@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MicroClaw Installer</title>
+    <style>
+      :root {
+        --bg-primary: #ffffff;
+        --bg-secondary: #ffffff;
+        --bg-tertiary: #f4f4f4;
+        --border: #e4e4e4;
+        --text-primary: #1a1a1a;
+        --text-secondary: #666666;
+        --text-muted: #999999;
+        --danger: #c42b1c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        font-family: "Segoe UI", sans-serif;
+        color: var(--text-primary);
+      }
+      body {
+        user-select: none;
+      }
+      button,
+      input {
+        font: inherit;
+      }
+
+      .app {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at top, #fff 0%, #fafafa 62%, #f2f2f2 100%);
+      }
+      .drag-region {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 36px;
+        -webkit-app-region: drag;
+      }
+      .close-btn {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        width: 28px;
+        height: 28px;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        -webkit-app-region: no-drag;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .close-btn:hover {
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+      }
+
+      .confetti {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      /* ---------- welcome ---------- */
+      .welcome-wrap {
+        width: 360px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+      .mascot-wrap {
+        width: 293px;
+        height: 293px;
+        position: relative;
+      }
+      .mascot-wrap img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .welcome-title {
+        margin: -32px 0 6px;
+        min-height: 32px;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        text-align: center;
+        transition: opacity 0.2s ease;
+      }
+      .welcome-bottom {
+        min-height: 160px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .welcome-notice {
+        max-width: 280px;
+        text-align: center;
+        font-size: 12px;
+        line-height: 1.7;
+        color: var(--text-muted);
+        margin: 0 0 10px;
+      }
+      .welcome-notice--desc {
+        font-size: 15px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        transition: opacity 0.2s ease;
+      }
+      .welcome-notice a {
+        color: var(--text-secondary);
+        text-decoration: underline;
+      }
+
+      .btn-primary {
+        min-width: 160px;
+        height: 40px;
+        padding: 0 28px;
+        border: none;
+        border-radius: 20px;
+        background: var(--text-primary);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .btn-primary:hover:not(:disabled) {
+        opacity: 0.86;
+      }
+      .btn-primary:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .btn-ghost {
+        height: 40px;
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .btn-ghost:hover {
+        color: var(--text-primary);
+      }
+
+      .install-progress-wrap {
+        width: 200px;
+        height: 6px;
+        margin: 0 0 12px;
+        border-radius: 99px;
+        background: #e5e5e5;
+        overflow: hidden;
+      }
+      .install-progress-bar {
+        width: 0;
+        height: 100%;
+        background: var(--text-primary);
+        border-radius: 99px;
+        transition: width 0.18s linear;
+      }
+
+      /* ---------- setup ---------- */
+      .setup-wrap {
+        width: 100%;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .setup-card {
+        width: 420px;
+        padding: 32px 28px 28px;
+        border-radius: 20px;
+        border: 1px solid var(--border);
+        background: var(--bg-secondary);
+        position: relative;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.05);
+      }
+      .back-btn {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .setup-title {
+        margin: 10px 0 4px;
+        text-align: center;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      .setup-desc {
+        margin: 0 0 24px;
+        text-align: center;
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+      .form-item {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 16px;
+      }
+      .form-item label {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+      .path-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 48px;
+        padding: 0 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #f5f5f5;
+      }
+      .path-row input {
+        flex: 1;
+        border: none;
+        background: transparent;
+        color: var(--text-primary);
+        outline: none;
+      }
+      .browse-btn {
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        color: var(--text-secondary);
+        font-size: 16px;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 24px;
+        cursor: pointer;
+      }
+      .checkbox {
+        width: 20px;
+        height: 20px;
+        margin-top: 2px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: transparent;
+      }
+      .checkbox.checked {
+        background: #0078d4;
+        border-color: #0078d4;
+        color: #fff;
+      }
+      .checkbox-label {
+        flex: 1;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text-primary);
+      }
+      .actions {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+      }
+
+      /* ---------- failure ---------- */
+      .failure-wrap {
+        width: 420px;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        padding: 24px;
+        text-align: center;
+      }
+      .failure-title {
+        margin: 16px 0 8px;
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .failure-msg {
+        max-width: 360px;
+        white-space: pre-wrap;
+        color: var(--text-secondary);
+        line-height: 1.6;
+        margin-bottom: 16px;
+      }
+      .link-btn {
+        border: none;
+        background: transparent;
+        color: #0067b8;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      /* ---------- utils ---------- */
+      .hidden {
+        display: none !important;
+      }
+
+      /* label-fade transition (matching Vue design) */
+      .label-fade {
+        transition: opacity 0.2s ease;
+      }
+      .label-fading {
+        opacity: 0;
+      }
+      .error-banner {
+        display: none;
+        position: absolute;
+        top: 40px;
+        left: 10px;
+        right: 10px;
+        padding: 8px 12px;
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        border-radius: 8px;
+        font-size: 12px;
+        z-index: 999;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Bootstrap data: type=application/json is NOT executed as JS, safe from SyntaxError -->
+    <script type="application/json" id="bootstrap-data">
+      __BOOTSTRAP_JSON__
+    </script>
+
+    <div class="app">
+      <canvas id="confetti" class="confetti"></canvas>
+      <div class="drag-region"></div>
+      <button id="close" class="close-btn">
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+      <div id="errorBanner" class="error-banner"></div>
+
+      <!-- ====== welcome ====== -->
+      <div id="welcome" class="welcome-wrap">
+        <div class="mascot-wrap"><img id="mascot" alt="mascot" /></div>
+        <h1 id="title" class="welcome-title"></h1>
+        <div class="welcome-bottom">
+          <p id="legal" class="welcome-notice"></p>
+          <p id="desc" class="welcome-notice welcome-notice--desc hidden"></p>
+          <div id="progressWrap" class="install-progress-wrap hidden">
+            <div id="progressBar" class="install-progress-bar"></div>
+          </div>
+          <button id="quick" class="btn-primary"></button>
+          <button id="custom" class="btn-ghost"></button>
+        </div>
+      </div>
+
+      <!-- ====== custom setup ====== -->
+      <div id="setup" class="setup-wrap">
+        <div class="setup-card">
+          <button id="back" class="back-btn"></button>
+          <h2 id="setupTitle" class="setup-title"></h2>
+          <p id="setupSubtitle" class="setup-desc"></p>
+          <div class="form-item">
+            <label id="pathLabel">Install Path</label>
+            <div class="path-row">
+              <input id="pathInput" type="text" />
+              <button id="browse" class="browse-btn">&#128194;</button>
+            </div>
+          </div>
+          <div id="allowRow" class="checkbox-row">
+            <div id="allowCheck" class="checkbox">&#10003;</div>
+            <div id="allowLabel" class="checkbox-label"></div>
+          </div>
+          <div class="actions">
+            <button id="start" class="btn-primary"></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====== failure ====== -->
+      <div id="failure" class="failure-wrap">
+        <div style="font-size: 40px; color: #c42b1c">&#10006;</div>
+        <div id="failTitle" class="failure-title"></div>
+        <div id="failMsg" class="failure-msg"></div>
+        <button id="viewLog" class="link-btn"></button>
+        <div style="height: 16px"></div>
+        <button id="failClose" class="btn-primary"></button>
+      </div>
+    </div>
+
+    <script>
+      /* ------------------------------------------------------------------ */
+      /* state & element refs                                                */
+      /* ------------------------------------------------------------------ */
+      const state = {
+        bootstrap: null,
+        bootstrapped: false,
+        route: "welcome",
+        installing: false,
+        imageTimer: null,
+        textTimer: null,
+        textIdx: 0,
+        pollTimer: null,
+        closeTimer: null,
+        retryTimer: null,
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const els = {
+        errorBanner: $("errorBanner"),
+        welcome: $("welcome"),
+        setup: $("setup"),
+        failure: $("failure"),
+        mascot: $("mascot"),
+        title: $("title"),
+        legal: $("legal"),
+        desc: $("desc"),
+        progressWrap: $("progressWrap"),
+        progressBar: $("progressBar"),
+        quick: $("quick"),
+        custom: $("custom"),
+        close: $("close"),
+        back: $("back"),
+        setupTitle: $("setupTitle"),
+        setupSubtitle: $("setupSubtitle"),
+        pathInput: $("pathInput"),
+        browse: $("browse"),
+        allowRow: $("allowRow"),
+        allowCheck: $("allowCheck"),
+        allowLabel: $("allowLabel"),
+        start: $("start"),
+        failTitle: $("failTitle"),
+        failMsg: $("failMsg"),
+        viewLog: $("viewLog"),
+        failClose: $("failClose"),
+        confetti: $("confetti"),
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* helpers                                                              */
+      /* ------------------------------------------------------------------ */
+      function show(route) {
+        state.route = route;
+        els.welcome.style.display = route === "welcome" ? "flex" : "none";
+        els.setup.style.display = route === "setup" ? "flex" : "none";
+        els.failure.style.display = route === "failure" ? "flex" : "none";
+      }
+
+      function setCheckbox(checked) {
+        els.allowCheck.classList.toggle("checked", checked);
+      }
+
+      function setInstalling(on) {
+        state.installing = on;
+        els.legal.classList.toggle("hidden", on);
+        els.quick.classList.toggle("hidden", on);
+        els.custom.classList.toggle("hidden", on);
+        els.desc.classList.toggle("hidden", !on);
+        els.progressWrap.classList.toggle("hidden", !on);
+        if (!on) els.progressBar.style.width = "0%";
+      }
+
+      function showError(msg) {
+        els.errorBanner.textContent = "Debug: " + msg;
+        els.errorBanner.style.display = "block";
+      }
+
+      function startTextCycle() {
+        if (state.textTimer) clearInterval(state.textTimer);
+        state.textIdx = 0;
+        const update = () => {
+          const carousel = state.bootstrap.strings.carousel;
+          const pair = carousel[state.textIdx % carousel.length];
+          // Fade out, swap text, fade in
+          els.title.style.opacity = "0";
+          els.desc.style.opacity = "0";
+          setTimeout(() => {
+            els.title.textContent = pair[0];
+            els.desc.textContent = pair[1];
+            els.title.style.opacity = "1";
+            els.desc.style.opacity = "1";
+          }, 200);
+          state.textIdx++;
+        };
+        update();
+        state.textTimer = setInterval(update, 3000);
+      }
+
+      function stopTextCycle() {
+        if (state.textTimer) {
+          clearInterval(state.textTimer);
+          state.textTimer = null;
+        }
+        if (state.bootstrap) {
+          els.title.style.opacity = "1";
+          els.title.textContent = state.bootstrap.strings.welcomeTitle;
+        }
+      }
+
+      function startImageCycle() {
+        if (state.imageTimer) clearInterval(state.imageTimer);
+        let idx = 0;
+        state.imageTimer = setInterval(() => {
+          if (!state.installing) return;
+          const imgs = state.bootstrap.assets.identities;
+          els.mascot.src = imgs[idx % imgs.length];
+          idx++;
+        }, 900);
+      }
+
+      function stopImageCycle() {
+        if (state.imageTimer) {
+          clearInterval(state.imageTimer);
+          state.imageTimer = null;
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* confetti                                                             */
+      /* ------------------------------------------------------------------ */
+      function launchConfetti() {
+        const canvas = els.confetti;
+        const ctx = canvas.getContext("2d");
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+        const colors = [
+          "#e8533a",
+          "#f5a623",
+          "#4cd964",
+          "#5ac8fa",
+          "#af52de",
+          "#ff2d55",
+          "#ffcc00",
+          "#34aadc",
+        ];
+        const cx = canvas.width / 2 + 70,
+          cy = canvas.height / 2 - 125;
+        const particles = Array.from({ length: 120 }, () => {
+          const a = Math.random() * Math.PI * 2,
+            s = 2 + Math.random() * 4;
+          return {
+            x: cx,
+            y: cy,
+            vx: Math.cos(a) * s,
+            vy: Math.sin(a) * s - 1.5,
+            w: 6 + Math.random() * 6,
+            h: 3 + Math.random() * 4,
+            color: colors[Math.floor(Math.random() * colors.length)],
+            angle: Math.random() * Math.PI * 2,
+            spin: (Math.random() - 0.5) * 0.15,
+            alpha: 1,
+            decay: 0.005 + Math.random() * 0.004,
+            driftFreq: 0.02 + Math.random() * 0.02,
+            driftAmp: 0.3 + Math.random() * 0.5,
+            driftT: Math.random() * Math.PI * 2,
+          };
+        });
+        (function draw() {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          let alive = false;
+          for (const p of particles) {
+            if (p.alpha <= 0) continue;
+            alive = true;
+            p.vy += 0.035;
+            p.vy *= 0.99;
+            p.vx *= 0.995;
+            p.driftT += p.driftFreq;
+            p.x += p.vx + Math.sin(p.driftT) * p.driftAmp;
+            p.y += p.vy;
+            p.angle += p.spin;
+            p.alpha -= p.decay;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, p.alpha);
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.angle);
+            ctx.fillStyle = p.color;
+            ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+            ctx.restore();
+          }
+          if (alive) requestAnimationFrame(draw);
+        })();
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* poll                                                                 */
+      /* ------------------------------------------------------------------ */
+      async function poll() {
+        try {
+          const snap = await window.pywebview.api.get_state();
+          els.pathInput.value = snap.install_dir;
+          setCheckbox(snap.allow_read);
+          if (snap.running) {
+            if (!state.installing) {
+              setInstalling(true);
+              startImageCycle();
+              startTextCycle();
+            }
+            els.progressBar.style.width = snap.progress + "%";
+          }
+          if (snap.status === "success") {
+            stopImageCycle();
+            stopTextCycle();
+            els.progressBar.style.width = "100%";
+            if (!state.closeTimer) {
+              state.closeTimer = setTimeout(() => window.pywebview.api.close_window(), 2000);
+            }
+          }
+          if (snap.status === "failed") {
+            stopImageCycle();
+            stopTextCycle();
+            setInstalling(false);
+            els.failTitle.textContent = state.bootstrap.strings.installFailTitle;
+            els.failMsg.textContent = snap.error + "\n\n" + state.bootstrap.strings.installFailMsg;
+            show("failure");
+          }
+        } catch (e) {
+          /* swallow poll errors */
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* bootstrap                                                            */
+      /* ------------------------------------------------------------------ */
+      async function bootstrap() {
+        if (state.bootstrapped) return;
+
+        /* ---- load data ---- */
+        try {
+          // Prefer pre-injected JSON (safe: <script type=application/json> is never executed)
+          const jsonEl = document.getElementById("bootstrap-data");
+          let data = null;
+          if (jsonEl && jsonEl.textContent.trim()) {
+            try {
+              data = JSON.parse(jsonEl.textContent);
+            } catch (_) {}
+          }
+          if (!data && window.pywebview && window.pywebview.api) {
+            data = await window.pywebview.api.get_bootstrap();
+          }
+          if (!data) return; // not ready yet — retry later
+          state.bootstrap = data;
+        } catch (e) {
+          showError("bootstrap data: " + e.message);
+          return;
+        }
+
+        /* ---- fill UI ---- */
+        try {
+          const s = state.bootstrap.strings;
+          const a = state.bootstrap.assets;
+          els.title.textContent = s.welcomeTitle;
+          els.legal.innerHTML =
+            s.legalLine +
+            '<br><a href="#">' +
+            s.serviceAgreement +
+            "</a> " +
+            (s.and || "") +
+            ' <a href="#">' +
+            s.privacyStatement +
+            "</a>";
+          els.quick.textContent = s.quickInstall;
+          els.custom.textContent = s.customInstall;
+          els.back.textContent = s.back;
+          els.setupTitle.textContent = s.customTitle;
+          els.setupSubtitle.textContent = s.customSubtitle;
+          els.allowLabel.textContent = s.allowRead;
+          els.start.textContent = s.startInstall;
+          els.viewLog.textContent = s.viewLog;
+          els.failClose.textContent = s.close;
+          els.mascot.src = a.fold;
+          els.pathInput.value = state.bootstrap.install_dir;
+          setCheckbox(state.bootstrap.allow_read);
+          setTimeout(() => {
+            if (state.installing) return;
+            els.mascot.src = a.expand;
+            launchConfetti();
+          }, 400);
+        } catch (e) {
+          showError("fill UI: " + e.message);
+          return;
+        }
+
+        /* ---- bind events (needs pywebview.api) ---- */
+        try {
+          const api = window.pywebview && window.pywebview.api;
+          if (!api) return; // retry later
+          const a = state.bootstrap.assets;
+          els.close.onclick = () => api.close_window();
+          els.custom.onclick = () => show("setup");
+          els.back.onclick = () => show("welcome");
+          els.browse.onclick = async () => {
+            const p = await api.choose_install_dir();
+            if (p) els.pathInput.value = p;
+          };
+          els.allowRow.onclick = async () => {
+            setCheckbox(await api.toggle_allow_read());
+          };
+          els.quick.onclick = async () => {
+            show("welcome");
+            setInstalling(true);
+            startImageCycle();
+            startTextCycle();
+            els.mascot.src = a.stock;
+            await api.quick_install();
+          };
+          els.start.onclick = async () => {
+            show("welcome");
+            setInstalling(true);
+            startImageCycle();
+            startTextCycle();
+            els.mascot.src = a.stock;
+            await api.start_custom_install(
+              els.pathInput.value,
+              els.allowCheck.classList.contains("checked"),
+            );
+          };
+          els.viewLog.onclick = () => api.open_log();
+          els.failClose.onclick = () => api.close_window();
+        } catch (e) {
+          showError("bindEvents: " + e.message);
+          return;
+        }
+
+        show("welcome");
+        state.pollTimer = setInterval(poll, 250);
+        state.bootstrapped = true;
+      }
+
+      function scheduleRetry() {
+        if (state.bootstrapped || state.retryTimer) return;
+        state.retryTimer = setInterval(() => {
+          if (state.bootstrapped) {
+            clearInterval(state.retryTimer);
+            state.retryTimer = null;
+            return;
+          }
+          bootstrap().catch(() => {});
+        }, 200);
+      }
+
+      window.addEventListener("pywebviewready", () => bootstrap().catch(() => scheduleRetry()));
+      window.addEventListener("DOMContentLoaded", () => {
+        bootstrap().catch(() => scheduleRetry());
+        scheduleRetry();
+      });
+    </script>
+  </body>
+</html>

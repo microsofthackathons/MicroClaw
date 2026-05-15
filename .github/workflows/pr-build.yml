@@ -1,0 +1,170 @@
+# PR Build
+#
+# Runs the end-to-end packaging script (build.ps1) on every PR.
+# Verifies that the entire pipeline still produces:
+#   - AppContainerLauncher.exe (.NET 9)
+#   - desktop\release\win-unpacked\ (electron-builder)
+#   - dist\microclaw-portable.zip
+#   - dist\MicroClawInstaller\ + dist\MicroClawInstaller.zip (PyInstaller)
+#
+# Complements pr-security-check.yml (per-stack audit + unit tests)
+# by catching cross-stack integration breakages before merge.
+#
+name: "PR Build"
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # ── ESLint + Prettier + Vitest on JS/TS sources ─────────────────
+  # Runs lint, prettier check, and Vitest across all four JS/TS packages
+  # (desktop, desktop/renderer, desktop/studio-backend, plugins/openclaw-weixin).
+  lint-js:
+    name: Lint, Format & Test (JS/TS)
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Toolchain (Node 22) is pre-installed on the self-hosted runner.
+      # actions/setup-node is unreliable under the NetworkService account
+      # (HKLM/tool-cache permission issues), so just verify the version.
+      - name: Verify pre-installed Node.js
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = (& node --version).TrimStart('v')
+          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          Write-Host "node $node"
+
+      - name: Install dependencies (all packages)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend', 'plugins/openclaw-weixin') {
+            Write-Host "── npm ci in $d ──"
+            Push-Location $d
+            try {
+              npm ci
+              if ($LASTEXITCODE -ne 0) { throw "npm ci failed in $d" }
+            } finally {
+              Pop-Location
+            }
+          }
+
+      - name: Lint all packages
+        run: npm run lint
+
+      - name: Check formatting (Prettier)
+        run: npm run format:check
+
+      - name: Run unit tests (Vitest)
+        run: npm test
+
+  # ── Ruff lint + format on Python sources ────────────────────────
+  # Runs `ruff check` and `ruff format --check`. Config lives in
+  # pyproject.toml. Serialised after `lint-js` because the self-hosted
+  # runner pool is small.
+  lint-python:
+    name: Lint & Format (Ruff)
+    runs-on: [self-hosted, Windows, X64]
+    needs: lint-js
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12+
+        uses: ./.github/actions/setup-python-windows
+
+      - name: Install Ruff
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "ruff>=0.14.0"
+
+      # Invoke via `python -m ruff` rather than the bare `ruff` command:
+      # the Microsoft Store / system Python on the runner installs scripts
+      # to %APPDATA%\Python\PythonXY\Scripts, which is not the same path
+      # as the interpreter's own Scripts directory and is not on PATH.
+      - name: Run ruff check
+        run: python -m ruff check .
+
+      - name: Run ruff format --check
+        run: python -m ruff format --check .
+
+  # ── Run build.ps1 end-to-end on Windows ─────────────────────────
+  # Serialised after `lint-python` so lint failures short-circuit the build
+  # and we never hold two self-hosted runners at once.
+  full-build:
+    name: build.ps1 (Windows)
+    runs-on: [self-hosted, Windows, X64]
+    needs: lint-python
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Toolchain (Node 22, .NET 9 SDK, Python 3.12+) is pre-installed on
+      # the self-hosted runner. We only verify versions here; installing
+      # via actions/setup-* is unreliable under the NetworkService account
+      # (HKLM/tool-cache permission issues).
+      - name: Verify pre-installed toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = (& node --version).TrimStart('v')
+          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          Write-Host "node $node"
+          $dotnet = & dotnet --version
+          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
+          Write-Host "dotnet $dotnet"
+
+      # Resolve a Python 3.12+ interpreter for the NetworkService account.
+      - name: Setup Python 3.12+
+        uses: ./.github/actions/setup-python-windows
+
+      - name: Install Python build dependencies
+        run: |
+          # Use `python -m pip` — the Store distribution writes upgraded
+          # pip.exe to a --user Scripts dir not on NetworkService's PATH.
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run build.ps1
+        run: .\build.ps1
+
+      - name: Verify build artifacts
+        run: |
+          $expected = @(
+            'dist\microclaw-portable.zip',
+            'dist\MicroClawInstaller.zip',
+            'dist\MicroClawInstaller'
+          )
+          $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Host "::error::Missing expected artifacts: $($missing -join ', ')"
+            exit 1
+          }
+          Get-ChildItem dist | Format-Table Name, Length, LastWriteTime

@@ -1,0 +1,41 @@
+{
+  "name": "microclaw",
+  "version": "1.0.0",
+  "description": "MicroClaw - Custom chat UI with built-in gateway",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "concurrently -n vite,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "cd renderer && npm run dev",
+    "dev:electron": "tsc && electron .",
+    "build": "tsc && cd renderer && npm run build",
+    "pack": "npm run build && electron-builder --win --x64 --dir",
+    "dist": "npm run build && electron-builder --win",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "lint:sarif": "eslint . --format @microsoft/eslint-formatter-sarif --output-file eslint-results.sarif",
+    "prepare-resources": "node scripts/prepare-resources.mjs",
+    "postinstall": "cd renderer && npm install"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@microsoft/eslint-formatter-sarif": "^3.1.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.1",
+    "concurrently": "^9.0.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^26.8.1",
+    "eslint": "^10.1.0",
+    "eslint-config-prettier": "^10.1.8",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.1"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "node-addon-api": "^8.7.0",
+    "ws": "^8.19.0"
+  }
+}

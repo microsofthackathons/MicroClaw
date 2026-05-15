@@ -1,0 +1,9 @@
+# Runtime dependencies for the installer (deploy.py / MicroClawDeployer.exe):
+# The GUI uses tkinter (bundled with Python 3).
+# pyyaml is optional but recommended for full YAML support.
+pyyaml>=6.0
+pywebview>=5.1
+
+# Build-only dependency: used by build.ps1 to package deploy.py into
+# MicroClawDeployer.exe. Not needed at runtime on end-user machines.
+pyinstaller>=6.0

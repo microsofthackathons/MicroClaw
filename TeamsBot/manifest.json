@@ -1,0 +1,54 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.25/MicrosoftTeams.schema.json",
+  "version": "1.0.0",
+  "manifestVersion": "1.25",
+  "id": "2e17b855-8e1d-4f8f-aedf-39c98834d96a",
+  "name": { "short": "MicroClaw" },
+  "developer": {
+    "name": "Microsoft",
+    "websiteUrl": "https://www.microsoft.com",
+    "privacyUrl": "https://www.microsoft.com",
+    "termsOfUseUrl": "https://www.microsoft.com"
+  },
+  "description": { "short": "MicroClaw Bot Test Version" },
+  "icons": { "outline": "outline.png", "color": "color.png" },
+  "accentColor": "#ffffff",
+  "bots": [
+    {
+      "botId": "1eca551c-76f2-4283-888a-cd35734bc0d1",
+      "scopes": [],
+      "isNotificationOnly": false,
+      "supportsCalling": false,
+      "supportsVideo": false,
+      "supportsFiles": false
+    }
+  ],
+  "validDomains": [],
+  "webApplicationInfo": {
+    "id": "1eca551c-76f2-4283-888a-cd35734bc0d1",
+    "resource": "api://1eca551c-76f2-4283-888a-cd35734bc0d1",
+    "appId": "1eca551c-76f2-4283-888a-cd35734bc0d1"
+  },
+  "devicePermissions": ["geolocation", "media", "notifications"],
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        { "name": "Channel.Create.Group", "type": "Application" },
+        { "name": "Channel.Delete.Group", "type": "Application" },
+        { "name": "ChannelMeeting.ReadBasic.Group", "type": "Application" },
+        { "name": "ChannelMeetingParticipant.Read.Group", "type": "Application" },
+        { "name": "ChannelMeetingRecording.Read.Group", "type": "Application" },
+        { "name": "ChannelMeetingTranscript.Read.Group", "type": "Application" },
+        { "name": "ChannelMeetingNotification.Send.Group", "type": "Application" },
+        { "name": "Calls.AccessMedia.Chat", "type": "Application" },
+        { "name": "Calls.JoinGroupCalls.Chat", "type": "Application" },
+        { "name": "ChatSettings.Read.Chat", "type": "Application" },
+        { "name": "ChatSettings.ReadWrite.Chat", "type": "Application" },
+        { "name": "ChatMessage.Read.Chat", "type": "Application" },
+        { "name": "ChatMessage.Send.Chat", "type": "Application" },
+        { "name": "ChatMessageReadReceipt.Read.Chat", "type": "Application" },
+        { "name": "ChatMember.Read.Chat", "type": "Application" }
+      ]
+    }
+  }
+}
