@@ -70,7 +70,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 安装器会在一次运行中完成 Windows 侧的主要准备工作：
 
 - Git for Windows（PortableGit → `~/.openclaw-git`）
-- Node.js 22+（来自 npmmirror 镜像 → `~/.openclaw-node`）
+- Node.js 22+，通过官方签名 `.msi` 以 per-machine 方式安装到 `%ProgramFiles%\nodejs\`（UAC 提权；若该路径已存在 ≥22.16 的系统 Node 则直接复用）
 - OpenClaw Gateway（`npm install -g openclaw`）
 - 配置 npm 镜像源与 V8 编译缓存
 - 安装 MicroClaw 桌面客户端、托管技能、AppContainer 沙箱、微信插件
