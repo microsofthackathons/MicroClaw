@@ -27,7 +27,22 @@ foreach ($candidate in $nodeCandidates) {
     }
 }
 if (-not $nodeFound) {
-    Write-Host "  ERROR: node.exe not found" -ForegroundColor Red
+    # Fall back to whatever node.exe is already on PATH (e.g. nvm, chocolatey,
+    # winget shims, or a non-standard install). Many dev machines keep node
+    # outside the three "standard" locations above, and after an uninstall the
+    # MSI directory is gone — but a system-wide node may still be available.
+    $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
+    if ($nodeCmd) {
+        $nodeDir = Split-Path -Parent $nodeCmd.Source
+        Write-Host "  Using Node from PATH: $nodeDir ($(& node --version))"
+        $nodeFound = $true
+    }
+}
+if (-not $nodeFound) {
+    Write-Host "  ERROR: node.exe not found in any of:" -ForegroundColor Red
+    foreach ($candidate in $nodeCandidates) { Write-Host "    - $candidate" -ForegroundColor Red }
+    Write-Host "    - PATH (Get-Command node.exe)" -ForegroundColor Red
+    Write-Host "  Install Node.js 22+ (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
     exit 1
 }
 

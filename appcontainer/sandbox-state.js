@@ -93,6 +93,9 @@ var _safePaths = (function () {
   if (tmp) dirs.push(path.resolve(tmp).toLowerCase() + path.sep);
   var appdata = process.env.APPDATA || "";
   if (appdata) dirs.push(path.resolve(appdata, "microclaw").toLowerCase() + path.sep);
+  // Per-user npm global prefix (default on Windows when no admin rights).
+  // The deployer falls back here when C:\Program Files\nodejs isn't writable.
+  if (appdata) dirs.push(path.resolve(appdata, "npm").toLowerCase() + path.sep);
   var systemDrive = process.env.SystemDrive || "C:";
   dirs.push(path.resolve(systemDrive, "tmp", "openclaw").toLowerCase() + path.sep);
   return dirs;
