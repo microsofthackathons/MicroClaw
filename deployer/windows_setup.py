@@ -948,15 +948,23 @@ class WindowsSetup:
         node_dir/node_modules/openclaw/, so the package must live there.
         """
         # Primary check: the actual entry file that Electron uses
-        entry = self.node_dir / "node_modules" / "openclaw" / "openclaw.mjs"
-        if not entry.exists():
-            entry = self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js"
-        if not entry.exists():
-            # Also check npm v10+ lib/ layout
-            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "openclaw.mjs"
-        if not entry.exists():
-            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "dist" / "index.js"
-        if not entry.exists():
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        search_roots = [self.node_dir, Path(appdata) / "npm"]
+        entry: Path | None = None
+        for root in search_roots:
+            for sub in (
+                ("node_modules", "openclaw", "openclaw.mjs"),
+                ("node_modules", "openclaw", "dist", "index.js"),
+                ("lib", "node_modules", "openclaw", "openclaw.mjs"),
+                ("lib", "node_modules", "openclaw", "dist", "index.js"),
+            ):
+                candidate = root.joinpath(*sub)
+                if candidate.exists():
+                    entry = candidate
+                    break
+            if entry:
+                break
+        if not entry:
             return False
 
         # Verify version via npm list (using our managed npm)
@@ -1042,6 +1050,16 @@ class WindowsSetup:
             env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
             self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
 
+            # Choose an npm --prefix that the current user can actually write
+            # to.  When Node.js is installed per-machine under
+            # ``C:\Program Files\nodejs`` (the standard MSI layout) the
+            # node_modules directory is owned by Administrators and a normal
+            # (non-elevated) user gets EPERM on ``npm install -g``.  Fall
+            # back to a user-writable directory in those cases.
+            install_prefix = self._choose_npm_install_prefix()
+            self.install_prefix = install_prefix  # remember for _find_openclaw_cmd
+            self.log.info(f"  npm install prefix: {install_prefix}")
+
             # Stream npm output line-by-line so the UI stays responsive
             proc = subprocess.Popen(
                 [
@@ -1050,7 +1068,7 @@ class WindowsSetup:
                     "-g",
                     f"openclaw@{tag}",
                     "--prefix",
-                    str(self.node_dir),
+                    str(install_prefix),
                     "--loglevel",
                     "info",
                     "--no-progress",
@@ -1073,52 +1091,87 @@ class WindowsSetup:
                     self.log.info(f"  npm: {stripped}")
             proc.wait(timeout=900)
 
-            if proc.returncode == 0:
-                self.log.success("OpenClaw installed on Windows")
-                # Verify the entry file actually landed where we expect
-                for _p in [
-                    self.node_dir / "node_modules" / "openclaw" / "openclaw.mjs",
-                    self.node_dir / "lib" / "node_modules" / "openclaw" / "openclaw.mjs",
-                    self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js",
-                    self.node_dir / "lib" / "node_modules" / "openclaw" / "dist" / "index.js",
-                ]:
-                    if _p.exists():
-                        self.log.debug(f"  Entry verified: {_p}")
-                        break
+            # Verify the entry file actually landed under the chosen prefix.
+            # npm exit code alone is unreliable: it may print warnings (e.g.
+            # EBADENGINE) and still return non-zero, and the previous
+            # heuristic ("'openclaw' substring in output") was triggered by
+            # cache-hit URLs like ``https://registry.npmjs.org/openclaw``
+            # even when the install failed with EPERM.
+            entry_found: Path | None = None
+            for _p in [
+                install_prefix / "node_modules" / "openclaw" / "openclaw.mjs",
+                install_prefix / "lib" / "node_modules" / "openclaw" / "openclaw.mjs",
+                install_prefix / "node_modules" / "openclaw" / "dist" / "index.js",
+                install_prefix / "lib" / "node_modules" / "openclaw" / "dist" / "index.js",
+            ]:
+                if _p.exists():
+                    entry_found = _p
+                    break
+
+            if entry_found:
+                if proc.returncode == 0:
+                    self.log.success("OpenClaw installed on Windows")
                 else:
                     self.log.warn(
-                        f"  openclaw entry file not found under {self.node_dir} — npm may have used a different prefix"
+                        f"npm exited with code {proc.returncode} but openclaw entry was written"
                     )
-                    # Log npm prefix for diagnostics
-                    try:
-                        _r = self._run(
-                            [npm, "config", "get", "prefix"],
-                            capture_output=True,
-                            text=True,
-                            timeout=10,
-                            env=env,
-                        )
-                        self.log.warn(f"  npm prefix = {_r.stdout.strip()}")
-                    except Exception:
-                        pass
+                    self.log.success("OpenClaw installed on Windows (with warnings)")
+                self.log.debug(f"  Entry verified: {entry_found}")
                 self._register_rollback_openclaw(npm, env)
                 self._patch_pi_ai_usage_streaming()
                 return True
-            # npm warnings (EBADENGINE etc.) may still succeed
-            all_output = "\n".join(collected).lower()
-            if "added" in all_output or "openclaw" in all_output:
-                self.log.warn(f"npm exited with code {proc.returncode} but packages were added")
-                self.log.success("OpenClaw installed on Windows (with warnings)")
-                self._register_rollback_openclaw(npm, env)
-                self._patch_pi_ai_usage_streaming()
-                return True
-            # Log the TAIL of output (actual error is at the end)
+
+            # Entry file missing → install really failed. Log npm prefix for
+            # diagnostics and surface the tail of npm's output (where the
+            # real error message lives).
+            try:
+                _r = self._run(
+                    [npm, "config", "get", "prefix"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=env,
+                )
+                self.log.warn(f"  npm prefix = {_r.stdout.strip()}")
+            except Exception:
+                pass
             err_out = "\n".join(collected)
-            self.log.error(f"npm install failed (exit {proc.returncode}):\n{err_out[-1000:]}")
+            self.log.error(
+                f"npm install failed (exit {proc.returncode}): openclaw entry not found under "
+                f"{install_prefix}\n{err_out[-1500:]}"
+            )
             return False
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
             return False
+
+    def _choose_npm_install_prefix(self) -> Path:
+        """Return a writable directory to use as ``npm install -g --prefix``.
+
+        Prefers ``self.node_dir`` (where Node.js itself lives) so the
+        resulting ``openclaw.cmd`` sits next to ``node.exe`` on PATH.  If
+        that directory isn't writable for the current user (typical for the
+        per-machine MSI install under ``C:\\Program Files\\nodejs`` when the
+        installer is run without elevation), fall back to the standard
+        per-user npm prefix at ``%APPDATA%\\npm`` — a location both the
+        deployer (`_find_openclaw_cmd`) and the Electron desktop
+        (`resolveOpenClawEntry`) already know how to find.
+        """
+        candidate = self.node_dir
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except (OSError, PermissionError):
+            appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+            fallback = Path(appdata) / "npm"
+            fallback.mkdir(parents=True, exist_ok=True)
+            self.log.info(
+                f"  {candidate} 不可写，改用用户目录 {fallback}（无需管理员权限）"
+            )
+            return fallback
 
     def _patch_pi_ai_usage_streaming(self) -> None:
         """Force pi-ai's openai-completions provider to always emit
@@ -1131,42 +1184,35 @@ class WindowsSetup:
         causes the Usage dashboard to report 0 tokens. Patch the guard
         away so usage is always requested. Idempotent; safe to re-run.
         """
-        candidates = [
-            self.node_dir
-            / "node_modules"
-            / "openclaw"
-            / "node_modules"
-            / "@mariozechner"
-            / "pi-ai"
-            / "dist"
-            / "providers"
-            / "openai-completions.js",
-            self.node_dir
-            / "node_modules"
-            / "@mariozechner"
-            / "pi-ai"
-            / "dist"
-            / "providers"
-            / "openai-completions.js",
-            self.node_dir
-            / "lib"
-            / "node_modules"
-            / "openclaw"
-            / "node_modules"
-            / "@mariozechner"
-            / "pi-ai"
-            / "dist"
-            / "providers"
-            / "openai-completions.js",
-            self.node_dir
-            / "lib"
-            / "node_modules"
-            / "@mariozechner"
-            / "pi-ai"
-            / "dist"
-            / "providers"
-            / "openai-completions.js",
-        ]
+        candidates = []
+        # Search both node_dir and the npm install prefix actually used
+        # (these differ when we fell back to %APPDATA%\npm).
+        roots: list[Path] = [self.node_dir]
+        install_prefix = getattr(self, "install_prefix", None)
+        if install_prefix and Path(install_prefix) not in roots:
+            roots.append(Path(install_prefix))
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            appdata_npm = Path(appdata) / "npm"
+            if appdata_npm not in roots:
+                roots.append(appdata_npm)
+        for root in roots:
+            for sub in (
+                ("node_modules", "openclaw", "node_modules"),
+                ("node_modules",),
+                ("lib", "node_modules", "openclaw", "node_modules"),
+                ("lib", "node_modules"),
+            ):
+                candidates.append(
+                    root.joinpath(
+                        *sub,
+                        "@mariozechner",
+                        "pi-ai",
+                        "dist",
+                        "providers",
+                        "openai-completions.js",
+                    )
+                )
         target = next((p for p in candidates if p.exists()), None)
         if target is None:
             self.log.debug(
@@ -1214,14 +1260,32 @@ class WindowsSetup:
         self.log.step("Warming up compile cache for faster startup…")
 
         node = self.node_dir / "node.exe"
-        entry = self.node_dir / "node_modules" / "openclaw" / "openclaw.mjs"
-        if not entry.exists():
-            entry = self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js"
-        if not entry.exists():
-            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "openclaw.mjs"
-        if not entry.exists():
-            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "dist" / "index.js"
-        if not node.exists() or not entry.exists():
+        # Search both node_dir and the npm install prefix actually used
+        # (these differ when we fell back to %APPDATA%\npm).
+        entry_roots: list[Path] = [self.node_dir]
+        install_prefix = getattr(self, "install_prefix", None)
+        if install_prefix and Path(install_prefix) not in entry_roots:
+            entry_roots.append(Path(install_prefix))
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            appdata_npm = Path(appdata) / "npm"
+            if appdata_npm not in entry_roots:
+                entry_roots.append(appdata_npm)
+        entry: Path | None = None
+        for root in entry_roots:
+            for sub in (
+                ("node_modules", "openclaw", "openclaw.mjs"),
+                ("node_modules", "openclaw", "dist", "index.js"),
+                ("lib", "node_modules", "openclaw", "openclaw.mjs"),
+                ("lib", "node_modules", "openclaw", "dist", "index.js"),
+            ):
+                candidate = root.joinpath(*sub)
+                if candidate.exists():
+                    entry = candidate
+                    break
+            if entry:
+                break
+        if not node.exists() or entry is None:
             self.log.info("  Node or openclaw entry not found — skipping warmup")
             return True
 
@@ -3157,10 +3221,12 @@ class WindowsSetup:
 
         Prefer .cmd over bare name to avoid .ps1 execution-policy issues.
         """
+        # Prefix used by the most recent install (set by install_openclaw_windows)
+        install_prefix = getattr(self, "install_prefix", None)
         # Managed node dir (always check, even if _node_bin not set)
-        for search_dir in filter(None, [self._node_bin, self.node_dir]):
+        for search_dir in filter(None, [install_prefix, self._node_bin, self.node_dir]):
             for name in ("openclaw.cmd", "openclaw.exe", "openclaw"):
-                p = search_dir / name
+                p = Path(search_dir) / name
                 if p.exists():
                     return [str(p)]
         # npm global
