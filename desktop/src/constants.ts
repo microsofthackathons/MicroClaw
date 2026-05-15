@@ -1,0 +1,120 @@
+// ---------------------------------------------------------------------------
+// Shared constants for the MicroClaw Desktop main process.
+// Centralises magic numbers and flags that were previously scattered across
+// main.ts, gateway-manager.ts, and gateway-client.ts.
+// ---------------------------------------------------------------------------
+
+/** Default gateway port when none is configured in openclaw.json. */
+export const DEFAULT_PORT = 18789;
+
+/** Windows process-creation flag: suppress the console window. */
+export const CREATE_NO_WINDOW = 0x08000000;
+
+/** Sub-directory under the state dir used for Node 22+ V8 bytecode caching. */
+export const COMPILE_CACHE_SUBDIR = "compile-cache";
+
+// ── Window sizes ───────────────────────────────────────────────────────
+
+/** Loading-phase window dimensions (fixed, non-resizable). */
+export const LOADING_WINDOW_WIDTH = 700;
+export const LOADING_WINDOW_HEIGHT = 540;
+
+/** Setup wizard window dimensions. */
+export const SETUP_WINDOW_WIDTH = 500;
+export const SETUP_WINDOW_HEIGHT = 820;
+
+/** Default full window dimensions when no saved bounds exist. */
+export const DEFAULT_WINDOW_WIDTH = 1200;
+export const DEFAULT_WINDOW_HEIGHT = 800;
+
+/** Minimum window dimensions after expanding to full size. */
+export const MIN_WINDOW_WIDTH = 800;
+export const MIN_WINDOW_HEIGHT = 600;
+
+// ── Timeouts & intervals ────────────────────────────────────────────────
+
+/** How often the health monitor pings the gateway (ms). */
+export const HEALTH_CHECK_INTERVAL_MS = 30_000;
+
+/** HTTP timeout for a single health-check request (ms). */
+export const HEALTH_CHECK_HTTP_TIMEOUT_MS = 10_000;
+
+/** Number of consecutive health-check failures before triggering a restart.
+ *  Tolerates transient slowness on low-CPU machines (e.g. 2-core VMs) where
+ *  the gateway event loop can stall for several seconds during plugin work. */
+export const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
+
+/** Max time to wait for the gateway to become ready after spawn (ms). */
+export const GATEWAY_READY_TIMEOUT_MS = 120_000;
+
+/** Max time to wait for the gateway port to become free (ms). */
+export const PORT_WAIT_TIMEOUT_MS = 30_000;
+
+/** Delay before the post-spawn restart that activates plugin channels (ms). */
+export const POST_SPAWN_RESTART_DELAY_MS = 5_000;
+
+/** Timeout for sandbox permission requests — file, shell, and app approval (ms).
+ *  Shared by sandbox-preload.js (via env var) and main.ts (remote approval).
+ *  After this timeout, pending prompts auto-deny to prevent consent fatigue. */
+export const SANDBOX_PERMISSION_TIMEOUT_MS = 60_000;
+
+/** Timeout for the WeChat login flow (ms). */
+export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
+
+/** Number of days of usage data to query from the gateway. */
+export const USAGE_QUERY_DAYS = 30;
+
+// ── WebSocket reconnect back-off ────────────────────────────────────────
+
+/** Initial delay before the first reconnect attempt (ms). */
+export const WS_RECONNECT_INITIAL_MS = 800;
+
+/** Maximum delay between reconnect attempts (ms). */
+export const WS_RECONNECT_MAX_MS = 15_000;
+
+/** Multiplier applied to the back-off delay on each retry. */
+export const WS_RECONNECT_MULTIPLIER = 1.7;
+
+/** Per-request timeout for gateway WS RPC calls (ms). */
+export const WS_REQUEST_TIMEOUT_MS = 30_000;
+
+// ── Studio backend ──────────────────────────────────────────────────────
+
+/** Default port for the Studio Node backend. */
+export const STUDIO_DEFAULT_PORT = 19000;
+
+/** Max time to wait for the studio backend to become ready after spawn (ms). */
+export const STUDIO_READY_TIMEOUT_MS = 30_000;
+
+/** Health-check poll interval while waiting for studio backend ready (ms). */
+export const STUDIO_HEALTH_POLL_MS = 500;
+
+/** HTTP timeout for a single studio health-check request (ms). */
+export const STUDIO_HEALTH_HTTP_TIMEOUT_MS = 2_000;
+
+/** Max automatic restart attempts for the studio backend. */
+export const STUDIO_MAX_RESTARTS = 3;
+
+/** Sub-directory under the state dir for studio data files. */
+export const STUDIO_DATA_SUBDIR = "studio-data";
+
+// ── Studio backend status ───────────────────────────────────────────────
+
+export type StudioBackendStatus =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "restarting"
+  | "failed"
+  | "stopping";
+
+// ── Gateway status ──────────────────────────────────────────────────────
+
+export type GatewayStatus =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "restarting"
+  | "failed"
+  | "stopping"
+  | "timeout";

@@ -1,0 +1,52 @@
+name: "Setup Python (Windows self-hosted)"
+description: >-
+  Locate a Python 3.12+ interpreter on the self-hosted Windows runner and
+  prepend its install directory + Scripts dir to GITHUB_PATH. Required because
+  actions/setup-python is unreliable under the NetworkService account
+  (HKLM/tool-cache permission issues) and the Microsoft Store interpreter is
+  registered under HKCU only and never on PATH.
+runs:
+  using: composite
+  steps:
+    - name: Locate Python 3.12+
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        function Find-Python {
+          $regRoots = @(
+            'HKLM:\SOFTWARE\Python\PythonCore',
+            'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore',
+            'HKCU:\SOFTWARE\Python\PythonCore'
+          )
+          foreach ($root in $regRoots) {
+            if (-not (Test-Path $root)) { continue }
+            $vers = Get-ChildItem $root -ErrorAction SilentlyContinue |
+              Where-Object { $_.PSChildName -match '^3\.(1[2-9]|[2-9]\d)' } |
+              Sort-Object { [version]$_.PSChildName } -Descending
+            foreach ($v in $vers) {
+              $ipKey = Join-Path $v.PSPath 'InstallPath'
+              if (-not (Test-Path $ipKey)) { continue }
+              $installDir = (Get-ItemProperty $ipKey -ErrorAction SilentlyContinue).'(default)'
+              if ($installDir) {
+                $exe = Join-Path $installDir 'python.exe'
+                if (Test-Path -LiteralPath $exe) { return $exe }
+              }
+            }
+          }
+          $cmd = Get-Command python.exe -ErrorAction SilentlyContinue
+          if ($cmd) {
+            $ver = & $cmd.Source -c "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>$null
+            if ($ver -and [version]$ver -ge [version]'3.12') { return $cmd.Source }
+          }
+          return $null
+        }
+
+        $exe = Find-Python
+        if (-not $exe) { throw "Python 3.12+ not found. Install it on the runner host." }
+
+        $pyDir = Split-Path -Parent $exe
+        "$pyDir"                  | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        "$pyDir\Scripts"          | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        Write-Host "Using Python: $exe"
+        & $exe --version

@@ -1,0 +1,55 @@
+# Python tooling configuration.
+#
+# Build/runtime dependencies live in requirements.txt. Ruff (the only dev
+# tool needed today) is installed ad-hoc:
+#   python -m pip install "ruff>=0.14.0"
+# CI does the same install inline. This file only configures Ruff (linter +
+# formatter) and is read automatically by `ruff check` / `ruff format`.
+
+[tool.ruff]
+# Match Prettier's printWidth=100 so JS/TS and Python wrap at the same column.
+line-length = 100
+target-version = "py312"
+
+# Files that must not be touched by Ruff.
+extend-exclude = [
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "**/site-packages/**",
+]
+
+[tool.ruff.lint]
+# Rule selection (medium strictness):
+#   E, W   — pycodestyle errors & warnings
+#   F      — pyflakes (undefined names, unused imports, ...)
+#   I      — isort (import ordering)
+#   B      — flake8-bugbear (likely bugs)
+#   UP     — pyupgrade (modernize syntax for our target Python)
+#   SIM    — flake8-simplify (redundant patterns)
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+
+# Rules we deliberately disable repo-wide:
+#   E501   — line-too-long: the formatter wraps everything it can; the lines
+#            that survive are long string literals / URLs that wrapping would
+#            damage. Letting Ruff complain about them is just noise.
+#   SIM105 — use contextlib.suppress: in CPython this is measurably slower
+#            than try/except/pass and is not universally clearer.
+#   SIM108 — collapse if/else into ternary: a long ternary is often less
+#            readable than the explicit branch it replaces.
+#   SIM112 — capitalize env var names: Windows env vars like
+#            ProgramFiles / ProgramFiles(x86) are case-insensitive but
+#            canonically mixed-case; capitalising them is misleading.
+ignore = ["E501", "SIM105", "SIM108", "SIM112"]
+
+# Tests and PyInstaller specs sometimes need patterns that the strict ruleset
+# would flag. Keep this list short and justified.
+[tool.ruff.lint.per-file-ignores]
+"MicroClawDeployer.spec" = ["F821"]  # PyInstaller injects names at runtime
+
+[tool.ruff.format]
+# Mirror Prettier defaults where it makes sense.
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

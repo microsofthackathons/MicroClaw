@@ -1,0 +1,48 @@
+# Normalize line endings on commit; check out using each platform's native EOL
+# rules. Without this, Windows contributors can accidentally commit CRLF into
+# files that should be LF (breaking shebangs, hash signatures, diffs, etc.).
+
+* text=auto eol=lf
+
+# Windows-only script formats must stay CRLF on disk.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.sln   text eol=crlf
+
+# Shell scripts must be LF even when checked out on Windows.
+*.sh    text eol=lf
+
+# Treat lockfiles as text but never auto-fix them via merge tooling.
+package-lock.json   text eol=lf
+yarn.lock           text eol=lf
+pnpm-lock.yaml      text eol=lf
+requirements.txt    text eol=lf
+
+# Mark binary blobs explicitly so Git won't try to diff or normalize them.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.zip   binary
+*.gz    binary
+*.7z    binary
+*.exe   binary
+*.dll   binary
+*.pdb   binary
+*.pdf   binary
+*.ttf   binary
+*.woff  binary
+*.woff2 binary
+
+# Hide noisy paths from default GitHub diffs / language stats.
+desktop/release/**          linguist-generated=true
+desktop/dist/**             linguist-generated=true
+desktop/renderer/dist/**    linguist-generated=true
+dist/**                     linguist-generated=true
+build/**                    linguist-generated=true

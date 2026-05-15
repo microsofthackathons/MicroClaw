@@ -1,0 +1,22 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "npm test --prefix desktop && npm test --prefix desktop/renderer && npm test --prefix desktop/studio-backend && npm test --prefix plugins/openclaw-weixin",
+    "test:main": "npm test --prefix desktop",
+    "test:renderer": "npm test --prefix desktop/renderer",
+    "test:studio-backend": "npm test --prefix desktop/studio-backend",
+    "test:weixin": "npm test --prefix plugins/openclaw-weixin",
+    "lint": "npm run lint --prefix desktop && npm run lint --prefix desktop/renderer && npm run lint --prefix desktop/studio-backend && npm run lint --prefix plugins/openclaw-weixin",
+    "lint:main": "npm run lint --prefix desktop",
+    "lint:renderer": "npm run lint --prefix desktop/renderer",
+    "lint:studio-backend": "npm run lint --prefix desktop/studio-backend",
+    "lint:weixin": "npm run lint --prefix plugins/openclaw-weixin",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.4",
+    "prettier": "^3.8.3",
+    "sharp": "^0.34.5"
+  }
+}

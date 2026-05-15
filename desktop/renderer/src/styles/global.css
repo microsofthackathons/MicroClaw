@@ -1,0 +1,198 @@
+:root {
+  /* ── Premium SaaS palette ── */
+  --bg-primary: #ffffff;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f5f6f8;
+  --bg-grouped: #ffffff;
+  --bg-input: #f7f8fa;
+  --bg-chat: #faf9f7;
+  --bg-chat-hover: #ece9e3;
+  --bg-assistant-card: #f9f5f0;
+  --text-primary: #1e1f25;
+  --text-secondary: #636878;
+  --text-muted: #a3a8b8;
+  --accent: #1e1f25;
+  --accent-hover: #333;
+  --accent-subtle: rgba(30, 31, 37, 0.06);
+  --accent-light: rgba(30, 31, 37, 0.1);
+  --accent-selected: #d4a843;
+  --accent-selected-bg: rgba(212, 168, 67, 0.12);
+  --border: #e8eaef;
+  --border-strong: #d0d3da;
+  --border-row: rgba(60, 60, 67, 0.05);
+  --border-light: #f0f1f4;
+  --msg-user-bg: #1e293b;
+  --msg-user-text: #ffffff;
+  --msg-ai-bg: transparent;
+  --danger: #ef4444;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --sidebar-width: 280px;
+  --card-radius: 16px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --card-shadow-hover: 0 14px 36px rgba(0, 0, 0, 0.13), 0 4px 10px rgba(0, 0, 0, 0.07);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--text-primary);
+  font-family:
+    "DM Sans",
+    "Noto Sans SC",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "SF Pro Display",
+    sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.3px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Light theme overrides for Element Plus */
+:root {
+  --el-bg-color: var(--bg-secondary);
+  --el-bg-color-overlay: var(--bg-tertiary);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-border-color: var(--border);
+  --el-color-primary: var(--accent);
+  --el-border-radius-base: 8px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Dark theme */
+html.dark {
+  --bg-primary: #18181b;
+  --bg-secondary: #27272a;
+  --bg-tertiary: #3f3f46;
+  --bg-grouped: #27272a;
+  --bg-input: #18181b;
+  --bg-chat: #18181b;
+  --bg-chat-hover: #27272a;
+  --bg-assistant-card: #3f3f46;
+  --text-primary: #f5f5f5;
+  --text-secondary: #b8b8c0;
+  --text-muted: #8c8c96;
+  --accent: #e0e0e0;
+  --accent-hover: #fafafa;
+  --accent-subtle: rgba(255, 255, 255, 0.08);
+  --accent-light: rgba(255, 255, 255, 0.12);
+  --accent-selected: #d4a843;
+  --accent-selected-bg: rgba(212, 168, 67, 0.2);
+  --border: #3f3f46;
+  --border-strong: #52525b;
+  --border-row: rgba(255, 255, 255, 0.06);
+  --border-light: #3f3f46;
+  --msg-user-bg: #334155;
+  --msg-ai-bg: transparent;
+  --danger: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --card-shadow-hover: 0 18px 44px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+  --bg-hover: #3f3f46;
+
+  /* Element Plus dark overrides */
+  --el-bg-color: var(--bg-secondary);
+  --el-bg-color-overlay: var(--bg-tertiary);
+  --el-bg-color-page: var(--bg-primary);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-placeholder: var(--text-muted);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border-light);
+  --el-fill-color: var(--bg-tertiary);
+  --el-fill-color-light: var(--bg-secondary);
+  --el-fill-color-lighter: var(--bg-tertiary);
+  --el-fill-color-blank: var(--bg-primary);
+  /*
+    In dark mode, --accent is a light gray (#e0e0e0) so it works as a
+    near-white text color on dark backgrounds. But Element Plus uses
+    --el-color-primary as the fill for primary buttons and the on-state
+    of switches with white foreground text — a near-white fill would
+    make those controls invisible. Override with a saturated brand
+    color (gold) so primary buttons + active switches stay readable.
+  */
+  --el-color-primary: #d4a843;
+  --el-color-primary-light-3: #c89a35;
+  --el-color-primary-light-5: #a07d29;
+  --el-color-primary-light-7: #6e5621;
+  --el-color-primary-light-8: #534119;
+  --el-color-primary-light-9: #3b2f15;
+  --el-color-primary-dark-2: #e2bb5e;
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+  --el-dialog-bg-color: var(--bg-secondary);
+}
+
+/* Light theme explicit */
+html.light {
+  --bg-primary: #ffffff;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f5f6f8;
+  --bg-grouped: #ffffff;
+  --bg-input: #f7f8fa;
+  --bg-chat: #f5f3ef;
+  --text-primary: #1e1f25;
+  --text-secondary: #636878;
+  --text-muted: #a3a8b8;
+  --border: #e8eaef;
+  --border-row: rgba(60, 60, 67, 0.05);
+  --border-light: #f0f1f4;
+  --msg-ai-bg: transparent;
+}
+
+/* ── Window controls overlay spacing ── */
+button,
+a,
+input,
+textarea,
+select,
+[role="button"] {
+  -webkit-app-region: no-drag;
+}

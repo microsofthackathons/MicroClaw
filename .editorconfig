@@ -1,0 +1,32 @@
+# EditorConfig — https://editorconfig.org
+# Unifies indentation, line endings, and whitespace handling across editors.
+# Most modern editors (VS Code, Visual Studio, Rider, etc.) read this natively.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Windows-only script formats — must keep CRLF or some shells refuse to run them.
+[*.{ps1,psm1,psd1,cmd,bat}]
+end_of_line = crlf
+
+# Python — PEP 8 prescribes 4-space indent.
+[*.py]
+indent_size = 4
+
+# C# — match Visual Studio defaults.
+[*.cs]
+indent_size = 4
+
+# Markdown — trailing whitespace is meaningful (hard line breaks).
+[*.md]
+trim_trailing_whitespace = false
+
+# Makefiles require literal tabs.
+[Makefile]
+indent_style = tab

@@ -1,0 +1,59 @@
+# Build outputs and dependency directories
+**/node_modules/
+**/dist/
+**/release/
+**/coverage/
+**/build/
+desktop/release/
+desktop/dist/
+build/
+
+# Generated/vendored content
+**/*.min.js
+**/*.min.css
+**/package-lock.json
+desktop/renderer/env.d.ts
+
+# Markdown — keep author-controlled prose formatting
+# (proposed line breaks, intentional spacing in CN/EN docs, etc.)
+**/*.md
+
+# Repository memory / skill assets (not our content)
+.claude/
+.github/copilot-instructions.md
+
+# Python / C# / shell — handled by ruff / dotnet format / shfmt elsewhere
+**/*.py
+**/*.cs
+**/*.ps1
+**/*.psm1
+**/*.psd1
+**/*.cmd
+**/*.bat
+
+# Binary / non-text assets
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.ico
+**/*.icns
+**/*.webp
+**/*.zip
+**/*.exe
+**/*.dll
+**/*.pdb
+
+# Generated skills snapshots
+skills/**/_meta.json
+
+# Studio backend test fixtures (if any get added later)
+desktop/studio-backend/data/
+
+# Plugin docs and changelog that have specific formatting
+plugins/openclaw-weixin/CHANGELOG*.md
+plugins/openclaw-weixin/README*.md
+
+# Top-level legal / generated text
+LICENSE
+NOTICE

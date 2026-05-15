@@ -1,0 +1,176 @@
+# PR Security Check
+#
+# Per-stack dependency audit + compile + unit tests for every PR.
+# Acts as a fast pre-merge gate; the full build.ps1 packaging pipeline
+# runs separately in pr-build.yml.
+#
+# Covers all three language stacks:
+#   - JavaScript / TypeScript (Electron + Vue)
+#   - C# / .NET 9 (AppContainerLauncher)
+#   - Python (Deployer / Installer)
+#
+# Each job only runs when its relevant files are changed (path filtering).
+# Stale runs are automatically cancelled when a new push arrives.
+#
+name: "PR Security Check"
+
+# Disabled: trigger only via manual dispatch.
+# To re-enable automatic PR runs, restore the `pull_request` trigger below.
+on:
+  workflow_dispatch:
+  # pull_request:
+  #   branches: [main]
+
+# Cancel in-progress runs for the same PR when a new push arrives
+concurrency:
+  group: pr-security-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # ── Detect which paths changed ──────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      js: ${{ steps.filter.outputs.js }}
+      csharp: ${{ steps.filter.outputs.csharp }}
+      python: ${{ steps.filter.outputs.python }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            js:
+              - 'desktop/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'skills/**'
+              - 'plugins/**'
+            csharp:
+              - 'appcontainer/**'
+              - 'MicroClaw.sln'
+            python:
+              - 'deployer/**'
+              - 'requirements.txt'
+              - '*.py'
+              - '*.spec'
+
+  # ── JavaScript / TypeScript ─────────────────────────────────────
+  security-and-build-js:
+    name: JS/TS - Audit, Build & Test
+    needs: changes
+    if: needs.changes.outputs.js == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Install dependencies
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Install renderer dependencies
+        working-directory: desktop/renderer
+        run: npm ci
+
+      # Security: dependency vulnerability audit
+      - name: Audit desktop dependencies
+        working-directory: desktop
+        run: npm audit --audit-level=high
+
+      - name: Audit renderer dependencies
+        working-directory: desktop/renderer
+        run: npm audit --audit-level=high
+
+      # Build: TypeScript compilation + Vite bundle
+      - name: Build desktop app
+        working-directory: desktop
+        run: npm run build
+
+      # Test: Vitest unit tests
+      - name: Run desktop tests
+        working-directory: desktop
+        run: npm run test
+
+      - name: Run renderer tests
+        working-directory: desktop/renderer
+        run: npm run test
+
+  # ── C# / .NET 9 ────────────────────────────────────────────────
+  security-and-build-csharp:
+    name: C# - Audit & Build
+    needs: changes
+    if: needs.changes.outputs.csharp == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore NuGet packages
+        run: dotnet restore appcontainer/AppContainerLauncher.csproj
+
+      # Security: check for known vulnerable NuGet packages
+      - name: Check for vulnerable NuGet packages
+        shell: pwsh
+        run: |
+          $output = dotnet list appcontainer/AppContainerLauncher.csproj package --vulnerable --include-transitive 2>&1
+          Write-Host $output
+          if ($output -match "has the following vulnerable packages") {
+            Write-Host "::error::Vulnerable NuGet packages detected!"
+            exit 1
+          }
+          Write-Host "No vulnerable NuGet packages found."
+
+      # Build
+      - name: Build AppContainerLauncher
+        run: dotnet build appcontainer/AppContainerLauncher.csproj -c Release --no-restore
+
+  # ── Python ──────────────────────────────────────────────────────
+  security-check-python:
+    name: Python - Audit Dependencies
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install pip-audit and project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          pip install -r requirements.txt
+
+      # Security: check for known vulnerable Python packages
+      - name: Audit Python dependencies
+        run: pip-audit -r requirements.txt
