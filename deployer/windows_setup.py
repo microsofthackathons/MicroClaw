@@ -734,6 +734,11 @@ class WindowsSetup:
 
             self.log.success(f"Node.js {ver} installed to {self.node_dir}")
 
+            # Record that MicroClaw owns this Node install so the uninstaller
+            # knows it's safe to remove.  Without this marker, uninstall
+            # preserves any Node.js it finds (assumes user-installed).
+            self._mark_node_owned_by_microclaw(self.node_dir)
+
             # Register rollback: msiexec /x by MSI file, elevated.
             def _rollback_node(msi=str(msi_path), d=str(self.node_dir)):
                 try:
@@ -2758,21 +2763,37 @@ class WindowsSetup:
                 self.log.info(f"  已删除 {pkg_dir}")
 
     def _uninstall_clean_node(self) -> None:
-        """Uninstall Node.js and clean PATH.
+        """Uninstall Node.js and clean PATH — but only if MicroClaw installed it.
 
-        Tries an MSI uninstall first (matching the new MSI-based install
-        path), then falls back to removing any legacy zip-extracted
-        ``~/.openclaw-node`` directory left over from earlier builds.
+        A user may have installed Node.js themselves before installing
+        MicroClaw (e.g. for the build, via winget, nvm, or the official
+        installer).  Uninstalling MicroClaw must NOT remove their Node.
+
+        Logic:
+          * Legacy ``~/.openclaw-node`` (zip-extracted by earlier builds) is
+            unambiguously ours — always cleaned up.
+          * ``self.node_dir`` (e.g. ``C:\\Program Files\\nodejs``) is only
+            touched if the ``~/.openclaw/.node-installed-by-microclaw``
+            marker file is present and records that exact path.
+          * Without the marker, MSI uninstall is skipped entirely.
         """
         self.log.step("清理 Node 环境…")
 
-        # Step 1: MSI uninstall — find Node.js entries in the Uninstall
-        # registry hive (per-user and per-machine) and run msiexec /x.
-        self._msi_uninstall_node()
+        owned_path = self._node_install_owned_by_microclaw()
+        if owned_path is None:
+            self.log.info("  未发现 MicroClaw 安装 Node 的标记 — 保留用户自带的 Node.js")
 
-        # Step 2: Remove residual files from both the current install dir
-        # and the legacy ~/.openclaw-node layout.
-        candidate_dirs = [self.node_dir, *LEGACY_NODE_DIRS]
+        # Step 1: MSI uninstall — only for the Node we installed ourselves.
+        if owned_path is not None:
+            self._msi_uninstall_node(owned_path)
+
+        # Step 2: Remove residual files.
+        #   - Legacy ~/.openclaw-node is always ours.
+        #   - self.node_dir is only ours when owned_path matches it.
+        candidate_dirs: list[Path] = list(LEGACY_NODE_DIRS)
+        if owned_path is not None:
+            candidate_dirs.insert(0, owned_path)
+
         seen: set[str] = set()
         for node_dir in candidate_dirs:
             key = str(node_dir).lower()
@@ -2806,10 +2827,12 @@ class WindowsSetup:
             else:
                 self.log.info(f"  已删除 {node_dir}")
 
-        # Also clean npm global bin from PATH (add_to_path adds this too)
-        npm_global = Path.home() / "AppData" / "Roaming" / "npm"
-        self._remove_from_system_path(str(npm_global))
-        self.log.info(f"  从 PATH 中移除 {npm_global}")
+        # Clean npm global bin from PATH only if we removed the Node that
+        # populated it.  Otherwise leave the user's npm shims alone.
+        if owned_path is not None:
+            npm_global = Path.home() / "AppData" / "Roaming" / "npm"
+            self._remove_from_system_path(str(npm_global))
+            self.log.info(f"  从 PATH 中移除 {npm_global}")
 
         # Broadcast WM_SETTINGCHANGE so Explorer picks up PATH changes
         try:
@@ -2823,17 +2846,71 @@ class WindowsSetup:
         except Exception:
             pass
 
-    def _msi_uninstall_node(self) -> None:
-        """Run ``msiexec /x`` for every Node.js MSI entry we can find.
+    # ── Node ownership marker ──
+    #
+    # Drop a sentinel file when we install Node ourselves so the uninstaller
+    # can distinguish a MicroClaw-managed Node from a user-installed one.
+
+    @staticmethod
+    def _node_owner_marker_path() -> Path:
+        return Path.home() / ".openclaw" / ".node-installed-by-microclaw"
+
+    def _mark_node_owned_by_microclaw(self, install_dir: Path) -> None:
+        """Persist that MicroClaw installed Node.js at *install_dir*."""
+        marker = self._node_owner_marker_path()
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(str(install_dir), encoding="utf-8")
+            self.log.debug(f"  Recorded Node ownership marker: {marker}")
+        except Exception as e:
+            self.log.warn(f"  Could not record Node ownership marker: {e}")
+
+    def _node_install_owned_by_microclaw(self) -> Path | None:
+        """Return the Node install path MicroClaw owns, or None if not ours.
+
+        Reads the ownership marker written by ``_mark_node_owned_by_microclaw``.
+        Returns ``None`` (treat Node as user-installed) when the marker is
+        missing or unreadable.
+        """
+        marker = self._node_owner_marker_path()
+        if not marker.exists():
+            return None
+        try:
+            recorded = Path(marker.read_text(encoding="utf-8").strip())
+        except Exception as e:
+            self.log.warn(f"  Could not read Node ownership marker: {e}")
+            return None
+        if not recorded:
+            return None
+        return recorded
+
+    def _msi_uninstall_node(self, owned_path: Path) -> None:
+        """Run ``msiexec /x`` for the Node.js MSI MicroClaw installed.
 
         Inspects both the per-user (HKCU) and per-machine (HKLM) Uninstall
-        registry hives.  Silently ignores entries that cannot be removed
-        (e.g. missing admin rights for an HKLM entry).
+        registry hives and only removes entries whose ``InstallLocation``
+        matches *owned_path* (the directory recorded in the ownership
+        marker).  This prevents removing a Node install the user did
+        themselves and that happens to share the same DisplayName prefix.
         """
         try:
             import winreg
         except Exception:
             return
+
+        try:
+            owned_resolved = owned_path.resolve()
+        except Exception:
+            owned_resolved = owned_path
+
+        def _matches_owned(install_location: str) -> bool:
+            if not install_location:
+                return False
+            try:
+                p = Path(install_location.rstrip("\\/")).resolve()
+            except Exception:
+                p = Path(install_location.rstrip("\\/"))
+            return str(p).lower() == str(owned_resolved).lower()
 
         hives = [
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -2867,11 +2944,25 @@ class WindowsSetup:
                     try:
                         sub = winreg.OpenKey(key, name)
                         display, _ = winreg.QueryValueEx(sub, "DisplayName")
+                        try:
+                            install_location, _ = winreg.QueryValueEx(sub, "InstallLocation")
+                        except OSError:
+                            install_location = ""
                         winreg.CloseKey(sub)
                     except OSError:
                         continue
-                    if "node.js" in str(display).lower():
-                        product_codes.append(name)
+                    if "node.js" not in str(display).lower():
+                        continue
+                    # Only target the Node MSI MicroClaw installed.  This
+                    # protects user-installed Node from being collateral
+                    # damage when MicroClaw is uninstalled.
+                    if not _matches_owned(str(install_location)):
+                        self.log.info(
+                            f"  跳过非 MicroClaw 安装的 Node.js: {display} "
+                            f"({install_location or '未知路径'})"
+                        )
+                        continue
+                    product_codes.append(name)
             finally:
                 winreg.CloseKey(key)
 
