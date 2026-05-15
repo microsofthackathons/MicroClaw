@@ -65,7 +65,27 @@ var _safePaths = (function () {
   var home = process.env.USERPROFILE || "";
   if (home) {
     dirs.push(path.resolve(home, ".openclaw").toLowerCase() + path.sep);
+    // Legacy Node.js install location (zip extract). Still recognised for
+    // upgrades; new installs use the MSI default below.
     dirs.push(path.resolve(home, ".openclaw-node").toLowerCase() + path.sep);
+  }
+  // Standard per-machine and per-user Node.js MSI install locations.
+  var programFiles = process.env.ProgramFiles || "";
+  if (programFiles) {
+    dirs.push(path.resolve(programFiles, "nodejs").toLowerCase() + path.sep);
+  }
+  var localAppData =
+    process.env.LOCALAPPDATA ||
+    (home ? path.join(home, "AppData", "Local") : "");
+  if (localAppData) {
+    dirs.push(
+      path.resolve(localAppData, "Programs", "nodejs").toLowerCase() + path.sep
+    );
+  }
+  // Allow runtime override (mirrors OPENCLAW_NODE_DIR used by the deployer).
+  var overrideDir = process.env.OPENCLAW_NODE_DIR || "";
+  if (overrideDir) {
+    dirs.push(path.resolve(overrideDir).toLowerCase() + path.sep);
   }
   var stateDir = process.env.OPENCLAW_STATE_DIR || "";
   if (stateDir) dirs.push(path.resolve(stateDir).toLowerCase() + path.sep);

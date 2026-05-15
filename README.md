@@ -124,7 +124,7 @@ Build the installer from source, then run it:
 The installer handles the Windows-side setup in a single run:
 
 - Git for Windows (PortableGit → `~/.openclaw-git`)
-- Node.js 22+ (via npmmirror → `~/.openclaw-node`)
+- Node.js 22+ via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing system Node ≥22.16 at that path is reused as-is)
 - OpenClaw Gateway (`npm install -g openclaw`)
 - Configures the npm registry mirror and V8 compile cache
 - Installs the MicroClaw desktop client, managed skills, AppContainer sandbox, WeChat plugin

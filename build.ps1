@@ -10,15 +10,23 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Use the bundled Node (v22) instead of the outdated system Node
-$openclawNode = "$env:USERPROFILE\.openclaw-node"
-if (Test-Path "$openclawNode\node.exe") {
-    $env:PATH = "$openclawNode;$env:PATH"
-    Write-Host "  Using Node: $openclawNode ($(& node --version))"
-} elseif (Test-Path "C:\Program Files\nodejs\node.exe") {
-    $env:PATH = "C:\Program Files\nodejs;$env:PATH"
-    Write-Host "  Using system Node: $(& node --version)"
-} else {
+# Prefer Node 22 from the standard per-user MSI install location, falling back
+# to the legacy zip-extract path and finally the system Node.
+$nodeCandidates = @(
+    "$env:ProgramFiles\nodejs",
+    "$env:LOCALAPPDATA\Programs\nodejs",
+    "$env:USERPROFILE\.openclaw-node"
+)
+$nodeFound = $false
+foreach ($candidate in $nodeCandidates) {
+    if (Test-Path "$candidate\node.exe") {
+        $env:PATH = "$candidate;$env:PATH"
+        Write-Host "  Using Node: $candidate ($(& node --version))"
+        $nodeFound = $true
+        break
+    }
+}
+if (-not $nodeFound) {
     Write-Host "  ERROR: node.exe not found" -ForegroundColor Red
     exit 1
 }

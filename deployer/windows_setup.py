@@ -46,12 +46,39 @@ MIRRORS = {
     },
 }
 
-# Default install location
+# Default install location.
+#
+# The Node.js Windows MSI is authored as a per-machine installer (it does
+# NOT support per-user installs — passing ``MSIINSTALLPERUSER=1`` fails with
+# exit code 1603).  Its default ``INSTALLDIR`` is ``C:\Program Files\nodejs``
+# and we mirror that here so the standard, Authenticode-trusted path is
+# used.  Windows Defender does not flag binaries under Program Files the
+# way it did with the previous zip-extract-to-dotfolder approach.
+#
+# Legacy zip-extract layouts under ~/.openclaw-node and the per-user
+# ``%LocalAppData%\Programs\nodejs`` directory are still recognised at
+# runtime for users upgrading from earlier builds (see check_node_windows /
+# sandbox-state.js).
+_PROGRAM_FILES = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+_LOCAL_APPDATA = Path(
+    os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+)
 DEFAULT_NODE_DIR = Path(
     os.environ.get(
         "OPENCLAW_NODE_DIR",
-        str(Path.home() / ".openclaw-node"),
+        str(_PROGRAM_FILES / "nodejs"),
     )
+)
+LEGACY_NODE_DIRS = (
+    Path.home() / ".openclaw-node",
+    _LOCAL_APPDATA / "Programs" / "nodejs",
+)
+# Standard, Authenticode-trusted locations the system Node.js MSI installs
+# to.  We accept a system Node at any of these paths without forcing a
+# reinstall, as long as the version satisfies our minimum.
+_STANDARD_NODE_DIRS = (
+    _PROGRAM_FILES / "nodejs",
+    _LOCAL_APPDATA / "Programs" / "nodejs",
 )
 
 DEFAULT_DESKTOP_DIR = Path(
@@ -492,11 +519,14 @@ class WindowsSetup:
         return "x64"
 
     def _get_node_download_url(self, version: str) -> str:
-        """Build the download URL for Node.js Windows zip from npmmirror."""
+        """Build the download URL for the official signed Node.js Windows MSI.
+
+        Both nodejs.org and npmmirror host the Authenticode-signed installer
+        at ``v{version}/node-v{version}-{arch}.msi`` (note: no ``-win-`` infix
+        in the MSI naming, unlike the zip).
+        """
         arch = self._get_arch()
-        # npmmirror hosts Node binaries at:
-        # https://registry.npmmirror.com/-/binary/node/v22.x.x/node-v22.x.x-win-x64.zip
-        return f"{self._node_download_base}/v{version}/node-v{version}-win-{arch}.zip"
+        return f"{self._node_download_base}/v{version}/node-v{version}-{arch}.msi"
 
     def _resolve_latest_version(self, major: str) -> str:
         """Resolve '22' to the latest specific version like '22.14.0'."""
@@ -565,11 +595,37 @@ class WindowsSetup:
             elif ver:
                 self.log.info(f"Managed Node.js {ver} is outdated (need ≥22.16.0), will reinstall")
 
-        # Log system node for diagnostics, but don't accept it
+        # Log system node for diagnostics. Accept it when it lives at a
+        # standard, Authenticode-trusted location (Program Files or the
+        # per-user MSI path) and satisfies our minimum version — reinstalling
+        # over a healthy system Node only causes Defender scoring noise and
+        # version churn.
         node_path = shutil.which("node")
         if node_path:
             ver = self._get_node_version(node_path)
             if ver:
+                resolved = Path(node_path).resolve()
+                parent = resolved.parent
+                is_standard = any(
+                    parent == std.resolve() if std.exists() else parent == std
+                    for std in _STANDARD_NODE_DIRS
+                )
+                if is_standard and self._version_ok(ver):
+                    self.log.info(
+                        f"Node.js (system) accepted: {ver} at {node_path}"
+                    )
+                    # Pin the discovered directory so all later logic
+                    # (AppContainer ACLs, PATH, npm prefix) targets the
+                    # actual install location rather than the configured
+                    # default.
+                    self.node_dir = parent
+                    self._node_bin = parent
+                    if not self._get_npm_path():
+                        self.log.warn(
+                            "System Node.js found but npm is missing — will install managed copy"
+                        )
+                        return False
+                    return True
                 self.log.info(
                     f"Node.js (system) found: {ver} at {node_path} (will install managed copy)"
                 )
@@ -577,7 +633,14 @@ class WindowsSetup:
         return False
 
     def install_node_windows(self) -> bool:
-        """Download and install Node.js on Windows from npmmirror."""
+        """Download and install Node.js on Windows via the official signed MSI.
+
+        Uses ``msiexec`` to install the Authenticode-signed Node.js MSI to a
+        per-user, standard path (``%LocalAppData%\\Programs\\nodejs\\`` by
+        default).  This avoids triggering Windows Defender's behavior-based
+        detections that the previous zip-extract-to-dotfolder approach
+        produced on some configurations.
+        """
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
 
         version = self._resolve_latest_version(self.node_version)
@@ -589,73 +652,124 @@ class WindowsSetup:
         url = self._get_node_download_url(version)
         self.log.info(f"Downloading: {url}")
 
+        tmp_dir: Path | None = None
         try:
-            # Download to temp
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_node_"))
-            zip_path = tmp_dir / "node.zip"
+            msi_path = tmp_dir / f"node-v{version}-{self._get_arch()}.msi"
 
-            self._download_with_progress(url, zip_path)
+            self._download_with_progress(url, msi_path)
 
             # Verify SHA256 integrity against official SHASUMS256.txt
-            if not self._verify_node_sha256(version, zip_path):
+            if not self._verify_node_sha256(version, msi_path):
                 self.log.error("SHA256 verification FAILED — download may be tampered")
-                shutil.rmtree(tmp_dir, ignore_errors=True)
                 return False
 
-            # Extract
-            self.log.step("Extracting Node.js…")
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(tmp_dir)
-
-            # Find the extracted folder (e.g., node-v22.14.0-win-x64/)
-            arch = self._get_arch()
-            extracted = tmp_dir / f"node-v{version}-win-{arch}"
-            if not extracted.exists():
-                # Try to find it
-                for d in tmp_dir.iterdir():
-                    if d.is_dir() and d.name.startswith("node-v"):
-                        extracted = d
-                        break
-
-            if not extracted.exists() or not (extracted / "node.exe").exists():
-                self.log.error(f"Extraction failed: node.exe not found in {extracted}")
+            # Install via msiexec to the standard per-machine location
+            # (C:\Program Files\nodejs by default).  The Node.js MSI is
+            # authored as per-machine only — passing MSIINSTALLPERUSER=1
+            # fails with exit code 1603.  We elevate via UAC so unprivileged
+            # users still get a non-interactive install.
+            self.log.step("Installing Node.js (msiexec)…")
+            install_dir = str(self.node_dir).rstrip("\\")
+            log_path = tmp_dir / "msi-install.log"
+            msi_args = (
+                f'/i "{msi_path}" /qn /norestart '
+                f'INSTALLDIR="{install_dir}\\" '
+                f'ADDLOCAL=NodeRuntime,npm '
+                f'/L*V "{log_path}"'
+            )
+            # Use PowerShell Start-Process -Verb RunAs to elevate.  -Wait
+            # blocks until msiexec exits and -PassThru lets us read the
+            # exit code; -WindowStyle Hidden keeps the UAC-spawned console
+            # off-screen.
+            ps_cmd = (
+                "$p = Start-Process -FilePath msiexec.exe "
+                f"-ArgumentList '{msi_args}' "
+                "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
+                "exit $p.ExitCode"
+            )
+            try:
+                result = self._run(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        ps_cmd,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                self.log.error("msiexec timed out after 10 minutes")
                 return False
 
-            # Move to install dir
-            self.node_dir.mkdir(parents=True, exist_ok=True)
-            for item in extracted.iterdir():
-                dest = self.node_dir / item.name
-                if dest.exists():
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-                shutil.move(str(item), str(dest))
+            # msiexec exit codes: 0 = success, 3010 = success + reboot required
+            if result.returncode not in (0, 3010):
+                self.log.error(
+                    f"msiexec exited with code {result.returncode}; "
+                    f"see log: {log_path}"
+                )
+                # Surface a short tail of the log to help diagnose
+                try:
+                    tail = log_path.read_text(encoding="utf-16-le", errors="replace").splitlines()[-20:]
+                    for line in tail:
+                        self.log.debug(f"  msi: {line}")
+                except Exception:
+                    pass
+                return False
+
+            node_exe = self.node_dir / "node.exe"
+            if not node_exe.exists():
+                self.log.error(f"MSI install reported success but node.exe missing at {node_exe}")
+                return False
 
             self._node_bin = self.node_dir
 
-            # Cleanup
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            ver = self._get_node_version(str(node_exe))
+            if not ver:
+                self.log.error("Node.js installed but verification failed")
+                return False
 
-            # Verify
-            ver = self._get_node_version(str(self.node_dir / "node.exe"))
-            if ver:
-                self.log.success(f"Node.js {ver} installed to {self.node_dir}")
+            self.log.success(f"Node.js {ver} installed to {self.node_dir}")
 
-                # Register rollback
-                def _rollback_node(d=str(self.node_dir)):
-                    shutil.rmtree(d, ignore_errors=True)
+            # Register rollback: msiexec /x by MSI file, elevated.
+            def _rollback_node(msi=str(msi_path), d=str(self.node_dir)):
+                try:
+                    ps = (
+                        f"$p = Start-Process -FilePath msiexec.exe "
+                        f"-ArgumentList '/x \"{msi}\" /qn /norestart' "
+                        f"-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
+                        f"exit $p.ExitCode"
+                    )
+                    self._run(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            ps,
+                        ],
+                        capture_output=True,
+                        timeout=300,
+                    )
+                except Exception:
+                    pass
+                # Best-effort: remove any residual files
+                shutil.rmtree(d, ignore_errors=True)
 
-                self._register_rollback("删除 Node.js", _rollback_node)
-
-                return True
-
-            self.log.error("Node.js installed but verification failed")
-            return False
+            self._register_rollback("删除 Node.js", _rollback_node)
+            return True
 
         except Exception as e:
             self.log.error(f"Node.js install failed: {e}")
             return False
+        finally:
+            # Keep the MSI around if install failed so the rollback can use
+            # it; otherwise drop the temp dir.
+            if tmp_dir and self._node_bin is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _download_with_progress(self, url: str, dest: Path):
         """Download a URL with progress logging."""
@@ -684,15 +798,15 @@ class WindowsSetup:
 
         self.log.info(f"  Download complete: {downloaded // (1024 * 1024):.0f} MB")
 
-    def _verify_node_sha256(self, version: str, zip_path: Path) -> bool:
-        """Verify downloaded Node.js zip against official SHASUMS256.txt."""
+    def _verify_node_sha256(self, version: str, installer_path: Path) -> bool:
+        """Verify the downloaded Node.js MSI against official SHASUMS256.txt."""
 
         arch = self._get_arch()
-        filename = f"node-v{version}-win-{arch}.zip"
+        filename = f"node-v{version}-{arch}.msi"
 
         # Compute local hash
         sha = hashlib.sha256()
-        with open(zip_path, "rb") as f:
+        with open(installer_path, "rb") as f:
             for chunk in iter(lambda: f.read(256 * 1024), b""):
                 sha.update(chunk)
         local_hash = sha.hexdigest()
@@ -2209,11 +2323,17 @@ class WindowsSetup:
         sandbox_dir.mkdir(parents=True, exist_ok=True)
 
         dirs_to_grant = [
-            (str(home / ".openclaw-node"), "r"),
-            (str(home / ".openclaw-node" / "node_modules"), "r"),
+            (str(self.node_dir), "r"),
+            (str(self.node_dir / "node_modules"), "r"),
             (str(home / ".openclaw"), "rw"),
             (str(sandbox_dir), "rw"),  # Tool execution sandbox workspace
         ]
+        # Legacy zip-extract layout — still grant if present so upgrades
+        # from older builds keep working.
+        for legacy in LEGACY_NODE_DIRS:
+            if legacy.exists() and str(legacy) != str(self.node_dir):
+                dirs_to_grant.append((str(legacy), "r"))
+                dirs_to_grant.append((str(legacy / "node_modules"), "r"))
         # Grant access to system Temp directory
         temp_dir = os.environ.get("TEMP", os.environ.get("TMP", ""))
         if temp_dir:
@@ -2343,11 +2463,15 @@ class WindowsSetup:
             # 1. Default provisioned directories
             home = Path.home()
             dirs_to_revoke: list[str] = [
-                str(home / ".openclaw-node"),
-                str(home / ".openclaw-node" / "node_modules"),
+                str(self.node_dir),
+                str(self.node_dir / "node_modules"),
                 str(home / ".openclaw"),
                 str(Path(os.environ.get("LOCALAPPDATA", "")) / "Temp"),
             ]
+            for legacy in LEGACY_NODE_DIRS:
+                if str(legacy) != str(self.node_dir):
+                    dirs_to_revoke.append(str(legacy))
+                    dirs_to_revoke.append(str(legacy / "node_modules"))
 
             # 2. User-added directories from electron-store settings
             #    (sandboxGrantHistory tracks every directory we ever granted ACLs to)
@@ -2570,13 +2694,32 @@ class WindowsSetup:
                 self.log.info(f"  已删除 {pkg_dir}")
 
     def _uninstall_clean_node(self) -> None:
-        """Remove .openclaw-node directory and clean PATH."""
+        """Uninstall Node.js and clean PATH.
+
+        Tries an MSI uninstall first (matching the new MSI-based install
+        path), then falls back to removing any legacy zip-extracted
+        ``~/.openclaw-node`` directory left over from earlier builds.
+        """
         self.log.step("清理 Node 环境…")
-        node_dir = self.node_dir
-        if node_dir.exists():
+
+        # Step 1: MSI uninstall — find Node.js entries in the Uninstall
+        # registry hive (per-user and per-machine) and run msiexec /x.
+        self._msi_uninstall_node()
+
+        # Step 2: Remove residual files from both the current install dir
+        # and the legacy ~/.openclaw-node layout.
+        candidate_dirs = [self.node_dir, *LEGACY_NODE_DIRS]
+        seen: set[str] = set()
+        for node_dir in candidate_dirs:
+            key = str(node_dir).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if not node_dir.exists():
+                self.log.info(f"  {node_dir} 不存在，跳过")
+                continue
             self._remove_from_system_path(str(node_dir))
             self.log.info(f"  从 PATH 中移除 {node_dir}")
-            # Log files being deleted
             try:
                 count = sum(1 for _ in node_dir.rglob("*") if _.is_file())
                 self.log.info(f"  正在删除 {count} 个文件…")
@@ -2588,15 +2731,16 @@ class WindowsSetup:
                 shutil.rmtree(node_dir, ignore_errors=True)
                 if not node_dir.exists():
                     break
-                remaining = [p.name for p in node_dir.iterdir()]
+                try:
+                    remaining = [p.name for p in node_dir.iterdir()]
+                except Exception:
+                    remaining = []
                 self.log.info(f"  删除重试 {attempt + 1}/3，残留文件: {remaining}")
                 time.sleep(2)
             if node_dir.exists():
                 self.log.warn(f"  {node_dir} 未完全删除，残留文件将在下次安装时覆盖")
             else:
                 self.log.info(f"  已删除 {node_dir}")
-        else:
-            self.log.info(f"  {node_dir} 不存在，跳过")
 
         # Also clean npm global bin from PATH (add_to_path adds this too)
         npm_global = Path.home() / "AppData" / "Roaming" / "npm"
@@ -2614,6 +2758,81 @@ class WindowsSetup:
             )
         except Exception:
             pass
+
+    def _msi_uninstall_node(self) -> None:
+        """Run ``msiexec /x`` for every Node.js MSI entry we can find.
+
+        Inspects both the per-user (HKCU) and per-machine (HKLM) Uninstall
+        registry hives.  Silently ignores entries that cannot be removed
+        (e.g. missing admin rights for an HKLM entry).
+        """
+        try:
+            import winreg
+        except Exception:
+            return
+
+        hives = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (
+                winreg.HKEY_LOCAL_MACHINE,
+                r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            ),
+            (
+                winreg.HKEY_LOCAL_MACHINE,
+                r"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            ),
+        ]
+
+        product_codes: list[str] = []
+        for hive, subkey in hives:
+            try:
+                key = winreg.OpenKey(hive, subkey)
+            except OSError:
+                continue
+            try:
+                idx = 0
+                while True:
+                    try:
+                        name = winreg.EnumKey(key, idx)
+                    except OSError:
+                        break
+                    idx += 1
+                    # Product codes look like {GUID}; skip everything else
+                    if not (name.startswith("{") and name.endswith("}")):
+                        continue
+                    try:
+                        sub = winreg.OpenKey(key, name)
+                        display, _ = winreg.QueryValueEx(sub, "DisplayName")
+                        winreg.CloseKey(sub)
+                    except OSError:
+                        continue
+                    if "node.js" in str(display).lower():
+                        product_codes.append(name)
+            finally:
+                winreg.CloseKey(key)
+
+        for code in product_codes:
+            self.log.info(f"  msiexec /x {code} (Node.js)")
+            try:
+                ps = (
+                    f"$p = Start-Process -FilePath msiexec.exe "
+                    f"-ArgumentList '/x {code} /qn /norestart' "
+                    f"-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
+                    f"exit $p.ExitCode"
+                )
+                self._run(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        ps,
+                    ],
+                    capture_output=True,
+                    timeout=300,
+                )
+            except Exception as e:
+                self.log.debug(f"  msi uninstall {code} failed: {e}")
 
     def _uninstall_clean_git(self) -> None:
         """Remove the managed PortableGit directory (~/.openclaw-git)."""

@@ -75,9 +75,20 @@ Write-Host ""
 Write-Host "[4/5] Granting directory access..." -ForegroundColor Yellow
 
 $home = $env:USERPROFILE
+# Resolve Node.js install dir: explicit override > standard per-user MSI path >
+# legacy zip-extract path (kept for upgrades from earlier builds).
+$nodeDir = $env:OPENCLAW_NODE_DIR
+if (-not $nodeDir) {
+    $candidate = Join-Path $env:LOCALAPPDATA "Programs\nodejs"
+    if (Test-Path (Join-Path $candidate "node.exe")) {
+        $nodeDir = $candidate
+    } else {
+        $nodeDir = Join-Path $home ".openclaw-node"
+    }
+}
 $dirs = @(
-    @{ Path = "$home\.openclaw-node";          Access = "r";  Desc = "Node.js binary (read-only)" },
-    @{ Path = "$home\.openclaw-node\node_modules"; Access = "r";  Desc = "npm packages (read-only)" },
+    @{ Path = $nodeDir;                              Access = "r";  Desc = "Node.js binary (read-only)" },
+    @{ Path = (Join-Path $nodeDir "node_modules");   Access = "r";  Desc = "npm packages (read-only)" },
     @{ Path = "$home\.openclaw";               Access = "rw"; Desc = "State / config (read-write)" },
     @{ Path = "$env:LOCALAPPDATA\Temp";        Access = "rw"; Desc = "Temp directory (read-write)" }
 )
@@ -120,4 +131,4 @@ Write-Host "  SID: $sid"
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "To test:" -ForegroundColor Gray
-Write-Host "  dotnet run --project $LauncherDir -c Release -- run --name $ContainerName --exe `"$home\.openclaw-node\node.exe`" --workdir `"$home\.openclaw`" -- -e `"console.log('Hello from AppContainer')`"" -ForegroundColor DarkGray
+Write-Host "  dotnet run --project $LauncherDir -c Release -- run --name $ContainerName --exe `"$nodeDir\node.exe`" --workdir `"$home\.openclaw`" -- -e `"console.log('Hello from AppContainer')`"" -ForegroundColor DarkGray
