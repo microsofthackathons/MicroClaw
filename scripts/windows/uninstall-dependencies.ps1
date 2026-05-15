@@ -7,13 +7,13 @@
       1. 停止 node.exe 进程
       2. 卸载 OpenClaw (npm uninstall -g)
       3. 清理系统级 npm 全局 openclaw
-      4. 删除 Node.js (~/.openclaw-node)
-      5. 删除 Git (~/.openclaw-git)
-      6. 清理 PATH 环境变量
-      7. 删除 OpenClaw 配置 (~/.openclaw)
-      8. 删除 npm 缓存
-      9. 移除 Windows Defender 排除项
+      4. 删除 Git (~/.openclaw-git)
+      5. 清理 PATH 环境变量（不包含 Node.js 路径）
+      6. 删除 OpenClaw 配置 (~/.openclaw)
+      7. 删除 npm 缓存
+      8. 移除 Windows Defender 排除项
 
+    此脚本不会删除 Node.js（即使是托管安装在 ~/.openclaw-node）。
     此脚本不会删除 MicroClaw 桌面客户端 (~/.microclaw)。
     使用 MicroClaw 安装器卸载桌面客户端。
 
@@ -90,7 +90,6 @@ Write-Host "  MicroClaw Dependency Uninstaller      " -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "This will remove:" -ForegroundColor White
-Write-Host "  - Node.js:      $NodeDir" -ForegroundColor Gray
 if (-not $SkipGit) {
 Write-Host "  - Git:          $GitDir" -ForegroundColor Gray
 }
@@ -99,6 +98,7 @@ Write-Host "  - OpenClaw cfg: ~/.openclaw" -ForegroundColor Gray
 Write-Host "  - npm cache:    $NpmCache" -ForegroundColor Gray
 Write-Host ""
 Write-Host "This will NOT remove:" -ForegroundColor White
+Write-Host "  - Node.js (kept intact, including $NodeDir if present)" -ForegroundColor Gray
 Write-Host "  - MicroClaw desktop app (~/.microclaw)" -ForegroundColor Gray
 Write-Host ""
 
@@ -192,29 +192,10 @@ if (Test-Path $NpmGlobalBin) {
 }
 
 # ══════════════════════════════════════════════════════════════
-# Step 3: Remove Node.js
+# Step 3: Keep Node.js installed (intentionally skipped)
 # ══════════════════════════════════════════════════════════════
-Write-Step "Removing Node.js ($NodeDir)..."
-if (Test-Path $NodeDir) {
-    $fileCount = (Get-ChildItem -Path $NodeDir -Recurse -File -ErrorAction SilentlyContinue).Count
-    Write-Info "Deleting $fileCount files..."
-
-    # Retry up to 3 times (Windows may hold file handles briefly)
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
-        Remove-Item -Path $NodeDir -Recurse -Force -ErrorAction SilentlyContinue
-        if (-not (Test-Path $NodeDir)) { break }
-        Write-Info "Retry $attempt/3..."
-        Start-Sleep -Seconds 2
-    }
-
-    if (Test-Path $NodeDir) {
-        Write-Warn "$NodeDir not fully deleted — some files may be locked"
-    } else {
-        Write-Ok "Deleted $NodeDir"
-    }
-} else {
-    Write-Info "$NodeDir does not exist, skipping"
-}
+Write-Step "Skipping Node.js removal (kept by design)"
+Write-Info "Node.js will NOT be uninstalled, including $NodeDir if present"
 
 # ══════════════════════════════════════════════════════════════
 # Step 4: Remove Git
@@ -243,7 +224,7 @@ if (-not $SkipGit) {
 # Step 5: Clean PATH
 # ══════════════════════════════════════════════════════════════
 Write-Step "Cleaning PATH..."
-Remove-FromUserPath $NodeDir
+# Node.js path intentionally left in PATH
 Remove-FromUserPath $NpmGlobalBin
 
 # Remove OfficeCLI from PATH if it was in the managed skills dir
@@ -285,7 +266,6 @@ if (Test-Path $NpmCache) {
 # ══════════════════════════════════════════════════════════════
 Write-Step "Removing Windows Defender exclusions (requires admin)..."
 $exclusionDirs = @(
-    $NodeDir,
     $GitDir,
     $NpmCache,
     $env:TEMP
@@ -309,13 +289,13 @@ Write-Host "  Dependencies uninstalled!             " -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Removed:" -ForegroundColor White
-Write-Host "  Node.js:      $NodeDir" -ForegroundColor Gray
 if (-not $SkipGit) {
 Write-Host "  Git:          $GitDir" -ForegroundColor Gray
 }
 Write-Host "  OpenClaw:     (npm global package + config)" -ForegroundColor Gray
 Write-Host "  npm cache:    $NpmCache" -ForegroundColor Gray
 Write-Host ""
-Write-Host "NOT removed (use MicroClaw installer to uninstall):" -ForegroundColor Yellow
-Write-Host "  Desktop app:  ~/.microclaw" -ForegroundColor Gray
+Write-Host "NOT removed:" -ForegroundColor Yellow
+Write-Host "  Node.js:      kept intact ($NodeDir if present)" -ForegroundColor Gray
+Write-Host "  Desktop app:  ~/.microclaw (use MicroClaw installer to uninstall)" -ForegroundColor Gray
 Write-Host ""
