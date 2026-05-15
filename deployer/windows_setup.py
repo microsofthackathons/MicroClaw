@@ -81,18 +81,6 @@ _STANDARD_NODE_DIRS = (
     _LOCAL_APPDATA / "Programs" / "nodejs",
 )
 
-# Per-user npm global prefix.  This is npm's own Windows default for user-
-# scoped global installs (it's also what `npm config get prefix` reports on
-# a fresh Node.js MSI install).  We use it instead of ``self.node_dir`` so
-# that ``npm install -g`` works without admin when Node.js lives under
-# ``C:\Program Files\nodejs``.
-NPM_USER_PREFIX = Path(
-    os.environ.get(
-        "OPENCLAW_NPM_PREFIX",
-        str(Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "npm"),
-    )
-)
-
 DEFAULT_DESKTOP_DIR = Path(
     os.environ.get(
         "MICROCLAW_DIR",
@@ -116,12 +104,6 @@ class WindowsSetup:
         self.node_version = config.get("node.version", "22")
         # Re-read env var at construction time (UI may have set it)
         self.node_dir = Path(os.environ.get("OPENCLAW_NODE_DIR", str(DEFAULT_NODE_DIR)))
-        # Per-user npm global prefix (where openclaw.cmd lives after
-        # ``npm install -g openclaw``).  Decoupled from node_dir so we never
-        # need admin to install when node lives under Program Files.
-        self.npm_prefix = Path(
-            os.environ.get("OPENCLAW_NPM_PREFIX", str(NPM_USER_PREFIX))
-        )
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
@@ -890,16 +872,10 @@ class WindowsSetup:
         try:
             env = self._get_env()
 
-            # Set prefix so `npm install -g` puts openclaw.cmd into a
-            # per-user dir (%APPDATA%\npm). Using self.node_dir would
-            # require admin when Node.js lives under Program Files.
-            try:
-                self.npm_prefix.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
+            # Set prefix so `npm install -g` puts openclaw.cmd in our dir
             try:
                 self._run(
-                    [npm, "config", "set", "prefix", str(self.npm_prefix)],
+                    [npm, "config", "set", "prefix", str(self.node_dir)],
                     capture_output=True,
                     timeout=30,
                     env=env,
@@ -1067,10 +1043,6 @@ class WindowsSetup:
             self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
 
             # Stream npm output line-by-line so the UI stays responsive
-            try:
-                self.npm_prefix.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
             proc = subprocess.Popen(
                 [
                     npm,
@@ -1078,7 +1050,7 @@ class WindowsSetup:
                     "-g",
                     f"openclaw@{tag}",
                     "--prefix",
-                    str(self.npm_prefix),
+                    str(self.node_dir),
                     "--loglevel",
                     "info",
                     "--no-progress",
@@ -1242,23 +1214,14 @@ class WindowsSetup:
         self.log.step("Warming up compile cache for faster startup…")
 
         node = self.node_dir / "node.exe"
-        # Search for the openclaw entry across:
-        #   - node_dir/node_modules/openclaw         (legacy `npm install -g` to node_dir)
-        #   - node_dir/lib/node_modules/openclaw    (legacy lib/ layout)
-        #   - npm_prefix/node_modules/openclaw      (current per-user prefix)
-        entry: Path | None = None
-        for base in (
-            self.node_dir / "node_modules" / "openclaw",
-            self.node_dir / "lib" / "node_modules" / "openclaw",
-            self.npm_prefix / "node_modules" / "openclaw",
-        ):
-            for candidate in (base / "openclaw.mjs", base / "dist" / "index.js"):
-                if candidate.exists():
-                    entry = candidate
-                    break
-            if entry is not None:
-                break
-        if not node.exists() or entry is None:
+        entry = self.node_dir / "node_modules" / "openclaw" / "openclaw.mjs"
+        if not entry.exists():
+            entry = self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js"
+        if not entry.exists():
+            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "openclaw.mjs"
+        if not entry.exists():
+            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "dist" / "index.js"
+        if not node.exists() or not entry.exists():
             self.log.info("  Node or openclaw entry not found — skipping warmup")
             return True
 
@@ -3194,19 +3157,13 @@ class WindowsSetup:
 
         Prefer .cmd over bare name to avoid .ps1 execution-policy issues.
         """
-        # Per-user npm global prefix (where we install openclaw)
-        search_dirs: list[Path] = [self.npm_prefix]
-        # Managed node dir (always check, even if _node_bin not set) — legacy
-        # installs may still have openclaw.cmd next to node.exe.
-        for d in filter(None, [self._node_bin, self.node_dir]):
-            if d not in search_dirs:
-                search_dirs.append(d)
-        for search_dir in search_dirs:
+        # Managed node dir (always check, even if _node_bin not set)
+        for search_dir in filter(None, [self._node_bin, self.node_dir]):
             for name in ("openclaw.cmd", "openclaw.exe", "openclaw"):
                 p = search_dir / name
                 if p.exists():
                     return [str(p)]
-        # Fallback: npm global default location
+        # npm global
         npm_prefix = Path.home() / "AppData" / "Roaming" / "npm"
         for name in ("openclaw.cmd", "openclaw.exe", "openclaw"):
             p = npm_prefix / name
@@ -3230,9 +3187,6 @@ class WindowsSetup:
         """
         env = os.environ.copy()
         path_prefix = ""
-        # Per-user npm global prefix first so openclaw.cmd resolves.
-        if self.npm_prefix.exists():
-            path_prefix += str(self.npm_prefix) + os.pathsep
         # Always put managed node dir first so our node.exe wins over system node
         if self.node_dir.exists():
             path_prefix += str(self.node_dir) + os.pathsep
@@ -3243,13 +3197,13 @@ class WindowsSetup:
         if path_prefix:
             env["PATH"] = path_prefix + env.get("PATH", "")
 
-        # Redirect npm global config to a per-user dir we always own.
+        # Redirect npm global config to our managed dir
         try:
-            self.npm_prefix.mkdir(parents=True, exist_ok=True)
-            env["npm_config_globalconfig"] = str(self.npm_prefix / "etc" / "npmrc")
-            (self.npm_prefix / "etc").mkdir(parents=True, exist_ok=True)
+            global_npmrc_dir = self.node_dir / "etc"
+            global_npmrc_dir.mkdir(parents=True, exist_ok=True)
+            env["npm_config_globalconfig"] = str(global_npmrc_dir / "npmrc")
         except Exception:
-            # Fall back: use temp dir if APPDATA is not writable
+            # Fall back: use temp dir if node_dir/etc is not writable
             try:
                 import tempfile
 
