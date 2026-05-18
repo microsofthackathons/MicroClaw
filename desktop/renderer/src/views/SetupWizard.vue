@@ -17,6 +17,16 @@
       <p class="setup-desc">{{ t("setup.aiDesc") }}</p>
 
       <el-form label-position="top" class="setup-form">
+        <el-form-item :label="t('setup.provider')">
+          <el-select v-model="form.presetId" style="width: 100%" @change="onPresetChange">
+            <el-option
+              v-for="preset in providerPresets"
+              :key="preset.id"
+              :label="t(preset.labelKey)"
+              :value="preset.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item :label="t('setup.apiFormat')">
           <el-select v-model="form.apiFormat" style="width: 100%">
             <el-option
@@ -80,6 +90,50 @@ const apiFormatOptions: Array<{ value: ApiFormat; labelKey: string }> = [
   { value: "anthropic", labelKey: "setup.apiFormatAnthropic" },
 ];
 
+const providerPresets: Array<{
+  id: string;
+  labelKey: string;
+  baseUrl: string;
+  apiFormat: ApiFormat;
+  defaultModel: string;
+}> = [
+  {
+    id: "openai",
+    labelKey: "setup.providerOpenai",
+    baseUrl: "https://api.openai.com/v1",
+    apiFormat: "openai-chat",
+    defaultModel: "gpt-4o",
+  },
+  {
+    id: "anthropic",
+    labelKey: "setup.providerAnthropic",
+    baseUrl: "https://api.anthropic.com",
+    apiFormat: "anthropic",
+    defaultModel: "claude-sonnet-4-6",
+  },
+  {
+    id: "minimax",
+    labelKey: "setup.providerMiniMaxGlobal",
+    baseUrl: "https://api.minimax.io/v1",
+    apiFormat: "openai-chat",
+    defaultModel: "MiniMax-M2.7",
+  },
+  {
+    id: "minimax-cn",
+    labelKey: "setup.providerMiniMaxCn",
+    baseUrl: "https://api.minimaxi.com/v1",
+    apiFormat: "openai-chat",
+    defaultModel: "MiniMax-M2.7",
+  },
+  {
+    id: "custom",
+    labelKey: "setup.providerCustom",
+    baseUrl: "",
+    apiFormat: "openai-chat",
+    defaultModel: "",
+  },
+];
+
 const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }> = [
   { value: "off", labelKey: "setup.reasoningOff" },
   { value: "minimal", labelKey: "setup.reasoningMinimal" },
@@ -134,12 +188,22 @@ function ensureReasoningPreset(): void {
 }
 
 const form = reactive({
+  presetId: "openai" as string,
   apiFormat: "openai-chat" as ApiFormat,
   apiKey: "",
   baseUrl: "",
   modelName: "",
   reasoningEffort: "off" as ReasoningEffort,
 });
+
+function onPresetChange(presetId: string): void {
+  const preset = providerPresets.find((p) => p.id === presetId);
+  if (!preset) return;
+  form.apiFormat = preset.apiFormat;
+  if (preset.baseUrl) form.baseUrl = preset.baseUrl;
+  if (preset.defaultModel && !form.modelName.trim()) form.modelName = preset.defaultModel;
+  ensureReasoningPreset();
+}
 
 watch(
   () => form.apiFormat,
@@ -219,7 +283,7 @@ async function saveAndFinish() {
     const apiMapping = resolveApiValue(form.apiFormat);
     const modelId =
       form.modelName.trim() || (form.apiFormat === "anthropic" ? "claude-sonnet-4-6" : "gpt-4o");
-    const providerId = resolveProviderId(form.apiFormat);
+    const providerId = form.presetId?.trim() || resolveProviderId(form.apiFormat);
     const modelRef = `${providerId}/${modelId}`;
     const reasoningEffort = normalizeReasoningEffort(form.reasoningEffort);
     const reasoningEnabled = form.apiFormat === "openai-responses" || reasoningEffort !== "off";

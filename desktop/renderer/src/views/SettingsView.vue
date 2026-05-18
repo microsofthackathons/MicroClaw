@@ -233,6 +233,20 @@
           :close-on-click-modal="false"
         >
           <el-form label-position="top" @submit.prevent>
+            <el-form-item :label="t('settings.provider')">
+              <el-select
+                v-model="newModelPresetId"
+                style="width: 100%"
+                @change="onNewModelPresetChange"
+              >
+                <el-option
+                  v-for="preset in providerPresets"
+                  :key="preset.id"
+                  :label="t(preset.labelKey)"
+                  :value="preset.id"
+                />
+              </el-select>
+            </el-form-item>
             <el-form-item :label="t('settings.modelName')">
               <el-input v-model="newModel.name" placeholder="e.g. my-gpt-4o" />
             </el-form-item>
@@ -1510,6 +1524,58 @@ function resetModelForm(form: ModelFormState): void {
   form.reasoningEffort = "off";
 }
 
+const providerPresets: Array<{
+  id: string;
+  labelKey: string;
+  baseUrl: string;
+  apiFormat: ApiFormat;
+  defaultModel: string;
+}> = [
+  {
+    id: "openai",
+    labelKey: "settings.providerOpenai",
+    baseUrl: "https://api.openai.com/v1",
+    apiFormat: "openai-chat",
+    defaultModel: "gpt-4o",
+  },
+  {
+    id: "anthropic",
+    labelKey: "settings.providerAnthropic",
+    baseUrl: "https://api.anthropic.com",
+    apiFormat: "anthropic",
+    defaultModel: "claude-sonnet-4-6",
+  },
+  {
+    id: "minimax",
+    labelKey: "settings.providerMiniMaxGlobal",
+    baseUrl: "https://api.minimax.io/v1",
+    apiFormat: "openai-chat",
+    defaultModel: "MiniMax-M2.7",
+  },
+  {
+    id: "minimax-cn",
+    labelKey: "settings.providerMiniMaxCn",
+    baseUrl: "https://api.minimaxi.com/v1",
+    apiFormat: "openai-chat",
+    defaultModel: "MiniMax-M2.7",
+  },
+  {
+    id: "custom",
+    labelKey: "settings.providerCustom",
+    baseUrl: "",
+    apiFormat: "openai-chat",
+    defaultModel: "",
+  },
+];
+
+function applyPresetToModelForm(form: ModelFormState, presetId: string): void {
+  const preset = providerPresets.find((p) => p.id === presetId);
+  if (!preset) return;
+  form.apiFormat = preset.apiFormat;
+  if (preset.baseUrl) form.baseUrl = preset.baseUrl;
+  if (preset.defaultModel && !form.name.trim()) form.name = preset.defaultModel;
+}
+
 function ensureReasoningPreset(form: ModelFormState): void {
   if (form.apiFormat === "openai-responses" && form.reasoningEffort === "off") {
     form.reasoningEffort = "low";
@@ -1523,6 +1589,7 @@ const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const gatewayPort = ref("18789");
 const showAddModel = ref(false);
+const newModelPresetId = ref<string>("");
 const newModel = reactive<ModelFormState>({
   name: "",
   baseUrl: "",
@@ -1530,6 +1597,10 @@ const newModel = reactive<ModelFormState>({
   apiFormat: "openai-chat",
   reasoningEffort: "off",
 });
+
+function onNewModelPresetChange(presetId: string): void {
+  applyPresetToModelForm(newModel, presetId);
+}
 const testLoading = ref(false);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
 
