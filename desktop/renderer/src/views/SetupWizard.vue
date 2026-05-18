@@ -266,7 +266,9 @@ async function saveAndFinish() {
 
     // Ensure gateway config exists
     if (!existing.gateway) {
-      const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      // CSPRNG via Web Crypto — mirrors the installer's secrets.token_hex(24).
+      // Math.random() is a deterministic PRNG and not safe for auth tokens.
+      const token = crypto.randomUUID().replace(/-/g, "");
       existing.gateway = {
         port: 18789,
         bind: "loopback",
