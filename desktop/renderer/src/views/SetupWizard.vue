@@ -218,8 +218,7 @@ async function saveAndFinish() {
 
     const apiMapping = resolveApiValue(form.apiFormat);
     const modelId =
-      form.modelName.trim() ||
-      (form.apiFormat === "anthropic" ? "claude-sonnet-4-20250514" : "gpt-4o");
+      form.modelName.trim() || (form.apiFormat === "anthropic" ? "claude-sonnet-4-6" : "gpt-4o");
     const providerId = resolveProviderId(form.apiFormat);
     const modelRef = `${providerId}/${modelId}`;
     const reasoningEffort = normalizeReasoningEffort(form.reasoningEffort);

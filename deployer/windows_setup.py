@@ -1553,7 +1553,7 @@ class WindowsSetup:
 
         base_url = self.cfg.get("model.base_url", "")
         api_key = self.cfg.get("model.api_key", "")
-        model_name = self.cfg.get("model.model_name", "claude-opus-4-6")
+        model_name = self.cfg.get("model.model_name", "claude-opus-4-7")
         port = self.cfg.get("gateway.port", 18789)
         bind = self.cfg.get("gateway.bind", "loopback")
 

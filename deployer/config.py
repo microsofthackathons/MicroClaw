@@ -72,7 +72,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "anthropic",
         "base_url": os.environ.get("MODEL_BASE_URL", ""),
         "api_key": os.environ.get("MODEL_API_KEY", ""),
-        "model_name": os.environ.get("MODEL_NAME", "claude-opus-4-6"),
+        "model_name": os.environ.get("MODEL_NAME", "claude-opus-4-7"),
     },
     "brave": {
         "api_key": os.environ.get("BRAVE_API_KEY", ""),
