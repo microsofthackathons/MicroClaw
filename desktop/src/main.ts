@@ -19,6 +19,7 @@ import { t as mainT } from "./i18n";
 import {
   getOpenClawStateDir,
   loadStateDirEnv,
+  resolveBuiltinSkillsDir,
   resolveNodePath,
   resolveOpenClawEntry,
 } from "./path-resolver";
@@ -2460,17 +2461,7 @@ function registerIpcHandlers(): void {
   // --- Skills ---
   ipcMain.handle("skills:list", () => {
     const homeDir = app.getPath("home");
-    // Check both classic and lib/ npm global layouts for builtin skills
-    const classicDir = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
-    const libDir = path.join(
-      homeDir,
-      ".openclaw-node",
-      "lib",
-      "node_modules",
-      "openclaw",
-      "skills",
-    );
-    const builtinDir = fs.existsSync(classicDir) ? classicDir : libDir;
+    const builtinDir = resolveBuiltinSkillsDir();
     const customDir = path.join(homeDir, ".agents", "skills");
     const managedDir = path.join(homeDir, ".openclaw", "skills");
 
