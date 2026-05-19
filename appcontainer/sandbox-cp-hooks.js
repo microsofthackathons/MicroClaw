@@ -358,11 +358,20 @@ function extractLaunchedApp(cmd, args) {
 
 function checkApproval(cmd, args, getExternalApps) {
   var argArr = Array.isArray(args) ? args : [];
-  // Auto-bypass for apps already in the user-configured whitelist.
-  // The whitelist is curated by the user in Settings and protected by
-  // a shell-name blocklist + HMAC-signed file, so silent bypass is acceptable.
-  if (hasExternalApp(cmd, argArr, getExternalApps)) return "bypass";
-  // Non-whitelisted apps still require explicit user approval.
+  // Every external-app launch goes through requestApproval. There is no
+  // silent fast-path for "whitelisted" apps: the default whitelist in
+  // desktop/src/main.ts (chrome, msedge, firefox, code, outlook, excel,
+  // winword, powerpnt) ships pre-populated without user opt-in, and the
+  // tests in desktop/src/sandbox-logic.test.ts ('whitelisted app code
+  // requires approval (not auto-bypass)', 'code with --remote args
+  // requires approval (attack vector)') explicitly require a prompt for
+  // every external-app launch — including parametrised attacks like
+  // `Start-Process code --remote ssh-remote+attacker@…` and
+  // `Start-Process chrome --remote-debugging-port=…` that the prior
+  // fast-path let escape AppContainer unannounced. The `getExternalApps`
+  // parameter is retained for call-site stability and may inform future
+  // UI hints (e.g. shorter prompt copy for known apps).
+  void getExternalApps;
   var appName = extractLaunchedApp(cmd, argArr);
   if (!appName) return "none";
   var cmdPreview = String(cmd) + " " + argArr.join(" ");
@@ -1754,6 +1763,7 @@ module.exports = {
   isSafeDiagnosticCommand: isSafeDiagnosticCommand,
   isSafeDiagnosticCommandStr: isSafeDiagnosticCommandStr,
   extractLaunchedApp: extractLaunchedApp,
+  checkApproval: checkApproval,
   tryDeclareAccess: tryDeclareAccess,
   tryInlineDeclareAccess: tryInlineDeclareAccess,
   DECLARE_TAG_RE: DECLARE_TAG_RE,

