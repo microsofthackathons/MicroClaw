@@ -110,3 +110,41 @@ export function resolveOpenClawEntry(): string {
   }
   return candidates[0];
 }
+
+/**
+ * Resolve the directory containing the built-in (bundled with the `openclaw`
+ * npm package) skills.
+ *
+ * Mirrors the layouts probed by {@link resolveOpenClawEntry}:
+ *  1. Bundled in packaged app resources (`resources/openclaw/skills`)
+ *  2. Deployer-installed under `~/.openclaw-node` (classic & `lib/` npm layouts)
+ *  3. Global npm install under `%APPDATA%/npm` (per-user, default `npm i -g`)
+ *  4. Per-machine Node at `%ProgramFiles%/nodejs`
+ *  5. Per-user Node at `%LocalAppData%/Programs/nodejs`
+ *
+ * Returns the first existing path. If none exist, returns the first candidate
+ * (legacy deployer layout) so callers can still surface a useful path.
+ */
+export function resolveBuiltinSkillsDir(): string {
+  if (app.isPackaged) {
+    const bundled = path.join(process.resourcesPath, "openclaw", "skills");
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  const home = process.env.USERPROFILE || "";
+  const appData = process.env.APPDATA || "";
+  const programFiles = process.env.ProgramFiles || "";
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const candidates = [
+    home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "skills") : "",
+    home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "skills") : "",
+    appData ? path.join(appData, "npm", "node_modules", "openclaw", "skills") : "",
+    programFiles ? path.join(programFiles, "nodejs", "node_modules", "openclaw", "skills") : "",
+    localAppData
+      ? path.join(localAppData, "Programs", "nodejs", "node_modules", "openclaw", "skills")
+      : "",
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}

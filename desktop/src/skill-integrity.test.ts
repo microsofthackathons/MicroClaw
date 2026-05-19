@@ -19,6 +19,18 @@ vi.mock("electron", () => ({
 
 vi.mock("./path-resolver", () => ({
   getOpenClawStateDir: () => tmpStateDir,
+  resolveBuiltinSkillsDir: () => {
+    const classic = path.join(tmpHome, ".openclaw-node", "node_modules", "openclaw", "skills");
+    const lib = path.join(
+      tmpHome,
+      ".openclaw-node",
+      "lib",
+      "node_modules",
+      "openclaw",
+      "skills",
+    );
+    return fs.existsSync(classic) ? classic : lib;
+  },
 }));
 
 import {

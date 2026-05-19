@@ -18,7 +18,7 @@ import {
 import fs from "fs";
 import path from "path";
 import { app } from "electron";
-import { getOpenClawStateDir } from "./path-resolver";
+import { getOpenClawStateDir, resolveBuiltinSkillsDir } from "./path-resolver";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -87,21 +87,10 @@ const EXCLUDED_NAMES = new Set([
 
 export function getSkillSourceDirs(): Array<{ source: string; baseDir: string }> {
   const homeDir = app.getPath("home");
-  // Check both classic and lib/ npm global layouts
-  const classicSkills = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
-  const libSkills = path.join(
-    homeDir,
-    ".openclaw-node",
-    "lib",
-    "node_modules",
-    "openclaw",
-    "skills",
-  );
-  const builtinDir = fs.existsSync(classicSkills) ? classicSkills : libSkills;
   return [
     {
       source: "builtin",
-      baseDir: builtinDir,
+      baseDir: resolveBuiltinSkillsDir(),
     },
     {
       source: "managed",
