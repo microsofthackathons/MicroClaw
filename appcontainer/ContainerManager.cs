@@ -178,6 +178,25 @@ internal static class ContainerManager
         new SecurityIdentifier("S-1-15-2-1");
 
     /// <summary>
+    /// Detect whether a DirectorySecurity object has a NULL or empty DACL.
+    /// A NULL DACL means "everyone has full access" (including AppContainer),
+    /// so writing back a DACL containing only our AppContainer ACE would
+    /// *replace* that implicit full-access with a single-entry DACL and wipe
+    /// all other principals (Administrators, Users, SYSTEM, …).
+    /// </summary>
+    private static bool IsNullOrEmptyDacl(CommonObjectSecurity security)
+    {
+        var sddl = security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        // A NULL DACL produces no "D:" section at all, or "D:" with no ACEs.
+        // An empty string after "D:" (e.g. "D:") also means zero ACEs.
+        int dIdx = sddl.IndexOf("D:", StringComparison.Ordinal);
+        if (dIdx < 0) return true;            // no DACL section → NULL DACL
+        // Check whether there is at least one ACE "(…)" after the "D:…" flags
+        int aceStart = sddl.IndexOf('(', dIdx);
+        return aceStart < 0;                  // no ACE entries → empty DACL
+    }
+
+    /// <summary>
     /// Check whether a path already has sufficient access for ALL APPLICATION PACKAGES.
     /// If so, no per-profile ACL grant is needed (just add to settings).
     /// </summary>
@@ -250,6 +269,15 @@ internal static class ContainerManager
             var info = new DirectoryInfo(dirPath);
             var security = info.GetAccessControl();
 
+            // Safety: a NULL/empty DACL means everyone already has full access
+            // (including AppContainer). Writing back would replace it with a
+            // single-entry DACL and strip Administrators/Users/SYSTEM.
+            if (IsNullOrEmptyDacl(security))
+            {
+                Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SKIPPED — NULL/empty DACL on dir (all access already implied): {dirPath}");
+                return;
+            }
+
             // Remove existing rules for this SID first (avoid duplicates)
             security.PurgeAccessRules(sid);
 
@@ -267,6 +295,13 @@ internal static class ContainerManager
         {
             var info = new FileInfo(dirPath);
             var security = info.GetAccessControl();
+
+            if (IsNullOrEmptyDacl(security))
+            {
+                Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SKIPPED — NULL/empty DACL on file (all access already implied): {dirPath}");
+                return;
+            }
+
             security.PurgeAccessRules(sid);
             security.AddAccessRule(new FileSystemAccessRule(
                 sid, rights,
@@ -580,17 +615,26 @@ internal static class ContainerManager
 
                 if (!hasAccess)
                 {
-                    // Traverse + ReadAttributes only (no ListDirectory to avoid exposing
-                    // directory contents — e.g. D:\ sibling folder names are private).
-                    security.AddAccessRule(new FileSystemAccessRule(
-                        sid,
-                        FileSystemRights.ReadAttributes |
-                        FileSystemRights.ReadExtendedAttributes | FileSystemRights.Traverse,
-                        InheritanceFlags.None,
-                        PropagationFlags.None,
-                        AccessControlType.Allow));
-                    info.SetAccessControl(security);
-                    Console.Error.WriteLine($"[traverse] Granted: {current}");
+                    // Safety: skip if DACL is NULL/empty — all access is already
+                    // implied and writing back would wipe other principals.
+                    if (IsNullOrEmptyDacl(security))
+                    {
+                        Console.Error.WriteLine($"[traverse] SKIPPED — NULL/empty DACL (all access already implied): {current}");
+                    }
+                    else
+                    {
+                        // Traverse + ReadAttributes only (no ListDirectory to avoid exposing
+                        // directory contents — e.g. D:\ sibling folder names are private).
+                        security.AddAccessRule(new FileSystemAccessRule(
+                            sid,
+                            FileSystemRights.ReadAttributes |
+                            FileSystemRights.ReadExtendedAttributes | FileSystemRights.Traverse,
+                            InheritanceFlags.None,
+                            PropagationFlags.None,
+                            AccessControlType.Allow));
+                        info.SetAccessControl(security);
+                        Console.Error.WriteLine($"[traverse] Granted: {current}");
+                    }
                 }
                 else
                 {
@@ -1192,6 +1236,14 @@ internal static class ContainerManager
 
                 if (!hasAccess)
                 {
+                    // Safety: skip if DACL is NULL/empty — all access is already
+                    // implied and writing back would wipe other principals.
+                    if (IsNullOrEmptyDacl(security))
+                    {
+                        Console.Error.WriteLine($"[setup] SKIPPED — NULL/empty DACL (all access already implied): {dir}");
+                        continue;
+                    }
+
                     security.AddAccessRule(new FileSystemAccessRule(
                         sid,
                         FileSystemRights.ReadAttributes |
