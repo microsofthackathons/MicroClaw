@@ -1,5 +1,5 @@
 <template>
-  <!-- Setup wizard — shown fullscreen when model config is missing -->
+  <!-- Setup wizard route is no longer auto-shown on launch. -->
   <router-view v-if="showSetup" />
 
   <!-- Gateway loading screen — blocks UI until WS is connected -->
@@ -344,18 +344,7 @@ onMounted(async () => {
     }
   } catch {}
 
-  // ── Redirect to setup wizard if model config is missing ──
-  try {
-    const needs = await window.openclaw.config.needsSetup();
-    if (needs) {
-      showSetup.value = true;
-      window.openclaw.window.resizeToSetup();
-      router.replace("/setup");
-      return; // Don't start gateway listeners until setup is done
-    }
-  } catch {}
-
-  // Setup not needed — redirect away from /setup if still on it (e.g. after reload)
+  // Redirect away from /setup if still on it (e.g. after reload)
   if (router.currentRoute.value.path === "/setup") {
     router.replace("/chat");
   }

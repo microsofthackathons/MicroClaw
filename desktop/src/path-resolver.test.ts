@@ -180,4 +180,19 @@ describe("resolveOpenClawEntry", () => {
     mockExistsSync.mockImplementation((p) => String(p) === libPath);
     expect(resolveOpenClawEntry()).toBe(libPath);
   });
+
+  it("falls back to Program Files Node global install", () => {
+    process.env.USERPROFILE = "C:\\Users\\testuser";
+    process.env.APPDATA = "";
+    process.env.ProgramFiles = "C:\\Program Files";
+    const programFilesPath = path.join(
+      "C:\\Program Files",
+      "nodejs",
+      "node_modules",
+      "openclaw",
+      "openclaw.mjs",
+    );
+    mockExistsSync.mockImplementation((p) => String(p) === programFilesPath);
+    expect(resolveOpenClawEntry()).toBe(programFilesPath);
+  });
 });

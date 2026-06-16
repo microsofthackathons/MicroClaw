@@ -1176,7 +1176,7 @@ function createMainWindow(): BrowserWindow {
     center: true,
     title: "MicroClaw",
     icon: APP_ICON_PATH,
-    show: false,
+    show: !settingsStore.get("startMinimized"),
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
@@ -1232,11 +1232,14 @@ function createMainWindow(): BrowserWindow {
 
   Menu.setApplicationMenu(null);
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
-  win.once("ready-to-show", () => {
+  const showWindowOnStartup = () => {
     if (!settingsStore.get("startMinimized")) {
       win.show();
+      win.focus();
     }
-  });
+  };
+  win.once("ready-to-show", showWindowOnStartup);
+  win.webContents.once("did-finish-load", showWindowOnStartup);
 
   // Open external links in the default browser instead of navigating the app
   win.webContents.on("will-navigate", (event, url) => {
