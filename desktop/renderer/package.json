@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.9",
     "element-plus": "^2.9.0",
     "highlight.js": "^11.11.0",
     "markdown-it": "^14.1.0",
