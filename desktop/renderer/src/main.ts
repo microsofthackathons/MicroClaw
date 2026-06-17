@@ -23,9 +23,12 @@ if (isBrowserDev) {
       onWsDisconnected: noopSub,
     },
     config: {
+      getStateDir: () => Promise.resolve(""),
       read: () => Promise.resolve({}),
+      readEnv: () => Promise.resolve({}),
       write: noopAsync,
       isConfigured: () => Promise.resolve(true),
+      needsSetup: () => Promise.resolve(false),
     },
     skills: {
       list: () => Promise.resolve([]),
@@ -48,6 +51,9 @@ if (isBrowserDev) {
     },
     app: {
       quit: noop,
+    },
+    shell: {
+      openExternal: noopAsync,
     },
   };
 }

@@ -198,6 +198,8 @@
         </div>
       </div>
     </template>
+
+    <ModelSetupDialog v-model="modelSetupVisible" @configured="handleModelConfigured" />
   </div>
 </template>
 
@@ -212,6 +214,7 @@ import ChatWelcome from "@/components/ChatWelcome.vue";
 import StudioGame from "@/components/studio/StudioGame.vue";
 import StudioChatPanel from "@/components/studio/StudioChatPanel.vue";
 import StudioStatusPanel from "@/components/studio/StudioStatusPanel.vue";
+import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import { useRoute } from "vue-router";
 
 const route = useRoute();
@@ -225,6 +228,8 @@ const inputRef = ref<HTMLTextAreaElement>();
 const threadRef = ref<HTMLDivElement>();
 const showNewMessages = ref(false);
 const isCompact = ref(window.innerHeight < 700);
+const modelSetupVisible = ref(false);
+const pendingModelSetupMessage = ref("");
 let isUserScrolledUp = false;
 
 function onWindowResize() {
@@ -396,9 +401,33 @@ function handleKeydown(e: KeyboardEvent) {
 async function handleSend() {
   const text = inputText.value.trim();
   if (!text || !chatStore.wsConnected) return;
+  if (await needsModelSetupBeforeSend()) {
+    pendingModelSetupMessage.value = text;
+    modelSetupVisible.value = true;
+    return;
+  }
+  await sendText(text);
+}
+
+async function sendText(text: string) {
   inputText.value = "";
   autoResize();
   await chatStore.sendMessage(text);
+}
+
+async function needsModelSetupBeforeSend(): Promise<boolean> {
+  try {
+    return await window.openclaw.config.needsSetup();
+  } catch {
+    return false;
+  }
+}
+
+async function handleModelConfigured() {
+  const text = pendingModelSetupMessage.value || inputText.value.trim();
+  pendingModelSetupMessage.value = "";
+  if (!text || !chatStore.wsConnected) return;
+  await sendText(text);
 }
 
 async function handleAbort() {

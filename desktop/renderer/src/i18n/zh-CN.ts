@@ -408,6 +408,20 @@ export default {
   "setup.enterApiKey": "请输入 API Key",
   "setup.saveFailed": "保存失败: {error}",
 
+  // ── ModelSetupDialog ──
+  "modelSetup.title": "设置模型",
+  "modelSetup.selectDesc": "请选择模型供应商，并在供应商页面登录来领取免费额度。",
+  "modelSetup.keyDesc": "请输入你的模型 API 密钥，即刻开始使用免费额度体验产品功能。",
+  "modelSetup.getApiKey": "获取 API 密钥",
+  "modelSetup.haveApiKey": "已获取 API 密钥",
+  "modelSetup.modelSelect": "模型选择",
+  "modelSetup.apiKey": "API KEY",
+  "modelSetup.start": "开始体验",
+  "modelSetup.saving": "正在保存…",
+  "modelSetup.enterApiKey": "请输入 API KEY",
+  "modelSetup.invalidMiniMaxKey": "MiniMax Subscription Key 应以 sk-cp- 开头",
+  "modelSetup.saveFailed": "保存失败: {error}",
+
   // ── TasksView ──
   "tasks.title": "定时任务",
   "tasks.desc": "查看和管理 OpenClaw 中已配置的定时任务",
@@ -425,6 +439,7 @@ export default {
   "tasks.disabled": "禁用",
 
   // ── Common ──
+  "common.close": "关闭",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",
   "common.platformLinux": "Linux",
