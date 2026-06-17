@@ -85,6 +85,8 @@ export function resolveNodePath(): string {
  *  1. Bundled in packaged app resources
  *  2. Deployer-installed under `~/.openclaw-node` (classic & `lib/` npm layouts)
  *  3. Global npm install under `%APPDATA%/npm`
+ *  4. Per-machine Node at `%ProgramFiles%/nodejs`
+ *  5. Per-user Node at `%LocalAppData%/Programs/nodejs`
  */
 export function resolveOpenClawEntry(): string {
   if (app.isPackaged) {
@@ -93,6 +95,8 @@ export function resolveOpenClawEntry(): string {
   }
   const home = process.env.USERPROFILE || "";
   const appData = process.env.APPDATA || "";
+  const programFiles = process.env.ProgramFiles || "";
+  const localAppData = process.env.LOCALAPPDATA || "";
   const candidates = [
     home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs") : "",
     home
@@ -104,6 +108,33 @@ export function resolveOpenClawEntry(): string {
       : "",
     appData ? path.join(appData, "npm", "node_modules", "openclaw", "openclaw.mjs") : "",
     appData ? path.join(appData, "npm", "node_modules", "openclaw", "dist", "index.js") : "",
+    programFiles
+      ? path.join(programFiles, "nodejs", "node_modules", "openclaw", "openclaw.mjs")
+      : "",
+    programFiles
+      ? path.join(programFiles, "nodejs", "node_modules", "openclaw", "dist", "index.js")
+      : "",
+    localAppData
+      ? path.join(
+          localAppData,
+          "Programs",
+          "nodejs",
+          "node_modules",
+          "openclaw",
+          "openclaw.mjs",
+        )
+      : "",
+    localAppData
+      ? path.join(
+          localAppData,
+          "Programs",
+          "nodejs",
+          "node_modules",
+          "openclaw",
+          "dist",
+          "index.js",
+        )
+      : "",
   ];
   for (const p of candidates) {
     if (p && fs.existsSync(p)) return p;

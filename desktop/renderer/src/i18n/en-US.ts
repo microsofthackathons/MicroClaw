@@ -427,6 +427,20 @@ export default {
   "setup.enterApiKey": "Please enter an API Key",
   "setup.saveFailed": "Save failed: {error}",
 
+  // ── ModelSetupDialog ──
+  "modelSetup.title": "Set Up Model",
+  "modelSetup.selectDesc": "Choose a model provider and sign in on the provider page to claim free credits.",
+  "modelSetup.keyDesc": "Enter your model API key to start using the product with free credits.",
+  "modelSetup.getApiKey": "Get API Key",
+  "modelSetup.haveApiKey": "I already have an API Key",
+  "modelSetup.modelSelect": "Model",
+  "modelSetup.apiKey": "API KEY",
+  "modelSetup.start": "Start",
+  "modelSetup.saving": "Saving…",
+  "modelSetup.enterApiKey": "Please enter an API key",
+  "modelSetup.invalidMiniMaxKey": "MiniMax Subscription Key should start with sk-cp-",
+  "modelSetup.saveFailed": "Save failed: {error}",
+
   // ── TasksView ──
   "tasks.title": "Scheduled Tasks",
   "tasks.desc": "View and manage scheduled tasks configured in OpenClaw",
@@ -444,6 +458,7 @@ export default {
   "tasks.disabled": "Disabled",
 
   // ── Common ──
+  "common.close": "Close",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",
   "common.platformLinux": "Linux",
