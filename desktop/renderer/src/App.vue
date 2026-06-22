@@ -359,12 +359,17 @@ onMounted(async () => {
   } catch {}
 
   // Listen for mid-session integrity alerts (file watcher)
-  unsubIntegrityAlert = window.openclaw.skills.onIntegrityAlert((result) => {
-    if (!result.valid) {
-      integrityResult.value = result;
-      integrityDialogVisible.value = true;
+  // Some preview environments do not expose this API yet.
+  try {
+    if (typeof window.openclaw.skills.onIntegrityAlert === "function") {
+      unsubIntegrityAlert = window.openclaw.skills.onIntegrityAlert((result) => {
+        if (!result.valid) {
+          integrityResult.value = result;
+          integrityDialogVisible.value = true;
+        }
+      });
     }
-  });
+  } catch {}
 
   // Listen for sandbox permission requests
   unsubPermission = window.openclaw.sandbox.onPermissionRequest((data: PermissionRequestData) => {
@@ -547,20 +552,32 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.app-layout,
+.main-content,
+.app-header,
+.win-ctrl,
+.integrity-hint,
+.integrity-file {
+  --ux-surface-primary: var(--smtc-background-web-page-primary, var(--bg-primary));
+  --ux-surface-secondary: var(--smtc-background-window-primary-solid, var(--bg-secondary));
+  --ux-surface-hover: var(--smtc-background-ctrl-subtle-hover, #f0f0f0);
+  --ux-danger-surface: var(--smtc-status-danger-background);
+  --ux-danger-text: var(--smtc-status-danger-foreground);
+  --ux-text-primary: var(--smtc-foreground-ctrl-neutral-primary-rest, var(--text-primary));
+  --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, var(--text-secondary));
+  --ux-border: var(--smtc-stroke-divider-subtle, #e0e0e0);
+}
+
 .app-layout {
   display: flex;
   height: 100vh;
   width: 100vw;
   overflow: hidden;
   border-radius: 16px;
-  border: 1px solid #e0e0e0;
-  background: var(--bg-primary);
+  border: 1px solid var(--ux-border);
+  background: var(--ux-surface-primary);
   position: relative;
   will-change: contents;
-}
-
-html.dark .app-layout {
-  border-color: #3a3a3a;
 }
 
 .main-content {
@@ -568,7 +585,7 @@ html.dark .app-layout {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
+  background: var(--ux-surface-secondary);
 }
 
 .app-header {
@@ -578,18 +595,14 @@ html.dark .app-layout {
   padding: 0 20px;
   height: 56px;
   flex-shrink: 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--ux-border);
   -webkit-app-region: drag;
-}
-
-html.dark .app-header {
-  border-bottom-color: var(--border);
 }
 
 .app-header-title {
   font-size: 18px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ux-text-primary);
 }
 
 .app-header-controls {
@@ -606,30 +619,22 @@ html.dark .app-header {
   place-items: center;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--ux-text-secondary);
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .win-ctrl:hover {
-  background: #f0f0f0;
-}
-
-html.dark .win-ctrl:hover {
-  background: var(--bg-tertiary);
+  background: var(--ux-surface-hover);
 }
 
 .win-ctrl--close:hover {
-  background: #fee2e2;
+  background: var(--ux-danger-surface);
 }
 
 .win-ctrl--close:hover svg {
-  stroke: #dc2626;
-}
-
-html.dark .win-ctrl--close:hover {
-  background: rgba(239, 68, 68, 0.15);
+  stroke: var(--ux-danger-text);
 }
 
 .main-drag-region {
@@ -638,12 +643,12 @@ html.dark .win-ctrl--close:hover {
 
 .integrity-hint {
   margin-bottom: 12px;
-  color: var(--text-secondary);
+  color: var(--ux-text-secondary);
 }
 
 .integrity-file {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--ux-text-secondary);
   padding-left: 12px;
 }
 </style>

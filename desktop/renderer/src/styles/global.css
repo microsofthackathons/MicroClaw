@@ -24,7 +24,7 @@
   --msg-user-bg: #1e293b;
   --msg-user-text: #ffffff;
   --msg-ai-bg: transparent;
-  --danger: #ef4444;
+  --danger: var(--smtc-status-danger-foreground);
   --success: #10b981;
   --warning: #f59e0b;
   --sidebar-width: 280px;
@@ -131,7 +131,7 @@ html.dark {
   --border-light: #3f3f46;
   --msg-user-bg: #334155;
   --msg-ai-bg: transparent;
-  --danger: #ef4444;
+  --danger: var(--smtc-status-danger-foreground);
   --success: #22c55e;
   --warning: #f59e0b;
   --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
