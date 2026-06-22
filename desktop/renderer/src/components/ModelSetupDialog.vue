@@ -2,11 +2,23 @@
   <div v-if="modelValue" class="model-setup-overlay">
     <div class="model-setup-panel" role="dialog" aria-modal="true">
       <button class="model-setup-close" type="button" :aria-label="t('common.close')" @click="close">
-        <span></span>
-        <span></span>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
       </button>
 
-      <template v-if="step === 'select'">
+      <template v-if="!isKeyStep">
         <h2>{{ t("modelSetup.title") }}</h2>
         <p class="model-setup-desc">{{ t("modelSetup.selectDesc") }}</p>
 
@@ -17,19 +29,31 @@
             type="button"
             class="model-family-card"
             :class="{ active: selectedFamilyId === family.id }"
-            @click="handleFamilyClick(family)"
+            :aria-pressed="selectedFamilyId === family.id ? 'true' : 'false'"
+            @click="selectedFamilyId = family.id"
           >
             <span class="family-icon" aria-hidden="true">
               <img :src="family.logo" :alt="family.label" />
             </span>
             <span class="family-name">{{ family.label }}</span>
+            <span v-if="selectedFamilyId === family.id" class="family-selected-badge" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M3.25 8.25L6.5 11.5L12.75 5.25"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
           </button>
         </div>
 
-        <button class="primary-action" type="button" @click="handleGetApiKey">
+        <button class="primary-action" type="button" @click.stop="handleGetApiKey">
           {{ t("modelSetup.getApiKey") }}
         </button>
-        <button class="text-action" type="button" @click="goToKeyForm">
+        <button class="text-action" type="button" @click.stop="goToKeyForm">
           {{ t("modelSetup.haveApiKey") }}
         </button>
       </template>
@@ -76,14 +100,23 @@
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
         </el-form>
 
-        <button
-          class="primary-action primary-action--spaced"
-          type="button"
-          :disabled="saving"
-          @click="saveAndStart"
-        >
-          {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
-        </button>
+        <div class="key-actions">
+          <button
+            class="text-action text-action--back"
+            type="button"
+            @mousedown.prevent.stop="goToSelectStep"
+          >
+            back
+          </button>
+          <button
+            class="primary-action"
+            type="button"
+            :disabled="saving"
+            @mousedown.prevent.stop="saveAndStart"
+          >
+            {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
+          </button>
+        </div>
       </template>
     </div>
   </div>
@@ -106,7 +139,6 @@ interface ModelFamilyPreset {
   apiFormat: ApiFormat;
   models: string[];
   apiKeyPlaceholder: string;
-  apiKeyUrl?: string;
   logo: string;
 }
 
@@ -125,24 +157,23 @@ const modelFamilies: ModelFamilyPreset[] = [
     providerKey: "qwen",
     baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
     apiFormat: "openai-chat",
-    models: ["Qwen3.6-Plus", "Qwen3.5-Plus"],
+    models: ["qwen", "Qwen3.6-Plus", "Qwen3.5-Plus"],
     apiKeyPlaceholder: "sk-...",
-    apiKeyUrl: "https://platform.qianwenai.com/home/api-keys",
     logo: qwenLogo,
   },
   {
     id: "minimax",
     label: "MiniMax",
     providerKey: "minimax",
-    baseUrl: "https://api.minimaxi.com/anthropic",
+    baseUrl: "",
     apiFormat: "anthropic",
-    models: ["MiniMax-M1"],
+    models: ["minimaxm3", "MiniMax-M1"],
     apiKeyPlaceholder: "sk-cp-...",
     logo: minimaxLogo,
   },
 ];
 
-const step = ref<"select" | "key">("select");
+const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(modelFamilies[0].models[0]);
 const baseUrl = ref(modelFamilies[0].baseUrl);
@@ -155,21 +186,16 @@ const selectedFamily = computed(
 );
 
 watch(selectedFamilyId, () => {
-  applyFamilyDefaults();
-});
-
-watch(selectedModelName, (modelName) => {
-  if (isAliyunModel(modelName)) {
-    baseUrl.value = ALIYUN_OPENAI_COMPATIBLE_BASE_URL;
-  }
+  selectedModelName.value = selectedFamily.value.models[0];
+  baseUrl.value = selectedFamily.value.baseUrl;
+  errorMsg.value = "";
 });
 
 watch(
   () => props.modelValue,
   (visible) => {
     if (!visible) return;
-    step.value = "select";
-    applyFamilyDefaults();
+    isKeyStep.value = false;
     errorMsg.value = "";
   },
 );
@@ -178,60 +204,45 @@ function resolveApiValue(apiFormat: ApiFormat): string {
   return apiFormat === "anthropic" ? "anthropic-messages" : "openai-completions";
 }
 
-function isAliyunModel(modelName: string): boolean {
-  return modelName.trim().toLowerCase().startsWith("qwen");
-}
-
-function applyFamilyDefaults() {
-  selectedModelName.value = selectedFamily.value.models[0];
-  baseUrl.value = selectedFamily.value.baseUrl;
-  errorMsg.value = "";
-}
-
 function close() {
   emit("update:modelValue", false);
 }
 
+function goToKeyForm() {
+  selectedModelName.value = selectedFamily.value.models[0];
+  baseUrl.value = selectedFamily.value.baseUrl;
+  isKeyStep.value = true;
+  errorMsg.value = "";
+}
+
 function handleGetApiKey() {
-  openApiKeyPage(selectedFamily.value);
+  const signupUrl =
+    selectedFamily.value.id === "qwen"
+      ? "https://bailian.console.aliyun.com/?tab=model#/api-key"
+      : "https://platform.minimaxi.com/user-center/basic-information/interface-key";
+  try {
+    window.openclaw?.shell?.openExternal?.(signupUrl);
+  } catch {
+    window.open(signupUrl, "_blank", "noopener,noreferrer");
+  }
   goToKeyForm();
 }
 
-function handleFamilyClick(family: ModelFamilyPreset) {
-  selectedFamilyId.value = family.id;
-  if (family.id === "qwen") {
-    openApiKeyPage(family);
-    goToKeyForm();
-  }
-}
-
-function openApiKeyPage(family: ModelFamilyPreset) {
-  if (!family.apiKeyUrl) return;
-  window.openclaw.shell.openExternal(family.apiKeyUrl).catch((err) => {
-    console.error("Failed to open API key page:", err);
-  });
-}
-
-function goToKeyForm() {
-  applyFamilyDefaults();
-  step.value = "key";
+function goToSelectStep() {
+  isKeyStep.value = false;
   errorMsg.value = "";
 }
 
 async function saveAndStart() {
   const trimmedModelName = selectedModelName.value.trim();
-  const trimmedKey = apiKey.value.trim();
   const trimmedBaseUrl = baseUrl.value.trim();
+  const trimmedKey = apiKey.value.trim();
   if (!trimmedModelName) {
     errorMsg.value = t("modelSetup.enterModelName");
     return;
   }
   if (!trimmedKey) {
     errorMsg.value = t("modelSetup.enterApiKey");
-    return;
-  }
-  if (!trimmedBaseUrl) {
-    errorMsg.value = t("modelSetup.enterBaseUrl");
     return;
   }
   if (selectedFamily.value.id === "minimax" && !trimmedKey.startsWith("sk-cp-")) {
@@ -247,7 +258,7 @@ async function saveAndStart() {
     const modelRef = `${family.providerKey}/${modelName}`;
     const existing = (await window.openclaw.config.read()) || {};
     const providerEntry: Record<string, unknown> = {
-      baseUrl: trimmedBaseUrl,
+      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
       apiKey: trimmedKey,
       api: resolveApiValue(family.apiFormat),
       models: [
@@ -290,13 +301,57 @@ async function saveAndStart() {
 </script>
 
 <style scoped>
+.model-setup-overlay,
+.model-setup-panel,
+.model-setup-close,
+.model-family-card,
+.primary-action,
+.text-action,
+.model-key-form,
+.error-msg {
+  --ux-overlay: rgba(255, 255, 255, 0.72);
+  --ux-panel-bg: #fff;
+  --ux-panel-text: #1f2228;
+  --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, #555967);
+  --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, #6b6e78);
+  --ux-border: var(--smtc-stroke-divider-subtle, #ededf0);
+  --ux-surface-hover: var(--smtc-background-ctrl-subtle-hover, #f4f4f5);
+  --ux-card-active: var(--smtc-background-card-on-primary-default-rest, #fafafa);
+  --ux-card-selected-border: var(--ux-brand-bg);
+  --ux-card-selected-bg: var(--ux-card-active);
+  --ux-card-check-bg: var(--ux-brand-bg);
+  --ux-card-check-fg: var(--ux-brand-fg);
+  --ux-brand-bg: #18181b;
+  --ux-brand-bg-hover: #27272a;
+  --ux-brand-bg-active: #09090b;
+  --ux-brand-fg: #fff;
+  --ux-panel-radius: 20px;
+  --ux-cta-radius: 999px;
+  --ux-danger: var(--smtc-status-danger-foreground);
+  --ux-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
+  --ux-flyout-border: #e7e8ec;
+  --ux-flyout-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(250, 250, 252, 0.9) 100%);
+  --ux-flyout-shadow:
+    0 24px 44px rgba(21, 24, 31, 0.16),
+    0 8px 18px rgba(21, 24, 31, 0.1);
+  --ux-font-family: "Segoe UI", "Noto Sans SC", sans-serif;
+  --ux-title-size: 28px;
+  --ux-title-weight: 700;
+  --ux-body-size: 15px;
+  --ux-body-line: 1.55;
+  --ux-label-size: 14px;
+  --ux-label-weight: 600;
+  --ux-input-size: 15px;
+  --ux-caption-size: 13px;
+}
+
 .model-setup-overlay {
   position: fixed;
   inset: 0;
   z-index: 2000;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--ux-overlay);
   backdrop-filter: blur(10px);
 }
 
@@ -305,10 +360,11 @@ async function saveAndStart() {
   min-height: 430px;
   position: relative;
   padding: 42px 34px 34px;
-  border-radius: 16px;
-  background: #fff;
-  color: #1f2228;
-  box-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
+  border-radius: var(--ux-panel-radius);
+  background: var(--ux-panel-bg);
+  color: var(--ux-panel-text);
+  font-family: var(--ux-font-family);
+  box-shadow: var(--ux-shadow);
   text-align: center;
 }
 
@@ -321,43 +377,35 @@ async function saveAndStart() {
   border: 0;
   border-radius: 50%;
   background: transparent;
+  color: var(--ux-text-muted);
   cursor: pointer;
-}
-
-.model-setup-close span {
-  position: absolute;
-  top: 13px;
-  left: 7px;
-  width: 14px;
-  height: 2px;
-  background: #8d8f98;
-  border-radius: 2px;
-}
-
-.model-setup-close span:first-child {
-  transform: rotate(45deg);
-}
-
-.model-setup-close span:last-child {
-  transform: rotate(-45deg);
+  display: grid;
+  place-items: center;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 
 .model-setup-close:hover {
-  background: #f4f4f5;
+  background: var(--ux-surface-hover);
+  color: var(--ux-panel-text);
 }
 
 h2 {
   margin: 0;
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 0;
+  font-size: var(--ux-title-size);
+  font-weight: var(--ux-title-weight);
+  line-height: 1.1;
+  color: var(--ux-panel-text);
+  letter-spacing: 0.1px;
 }
 
 .model-setup-desc {
-  margin: 12px 0 34px;
-  color: #555967;
-  font-size: 14px;
-  line-height: 1.6;
+  margin: 14px 0 34px;
+  color: var(--ux-text-secondary);
+  font-size: var(--ux-body-size);
+  line-height: var(--ux-body-line);
+  font-weight: 500;
 }
 
 .model-family-grid {
@@ -368,6 +416,7 @@ h2 {
 }
 
 .model-family-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -376,7 +425,7 @@ h2 {
   border: 1px solid transparent;
   border-radius: 12px;
   background: transparent;
-  color: #1f2228;
+  color: var(--ux-panel-text);
   cursor: pointer;
   transition:
     border-color 0.15s,
@@ -386,12 +435,18 @@ h2 {
 
 .model-family-card:hover,
 .model-family-card.active {
-  background: #fafafa;
-  border-color: #ededf0;
+  background: var(--ux-card-active);
+  border-color: var(--ux-border);
 }
 
 .model-family-card:hover {
   transform: translateY(-1px);
+}
+
+.model-family-card.active {
+  background: var(--ux-card-selected-bg);
+  border-color: var(--ux-card-selected-border);
+  border-width: 2px;
 }
 
 .family-icon {
@@ -409,26 +464,59 @@ h2 {
 }
 
 .family-name {
-  font-size: 18px;
-  font-weight: 500;
-  color: #6b6e78;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ux-text-muted);
+}
+
+.model-family-card.active .family-name {
+  color: var(--ux-panel-text);
+  font-weight: 700;
+}
+
+.family-selected-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: var(--ux-card-check-bg);
+  color: var(--ux-card-check-fg);
 }
 
 .primary-action {
   width: 100%;
-  height: 48px;
+  height: 52px;
   border: 0;
-  border-radius: 8px;
-  background: #211d1a;
-  color: #fff;
-  font-family: inherit;
-  font-size: 15px;
-  font-weight: 600;
+  border-radius: var(--ux-cta-radius);
+  background: var(--ux-brand-bg);
+  color: var(--ux-brand-fg);
+  font-family: var(--ux-font-family);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
   cursor: pointer;
+  transition:
+    background 0.18s ease,
+    transform 0.12s ease,
+    box-shadow 0.18s ease;
+  box-shadow: 0 10px 26px rgba(24, 24, 27, 0.18);
 }
 
 .primary-action:hover:not(:disabled) {
-  background: #302b27;
+  background: var(--ux-brand-bg-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px rgba(24, 24, 27, 0.22);
+}
+
+.primary-action:active:not(:disabled) {
+  background: var(--ux-brand-bg-active);
+  transform: translateY(0);
+  box-shadow: 0 6px 14px rgba(24, 24, 27, 0.2);
 }
 
 .primary-action:disabled {
@@ -441,17 +529,45 @@ h2 {
 }
 
 .text-action {
-  margin-top: 20px;
-  border: 0;
-  background: transparent;
-  color: #6b6e78;
-  font-family: inherit;
+  margin-top: 14px;
+  border: 1px solid var(--ux-border);
+  border-radius: var(--ux-cta-radius);
+  box-sizing: border-box;
+  background: #fff;
+  color: var(--ux-text-muted);
+  font-family: var(--ux-font-family);
   font-size: 14px;
+  font-weight: 600;
+  height: 52px;
+  width: 100%;
   cursor: pointer;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    border-color 0.15s;
 }
 
 .text-action:hover {
-  color: #1f2228;
+  color: var(--ux-panel-text);
+  background: var(--ux-surface-hover);
+  border-color: var(--ux-border);
+}
+
+.text-action--back {
+  margin-top: 0;
+}
+
+.key-actions {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.key-actions .text-action,
+.key-actions .primary-action {
+  margin-top: 0;
+  height: 46px;
 }
 
 .model-key-form {
@@ -459,44 +575,154 @@ h2 {
 }
 
 .model-key-form :deep(.el-form-item__label) {
-  color: #555967;
-  font-weight: 600;
+  color: var(--ux-text-secondary);
+  font-size: var(--ux-label-size);
+  font-weight: var(--ux-label-weight);
+  line-height: 1.4;
 }
 
 .model-key-form :deep(.el-input__wrapper),
 .model-key-form :deep(.el-select__wrapper) {
   min-height: 48px;
   border-radius: 12px;
-  box-shadow: 0 0 0 1px #dedfe5 inset;
+  box-shadow: 0 0 0 1px var(--ux-border) inset;
+}
+
+.model-dropdown {
+  position: relative;
+  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.model-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  height: 48px;
+  position: relative;
+  border: 1px solid var(--ux-border);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ux-panel-text);
+  font-family: var(--ux-font-family);
+  font-size: var(--ux-input-size);
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 0 30px 0 14px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    background 0.15s;
+}
+
+.model-dropdown-trigger:hover {
+  background: #fcfcfd;
+}
+
+.model-dropdown-trigger:disabled {
+  cursor: default;
+  background: #fff;
+}
+
+.model-dropdown-trigger:disabled .model-dropdown-caret {
+  opacity: 0.55;
+}
+
+.model-dropdown-trigger:focus-visible {
+  outline: none;
+  border-color: #c9cbd3;
+  box-shadow: 0 0 0 3px rgba(120, 126, 146, 0.12);
+}
+
+.model-dropdown-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-dropdown-caret {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #989ba7;
+  border-bottom: 2px solid #989ba7;
+  transform: translateY(-62%) rotate(45deg);
+  transition: transform 0.16s ease;
+}
+
+.model-dropdown-menu {
+  display: none;
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: calc(100% + 8px);
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--ux-flyout-border);
+  border-radius: 14px;
+  background: var(--ux-flyout-bg);
+  backdrop-filter: blur(14px) saturate(1.08);
+  box-shadow: var(--ux-flyout-shadow);
+}
+
+.model-dropdown:focus-within .model-dropdown-menu {
+  display: block;
+}
+
+.model-dropdown-option {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ux-panel-text);
+  font-family: var(--ux-font-family);
+  font-size: var(--ux-input-size);
+  font-weight: 500;
+  line-height: 40px;
+  min-height: 40px;
+  padding: 0 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-dropdown-option:hover {
+  background: var(--ux-surface-hover);
+}
+
+.model-dropdown-option.selected {
+  background: transparent;
+  font-weight: 700;
+}
+
+.model-dropdown-option.selected:hover {
+  background: transparent;
+}
+
+.model-key-form :deep(.el-input__inner),
+.model-key-form :deep(.el-select__selected-item),
+.model-key-form :deep(.el-select__placeholder) {
+  font-family: var(--ux-font-family);
+  font-size: var(--ux-input-size);
+  color: var(--ux-panel-text);
+}
+
+.model-key-form :deep(.el-input__inner::placeholder) {
+  color: var(--ux-text-muted);
 }
 
 .error-msg {
   margin-top: -4px;
-  color: #d93025;
-  font-size: 13px;
+  color: var(--ux-danger);
+  font-size: var(--ux-caption-size);
+  font-weight: 600;
   line-height: 1.5;
-}
-
-html.dark .model-setup-overlay {
-  background: rgba(18, 19, 20, 0.7);
-}
-
-html.dark .model-setup-panel {
-  background: #1b1c20;
-  color: #f5f5f5;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
-}
-
-html.dark .model-setup-desc,
-html.dark .family-name,
-html.dark .text-action {
-  color: #a6a8b0;
-}
-
-html.dark .model-family-card:hover,
-html.dark .model-family-card.active,
-html.dark .model-setup-close:hover {
-  background: #24262b;
-  border-color: #30323a;
 }
 </style>

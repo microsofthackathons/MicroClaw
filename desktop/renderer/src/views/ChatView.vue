@@ -262,7 +262,11 @@ onMounted(() => {
   if (chatStore.messages.length) {
     nextTick(scrollToBottom);
   }
-  studioStore.initialize();
+  try {
+    studioStore.initialize();
+  } catch {
+    // Studio APIs may be absent in lightweight preview mode.
+  }
 });
 
 onUnmounted(() => {
@@ -447,11 +451,35 @@ function handleThreadClick(e: MouseEvent) {
 </script>
 
 <style scoped>
+.chat-view,
+.mode-toggle-btn,
+.chat-new-messages,
+.studio-canvas-area,
+.studio-retry-btn,
+.home-input-box,
+.home-input-plus,
+.home-input-send,
+.home-disclaimer {
+  --ux-surface-primary: var(--smtc-background-web-page-primary, var(--bg-primary));
+  --ux-surface-secondary: var(--smtc-background-window-primary-solid, var(--bg-secondary));
+  --ux-surface-tertiary: var(--smtc-background-card-on-primary-default-rest, var(--bg-tertiary));
+  --ux-surface-hover: var(--smtc-background-ctrl-subtle-hover, #f5f5f5);
+  --ux-ctrl-brand-rest: var(--smtc-background-ctrl-brand-rest, #211d1a);
+  --ux-ctrl-brand-hover: var(--smtc-background-ctrl-brand-hover, #302b27);
+  --ux-ctrl-on-brand: var(--smtc-foreground-ctrl-on-brand-rest, #fff);
+  --ux-text-primary: var(--smtc-foreground-ctrl-neutral-primary-rest, var(--text-primary));
+  --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, var(--text-secondary));
+  --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, var(--text-muted));
+  --ux-border: var(--smtc-stroke-divider-subtle, var(--border));
+  --ux-focus: var(--smtc-background-ctrl-subtle-selected-rest, var(--text-muted));
+  --ux-shadow-card: var(--smtc-shadow-card-rest-key, 0 2px 12px rgba(0, 0, 0, 0.15));
+}
+
 .chat-view {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--ux-surface-primary);
   overflow: hidden;
   position: relative;
 }
@@ -470,23 +498,23 @@ function handleThreadClick(e: MouseEvent) {
   font-size: 13px;
   font-weight: 500;
   font-family: inherit;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ux-border);
   border-radius: 999px;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--ux-text-muted);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .mode-toggle-btn.active {
-  background: var(--text-primary);
-  color: var(--bg-primary);
-  border-color: var(--text-primary);
+  background: var(--ux-ctrl-brand-rest);
+  color: var(--ux-ctrl-on-brand);
+  border-color: var(--ux-ctrl-brand-rest);
 }
 
 .mode-toggle-btn:not(.active):hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  background: var(--ux-surface-hover);
+  color: var(--ux-text-primary);
 }
 
 /* ── Welcome ── */
@@ -524,8 +552,8 @@ function handleThreadClick(e: MouseEvent) {
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
-  color: #fff;
-  background: #1e1f25;
+  color: var(--ux-ctrl-on-brand);
+  background: var(--ux-ctrl-brand-rest);
   border: none;
   border-radius: 999px;
   cursor: pointer;
@@ -534,26 +562,15 @@ function handleThreadClick(e: MouseEvent) {
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--ux-shadow-card);
   transition:
     background 0.15s,
     box-shadow 0.15s;
 }
 
 .chat-new-messages:hover {
-  background: #333;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-}
-
-html.dark .chat-new-messages {
-  background: #e0e0e0;
-  color: #1e1f25;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-}
-
-html.dark .chat-new-messages:hover {
-  background: #fafafa;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  background: var(--ux-ctrl-brand-hover);
+  box-shadow: var(--smtc-shadow-flyout-key, 0 4px 16px rgba(0, 0, 0, 0.2));
 }
 
 /* ── Studio mode ── */
@@ -562,7 +579,7 @@ html.dark .chat-new-messages:hover {
   min-height: 0;
   position: relative;
   overflow: hidden;
-  background: #2d2d3d;
+  background: var(--smtc-background-window-tab-band-solid, #2d2d3d);
   border-radius: 14px;
   margin: 8px 32px 12px;
 }
@@ -574,7 +591,7 @@ html.dark .chat-new-messages:hover {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: var(--text-muted);
+  color: var(--ux-text-muted);
 }
 
 .studio-loading-text {
@@ -588,10 +605,10 @@ html.dark .chat-new-messages:hover {
 
 .studio-retry-btn {
   padding: 6px 20px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ux-border);
   border-radius: 8px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
+  background: var(--ux-surface-secondary);
+  color: var(--ux-text-primary);
   font-size: 13px;
   cursor: pointer;
   transition: background 0.15s;
@@ -599,7 +616,7 @@ html.dark .chat-new-messages:hover {
 }
 
 .studio-retry-btn:hover {
-  background: var(--bg-tertiary);
+  background: var(--ux-surface-hover);
 }
 
 .studio-status-bar {
@@ -623,7 +640,7 @@ html.dark .chat-new-messages:hover {
 }
 
 .home-input-box {
-  border: 1px solid var(--border);
+  border: 1px solid var(--ux-border);
   border-radius: 20px;
   transition:
     box-shadow 0.15s,
@@ -632,7 +649,7 @@ html.dark .chat-new-messages:hover {
 
 .home-input-box:focus-within {
   border-color: transparent;
-  box-shadow: 0 0 0 2px var(--text-muted);
+  box-shadow: 0 0 0 2px var(--ux-focus);
 }
 
 .home-input-box textarea {
@@ -642,14 +659,14 @@ html.dark .chat-new-messages:hover {
   outline: none;
   background: transparent;
   font-size: 14px;
-  color: var(--text-primary);
+  color: var(--ux-text-primary);
   font-family: inherit;
   resize: none;
   line-height: 1.5;
 }
 
 .home-input-box textarea::placeholder {
-  color: var(--text-muted);
+  color: var(--ux-text-muted);
 }
 
 .home-input-box textarea:disabled {
@@ -677,18 +694,14 @@ html.dark .chat-new-messages:hover {
   place-items: center;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--ux-text-secondary);
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .home-input-plus:hover {
-  background: #f5f5f5;
-}
-
-html.dark .home-input-plus:hover {
-  background: var(--bg-tertiary);
+  background: var(--ux-surface-hover);
 }
 
 .home-input-send {
@@ -697,14 +710,14 @@ html.dark .home-input-plus:hover {
   display: grid;
   place-items: center;
   border: none;
-  background: #e1e1e1;
-  color: var(--text-secondary);
+  background: var(--smtc-background-ctrl-neutral-rest, #e1e1e1);
+  color: var(--ux-text-secondary);
   border-radius: 50%;
   cursor: pointer;
   transition:
     background 0.15s,
     opacity 0.15s;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--ux-shadow-card);
 }
 
 .home-input-send:disabled {
@@ -713,53 +726,32 @@ html.dark .home-input-plus:hover {
 }
 
 .home-input-send:not(:disabled):hover {
-  background: #d5d5d5;
-}
-
-html.dark .home-input-send {
-  background: var(--bg-tertiary);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
-}
-
-html.dark .home-input-send:not(:disabled):hover {
-  background: var(--border);
+  background: var(--smtc-background-ctrl-neutral-hover, #d5d5d5);
 }
 
 .home-input-send--stop {
-  background: var(--accent);
-  color: #fff;
+  background: var(--ux-ctrl-brand-rest);
+  color: var(--ux-ctrl-on-brand);
   opacity: 1;
   cursor: pointer;
 }
 
 .home-input-send--stop:hover {
-  background: #333;
-}
-
-html.dark .home-input-send--stop {
-  background: #e0e0e0;
-}
-
-html.dark .home-input-send--stop:hover {
-  background: #fafafa;
+  background: var(--ux-ctrl-brand-hover);
 }
 
 .stop-square {
   display: block;
   width: 12px;
   height: 12px;
-  background: #fff;
+  background: var(--ux-ctrl-on-brand);
   border-radius: 2px;
-}
-
-html.dark .stop-square {
-  background: #1e1f25;
 }
 
 .home-disclaimer {
   text-align: center;
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--ux-text-muted);
   margin-top: 16px;
   margin-bottom: 4px;
   line-height: 1.4;

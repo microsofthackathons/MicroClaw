@@ -403,15 +403,15 @@ watch(
 }
 
 .win-ctrl--close:hover {
-  background: #fee2e2;
+  background: var(--smtc-status-danger-background);
 }
 
 .win-ctrl--close:hover svg {
-  stroke: #dc2626;
+  stroke: var(--smtc-status-danger-foreground);
 }
 
 :global(html.dark) .win-ctrl--close:hover {
-  background: rgba(239, 68, 68, 0.15);
+  background: color-mix(in srgb, var(--smtc-status-danger-background) 28%, transparent);
 }
 
 .loading-center {
