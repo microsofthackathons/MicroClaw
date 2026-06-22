@@ -30,7 +30,7 @@
             class="model-family-card"
             :class="{ active: selectedFamilyId === family.id }"
             :aria-pressed="selectedFamilyId === family.id ? 'true' : 'false'"
-            @click="selectedFamilyId = family.id"
+            @click="selectFamily(family.id)"
           >
             <span class="family-icon" aria-hidden="true">
               <img :src="family.logo" :alt="family.label" />
@@ -72,13 +72,20 @@
               default-first-option
               :reserve-keyword="false"
               :placeholder="t('modelSetup.modelPlaceholder')"
+              @change="handleModelChange"
             >
-              <el-option
-                v-for="model in selectedFamily.models"
-                :key="model"
-                :label="model"
-                :value="model"
-              />
+              <el-option-group
+                v-for="family in modelFamilies"
+                :key="family.id"
+                :label="family.label"
+              >
+                <el-option
+                  v-for="model in family.models"
+                  :key="`${family.id}:${model}`"
+                  :label="model"
+                  :value="model"
+                />
+              </el-option-group>
             </el-select>
           </el-form-item>
           <el-form-item :label="t('modelSetup.baseUrl')">
@@ -138,6 +145,7 @@ interface ModelFamilyPreset {
   baseUrl: string;
   apiFormat: ApiFormat;
   models: string[];
+  defaultModel: string;
   apiKeyPlaceholder: string;
   logo: string;
 }
@@ -157,7 +165,8 @@ const modelFamilies: ModelFamilyPreset[] = [
     providerKey: "qwen",
     baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
     apiFormat: "openai-chat",
-    models: ["qwen", "Qwen3.6-Plus", "Qwen3.5-Plus"],
+    models: ["qwen", "qwen3.7-plus", "qwen3.6-plus", "qwen3-32b", "qwen3.6-flash", "qwen3.5-plus"],
+    defaultModel: "qwen3.7-plus",
     apiKeyPlaceholder: "sk-...",
     logo: qwenLogo,
   },
@@ -168,28 +177,33 @@ const modelFamilies: ModelFamilyPreset[] = [
     baseUrl: "",
     apiFormat: "anthropic",
     models: ["minimaxm3", "MiniMax-M1"],
+    defaultModel: "minimaxm3",
     apiKeyPlaceholder: "sk-cp-...",
     logo: minimaxLogo,
   },
 ];
 
+function getDefaultModel(family: ModelFamilyPreset): string {
+  return family.defaultModel;
+}
+
+function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
+  return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
+}
+
+function getFamilyByModel(modelName: string): ModelFamilyPreset | undefined {
+  return modelFamilies.find((family) => family.models.includes(modelName));
+}
+
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
-const selectedModelName = ref(modelFamilies[0].models[0]);
+const selectedModelName = ref(getDefaultModel(modelFamilies[0]));
 const baseUrl = ref(modelFamilies[0].baseUrl);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
 
-const selectedFamily = computed(
-  () => modelFamilies.find((family) => family.id === selectedFamilyId.value) ?? modelFamilies[0],
-);
-
-watch(selectedFamilyId, () => {
-  selectedModelName.value = selectedFamily.value.models[0];
-  baseUrl.value = selectedFamily.value.baseUrl;
-  errorMsg.value = "";
-});
+const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
 
 watch(
   () => props.modelValue,
@@ -208,8 +222,25 @@ function close() {
   emit("update:modelValue", false);
 }
 
+function selectFamily(familyId: ModelFamilyId) {
+  const family = getFamilyById(familyId);
+  selectedFamilyId.value = family.id;
+  selectedModelName.value = getDefaultModel(family);
+  baseUrl.value = family.baseUrl;
+  errorMsg.value = "";
+}
+
+function handleModelChange(modelName: string) {
+  const family = getFamilyByModel(modelName);
+  if (!family || family.id === selectedFamilyId.value) return;
+
+  selectedFamilyId.value = family.id;
+  baseUrl.value = family.baseUrl;
+  errorMsg.value = "";
+}
+
 function goToKeyForm() {
-  selectedModelName.value = selectedFamily.value.models[0];
+  selectedModelName.value = getDefaultModel(selectedFamily.value);
   baseUrl.value = selectedFamily.value.baseUrl;
   isKeyStep.value = true;
   errorMsg.value = "";
