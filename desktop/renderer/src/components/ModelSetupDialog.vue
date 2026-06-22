@@ -17,7 +17,7 @@
             type="button"
             class="model-family-card"
             :class="{ active: selectedFamilyId === family.id }"
-            @click="selectedFamilyId = family.id"
+            @click="handleFamilyClick(family)"
           >
             <span class="family-icon" aria-hidden="true">
               <img :src="family.logo" :alt="family.label" />
@@ -40,7 +40,15 @@
 
         <el-form label-position="top" class="model-key-form">
           <el-form-item :label="t('modelSetup.modelSelect')">
-            <el-select v-model="selectedModelName" style="width: 100%">
+            <el-select
+              v-model="selectedModelName"
+              style="width: 100%"
+              filterable
+              allow-create
+              default-first-option
+              :reserve-keyword="false"
+              :placeholder="t('modelSetup.modelPlaceholder')"
+            >
               <el-option
                 v-for="model in selectedFamily.models"
                 :key="model"
@@ -48,6 +56,13 @@
                 :value="model"
               />
             </el-select>
+          </el-form-item>
+          <el-form-item :label="t('modelSetup.baseUrl')">
+            <el-input
+              v-model="baseUrl"
+              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              @keydown.enter.prevent="saveAndStart"
+            />
           </el-form-item>
           <el-form-item :label="t('modelSetup.apiKey')">
             <el-input
@@ -91,6 +106,7 @@ interface ModelFamilyPreset {
   apiFormat: ApiFormat;
   models: string[];
   apiKeyPlaceholder: string;
+  apiKeyUrl?: string;
   logo: string;
 }
 
@@ -100,15 +116,18 @@ const emit = defineEmits<{
   configured: [];
 }>();
 
+const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
 const modelFamilies: ModelFamilyPreset[] = [
   {
     id: "qwen",
     label: "千问",
     providerKey: "qwen",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+    baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
     apiFormat: "openai-chat",
-    models: ["Qwen3.6-Plus"],
+    models: ["Qwen3.6-Plus", "Qwen3.5-Plus"],
     apiKeyPlaceholder: "sk-...",
+    apiKeyUrl: "https://platform.qianwenai.com/home/api-keys",
     logo: qwenLogo,
   },
   {
@@ -126,6 +145,7 @@ const modelFamilies: ModelFamilyPreset[] = [
 const step = ref<"select" | "key">("select");
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(modelFamilies[0].models[0]);
+const baseUrl = ref(modelFamilies[0].baseUrl);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
@@ -135,8 +155,13 @@ const selectedFamily = computed(
 );
 
 watch(selectedFamilyId, () => {
-  selectedModelName.value = selectedFamily.value.models[0];
-  errorMsg.value = "";
+  applyFamilyDefaults();
+});
+
+watch(selectedModelName, (modelName) => {
+  if (isAliyunModel(modelName)) {
+    baseUrl.value = ALIYUN_OPENAI_COMPATIBLE_BASE_URL;
+  }
 });
 
 watch(
@@ -144,6 +169,7 @@ watch(
   (visible) => {
     if (!visible) return;
     step.value = "select";
+    applyFamilyDefaults();
     errorMsg.value = "";
   },
 );
@@ -152,24 +178,60 @@ function resolveApiValue(apiFormat: ApiFormat): string {
   return apiFormat === "anthropic" ? "anthropic-messages" : "openai-completions";
 }
 
+function isAliyunModel(modelName: string): boolean {
+  return modelName.trim().toLowerCase().startsWith("qwen");
+}
+
+function applyFamilyDefaults() {
+  selectedModelName.value = selectedFamily.value.models[0];
+  baseUrl.value = selectedFamily.value.baseUrl;
+  errorMsg.value = "";
+}
+
 function close() {
   emit("update:modelValue", false);
 }
 
 function handleGetApiKey() {
-  // Reserved for the future BYOK/register-url flow.
+  openApiKeyPage(selectedFamily.value);
+  goToKeyForm();
+}
+
+function handleFamilyClick(family: ModelFamilyPreset) {
+  selectedFamilyId.value = family.id;
+  if (family.id === "qwen") {
+    openApiKeyPage(family);
+    goToKeyForm();
+  }
+}
+
+function openApiKeyPage(family: ModelFamilyPreset) {
+  if (!family.apiKeyUrl) return;
+  window.openclaw.shell.openExternal(family.apiKeyUrl).catch((err) => {
+    console.error("Failed to open API key page:", err);
+  });
 }
 
 function goToKeyForm() {
-  selectedModelName.value = selectedFamily.value.models[0];
+  applyFamilyDefaults();
   step.value = "key";
   errorMsg.value = "";
 }
 
 async function saveAndStart() {
+  const trimmedModelName = selectedModelName.value.trim();
   const trimmedKey = apiKey.value.trim();
+  const trimmedBaseUrl = baseUrl.value.trim();
+  if (!trimmedModelName) {
+    errorMsg.value = t("modelSetup.enterModelName");
+    return;
+  }
   if (!trimmedKey) {
     errorMsg.value = t("modelSetup.enterApiKey");
+    return;
+  }
+  if (!trimmedBaseUrl) {
+    errorMsg.value = t("modelSetup.enterBaseUrl");
     return;
   }
   if (selectedFamily.value.id === "minimax" && !trimmedKey.startsWith("sk-cp-")) {
@@ -181,11 +243,11 @@ async function saveAndStart() {
   errorMsg.value = "";
   try {
     const family = selectedFamily.value;
-    const modelName = selectedModelName.value || family.models[0];
+    const modelName = trimmedModelName;
     const modelRef = `${family.providerKey}/${modelName}`;
     const existing = (await window.openclaw.config.read()) || {};
     const providerEntry: Record<string, unknown> = {
-      baseUrl: family.baseUrl,
+      baseUrl: trimmedBaseUrl,
       apiKey: trimmedKey,
       api: resolveApiValue(family.apiFormat),
       models: [
