@@ -64,33 +64,29 @@
 
         <el-form label-position="top" class="model-key-form">
           <el-form-item :label="t('modelSetup.modelSelect')">
-            <div class="model-dropdown">
-              <button
-                class="model-dropdown-trigger"
-                type="button"
-                role="combobox"
-                aria-expanded="false"
-                aria-haspopup="listbox"
-              >
-                <span class="model-dropdown-value">{{ selectedModelName }}</span>
-                <span class="model-dropdown-caret" aria-hidden="true"></span>
-              </button>
-
-              <ul class="model-dropdown-menu" role="listbox">
-                <li v-for="model in selectedFamily.models" :key="model" role="none">
-                  <button
-                    class="model-dropdown-option"
-                    :class="{ selected: selectedModelName === model }"
-                    type="button"
-                    role="option"
-                    :aria-selected="selectedModelName === model ? 'true' : 'false'"
-                    @mousedown.prevent.stop="selectModel(model)"
-                  >
-                    {{ model }}
-                  </button>
-                </li>
-              </ul>
-            </div>
+            <el-select
+              v-model="selectedModelName"
+              style="width: 100%"
+              filterable
+              allow-create
+              default-first-option
+              :reserve-keyword="false"
+              :placeholder="t('modelSetup.modelPlaceholder')"
+            >
+              <el-option
+                v-for="model in selectedFamily.models"
+                :key="model"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('modelSetup.baseUrl')">
+            <el-input
+              v-model="baseUrl"
+              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              @keydown.enter.prevent="saveAndStart"
+            />
           </el-form-item>
           <el-form-item :label="t('modelSetup.apiKey')">
             <el-input
@@ -110,7 +106,7 @@
             type="button"
             @mousedown.prevent.stop="goToSelectStep"
           >
-            {{ t("common.back") }}
+            back
           </button>
           <button
             class="primary-action"
@@ -152,14 +148,16 @@ const emit = defineEmits<{
   configured: [];
 }>();
 
+const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
 const modelFamilies: ModelFamilyPreset[] = [
   {
     id: "qwen",
     label: "千问",
     providerKey: "qwen",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+    baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
     apiFormat: "openai-chat",
-    models: ["Qwen3.6-Plus"],
+    models: ["qwen", "Qwen3.6-Plus", "Qwen3.5-Plus"],
     apiKeyPlaceholder: "sk-...",
     logo: qwenLogo,
   },
@@ -167,9 +165,9 @@ const modelFamilies: ModelFamilyPreset[] = [
     id: "minimax",
     label: "MiniMax",
     providerKey: "minimax",
-    baseUrl: "https://api.minimaxi.com/anthropic",
+    baseUrl: "",
     apiFormat: "anthropic",
-    models: ["MiniMax-M1"],
+    models: ["minimaxm3", "MiniMax-M1"],
     apiKeyPlaceholder: "sk-cp-...",
     logo: minimaxLogo,
   },
@@ -178,6 +176,7 @@ const modelFamilies: ModelFamilyPreset[] = [
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(modelFamilies[0].models[0]);
+const baseUrl = ref(modelFamilies[0].baseUrl);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
@@ -188,6 +187,7 @@ const selectedFamily = computed(
 
 watch(selectedFamilyId, () => {
   selectedModelName.value = selectedFamily.value.models[0];
+  baseUrl.value = selectedFamily.value.baseUrl;
   errorMsg.value = "";
 });
 
@@ -210,6 +210,7 @@ function close() {
 
 function goToKeyForm() {
   selectedModelName.value = selectedFamily.value.models[0];
+  baseUrl.value = selectedFamily.value.baseUrl;
   isKeyStep.value = true;
   errorMsg.value = "";
 }
@@ -224,6 +225,7 @@ function handleGetApiKey() {
   } catch {
     window.open(signupUrl, "_blank", "noopener,noreferrer");
   }
+  goToKeyForm();
 }
 
 function goToSelectStep() {
@@ -231,12 +233,14 @@ function goToSelectStep() {
   errorMsg.value = "";
 }
 
-function selectModel(model: string) {
-  selectedModelName.value = model;
-}
-
 async function saveAndStart() {
+  const trimmedModelName = selectedModelName.value.trim();
+  const trimmedBaseUrl = baseUrl.value.trim();
   const trimmedKey = apiKey.value.trim();
+  if (!trimmedModelName) {
+    errorMsg.value = t("modelSetup.enterModelName");
+    return;
+  }
   if (!trimmedKey) {
     errorMsg.value = t("modelSetup.enterApiKey");
     return;
@@ -250,11 +254,11 @@ async function saveAndStart() {
   errorMsg.value = "";
   try {
     const family = selectedFamily.value;
-    const modelName = selectedModelName.value || family.models[0];
+    const modelName = trimmedModelName;
     const modelRef = `${family.providerKey}/${modelName}`;
     const existing = (await window.openclaw.config.read()) || {};
     const providerEntry: Record<string, unknown> = {
-      baseUrl: family.baseUrl,
+      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
       apiKey: trimmedKey,
       api: resolveApiValue(family.apiFormat),
       models: [
