@@ -1,6 +1,6 @@
 <template>
   <div v-if="modelValue" class="model-setup-overlay">
-    <div class="model-setup-panel" role="dialog" aria-modal="true">
+    <div class="model-setup-panel">
       <button class="model-setup-close" type="button" :aria-label="t('common.close')" @click="close">
         <svg
           width="12"
@@ -50,12 +50,12 @@
           </button>
         </div>
 
-        <button class="primary-action" type="button" @click.stop="handleGetApiKey">
+        <UiButton class="primary-action" variant="default" size="lg" @click.stop="handleGetApiKey">
           {{ t("modelSetup.getApiKey") }}
-        </button>
-        <button class="text-action" type="button" @click.stop="goToKeyForm">
+        </UiButton>
+        <UiButton class="text-action" variant="outline" size="lg" @click.stop="goToKeyForm">
           {{ t("modelSetup.haveApiKey") }}
-        </button>
+        </UiButton>
       </template>
 
       <template v-else>
@@ -64,34 +64,64 @@
 
         <el-form label-position="top" class="model-key-form">
           <el-form-item :label="t('modelSetup.modelSelect')">
-            <el-select
-              v-model="selectedModelName"
-              style="width: 100%"
-              filterable
-              allow-create
-              default-first-option
-              :reserve-keyword="false"
-              :placeholder="t('modelSetup.modelPlaceholder')"
-            >
-              <el-option
-                v-for="model in selectedFamily.models"
-                :key="model"
-                :label="model"
-                :value="model"
-              />
-            </el-select>
+            <div ref="dropdownRef" class="model-dropdown" :class="{ 'is-open': isDropdownOpen }">
+              <button
+                class="model-dropdown-trigger"
+                type="button"
+                role="combobox"
+                :aria-expanded="isDropdownOpen ? 'true' : 'false'"
+                :aria-controls="dropdownListId"
+                :aria-activedescendant="isDropdownOpen ? activeOptionId : undefined"
+                aria-haspopup="listbox"
+                @click.stop="toggleDropdown"
+                @keydown.down.prevent="handleTriggerArrow(1)"
+                @keydown.up.prevent="handleTriggerArrow(-1)"
+                @keydown.home.prevent="selectFirstModel"
+                @keydown.end.prevent="selectLastModel"
+                @keydown.enter.prevent="toggleDropdown"
+                @keydown.space.prevent="toggleDropdown"
+                @keydown.esc.prevent="closeDropdown"
+              >
+                <span class="model-dropdown-value">{{ selectedModelName }}</span>
+                <span class="model-dropdown-caret" aria-hidden="true"></span>
+              </button>
+
+              <ul
+                :id="dropdownListId"
+                class="model-dropdown-menu"
+                role="listbox"
+                :aria-hidden="isDropdownOpen ? 'false' : 'true'"
+              >
+                <li v-for="model in selectedFamily.models" :key="model" role="none">
+                  <button
+                    :id="getOptionId(model)"
+                    class="model-dropdown-option"
+                    :class="{ selected: selectedModelName === model, active: selectedModelName === model && isDropdownOpen }"
+                    type="button"
+                    role="option"
+                    :aria-selected="selectedModelName === model ? 'true' : 'false'"
+                    @click.stop="selectModel(model)"
+                  >
+                    {{ model }}
+                  </button>
+                </li>
+              </ul>
+            </div>
           </el-form-item>
           <el-form-item :label="t('modelSetup.baseUrl')">
-            <el-input
+            <UiInput
               v-model="baseUrl"
+              class="model-key-input"
+              size="lg"
               placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
               @keydown.enter.prevent="saveAndStart"
             />
           </el-form-item>
           <el-form-item :label="t('modelSetup.apiKey')">
-            <el-input
+            <UiInput
+              class="model-key-input"
               v-model="apiKey"
-              type="password"
+              size="lg"
               show-password
               :placeholder="selectedFamily.apiKeyPlaceholder"
               @keydown.enter.prevent="saveAndStart"
@@ -101,21 +131,23 @@
         </el-form>
 
         <div class="key-actions">
-          <button
+          <UiButton
             class="text-action text-action--back"
-            type="button"
+            variant="outline"
+            size="lg"
             @mousedown.prevent.stop="goToSelectStep"
           >
-            back
-          </button>
-          <button
+            {{ t("common.back") }}
+          </UiButton>
+          <UiButton
             class="primary-action"
-            type="button"
+            variant="default"
+            size="lg"
             :disabled="saving"
             @mousedown.prevent.stop="saveAndStart"
           >
             {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
-          </button>
+          </UiButton>
         </div>
       </template>
     </div>
@@ -123,8 +155,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
+import { UiButton, UiInput } from "@/components/ui";
 import qwenLogo from "@/assets/modelprovider/Qwen.png";
 import minimaxLogo from "@/assets/modelprovider/minimax.png";
 
@@ -177,9 +210,14 @@ const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(modelFamilies[0].models[0]);
 const baseUrl = ref(modelFamilies[0].baseUrl);
+const isDropdownOpen = ref(false);
+const dropdownRef = ref<HTMLElement | null>(null);
+const dropdownListId = "model-setup-model-listbox";
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
+
+const activeOptionId = computed(() => getOptionId(selectedModelName.value));
 
 const selectedFamily = computed(
   () => modelFamilies.find((family) => family.id === selectedFamilyId.value) ?? modelFamilies[0],
@@ -194,11 +232,23 @@ watch(selectedFamilyId, () => {
 watch(
   () => props.modelValue,
   (visible) => {
-    if (!visible) return;
+    if (!visible) {
+      closeDropdown();
+      return;
+    }
     isKeyStep.value = false;
     errorMsg.value = "";
+    closeDropdown();
   },
 );
+
+onMounted(() => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
+});
 
 function resolveApiValue(apiFormat: ApiFormat): string {
   return apiFormat === "anthropic" ? "anthropic-messages" : "openai-completions";
@@ -213,6 +263,7 @@ function goToKeyForm() {
   baseUrl.value = selectedFamily.value.baseUrl;
   isKeyStep.value = true;
   errorMsg.value = "";
+  closeDropdown();
 }
 
 function handleGetApiKey() {
@@ -231,6 +282,61 @@ function handleGetApiKey() {
 function goToSelectStep() {
   isKeyStep.value = false;
   errorMsg.value = "";
+  closeDropdown();
+}
+
+function selectModel(model: string) {
+  selectedModelName.value = model;
+  closeDropdown();
+}
+
+function toggleDropdown() {
+  isDropdownOpen.value = !isDropdownOpen.value;
+}
+
+function closeDropdown() {
+  isDropdownOpen.value = false;
+}
+
+function handleTriggerArrow(step: number) {
+  if (!isDropdownOpen.value) {
+    isDropdownOpen.value = true;
+  }
+  cycleModel(step);
+}
+
+function cycleModel(step: number) {
+  const models = selectedFamily.value.models;
+  if (!models.length) return;
+  const currentIndex = Math.max(0, models.indexOf(selectedModelName.value));
+  const nextIndex = (currentIndex + step + models.length) % models.length;
+  selectedModelName.value = models[nextIndex];
+}
+
+function selectFirstModel() {
+  const models = selectedFamily.value.models;
+  if (!models.length) return;
+  selectedModelName.value = models[0];
+  isDropdownOpen.value = true;
+}
+
+function selectLastModel() {
+  const models = selectedFamily.value.models;
+  if (!models.length) return;
+  selectedModelName.value = models[models.length - 1];
+  isDropdownOpen.value = true;
+}
+
+function getOptionId(model: string) {
+  return `model-option-${model.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()}`;
+}
+
+function handleDocumentPointerDown(event: Event) {
+  const target = event.target as Node | null;
+  if (!target) return;
+  if (!dropdownRef.value?.contains(target)) {
+    closeDropdown();
+  }
 }
 
 async function saveAndStart() {
@@ -309,28 +415,28 @@ async function saveAndStart() {
 .text-action,
 .model-key-form,
 .error-msg {
-  --ux-overlay: rgba(255, 255, 255, 0.72);
-  --ux-panel-bg: #fff;
-  --ux-panel-text: #1f2228;
+  --ux-overlay: var(--surface-overlay, rgba(255, 255, 255, 0.72));
+  --ux-panel-bg: var(--surface-page, var(--bg-primary));
+  --ux-panel-text: var(--text-primary, #1f2228);
   --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, #555967);
   --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, #6b6e78);
-  --ux-border: var(--smtc-stroke-divider-subtle, #ededf0);
-  --ux-surface-hover: var(--smtc-background-ctrl-subtle-hover, #f4f4f5);
+  --ux-border: var(--border-default, var(--smtc-stroke-divider-subtle, #ededf0));
+  --ux-surface-hover: var(--surface-hover, var(--smtc-background-ctrl-subtle-hover, #f4f4f5));
   --ux-card-active: var(--smtc-background-card-on-primary-default-rest, #fafafa);
   --ux-card-selected-border: var(--ux-brand-bg);
   --ux-card-selected-bg: var(--ux-card-active);
   --ux-card-check-bg: var(--ux-brand-bg);
   --ux-card-check-fg: var(--ux-brand-fg);
-  --ux-brand-bg: #18181b;
+  --ux-brand-bg: var(--action-primary, #18181b);
   --ux-brand-bg-hover: #27272a;
   --ux-brand-bg-active: #09090b;
-  --ux-brand-fg: #fff;
+  --ux-brand-fg: var(--action-primary-foreground, #fff);
   --ux-panel-radius: 20px;
   --ux-cta-radius: 999px;
   --ux-danger: var(--smtc-status-danger-foreground);
   --ux-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
-  --ux-flyout-border: #e7e8ec;
-  --ux-flyout-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(250, 250, 252, 0.9) 100%);
+  --ux-flyout-border: var(--ux-border);
+  --ux-flyout-bg: var(--ux-panel-bg);
   --ux-flyout-shadow:
     0 24px 44px rgba(21, 24, 31, 0.16),
     0 8px 18px rgba(21, 24, 31, 0.1);
@@ -490,38 +596,8 @@ h2 {
 
 .primary-action {
   width: 100%;
-  height: 52px;
-  border: 0;
+  min-height: 52px;
   border-radius: var(--ux-cta-radius);
-  background: var(--ux-brand-bg);
-  color: var(--ux-brand-fg);
-  font-family: var(--ux-font-family);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-  cursor: pointer;
-  transition:
-    background 0.18s ease,
-    transform 0.12s ease,
-    box-shadow 0.18s ease;
-  box-shadow: 0 10px 26px rgba(24, 24, 27, 0.18);
-}
-
-.primary-action:hover:not(:disabled) {
-  background: var(--ux-brand-bg-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 14px 30px rgba(24, 24, 27, 0.22);
-}
-
-.primary-action:active:not(:disabled) {
-  background: var(--ux-brand-bg-active);
-  transform: translateY(0);
-  box-shadow: 0 6px 14px rgba(24, 24, 27, 0.2);
-}
-
-.primary-action:disabled {
-  opacity: 0.72;
-  cursor: wait;
 }
 
 .primary-action--spaced {
@@ -530,27 +606,9 @@ h2 {
 
 .text-action {
   margin-top: 14px;
-  border: 1px solid var(--ux-border);
-  border-radius: var(--ux-cta-radius);
-  box-sizing: border-box;
-  background: #fff;
-  color: var(--ux-text-muted);
-  font-family: var(--ux-font-family);
-  font-size: 14px;
-  font-weight: 600;
-  height: 52px;
   width: 100%;
-  cursor: pointer;
-  transition:
-    color 0.15s,
-    background 0.15s,
-    border-color 0.15s;
-}
-
-.text-action:hover {
-  color: var(--ux-panel-text);
-  background: var(--ux-surface-hover);
-  border-color: var(--ux-border);
+  min-height: 52px;
+  border-radius: var(--ux-cta-radius);
 }
 
 .text-action--back {
@@ -567,7 +625,16 @@ h2 {
 .key-actions .text-action,
 .key-actions .primary-action {
   margin-top: 0;
-  height: 46px;
+  min-height: 48px;
+}
+
+.model-key-input {
+  width: 100%;
+}
+
+.model-key-input :deep(.ui-input__control) {
+  height: 48px;
+  border-radius: 12px;
 }
 
 .model-key-form {
@@ -604,7 +671,7 @@ h2 {
   position: relative;
   border: 1px solid var(--ux-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--surface-panel, var(--ux-panel-bg));
   color: var(--ux-panel-text);
   font-family: var(--ux-font-family);
   font-size: var(--ux-input-size);
@@ -620,12 +687,12 @@ h2 {
 }
 
 .model-dropdown-trigger:hover {
-  background: #fcfcfd;
+  background: var(--ux-surface-hover);
 }
 
 .model-dropdown-trigger:disabled {
   cursor: default;
-  background: #fff;
+  background: var(--surface-panel, var(--ux-panel-bg));
 }
 
 .model-dropdown-trigger:disabled .model-dropdown-caret {
@@ -634,8 +701,8 @@ h2 {
 
 .model-dropdown-trigger:focus-visible {
   outline: none;
-  border-color: #c9cbd3;
-  box-shadow: 0 0 0 3px rgba(120, 126, 146, 0.12);
+  border-color: var(--ux-brand-bg);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .model-dropdown-value {
@@ -650,14 +717,14 @@ h2 {
   top: 50%;
   width: 9px;
   height: 9px;
-  border-right: 2px solid #989ba7;
-  border-bottom: 2px solid #989ba7;
+  border-right: 2px solid var(--ux-text-muted);
+  border-bottom: 2px solid var(--ux-text-muted);
   transform: translateY(-62%) rotate(45deg);
   transition: transform 0.16s ease;
 }
 
 .model-dropdown-menu {
-  display: none;
+  display: block;
   position: absolute;
   z-index: 40;
   left: 0;
@@ -669,12 +736,23 @@ h2 {
   border: 1px solid var(--ux-flyout-border);
   border-radius: 14px;
   background: var(--ux-flyout-bg);
-  backdrop-filter: blur(14px) saturate(1.08);
+  backdrop-filter: none;
   box-shadow: var(--ux-flyout-shadow);
+  opacity: 0;
+  transform: translateY(-4px);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    visibility 0.15s ease;
 }
 
-.model-dropdown:focus-within .model-dropdown-menu {
-  display: block;
+.model-dropdown.is-open .model-dropdown-menu {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .model-dropdown-option {
@@ -703,7 +781,7 @@ h2 {
 }
 
 .model-dropdown-option.selected:hover {
-  background: transparent;
+  background: var(--ux-surface-hover);
 }
 
 .model-key-form :deep(.el-input__inner),

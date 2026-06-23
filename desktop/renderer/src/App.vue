@@ -372,16 +372,17 @@ onMounted(async () => {
   } catch {}
 
   // Listen for sandbox permission requests
-  unsubPermission = window.openclaw.sandbox.onPermissionRequest((data: PermissionRequestData) => {
-    permissionQueue.value.push(data);
-    // Add a pending entry to the exec panel so user sees what's waiting for permission
-    if (chatStore.streaming) {
-      const path = data.targetPath || data.dirPath;
-      const access = data.accessNeeded === "ro" ? "Read" : "Write";
-      const label = `${access} permission: ${path}`;
-      chatStore.addPendingToolCall(data.requestId, label);
-    }
-  });
+  unsubPermission =
+    window.openclaw?.sandbox?.onPermissionRequest?.((data: PermissionRequestData) => {
+      permissionQueue.value.push(data);
+      // Add a pending entry to the exec panel so user sees what's waiting for permission
+      if (chatStore.streaming) {
+        const path = data.targetPath || data.dirPath;
+        const access = data.accessNeeded === "ro" ? "Read" : "Write";
+        const label = `${access} permission: ${path}`;
+        chatStore.addPendingToolCall(data.requestId, label);
+      }
+    }) ?? null;
 
   // Listen for ACL verification timeout after user approved permission
   unsubAclTimeout =

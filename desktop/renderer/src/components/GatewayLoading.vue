@@ -353,9 +353,9 @@ watch(
   justify-content: center;
   background: radial-gradient(
     circle at top,
-    var(--bg-primary) 0%,
-    var(--bg-primary) 62%,
-    var(--border-light, #f2f2f2) 100%
+    var(--surface-page, var(--bg-primary)) 0%,
+    var(--surface-page, var(--bg-primary)) 62%,
+    var(--surface-hover, var(--border-light, #f2f2f2)) 100%
   );
   border-radius: 16px;
   z-index: 9999;
@@ -395,7 +395,7 @@ watch(
 }
 
 .win-ctrl:hover {
-  background: #f0f0f0;
+  background: var(--surface-hover, #f0f0f0);
 }
 
 :global(html.dark) .win-ctrl:hover {
@@ -470,7 +470,7 @@ watch(
   width: 200px;
   height: 6px;
   border-radius: 99px;
-  background: var(--border);
+  background: var(--border-default, var(--border));
   overflow: hidden;
   margin-bottom: 12px;
 }
@@ -525,7 +525,7 @@ watch(
   height: 40px;
   padding: 0 28px;
   background: var(--text-primary);
-  color: var(--bg-primary);
+  color: var(--surface-page, var(--bg-primary));
   border: none;
   border-radius: 20px;
   font-size: 13px;
