@@ -20,7 +20,20 @@
           aria-label="Close"
           @click="close"
         >
-          <span aria-hidden="true">x</span>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
         </button>
       </header>
 
@@ -132,9 +145,8 @@ function onOverlayMouseDown() {
 
 .ui-dialog__close {
   position: absolute;
-  right: 22px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 16px;
+  right: 16px;
   width: 28px;
   height: 28px;
   border-radius: 50%;

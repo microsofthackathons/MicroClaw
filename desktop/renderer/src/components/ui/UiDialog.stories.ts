@@ -94,3 +94,69 @@ export const LargeSize: Story = {
     `,
   }),
 };
+
+export const FooterHorizontalActions: Story = {
+  args: {
+    title: "Footer: Horizontal Actions",
+    titleAlign: "center",
+    size: "md",
+  },
+  render: (args) => ({
+    components: { UiDialog, UiButton, UiInput },
+    setup() {
+      const open = ref(true);
+      const model = ref("");
+      return { args, open, model };
+    },
+    template: `
+      <div style="min-height: 460px; min-width: 980px; display: grid; place-items: center; background: #f2f2f5;">
+        <UiDialog v-bind="args" v-model="open">
+          <div style="display:grid; gap:14px; min-width:460px;">
+            <UiInput v-model="model" size="lg" placeholder="e.g. my-gpt-4o">
+              <template #label>Model Name</template>
+            </UiInput>
+          </div>
+          <template #footer>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; width:100%;">
+              <UiButton variant="outline" size="lg" :block="true" @click="open = false">Cancel</UiButton>
+              <UiButton variant="default" size="lg" :block="true">Save</UiButton>
+            </div>
+          </template>
+        </UiDialog>
+      </div>
+    `,
+  }),
+};
+
+export const FooterVerticalActions: Story = {
+  args: {
+    title: "Footer: Vertical Actions",
+    titleAlign: "center",
+    size: "md",
+  },
+  render: (args) => ({
+    components: { UiDialog, UiButton, UiInput },
+    setup() {
+      const open = ref(true);
+      const apiKey = ref("");
+      return { args, open, apiKey };
+    },
+    template: `
+      <div style="min-height: 460px; min-width: 980px; display: grid; place-items: center; background: #f2f2f5;">
+        <UiDialog v-bind="args" v-model="open">
+          <div style="display:grid; gap:14px; min-width:460px;">
+            <UiInput v-model="apiKey" size="lg" show-password placeholder="sk-...">
+              <template #label>API Key</template>
+            </UiInput>
+          </div>
+          <template #footer>
+            <div style="display:grid; grid-template-columns: 1fr; gap:10px; width:100%;">
+              <UiButton variant="default" size="lg" :block="true">Save and continue</UiButton>
+              <UiButton variant="outline" size="lg" :block="true" @click="open = false">Not now</UiButton>
+            </div>
+          </template>
+        </UiDialog>
+      </div>
+    `,
+  }),
+};
