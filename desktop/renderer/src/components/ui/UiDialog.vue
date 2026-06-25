@@ -5,7 +5,11 @@
     @mousedown.self="onOverlayMouseDown"
   >
     <section class="ui-dialog" :class="[`ui-dialog--${size}`, `ui-dialog--${variant}`]" role="dialog" aria-modal="true">
-      <header v-if="$slots.header || title || showClose" class="ui-dialog__header">
+      <header
+        v-if="$slots.header || title || showClose"
+        class="ui-dialog__header"
+        :class="[`ui-dialog__header--${titleAlign}`]"
+      >
         <slot name="header">
           <h2 v-if="title" class="ui-dialog__title">{{ title }}</h2>
         </slot>
@@ -43,6 +47,7 @@ const props = withDefaults(
     title?: string;
     size?: "sm" | "md" | "lg";
     variant?: "default" | "elevated";
+    titleAlign?: "left" | "center";
     closeOnOverlay?: boolean;
     showClose?: boolean;
   }>(),
@@ -50,6 +55,7 @@ const props = withDefaults(
     title: "",
     size: "md",
     variant: "default",
+    titleAlign: "left",
     closeOnOverlay: true,
     showClose: true,
   },
@@ -105,8 +111,17 @@ function onOverlayMouseDown() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
   gap: 12px;
   padding: 20px 22px 10px;
+}
+
+.ui-dialog__header--center {
+  justify-content: center;
+}
+
+.ui-dialog__header--center .ui-dialog__title {
+  text-align: center;
 }
 
 .ui-dialog__title {
@@ -116,6 +131,10 @@ function onOverlayMouseDown() {
 }
 
 .ui-dialog__close {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 28px;
   height: 28px;
   border-radius: 50%;
