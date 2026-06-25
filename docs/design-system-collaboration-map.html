@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ShadCN x MAI x Universal Mapping</title>
+    <style>
+      :root {
+        --bg: #f6f4ef;
+        --bg-panel: #fffdf8;
+        --ink: #1c1a16;
+        --muted: #5f5a4f;
+        --line: #d6d0c2;
+        --primary: #0f5e59;
+        --primary-soft: #d9efec;
+        --accent: #c86f31;
+        --accent-soft: #f9e7da;
+        --warn: #934020;
+        --shadow: 0 14px 36px rgba(20, 16, 10, 0.08);
+        --radius-xl: 22px;
+        --radius-lg: 16px;
+        --radius-md: 12px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 15% -10%, #efe7d8 0%, rgba(239, 231, 216, 0) 48%),
+          radial-gradient(circle at 90% 10%, #e3efe6 0%, rgba(227, 239, 230, 0) 42%),
+          var(--bg);
+      }
+
+      .page {
+        width: min(1180px, calc(100% - 32px));
+        margin: 28px auto 48px;
+      }
+
+      .hero {
+        background: linear-gradient(140deg, #fffdf8 0%, #fff8ed 100%);
+        border: 1px solid #efe7d8;
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow);
+        padding: 28px;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(26px, 3.6vw, 40px);
+        letter-spacing: 0.2px;
+      }
+
+      .hero p {
+        margin: 10px 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .legend {
+        margin-top: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .tag {
+        padding: 7px 12px;
+        border-radius: 999px;
+        font-size: 13px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .tag.primary {
+        border-color: #b7dfda;
+        background: var(--primary-soft);
+        color: #0b4f4a;
+      }
+
+      .tag.accent {
+        border-color: #f2cfb8;
+        background: var(--accent-soft);
+        color: #84441d;
+      }
+
+      h2.section-title {
+        margin: 26px 4px 12px;
+        font-size: 21px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card {
+        background: var(--bg-panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 16px;
+      }
+
+      .card h3 {
+        margin: 0 0 6px;
+        font-size: 18px;
+      }
+
+      .card p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .layer-card {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .layer-card::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        top: -24px;
+        width: 110px;
+        height: 110px;
+        border-radius: 50%;
+        background: rgba(15, 94, 89, 0.09);
+      }
+
+      .mapping {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--bg-panel);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 820px;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid #e7e1d3;
+        vertical-align: top;
+        line-height: 1.45;
+      }
+
+      th {
+        background: #fbf7ef;
+        font-size: 14px;
+      }
+
+      td:first-child,
+      th:first-child {
+        width: 180px;
+      }
+
+      .flow {
+        display: grid;
+        gap: 10px;
+      }
+
+      .flow-row {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto 1fr;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .flow-node {
+        background: var(--bg-panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        padding: 12px;
+      }
+
+      .flow-node strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .arrow {
+        text-align: center;
+        color: var(--primary);
+        font-weight: 700;
+      }
+
+      .two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .mode {
+        border-left: 4px solid var(--primary);
+      }
+
+      .mode h3 {
+        margin-bottom: 10px;
+      }
+
+      ul {
+        margin: 8px 0 0 18px;
+        padding: 0;
+        color: var(--muted);
+      }
+
+      li {
+        margin: 4px 0;
+      }
+
+      .footer-note {
+        margin-top: 14px;
+        color: #5d5340;
+        background: #fff3e2;
+        border: 1px solid #f2d7ae;
+        border-radius: var(--radius-md);
+        padding: 12px;
+      }
+
+      @media (max-width: 960px) {
+        .three,
+        .two {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-row {
+          grid-template-columns: 1fr;
+        }
+
+        .arrow {
+          transform: rotate(90deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero">
+        <h1>ShadCN x MAI x Universal 协作映射图</h1>
+        <p>
+          这张图回答一个核心问题：ShadCN 定义三层后，Universal 和 MAI 分别定义什么，以及三者如何协作。
+          你可以把它理解为：ShadCN 是骨架，Universal 是设计规则，MAI UI 是可选现成组件实现。
+        </p>
+        <div class="legend">
+          <span class="tag primary">ShadCN: 分层方法</span>
+          <span class="tag">Universal: 设计规则与 token</span>
+          <span class="tag accent">MAI UI: 组件实现加速器</span>
+        </div>
+      </section>
+
+      <h2 class="section-title">1) ShadCN 三层（方法层）</h2>
+      <section class="grid three">
+        <article class="card layer-card">
+          <h3>Token 层</h3>
+          <p>定义语义颜色、排版、间距、阴影、状态，回答“设计语言是什么”。</p>
+        </article>
+        <article class="card layer-card">
+          <h3>Primitive 层</h3>
+          <p>定义 Button/Input/Dialog 等基础组件，回答“交互和样式如何一致落地”。</p>
+        </article>
+        <article class="card layer-card">
+          <h3>业务层</h3>
+          <p>定义页面流程和业务状态，回答“具体功能逻辑是什么”。</p>
+        </article>
+      </section>
+
+      <h2 class="section-title">2) 三者映射关系</h2>
+      <section class="mapping">
+        <table>
+          <thead>
+            <tr>
+              <th>层级</th>
+              <th>ShadCN 定义</th>
+              <th>Universal 提供</th>
+              <th>MAI UI 提供</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Token 层</strong></td>
+              <td>层次和命名方法</td>
+              <td>强覆盖: 语义 token、light/dark、设计语言约束</td>
+              <td>依赖/消费 token（不是主规则源）</td>
+            </tr>
+            <tr>
+              <td><strong>Primitive 层</strong></td>
+              <td>组件分层和复用策略</td>
+              <td>中覆盖: 组件使用原则与风格边界</td>
+              <td>强覆盖: 现成 web components、属性、slot、状态行为</td>
+            </tr>
+            <tr>
+              <td><strong>业务层</strong></td>
+              <td>业务与 UI 解耦</td>
+              <td>弱覆盖: 仅给原则</td>
+              <td>弱覆盖: 组件不处理业务流</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <h2 class="section-title">3) 协作流程（推荐）</h2>
+      <section class="flow">
+        <div class="flow-row">
+          <div class="flow-node">
+            <strong>Step A: Universal</strong>
+            先定 token 与设计规则（颜色、间距、状态、可访问性门槛）。
+          </div>
+          <div class="arrow">→</div>
+          <div class="flow-node">
+            <strong>Step B: ShadCN 方法</strong>
+            按 Token/Primitive/业务三层组织代码，防止逻辑样式耦合。
+          </div>
+          <div class="arrow">→</div>
+          <div class="flow-node">
+            <strong>Step C: MAI UI（可选）</strong>
+            标准场景直接复用 MAI 组件；高定制场景走自研 Primitive。
+          </div>
+        </div>
+      </section>
+
+      <h2 class="section-title">4) 两种落地模式</h2>
+      <section class="grid two">
+        <article class="card mode">
+          <h3>模式 A: Universal + 自研 Primitive（主推）</h3>
+          <ul>
+            <li>适合复杂弹窗、定制交互（如权限审批、多步模型配置）。</li>
+            <li>控制力强，回归定位清晰。</li>
+            <li>成本: 需要维护你自己的组件层。</li>
+          </ul>
+        </article>
+        <article class="card mode">
+          <h3>模式 B: Universal + MAI UI（加速）</h3>
+          <ul>
+            <li>适合标准表单/设置页/普通对话框。</li>
+            <li>开发速度快，一致性上手快。</li>
+            <li>风险: 不要强制套用到高定制场景。</li>
+          </ul>
+        </article>
+      </section>
+
+      <p class="footer-note">
+        实操建议: 先用 Universal 锁定 token 规则，再用 ShadCN 方法统一三层；MAI UI 只作为 Primitive
+        的“可插拔实现”，避免组件强匹配导致体验妥协。
+      </p>
+    </div>
+  </body>
+</html>
