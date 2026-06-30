@@ -2373,7 +2373,10 @@ function registerIpcHandlers(): void {
   // direct access to the gateway auth token.  All gateway communication
   // flows through main-process IPC handlers (chat:send-message, etc.).
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
-  ipcMain.handle("gateway:restart", async () => {
+  ipcMain.handle("gateway:restart", async (_event, options?: { hard?: boolean }) => {
+    if (options?.hard) {
+      forceHardRestart = true;
+    }
     mainWindow?.webContents.send("gateway:log", "[restart] 正在重启网关…");
 
     // 1. Try in-process restart via config.patch → SIGUSR1 (no model needed)
@@ -2424,7 +2427,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:needs-setup", () => needsSetup());
   ipcMain.handle("config:read", () => readConfig());
   ipcMain.handle("config:read-env", () => loadStateDirEnv());
-  ipcMain.handle("config:write", (_event, config: any) => {
+  ipcMain.handle("config:write", async (_event, config: any) => {
     if (typeof config !== "object" || config === null || Array.isArray(config)) {
       throw new Error("config:write — invalid config: must be a plain object");
     }
@@ -2457,8 +2460,8 @@ function registerIpcHandlers(): void {
       throw new Error(`config:write — disallowed top-level keys: ${unknownKeys.join(", ")}`);
     }
     const stateDir = getOpenClawStateDir();
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    await fs.promises.mkdir(stateDir, { recursive: true });
+    await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
   // --- Skills ---

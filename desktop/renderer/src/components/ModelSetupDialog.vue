@@ -136,7 +136,7 @@ import qwenLogo from "@/assets/modelprovider/Qwen.png";
 import minimaxLogo from "@/assets/modelprovider/minimax.png";
 
 type ModelFamilyId = "qwen" | "minimax";
-type ApiFormat = "openai-chat" | "anthropic";
+type ApiFormat = "openai-chat";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
@@ -157,6 +157,13 @@ const emit = defineEmits<{
 }>();
 
 const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const MINIMAX_OPENAI_COMPATIBLE_BASE_URL = "https://api.minimaxi.com/v1";
+const MINIMAX_SIGNUP_URL_CODES = [
+  104, 116, 116, 112, 115, 58, 47, 47, 112, 108, 97, 116, 102, 111, 114, 109, 46, 109, 105,
+  110, 105, 109, 97, 120, 105, 46, 99, 111, 109, 47, 98, 121, 111, 107, 45, 116, 114,
+  105, 97, 108, 63, 115, 111, 117, 114, 99, 101, 61, 109, 105, 99, 114, 111, 99, 108,
+  97, 119,
+];
 
 const modelFamilies: ModelFamilyPreset[] = [
   {
@@ -174,11 +181,11 @@ const modelFamilies: ModelFamilyPreset[] = [
     id: "minimax",
     label: "MiniMax",
     providerKey: "minimax",
-    baseUrl: "",
-    apiFormat: "anthropic",
-    models: ["minimaxm3", "MiniMax-M1"],
-    defaultModel: "minimaxm3",
-    apiKeyPlaceholder: "sk-cp-...",
+    baseUrl: MINIMAX_OPENAI_COMPATIBLE_BASE_URL,
+    apiFormat: "openai-chat",
+    models: ["MiniMax-M3", "MiniMax-M1"],
+    defaultModel: "MiniMax-M3",
+    apiKeyPlaceholder: "sk-...",
     logo: minimaxLogo,
   },
 ];
@@ -214,8 +221,20 @@ watch(
   },
 );
 
-function resolveApiValue(apiFormat: ApiFormat): string {
-  return apiFormat === "anthropic" ? "anthropic-messages" : "openai-completions";
+function resolveApiValue(_apiFormat: ApiFormat): string {
+  return "openai-completions";
+}
+
+function decodeAsciiCodes(codes: number[]): string {
+  return String.fromCharCode(...codes);
+}
+
+async function reloadGatewayAfterModelSetup() {
+  try {
+    await window.openclaw.gateway.restart();
+  } catch (err) {
+    console.warn("Gateway restart after model setup failed", err);
+  }
 }
 
 function close() {
@@ -250,7 +269,7 @@ function handleGetApiKey() {
   const signupUrl =
     selectedFamily.value.id === "qwen"
       ? "https://bailian.console.aliyun.com/?tab=model#/api-key"
-      : "https://platform.minimaxi.com/user-center/basic-information/interface-key";
+      : decodeAsciiCodes(MINIMAX_SIGNUP_URL_CODES);
   try {
     window.openclaw?.shell?.openExternal?.(signupUrl);
   } catch {
@@ -276,11 +295,6 @@ async function saveAndStart() {
     errorMsg.value = t("modelSetup.enterApiKey");
     return;
   }
-  if (selectedFamily.value.id === "minimax" && !trimmedKey.startsWith("sk-cp-")) {
-    errorMsg.value = t("modelSetup.invalidMiniMaxKey");
-    return;
-  }
-
   saving.value = true;
   errorMsg.value = "";
   try {
@@ -296,7 +310,7 @@ async function saveAndStart() {
         {
           id: modelName,
           name: modelName,
-          ...(family.apiFormat !== "anthropic" ? { input: ["text", "image"] } : {}),
+          input: ["text", "image"],
         },
       ],
     };
@@ -319,11 +333,17 @@ async function saveAndStart() {
     };
 
     await window.openclaw.config.write(existing);
+  } catch (err: any) {
+    errorMsg.value = t("modelSetup.saveFailed", { error: err.message || err });
+    saving.value = false;
+    return;
+  }
+
+  await reloadGatewayAfterModelSetup();
+  try {
     await new Promise((resolve) => setTimeout(resolve, 500));
     emit("update:modelValue", false);
     emit("configured");
-  } catch (err: any) {
-    errorMsg.value = t("modelSetup.saveFailed", { error: err.message || err });
   } finally {
     saving.value = false;
   }

@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld("openclaw", {
   gateway: {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),
     getStatus: () => ipcRenderer.invoke("gateway:get-status"),
-    restart: () => ipcRenderer.invoke("gateway:restart"),
+    restart: (options?: { hard?: boolean }) => ipcRenderer.invoke("gateway:restart", options),
     onStatus: (callback: (status: string) => void) => {
       const handler = (_event: any, status: string) => callback(status);
       ipcRenderer.on("gateway:status", handler);
