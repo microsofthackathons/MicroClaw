@@ -268,7 +268,7 @@ function goToKeyForm() {
 function handleGetApiKey() {
   const signupUrl =
     selectedFamily.value.id === "qwen"
-      ? "https://bailian.console.aliyun.com/?tab=model#/api-key"
+      ? "https://platform.qianwenai.com/home/api-keys"
       : decodeAsciiCodes(MINIMAX_SIGNUP_URL_CODES);
   try {
     window.openclaw?.shell?.openExternal?.(signupUrl);
