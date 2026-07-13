@@ -20,7 +20,7 @@ class SkillInfo(TypedDict):
     platform: list[str]  # e.g. ["windows"], ["macos"], ["windows", "macos", "linux"]
 
 
-# Complete catalog of the 52 bundled skills shipped with OpenClaw.
+# Complete catalog of the 23 bundled skills shipped with OpenClaw.
 # Keep alphabetically sorted by key.
 #
 # Hand-aligned reference table where every row's description and platform
