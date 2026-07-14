@@ -21,10 +21,6 @@ name: "Release"
 on:
   push:
     tags: ["v*"]
-    # TEMP: also build on this feature branch so the artifact can be produced
-    # before the workflow is merged to main (workflow_dispatch only works from
-    # the default branch). Remove this branch entry before merging.
-    branches: ["tsun/smartscreen-signed-installer"]
   workflow_dispatch:
     inputs:
       sign:
