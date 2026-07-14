@@ -23,6 +23,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
+      sign:
+        description: "Code-sign MicroClawSetup.exe (uncheck to get an UNSIGNED exe while signing is still under discussion)"
+        type: boolean
+        default: false
       publish_release:
         description: "Create a GitHub Release (only meaningful on a tag)"
         type: boolean
@@ -48,13 +52,18 @@ jobs:
       # Azure Trusted Signing — consumed by scripts\windows\sign-artifact.ps1.
       # If any of the three TRUSTED_SIGNING_* values is empty the signer skips
       # (no-op, exit 0) and the exe is produced UNSIGNED.
-      TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
-      TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
-      TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+      #
+      # Signing is enabled for tag builds, and for manual (workflow_dispatch)
+      # runs only when the "sign" input is checked. When disabled we pass empty
+      # strings so the signer no-ops and you get an unsigned MicroClawSetup.exe
+      # (useful while the signing approach is still under discussion).
+      TRUSTED_SIGNING_ENDPOINT: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.TRUSTED_SIGNING_ENDPOINT || '' }}
+      TRUSTED_SIGNING_ACCOUNT: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.TRUSTED_SIGNING_ACCOUNT || '' }}
+      TRUSTED_SIGNING_PROFILE: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.TRUSTED_SIGNING_PROFILE || '' }}
       # DefaultAzureCredential for the Trusted Signing client.
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_TENANT_ID || '' }}
+      AZURE_CLIENT_ID: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_CLIENT_ID || '' }}
+      AZURE_CLIENT_SECRET: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_CLIENT_SECRET || '' }}
 
     steps:
       - name: Checkout repository
@@ -130,7 +139,7 @@ jobs:
             }
             Write-Host "Signed installer verified."
           } else {
-            Write-Host "::warning::Trusted Signing secrets not configured; MicroClawSetup.exe is UNSIGNED and will trip SmartScreen."
+            Write-Host "::warning::MicroClawSetup.exe is UNSIGNED (signing toggle off or secrets not configured) and will trip SmartScreen. This is expected while the signing approach is under discussion."
           }
 
       - name: Upload build artifact
