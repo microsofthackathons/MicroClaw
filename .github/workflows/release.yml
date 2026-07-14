@@ -21,6 +21,10 @@ name: "Release"
 on:
   push:
     tags: ["v*"]
+    # TEMP: also build on this feature branch so the artifact can be produced
+    # before the workflow is merged to main (workflow_dispatch only works from
+    # the default branch). Remove this branch entry before merging.
+    branches: ["tsun/smartscreen-signed-installer"]
   workflow_dispatch:
     inputs:
       sign:
@@ -42,7 +46,7 @@ permissions:
 jobs:
   build-signed:
     name: Build + sign single-exe installer
-    runs-on: [self-hosted, Windows, X64]
+    runs-on: windows-latest
     timeout-minutes: 60
     defaults:
       run:
@@ -69,7 +73,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify pre-installed toolchain
+      # GitHub-hosted windows-latest ships older/other toolchain versions than
+      # build.ps1 expects, so pin them explicitly with the setup-* actions
+      # (reliable on hosted runners, unlike on the self-hosted NetworkService
+      # account). build.ps1 then installs its own npm/pip deps and locates NSIS
+      # from electron-builder's cache.
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify toolchain
         run: |
           $ErrorActionPreference = 'Stop'
           $node = (& node --version).TrimStart('v')
@@ -78,9 +102,7 @@ jobs:
           $dotnet = & dotnet --version
           if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
           Write-Host "dotnet $dotnet"
-
-      - name: Setup Python 3.12+
-        uses: ./.github/actions/setup-python-windows
+          Write-Host "python $(& python --version)"
 
       - name: Install Python build dependencies
         run: |
