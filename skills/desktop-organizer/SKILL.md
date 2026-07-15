@@ -2,7 +2,7 @@
 name: Desktop Organizer
 slug: desktop-organizer
 version: 1.3.0
-description: " Scan a Windows desktop, show a plan, then STOP and wait for user go-ahead before organizing."
+description: "Scan a Windows desktop, show a plan, then STOP and wait for user go-ahead before organizing."
 metadata: {"clawdbot":{"emoji":"","requires":{"bins":[]},"os":["win32"]}}
 ---
 
@@ -145,7 +145,7 @@ Verify access to the desktop path before doing anything else.
 "Get-ChildItem -LiteralPath 'C:\Users\Administrator\Desktop' -Force | Out-Null"
 ```
 
-If this fails → retry this probe, if it fail again, report the error to the user and go to the next step.
+If this fails → retry this probe, if it fails again, report the error to the user and go to the next step.
 
 ### Step 2 — Scan
 
