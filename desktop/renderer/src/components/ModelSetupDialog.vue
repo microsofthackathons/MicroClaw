@@ -268,7 +268,7 @@ function goToKeyForm() {
 function handleGetApiKey() {
   const signupUrl =
     selectedFamily.value.id === "qwen"
-      ? "https://platform.qianwenai.com/home/api-keys"
+      ? "https://platform.qianwenai.com/home/api-keys?utm_content=g_20000000611"
       : decodeAsciiCodes(MINIMAX_SIGNUP_URL_CODES);
   try {
     window.openclaw?.shell?.openExternal?.(signupUrl);
