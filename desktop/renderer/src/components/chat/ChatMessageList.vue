@@ -467,6 +467,7 @@
 import { ref, computed, nextTick, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useChatStore } from "@/stores/chat";
+import { useAgentStore } from "@/stores/agents";
 import {
   renderMarkdown,
   stripAnsi,
@@ -485,14 +486,22 @@ import searchGif from "@/assets/openclaw_search_preview_transparent.gif";
 import bookGif from "@/assets/book.gif";
 import binocularsGif from "@/assets/binoculars.gif";
 import mapGif from "@/assets/map.gif";
-import avatarImg from "@/assets/normal.png";
+import defaultAvatar from "@/assets/normal.png";
 
 defineProps<{
   studioMode?: boolean;
 }>();
 
 const chatStore = useChatStore();
+const agentStore = useAgentStore();
 const router = useRouter();
+
+/** Avatar of the agent bound to the current session (falls back to the default). */
+const avatarImg = computed(() => {
+  const agentId = chatStore.currentSessionAgentId;
+  const agent = agentStore.agents.find((a) => a.id === agentId);
+  return agent?.avatar || defaultAvatar;
+});
 
 function openModelSettings() {
   router.push({ name: "settings", params: { section: "models" } });
