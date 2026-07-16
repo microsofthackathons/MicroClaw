@@ -64,6 +64,9 @@ export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
 /** Number of days of usage data to query from the gateway. */
 export const USAGE_QUERY_DAYS = 30;
 
+/** Public manifest used by the P0 manual update checker. */
+export const UPDATE_MANIFEST_URL = "https://microclaw.microsoftol.com/releases/latest.json";
+
 // ── WebSocket reconnect back-off ────────────────────────────────────────
 
 /** Initial delay before the first reconnect attempt (ms). */

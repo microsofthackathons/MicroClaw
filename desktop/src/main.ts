@@ -16,6 +16,7 @@ import { ToolSandbox } from "./tool-sandbox";
 import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { StudioBackendManager } from "./studio-backend-manager";
 import { t as mainT } from "./i18n";
+import { checkForUpdates } from "./update-checker";
 import {
   getOpenClawStateDir,
   loadStateDirEnv,
@@ -43,6 +44,7 @@ import {
   POST_SPAWN_RESTART_DELAY_MS,
   WEIXIN_LOGIN_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
+  UPDATE_MANIFEST_URL,
 } from "./constants";
 
 /**
@@ -3259,6 +3261,14 @@ function registerIpcHandlers(): void {
           : { color: "#ffffff", symbolColor: "#1e1f25", height: 36 },
       );
     }
+  });
+
+  // --- Updates ---
+  ipcMain.handle("updates:check", () => {
+    return checkForUpdates({
+      currentVersion: app.getVersion(),
+      manifestUrl: UPDATE_MANIFEST_URL,
+    });
   });
 
   // --- Studio Backend ---

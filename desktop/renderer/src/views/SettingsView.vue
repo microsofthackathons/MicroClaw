@@ -1108,6 +1108,35 @@
           <img class="about-icon" :src="microclawLogo" alt="MicroClaw" />
           <div class="about-name">MicroClawDesktop</div>
           <div class="about-version">{{ t("settings.version") }}</div>
+          <el-button
+            type="primary"
+            plain
+            size="small"
+            :loading="updateChecking"
+            class="update-check-btn"
+            @click="checkForUpdates"
+          >
+            {{ updateChecking ? t("settings.updateChecking") : t("settings.checkForUpdates") }}
+          </el-button>
+        </div>
+        <div v-if="updateResult" class="update-card" :class="`update-card-${updateResult.status}`">
+          <div class="update-title">{{ updateStatusTitle }}</div>
+          <div class="update-detail">{{ updateStatusDetail }}</div>
+          <ul
+            v-if="updateResult.status === 'update-available' && updateResult.releaseNotes.length"
+            class="update-notes"
+          >
+            <li v-for="note in updateResult.releaseNotes" :key="note">{{ note }}</li>
+          </ul>
+          <el-button
+            v-if="updateResult.status === 'update-available'"
+            type="primary"
+            size="small"
+            class="update-download-btn"
+            @click="openUpdateDownload"
+          >
+            {{ t("settings.downloadUpdate") }}
+          </el-button>
         </div>
         <div class="card-group" style="margin-top: 16px">
           <div class="card-row no-border">
@@ -1149,6 +1178,33 @@ watch(
 
 const activeSection = ref("general");
 const stateDir = ref("");
+const updateChecking = ref(false);
+const updateResult = ref<UpdateCheckResult | null>(null);
+
+const updateStatusTitle = computed(() => {
+  if (!updateResult.value) return "";
+  if (updateResult.value.status === "update-available") {
+    return t("settings.updateAvailable", { version: updateResult.value.latestVersion });
+  }
+  if (updateResult.value.status === "up-to-date") {
+    return t("settings.updateUpToDate");
+  }
+  return t("settings.updateCheckFailed");
+});
+
+const updateStatusDetail = computed(() => {
+  if (!updateResult.value) return "";
+  if (updateResult.value.status === "update-available") {
+    return t("settings.updateAvailableDetail", {
+      current: updateResult.value.currentVersion,
+      latest: updateResult.value.latestVersion,
+    });
+  }
+  if (updateResult.value.status === "up-to-date") {
+    return t("settings.updateUpToDateDetail", { version: updateResult.value.currentVersion });
+  }
+  return updateResult.value.message;
+});
 
 const VALID_SECTIONS = [
   "general",
@@ -2150,6 +2206,35 @@ function openExternal(url: string) {
   window.openclaw.shell.openExternal(url);
 }
 
+async function checkForUpdates() {
+  updateChecking.value = true;
+  try {
+    updateResult.value = await window.openclaw.updates.check();
+    if (updateResult.value.status === "update-available") {
+      ElMessage.success(t("settings.updateAvailableToast"));
+    } else if (updateResult.value.status === "up-to-date") {
+      ElMessage.success(t("settings.updateUpToDate"));
+    } else {
+      ElMessage.error(t("settings.updateCheckFailed"));
+    }
+  } catch (err: any) {
+    updateResult.value = {
+      status: "error",
+      currentVersion: "unknown",
+      message: err?.message || String(err),
+    };
+    ElMessage.error(t("settings.updateCheckFailed"));
+  } finally {
+    updateChecking.value = false;
+  }
+}
+
+function openUpdateDownload() {
+  if (updateResult.value?.status === "update-available") {
+    window.openclaw.shell.openExternal(updateResult.value.downloadUrl);
+  }
+}
+
 async function reconnectGateway() {
   try {
     await window.openclaw.gateway.restart();
@@ -2428,6 +2513,51 @@ async function clearChatHistory() {
 .about-version {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.update-check-btn {
+  margin-top: 10px;
+}
+
+.update-card {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-grouped);
+}
+
+.update-card-update-available {
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.update-card-error {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.update-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.update-detail {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.update-notes {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.update-download-btn {
+  margin-top: 12px;
 }
 
 /* Models & API */

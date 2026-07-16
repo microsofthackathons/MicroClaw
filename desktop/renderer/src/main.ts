@@ -39,6 +39,14 @@ if (isBrowserDev) {
       get: () => Promise.resolve(null),
       set: noopAsync,
     },
+    updates: {
+      check: () =>
+        Promise.resolve({
+          status: "up-to-date",
+          currentVersion: "1.0.0",
+          latestVersion: "1.0.0",
+        }),
+    },
     chat: {
       send: noopAsync,
       abort: noopAsync,

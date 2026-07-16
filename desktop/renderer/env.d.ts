@@ -49,6 +49,28 @@ interface IntegrityResult {
   changes: IntegrityChange[];
 }
 
+type UpdateCheckResult =
+  | {
+      status: "update-available";
+      currentVersion: string;
+      latestVersion: string;
+      downloadUrl: string;
+      releasedAt?: string;
+      sha256?: string;
+      openclawVersion?: string;
+      releaseNotes: string[];
+    }
+  | {
+      status: "up-to-date";
+      currentVersion: string;
+      latestVersion: string;
+    }
+  | {
+      status: "error";
+      currentVersion: string;
+      message: string;
+    };
+
 interface OpenClawAPI {
   gateway: {
     getPort(): Promise<number>;
@@ -70,6 +92,9 @@ interface OpenClawAPI {
   settings: {
     get(): Promise<AppSettings>;
     set(key: string, value: any): Promise<void>;
+  };
+  updates: {
+    check(): Promise<UpdateCheckResult>;
   };
   skills: {
     list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;

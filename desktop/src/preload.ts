@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld("openclaw", {
     set: (key: string, value: any) => ipcRenderer.invoke("settings:set", key, value),
   },
 
+  // --- Updates ---
+  updates: {
+    check: () => ipcRenderer.invoke("updates:check"),
+  },
+
   // --- Skills ---
   skills: {
     list: () => ipcRenderer.invoke("skills:list"),
