@@ -5,10 +5,12 @@ configures npm to use the taobao registry, and installs openclaw.
 """
 
 import hashlib
+import json
 import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -16,13 +18,20 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from deployer.logger import DeployerLogger
+from deployer.openclaw_upgrade import (
+    RECOVERABLE_PHASES,
+    OpenClawInstallation,
+    OpenClawUpgradeTransaction,
+    UpgradeInProgressError,
+    process_is_alive,
+)
 from deployer.openclaw_version import (
     NODE_FALLBACK_VERSION,
     OPENCLAW_TARGET_VERSION,
-    extract_openclaw_version,
     is_supported_node_version,
 )
 from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
@@ -33,6 +42,7 @@ MIRROR_OFFICIAL = "official"
 MIRROR_NPMMIRROR = "npmmirror"
 MIRROR_TENCENT = "tencent"
 MIRROR_FALLBACK = MIRROR_NPMMIRROR
+NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
 
 MIRRORS = {
     MIRROR_OFFICIAL: {
@@ -99,6 +109,13 @@ _VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 _CREATE_NO_WINDOW = 0x08000000
 
 
+@dataclass(frozen=True)
+class OpenClawInstallAttempt:
+    returncode: int
+    output: str
+    installed_version: str | None
+
+
 class WindowsSetup:
     """Handles Node.js + OpenClaw installation on Windows natively."""
 
@@ -111,6 +128,7 @@ class WindowsSetup:
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
+        self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
         self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
         self.weixin_plugin_enabled = True  # Install by default
 
@@ -950,57 +968,188 @@ class WindowsSetup:
 
     # ────────────────────── OpenClaw ──────────────────────
 
-    def check_openclaw_windows(self) -> bool:
-        """Check if openclaw is installed **inside our managed node_dir**.
+    def _openclaw_search_roots(self) -> list[Path]:
+        """Return package roots in the same precedence used by the desktop."""
+        appdata = Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming"))
+        local_appdata = Path(
+            os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        )
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        candidates = [
+            getattr(self, "install_prefix", None),
+            Path.home() / ".openclaw-node",
+            appdata / "npm",
+            program_files / "nodejs",
+            local_appdata / "Programs" / "nodejs",
+            self.node_dir,
+        ]
+        roots: list[Path] = []
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            path = Path(candidate).resolve(strict=False)
+            if path not in roots:
+                roots.append(path)
+        return roots
 
-        A system-level openclaw (e.g. via Node v24 in Program Files) does
-        NOT count — the Electron desktop app resolves the entry point from
-        node_dir/node_modules/openclaw/, so the package must live there.
-        """
-        # Primary check: the actual entry file that Electron uses
-        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        search_roots = [self.node_dir, Path(appdata) / "npm"]
-        entry: Path | None = None
-        for root in search_roots:
-            for sub in (
-                ("node_modules", "openclaw", "openclaw.mjs"),
-                ("node_modules", "openclaw", "dist", "index.js"),
-                ("lib", "node_modules", "openclaw", "openclaw.mjs"),
-                ("lib", "node_modules", "openclaw", "dist", "index.js"),
-            ):
-                candidate = root.joinpath(*sub)
-                if candidate.exists():
-                    entry = candidate
-                    break
-            if entry:
-                break
-        if not entry:
-            return False
-
-        # Verify version via npm list (using our managed npm)
-        npm = self._get_npm_path()
-        if not npm:
-            return False
-        try:
-            env = self._get_env()
-            r = self._run(
-                [npm, "list", "-g", "openclaw", "--depth=0"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                env=env,
+    @staticmethod
+    def _openclaw_installation_at_prefix(prefix: Path) -> OpenClawInstallation | None:
+        prefix = prefix.resolve(strict=False)
+        for package_dir in (
+            prefix / "node_modules" / "openclaw",
+            prefix / "lib" / "node_modules" / "openclaw",
+        ):
+            package_json = package_dir / "package.json"
+            if not package_json.exists():
+                continue
+            try:
+                package = json.loads(package_json.read_text(encoding="utf-8"))
+                version = package["version"]
+            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(version, str) or not version:
+                continue
+            entry = package_dir / "openclaw.mjs"
+            if not entry.exists():
+                entry = package_dir / "dist" / "index.js"
+            if not entry.exists():
+                continue
+            return OpenClawInstallation(
+                version=version,
+                prefix=prefix,
+                package_dir=package_dir,
+                entry_path=entry,
+                shim_paths=tuple(
+                    prefix / name for name in ("openclaw", "openclaw.cmd", "openclaw.ps1")
+                ),
             )
-            if "openclaw@" in r.stdout:
-                version = extract_openclaw_version(r.stdout)
-                if version is None:
-                    return False
-                self.log.info(f"OpenClaw found on Windows: {version}")
+        return None
+
+    def _detect_openclaw_installation(self) -> OpenClawInstallation | None:
+        for root in self._openclaw_search_roots():
+            installation = self._openclaw_installation_at_prefix(root)
+            if installation is not None:
+                return installation
+        return None
+
+    def check_openclaw_windows(self) -> bool:
+        """Return whether the exact pinned OpenClaw package is installed."""
+        installation = self._detect_openclaw_installation()
+        if installation is None:
+            return False
+        self.log.info(f"OpenClaw found on Windows: {installation.version}")
+        if installation.version != OPENCLAW_TARGET_VERSION:
+            self.log.info(
+                f"OpenClaw {installation.version} requires upgrade to {OPENCLAW_TARGET_VERSION}"
+            )
+            return False
+        self.install_prefix = installation.prefix
+        return True
+
+    @staticmethod
+    def _is_tcp_port_open(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
                 return True
-        except Exception:
-            pass
-        return False
+        except OSError:
+            return False
+
+    def _find_active_gateway_lock(self) -> dict | None:
+        local_appdata = Path(
+            os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        )
+        lock_dir = local_appdata / "Temp" / "openclaw"
+        if not lock_dir.is_dir():
+            return None
+        for lock_path in lock_dir.glob("gateway.*.lock"):
+            try:
+                payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            pid = payload.get("pid")
+            port = payload.get("port")
+            has_declared_port = isinstance(port, int) and 1 <= port <= 65535
+            active = (
+                self._is_tcp_port_open(port)
+                if has_declared_port
+                else isinstance(pid, int) and process_is_alive(pid)
+            )
+            if active:
+                return {**payload, "lockPath": str(lock_path)}
+        return None
+
+    def recover_interrupted_openclaw_upgrade(self) -> bool:
+        try:
+            transaction = OpenClawUpgradeTransaction.load(DEFAULT_DESKTOP_DIR)
+        except UpgradeInProgressError as error:
+            self.log.error(str(error))
+            return False
+        if transaction is None or transaction.manifest.phase not in RECOVERABLE_PHASES:
+            return True
+        self.log.warn("Recovering interrupted OpenClaw upgrade before continuing")
+        try:
+            transaction.rollback()
+            return True
+        except Exception as error:
+            self.log.error(
+                f"Interrupted OpenClaw upgrade recovery failed; backup retained at "
+                f"{transaction.backup_dir}: {error}"
+            )
+            return False
+
+    def prepare_openclaw_upgrade(self) -> bool:
+        """Block active gateways and snapshot the current package and state."""
+        if not self.recover_interrupted_openclaw_upgrade():
+            return False
+        installation = self._detect_openclaw_installation()
+        port = int(self.cfg.get("gateway.port", 18789))
+        active_lock = self._find_active_gateway_lock()
+        if self._is_tcp_port_open(port) or active_lock is not None:
+            owner_pid = active_lock.get("pid") if active_lock else None
+            owner = f" (pid {owner_pid})" if isinstance(owner_pid, int) else ""
+            self.log.error(
+                f"OpenClaw Gateway is active{owner}. Exit MicroClaw and standalone "
+                "OpenClaw before upgrading."
+            )
+            return False
+        if installation is not None and installation.version == OPENCLAW_TARGET_VERSION:
+            self.install_prefix = installation.prefix
+            return True
+
+        prefix = (
+            installation.prefix if installation is not None else self._choose_npm_install_prefix()
+        )
+        source = installation or OpenClawInstallation(
+            version="",
+            prefix=prefix,
+            package_dir=prefix / "node_modules" / "openclaw",
+            entry_path=prefix / "node_modules" / "openclaw" / "openclaw.mjs",
+            shim_paths=tuple(
+                prefix / name for name in ("openclaw", "openclaw.cmd", "openclaw.ps1")
+            ),
+        )
+        self.install_prefix = prefix
+        try:
+            transaction = OpenClawUpgradeTransaction.create(
+                microclaw_root=DEFAULT_DESKTOP_DIR,
+                state_dir=Path.home() / ".openclaw",
+                target_version=OPENCLAW_TARGET_VERSION,
+                installation=source,
+            )
+            self._openclaw_transaction = transaction
+            transaction.backup()
+            return True
+        except Exception as error:
+            self.log.error(f"Could not prepare OpenClaw upgrade backup: {error}")
+            transaction = self._openclaw_transaction
+            if transaction is not None:
+                try:
+                    transaction.rollback()
+                except Exception as rollback_error:
+                    self.log.error(f"Could not close failed backup transaction: {rollback_error}")
+            return False
 
     def ensure_execution_policy(self) -> bool:
         """Set PowerShell ExecutionPolicy to RemoteSigned for current user.
@@ -1057,105 +1206,118 @@ class WindowsSetup:
             return False
 
         try:
-            env = self._get_env()
-            # Skip llama.cpp binary download (avoids build failures on Windows)
-            env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
-            self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
-
-            # Choose an npm --prefix that the current user can actually write
-            # to.  When Node.js is installed per-machine under
-            # ``C:\Program Files\nodejs`` (the standard MSI layout) the
-            # node_modules directory is owned by Administrators and a normal
-            # (non-elevated) user gets EPERM on ``npm install -g``.  Fall
-            # back to a user-writable directory in those cases.
-            install_prefix = self._choose_npm_install_prefix()
-            self.install_prefix = install_prefix  # remember for _find_openclaw_cmd
+            install_prefix = Path(
+                getattr(self, "install_prefix", None) or self._choose_npm_install_prefix()
+            )
+            self.install_prefix = install_prefix
             self.log.info(f"  npm install prefix: {install_prefix}")
-
-            # Stream npm output line-by-line so the UI stays responsive
-            proc = subprocess.Popen(
-                [
-                    npm,
-                    "install",
-                    "-g",
-                    f"openclaw@{tag}",
-                    "--prefix",
-                    str(install_prefix),
-                    "--loglevel",
-                    "info",
-                    "--no-progress",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                env=env,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-            collected = []
-            for line in proc.stdout:
-                stripped = line.rstrip()
-                if stripped:
-                    collected.append(stripped)
-                    # Show fetch/reify lines as concise progress
-                    self.log.info(f"  npm: {stripped}")
-            proc.wait(timeout=900)
-
-            # Verify the entry file actually landed under the chosen prefix.
-            # npm exit code alone is unreliable: it may print warnings (e.g.
-            # EBADENGINE) and still return non-zero, and the previous
-            # heuristic ("'openclaw' substring in output") was triggered by
-            # cache-hit URLs like ``https://registry.npmjs.org/openclaw``
-            # even when the install failed with EPERM.
-            entry_found: Path | None = None
-            for _p in [
-                install_prefix / "node_modules" / "openclaw" / "openclaw.mjs",
-                install_prefix / "lib" / "node_modules" / "openclaw" / "openclaw.mjs",
-                install_prefix / "node_modules" / "openclaw" / "dist" / "index.js",
-                install_prefix / "lib" / "node_modules" / "openclaw" / "dist" / "index.js",
-            ]:
-                if _p.exists():
-                    entry_found = _p
-                    break
-
-            if entry_found:
-                if proc.returncode == 0:
-                    self.log.success("OpenClaw installed on Windows")
-                else:
-                    self.log.warn(
-                        f"npm exited with code {proc.returncode} but openclaw entry was written"
-                    )
-                    self.log.success("OpenClaw installed on Windows (with warnings)")
-                self.log.debug(f"  Entry verified: {entry_found}")
-                self._register_rollback_openclaw(npm, env)
+            if self._install_openclaw_with_registry_fallback(install_prefix):
                 self._patch_pi_ai_usage_streaming()
+                self.log.success(f"OpenClaw {tag} installed on Windows")
                 return True
-
-            # Entry file missing → install really failed. Log npm prefix for
-            # diagnostics and surface the tail of npm's output (where the
-            # real error message lives).
-            try:
-                _r = self._run(
-                    [npm, "config", "get", "prefix"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    env=env,
-                )
-                self.log.warn(f"  npm prefix = {_r.stdout.strip()}")
-            except Exception:
-                pass
-            err_out = "\n".join(collected)
-            self.log.error(
-                f"npm install failed (exit {proc.returncode}): openclaw entry not found under "
-                f"{install_prefix}\n{err_out[-1500:]}"
-            )
             return False
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
             return False
+
+    def _npm_registry_candidates(self) -> list[str]:
+        configured = self.cfg.get("npm.registry", "") or getattr(self, "_resolved_npm_registry", "")
+        candidates = [
+            configured,
+            MIRRORS[MIRROR_OFFICIAL]["npm_registry"],
+            MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+            NPM_REGISTRY_HUAWEI,
+        ]
+        registries: list[str] = []
+        for registry in candidates:
+            if registry and registry.rstrip("/") not in {
+                existing.rstrip("/") for existing in registries
+            }:
+                registries.append(registry)
+        return registries
+
+    def _install_openclaw_from_registry(
+        self, install_prefix: Path, registry: str
+    ) -> OpenClawInstallAttempt:
+        npm = self._get_npm_path()
+        if not npm:
+            raise RuntimeError("npm not found — install Node.js first")
+        channel = self.cfg.get("openclaw.channel", "stable")
+        tag = OPENCLAW_TARGET_VERSION if channel == "stable" else channel
+        env = self._get_env()
+        env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
+        proc = subprocess.Popen(
+            [
+                npm,
+                "install",
+                "-g",
+                f"openclaw@{tag}",
+                "--prefix",
+                str(install_prefix),
+                "--registry",
+                registry,
+                "--replace-registry-host",
+                "always",
+                "--loglevel",
+                "info",
+                "--no-progress",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=env,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        collected: list[str] = []
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                stripped = line.rstrip()
+                if stripped:
+                    collected.append(stripped)
+                    self.log.info(f"  npm: {stripped}")
+        proc.wait(timeout=900)
+        installation = self._openclaw_installation_at_prefix(install_prefix)
+        return OpenClawInstallAttempt(
+            returncode=proc.returncode,
+            output="\n".join(collected),
+            installed_version=installation.version if installation else None,
+        )
+
+    def _install_openclaw_with_registry_fallback(self, install_prefix: Path) -> bool:
+        network_error = re.compile(
+            r"ERR_SSL|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN",
+            re.IGNORECASE,
+        )
+        channel = self.cfg.get("openclaw.channel", "stable")
+        expected_version = OPENCLAW_TARGET_VERSION if channel == "stable" else None
+        for registry in self._npm_registry_candidates():
+            self.log.info(f"  npm registry attempt: {registry}")
+            attempt = self._install_openclaw_from_registry(install_prefix, registry)
+            installed = attempt.installed_version
+            success = (
+                installed == expected_version
+                if expected_version is not None
+                else attempt.returncode == 0 and installed is not None
+            )
+            if success:
+                if attempt.returncode != 0:
+                    self.log.warn(
+                        f"npm exited with code {attempt.returncode} but the exact "
+                        "OpenClaw package and entry were verified"
+                    )
+                return True
+            if not network_error.search(attempt.output):
+                self.log.error(
+                    f"npm install failed (exit {attempt.returncode}) via {registry}:\n"
+                    f"{attempt.output[-1500:]}"
+                )
+                return False
+            self.log.warn(f"npm network/TLS failure via {registry}; trying next registry")
+        self.log.error("OpenClaw install failed through every configured npm registry")
+        return False
 
     def _choose_npm_install_prefix(self) -> Path:
         """Return a writable directory to use as ``npm install -g --prefix``.
@@ -1359,22 +1521,6 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"Compile cache warmup failed (non-fatal): {e}")
             return True  # non-fatal
-
-    def _register_rollback_openclaw(self, npm: str, env: dict):
-        """Register rollback action for OpenClaw npm uninstall."""
-
-        def _rollback_openclaw():
-            try:
-                WindowsSetup._run(
-                    [npm, "uninstall", "-g", "openclaw"],
-                    capture_output=True,
-                    timeout=120,
-                    env=env,
-                )
-            except Exception:
-                pass
-
-        self._register_rollback("卸载 OpenClaw", _rollback_openclaw)
 
     # ────────────────────── Managed Skills ──────────────────────
 
