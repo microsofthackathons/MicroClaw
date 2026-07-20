@@ -1,12 +1,10 @@
 import path from "node:path";
 
 import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk";
-import { normalizeAccountId } from "openclaw/plugin-sdk";
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-core";
 
 import {
   registerWeixinAccountId,
-  unregisterWeixinAccountId,
-  clearWeixinAccount,
   loadWeixinAccount,
   saveWeixinAccount,
   listWeixinAccountIds,
@@ -384,22 +382,6 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         message: result.message,
         accountId: result.accountId,
       } as { connected: boolean; message: string };
-    },
-    disconnect: async (params) => {
-      const accountId = (params as { accountId?: string }).accountId;
-      if (!accountId) {
-        return { ok: false, message: "accountId is required" };
-      }
-      try {
-        const normalizedId = normalizeAccountId(accountId);
-        clearWeixinAccount(normalizedId);
-        unregisterWeixinAccountId(normalizedId);
-        logger.info(`disconnect: removed account data for accountId=${normalizedId}`);
-        return { ok: true, message: "Account disconnected" };
-      } catch (err) {
-        logger.error(`disconnect: failed err=${String(err)}`);
-        return { ok: false, message: String(err) };
-      }
     },
   },
 };

@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
+import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 
 import { weixinPlugin } from "./src/channel.js";
 import { WeixinConfigSchema } from "./src/config/config-schema.js";
@@ -10,7 +10,7 @@ const plugin = {
   id: "openclaw-weixin",
   name: "Weixin",
   description: "Weixin channel (getUpdates long-poll + sendMessage)",
-  configSchema: buildChannelConfigSchema(WeixinConfigSchema),
+  configSchema: buildJsonChannelConfigSchema(WeixinConfigSchema.toJSONSchema()),
   register(api: OpenClawPluginApi) {
     if (!api?.runtime) {
       throw new Error("[weixin] api.runtime is not available in register()");

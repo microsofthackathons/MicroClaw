@@ -310,7 +310,7 @@ helpers move to their 2026.7.1-1 public subpaths:
 
 | Helper | Public subpath |
 |---|---|
-| `buildChannelConfigSchema` | `openclaw/plugin-sdk/channel-core` |
+| `buildJsonChannelConfigSchema` | `openclaw/plugin-sdk/channel-config-schema` |
 | `normalizeAccountId` | `openclaw/plugin-sdk/account-core` |
 | `withFileLock` | `openclaw/plugin-sdk/file-lock` |
 | `createTypingCallbacks` | `openclaw/plugin-sdk/channel-outbound` |
@@ -320,6 +320,12 @@ helpers move to their 2026.7.1-1 public subpaths:
 | `stripMarkdown` | `openclaw/plugin-sdk/text-chunking` |
 
 The migration does not replace these helpers with local copies.
+
+OpenClaw 2026.7.1-1 no longer accepts a custom `gateway.disconnect` callback.
+MicroClaw already owns Weixin disconnection through its desktop IPC and state
+cleanup, so the obsolete plugin callback is removed. The plugin exports its
+Zod configuration through `buildJsonChannelConfigSchema` to avoid coupling a
+third-party Zod instance to OpenClaw's bundled schema types.
 
 ## Error Handling
 
