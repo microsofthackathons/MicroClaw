@@ -66,9 +66,7 @@ MIRRORS = {
 # runtime for users upgrading from earlier builds (see check_node_windows /
 # sandbox-state.js).
 _PROGRAM_FILES = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-_LOCAL_APPDATA = Path(
-    os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-)
+_LOCAL_APPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
 DEFAULT_NODE_DIR = Path(
     os.environ.get(
         "OPENCLAW_NODE_DIR",
@@ -621,9 +619,7 @@ class WindowsSetup:
                     for std in _STANDARD_NODE_DIRS
                 )
                 if is_standard and is_supported_node_version(ver):
-                    self.log.info(
-                        f"Node.js (system) accepted: {ver} at {node_path}"
-                    )
+                    self.log.info(f"Node.js (system) accepted: {ver} at {node_path}")
                     # Pin the discovered directory so all later logic
                     # (AppContainer ACLs, PATH, npm prefix) targets the
                     # actual install location rather than the configured
@@ -685,7 +681,7 @@ class WindowsSetup:
             msi_args = (
                 f'/i "{msi_path}" /qn /norestart '
                 f'INSTALLDIR="{install_dir}\\" '
-                f'ADDLOCAL=NodeRuntime,npm '
+                f"ADDLOCAL=NodeRuntime,npm "
                 f'/L*V "{log_path}"'
             )
             # Use PowerShell Start-Process -Verb RunAs to elevate.  -Wait
@@ -717,13 +713,12 @@ class WindowsSetup:
 
             # msiexec exit codes: 0 = success, 3010 = success + reboot required
             if result.returncode not in (0, 3010):
-                self.log.error(
-                    f"msiexec exited with code {result.returncode}; "
-                    f"see log: {log_path}"
-                )
+                self.log.error(f"msiexec exited with code {result.returncode}; see log: {log_path}")
                 # Surface a short tail of the log to help diagnose
                 try:
-                    tail = log_path.read_text(encoding="utf-16-le", errors="replace").splitlines()[-20:]
+                    tail = log_path.read_text(encoding="utf-16-le", errors="replace").splitlines()[
+                        -20:
+                    ]
                     for line in tail:
                         self.log.debug(f"  msi: {line}")
                 except Exception:
@@ -1185,9 +1180,7 @@ class WindowsSetup:
             appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
             fallback = Path(appdata) / "npm"
             fallback.mkdir(parents=True, exist_ok=True)
-            self.log.info(
-                f"  {candidate} 不可写，改用用户目录 {fallback}（无需管理员权限）"
-            )
+            self.log.info(f"  {candidate} 不可写，改用用户目录 {fallback}（无需管理员权限）")
             return fallback
 
     def _patch_pi_ai_usage_streaming(self) -> None:
