@@ -35,6 +35,7 @@ ACTIVE_PHASES = {
 RECOVERABLE_PHASES = ACTIVE_PHASES | {UpgradePhase.ROLLBACK_FAILED}
 
 _TRANSACTION_ID_PATTERN = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
+_LOCK_BYTE_OFFSET = 4095
 
 
 class UpgradeInProgressError(RuntimeError):
@@ -143,15 +144,94 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _windows_move_file(source: Path, destination: Path, *, replace: bool) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    movefile_replace_existing = 0x1
+    movefile_write_through = 0x8
+    flags = movefile_write_through
+    if replace:
+        flags |= movefile_replace_existing
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.MoveFileExW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    ]
+    kernel32.MoveFileExW.restype = wintypes.BOOL
+    if not kernel32.MoveFileExW(str(source), str(destination), flags):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _durable_rename(source: Path, destination: Path, *, replace: bool = False) -> None:
+    source = Path(source)
+    destination = Path(destination)
+    if _is_windows():
+        _windows_move_file(source, destination, replace=replace)
+        return
+
+    if replace:
+        os.replace(source, destination)
+    else:
+        os.rename(source, destination)
+    _fsync_directory(destination.parent)
+    if source.parent != destination.parent:
+        _fsync_directory(source.parent)
+
+
+def _durable_replace(source: Path, destination: Path) -> None:
+    _durable_rename(source, destination, replace=True)
+
+
+def _durable_mkdir(path: Path) -> None:
+    path = Path(path)
+    missing = []
+    candidate = path
+    while not candidate.exists():
+        missing.append(candidate)
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
+
+    if candidate.exists() and not candidate.is_dir():
+        raise FileExistsError(f"directory path is occupied by a non-directory: {candidate}")
+
+    for directory in reversed(missing):
+        if _is_windows():
+            staging = directory.with_name(f".{directory.name}.{uuid.uuid4().hex}.mkdir")
+            staging.mkdir()
+            try:
+                _durable_rename(staging, directory)
+            except FileExistsError:
+                staging.rmdir()
+                if not directory.is_dir():
+                    raise
+            continue
+
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            if not directory.is_dir():
+                raise
+        else:
+            _fsync_directory(directory.parent)
+
+
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _durable_mkdir(path.parent)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as file:
             file.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
             _flush_and_fsync(file)
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
+        _durable_replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -175,6 +255,15 @@ def _remove_path(path: Path) -> None:
         path.unlink(missing_ok=True)
     elif path.exists():
         shutil.rmtree(path)
+
+
+def _durable_remove(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    tombstone = path.with_name(f".{path.name}.{uuid.uuid4().hex}.remove")
+    _durable_rename(path, tombstone)
+    _remove_path(tombstone)
+    _fsync_directory(path.parent)
 
 
 def _fsync_payload_tree(root: Path) -> None:
@@ -203,82 +292,127 @@ def _manifest_requires_recovery(manifest_path: Path) -> bool:
 
 def _read_lock(lock_path: Path) -> dict[str, Any] | None:
     try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        with lock_path.open("rb", buffering=0) as lock_file:
+            encoded = lock_file.read(1024)
+        payload = json.loads(encoded.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if (
         not isinstance(payload, dict)
         or payload.get("schema") != 1
         or not isinstance(payload.get("owner_pid"), int)
         or not isinstance(payload.get("transaction_id"), str)
+        or not isinstance(payload.get("owner_token"), str)
     ):
         return None
     return payload
 
 
-def _release_matching_lock(lock_path: Path, transaction_id: str) -> bool:
-    payload = _read_lock(lock_path)
-    if payload is None or payload["transaction_id"] != transaction_id:
-        return False
+def _lock_file_nonblocking(lock_file: Any) -> None:
+    lock_file.seek(_LOCK_BYTE_OFFSET)
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as error:
+            contention_errors = {errno.EACCES, errno.EAGAIN}
+            deadlock = getattr(errno, "EDEADLK", None)
+            if deadlock is not None:
+                contention_errors.add(deadlock)
+            if error.errno in contention_errors:
+                raise UpgradeInProgressError("an OpenClaw upgrade is already in progress") from None
+            raise
+        return
+
+    import fcntl
+
     try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        return False
-    return True
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise UpgradeInProgressError("an OpenClaw upgrade is already in progress") from None
+
+
+def _unlock_file(lock_file: Any) -> None:
+    lock_file.seek(_LOCK_BYTE_OFFSET)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@dataclass
+class _UpgradeFileLock:
+    path: Path
+    file: Any
+    owner_token: str
+    transaction_id: str
+    released: bool = False
+
+    def _write_payload(self) -> None:
+        payload = {
+            "schema": 1,
+            "owner_pid": os.getpid(),
+            "transaction_id": self.transaction_id,
+            "owner_token": self.owner_token,
+        }
+        encoded = (json.dumps(payload, sort_keys=True) + "\n").encode()
+        if len(encoded) > _LOCK_BYTE_OFFSET:
+            raise ValueError("OpenClaw upgrade lock payload is too large")
+        self.file.seek(0)
+        self.file.write(encoded)
+        self.file.write(b" " * (_LOCK_BYTE_OFFSET + 1 - len(encoded)))
+        self.file.truncate()
+        _flush_and_fsync(self.file)
+
+    def update_transaction_id(self, transaction_id: str) -> None:
+        self.transaction_id = transaction_id
+        self._write_payload()
+
+    def release(self, owner_token: str) -> bool:
+        if self.released or owner_token != self.owner_token:
+            return False
+        try:
+            _unlock_file(self.file)
+        finally:
+            self.file.close()
+            self.released = True
+        return True
 
 
 def _acquire_transaction_lock(
     lock_path: Path,
-    manifest_path: Path,
     transaction_id: str,
-) -> None:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema": 1,
-        "owner_pid": os.getpid(),
-        "transaction_id": transaction_id,
-    }
-    encoded = (json.dumps(payload, sort_keys=True) + "\n").encode()
+) -> _UpgradeFileLock:
+    _durable_mkdir(lock_path.parent)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_file = os.fdopen(descriptor, "r+b", buffering=0)
+    try:
+        _lock_file_nonblocking(lock_file)
+    except BaseException:
+        lock_file.close()
+        raise
 
-    for attempt in range(2):
-        try:
-            descriptor = os.open(
-                lock_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-            )
-        except FileExistsError:
-            existing = _read_lock(lock_path)
-            if existing is None or process_is_alive(existing["owner_pid"]):
-                raise UpgradeInProgressError("an OpenClaw upgrade is already in progress") from None
-            if _manifest_requires_recovery(manifest_path):
-                raise UpgradeRecoveryRequiredError(
-                    "an interrupted OpenClaw upgrade must be recovered"
-                ) from None
-            if attempt:
-                raise UpgradeInProgressError(
-                    "could not replace stale OpenClaw upgrade lock"
-                ) from None
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
-            continue
+    held_lock = _UpgradeFileLock(
+        path=lock_path,
+        file=lock_file,
+        owner_token=uuid.uuid4().hex,
+        transaction_id=transaction_id,
+    )
+    try:
+        held_lock._write_payload()
+    except BaseException:
+        held_lock.release(held_lock.owner_token)
+        raise
+    return held_lock
 
-        try:
-            with os.fdopen(descriptor, "wb") as lock_file:
-                lock_file.write(encoded)
-                _flush_and_fsync(lock_file)
-        except BaseException:
-            lock_path.unlink(missing_ok=True)
-            raise
 
-        if _manifest_requires_recovery(manifest_path):
-            _release_matching_lock(lock_path, transaction_id)
-            raise UpgradeRecoveryRequiredError("an interrupted OpenClaw upgrade must be recovered")
-        return
-
-    raise UpgradeInProgressError("could not acquire OpenClaw upgrade lock")
+_RETAINED_FAILED_LOCKS: dict[str, _UpgradeFileLock] = {}
 
 
 class OpenClawUpgradeTransaction:
@@ -288,9 +422,11 @@ class OpenClawUpgradeTransaction:
         manifest: UpgradeManifest,
         *,
         trusted_prefixes: Iterable[Path] | None = None,
+        held_lock: _UpgradeFileLock | None = None,
     ):
         self.microclaw_root = microclaw_root.resolve(strict=False)
         self.manifest = manifest
+        self._held_lock = held_lock
         roots = trusted_openclaw_prefixes() if trusted_prefixes is None else trusted_prefixes
         self._trusted_prefixes = {_require_absolute(Path(path), "trusted prefix") for path in roots}
         self._validate_manifest()
@@ -324,7 +460,10 @@ class OpenClawUpgradeTransaction:
         transaction_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
         manifest_path = root / "upgrade" / "openclaw-upgrade.json"
         lock_path = root / "upgrade" / "openclaw-upgrade.lock"
-        _acquire_transaction_lock(lock_path, manifest_path, transaction_id)
+        held_lock = _acquire_transaction_lock(lock_path, transaction_id)
+        if _manifest_requires_recovery(manifest_path):
+            held_lock.release(held_lock.owner_token)
+            raise UpgradeRecoveryRequiredError("an interrupted OpenClaw upgrade must be recovered")
         backup_dir = root / "backups" / "openclaw" / transaction_id
         timestamp = _now()
         manifest = UpgradeManifest(
@@ -349,12 +488,25 @@ class OpenClawUpgradeTransaction:
                 root,
                 manifest,
                 trusted_prefixes=(installation.prefix,),
+                held_lock=held_lock,
             )
             transaction._persist()
             return transaction
         except BaseException:
-            _release_matching_lock(lock_path, transaction_id)
+            held_lock.release(held_lock.owner_token)
             raise
+
+    @classmethod
+    def _read_manifest(cls, manifest_path: Path) -> UpgradeManifest:
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("manifest root must be an object")
+            data["phase"] = UpgradePhase(data["phase"])
+            manifest = UpgradeManifest(**data)
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError("invalid OpenClaw upgrade manifest") from error
+        return manifest
 
     @classmethod
     def load(
@@ -366,15 +518,45 @@ class OpenClawUpgradeTransaction:
         manifest_path = root / "upgrade" / "openclaw-upgrade.json"
         if not manifest_path.exists():
             return None
+
+        manifest = cls._read_manifest(manifest_path)
+        if manifest.phase not in RECOVERABLE_PHASES:
+            return cls(root, manifest, trusted_prefixes=trusted_prefixes)
+
+        held_lock = _acquire_transaction_lock(
+            root / "upgrade" / "openclaw-upgrade.lock",
+            manifest.transaction_id,
+        )
         try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("manifest root must be an object")
-            data["phase"] = UpgradePhase(data["phase"])
-            manifest = UpgradeManifest(**data)
-        except (KeyError, TypeError, json.JSONDecodeError) as error:
-            raise ValueError("invalid OpenClaw upgrade manifest") from error
-        return cls(root, manifest, trusted_prefixes=trusted_prefixes)
+            if not manifest_path.exists():
+                held_lock.release(held_lock.owner_token)
+                return None
+            manifest = cls._read_manifest(manifest_path)
+            if manifest.phase not in RECOVERABLE_PHASES:
+                held_lock.release(held_lock.owner_token)
+                return cls(root, manifest, trusted_prefixes=trusted_prefixes)
+            if held_lock.transaction_id != manifest.transaction_id:
+                held_lock.update_transaction_id(manifest.transaction_id)
+            return cls(
+                root,
+                manifest,
+                trusted_prefixes=trusted_prefixes,
+                held_lock=held_lock,
+            )
+        except BaseException:
+            held_lock.release(held_lock.owner_token)
+            raise
+
+    def close(self) -> bool:
+        if self._held_lock is None:
+            return False
+        held_lock = self._held_lock
+        if not held_lock.release(held_lock.owner_token):
+            return False
+        if _RETAINED_FAILED_LOCKS.get(held_lock.owner_token) is held_lock:
+            del _RETAINED_FAILED_LOCKS[held_lock.owner_token]
+        self._held_lock = None
+        return True
 
     def _validate_manifest(self) -> None:
         if self.manifest.schema_version != 1:
@@ -421,14 +603,25 @@ class OpenClawUpgradeTransaction:
         payload["phase"] = self.manifest.phase.value
         return payload
 
+    def _require_held_lock(self) -> None:
+        held_lock = self._held_lock
+        if (
+            held_lock is None
+            or held_lock.released
+            or held_lock.transaction_id != self.manifest.transaction_id
+        ):
+            raise RuntimeError("upgrade transaction no longer owns the transaction lock")
+
     def _persist(self) -> None:
+        self._require_held_lock()
         self.manifest.updated_at = _now()
         payload = self._payload()
-        _atomic_json_write(self.manifest_path, payload)
         if self.backup_dir.exists():
             _atomic_json_write(self.backup_dir / "transaction.json", payload)
+        _atomic_json_write(self.manifest_path, payload)
 
     def set_phase(self, phase: UpgradePhase) -> None:
+        self._require_held_lock()
         self.manifest.phase = phase
         self._persist()
 
@@ -445,68 +638,76 @@ class OpenClawUpgradeTransaction:
             )
         return ignored
 
-    def _shim_backup_path(self, shim: Path) -> Path:
+    def _shim_backup_path(self, shim: Path, backup_dir: Path | None = None) -> Path:
         relative = shim.resolve(strict=False).relative_to(
             Path(self.manifest.prefix).resolve(strict=False)
         )
-        return self.backup_dir / "shims" / relative
+        return (self.backup_dir if backup_dir is None else backup_dir) / "shims" / relative
 
     def backup(self) -> None:
         self.set_phase(UpgradePhase.BACKING_UP)
-        self.backup_dir.mkdir(parents=True, exist_ok=False)
-        self._persist()
-
         package_dir = Path(self.manifest.package_dir)
         if self.manifest.package_existed and not package_dir.exists():
             raise FileNotFoundError(f"OpenClaw package disappeared before backup: {package_dir}")
         if not self.manifest.package_existed and package_dir.exists():
             raise RuntimeError(f"OpenClaw package appeared before backup: {package_dir}")
-        if self.manifest.package_existed:
-            shutil.copytree(package_dir, self.backup_dir / "package")
-
-        (self.backup_dir / "shims").mkdir()
-        for shim_value in self.manifest.shim_paths:
-            shim = Path(shim_value)
-            if shim.exists():
-                destination = self._shim_backup_path(shim)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(shim, destination)
 
         state_dir = Path(self.manifest.state_dir)
         if self.manifest.state_existed and not state_dir.exists():
             raise FileNotFoundError(f"OpenClaw state disappeared before backup: {state_dir}")
         if not self.manifest.state_existed and state_dir.exists():
             raise RuntimeError(f"OpenClaw state appeared before backup: {state_dir}")
+
+        _durable_mkdir(self.backup_root)
+        staging = self.backup_dir.with_name(
+            f".{self.manifest.transaction_id}.{uuid.uuid4().hex}.staging"
+        )
+        _durable_mkdir(staging)
+        if self.manifest.package_existed:
+            shutil.copytree(package_dir, staging / "package")
+
+        _durable_mkdir(staging / "shims")
+        for shim_value in self.manifest.shim_paths:
+            shim = Path(shim_value)
+            if shim.exists():
+                destination = self._shim_backup_path(shim, staging)
+                _durable_mkdir(destination.parent)
+                shutil.copy2(shim, destination)
+
         if self.manifest.state_existed:
             shutil.copytree(
                 state_dir,
-                self.backup_dir / "state",
+                staging / "state",
                 ignore=self._ignore_state,
             )
 
         for payload_root in (
-            self.backup_dir / "package",
-            self.backup_dir / "shims",
-            self.backup_dir / "state",
+            staging / "package",
+            staging / "shims",
+            staging / "state",
         ):
             _fsync_payload_tree(payload_root)
 
         metadata_files = {
-            self.backup_dir / "transaction.json",
-            self.backup_dir / "backup-files.json",
+            staging / "transaction.json",
+            staging / "backup-files.json",
         }
         inventory = {
-            path.relative_to(self.backup_dir).as_posix(): path.stat().st_size
-            for path in self.backup_dir.rglob("*")
+            path.relative_to(staging).as_posix(): path.stat().st_size
+            for path in staging.rglob("*")
             if path.is_file() and path not in metadata_files
         }
-        _atomic_json_write(self.backup_dir / "backup-files.json", inventory)
+        _atomic_json_write(staging / "backup-files.json", inventory)
+        _atomic_json_write(staging / "transaction.json", self._payload())
+        _fsync_directory(staging)
+        _durable_rename(staging, self.backup_dir)
         self.set_phase(UpgradePhase.INSTALLING)
 
     def mark_verifying(self) -> None:
         self.set_phase(UpgradePhase.VERIFYING)
 
     def record_validation(self, name: str, passed: bool) -> None:
+        self._require_held_lock()
         self.manifest.validation_results[name] = passed
         self._persist()
 
@@ -515,48 +716,83 @@ class OpenClawUpgradeTransaction:
         if not results or not all(value is True for value in results.values()):
             raise RuntimeError("cannot commit before every validation passes")
         self.set_phase(UpgradePhase.COMMITTED)
-        _release_matching_lock(self.lock_path, self.manifest.transaction_id)
+        self.close()
 
     def _move_to_failed(self, live: Path, failed: Path) -> None:
         if not live.exists() and not live.is_symlink():
             return
         if failed.exists() or failed.is_symlink():
-            _remove_path(live)
+            _durable_remove(live)
             return
-        failed.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(live), str(failed))
+        _durable_mkdir(failed.parent)
+        try:
+            _durable_rename(live, failed)
+        except OSError as error:
+            if error.errno != errno.EXDEV and getattr(error, "winerror", None) != 17:
+                raise
+            staging = failed.with_name(f".{failed.name}.{uuid.uuid4().hex}.quarantine")
+            if live.is_dir() and not live.is_symlink():
+                shutil.copytree(live, staging)
+                _fsync_payload_tree(staging)
+            else:
+                shutil.copy2(live, staging)
+                _fsync_file(staging)
+            _durable_rename(staging, failed)
+            _durable_remove(live)
+
+    def _restore_tree(self, backup: Path, live: Path, failed: Path, existed: bool) -> None:
+        staging = None
+        if existed:
+            _durable_mkdir(live.parent)
+            staging = live.with_name(f".{live.name}.{uuid.uuid4().hex}.restore")
+            shutil.copytree(backup, staging)
+            _fsync_payload_tree(staging)
+        self._move_to_failed(live, failed)
+        if staging is not None:
+            _durable_rename(staging, live)
 
     def _restore_package(self, failed_dir: Path) -> None:
         package_dir = Path(self.manifest.package_dir)
-        self._move_to_failed(package_dir, failed_dir / "package")
-        if self.manifest.package_existed:
-            package_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(self.backup_dir / "package", package_dir)
+        self._restore_tree(
+            self.backup_dir / "package",
+            package_dir,
+            failed_dir / "package",
+            self.manifest.package_existed,
+        )
 
     def _restore_shims(self) -> None:
         for shim_value in self.manifest.shim_paths:
             shim = Path(shim_value)
-            _remove_path(shim)
             backup_shim = self._shim_backup_path(shim)
             if backup_shim.exists():
-                shim.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup_shim, shim)
+                _durable_mkdir(shim.parent)
+                staging = shim.with_name(f".{shim.name}.{uuid.uuid4().hex}.restore")
+                try:
+                    shutil.copy2(backup_shim, staging)
+                    _fsync_file(staging)
+                    _durable_replace(staging, shim)
+                finally:
+                    staging.unlink(missing_ok=True)
+            else:
+                _durable_remove(shim)
 
     def _restore_state(self, failed_dir: Path) -> None:
         state_dir = Path(self.manifest.state_dir)
-        self._move_to_failed(state_dir, failed_dir / "state")
-        if self.manifest.state_existed:
-            state_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(self.backup_dir / "state", state_dir)
+        self._restore_tree(
+            self.backup_dir / "state",
+            state_dir,
+            failed_dir / "state",
+            self.manifest.state_existed,
+        )
 
     def rollback(self) -> None:
         original_phase = self.manifest.phase
         if original_phase == UpgradePhase.BACKING_UP:
             self.set_phase(UpgradePhase.ROLLED_BACK)
-            _release_matching_lock(self.lock_path, self.manifest.transaction_id)
+            self.close()
             return
         if original_phase == UpgradePhase.ROLLED_BACK:
-            _release_matching_lock(self.lock_path, self.manifest.transaction_id)
+            self.close()
             return
         if original_phase not in {
             UpgradePhase.INSTALLING,
@@ -569,14 +805,20 @@ class OpenClawUpgradeTransaction:
         try:
             self.set_phase(UpgradePhase.ROLLING_BACK)
             failed_dir = self.backup_dir / "failed"
-            failed_dir.mkdir(parents=True, exist_ok=True)
+            _durable_mkdir(failed_dir)
             self._restore_package(failed_dir)
             self._restore_shims()
             self._restore_state(failed_dir)
             self.set_phase(UpgradePhase.ROLLED_BACK)
-            _release_matching_lock(self.lock_path, self.manifest.transaction_id)
-        except Exception:
-            self.set_phase(UpgradePhase.ROLLBACK_FAILED)
+            self.close()
+        except Exception as error:
+            try:
+                self.set_phase(UpgradePhase.ROLLBACK_FAILED)
+            except Exception as persist_error:
+                error.add_note(f"also failed to persist rollback-failed: {persist_error}")
+            held_lock = self._held_lock
+            if held_lock is not None and not held_lock.released:
+                _RETAINED_FAILED_LOCKS[held_lock.owner_token] = held_lock
             raise
 
 

@@ -1,12 +1,13 @@
-import concurrent.futures
 import errno
+import gc
 import json
+import multiprocessing
 import os
 import shutil
 import tempfile
-import threading
 import unittest
 import unittest.mock
+import weakref
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -19,6 +20,109 @@ from deployer.openclaw_upgrade import (
     process_is_alive,
     prune_previous_committed_backups,
 )
+
+
+def _worker_installation(prefix_value: str) -> OpenClawInstallation:
+    prefix = Path(prefix_value)
+    package = prefix / "node_modules" / "openclaw"
+    return OpenClawInstallation(
+        version="2026.3.12",
+        prefix=prefix,
+        package_dir=package,
+        entry_path=package / "openclaw.mjs",
+        shim_paths=(prefix / "openclaw.cmd",),
+    )
+
+
+def _concurrent_create_worker(
+    microclaw_value: str,
+    state_value: str,
+    prefix_value: str,
+    barrier: object,
+    release: object,
+    outcomes: object,
+) -> None:
+    state = Path(state_value)
+    upgrade._default_state_dir = lambda: state
+    transaction = None
+    try:
+        barrier.wait(timeout=15)  # type: ignore[attr-defined]
+        transaction = OpenClawUpgradeTransaction.create(
+            microclaw_root=Path(microclaw_value),
+            state_dir=state,
+            target_version="2026.7.1-1",
+            installation=_worker_installation(prefix_value),
+        )
+    except upgrade.UpgradeInProgressError:
+        outcomes.put(("in-progress", None))  # type: ignore[attr-defined]
+        return
+    except Exception as error:
+        outcomes.put(("error", f"{type(error).__name__}: {error}"))  # type: ignore[attr-defined]
+        return
+
+    outcomes.put(("created", transaction.manifest.transaction_id))  # type: ignore[attr-defined]
+    release.wait(timeout=15)  # type: ignore[attr-defined]
+    transaction.close()
+
+
+def _concurrent_recovery_worker(
+    microclaw_value: str,
+    state_value: str,
+    prefix_value: str,
+    worker_id: int,
+    barrier: object,
+    release: object,
+    outcomes: object,
+) -> None:
+    state = Path(state_value)
+    upgrade._default_state_dir = lambda: state
+    transaction = None
+    try:
+        barrier.wait(timeout=15)  # type: ignore[attr-defined]
+        transaction = OpenClawUpgradeTransaction.load(
+            Path(microclaw_value),
+            trusted_prefixes=(Path(prefix_value),),
+        )
+        if transaction is None:
+            raise RuntimeError("active transaction disappeared")
+        transaction.record_validation(f"recovery-{worker_id}", True)
+    except upgrade.UpgradeInProgressError:
+        outcomes.put(("in-progress", None))  # type: ignore[attr-defined]
+        return
+    except Exception as error:
+        outcomes.put(("error", f"{type(error).__name__}: {error}"))  # type: ignore[attr-defined]
+        return
+
+    outcomes.put(("recovered", worker_id))  # type: ignore[attr-defined]
+    release.wait(timeout=15)  # type: ignore[attr-defined]
+    transaction.close()
+
+
+def _kernel_lock_owner_worker(
+    lock_path_value: str,
+    transaction_id: str,
+    mismatched_token: str | None,
+    release: object,
+    outcomes: object,
+) -> None:
+    try:
+        held = upgrade._acquire_transaction_lock(
+            Path(lock_path_value),
+            transaction_id,
+        )
+    except upgrade.UpgradeInProgressError:
+        outcomes.put(("in-progress", None))  # type: ignore[attr-defined]
+        return
+    except Exception as error:
+        outcomes.put(("error", f"{type(error).__name__}: {error}"))  # type: ignore[attr-defined]
+        return
+
+    outcomes.put(("acquired", held.owner_token))  # type: ignore[attr-defined]
+    if mismatched_token is not None:
+        outcomes.put(("mismatch-release", held.release(mismatched_token)))  # type: ignore[attr-defined]
+    release.wait(timeout=15)  # type: ignore[attr-defined]
+    if not held.released:
+        held.release(held.owner_token)
 
 
 class TrustedPrefixTests(unittest.TestCase):
@@ -68,33 +172,120 @@ class DurabilityHelperTests(unittest.TestCase):
         self.assertTrue(hasattr(upgrade, "_fsync_file"))
         self.assertTrue(hasattr(upgrade, "_fsync_directory"))
 
-    def test_atomic_json_fsyncs_file_before_replace_then_parent_directory(self) -> None:
+    def test_atomic_json_fsyncs_file_before_durable_replace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
             events: list[str] = []
             real_flush = upgrade._flush_and_fsync
-            real_replace = os.replace
+            real_replace = upgrade._durable_replace
 
             def flush(file: object) -> None:
                 events.append("file-fsync")
                 real_flush(file)
 
-            def replace(source: str, destination: str) -> None:
-                events.append("replace")
+            def replace(source: Path, destination: Path) -> None:
+                events.append("durable-replace")
                 real_replace(source, destination)
 
             with (
                 unittest.mock.patch.object(upgrade, "_flush_and_fsync", side_effect=flush),
-                unittest.mock.patch.object(upgrade.os, "replace", side_effect=replace),
-                unittest.mock.patch.object(
-                    upgrade,
-                    "_fsync_directory",
-                    side_effect=lambda _: events.append("directory-fsync"),
-                ),
+                unittest.mock.patch.object(upgrade, "_durable_replace", side_effect=replace),
             ):
                 upgrade._atomic_json_write(path, {"phase": "backing-up"})
 
-        self.assertEqual(events, ["file-fsync", "replace", "directory-fsync"])
+        self.assertEqual(events, ["file-fsync", "durable-replace"])
+
+    def test_posix_durable_replace_fsyncs_parent_after_os_replace(self) -> None:
+        parent = Path(tempfile.gettempdir())
+        source = parent / "source.tmp"
+        destination = parent / "destination.json"
+        events: list[tuple[str, Path, Path | None]] = []
+
+        with (
+            unittest.mock.patch.object(upgrade, "_is_windows", return_value=False),
+            unittest.mock.patch.object(
+                upgrade.os,
+                "replace",
+                side_effect=lambda old, new: events.append(("replace", Path(old), Path(new))),
+            ),
+            unittest.mock.patch.object(
+                upgrade,
+                "_fsync_directory",
+                side_effect=lambda path: events.append(("fsync", path, None)),
+            ),
+        ):
+            upgrade._durable_replace(source, destination)
+
+        self.assertEqual(
+            events,
+            [
+                ("replace", source, destination),
+                ("fsync", destination.parent, None),
+            ],
+        )
+
+    def test_posix_durable_mkdir_fsyncs_each_new_parent_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "one" / "two"
+            fsynced: list[Path] = []
+            with (
+                unittest.mock.patch.object(upgrade, "_is_windows", return_value=False),
+                unittest.mock.patch.object(
+                    upgrade,
+                    "_fsync_directory",
+                    side_effect=fsynced.append,
+                ),
+            ):
+                upgrade._durable_mkdir(target)
+
+            self.assertTrue(target.is_dir())
+            self.assertEqual(fsynced, [root, root / "one"])
+
+    def test_windows_move_file_ex_uses_write_through_and_replace_flags(self) -> None:
+        kernel32 = unittest.mock.MagicMock()
+        kernel32.MoveFileExW.return_value = True
+        source = Path(r"C:\upgrade\source")
+        destination = Path(r"C:\upgrade\destination")
+
+        with (
+            unittest.mock.patch.object(upgrade, "_is_windows", return_value=True),
+            unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+        ):
+            upgrade._durable_rename(source, destination)
+            upgrade._durable_replace(source, destination)
+
+        self.assertEqual(
+            kernel32.MoveFileExW.call_args_list,
+            [
+                unittest.mock.call(str(source), str(destination), 0x8),
+                unittest.mock.call(str(source), str(destination), 0x9),
+            ],
+        )
+
+    def test_windows_durable_mkdir_publishes_unique_sibling_with_write_through(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "created"
+            moves: list[tuple[Path, Path, bool]] = []
+
+            def move(source: Path, destination: Path, *, replace: bool) -> None:
+                moves.append((source, destination, replace))
+                os.rename(source, destination)
+
+            with (
+                unittest.mock.patch.object(upgrade, "_is_windows", return_value=True),
+                unittest.mock.patch.object(upgrade, "_windows_move_file", side_effect=move),
+            ):
+                upgrade._durable_mkdir(target)
+
+            self.assertTrue(target.is_dir())
+            self.assertEqual(len(moves), 1)
+            staging, destination, replace = moves[0]
+            self.assertEqual(staging.parent, root)
+            self.assertRegex(staging.name, r"^\.created\.[0-9a-f]{32}\.mkdir$")
+            self.assertEqual(destination, target)
+            self.assertFalse(replace)
 
     def test_atomic_json_propagates_file_fsync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -162,8 +353,11 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             "deployer.openclaw_upgrade._default_state_dir", return_value=self.state
         )
         self.state_patch.start()
+        self.transactions: list[OpenClawUpgradeTransaction] = []
 
     def tearDown(self) -> None:
+        for transaction in reversed(self.transactions):
+            transaction.close()
         self.state_patch.stop()
         self.temp.cleanup()
 
@@ -179,24 +373,35 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def _create(
         self, *, installation: OpenClawInstallation | None = None
     ) -> OpenClawUpgradeTransaction:
-        return OpenClawUpgradeTransaction.create(
+        transaction = OpenClawUpgradeTransaction.create(
             microclaw_root=self.microclaw,
             state_dir=self.state,
             target_version="2026.7.1-1",
             installation=installation or self._installation(),
         )
+        self.transactions.append(transaction)
+        return transaction
 
     def _load(self) -> OpenClawUpgradeTransaction | None:
-        return OpenClawUpgradeTransaction.load(
+        transaction = OpenClawUpgradeTransaction.load(
             self.microclaw,
             trusted_prefixes=(self.prefix,),
         )
+        if transaction is not None:
+            self.transactions.append(transaction)
+        return transaction
 
     @property
     def lock_path(self) -> Path:
         return self.microclaw / "upgrade" / "openclaw-upgrade.lock"
 
-    def _write_lock(self, *, owner_pid: int, transaction_id: str) -> None:
+    def _write_lock(
+        self,
+        *,
+        owner_pid: int,
+        transaction_id: str,
+        owner_token: str = "stale-owner-token",
+    ) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         self.lock_path.write_text(
             json.dumps(
@@ -204,10 +409,50 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                     "schema": 1,
                     "owner_pid": owner_pid,
                     "transaction_id": transaction_id,
+                    "owner_token": owner_token,
                 }
             ),
             encoding="utf-8",
         )
+
+    def _run_concurrent_workers(
+        self,
+        target: object,
+        *,
+        include_worker_id: bool = False,
+    ) -> list[tuple[str, object]]:
+        context = multiprocessing.get_context("spawn")
+        barrier = context.Barrier(2)
+        release = context.Event()
+        outcomes = context.Queue()
+        processes = []
+        for worker_id in range(2):
+            arguments: tuple[object, ...] = (
+                str(self.microclaw),
+                str(self.state),
+                str(self.prefix),
+            )
+            if include_worker_id:
+                arguments += (worker_id,)
+            arguments += (barrier, release, outcomes)
+            process = context.Process(target=target, args=arguments)
+            process.start()
+            processes.append(process)
+
+        try:
+            results = [outcomes.get(timeout=20) for _ in processes]
+        finally:
+            release.set()
+            for process in processes:
+                process.join(timeout=20)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=5)
+            outcomes.close()
+            outcomes.join_thread()
+
+        self.assertTrue(all(process.exitcode == 0 for process in processes))
+        return results
 
     def test_lock_exceptions_are_available(self) -> None:
         self.assertTrue(hasattr(upgrade, "UpgradeInProgressError"))
@@ -244,7 +489,8 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_create_writes_schema_v1_manifest_atomically(self) -> None:
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
-        lock_data = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        lock_data = upgrade._read_lock(self.lock_path)
+        self.assertIsNotNone(lock_data)
 
         self.assertEqual(
             set(data),
@@ -273,28 +519,24 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual(data["phase"], "backing-up")
         self.assertEqual(data["validation_results"], {})
         self.assertEqual(
-            lock_data,
+            set(lock_data),
             {
-                "schema": 1,
-                "owner_pid": os.getpid(),
-                "transaction_id": tx.manifest.transaction_id,
+                "schema",
+                "owner_pid",
+                "transaction_id",
+                "owner_token",
             },
         )
+        self.assertEqual(lock_data["owner_pid"], os.getpid())  # type: ignore[index]
+        self.assertEqual(
+            lock_data["transaction_id"],  # type: ignore[index]
+            tx.manifest.transaction_id,
+        )
+        self.assertRegex(lock_data["owner_token"], r"^[0-9a-f]{32}$")  # type: ignore[index]
         self.assertEqual(list(tx.manifest_path.parent.glob("*.tmp")), [])
 
     def test_exclusive_lock_allows_exactly_one_create_without_manifest_overwrite(self) -> None:
-        barrier = threading.Barrier(2)
-
-        def attempt_create() -> tuple[str, str | None]:
-            barrier.wait()
-            try:
-                transaction = self._create()
-                return ("created", transaction.manifest.transaction_id)
-            except upgrade.UpgradeInProgressError:
-                return ("in-progress", None)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            outcomes = list(executor.map(lambda _: attempt_create(), range(2)))
+        outcomes = self._run_concurrent_workers(_concurrent_create_worker)
 
         self.assertCountEqual([outcome for outcome, _ in outcomes], ["created", "in-progress"])
         created_id = next(
@@ -306,39 +548,157 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         lock = json.loads(self.lock_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["transaction_id"], created_id)
         self.assertEqual(lock["transaction_id"], created_id)
+        self.assertEqual(
+            len(list((self.microclaw / "upgrade").glob("openclaw-upgrade.json"))),
+            1,
+        )
 
-    def test_dead_owner_lock_without_recoverable_manifest_is_replaced_once(self) -> None:
+    def test_existing_unlocked_stale_lock_allows_exactly_one_concurrent_owner(self) -> None:
         stale_id = "20260720T000000Z-deadbeef"
-        self._write_lock(owner_pid=0, transaction_id=stale_id)
+        self._write_lock(owner_pid=os.getpid(), transaction_id=stale_id)
 
-        tx = self._create()
+        outcomes = self._run_concurrent_workers(_concurrent_create_worker)
 
+        self.assertCountEqual([outcome for outcome, _ in outcomes], ["created", "in-progress"])
+        created_id = next(
+            transaction_id for outcome, transaction_id in outcomes if outcome == "created"
+        )
         lock_data = json.loads(self.lock_path.read_text(encoding="utf-8"))
         self.assertNotEqual(lock_data["transaction_id"], stale_id)
-        self.assertEqual(lock_data["transaction_id"], tx.manifest.transaction_id)
+        self.assertEqual(lock_data["transaction_id"], created_id)
 
-    def test_dead_owner_lock_with_active_manifest_requires_recovery(self) -> None:
+    def test_active_manifest_requires_recovery_after_owner_releases_lock(self) -> None:
         tx = self._create()
         original_manifest = tx.manifest_path.read_bytes()
-        self._write_lock(owner_pid=0, transaction_id=tx.manifest.transaction_id)
-        original_lock = self.lock_path.read_bytes()
+        tx.close()
 
         with self.assertRaises(upgrade.UpgradeRecoveryRequiredError):
             self._create()
 
         self.assertEqual(tx.manifest_path.read_bytes(), original_manifest)
-        self.assertEqual(self.lock_path.read_bytes(), original_lock)
 
     def test_active_manifest_without_lock_requires_recovery(self) -> None:
         tx = self._create()
         original_manifest = tx.manifest_path.read_bytes()
+        tx.close()
         self.lock_path.unlink()
 
         with self.assertRaises(upgrade.UpgradeRecoveryRequiredError):
             self._create()
 
         self.assertEqual(tx.manifest_path.read_bytes(), original_manifest)
-        self.assertFalse(self.lock_path.exists())
+        self.assertTrue(self.lock_path.exists())
+
+    def test_two_recovery_processes_cannot_both_mutate_active_manifest(self) -> None:
+        tx = self._create()
+        tx.backup()
+        tx.close()
+
+        outcomes = self._run_concurrent_workers(
+            _concurrent_recovery_worker,
+            include_worker_id=True,
+        )
+
+        self.assertCountEqual(
+            [outcome for outcome, _ in outcomes],
+            ["recovered", "in-progress"],
+        )
+        manifest = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["validation_results"]), 1)
+
+    def test_owner_token_mismatch_cannot_release_held_kernel_lock(self) -> None:
+        context = multiprocessing.get_context("spawn")
+
+        def start_owner(
+            transaction_id: str,
+            mismatched_token: str | None,
+        ) -> tuple[object, object, object]:
+            release = context.Event()
+            outcomes = context.Queue()
+            process = context.Process(
+                target=_kernel_lock_owner_worker,
+                args=(
+                    str(self.lock_path),
+                    transaction_id,
+                    mismatched_token,
+                    release,
+                    outcomes,
+                ),
+            )
+            process.start()
+            return process, release, outcomes
+
+        first, release_first, first_outcomes = start_owner(
+            "20260720T000000Z-aaaaaaaa",
+            None,
+        )
+        first_status, first_token = first_outcomes.get(timeout=20)
+        self.assertEqual(first_status, "acquired")
+        release_first.set()
+        first.join(timeout=20)
+        self.assertEqual(first.exitcode, 0)
+        first_outcomes.close()
+        first_outcomes.join_thread()
+
+        second, release_second, second_outcomes = start_owner(
+            "20260720T000000Z-bbbbbbbb",
+            first_token,
+        )
+        second_status, second_token = second_outcomes.get(timeout=20)
+        mismatch_status, mismatch_result = second_outcomes.get(timeout=20)
+        self.assertEqual(second_status, "acquired")
+        self.assertNotEqual(second_token, first_token)
+        self.assertEqual((mismatch_status, mismatch_result), ("mismatch-release", False))
+
+        contender, release_contender, contender_outcomes = start_owner(
+            "20260720T000000Z-cccccccc",
+            None,
+        )
+        try:
+            self.assertEqual(
+                contender_outcomes.get(timeout=20),
+                ("in-progress", None),
+            )
+        finally:
+            release_contender.set()
+            contender.join(timeout=20)
+            release_second.set()
+            second.join(timeout=20)
+            contender_outcomes.close()
+            contender_outcomes.join_thread()
+            second_outcomes.close()
+            second_outcomes.join_thread()
+
+        self.assertEqual(contender.exitcode, 0)
+        self.assertEqual(second.exitcode, 0)
+
+    def test_kernel_lock_is_acquired_before_initializing_empty_lock_file(self) -> None:
+        lock_path = self.microclaw / "empty-lock" / "openclaw-upgrade.lock"
+        events: list[str] = []
+        real_lock = upgrade._lock_file_nonblocking
+        real_flush = upgrade._flush_and_fsync
+
+        def lock(lock_file: object) -> None:
+            events.append("lock")
+            real_lock(lock_file)
+
+        def flush(lock_file: object) -> None:
+            events.append("flush")
+            real_flush(lock_file)
+
+        with (
+            unittest.mock.patch.object(upgrade, "_lock_file_nonblocking", side_effect=lock),
+            unittest.mock.patch.object(upgrade, "_flush_and_fsync", side_effect=flush),
+        ):
+            held = upgrade._acquire_transaction_lock(
+                lock_path,
+                "20260720T000000Z-aaaaaaaa",
+            )
+
+        try:
+            self.assertEqual(events, ["lock", "flush"])
+        finally:
+            held.release(held.owner_token)
 
     def test_set_phase_persists_public_phase_updates(self) -> None:
         tx = self._create()
@@ -361,6 +721,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         )
 
         tx = self._create(installation=installation)
+        tx.close()
         loaded = self._load()
 
         self.assertIsNone(tx.manifest.source_version)
@@ -418,6 +779,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                     installation=self._installation(),
                 )
                 tx.backup()
+                tx.close()
 
             backup_state = tx.backup_dir / "state"
             self.assertEqual((backup_state / "logs").read_text(), "keep-file")
@@ -443,6 +805,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                     installation=self._installation(),
                 )
                 tx.backup()
+                tx.close()
 
             backup_state = tx.backup_dir / "state"
             self.assertFalse((backup_state / "logs").exists())
@@ -464,18 +827,116 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertNotIn("transaction.json", inventory)
         self.assertNotIn("backup-files.json", inventory)
 
+    def test_backup_flushes_staging_and_publishes_before_installing(self) -> None:
+        tx = self._create()
+        events: list[tuple[str, Path | None, str | None]] = []
+        real_flush_tree = upgrade._fsync_payload_tree
+        real_atomic_write = upgrade._atomic_json_write
+        real_rename = upgrade._durable_rename
+
+        def flush_tree(path: Path) -> None:
+            events.append(("payload-flush", path, None))
+            real_flush_tree(path)
+
+        def write_json(path: Path, payload: dict[str, object]) -> None:
+            if path.name == "backup-files.json":
+                events.append(("inventory", path, None))
+            if payload.get("phase") == UpgradePhase.INSTALLING.value:
+                events.append(("installing", path, UpgradePhase.INSTALLING.value))
+            real_atomic_write(path, payload)
+
+        def rename(source: Path, destination: Path, *, replace: bool = False) -> None:
+            if destination == tx.backup_dir:
+                events.append(("publish", source, None))
+            real_rename(source, destination, replace=replace)
+
+        with (
+            unittest.mock.patch.object(upgrade, "_fsync_payload_tree", side_effect=flush_tree),
+            unittest.mock.patch.object(upgrade, "_atomic_json_write", side_effect=write_json),
+            unittest.mock.patch.object(upgrade, "_durable_rename", side_effect=rename),
+        ):
+            tx.backup()
+
+        publish_index = next(
+            index for index, (event, _, _) in enumerate(events) if event == "publish"
+        )
+        staging = events[publish_index][1]
+        self.assertIsNotNone(staging)
+        self.assertEqual(staging.parent, tx.backup_dir.parent)  # type: ignore[union-attr]
+        self.assertRegex(
+            staging.name,  # type: ignore[union-attr]
+            rf"^\.{tx.manifest.transaction_id}\.[0-9a-f]{{32}}\.staging$",
+        )
+        payload_indexes = [
+            index for index, (event, _, _) in enumerate(events) if event == "payload-flush"
+        ]
+        inventory_index = next(
+            index for index, (event, _, _) in enumerate(events) if event == "inventory"
+        )
+        installing_indexes = [
+            index for index, (event, _, _) in enumerate(events) if event == "installing"
+        ]
+        self.assertEqual(len(payload_indexes), 3)
+        self.assertLess(max(payload_indexes), inventory_index)
+        self.assertLess(inventory_index, publish_index)
+        self.assertTrue(all(publish_index < index for index in installing_indexes))
+        self.assertFalse(staging.exists())  # type: ignore[union-attr]
+        published_manifest = json.loads(
+            (tx.backup_dir / "transaction.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(published_manifest["phase"], UpgradePhase.INSTALLING.value)
+
+    def test_backup_publication_failure_keeps_backing_up_and_live_data_untouched(self) -> None:
+        tx = self._create()
+        package_before = (self.package / "old.txt").read_bytes()
+        state_before = (self.state / "openclaw.json").read_bytes()
+        real_rename = upgrade._durable_rename
+
+        def fail_publication(
+            source: Path,
+            destination: Path,
+            *,
+            replace: bool = False,
+        ) -> None:
+            if destination == tx.backup_dir:
+                raise OSError(errno.EIO, "publication failed")
+            real_rename(source, destination, replace=replace)
+
+        with (
+            unittest.mock.patch.object(
+                upgrade,
+                "_durable_rename",
+                side_effect=fail_publication,
+            ),
+            self.assertRaisesRegex(OSError, "publication failed"),
+        ):
+            tx.backup()
+
+        persisted = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(tx.manifest.phase, UpgradePhase.BACKING_UP)
+        self.assertEqual(persisted["phase"], UpgradePhase.BACKING_UP.value)
+        self.assertFalse(tx.backup_dir.exists())
+        self.assertEqual((self.package / "old.txt").read_bytes(), package_before)
+        self.assertEqual((self.state / "openclaw.json").read_bytes(), state_before)
+        staging = list(tx.backup_dir.parent.glob(f".{tx.manifest.transaction_id}.*.staging"))
+        self.assertEqual(len(staging), 1)
+        self.assertTrue((staging[0] / "backup-files.json").exists())
+        self.assertTrue((staging[0] / "transaction.json").exists())
+
     def test_backup_fsyncs_all_payload_before_inventory_and_installing_phase(self) -> None:
         tx = self._create()
-        events: list[tuple[str, str, str | None]] = []
+        events: list[tuple[str, object, str | None]] = []
+        published_staging: list[Path] = []
         real_atomic_write = upgrade._atomic_json_write
         real_flush = upgrade._flush_and_fsync
+        real_rename = upgrade._durable_rename
 
         def record_file(path: Path) -> None:
-            events.append(("file-fsync", path.relative_to(tx.backup_dir).as_posix(), None))
+            events.append(("file-fsync", path, None))
 
         def record_directory(path: Path) -> None:
-            if path.is_relative_to(tx.backup_dir):
-                events.append(("directory-fsync", path.relative_to(tx.backup_dir).as_posix(), None))
+            if path.is_relative_to(tx.backup_root):
+                events.append(("directory-fsync", path, None))
 
         def record_json(path: Path, payload: dict[str, object]) -> None:
             events.append(
@@ -490,6 +951,11 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         def record_flush(file: object) -> None:
             events.append(("content-fsync", Path(file.name).name, None))  # type: ignore[attr-defined]
             real_flush(file)
+
+        def record_rename(source: Path, destination: Path, *, replace: bool = False) -> None:
+            if destination == tx.backup_dir:
+                published_staging.append(source)
+            real_rename(source, destination, replace=replace)
 
         with (
             unittest.mock.patch.object(upgrade, "_fsync_file", side_effect=record_file),
@@ -508,11 +974,22 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 "_flush_and_fsync",
                 side_effect=record_flush,
             ),
+            unittest.mock.patch.object(
+                upgrade,
+                "_durable_rename",
+                side_effect=record_rename,
+            ),
         ):
             tx.backup()
 
+        self.assertEqual(len(published_staging), 1)
+        staging = published_staging[0]
         inventory = json.loads((tx.backup_dir / "backup-files.json").read_text(encoding="utf-8"))
-        fsynced_files = {path for event, path, _ in events if event == "file-fsync"}
+        fsynced_files = {
+            path.relative_to(staging).as_posix()
+            for event, path, _ in events
+            if event == "file-fsync" and isinstance(path, Path)
+        }
         self.assertEqual(fsynced_files, set(inventory))
         self.assertNotIn("transaction.json", fsynced_files)
 
@@ -522,7 +999,13 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             for path in [tx.backup_dir / root_name, *(tx.backup_dir / root_name).rglob("*")]
             if path.is_dir()
         }
-        fsynced_directories = {path for event, path, _ in events if event == "directory-fsync"}
+        fsynced_directories = {
+            path.relative_to(staging).as_posix()
+            for event, path, _ in events
+            if event == "directory-fsync"
+            and isinstance(path, Path)
+            and path.is_relative_to(staging)
+        }
         self.assertTrue(expected_directories.issubset(fsynced_directories))
 
         inventory_index = events.index(("json-write", "backup-files.json", None))
@@ -535,7 +1018,9 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             index
             for index, (event, path, _) in enumerate(events)
             if event in {"file-fsync", "directory-fsync"}
-            and path in fsynced_files | expected_directories
+            and isinstance(path, Path)
+            and path.is_relative_to(staging)
+            and path.relative_to(staging).as_posix() in fsynced_files | expected_directories
         ]
         self.assertLess(max(payload_indexes), inventory_index)
         inventory_fsync_index = next(
@@ -575,7 +1060,147 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual(self.shim.read_text(), "@old")
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
         self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLED_BACK)
-        self.assertFalse(self.lock_path.exists())
+        self.assertTrue(self.lock_path.exists())
+
+    def test_rollback_flushes_staging_before_durable_restore_and_rolled_back(self) -> None:
+        tx = self._create()
+        tx.backup()
+        (self.package / "old.txt").write_text("new-package", encoding="utf-8")
+        self.shim.write_text("@new", encoding="utf-8")
+        (self.state / "openclaw.json").write_text("new-state", encoding="utf-8")
+        events: list[tuple[str, Path | UpgradePhase, Path | None]] = []
+        real_flush_tree = upgrade._fsync_payload_tree
+        real_fsync_file = upgrade._fsync_file
+        real_rename = upgrade._durable_rename
+        real_replace = upgrade._durable_replace
+        real_set_phase = tx.set_phase
+
+        def flush_tree(path: Path) -> None:
+            events.append(("tree-flush", path, None))
+            real_flush_tree(path)
+
+        def fsync_file(path: Path) -> None:
+            if path.parent == self.shim.parent and path.name.endswith(".restore"):
+                events.append(("shim-flush", path, None))
+            real_fsync_file(path)
+
+        def rename(source: Path, destination: Path, *, replace: bool = False) -> None:
+            if destination in {self.package, self.state}:
+                events.append(("tree-publish", source, destination))
+            real_rename(source, destination, replace=replace)
+
+        def replace(source: Path, destination: Path) -> None:
+            if destination == self.shim:
+                events.append(("shim-publish", source, destination))
+            real_replace(source, destination)
+
+        def set_phase(phase: UpgradePhase) -> None:
+            events.append(("phase", phase, None))
+            real_set_phase(phase)
+
+        with (
+            unittest.mock.patch.object(upgrade, "_fsync_payload_tree", side_effect=flush_tree),
+            unittest.mock.patch.object(upgrade, "_fsync_file", side_effect=fsync_file),
+            unittest.mock.patch.object(upgrade, "_durable_rename", side_effect=rename),
+            unittest.mock.patch.object(upgrade, "_durable_replace", side_effect=replace),
+            unittest.mock.patch.object(tx, "set_phase", side_effect=set_phase),
+        ):
+            tx.rollback()
+
+        rolled_back_index = events.index(("phase", UpgradePhase.ROLLED_BACK, None))
+        for live in (self.package, self.state):
+            publish_index = next(
+                index
+                for index, event in enumerate(events)
+                if event[0] == "tree-publish" and event[2] == live
+            )
+            staging = events[publish_index][1]
+            flush_index = events.index(("tree-flush", staging, None))
+            self.assertEqual(staging.parent, live.parent)  # type: ignore[union-attr]
+            self.assertLess(flush_index, publish_index)
+            self.assertLess(publish_index, rolled_back_index)
+
+        shim_publish_index = next(
+            index for index, event in enumerate(events) if event[0] == "shim-publish"
+        )
+        shim_staging = events[shim_publish_index][1]
+        shim_flush_index = events.index(("shim-flush", shim_staging, None))
+        self.assertLess(shim_flush_index, shim_publish_index)
+        self.assertLess(shim_publish_index, rolled_back_index)
+
+    def test_restore_flush_failure_never_writes_rolled_back_and_retains_lock(self) -> None:
+        tx = self._create()
+        tx.backup()
+        (self.package / "old.txt").write_text("failed-package", encoding="utf-8")
+        (self.state / "openclaw.json").write_text("failed-state", encoding="utf-8")
+
+        with (
+            unittest.mock.patch.object(
+                upgrade,
+                "_fsync_payload_tree",
+                side_effect=OSError(errno.EIO, "restore flush failed"),
+            ),
+            self.assertRaisesRegex(OSError, "restore flush failed"),
+        ):
+            tx.rollback()
+
+        self.assertEqual((self.package / "old.txt").read_text(), "failed-package")
+        self.assertEqual((self.state / "openclaw.json").read_text(), "failed-state")
+        for manifest_path in (tx.manifest_path, tx.backup_dir / "transaction.json"):
+            persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["phase"], UpgradePhase.ROLLBACK_FAILED.value)
+            self.assertNotEqual(persisted["phase"], UpgradePhase.ROLLED_BACK.value)
+        with self.assertRaises(upgrade.UpgradeInProgressError):
+            OpenClawUpgradeTransaction.load(
+                self.microclaw,
+                trusted_prefixes=(self.prefix,),
+            )
+
+        tx.close()
+        resumed = self._load()
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed.manifest.phase, UpgradePhase.ROLLBACK_FAILED)  # type: ignore[union-attr]
+
+    def test_rollback_failed_lock_survives_transaction_garbage_collection(self) -> None:
+        tx = self._create()
+        tx.backup()
+        with (
+            unittest.mock.patch.object(
+                upgrade,
+                "_fsync_payload_tree",
+                side_effect=OSError(errno.EIO, "restore flush failed"),
+            ),
+            self.assertRaisesRegex(OSError, "restore flush failed"),
+        ):
+            tx.rollback()
+
+        lock_data = upgrade._read_lock(self.lock_path)
+        self.assertIsNotNone(lock_data)
+        owner_token = lock_data["owner_token"]  # type: ignore[index]
+        transaction_reference = weakref.ref(tx)
+        self.transactions.remove(tx)
+        del tx
+        gc.collect()
+        self.assertIsNone(transaction_reference())
+
+        recovered = None
+        blocked = False
+        try:
+            recovered = OpenClawUpgradeTransaction.load(
+                self.microclaw,
+                trusted_prefixes=(self.prefix,),
+            )
+        except upgrade.UpgradeInProgressError:
+            blocked = True
+        finally:
+            if recovered is not None:
+                recovered.close()
+            retained_locks = getattr(upgrade, "_RETAINED_FAILED_LOCKS", {})
+            retained = retained_locks.pop(owner_token, None)
+            if retained is not None:
+                retained.release(owner_token)
+
+        self.assertTrue(blocked)
 
     def test_rollback_removes_new_shim_without_backup(self) -> None:
         new_shim = self.prefix / "openclaw.ps1"
@@ -610,6 +1235,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_tampered_manifest_paths_are_rejected(self) -> None:
         tx = self._create()
         original = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         tampered_values = {
             "package_dir": str(self.root / "outside-package"),
             "shim_paths": [str(self.root / "outside-shim.cmd")],
@@ -628,6 +1254,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_tampering_prefix_package_and_shims_together_is_rejected(self) -> None:
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         outside = self.root / "attacker-controlled"
         data["prefix"] = str(outside)
         data["package_dir"] = str(outside / "node_modules" / "openclaw")
@@ -639,20 +1266,26 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
     def test_load_accepts_explicit_trusted_root(self) -> None:
         tx = self._create()
+        tx.close()
 
         loaded = OpenClawUpgradeTransaction.load(
             self.microclaw,
             trusted_prefixes=(self.prefix,),
         )
+        if loaded is not None:
+            self.transactions.append(loaded)
 
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.manifest.transaction_id, tx.manifest.transaction_id)  # type: ignore[union-attr]
 
     def test_load_accepts_default_appdata_npm_root(self) -> None:
         tx = self._create()
+        tx.close()
 
         with unittest.mock.patch.dict(os.environ, {"APPDATA": str(self.root)}):
             loaded = OpenClawUpgradeTransaction.load(self.microclaw)
+        if loaded is not None:
+            self.transactions.append(loaded)
 
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.manifest.transaction_id, tx.manifest.transaction_id)  # type: ignore[union-attr]
@@ -660,6 +1293,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_tampered_manifest_backup_dir_cannot_equal_backup_root(self) -> None:
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         data["backup_dir"] = str(tx.backup_root)
         tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
 
@@ -669,6 +1303,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_tampered_manifest_transaction_id_cannot_be_dot(self) -> None:
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         data["transaction_id"] = "."
         data["backup_dir"] = str(tx.backup_root)
         tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
@@ -679,6 +1314,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_tampered_manifest_transaction_id_must_match_backup_dir_name(self) -> None:
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         data["transaction_id"] = "20260720T043308Z-aaaaaaaa"
         tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
 
@@ -688,6 +1324,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_package_dir_must_match_an_openclaw_package_location(self) -> None:
         tx = self._create()
         original = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         invalid_packages = (
             self.prefix,
             self.prefix / "node_modules",
@@ -721,6 +1358,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_shims_must_be_named_direct_children_of_prefix(self) -> None:
         tx = self._create()
         original = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        tx.close()
         invalid_shims = (
             self.prefix,
             self.prefix / "other.cmd",
@@ -775,6 +1413,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual((failed / "package" / "old.txt").read_text(), "failed-package")
         self.assertEqual((failed / "state" / "openclaw.json").read_text(), "failed-state")
 
+        tx.close()
         resumed = self._load()
         self.assertIsNotNone(resumed)
 
@@ -785,17 +1424,17 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual((failed / "package" / "old.txt").read_text(), "failed-package")
         self.assertEqual((failed / "state" / "openclaw.json").read_text(), "failed-state")
         self.assertEqual(resumed.manifest.phase, UpgradePhase.ROLLED_BACK)  # type: ignore[union-attr]
-        self.assertFalse(self.lock_path.exists())
+        self.assertTrue(self.lock_path.exists())
 
-    def test_loaded_recovery_releases_matching_dead_owner_lock(self) -> None:
+    def test_loaded_recovery_acquires_existing_unlocked_lock(self) -> None:
         tx = self._create()
         tx.backup()
-        self._write_lock(owner_pid=0, transaction_id=tx.manifest.transaction_id)
+        tx.close()
 
         resumed = self._load()
         resumed.rollback()  # type: ignore[union-attr]
 
-        self.assertFalse(self.lock_path.exists())
+        self.assertTrue(self.lock_path.exists())
 
     def test_successful_rollback_never_removes_mismatched_lock_identity(self) -> None:
         tx = self._create()
@@ -853,7 +1492,23 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         tx.commit()
 
         self.assertEqual(tx.manifest.phase, UpgradePhase.COMMITTED)
-        self.assertFalse(self.lock_path.exists())
+        self.assertTrue(self.lock_path.exists())
+
+    def test_closed_terminal_transaction_cannot_overwrite_new_active_owner(self) -> None:
+        original = self._create()
+        original.backup()
+        original.mark_verifying()
+        original.record_validation("version", True)
+        original.commit()
+        current = self._create()
+        current_manifest = current.manifest_path.read_bytes()
+
+        with self.assertRaisesRegex(RuntimeError, "no longer owns"):
+            original.record_validation("stale-writer", True)
+
+        self.assertEqual(current.manifest_path.read_bytes(), current_manifest)
+        persisted = json.loads(current.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["transaction_id"], current.manifest.transaction_id)
 
     def test_process_is_alive_handles_current_and_invalid_pids(self) -> None:
         self.assertTrue(process_is_alive(os.getpid()))
