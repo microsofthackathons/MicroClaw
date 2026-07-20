@@ -128,6 +128,7 @@ contains:
 
 - schema version;
 - transaction ID;
+- installer process ID;
 - source and target OpenClaw versions;
 - npm prefix and package entry path;
 - state directory;
@@ -244,8 +245,10 @@ Rollback never depends on npm, a registry, or the network.
 
 If the installer or machine exits during an active transaction, the next
 installer run resumes rollback. The desktop checks the transaction before
-starting the Gateway; when it finds an active transaction, it performs the
-same path-validated restore or blocks Gateway startup if recovery cannot be
+starting the Gateway. When the recorded installer process is still alive, the
+desktop reports that an upgrade is in progress and does not start the Gateway.
+When the owner process is no longer alive, the desktop performs the same
+path-validated restore or blocks Gateway startup if recovery cannot be
 completed.
 
 If rollback fails, the transaction becomes `rollback-failed`. MicroClaw must
@@ -308,6 +311,8 @@ helpers move to their 2026.7.1-1 public subpaths:
 | `buildChannelConfigSchema` | `openclaw/plugin-sdk/channel-core` |
 | `normalizeAccountId` | `openclaw/plugin-sdk/account-core` |
 | `withFileLock` | `openclaw/plugin-sdk/file-lock` |
+| `createTypingCallbacks` | `openclaw/plugin-sdk/channel-outbound` |
+| `resolveSenderCommandAuthorizationWithRuntime` | `openclaw/plugin-sdk/command-auth` |
 | `resolveDirectDmAuthorizationOutcome` | `openclaw/plugin-sdk/command-auth` |
 | `resolvePreferredOpenClawTmpDir` | `openclaw/plugin-sdk/temp-path` |
 | `stripMarkdown` | `openclaw/plugin-sdk/text-chunking` |
