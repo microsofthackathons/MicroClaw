@@ -166,6 +166,35 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertIn("package/old.txt", inventory)
         self.assertEqual(tx.manifest.phase, UpgradePhase.INSTALLING)
 
+    def test_backup_excludes_log_files_but_preserves_log_named_directories(self) -> None:
+        audit_log = self.state / "audit.log"
+        audit_log.mkdir()
+        (audit_log / "events.json").write_text("keep", encoding="utf-8")
+        (self.state / "gateway.log").write_text("skip", encoding="utf-8")
+
+        tx = self._create()
+        tx.backup()
+
+        backup_state = tx.backup_dir / "state"
+        self.assertEqual((backup_state / "audit.log" / "events.json").read_text(), "keep")
+        self.assertFalse((backup_state / "gateway.log").exists())
+
+    def test_backup_inventory_contains_only_copied_payload_files(self) -> None:
+        tx = self._create()
+        tx.backup()
+
+        inventory = json.loads((tx.backup_dir / "backup-files.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(
+            {
+                "package/old.txt",
+                "shims/openclaw.cmd",
+                "state/openclaw.json",
+            }.issubset(inventory)
+        )
+        self.assertNotIn("transaction.json", inventory)
+        self.assertNotIn("backup-files.json", inventory)
+
     def test_backup_cannot_install_after_expected_package_disappears(self) -> None:
         tx = self._create()
         shutil.rmtree(self.package)
@@ -388,6 +417,24 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertTrue(process_is_alive(os.getpid()))
         self.assertFalse(process_is_alive(0))
         self.assertFalse(process_is_alive(-1))
+
+    @unittest.skipUnless(os.name == "nt", "Windows process API test")
+    def test_process_is_alive_checks_windows_process_exit_code(self) -> None:
+        for exit_code, expected_alive in ((259, True), (0, False)):
+            with self.subTest(exit_code=exit_code):
+                kernel32 = unittest.mock.MagicMock()
+                kernel32.OpenProcess.return_value = 123
+
+                def set_exit_code(_handle: int, result: object, code: int = exit_code) -> bool:
+                    result._obj.value = code  # type: ignore[attr-defined]
+                    return True
+
+                kernel32.GetExitCodeProcess.side_effect = set_exit_code
+                with unittest.mock.patch("ctypes.WinDLL", return_value=kernel32):
+                    self.assertEqual(process_is_alive(456), expected_alive)
+
+                kernel32.GetExitCodeProcess.assert_called_once()
+                kernel32.CloseHandle.assert_called_once_with(123)
 
 
 class PruneCommittedBackupsTests(unittest.TestCase):

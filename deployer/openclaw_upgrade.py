@@ -219,7 +219,9 @@ class OpenClawUpgradeTransaction:
         self._persist()
 
     def _ignore_state(self, directory: str, names: list[str]) -> set[str]:
-        ignored = {name for name in names if name.endswith(".log")}
+        ignored = {
+            name for name in names if name.endswith(".log") and (Path(directory) / name).is_file()
+        }
         if Path(directory).resolve(strict=False) == Path(self.manifest.state_dir).resolve(
             strict=False
         ):
@@ -265,10 +267,14 @@ class OpenClawUpgradeTransaction:
                 ignore=self._ignore_state,
             )
 
+        metadata_files = {
+            self.backup_dir / "transaction.json",
+            self.backup_dir / "backup-files.json",
+        }
         inventory = {
             path.relative_to(self.backup_dir).as_posix(): path.stat().st_size
             for path in self.backup_dir.rglob("*")
-            if path.is_file()
+            if path.is_file() and path not in metadata_files
         }
         _atomic_json_write(self.backup_dir / "backup-files.json", inventory)
         self._set_phase(UpgradePhase.INSTALLING)
@@ -357,13 +363,21 @@ def process_is_alive(pid: int) -> bool:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
         handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
         if not handle:
             return ctypes.get_last_error() == 5
         try:
-            return True
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == 259
         finally:
             kernel32.CloseHandle(handle)
     try:
