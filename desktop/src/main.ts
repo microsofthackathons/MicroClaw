@@ -18,6 +18,10 @@ import { StudioBackendManager } from "./studio-backend-manager";
 import { t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import {
+  recoverInterruptedOpenClawUpgrade,
+  UpgradeInProgressError,
+} from "./openclaw-upgrade-recovery";
+import {
   getOpenClawStateDir,
   loadStateDirEnv,
   resolveBuiltinSkillsDir,
@@ -4305,6 +4309,24 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  try {
+    const home = app.getPath("home");
+    const recovery = recoverInterruptedOpenClawUpgrade(path.join(home, ".microclaw"), {
+      expectedStateDir: path.join(home, ".openclaw"),
+    });
+    if (recovery.status === "rolled-back") {
+      console.log("[upgrade] Restored the previous OpenClaw package and state");
+    }
+  } catch (error) {
+    const inProgress = error instanceof UpgradeInProgressError;
+    dialog.showErrorBox(
+      inProgress ? "MicroClaw upgrade in progress" : "OpenClaw recovery failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    app.quit();
+    return;
+  }
+
   registerIpcHandlers();
 
   // Sync auto-start with OS
