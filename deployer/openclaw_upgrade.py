@@ -219,13 +219,16 @@ class OpenClawUpgradeTransaction:
         self._persist()
 
     def _ignore_state(self, directory: str, names: list[str]) -> set[str]:
+        current_dir = Path(directory)
         ignored = {
-            name for name in names if name.endswith(".log") and (Path(directory) / name).is_file()
+            name for name in names if name.endswith(".log") and (current_dir / name).is_file()
         }
-        if Path(directory).resolve(strict=False) == Path(self.manifest.state_dir).resolve(
-            strict=False
-        ):
-            ignored.update({"compile-cache", "logs"}.intersection(names))
+        if current_dir.resolve(strict=False) == Path(self.manifest.state_dir).resolve(strict=False):
+            ignored.update(
+                name
+                for name in ("compile-cache", "logs")
+                if name in names and (current_dir / name).is_dir()
+            )
         return ignored
 
     def _shim_backup_path(self, shim: Path) -> Path:

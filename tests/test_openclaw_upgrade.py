@@ -179,6 +179,55 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual((backup_state / "audit.log" / "events.json").read_text(), "keep")
         self.assertFalse((backup_state / "gateway.log").exists())
 
+    def test_backup_preserves_regular_logs_files_but_excludes_logs_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / ".openclaw"
+            state_dir.mkdir()
+            (state_dir / "openclaw.json").write_text('{"gateway":{}}', encoding="utf-8")
+            (state_dir / "logs").write_text("keep-file", encoding="utf-8")
+            (state_dir / "compile-cache").write_text("keep-file", encoding="utf-8")
+
+            with unittest.mock.patch(
+                "deployer.openclaw_upgrade._default_state_dir", return_value=state_dir
+            ):
+                tx = OpenClawUpgradeTransaction.create(
+                    microclaw_root=self.microclaw,
+                    state_dir=state_dir,
+                    target_version="2026.7.1-1",
+                    installation=self._installation(),
+                )
+                tx.backup()
+
+            backup_state = tx.backup_dir / "state"
+            self.assertEqual((backup_state / "logs").read_text(), "keep-file")
+            self.assertEqual((backup_state / "compile-cache").read_text(), "keep-file")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / ".openclaw"
+            state_dir.mkdir()
+            (state_dir / "openclaw.json").write_text('{"gateway":{}}', encoding="utf-8")
+            (state_dir / "logs").mkdir()
+            (state_dir / "logs" / "events.json").write_text("skip", encoding="utf-8")
+            (state_dir / "compile-cache").mkdir()
+            (state_dir / "compile-cache" / "bytecode").write_text("skip", encoding="utf-8")
+
+            with unittest.mock.patch(
+                "deployer.openclaw_upgrade._default_state_dir", return_value=state_dir
+            ):
+                tx = OpenClawUpgradeTransaction.create(
+                    microclaw_root=self.microclaw,
+                    state_dir=state_dir,
+                    target_version="2026.7.1-1",
+                    installation=self._installation(),
+                )
+                tx.backup()
+
+            backup_state = tx.backup_dir / "state"
+            self.assertFalse((backup_state / "logs").exists())
+            self.assertFalse((backup_state / "compile-cache").exists())
+
     def test_backup_inventory_contains_only_copied_payload_files(self) -> None:
         tx = self._create()
         tx.backup()
