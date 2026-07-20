@@ -42,10 +42,7 @@ export type UpgradeRecoveryOptions = {
   expectedStateDir?: string;
   trustedPrefixes?: string[];
   processIsAlive?: (pid: number) => boolean;
-  claimLock?: (
-    lockPath: string,
-    processIsAlive: (pid: number) => boolean,
-  ) => ClaimedLock;
+  claimLock?: (lockPath: string, processIsAlive: (pid: number) => boolean) => ClaimedLock;
 };
 
 export class UpgradeInProgressError extends Error {}
@@ -65,9 +62,7 @@ function canonicalPath(value: string): string {
 
 function normalized(value: string): string {
   const canonical = canonicalPath(value);
-  return process.platform === "win32"
-    ? canonical.toLowerCase()
-    : canonical;
+  return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -174,22 +169,14 @@ function quarantine(live: string, failed: string): void {
   }
 }
 
-function restoreTree(
-  backup: string,
-  live: string,
-  failed: string,
-  existed: boolean,
-): void {
+function restoreTree(backup: string, live: string, failed: string, existed: boolean): void {
   let staging: string | null = null;
   if (existed) {
     if (!fs.existsSync(backup)) {
       throw new Error(`upgrade backup is missing: ${backup}`);
     }
     fs.mkdirSync(path.dirname(live), { recursive: true });
-    staging = path.join(
-      path.dirname(live),
-      `.${path.basename(live)}.${randomUUID()}.restore`,
-    );
+    staging = path.join(path.dirname(live), `.${path.basename(live)}.${randomUUID()}.restore`);
     fs.cpSync(backup, staging, { recursive: true });
     fsyncTree(staging);
   }
@@ -208,23 +195,16 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function defaultClaimLock(
-  lockPath: string,
-  isProcessAlive: (pid: number) => boolean,
-): ClaimedLock {
+function defaultClaimLock(lockPath: string, isProcessAlive: (pid: number) => boolean): ClaimedLock {
   if (process.platform !== "win32") {
-    throw new UpgradeInProgressError(
-      "automatic upgrade recovery is only supported on Windows",
-    );
+    throw new UpgradeInProgressError("automatic upgrade recovery is only supported on Windows");
   }
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   if (fs.existsSync(lockPath)) {
     const payload = readJsonObject(lockPath);
     const ownerPid = payload?.owner_pid;
     if (typeof ownerPid === "number" && isProcessAlive(ownerPid)) {
-      throw new UpgradeInProgressError(
-        `installer process ${ownerPid} is still upgrading OpenClaw`,
-      );
+      throw new UpgradeInProgressError(`installer process ${ownerPid} is still upgrading OpenClaw`);
     }
   } else {
     const descriptor = fs.openSync(lockPath, "wx");
@@ -236,9 +216,7 @@ function defaultClaimLock(
     fs.renameSync(lockPath, claimPath);
   } catch (error) {
     throw new UpgradeInProgressError(
-      `another process owns the OpenClaw upgrade lock: ${
-        (error as Error).message
-      }`,
+      `another process owns the OpenClaw upgrade lock: ${(error as Error).message}`,
     );
   }
   let completed = false;
@@ -308,10 +286,7 @@ function validateManifest(
   }
 }
 
-function persistManifest(
-  manifestPath: string,
-  manifest: UpgradeManifest,
-): void {
+function persistManifest(manifestPath: string, manifest: UpgradeManifest): void {
   manifest.updated_at = new Date().toISOString();
   const backupManifest = path.join(manifest.backup_dir, "transaction.json");
   if (fs.existsSync(manifest.backup_dir)) {
@@ -324,19 +299,14 @@ export function recoverInterruptedOpenClawUpgrade(
   microclawRoot: string,
   options: UpgradeRecoveryOptions = {},
 ): UpgradeRecoveryResult {
-  const manifestPath = path.join(
-    microclawRoot,
-    "upgrade",
-    "openclaw-upgrade.json",
-  );
+  const manifestPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.json");
   if (!fs.existsSync(manifestPath)) return { status: "none" };
   const manifest = parseManifest(manifestPath);
   if (manifest.phase === "committed") return { status: "committed" };
   if (manifest.phase === "rolled-back") return { status: "rolled-back" };
 
   const expectedStateDir =
-    options.expectedStateDir ??
-    path.join(process.env.USERPROFILE || "", ".openclaw");
+    options.expectedStateDir ?? path.join(process.env.USERPROFILE || "", ".openclaw");
   const trustedPrefixes = options.trustedPrefixes ?? defaultTrustedPrefixes();
   const claimLock = options.claimLock ?? defaultClaimLock;
   const claim = claimLock(
@@ -344,23 +314,14 @@ export function recoverInterruptedOpenClawUpgrade(
     options.processIsAlive ?? processIsAlive,
   );
   try {
-    validateManifest(
-      manifest,
-      microclawRoot,
-      expectedStateDir,
-      trustedPrefixes,
-    );
+    validateManifest(manifest, microclawRoot, expectedStateDir, trustedPrefixes);
     if (manifest.phase === "backing-up") {
       manifest.phase = "rolled-back";
       persistManifest(manifestPath, manifest);
       claim.complete(true);
       return { status: "rolled-back" };
     }
-    if (
-      !["installing", "verifying", "rolling-back", "rollback-failed"].includes(
-        manifest.phase,
-      )
-    ) {
+    if (!["installing", "verifying", "rolling-back", "rollback-failed"].includes(manifest.phase)) {
       throw new Error(`cannot recover upgrade phase: ${manifest.phase}`);
     }
 
@@ -375,11 +336,7 @@ export function recoverInterruptedOpenClawUpgrade(
       manifest.package_existed,
     );
     for (const shim of manifest.shim_paths) {
-      const backupShim = path.join(
-        manifest.backup_dir,
-        "shims",
-        path.basename(shim),
-      );
+      const backupShim = path.join(manifest.backup_dir, "shims", path.basename(shim));
       if (fs.existsSync(backupShim)) {
         const staging = path.join(
           path.dirname(shim),

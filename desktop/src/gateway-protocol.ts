@@ -11,9 +11,7 @@ export type GatewayConnectInput = {
   nonce: string;
 };
 
-export function buildGatewayConnectParams(
-  input: GatewayConnectInput,
-): Record<string, unknown> {
+export function buildGatewayConnectParams(input: GatewayConnectInput): Record<string, unknown> {
   const params: Record<string, unknown> = {
     minProtocol: GATEWAY_MIN_PROTOCOL_VERSION,
     maxProtocol: GATEWAY_MAX_PROTOCOL_VERSION,

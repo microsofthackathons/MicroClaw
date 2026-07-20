@@ -17,22 +17,9 @@ function fixture(phase = "installing") {
   const packageDir = path.join(prefix, "node_modules", "openclaw");
   const stateDir = path.join(root, ".openclaw");
   const transactionId = "20260720T000000Z-1234abcd";
-  const backupDir = path.join(
-    microclawRoot,
-    "backups",
-    "openclaw",
-    transactionId,
-  );
-  const manifestPath = path.join(
-    microclawRoot,
-    "upgrade",
-    "openclaw-upgrade.json",
-  );
-  const lockPath = path.join(
-    microclawRoot,
-    "upgrade",
-    "openclaw-upgrade.lock",
-  );
+  const backupDir = path.join(microclawRoot, "backups", "openclaw", transactionId);
+  const manifestPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.json");
+  const lockPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.lock");
   fs.mkdirSync(path.join(backupDir, "package"), { recursive: true });
   fs.mkdirSync(path.join(backupDir, "state"), { recursive: true });
   fs.mkdirSync(path.join(backupDir, "shims"), { recursive: true });
@@ -104,16 +91,10 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
     });
 
     expect(result.status).toBe("rolled-back");
-    expect(
-      fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8"),
-    ).toBe("old");
-    expect(fs.readFileSync(path.join(item.stateDir, "state.txt"), "utf-8")).toBe(
-      "old-state",
-    );
+    expect(fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8")).toBe("old");
+    expect(fs.readFileSync(path.join(item.stateDir, "state.txt"), "utf-8")).toBe("old-state");
     expect(fs.readFileSync(item.shim, "utf-8")).toBe("@old");
-    expect(JSON.parse(fs.readFileSync(item.manifestPath, "utf-8")).phase).toBe(
-      "rolled-back",
-    );
+    expect(JSON.parse(fs.readFileSync(item.manifestPath, "utf-8")).phase).toBe("rolled-back");
   });
 
   it("does not mutate live data while an installer owns the lock", () => {
@@ -128,9 +109,7 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
         },
       }),
     ).toThrow(UpgradeInProgressError);
-    expect(
-      fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8"),
-    ).toBe("new");
+    expect(fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8")).toBe("new");
   });
 
   it("marks a partial backing-up phase rolled back without replacing live data", () => {
@@ -143,23 +122,15 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
     });
 
     expect(result.status).toBe("rolled-back");
-    expect(
-      fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8"),
-    ).toBe("new");
-    expect(fs.readFileSync(path.join(item.stateDir, "state.txt"), "utf-8")).toBe(
-      "migrated",
-    );
+    expect(fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8")).toBe("new");
+    expect(fs.readFileSync(path.join(item.stateDir, "state.txt"), "utf-8")).toBe("migrated");
   });
 
   it("rejects package paths outside the independently trusted prefix", () => {
     const item = fixture();
     const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
     manifest.prefix = path.join(path.dirname(item.prefix), "outside");
-    manifest.package_dir = path.join(
-      manifest.prefix,
-      "node_modules",
-      "openclaw",
-    );
+    manifest.package_dir = path.join(manifest.prefix, "node_modules", "openclaw");
     manifest.shim_paths = [path.join(manifest.prefix, "openclaw.cmd")];
     fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
 

@@ -4,8 +4,5 @@ declare module "silk-wasm" {
     duration: number;
   };
 
-  export function decode(
-    input: Uint8Array,
-    sampleRate: number,
-  ): Promise<SilkDecodeResult>;
+  export function decode(input: Uint8Array, sampleRate: number): Promise<SilkDecodeResult>;
 }
