@@ -19,6 +19,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from deployer.logger import DeployerLogger
+from deployer.openclaw_version import (
+    NODE_FALLBACK_VERSION,
+    OPENCLAW_TARGET_VERSION,
+    extract_openclaw_version,
+    is_supported_node_version,
+)
 from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
 
 # ── Mirror URLs ──
@@ -565,8 +571,8 @@ class WindowsSetup:
         except Exception as e:
             self.log.debug(f"npmmirror resolve failed: {e}")
 
-        # Fallback — must satisfy OpenClaw's v22.12+ requirement
-        fallback = f"{major}.20.0"
+        # Fallback — use the pinned supported Node.js release.
+        fallback = NODE_FALLBACK_VERSION
         self.log.warn(f"Could not resolve version, using fallback: {fallback}")
         return fallback
 
@@ -581,7 +587,7 @@ class WindowsSetup:
         managed_node = self.node_dir / "node.exe"
         if managed_node.exists():
             ver = self._get_node_version(str(managed_node))
-            if ver and self._version_ok(ver):
+            if ver and is_supported_node_version(ver):
                 self.log.info(f"Node.js (managed) found: {ver}")
                 self._node_bin = managed_node.parent
                 # Verify npm is also available — a partial install (e.g. after
@@ -593,7 +599,11 @@ class WindowsSetup:
                     return False
                 return True
             elif ver:
-                self.log.info(f"Managed Node.js {ver} is outdated (need ≥22.16.0), will reinstall")
+                self.log.info(
+                    "Managed Node.js "
+                    f"{ver} is outdated (need >=22.22.3, <23 / >=24.15.0, <25 / >=25.9.0), "
+                    "will reinstall"
+                )
 
         # Log system node for diagnostics. Accept it when it lives at a
         # standard, Authenticode-trusted location (Program Files or the
@@ -610,7 +620,7 @@ class WindowsSetup:
                     parent == std.resolve() if std.exists() else parent == std
                     for std in _STANDARD_NODE_DIRS
                 )
-                if is_standard and self._version_ok(ver):
+                if is_standard and is_supported_node_version(ver):
                     self.log.info(
                         f"Node.js (system) accepted: {ver} at {node_path}"
                     )
@@ -988,7 +998,9 @@ class WindowsSetup:
                 env=env,
             )
             if "openclaw@" in r.stdout:
-                version = r.stdout.strip().split("openclaw@")[-1].split()[0]
+                version = extract_openclaw_version(r.stdout)
+                if version is None:
+                    return False
                 self.log.info(f"OpenClaw found on Windows: {version}")
                 return True
         except Exception:
@@ -1037,7 +1049,7 @@ class WindowsSetup:
     def install_openclaw_windows(self) -> bool:
         """Install openclaw via npm on Windows."""
         channel = self.cfg.get("openclaw.channel", "stable")
-        tag = "2026.3.12" if channel == "stable" else channel
+        tag = OPENCLAW_TARGET_VERSION if channel == "stable" else channel
         # Validate tag before passing to subprocess
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$", tag):
             self.log.error(f"Invalid npm tag: {tag!r}")
@@ -3427,18 +3439,6 @@ class WindowsSetup:
             return ver if ver.startswith("v") else None
         except Exception:
             return None
-
-    def _version_ok(self, ver: str) -> bool:
-        """Check if version is >= 22.16.0 (OpenClaw CLI minimum)."""
-        try:
-            parts = ver.lstrip("v").split(".")
-            major = int(parts[0])
-            minor = int(parts[1]) if len(parts) > 1 else 0
-            if major > 22:
-                return True
-            return major == 22 and minor >= 16
-        except Exception:
-            return False
 
     def add_to_path(self) -> bool:
         """Add managed node dir + npm global bin to the user's persistent PATH."""
