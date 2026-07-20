@@ -34,6 +34,24 @@ class RuntimeGateTests(unittest.TestCase):
 
         self.assertIn("python -m unittest discover -s tests -v", workflow)
 
+    def test_build_uses_uv_only_for_a_real_uv_project(self):
+        build_script = (ROOT / "build.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("$hasUvProject", build_script)
+        self.assertIn("if ($hasUvProject)", build_script)
+        self.assertIn(
+            'python -m pip install -r "$root\\requirements.txt"',
+            build_script,
+        )
+        self.assertIn("$pipExitCode = $LASTEXITCODE", build_script)
+
+    def test_installer_spec_excludes_plugin_development_dependencies(self):
+        spec = (ROOT / "MicroClawDeployer.spec").read_text(encoding="utf-8")
+
+        self.assertIn("collect_plugin_files", spec)
+        self.assertIn("'node_modules'", spec)
+        self.assertNotIn("('plugins', 'plugins')", spec)
+
 
 if __name__ == "__main__":
     unittest.main()

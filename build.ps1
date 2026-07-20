@@ -175,7 +175,11 @@ $installerBuilt = $false
 
 # --- Ensure Python dependencies are installed (like npm install for Node) ---
 $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
-if ($uvCmd) {
+$hasUvProject = $false
+if ($uvCmd -and (Test-Path "$root\pyproject.toml")) {
+    $hasUvProject = [bool](Select-String -Path "$root\pyproject.toml" -Pattern '^\s*\[project\]\s*$')
+}
+if ($hasUvProject) {
     # uv manages .venv automatically; `uv sync` is fast and idempotent
     if (-not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
         Write-Host "  Python deps not found — running 'uv sync'..." -ForegroundColor Yellow
@@ -185,19 +189,23 @@ if ($uvCmd) {
         }
     }
 } else {
-    # Fallback: use pip with system/venv Python
-    $pipTarget = $null
-    if (Test-Path "$root\.venv\Scripts\pip.exe") {
-        $pipTarget = "$root\.venv\Scripts\pip.exe"
-    } else {
-        $pipCmd = Get-Command pip -ErrorAction SilentlyContinue
-        if ($pipCmd) { $pipTarget = $pipCmd.Source }
-    }
-    if ($pipTarget -and -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe") -and
-        -not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
+    # This repository keeps runtime/build dependencies in requirements.txt;
+    # pyproject.toml only configures Ruff and is not an installable uv project.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    python -c "import PyInstaller" *> $null
+    $pythonHasPyInstaller = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = $previousPreference
+    if (-not (Test-Path "$root\.venv\Scripts\pyinstaller.exe") -and
+        -not (Get-Command pyinstaller -ErrorAction SilentlyContinue) -and
+        -not $pythonHasPyInstaller) {
         Write-Host "  Python deps not found — running 'pip install -r requirements.txt'..." -ForegroundColor Yellow
-        & $pipTarget install -r "$root\requirements.txt" 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        python -m pip install -r "$root\requirements.txt" 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $pipExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousPreference
+        if ($pipExitCode -ne 0) {
             Write-Host "  WARNING: pip install failed" -ForegroundColor Yellow
         }
     }
@@ -205,7 +213,7 @@ if ($uvCmd) {
 
 # --- Run PyInstaller ---
 # Strategy 1: `uv run` — uses project .venv with all deps
-if (-not $installerBuilt -and $uvCmd) {
+if (-not $installerBuilt -and $hasUvProject) {
     Write-Host "  Trying: uv run pyinstaller" -ForegroundColor DarkGray
     uv run pyinstaller MicroClawDeployer.spec --noconfirm
     if ($LASTEXITCODE -eq 0) { $installerBuilt = $true }
