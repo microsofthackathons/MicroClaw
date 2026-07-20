@@ -2545,22 +2545,9 @@ function registerIpcHandlers(): void {
     const custom = scanSkills(customDir, "custom");
     const managedOnDisk = scanSkills(managedDir, "managed");
 
-    // Also list catalog-only managed skills (defined in catalog but not yet on disk)
-    const onDiskIds = new Set(managedOnDisk.map((s) => s.id));
-    for (const [id, info] of Object.entries(managedCatalog)) {
-      if (!onDiskIds.has(id)) {
-        const enabled = entries[id]?.enabled ?? info.platform?.includes("windows") ?? false;
-        managedOnDisk.push({
-          id,
-          name: id,
-          description: info.description,
-          source: "managed" as const,
-          platform: info.platform ?? [],
-          enabled,
-          installed: false,
-        });
-      }
-    }
+    // Only expose managed skills that are actually installed on disk. Catalog-only
+    // entries (defined in managed_skill_catalog.json but not present on disk) are
+    // intentionally omitted because there is no in-app install action for them. See #58.
 
     return { builtin, custom, managed: managedOnDisk };
   });
