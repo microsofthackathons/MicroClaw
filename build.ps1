@@ -47,7 +47,7 @@ if (-not $nodeFound) {
 }
 
 # -- Step 1: Build AppContainerLauncher.exe (.NET 9) --
-Write-Host "`n=== Step 1/6: Build AppContainerLauncher ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 1/7: Build AppContainerLauncher ===" -ForegroundColor Cyan
 $acProject = "$root\appcontainer"
 if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
     Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
@@ -88,7 +88,7 @@ if (Test-Path $preloadSrc) {
 }
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
-Write-Host "`n=== Step 2/6: Clean stale build artifacts ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan
 $distDir = "$root\desktop\dist"
 if (Test-Path $distDir) {
     Remove-Item "$distDir\*.js" -Force -ErrorAction SilentlyContinue
@@ -104,7 +104,7 @@ if (-not (Test-Path $outDist)) {
 }
 
 # -- Step 3: Build & pack desktop --
-Write-Host "`n=== Step 3/6: Build & pack desktop ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
 try {
     # First-run bootstrap: install npm deps (including renderer via postinstall)
@@ -161,7 +161,7 @@ if (Test-Path $desktopAsar) {
 }
 
 # Step 4: Create portable zip
-Write-Host "`n=== Step 4/6: Create portable zip ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
@@ -169,7 +169,7 @@ $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  -> $zipPath  ${zipSizeMB} MB"
 
 # Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
-Write-Host "`n=== Step 5/6: Build installer ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan
 Push-Location $root
 $installerBuilt = $false
 
@@ -260,7 +260,7 @@ if (-not $installerBuilt) {
 }
 
 # Step 6: Pack onedir output into a single distributable zip
-Write-Host "`n=== Step 6/6: Pack installer directory ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 6/7: Pack installer directory ===" -ForegroundColor Cyan
 $installerDir = "$root\dist\MicroClawInstaller"
 $installerZip = "$root\dist\MicroClawInstaller.zip"
 if (-not (Test-Path $installerDir)) {
@@ -273,7 +273,79 @@ Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
 $instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
 Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
 
+# Step 7: Build the single-exe setup (NSIS self-extractor) and code-sign it.
+# This is the ONE file end users download. It extracts the onedir installer to a
+# real directory under %LOCALAPPDATA% (not %TEMP%, preserving WDAC safety) and
+# auto-launches MicroClawInstaller.exe. Only this stub needs signing to clear
+# SmartScreen (it is the only file that carries Mark-of-the-Web on download).
+Write-Host "`n=== Step 7/7: Build single-exe setup + sign ===" -ForegroundColor Cyan
+$setupExe = "$root\dist\MicroClawSetup.exe"
+$nsiScript = "$root\installer\microclaw-setup.nsi"
+$setupIcon = "$root\deployer\assets\microclaw.ico"
+
+# Resolve makensis: PATH first, then common install locations, then the copy
+# that ships inside electron-builder's cache (already present after Step 3).
+$makensis = $null
+$mkCmd = Get-Command makensis -ErrorAction SilentlyContinue
+if ($mkCmd) { $makensis = $mkCmd.Source }
+if (-not $makensis) {
+    $mkCandidates = @(
+        "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+        "$env:ProgramFiles\NSIS\makensis.exe"
+    )
+    $mkCandidates += Get-ChildItem "$env:LOCALAPPDATA\electron-builder\Cache\nsis" -Recurse -Filter makensis.exe -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName
+    $makensis = $mkCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+
+if (-not $makensis) {
+    Write-Host "  ERROR: makensis (NSIS) not found. Install NSIS 3.x (e.g. 'choco install nsis')." -ForegroundColor Red
+    Write-Host "         The onedir installer + zip were still produced." -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "  Using makensis: $makensis"
+
+# Derive a 4-part version (NSIS VIProductVersion requires X.X.X.X).
+$pkgVersion = '0.0.0'
+try {
+    $pkgVersion = (Get-Content "$root\desktop\package.json" -Raw | ConvertFrom-Json).version
+} catch { }
+$verParts = @($pkgVersion -split '\.') + @('0','0','0','0')
+$version4 = ($verParts[0..3]) -join '.'
+
+if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
+
+$prev = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $makensis `
+    "/DPAYLOAD_DIR=$installerDir" `
+    "/DOUT_FILE=$setupExe" `
+    "/DICON=$setupIcon" `
+    "/DVERSION=$version4" `
+    $nsiScript 2>&1 | ForEach-Object { Write-Host "  $_" }
+$nsisExit = $LASTEXITCODE
+$ErrorActionPreference = $prev
+if ($nsisExit -ne 0 -or -not (Test-Path $setupExe)) {
+    Write-Host "  ERROR: makensis failed (exit $nsisExit) — MicroClawSetup.exe not produced." -ForegroundColor Red
+    exit 1
+}
+$setupSizeMB = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
+Write-Host "  -> $setupExe  ${setupSizeMB} MB" -ForegroundColor Green
+
+# Code-sign the setup exe. This is a NO-OP unless Trusted Signing is configured
+# (TRUSTED_SIGNING_ENDPOINT/ACCOUNT/PROFILE), so local + PR builds are unchanged.
+# Run in a child process using the SAME PowerShell host (the signer calls
+# `exit`, which would otherwise terminate this build script).
+$psHost = (Get-Process -Id $PID).Path
+if (-not $psHost) { $psHost = 'powershell' }
+& $psHost -NoProfile -File "$root\scripts\windows\sign-artifact.ps1" -Path $setupExe
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  ERROR: signing step failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "`n=== Done ===" -ForegroundColor Green
-Write-Host "  Installer dir: $root\dist\MicroClawInstaller\"
-Write-Host "  Installer zip: $installerZip"
-Write-Host "  Portable:      $zipPath"
+Write-Host "  Setup (one-exe): $setupExe"
+Write-Host "  Installer dir:   $root\dist\MicroClawInstaller\"
+Write-Host "  Installer zip:   $installerZip"
+Write-Host "  Portable:        $zipPath"

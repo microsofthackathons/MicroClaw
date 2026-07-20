@@ -1,0 +1,177 @@
+# Release
+#
+# Produces the signed, single-exe installer (dist\MicroClawSetup.exe) and
+# publishes it as a GitHub Release asset.
+#
+# build.ps1 Step 7 wraps the PyInstaller onedir in an NSIS self-extractor
+# (installer\microclaw-setup.nsi) and then calls scripts\windows\sign-artifact.ps1.
+# That signer is a NO-OP unless the TRUSTED_SIGNING_* / AZURE_* secrets below
+# are present, so the *signed* exe is only ever produced by this workflow —
+# never on PRs (which have no secrets and may run on forks).
+#
+# Signing the single downloaded exe is what clears Windows SmartScreen:
+# files a trusted local process later extracts carry no Mark-of-the-Web and
+# are not re-evaluated.
+#
+# Triggers:
+#   - push of a version tag (v*)   -> publishes a release for that tag
+#   - manual workflow_dispatch      -> builds + signs, uploads as a run artifact
+name: "Release"
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Code-sign MicroClawSetup.exe (uncheck to get an UNSIGNED exe while signing is still under discussion)"
+        type: boolean
+        default: false
+      publish_release:
+        description: "Create a GitHub Release (only meaningful on a tag)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # needed to create the release and upload assets
+
+jobs:
+  build-signed:
+    name: Build + sign single-exe installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      # Azure Trusted Signing — consumed by scripts\windows\sign-artifact.ps1.
+      # If any of the three TRUSTED_SIGNING_* values is empty the signer skips
+      # (no-op, exit 0) and the exe is produced UNSIGNED.
+      #
+      # Signing is enabled for tag builds, and for manual (workflow_dispatch)
+      # runs only when the "sign" input is checked. When disabled we pass empty
+      # strings so the signer no-ops and you get an unsigned MicroClawSetup.exe
+      # (useful while the signing approach is still under discussion).
+      TRUSTED_SIGNING_ENDPOINT: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.TRUSTED_SIGNING_ENDPOINT || '' }}
+      TRUSTED_SIGNING_ACCOUNT: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.TRUSTED_SIGNING_ACCOUNT || '' }}
+      TRUSTED_SIGNING_PROFILE: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.TRUSTED_SIGNING_PROFILE || '' }}
+      # DefaultAzureCredential for the Trusted Signing client.
+      AZURE_TENANT_ID: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_TENANT_ID || '' }}
+      AZURE_CLIENT_ID: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_CLIENT_ID || '' }}
+      AZURE_CLIENT_SECRET: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_CLIENT_SECRET || '' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # GitHub-hosted windows-latest ships older/other toolchain versions than
+      # build.ps1 expects, so pin them explicitly with the setup-* actions
+      # (reliable on hosted runners, unlike on the self-hosted NetworkService
+      # account). build.ps1 then installs its own npm/pip deps and locates NSIS
+      # from electron-builder's cache.
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = (& node --version).TrimStart('v')
+          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          Write-Host "node $node"
+          $dotnet = & dotnet --version
+          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
+          Write-Host "dotnet $dotnet"
+          Write-Host "python $(& python --version)"
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # build.ps1 Step 7 needs makensis. electron-builder populates its NSIS
+      # cache during Step 3, so it is normally present by Step 7. Pre-install
+      # a system copy as a fallback so a cold runner never fails the step.
+      - name: Ensure NSIS is available
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $have = Get-Command makensis -ErrorAction SilentlyContinue
+          $sys = Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not $have -and -not $sys) {
+            Write-Host "Installing NSIS via choco..."
+            choco install nsis -y --no-progress
+          } else {
+            Write-Host "NSIS already present."
+          }
+
+      - name: Run build.ps1 (builds + signs MicroClawSetup.exe)
+        run: .\build.ps1
+
+      - name: Verify build artifacts
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = @(
+            'dist\microclaw-portable.zip',
+            'dist\MicroClawInstaller.zip',
+            'dist\MicroClawSetup.exe'
+          )
+          $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Host "::error::Missing expected artifacts: $($missing -join ', ')"
+            exit 1
+          }
+          Get-ChildItem dist | Format-Table Name, Length, LastWriteTime
+
+      # Confirm the single-exe installer is Authenticode-signed. When signing
+      # secrets are configured this must be Valid; otherwise we surface a clear
+      # warning (a tag build without secrets ships an unsigned exe that will
+      # still trip SmartScreen).
+      - name: Verify signature
+        run: |
+          $sig = Get-AuthenticodeSignature 'dist\MicroClawSetup.exe'
+          Write-Host "MicroClawSetup.exe signature status: $($sig.Status)"
+          if ($sig.SignerCertificate) {
+            Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          }
+          $configured = $env:TRUSTED_SIGNING_ENDPOINT -and $env:TRUSTED_SIGNING_ACCOUNT -and $env:TRUSTED_SIGNING_PROFILE
+          if ($configured) {
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::Trusted Signing was configured but the exe is not validly signed ($($sig.Status))."
+              exit 1
+            }
+            Write-Host "Signed installer verified."
+          } else {
+            Write-Host "::warning::MicroClawSetup.exe is UNSIGNED (signing toggle off or secrets not configured) and will trip SmartScreen. This is expected while the signing approach is under discussion."
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MicroClawSetup
+          path: dist\MicroClawSetup.exe
+          if-no-files-found: error
+
+      # Publish a GitHub Release with the signed exe when built from a tag.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist\MicroClawSetup.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
