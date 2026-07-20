@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import shutil
 import uuid
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -30,8 +32,17 @@ ACTIVE_PHASES = {
     UpgradePhase.VERIFYING,
     UpgradePhase.ROLLING_BACK,
 }
+RECOVERABLE_PHASES = ACTIVE_PHASES | {UpgradePhase.ROLLBACK_FAILED}
 
 _TRANSACTION_ID_PATTERN = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
+
+
+class UpgradeInProgressError(RuntimeError):
+    """Raised when another process owns the upgrade transaction lock."""
+
+
+class UpgradeRecoveryRequiredError(RuntimeError):
+    """Raised when an interrupted transaction must be recovered first."""
 
 
 @dataclass(frozen=True)
@@ -71,15 +82,76 @@ def _default_state_dir() -> Path:
     return Path.home() / ".openclaw"
 
 
+def trusted_openclaw_prefixes() -> tuple[Path, ...]:
+    """Return independently configured roots where OpenClaw may be installed."""
+    candidates = [Path.home() / ".openclaw-node"]
+    environment_roots = (
+        ("APPDATA", ("npm",)),
+        ("ProgramFiles", ("nodejs",)),
+        ("LOCALAPPDATA", ("Programs", "nodejs")),
+    )
+    for variable, suffix in environment_roots:
+        value = os.environ.get(variable)
+        if value:
+            candidates.append(Path(value).joinpath(*suffix))
+
+    override = os.environ.get("OPENCLAW_NODE_DIR")
+    if override and Path(override).expanduser().is_absolute():
+        candidates.append(Path(override).expanduser())
+
+    return tuple(dict.fromkeys(path.resolve(strict=False) for path in candidates))
+
+
+def _flush_and_fsync(file: Any) -> None:
+    file.flush()
+    os.fsync(file.fileno())
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb+") as file:
+        os.fsync(file.fileno())
+
+
+def _directory_fsync_is_unsupported(error: OSError) -> bool:
+    unsupported = {errno.EINVAL}
+    for name in ("ENOTSUP", "EOPNOTSUPP"):
+        value = getattr(errno, name, None)
+        if value is not None:
+            unsupported.add(value)
+    if error.errno in unsupported:
+        return True
+    return os.name == "nt" and (
+        error.errno in {errno.EACCES, errno.EPERM}
+        or getattr(error, "winerror", None) in {1, 5, 50, 87}
+    )
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if _directory_fsync_is_unsupported(error):
+            return
+        raise
+    try:
+        os.fsync(descriptor)
+    except OSError as error:
+        if not _directory_fsync_is_unsupported(error):
+            raise
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        with temporary.open("w", encoding="utf-8") as file:
+            file.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            _flush_and_fsync(file)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -105,15 +177,131 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _fsync_payload_tree(root: Path) -> None:
+    if not root.exists():
+        return
+    directories = [root]
+    for path in root.rglob("*"):
+        if path.is_file():
+            _fsync_file(path)
+        elif path.is_dir():
+            directories.append(path)
+    for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+        _fsync_directory(directory)
+
+
+def _manifest_requires_recovery(manifest_path: Path) -> bool:
+    if not manifest_path.exists():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        phase = UpgradePhase(payload["phase"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
+        return True
+    return phase in RECOVERABLE_PHASES
+
+
+def _read_lock(lock_path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != 1
+        or not isinstance(payload.get("owner_pid"), int)
+        or not isinstance(payload.get("transaction_id"), str)
+    ):
+        return None
+    return payload
+
+
+def _release_matching_lock(lock_path: Path, transaction_id: str) -> bool:
+    payload = _read_lock(lock_path)
+    if payload is None or payload["transaction_id"] != transaction_id:
+        return False
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _acquire_transaction_lock(
+    lock_path: Path,
+    manifest_path: Path,
+    transaction_id: str,
+) -> None:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": 1,
+        "owner_pid": os.getpid(),
+        "transaction_id": transaction_id,
+    }
+    encoded = (json.dumps(payload, sort_keys=True) + "\n").encode()
+
+    for attempt in range(2):
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+        except FileExistsError:
+            existing = _read_lock(lock_path)
+            if existing is None or process_is_alive(existing["owner_pid"]):
+                raise UpgradeInProgressError("an OpenClaw upgrade is already in progress") from None
+            if _manifest_requires_recovery(manifest_path):
+                raise UpgradeRecoveryRequiredError(
+                    "an interrupted OpenClaw upgrade must be recovered"
+                ) from None
+            if attempt:
+                raise UpgradeInProgressError(
+                    "could not replace stale OpenClaw upgrade lock"
+                ) from None
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+
+        try:
+            with os.fdopen(descriptor, "wb") as lock_file:
+                lock_file.write(encoded)
+                _flush_and_fsync(lock_file)
+        except BaseException:
+            lock_path.unlink(missing_ok=True)
+            raise
+
+        if _manifest_requires_recovery(manifest_path):
+            _release_matching_lock(lock_path, transaction_id)
+            raise UpgradeRecoveryRequiredError("an interrupted OpenClaw upgrade must be recovered")
+        return
+
+    raise UpgradeInProgressError("could not acquire OpenClaw upgrade lock")
+
+
 class OpenClawUpgradeTransaction:
-    def __init__(self, microclaw_root: Path, manifest: UpgradeManifest):
+    def __init__(
+        self,
+        microclaw_root: Path,
+        manifest: UpgradeManifest,
+        *,
+        trusted_prefixes: Iterable[Path] | None = None,
+    ):
         self.microclaw_root = microclaw_root.resolve(strict=False)
         self.manifest = manifest
+        roots = trusted_openclaw_prefixes() if trusted_prefixes is None else trusted_prefixes
+        self._trusted_prefixes = {_require_absolute(Path(path), "trusted prefix") for path in roots}
         self._validate_manifest()
 
     @property
     def manifest_path(self) -> Path:
         return self.microclaw_root / "upgrade" / "openclaw-upgrade.json"
+
+    @property
+    def lock_path(self) -> Path:
+        return self.microclaw_root / "upgrade" / "openclaw-upgrade.lock"
 
     @property
     def backup_root(self) -> Path:
@@ -134,6 +322,9 @@ class OpenClawUpgradeTransaction:
     ) -> OpenClawUpgradeTransaction:
         root = microclaw_root.resolve(strict=False)
         transaction_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+        manifest_path = root / "upgrade" / "openclaw-upgrade.json"
+        lock_path = root / "upgrade" / "openclaw-upgrade.lock"
+        _acquire_transaction_lock(lock_path, manifest_path, transaction_id)
         backup_dir = root / "backups" / "openclaw" / transaction_id
         timestamp = _now()
         manifest = UpgradeManifest(
@@ -153,12 +344,24 @@ class OpenClawUpgradeTransaction:
             created_at=timestamp,
             updated_at=timestamp,
         )
-        transaction = cls(root, manifest)
-        transaction._persist()
-        return transaction
+        try:
+            transaction = cls(
+                root,
+                manifest,
+                trusted_prefixes=(installation.prefix,),
+            )
+            transaction._persist()
+            return transaction
+        except BaseException:
+            _release_matching_lock(lock_path, transaction_id)
+            raise
 
     @classmethod
-    def load(cls, microclaw_root: Path) -> OpenClawUpgradeTransaction | None:
+    def load(
+        cls,
+        microclaw_root: Path,
+        trusted_prefixes: Iterable[Path] | None = None,
+    ) -> OpenClawUpgradeTransaction | None:
         root = microclaw_root.resolve(strict=False)
         manifest_path = root / "upgrade" / "openclaw-upgrade.json"
         if not manifest_path.exists():
@@ -171,7 +374,7 @@ class OpenClawUpgradeTransaction:
             manifest = UpgradeManifest(**data)
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             raise ValueError("invalid OpenClaw upgrade manifest") from error
-        return cls(root, manifest)
+        return cls(root, manifest, trusted_prefixes=trusted_prefixes)
 
     def _validate_manifest(self) -> None:
         if self.manifest.schema_version != 1:
@@ -183,6 +386,8 @@ class OpenClawUpgradeTransaction:
             raise ValueError("transaction_id is not a valid generated transaction ID")
 
         prefix = _require_absolute(Path(self.manifest.prefix), "prefix")
+        if prefix not in self._trusted_prefixes:
+            raise ValueError(f"prefix is not a trusted OpenClaw installation root: {prefix}")
         package_dir = _require_absolute(Path(self.manifest.package_dir), "package_dir")
         allowed_package_dirs = {
             (prefix / "node_modules" / "openclaw").resolve(strict=False),
@@ -279,6 +484,13 @@ class OpenClawUpgradeTransaction:
                 ignore=self._ignore_state,
             )
 
+        for payload_root in (
+            self.backup_dir / "package",
+            self.backup_dir / "shims",
+            self.backup_dir / "state",
+        ):
+            _fsync_payload_tree(payload_root)
+
         metadata_files = {
             self.backup_dir / "transaction.json",
             self.backup_dir / "backup-files.json",
@@ -303,6 +515,7 @@ class OpenClawUpgradeTransaction:
         if not results or not all(value is True for value in results.values()):
             raise RuntimeError("cannot commit before every validation passes")
         self.set_phase(UpgradePhase.COMMITTED)
+        _release_matching_lock(self.lock_path, self.manifest.transaction_id)
 
     def _move_to_failed(self, live: Path, failed: Path) -> None:
         if not live.exists() and not live.is_symlink():
@@ -340,8 +553,10 @@ class OpenClawUpgradeTransaction:
         original_phase = self.manifest.phase
         if original_phase == UpgradePhase.BACKING_UP:
             self.set_phase(UpgradePhase.ROLLED_BACK)
+            _release_matching_lock(self.lock_path, self.manifest.transaction_id)
             return
         if original_phase == UpgradePhase.ROLLED_BACK:
+            _release_matching_lock(self.lock_path, self.manifest.transaction_id)
             return
         if original_phase not in {
             UpgradePhase.INSTALLING,
@@ -359,6 +574,7 @@ class OpenClawUpgradeTransaction:
             self._restore_shims()
             self._restore_state(failed_dir)
             self.set_phase(UpgradePhase.ROLLED_BACK)
+            _release_matching_lock(self.lock_path, self.manifest.transaction_id)
         except Exception:
             self.set_phase(UpgradePhase.ROLLBACK_FAILED)
             raise
