@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import unittest.mock
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,6 +154,22 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertFalse(self.ws.prepare_openclaw_upgrade())
         self.assertIsNone(self.ws._openclaw_transaction)
 
+    def test_prepare_still_snapshots_a_stopped_exact_target_installation(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        transaction = unittest.mock.Mock()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ):
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        transaction.backup.assert_called_once()
+        self.assertIs(self.ws._openclaw_transaction, transaction)
+
     def test_prepare_backs_up_existing_installation_in_same_prefix(self):
         prefix = self.home / ".openclaw-node"
         package = self._write_package(prefix, "2026.3.12")
@@ -239,6 +256,106 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.install_openclaw_windows())
 
         self.ws._install_openclaw_with_registry_fallback.assert_called_once_with(prepared)
+
+    def test_validation_records_every_required_check_and_stops_gateway(self):
+        transaction = unittest.mock.Mock()
+        process = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=True)
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._validate_gateway_status = unittest.mock.Mock(return_value=True)
+        self.ws._validate_gateway_rpc = unittest.mock.Mock(return_value=True)
+        self.ws._validate_weixin_plugin = unittest.mock.Mock(return_value=True)
+        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.verify_openclaw_upgrade())
+
+        self.assertEqual(
+            [call.args for call in transaction.record_validation.call_args_list],
+            [
+                ("version", True),
+                ("health", True),
+                ("v4-handshake", True),
+                ("config.get", True),
+                ("agents.list", True),
+                ("channels.list", True),
+                ("cron.list", True),
+                ("weixin-plugin", True),
+                ("appcontainer", True),
+            ],
+        )
+        transaction.mark_verifying.assert_called_once()
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+
+    def test_failed_validation_returns_false_without_rolling_back_inside_validator(self):
+        transaction = unittest.mock.Mock()
+        process = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=False)
+
+        self.assertFalse(self.ws.verify_openclaw_upgrade())
+
+        transaction.rollback.assert_not_called()
+        transaction.record_validation.assert_called_once_with("version", False)
+        self.ws._start_validation_gateway.assert_not_called()
+        self.ws._stop_validation_gateway.assert_not_called()
+
+    def test_rollback_restores_and_health_checks_previous_gateway(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = "2026.3.12"
+        process = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.rollback_openclaw_upgrade())
+
+        transaction.rollback.assert_called_once()
+        self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+
+    def test_new_install_rollback_does_not_start_a_missing_previous_gateway(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = None
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.rollback_openclaw_upgrade())
+
+        transaction.rollback.assert_called_once()
+        self.ws._start_validation_gateway.assert_not_called()
+
+    def test_desktop_update_preserves_upgrade_transaction_directories(self):
+        install_dir = self.root / ".microclaw"
+        backup_marker = install_dir / "backups" / "openclaw" / "tx" / "marker.txt"
+        transaction_marker = install_dir / "upgrade" / "openclaw-upgrade.json"
+        backup_marker.parent.mkdir(parents=True)
+        transaction_marker.parent.mkdir(parents=True)
+        backup_marker.write_text("backup", encoding="utf-8")
+        transaction_marker.write_text("transaction", encoding="utf-8")
+        (install_dir / "MicroClawDesktop.exe").write_text("old", encoding="utf-8")
+        desktop_zip = self.root / "microclaw-portable.zip"
+        with zipfile.ZipFile(desktop_zip, "w") as archive:
+            archive.writestr("MicroClawDesktop.exe", "new")
+
+        self.ws._find_local_desktop_zip = unittest.mock.Mock(return_value=desktop_zip)
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        with unittest.mock.patch("deployer.windows_setup.DEFAULT_DESKTOP_DIR", install_dir):
+            self.assertTrue(self.ws.install_desktop_client())
+
+        self.assertEqual(backup_marker.read_text(encoding="utf-8"), "backup")
+        self.assertEqual(transaction_marker.read_text(encoding="utf-8"), "transaction")
+        self.assertEqual(
+            (install_dir / "MicroClawDesktop.exe").read_text(encoding="utf-8"),
+            "new",
+        )
 
 
 if __name__ == "__main__":

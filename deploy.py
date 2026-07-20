@@ -891,6 +891,7 @@ class DeployerApp(tk.Tk):
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
             (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions),
             (10, "Installing Git...", ws.ensure_git),
+            (18, "Preparing OpenClaw upgrade...", ws.prepare_openclaw_upgrade),
             (25, "Installing Node.js...", lambda: self._ensure_node(ws)),
             (35, "Configuring npm registry...", ws.setup_npm_mirror),
             (50, "Installing OpenClaw gateway...", lambda: self._ensure_openclaw(ws)),
@@ -900,16 +901,22 @@ class DeployerApp(tk.Tk):
             (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(ws)),
             (65, "Writing API keys...", lambda: self._write_env_file()),
             (70, "Writing OpenClaw configuration...", ws.write_config),
-            (75, "Warming up V8 compile cache...", ws.warmup_compile_cache),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin),
-            (95, "Creating desktop shortcut...", ws.create_desktop_shortcut),
+            (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade),
+            (96, "Creating desktop shortcut...", ws.create_desktop_shortcut),
+            (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade),
         ]
 
         for pct, label, fn in steps:
             if not self._running:
                 self._set_progress(pct, "Installation cancelled.")
-                self.after(0, lambda: self._finish_fail("Installation cancelled."))
+                rollback_ok = ws.rollback_openclaw_upgrade()
+                if not rollback_ok:
+                    log.error("Automatic OpenClaw rollback failed after cancellation")
+                suffix = "" if rollback_ok else " Automatic rollback also failed."
+                message = f"Installation cancelled.{suffix}"
+                self.after(0, lambda text=message: self._finish_fail(text))
                 self._running = False
                 return
 
@@ -917,12 +924,16 @@ class DeployerApp(tk.Tk):
             try:
                 result = fn()
                 if result is not None and not result:
-                    self._finish_fail(label.rstrip(".") + " failed.")
+                    rollback_ok = ws.rollback_openclaw_upgrade()
+                    suffix = "" if rollback_ok else " Automatic rollback also failed."
+                    self._finish_fail(label.rstrip(".") + f" failed.{suffix}")
                     self._running = False
                     return
             except Exception as e:
                 log.error(f"{label} exception: {e}")
-                self._finish_fail(label.rstrip(".") + " failed.")
+                rollback_ok = ws.rollback_openclaw_upgrade()
+                suffix = "" if rollback_ok else " Automatic rollback also failed."
+                self._finish_fail(label.rstrip(".") + f" failed.{suffix}")
                 self._running = False
                 return
 

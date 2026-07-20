@@ -28,6 +28,7 @@ from deployer.openclaw_upgrade import (
     OpenClawUpgradeTransaction,
     UpgradeInProgressError,
     process_is_alive,
+    prune_previous_committed_backups,
 )
 from deployer.openclaw_version import (
     NODE_FALLBACK_VERSION,
@@ -1114,10 +1115,6 @@ class WindowsSetup:
                 "OpenClaw before upgrading."
             )
             return False
-        if installation is not None and installation.version == OPENCLAW_TARGET_VERSION:
-            self.install_prefix = installation.prefix
-            return True
-
         prefix = (
             installation.prefix if installation is not None else self._choose_npm_install_prefix()
         )
@@ -1318,6 +1315,282 @@ class WindowsSetup:
             self.log.warn(f"npm network/TLS failure via {registry}; trying next registry")
         self.log.error("OpenClaw install failed through every configured npm registry")
         return False
+
+    def _load_openclaw_state_env(self, state_dir: Path) -> dict[str, str]:
+        values: dict[str, str] = {}
+        env_path = state_dir / ".env"
+        try:
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, separator, value = line.partition("=")
+                if separator and key.strip():
+                    values[key.strip()] = value.strip()
+        except FileNotFoundError:
+            pass
+        return values
+
+    def _resolve_validation_node(self) -> Path:
+        candidates = []
+        if self._node_bin is not None:
+            candidates.append(Path(self._node_bin) / "node.exe")
+        candidates.append(self.node_dir / "node.exe")
+        path_node = shutil.which("node")
+        if path_node:
+            candidates.append(Path(path_node))
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError("node.exe not found for OpenClaw validation")
+
+    def _start_validation_gateway(
+        self, expected_version: str | None = OPENCLAW_TARGET_VERSION
+    ) -> subprocess.Popen:
+        installation = self._detect_openclaw_installation()
+        if installation is None or (
+            expected_version is not None and installation.version != expected_version
+        ):
+            raise RuntimeError(f"Expected OpenClaw package is not installed: {expected_version}")
+        node = self._resolve_validation_node()
+        state_dir = Path.home() / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env.update(
+            {
+                "OPENCLAW_STATE_DIR": str(state_dir),
+                "NODE_COMPILE_CACHE": str(cache_dir),
+                "NODE_ENV": "production",
+                "OPENCLAW_NO_RESPAWN": "1",
+            }
+        )
+        return subprocess.Popen(
+            [
+                str(node),
+                str(installation.entry_path),
+                "gateway",
+                "run",
+                "--port",
+                str(self.cfg.get("gateway.port", 18789)),
+                "--bind",
+                "loopback",
+                "--allow-unconfigured",
+            ],
+            cwd=str(installation.package_dir),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+
+    def _stop_validation_gateway(self, process: subprocess.Popen | None) -> None:
+        if process is None or process.poll() is not None:
+            return
+        if platform.system() == "Windows" and process.pid:
+            result = self._run(
+                ["taskkill", "/pid", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode not in (0, 128):
+                self.log.warn(
+                    f"Could not stop validation Gateway process tree: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+        else:
+            process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+    def _validate_installed_version(self) -> bool:
+        installation = self._detect_openclaw_installation()
+        return bool(
+            installation
+            and installation.version == OPENCLAW_TARGET_VERSION
+            and installation.entry_path.exists()
+        )
+
+    def _validate_gateway_health(self) -> bool:
+        url = f"http://127.0.0.1:{self.cfg.get('gateway.port', 18789)}/health"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(url, timeout=2) as response:
+                    if response.status == 200:
+                        return True
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.5)
+        return False
+
+    def _run_openclaw_json(self, args: list[str]) -> object:
+        command = self._find_openclaw_cmd()
+        if command is None:
+            raise RuntimeError("openclaw command not found")
+        state_dir = Path.home() / ".openclaw"
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env["OPENCLAW_STATE_DIR"] = str(state_dir)
+        result = self._run(
+            command + args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"OpenClaw returned invalid JSON for {' '.join(args)}") from error
+
+    def _validate_gateway_status(self) -> bool:
+        payload = self._run_openclaw_json(["gateway", "status", "--require-rpc", "--json"])
+        return isinstance(payload, dict)
+
+    def _validate_gateway_rpc(self, method: str) -> bool:
+        return self._run_openclaw_json(["gateway", "call", method, "--json"]) is not None
+
+    @staticmethod
+    def _contains_enabled_weixin_plugin(value: object) -> bool:
+        if isinstance(value, dict):
+            identifier = value.get("id") or value.get("name")
+            if identifier == "openclaw-weixin":
+                status = str(value.get("status", "")).lower()
+                return value.get("enabled", True) is not False and status not in {
+                    "disabled",
+                    "error",
+                    "failed",
+                }
+            return any(
+                WindowsSetup._contains_enabled_weixin_plugin(child) for child in value.values()
+            )
+        if isinstance(value, list):
+            return any(WindowsSetup._contains_enabled_weixin_plugin(child) for child in value)
+        return False
+
+    def _validate_weixin_plugin(self) -> bool:
+        payload = self._run_openclaw_json(["plugins", "list", "--json"])
+        return self._contains_enabled_weixin_plugin(payload)
+
+    def _validate_appcontainer_smoke(self) -> bool:
+        if not self.appcontainer_enabled:
+            return True
+        launcher = self._find_appcontainer_launcher()
+        if launcher is None:
+            return False
+        result = self._run(
+            [
+                str(launcher),
+                "run",
+                "--name",
+                "MicroClaw",
+                "--exe",
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "--no-window",
+                "--quiet",
+                "--",
+                "/c",
+                "echo",
+                "microclaw-sandbox-ok",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        return result.returncode == 0 and "microclaw-sandbox-ok" in result.stdout
+
+    def verify_openclaw_upgrade(self) -> bool:
+        transaction = self._openclaw_transaction
+        if transaction is not None:
+            transaction.mark_verifying()
+
+        def record(name: str, passed: bool) -> None:
+            if transaction is not None:
+                transaction.record_validation(name, passed)
+
+        version_ok = self._validate_installed_version()
+        record("version", version_ok)
+        if not version_ok:
+            self.log.error("OpenClaw validation failed: version")
+            return False
+
+        process = None
+        checks = [
+            ("health", self._validate_gateway_health),
+            ("v4-handshake", self._validate_gateway_status),
+            ("config.get", lambda: self._validate_gateway_rpc("config.get")),
+            ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
+            ("channels.list", lambda: self._validate_gateway_rpc("channels.list")),
+            ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
+            ("weixin-plugin", self._validate_weixin_plugin),
+            ("appcontainer", self._validate_appcontainer_smoke),
+        ]
+        try:
+            process = self._start_validation_gateway()
+            for name, check in checks:
+                passed = bool(check())
+                record(name, passed)
+                if not passed:
+                    raise RuntimeError(f"OpenClaw validation failed: {name}")
+            return True
+        except Exception as error:
+            self.log.error(str(error))
+            return False
+        finally:
+            self._stop_validation_gateway(process)
+
+    def commit_openclaw_upgrade(self) -> bool:
+        transaction = self._openclaw_transaction
+        if transaction is None:
+            return True
+        transaction.commit()
+        try:
+            prune_previous_committed_backups(transaction.backup_root, keep=transaction.backup_dir)
+        except OSError as error:
+            self.log.warn(f"Could not prune an older OpenClaw backup: {error}")
+        self._openclaw_transaction = None
+        return True
+
+    def rollback_openclaw_upgrade(self) -> bool:
+        transaction = self._openclaw_transaction
+        if transaction is None:
+            return True
+        try:
+            transaction.rollback()
+            if transaction.manifest.source_version is None:
+                self._openclaw_transaction = None
+                return True
+            process = self._start_validation_gateway(
+                expected_version=transaction.manifest.source_version
+            )
+            try:
+                healthy = self._validate_gateway_health()
+            finally:
+                self._stop_validation_gateway(process)
+            if healthy:
+                self._openclaw_transaction = None
+            else:
+                self.log.error(
+                    f"Restored OpenClaw {transaction.manifest.source_version} "
+                    "did not pass its health check"
+                )
+            return healthy
+        except Exception as error:
+            self.log.error(
+                f"OpenClaw rollback failed; backup retained at {transaction.backup_dir}: {error}"
+            )
+            return False
 
     def _choose_npm_install_prefix(self) -> Path:
         """Return a writable directory to use as ``npm install -g --prefix``.
@@ -2061,7 +2334,9 @@ class WindowsSetup:
                 time.sleep(1)
             except Exception:
                 pass
-            shutil.rmtree(install_dir, ignore_errors=True)
+            # Overlay the verified archive instead of deleting the whole
+            # MicroClaw root: active upgrade manifests and backups live under
+            # this directory and must survive until the transaction commits.
 
         # 1. Try local bundled zip
         local_zip = self._find_local_desktop_zip()
