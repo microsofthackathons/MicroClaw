@@ -103,12 +103,49 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
 
+        self.assertEqual(
+            set(data),
+            {
+                "schema_version",
+                "transaction_id",
+                "owner_pid",
+                "source_version",
+                "target_version",
+                "prefix",
+                "package_dir",
+                "state_dir",
+                "backup_dir",
+                "shim_paths",
+                "package_existed",
+                "state_existed",
+                "phase",
+                "created_at",
+                "updated_at",
+                "validation_results",
+            },
+        )
         self.assertEqual(data["schema_version"], 1)
         self.assertEqual(data["source_version"], "2026.3.12")
         self.assertEqual(data["target_version"], "2026.7.1-1")
         self.assertEqual(data["phase"], "backing-up")
         self.assertEqual(data["validation_results"], {})
         self.assertEqual(list(tx.manifest_path.parent.glob("*.tmp")), [])
+
+    def test_source_version_none_round_trips_through_manifest(self) -> None:
+        installation = OpenClawInstallation(
+            version="",
+            prefix=self.prefix,
+            package_dir=self.package,
+            entry_path=self.package / "openclaw.mjs",
+            shim_paths=(self.shim,),
+        )
+
+        tx = self._create(installation=installation)
+        loaded = OpenClawUpgradeTransaction.load(self.microclaw)
+
+        self.assertIsNone(tx.manifest.source_version)
+        self.assertIsNotNone(loaded)
+        self.assertIsNone(loaded.manifest.source_version)  # type: ignore[union-attr]
 
     def test_backup_preserves_durable_state_writes_inventory_then_installs(self) -> None:
         tx = self._create()
@@ -201,6 +238,57 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     OpenClawUpgradeTransaction.load(self.microclaw)
 
+    def test_package_dir_must_match_an_openclaw_package_location(self) -> None:
+        tx = self._create()
+        original = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        invalid_packages = (
+            self.prefix,
+            self.prefix / "node_modules",
+            self.prefix / "node_modules" / "other",
+            self.prefix / "nested" / "node_modules" / "openclaw",
+            self.prefix / "lib" / "node_modules",
+            self.prefix / "lib" / "node_modules" / "other",
+        )
+
+        for package_dir in invalid_packages:
+            with self.subTest(package_dir=package_dir):
+                data = dict(original)
+                data["package_dir"] = str(package_dir)
+                tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    OpenClawUpgradeTransaction.load(self.microclaw)
+
+    def test_lib_node_modules_openclaw_package_location_is_allowed(self) -> None:
+        installation = OpenClawInstallation(
+            version="2026.3.12",
+            prefix=self.prefix,
+            package_dir=self.prefix / "lib" / "node_modules" / "openclaw",
+            entry_path=self.prefix / "lib" / "node_modules" / "openclaw" / "openclaw.mjs",
+            shim_paths=(self.shim,),
+        )
+
+        tx = self._create(installation=installation)
+
+        self.assertEqual(Path(tx.manifest.package_dir), installation.package_dir)
+
+    def test_shims_must_be_named_direct_children_of_prefix(self) -> None:
+        tx = self._create()
+        original = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        invalid_shims = (
+            self.prefix,
+            self.prefix / "other.cmd",
+            self.prefix / "OPENCLAW.CMD",
+            self.prefix / "bin" / "openclaw.cmd",
+        )
+
+        for shim in invalid_shims:
+            with self.subTest(shim=shim):
+                data = dict(original)
+                data["shim_paths"] = [str(shim)]
+                tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    OpenClawUpgradeTransaction.load(self.microclaw)
+
     def test_interrupted_backing_up_preserves_live_and_partial_diagnostics(self) -> None:
         tx = self._create()
         tx.backup_dir.mkdir(parents=True)
@@ -215,20 +303,31 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertTrue((partial_state / "partial.txt").exists())
         self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLED_BACK)
 
-    def test_rollback_retries_safely_from_rolling_back(self) -> None:
+    def test_rollback_retry_preserves_first_failed_upgrade_diagnostic(self) -> None:
         tx = self._create()
         tx.backup()
+        (self.package / "old.txt").write_text("failed-package", encoding="utf-8")
+        (self.state / "openclaw.json").write_text("failed-state", encoding="utf-8")
+        original_set_phase = tx._set_phase
+
+        def interrupt_before_final_phase(phase: UpgradePhase) -> None:
+            if phase == UpgradePhase.ROLLED_BACK:
+                raise KeyboardInterrupt("simulated process interruption")
+            original_set_phase(phase)
+
+        with (
+            unittest.mock.patch.object(tx, "_set_phase", side_effect=interrupt_before_final_phase),
+            self.assertRaisesRegex(KeyboardInterrupt, "simulated process interruption"),
+        ):
+            tx.rollback()
+
         failed = tx.backup_dir / "failed"
-        failed.mkdir()
-        (failed / "package").mkdir()
-        (failed / "package" / "interrupted.txt").write_text("keep", encoding="utf-8")
-        shutil.rmtree(self.package)
-        (failed / "state").mkdir()
-        (failed / "state" / "stale.txt").write_text("stale", encoding="utf-8")
-        (self.state / "openclaw.json").write_text("failed-upgrade", encoding="utf-8")
-        data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
-        data["phase"] = UpgradePhase.ROLLING_BACK.value
-        tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLING_BACK)
+        self.assertEqual((self.package / "old.txt").read_text(), "old-package")
+        self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
+        self.assertEqual((failed / "package" / "old.txt").read_text(), "failed-package")
+        self.assertEqual((failed / "state" / "openclaw.json").read_text(), "failed-state")
+
         resumed = OpenClawUpgradeTransaction.load(self.microclaw)
         self.assertIsNotNone(resumed)
 
@@ -236,10 +335,22 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
         self.assertEqual((self.package / "old.txt").read_text(), "old-package")
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
-        self.assertEqual((failed / "package" / "interrupted.txt").read_text(), "keep")
-        self.assertFalse((failed / "state" / "stale.txt").exists())
-        self.assertEqual((failed / "state" / "openclaw.json").read_text(), "failed-upgrade")
+        self.assertEqual((failed / "package" / "old.txt").read_text(), "failed-package")
+        self.assertEqual((failed / "state" / "openclaw.json").read_text(), "failed-state")
         self.assertEqual(resumed.manifest.phase, UpgradePhase.ROLLED_BACK)  # type: ignore[union-attr]
+
+    def test_rollback_can_start_from_verifying(self) -> None:
+        tx = self._create()
+        tx.backup()
+        tx.mark_verifying()
+        (self.package / "old.txt").write_text("new-package", encoding="utf-8")
+        (self.state / "openclaw.json").write_text("new-state", encoding="utf-8")
+
+        tx.rollback()
+
+        self.assertEqual((self.package / "old.txt").read_text(), "old-package")
+        self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
+        self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLED_BACK)
 
     def test_rollback_failure_is_persisted_and_reraised(self) -> None:
         tx = self._create()
@@ -283,19 +394,21 @@ class PruneCommittedBackupsTests(unittest.TestCase):
     def test_prune_deletes_only_previous_committed_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backup_root = Path(directory) / "backups"
-            phases = {
-                "old-committed": "committed",
-                "active": "installing",
-                "rolled-back": "rolled-back",
-                "rollback-failed": "rollback-failed",
-                "unknown": "future-phase",
-                "current": "committed",
+            manifests = {
+                "old-committed": ("committed", "2026-07-18T00:00:00+00:00"),
+                "active": ("installing", "2026-07-18T00:00:00+00:00"),
+                "rolled-back": ("rolled-back", "2026-07-18T00:00:00+00:00"),
+                "rollback-failed": ("rollback-failed", "2026-07-18T00:00:00+00:00"),
+                "unknown": ("future-phase", "2026-07-18T00:00:00+00:00"),
+                "current": ("committed", "2026-07-19T00:00:00+00:00"),
+                "newer-committed": ("committed", "2026-07-20T00:00:00+00:00"),
             }
-            for name, phase in phases.items():
+            for name, (phase, created_at) in manifests.items():
                 candidate = backup_root / name
                 candidate.mkdir(parents=True)
                 (candidate / "transaction.json").write_text(
-                    json.dumps({"phase": phase}), encoding="utf-8"
+                    json.dumps({"phase": phase, "created_at": created_at}),
+                    encoding="utf-8",
                 )
             malformed = backup_root / "malformed"
             malformed.mkdir()
@@ -307,7 +420,7 @@ class PruneCommittedBackupsTests(unittest.TestCase):
             prune_previous_committed_backups(backup_root, keep)
 
             self.assertFalse((backup_root / "old-committed").exists())
-            for name in phases.keys() - {"old-committed"}:
+            for name in manifests.keys() - {"old-committed"}:
                 self.assertTrue((backup_root / name).exists(), name)
             self.assertTrue(malformed.exists())
             self.assertTrue(no_manifest.exists())

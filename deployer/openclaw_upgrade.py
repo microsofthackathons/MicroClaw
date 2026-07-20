@@ -177,9 +177,20 @@ class OpenClawUpgradeTransaction:
             raise ValueError("transaction_id must not be empty")
 
         prefix = _require_absolute(Path(self.manifest.prefix), "prefix")
-        _require_within(Path(self.manifest.package_dir), prefix, "package_dir")
+        package_dir = _require_absolute(Path(self.manifest.package_dir), "package_dir")
+        allowed_package_dirs = {
+            (prefix / "node_modules" / "openclaw").resolve(strict=False),
+            (prefix / "lib" / "node_modules" / "openclaw").resolve(strict=False),
+        }
+        if package_dir not in allowed_package_dirs:
+            raise ValueError("package_dir is not an OpenClaw package location")
+
+        allowed_shim_names = {"openclaw", "openclaw.cmd", "openclaw.ps1"}
         for shim in self.manifest.shim_paths:
-            _require_within(Path(shim), prefix, "shim")
+            shim_path = Path(shim)
+            resolved_shim = _require_absolute(shim_path, "shim")
+            if resolved_shim.parent != prefix or shim_path.name not in allowed_shim_names:
+                raise ValueError("shim is not a recognized direct child of prefix")
 
         state_dir = _require_absolute(Path(self.manifest.state_dir), "state_dir")
         expected_state = _default_state_dir().resolve(strict=False)
@@ -278,7 +289,9 @@ class OpenClawUpgradeTransaction:
     def _move_to_failed(self, live: Path, failed: Path) -> None:
         if not live.exists() and not live.is_symlink():
             return
-        _remove_path(failed)
+        if failed.exists() or failed.is_symlink():
+            _remove_path(live)
+            return
         failed.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(live), str(failed))
 
@@ -368,6 +381,15 @@ def prune_previous_committed_backups(backup_root: Path, keep: Path) -> None:
     if not backup_root.exists():
         return
     keep_resolved = keep.resolve(strict=False)
+    try:
+        keep_data = json.loads((keep / "transaction.json").read_text(encoding="utf-8"))
+        keep_created_at = datetime.fromisoformat(keep_data["created_at"])
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return
+    if keep_created_at.tzinfo is None:
+        keep_created_at = keep_created_at.replace(tzinfo=UTC)
+    keep_created_at = keep_created_at.astimezone(UTC)
+
     for candidate in backup_root.iterdir():
         if (
             not candidate.is_dir()
@@ -377,8 +399,13 @@ def prune_previous_committed_backups(backup_root: Path, keep: Path) -> None:
             continue
         manifest_path = candidate / "transaction.json"
         try:
-            phase = json.loads(manifest_path.read_text(encoding="utf-8")).get("phase")
-        except (OSError, AttributeError, json.JSONDecodeError):
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            phase = data.get("phase")
+            created_at = datetime.fromisoformat(data["created_at"])
+        except (OSError, AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        if phase == UpgradePhase.COMMITTED.value:
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        created_at = created_at.astimezone(UTC)
+        if phase == UpgradePhase.COMMITTED.value and created_at < keep_created_at:
             shutil.rmtree(candidate)
