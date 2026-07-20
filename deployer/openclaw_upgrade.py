@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -29,6 +30,8 @@ ACTIVE_PHASES = {
     UpgradePhase.VERIFYING,
     UpgradePhase.ROLLING_BACK,
 }
+
+_TRANSACTION_ID_PATTERN = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 
 
 @dataclass(frozen=True)
@@ -173,8 +176,11 @@ class OpenClawUpgradeTransaction:
     def _validate_manifest(self) -> None:
         if self.manifest.schema_version != 1:
             raise ValueError("unsupported OpenClaw upgrade manifest schema")
-        if not self.manifest.transaction_id:
-            raise ValueError("transaction_id must not be empty")
+        transaction_id = self.manifest.transaction_id
+        if not isinstance(transaction_id, str) or not _TRANSACTION_ID_PATTERN.fullmatch(
+            transaction_id
+        ):
+            raise ValueError("transaction_id is not a valid generated transaction ID")
 
         prefix = _require_absolute(Path(self.manifest.prefix), "prefix")
         package_dir = _require_absolute(Path(self.manifest.package_dir), "package_dir")
@@ -198,8 +204,11 @@ class OpenClawUpgradeTransaction:
             raise ValueError("state_dir is not the default OpenClaw state directory")
 
         backup_dir = _require_within(Path(self.manifest.backup_dir), self.backup_root, "backup_dir")
-        expected_backup = (self.backup_root / self.manifest.transaction_id).resolve(strict=False)
-        if backup_dir != expected_backup:
+        backup_root = self.backup_root.resolve(strict=False)
+        if backup_dir == backup_root:
+            raise ValueError("backup_dir must be a strict descendant of backup root")
+        expected_backup = (backup_root / transaction_id).resolve(strict=False)
+        if backup_dir.name != transaction_id or backup_dir != expected_backup:
             raise ValueError("backup_dir does not match transaction_id")
 
     def _payload(self) -> dict[str, Any]:
@@ -214,7 +223,7 @@ class OpenClawUpgradeTransaction:
         if self.backup_dir.exists():
             _atomic_json_write(self.backup_dir / "transaction.json", payload)
 
-    def _set_phase(self, phase: UpgradePhase) -> None:
+    def set_phase(self, phase: UpgradePhase) -> None:
         self.manifest.phase = phase
         self._persist()
 
@@ -238,7 +247,7 @@ class OpenClawUpgradeTransaction:
         return self.backup_dir / "shims" / relative
 
     def backup(self) -> None:
-        self._set_phase(UpgradePhase.BACKING_UP)
+        self.set_phase(UpgradePhase.BACKING_UP)
         self.backup_dir.mkdir(parents=True, exist_ok=False)
         self._persist()
 
@@ -280,10 +289,10 @@ class OpenClawUpgradeTransaction:
             if path.is_file() and path not in metadata_files
         }
         _atomic_json_write(self.backup_dir / "backup-files.json", inventory)
-        self._set_phase(UpgradePhase.INSTALLING)
+        self.set_phase(UpgradePhase.INSTALLING)
 
     def mark_verifying(self) -> None:
-        self._set_phase(UpgradePhase.VERIFYING)
+        self.set_phase(UpgradePhase.VERIFYING)
 
     def record_validation(self, name: str, passed: bool) -> None:
         self.manifest.validation_results[name] = passed
@@ -293,7 +302,7 @@ class OpenClawUpgradeTransaction:
         results = self.manifest.validation_results
         if not results or not all(value is True for value in results.values()):
             raise RuntimeError("cannot commit before every validation passes")
-        self._set_phase(UpgradePhase.COMMITTED)
+        self.set_phase(UpgradePhase.COMMITTED)
 
     def _move_to_failed(self, live: Path, failed: Path) -> None:
         if not live.exists() and not live.is_symlink():
@@ -330,7 +339,7 @@ class OpenClawUpgradeTransaction:
     def rollback(self) -> None:
         original_phase = self.manifest.phase
         if original_phase == UpgradePhase.BACKING_UP:
-            self._set_phase(UpgradePhase.ROLLED_BACK)
+            self.set_phase(UpgradePhase.ROLLED_BACK)
             return
         if original_phase == UpgradePhase.ROLLED_BACK:
             return
@@ -343,15 +352,15 @@ class OpenClawUpgradeTransaction:
             raise RuntimeError(f"cannot roll back from phase {original_phase.value}")
 
         try:
-            self._set_phase(UpgradePhase.ROLLING_BACK)
+            self.set_phase(UpgradePhase.ROLLING_BACK)
             failed_dir = self.backup_dir / "failed"
             failed_dir.mkdir(parents=True, exist_ok=True)
             self._restore_package(failed_dir)
             self._restore_shims()
             self._restore_state(failed_dir)
-            self._set_phase(UpgradePhase.ROLLED_BACK)
+            self.set_phase(UpgradePhase.ROLLED_BACK)
         except Exception:
-            self._set_phase(UpgradePhase.ROLLBACK_FAILED)
+            self.set_phase(UpgradePhase.ROLLBACK_FAILED)
             raise
 
 

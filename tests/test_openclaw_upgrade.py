@@ -131,6 +131,17 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual(data["validation_results"], {})
         self.assertEqual(list(tx.manifest_path.parent.glob("*.tmp")), [])
 
+    def test_set_phase_persists_public_phase_updates(self) -> None:
+        tx = self._create()
+        tx.backup()
+
+        tx.set_phase(UpgradePhase.VERIFYING)
+
+        self.assertEqual(tx.manifest.phase, UpgradePhase.VERIFYING)
+        for manifest_path in (tx.manifest_path, tx.backup_dir / "transaction.json"):
+            persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["phase"], "verifying")
+
     def test_source_version_none_round_trips_through_manifest(self) -> None:
         installation = OpenClawInstallation(
             version="",
@@ -316,6 +327,34 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     OpenClawUpgradeTransaction.load(self.microclaw)
 
+    def test_tampered_manifest_backup_dir_cannot_equal_backup_root(self) -> None:
+        tx = self._create()
+        data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        data["backup_dir"] = str(tx.backup_root)
+        tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            OpenClawUpgradeTransaction.load(self.microclaw)
+
+    def test_tampered_manifest_transaction_id_cannot_be_dot(self) -> None:
+        tx = self._create()
+        data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        data["transaction_id"] = "."
+        data["backup_dir"] = str(tx.backup_root)
+        tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            OpenClawUpgradeTransaction.load(self.microclaw)
+
+    def test_tampered_manifest_transaction_id_must_match_backup_dir_name(self) -> None:
+        tx = self._create()
+        data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
+        data["transaction_id"] = "20260720T043308Z-aaaaaaaa"
+        tx.manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            OpenClawUpgradeTransaction.load(self.microclaw)
+
     def test_package_dir_must_match_an_openclaw_package_location(self) -> None:
         tx = self._create()
         original = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
@@ -386,7 +425,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         tx.backup()
         (self.package / "old.txt").write_text("failed-package", encoding="utf-8")
         (self.state / "openclaw.json").write_text("failed-state", encoding="utf-8")
-        original_set_phase = tx._set_phase
+        original_set_phase = tx.set_phase
 
         def interrupt_before_final_phase(phase: UpgradePhase) -> None:
             if phase == UpgradePhase.ROLLED_BACK:
@@ -394,7 +433,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             original_set_phase(phase)
 
         with (
-            unittest.mock.patch.object(tx, "_set_phase", side_effect=interrupt_before_final_phase),
+            unittest.mock.patch.object(tx, "set_phase", side_effect=interrupt_before_final_phase),
             self.assertRaisesRegex(KeyboardInterrupt, "simulated process interruption"),
         ):
             tx.rollback()
