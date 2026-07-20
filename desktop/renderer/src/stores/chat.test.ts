@@ -437,6 +437,20 @@ describe("useChatStore — draft sessions", () => {
       ),
     ).toBe(true);
   });
+
+  it("encodes a non-default agent into the session key so the gateway routes to it", () => {
+    const store = useChatStore();
+    store.newSession("coder");
+    expect(store.sessionKey).toMatch(/^agent:coder:session-/);
+    expect(store.currentSessionAgentId).toBe("coder");
+  });
+
+  it("keeps a bare session key for the default (main) agent", () => {
+    const store = useChatStore();
+    store.newSession("main");
+    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.currentSessionAgentId).toBe("main");
+  });
 });
 // ── Message content extraction tests ──
 

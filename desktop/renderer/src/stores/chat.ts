@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useSessionStore } from "./sessions";
 import { scanPii, redactPii } from "@/utils/pii-scanner";
 
@@ -151,6 +151,18 @@ export const useChatStore = defineStore("chat", () => {
   /** Prompt text to pre-fill in the chat input after navigation. */
   const pendingPrompt = ref<string | null>(null);
   const pendingSessionAgentId = ref<string | undefined>(undefined);
+
+  /**
+   * The agent bound to the currently-active session.
+   * Non-default agents are encoded into the session key as `agent:<id>:...`;
+   * for a freshly-created session not yet synced, fall back to the pending
+   * agent; otherwise the session belongs to the default (main) agent.
+   */
+  const currentSessionAgentId = computed(() => {
+    const match = /^agent:([^:]+):/.exec(sessionKey.value);
+    if (match) return match[1];
+    return pendingSessionAgentId.value || "main";
+  });
 
   /** Per-agent last message preview text */
   const lastMessageMap = ref<Record<string, string>>({});
@@ -1025,7 +1037,11 @@ export const useChatStore = defineStore("chat", () => {
     _syncToSessionStore();
     _saveCurrentState();
 
-    const key = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const suffix = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Encode the agent into the session key so the gateway routes the message
+    // to the selected agent. Bare keys (and "main") are normalised to the
+    // default (main) agent server-side, so only non-default agents are prefixed.
+    const key = agentId && agentId !== "main" ? `agent:${agentId}:${suffix}` : suffix;
     pendingSessionAgentId.value = agentId;
     sessionKey.value = key;
     resolvedSessionKey.value = null;
@@ -1213,6 +1229,7 @@ export const useChatStore = defineStore("chat", () => {
   return {
     sessionKey,
     resolvedSessionKey,
+    currentSessionAgentId,
     messages,
     loading,
     sending,

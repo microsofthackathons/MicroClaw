@@ -219,16 +219,22 @@ onMounted(() => {
   gateway.refreshWeixinStatus();
 });
 
-/** Only create a new session if the current one already has messages. */
+/**
+ * Ensure the active chat is a fresh session bound to the currently-selected agent.
+ * Starts a new session when the current chat already has messages, OR when it
+ * belongs to a different agent than the one now selected — otherwise switching
+ * agents on an empty chat would keep routing to (and displaying) the old agent.
+ */
 function ensureEmptySession() {
-  if (chatStore.messages.length > 0) {
-    chatStore.newSession(agentStore.currentAgentId);
+  const targetAgentId = agentStore.currentAgentId;
+  if (chatStore.messages.length > 0 || chatStore.currentSessionAgentId !== targetAgentId) {
+    chatStore.newSession(targetAgentId);
   }
-  // Tag the (new or existing) session with the current agent
+  // Tag the (new or existing) session with the current agent.
   const key = chatStore.sessionKey;
   const s = sessionStore.sessions.find((s) => s.key === key);
-  if (s && !s.agentId) {
-    s.agentId = agentStore.currentAgentId;
+  if (s) {
+    s.agentId = targetAgentId;
   }
 }
 
