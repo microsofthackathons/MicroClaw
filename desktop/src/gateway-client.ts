@@ -187,31 +187,6 @@ export class GatewayClient {
     return this.request("web.login.wait", params);
   }
 
-  /**
-   * Trigger an in-process gateway restart via config.patch → SIGUSR1.
-   * This avoids the chat/model dependency of `/gateway restart` and
-   * correctly re-initialises all plugin channels (e.g. weixin).
-   */
-  async restart(): Promise<unknown> {
-    // 1. Read current config + hash
-    const snapshot = await this.request<{
-      hash?: string;
-      config?: unknown;
-    }>("config.get");
-    const hash = snapshot?.hash;
-    if (!hash) {
-      throw new Error("config.get did not return hash");
-    }
-    // 2. Apply a no-op patch — the server unconditionally schedules
-    //    a SIGUSR1 restart after every config.patch write.
-    return this.request("config.patch", { raw: "{}", baseHash: hash });
-  }
-
-  /** @deprecated Use restart() instead — gateway.reload RPC does not exist. */
-  reload(): Promise<unknown> {
-    return this.restart();
-  }
-
   // ── Internal ──
 
   private connect() {

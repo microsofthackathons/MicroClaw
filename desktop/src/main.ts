@@ -2,8 +2,10 @@ import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
-import { ChildProcess, spawn } from "child_process";
+import * as net from "net";
+import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
+import { hardRestartGateway } from "./gateway-lifecycle";
 import { createTray, destroyTray } from "./tray";
 import Store from "electron-store";
 import {
@@ -160,9 +162,6 @@ const settingsStore = new Store<{
 
 /** Module-level quit flag — replaces `(app as any).isQuitting`. */
 let isQuitting = false;
-/** Force hard restart (kill + respawn) on next gateway:restart. Set when env-var-level config changes. */
-let forceHardRestart = false;
-
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
@@ -173,6 +172,7 @@ let weixinLoginProcess: ChildProcess | null = null;
 let pendingIntegrityResult: IntegrityResult | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 let gatewayRestarting = false;
+let gatewayRestartPromise: Promise<void> | null = null;
 /** Number of pending sync permission requests that block the gateway process.
  *  While > 0, the health-monitor skips checks to avoid killing the gateway. */
 let pendingSyncPermissionRequests = 0;
@@ -1287,6 +1287,22 @@ function checkExistingGateway(port: number): Promise<boolean> {
   });
 }
 
+function isGatewayPortOccupied(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const finish = (occupied: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(occupied);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(1_000, () => finish(false));
+  });
+}
+
 /** Resolve AppContainerLauncher.exe path, or null if unavailable. */
 function resolveAppContainerLauncher(): string | null {
   if (process.platform !== "win32") return null;
@@ -1324,78 +1340,83 @@ async function waitForGatewayReady(
   return false;
 }
 
-/** Kill the gateway by finding the process listening on gatewayPort */
+/** Kill the managed gateway and any listener still holding gatewayPort. */
 function stopGatewayProcess(): void {
+  const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
-  if (!gatewayPort) return;
-  try {
-    // Find PID listening on the gateway port and kill it
-    const result = require("child_process").execSync(
-      `netstat -ano | findstr "LISTENING" | findstr ":${gatewayPort} "`,
-      { windowsHide: true, encoding: "utf-8", timeout: 5000 },
-    );
-    const pids = new Set<string>();
-    for (const line of result.split("\n")) {
-      const m = line.trim().match(/(\d+)\s*$/);
-      if (m) pids.add(m[1]);
+  const pids = new Set<number>();
+  if (knownPid) pids.add(knownPid);
+  if (gatewayPort && process.platform === "win32") {
+    try {
+      const result = execFileSync("netstat", ["-ano"], {
+        windowsHide: true,
+        encoding: "utf-8",
+        timeout: 5_000,
+      });
+      for (const line of result.split(/\r?\n/)) {
+        const columns = line.trim().split(/\s+/);
+        if (
+          columns.length >= 5 &&
+          columns[0].toUpperCase() === "TCP" &&
+          columns[1].endsWith(`:${gatewayPort}`) &&
+          columns[3].toUpperCase() === "LISTENING"
+        ) {
+          const pid = Number.parseInt(columns[4], 10);
+          if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+        }
+      }
+    } catch {
+      // No listener or netstat unavailable; the known child PID is still used.
     }
-    for (const pid of pids) {
-      if (pid === "0") continue;
-      console.log(`[gateway] killing process ${pid} on port ${gatewayPort}`);
+  }
+  for (const pid of pids) {
+    console.log(`[gateway] killing process ${pid} on port ${gatewayPort}`);
+    if (process.platform === "win32") {
       try {
-        require("child_process").execSync(`taskkill /pid ${pid} /T /F`, {
+        execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
-          timeout: 10000,
+          timeout: 10_000,
           stdio: "ignore",
         });
       } catch {}
+    } else {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {}
     }
-  } catch {
-    // netstat may return empty if nothing is listening — that's fine
   }
 }
 
-/**
- * Send SIGUSR1 to the gateway process to trigger an in-process restart.
- * This preserves plugin registrations so channels (like weixin) start correctly.
- * Returns true if the signal was sent successfully.
- */
-function _signalGatewayRestart(): boolean {
-  if (!gatewayProcess?.pid) {
-    // No child process ref — try to find the gateway PID from the port
+async function restartManagedGateway(reason: string): Promise<void> {
+  if (gatewayRestartPromise) return gatewayRestartPromise;
+  const restart = (async () => {
+    gatewayRestarting = true;
+    gatewayStatus = "restarting";
+    mainWindow?.webContents.send("gateway:status", "restarting");
+    mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
     try {
-      const result = require("child_process").execSync(
-        `netstat -ano | findstr "LISTENING" | findstr ":${gatewayPort} "`,
-        { windowsHide: true, encoding: "utf-8", timeout: 5000 },
-      );
-      for (const line of result.split("\n")) {
-        const m = line.trim().match(/(\d+)\s*$/);
-        if (m && m[1] !== "0") {
-          const pid = parseInt(m[1], 10);
-          console.log(`[gateway] sending SIGUSR1 to PID ${pid} (found via port ${gatewayPort})`);
-          process.kill(pid, "SIGUSR1");
-          mainWindow?.webContents.send(
-            "gateway:log",
-            "[restart] 已发送 SIGUSR1 信号 (in-process restart)",
-          );
-          return true;
-        }
-      }
-    } catch {}
-    console.log("[gateway] no gateway process found for SIGUSR1");
-    return false;
-  }
+      await hardRestartGateway({
+        stopClient: () => gwClient?.stop(),
+        stopProcess: stopGatewayProcess,
+        isPortOccupied: () => isGatewayPortOccupied(gatewayPort),
+        startGateway,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        timeoutMs: 8_000,
+        pollMs: 500,
+      });
+    } catch (error) {
+      gatewayStatus = "failed";
+      mainWindow?.webContents.send("gateway:status", "failed");
+      throw error;
+    } finally {
+      gatewayRestarting = false;
+    }
+  })();
+  gatewayRestartPromise = restart;
   try {
-    console.log(`[gateway] sending SIGUSR1 to gateway PID ${gatewayProcess.pid}`);
-    process.kill(gatewayProcess.pid, "SIGUSR1");
-    mainWindow?.webContents.send(
-      "gateway:log",
-      "[restart] 已发送 SIGUSR1 信号 (in-process restart)",
-    );
-    return true;
-  } catch (err: any) {
-    console.error(`[gateway] SIGUSR1 failed: ${err.message}`);
-    return false;
+    await restart;
+  } finally {
+    if (gatewayRestartPromise === restart) gatewayRestartPromise = null;
   }
 }
 
@@ -1431,32 +1452,10 @@ function startHealthMonitor(): void {
     if (consecutiveFailures < HEALTH_CHECK_FAILURE_THRESHOLD) return;
     consecutiveFailures = 0;
 
-    // Gateway truly unresponsive — try in-process restart first (preserves
-    // plugin state and avoids killing a busy process). Fall back to a hard
-    // restart only if SIGUSR1 fails.
-    console.log("[health-monitor] Gateway unresponsive — attempting in-process restart (SIGUSR1)…");
-    let signaled: boolean;
     try {
-      signaled = await Promise.race([
-        gwClient
-          ?.restart()
-          .then(() => true)
-          .catch(() => false) ?? Promise.resolve(false),
-        new Promise<boolean>((r) => setTimeout(() => r(false), 5_000)),
-      ]);
-    } catch {
-      signaled = false;
-    }
-    if (signaled) {
-      console.log("[health-monitor] SIGUSR1 restart scheduled — skipping hard restart");
-      return;
-    }
-    console.log("[health-monitor] SIGUSR1 path failed — falling back to hard restart");
-    gatewayRestarting = true;
-    try {
-      await startGateway();
-    } finally {
-      gatewayRestarting = false;
+      await restartManagedGateway("Gateway health check failed; replacing process");
+    } catch (error) {
+      console.error("[health-monitor] Gateway restart failed:", error);
     }
   }, HEALTH_CHECK_INTERVAL_MS);
 }
@@ -1477,14 +1476,8 @@ async function ensureGatewayConnected(): Promise<void> {
       connectGatewayWs();
     }
   } else {
-    // Gateway is down — restart it
     console.log("[ensure-gateway] Gateway not reachable — restarting...");
-    gatewayRestarting = true;
-    try {
-      await startGateway();
-    } finally {
-      gatewayRestarting = false;
-    }
+    await restartManagedGateway("Gateway was unreachable when the window became active");
   }
 }
 
@@ -1590,11 +1583,11 @@ async function startGatewayInner(): Promise<void> {
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
 
-  // If gateway is already healthy, just connect WS and return — no new terminal.
-  // Exception: forceHardRestart means env vars (COMSPEC, NODE_OPTIONS) changed,
-  // so the old process MUST be replaced even if it looks healthy.
+  // If gateway is already healthy, just connect WS and return — no new process.
+  // Callers that need replacement use restartManagedGateway(), which stops the
+  // old process and waits for the port before invoking this function.
   const alreadyRunning = await checkExistingGateway(configuredPort);
-  if (alreadyRunning && !forceHardRestart) {
+  if (alreadyRunning) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
     gatewaySpawnedByUs = false;
     gatewayStatus = "running";
@@ -1602,19 +1595,6 @@ async function startGatewayInner(): Promise<void> {
     connectGatewayWs();
     startHealthMonitor();
     return;
-  }
-  if (alreadyRunning && forceHardRestart) {
-    console.log(
-      `[gateway] Stale gateway still alive on port ${configuredPort} — force-killing for env change`,
-    );
-    stopGatewayProcess();
-    // Give the OS a moment to release the port
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      const still = await checkExistingGateway(configuredPort);
-      if (!still) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
   }
 
   const stateDir = getOpenClawStateDir();
@@ -2217,8 +2197,8 @@ function connectGatewayWs(): void {
       const mainSessionKey = sessionDefaults?.mainSessionKey as string | undefined;
 
       // After a fresh spawn, auto-discovered plugins (like weixin) may miss
-      // the initial channel-start sweep.  Trigger an in-process restart via
-      // config.patch → SIGUSR1 which properly re-initialises all channels.
+      // the initial channel-start sweep. Replace the process once so every
+      // channel initializes from the final plugin configuration.
       // IMPORTANT: Do NOT notify the renderer of ws-connected yet — if we
       // announce connectivity now, the user can send a message that will be
       // killed when the restart fires seconds later (causing a 30s timeout).
@@ -2230,8 +2210,7 @@ function connectGatewayWs(): void {
         setTimeout(async () => {
           console.log("[gateway-ws] post-spawn: restarting gateway to activate plugin channels");
           try {
-            await gwClient?.restart();
-            console.log("[gateway-ws] post-spawn restart scheduled (SIGUSR1)");
+            await restartManagedGateway("Activating installed plugin channels");
           } catch (err: any) {
             console.error("[gateway-ws] post-spawn restart failed:", err.message);
             // Restart failed — notify renderer anyway so it's not stuck
@@ -2254,10 +2233,9 @@ function connectGatewayWs(): void {
       mainWindow?.webContents.send("gateway:log", `[warn] 网关认证失败 (token 不匹配)，正在重启…`);
       if (!wsAuthRestartInProgress) {
         wsAuthRestartInProgress = true;
-        stopGatewayProcess();
         setTimeout(async () => {
           try {
-            await startGateway();
+            await restartManagedGateway("Replacing Gateway after authentication failure");
           } catch (err: any) {
             console.error("[gateway-ws] restart after auth error failed:", err);
             mainWindow?.webContents.send(
@@ -2379,52 +2357,16 @@ function registerIpcHandlers(): void {
   // direct access to the gateway auth token.  All gateway communication
   // flows through main-process IPC handlers (chat:send-message, etc.).
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
-  ipcMain.handle("gateway:restart", async (_event, options?: { hard?: boolean }) => {
-    if (options?.hard) {
-      forceHardRestart = true;
-    }
-    mainWindow?.webContents.send("gateway:log", "[restart] 正在重启网关…");
-
-    // 1. Try in-process restart via config.patch → SIGUSR1 (no model needed)
-    //    Skip if forceHardRestart is set (e.g. capabilities changed — env vars
-    //    are baked at process start and SIGUSR1 won't update them).
-    if (!forceHardRestart && gwClient?.connected) {
-      try {
-        mainWindow?.webContents.send("gateway:log", "[restart] 触发网关内重启 (SIGUSR1)…");
-        await gwClient.restart();
-        mainWindow?.webContents.send(
-          "gateway:log",
-          "[restart] 重启指令已发送，网关将在数秒内重启…",
-        );
-        return;
-      } catch (err: any) {
-        mainWindow?.webContents.send(
-          "gateway:log",
-          `[restart] 内重启失败 (${err.message})，回退到硬重启…`,
-        );
-      }
-    }
-
-    // 2. Fallback: hard kill + cold restart
-    gwClient?.stop();
-    stopGatewayProcess();
-    // Wait until the port is actually free (old process may take a moment to die)
-    const portFreeDeadline = Date.now() + 8000;
-    while (Date.now() < portFreeDeadline) {
-      const still = await checkExistingGateway(gatewayPort);
-      if (!still) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
+  ipcMain.handle("gateway:restart", async (_event, _options?: { hard?: boolean }) => {
     try {
-      await startGateway();
+      await restartManagedGateway("Restart requested by user");
+      mainWindow?.webContents.send("gateway:log", "[restart] 网关重启完成");
     } catch (err: any) {
       const msg = `[error] Gateway restart failed: ${err?.message || err}`;
       console.error(msg);
       mainWindow?.webContents.send("gateway:log", msg);
-      gatewayStatus = "failed";
-      mainWindow?.webContents.send("gateway:status", "failed");
+      throw err;
     }
-    forceHardRestart = false;
   });
 
   // --- Config ---
@@ -2619,7 +2561,7 @@ function registerIpcHandlers(): void {
   // Report as "not connected" while the post-spawn restart is pending.
   // Without this, the renderer's isConnected() poll on mount bypasses the
   // ws-connected gate and lets the user send messages before the gateway's
-  // SIGUSR1 restart completes (sandbox runtime not yet initialized).
+  // post-spawn process replacement completes (sandbox runtime not yet initialized).
   ipcMain.handle("chat:is-connected", () => (gwClient?.connected ?? false) && postSpawnRestartDone);
 
   // --- Cron / Scheduled Tasks ---
@@ -2753,11 +2695,7 @@ function registerIpcHandlers(): void {
           );
           setTimeout(async () => {
             try {
-              console.log(
-                `[weixin-login] gwClient=${gwClient ? "connected" : "null"}, triggering restart`,
-              );
-              await gwClient?.restart();
-              console.log("[weixin-login] gateway restart scheduled (SIGUSR1)");
+              await restartManagedGateway("Activating Weixin after login");
             } catch (err: any) {
               console.error("[weixin-login] restart failed:", err.message);
             }
@@ -2878,11 +2816,7 @@ function registerIpcHandlers(): void {
       // Restart gateway so the channel stops
       console.log("[weixin:disconnect] Credentials removed, restarting gateway...");
       mainWindow?.webContents.send("gateway:log", "[weixin] 微信账号已断开，正在重启网关…");
-      try {
-        await gwClient?.restart();
-      } catch (err: any) {
-        console.error("[weixin:disconnect] restart failed:", err.message);
-      }
+      await restartManagedGateway("Applying Weixin account disconnection");
 
       return { ok: true };
     } catch (err: any) {
@@ -3344,26 +3278,19 @@ function registerIpcHandlers(): void {
     settingsStore.set("sandboxEnabled", enabled);
     // Sandbox enabled/disabled requires hard gateway restart — COMSPEC and
     // NODE_OPTIONS are baked at process start, can't change for running gateway.
-    forceHardRestart = true;
     mainWindow?.webContents.send(
       "gateway:log",
       `[sandbox] Sandbox ${enabled ? "enabled" : "disabled"} — restarting gateway…`,
     );
-    gwClient?.stop();
-    stopGatewayProcess();
-    const portFreeDeadline = Date.now() + 8000;
-    while (Date.now() < portFreeDeadline) {
-      const still = await checkExistingGateway(gatewayPort);
-      if (!still) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    // Keep forceHardRestart=true so startGatewayInner won't reconnect to
-    // a stale process that still has the old COMSPEC/NODE_OPTIONS env vars.
     try {
-      await startGateway();
-    } catch {}
-    forceHardRestart = false;
-    return { ok: true };
+      await restartManagedGateway(`Applying sandbox ${enabled ? "enablement" : "disablement"}`);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   });
 
   ipcMain.handle(
@@ -3483,9 +3410,8 @@ function registerIpcHandlers(): void {
     const clean = caps.filter((c) => KNOWN_CAPS.has(c));
     settingsStore.set("sandboxCapabilities", clean);
     toolSandbox?.setCapabilities(clean);
-    // Capabilities are baked into env var at gateway start — need hard restart
-    // (SIGUSR1 in-process restart doesn't update env vars).
-    forceHardRestart = true;
+    // Capabilities are baked into the Gateway environment, so the renderer
+    // asks the user to apply them through the hard restart IPC.
     return { ok: true, caps: clean, needsRestart: true };
   });
 
@@ -4346,8 +4272,9 @@ app.whenReady().then(async () => {
       );
     },
     onRestartGateway: () => {
-      stopGatewayProcess();
-      startGateway();
+      restartManagedGateway("Restart requested from system tray").catch((error) =>
+        console.error("[tray] Gateway restart failed:", error),
+      );
     },
     onQuit: () => {
       isQuitting = true;
