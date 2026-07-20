@@ -261,14 +261,16 @@ The Gateway client advertises:
 
 ```json
 {
-  "minProtocol": 4,
+  "minProtocol": 3,
   "maxProtocol": 4
 }
 ```
 
-It continues to wait for and sign the `connect.challenge` nonce. The existing
-v2 device-auth signature payload remains supported by OpenClaw 2026.7.1-1 and
-does not need to change.
+The range allows OpenClaw 2026.7.1-1 to negotiate protocol v4 while preserving
+desktop compatibility with the protocol-v3 Gateway restored by automatic
+rollback. The client continues to wait for and sign the `connect.challenge`
+nonce. The existing v2 device-auth signature payload remains supported by
+OpenClaw 2026.7.1-1 and does not need to change.
 
 `ChatEventPayload` adds:
 

@@ -23,6 +23,7 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
 } from "./constants";
+import { buildGatewayConnectParams } from "./gateway-protocol";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -46,6 +47,8 @@ export type ChatEventPayload = {
   sessionKey: string;
   state: "delta" | "final" | "aborted" | "error";
   message?: unknown;
+  deltaText?: string;
+  replace?: boolean;
   errorMessage?: string;
 };
 
@@ -280,30 +283,15 @@ export class GatewayClient {
     });
     const signature = signDevicePayload(this.deviceIdentity.privateKey, payload);
 
-    const params: Record<string, unknown> = {
-      minProtocol: 3,
-      maxProtocol: 3,
-      client: {
-        id: clientId,
-        version: "1.0.0",
-        platform: process.platform,
-        mode: clientMode,
-      },
-      role,
-      scopes,
-      device: {
-        id: this.deviceIdentity.deviceId,
-        publicKey: this.deviceIdentity.publicKey,
-        signature,
-        signedAt: signedAtMs,
-        nonce,
-      },
-      caps: ["tool-events"],
-    };
-
-    if (this.opts.token) {
-      params.auth = { token: this.opts.token };
-    }
+    const params = buildGatewayConnectParams({
+      token: this.opts.token,
+      platform: process.platform,
+      deviceId: this.deviceIdentity.deviceId,
+      publicKey: this.deviceIdentity.publicKey,
+      signature,
+      signedAt: signedAtMs,
+      nonce,
+    });
 
     this.request<Record<string, unknown>>("connect", params)
       .then((hello) => {
