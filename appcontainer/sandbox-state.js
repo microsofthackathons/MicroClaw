@@ -7,6 +7,7 @@
 "use strict";
 
 var path = require("path");
+var fileURLToPath = require("url").fileURLToPath;
 
 // ── Configuration ──
 
@@ -116,7 +117,19 @@ var _safeExactPaths = (function () {
 
 // ── Path checking functions ──
 
+function resolvePathLower(filePath) {
+  var value = Buffer.isBuffer(filePath) ? filePath.toString() : filePath;
+  var stringValue = String(value);
+  if (/^file:/i.test(stringValue)) {
+    value = fileURLToPath(value);
+  }
+  return path.resolve(String(value)).toLowerCase();
+}
+
 function isNonFilePath(p) {
+  // Numeric values are already-open file descriptors. The original open call
+  // is where path authorization is enforced.
+  if (typeof p === "number") return true;
   var s = String(p);
   if (s.indexOf("\\\\.\\") === 0 || s.indexOf("\\\\?\\") === 0) return true;
   if (/^\\\\[.?]\\/.test(s)) return true;
@@ -147,7 +160,7 @@ function isBlockedPath(filePath) {
   if (isNonFilePath(filePath)) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = resolvePathLower(filePath);
   } catch {
     return false;
   }
@@ -175,7 +188,7 @@ function isReadBlockedPath(filePath, shellContext) {
   if (isNonFilePath(filePath)) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = resolvePathLower(filePath);
   } catch {
     return false;
   }
@@ -281,6 +294,7 @@ module.exports = {
   state: state,
   // Path functions
   normDirList: normDirList,
+  resolvePathLower: resolvePathLower,
   isNonFilePath: isNonFilePath,
   isSafePath: isSafePath,
   isSafePrefixPath: isSafePrefixPath,

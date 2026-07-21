@@ -29,6 +29,7 @@ import {
   resolveBuiltinSkillsDir,
   resolveNodePath,
   resolveOpenClawEntry,
+  resolveOpenClawPackageDir,
 } from "./path-resolver";
 import {
   type GatewayStatus,
@@ -1669,6 +1670,9 @@ async function startGatewayInner(): Promise<void> {
     NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
     NODE_ENV: "production",
     NODE_COMPILE_CACHE: compileCacheDir,
+    // The Desktop process already supplies a stable cache directory. Prevent
+    // the OpenClaw launcher from self-respawning through the tool sandbox.
+    OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
     OPENCLAW_NO_RESPAWN: "1",
     // HMAC key for verifying the external apps whitelist file
     OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
@@ -1688,8 +1692,14 @@ async function startGatewayInner(): Promise<void> {
     toolSandbox.setEnabled(false);
   }
 
-  // Grant sandbox read access to openclaw state dir and node modules
+  // Grant sandbox access to the state directory and the resolved runtimes.
   if (fs.existsSync(stateDir)) toolSandbox.addDirRW(stateDir);
+  const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
+  if (fs.existsSync(openClawPackageDir)) toolSandbox.addDirRO(openClawPackageDir);
+  const nodeRuntimeDir = path.dirname(nodePath);
+  if (fs.existsSync(nodeRuntimeDir)) toolSandbox.addDirRO(nodeRuntimeDir);
+
+  // Preserve support for the legacy per-user runtime layout.
   const ocNodeDir = process.env.USERPROFILE
     ? path.join(process.env.USERPROFILE, ".openclaw-node")
     : "";

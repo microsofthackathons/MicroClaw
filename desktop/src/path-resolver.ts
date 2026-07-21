@@ -142,6 +142,12 @@ export function resolveOpenClawEntry(): string {
   return candidates[0];
 }
 
+/** Resolve the package root that must remain readable by the sandbox preload. */
+export function resolveOpenClawPackageDir(entryPath: string): string {
+  const entryDir = path.dirname(entryPath);
+  return path.basename(entryDir).toLowerCase() === "dist" ? path.dirname(entryDir) : entryDir;
+}
+
 /**
  * Resolve the directory containing the built-in (bundled with the `openclaw`
  * npm package) skills.

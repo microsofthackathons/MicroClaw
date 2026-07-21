@@ -2667,6 +2667,47 @@ describe("per-path independent enforcement", () => {
         sandboxState.state._roDirs = originalRO;
       }
     });
+
+    it("normalizes Node ESM file URLs before checking read access", () => {
+      const originalActive = sandboxState.state.sandboxActive;
+      const originalRW = sandboxState.state._rwDirs.slice();
+      const originalRO = sandboxState.state._roDirs.slice();
+
+      try {
+        sandboxState.state.sandboxActive = true;
+        sandboxState.state._rwDirs = [];
+        sandboxState.state._roDirs = sandboxState.normDirList(
+          "C:\\Users\\testuser\\AppData\\Roaming\\npm\\node_modules\\openclaw",
+        );
+
+        const allowed = new URL(
+          "file:///C:/Users/testuser/AppData/Roaming/npm/node_modules/openclaw/openclaw.mjs",
+        );
+        expect(sandboxState.isReadBlockedPath(allowed, false)).toBe(false);
+        expect(sandboxState.isReadBlockedPath(allowed.href, false)).toBe(false);
+        expect(
+          sandboxState.isReadBlockedPath(
+            new URL("file:///C:/Users/testuser/AppData/Roaming/npm/node_modules/other/index.mjs"),
+            false,
+          ),
+        ).toBe(true);
+      } finally {
+        sandboxState.state.sandboxActive = originalActive;
+        sandboxState.state._rwDirs = originalRW;
+        sandboxState.state._roDirs = originalRO;
+      }
+    });
+
+    it("allows reads and writes through already-authorized file descriptors", () => {
+      const originalActive = sandboxState.state.sandboxActive;
+      try {
+        sandboxState.state.sandboxActive = true;
+        expect(sandboxState.isReadBlockedPath(3, false)).toBe(false);
+        expect(sandboxState.isBlockedPath(3)).toBe(false);
+      } finally {
+        sandboxState.state.sandboxActive = originalActive;
+      }
+    });
   });
 
   describe("end-to-end: declare A + command touches A,B,C", () => {
