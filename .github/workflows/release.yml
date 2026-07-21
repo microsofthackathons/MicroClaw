@@ -3,7 +3,7 @@
 # Produces the signed, single-exe installer (dist\MicroClawSetup.exe) and
 # publishes it as a GitHub Release asset.
 #
-# build.ps1 Step 7 wraps the PyInstaller onedir in an NSIS self-extractor
+# build.ps1 Step 8 wraps the PyInstaller onedir in an NSIS self-extractor
 # (installer\microclaw-setup.nsi) and then calls scripts\windows\sign-artifact.ps1.
 # That signer is a NO-OP unless the TRUSTED_SIGNING_* / AZURE_* secrets below
 # are present, so the *signed* exe is only ever produced by this workflow —
@@ -14,12 +14,14 @@
 # are not re-evaluated.
 #
 # Triggers:
+#   - push to main                 -> builds + signs, uploads as a run artifact
 #   - push of a version tag (v*)   -> publishes a release for that tag
 #   - manual workflow_dispatch      -> builds + signs, uploads as a run artifact
 name: "Release"
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -105,8 +107,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      # build.ps1 Step 7 needs makensis. electron-builder populates its NSIS
-      # cache during Step 3, so it is normally present by Step 7. Pre-install
+      # build.ps1 Step 8 needs makensis. electron-builder populates its NSIS
+      # cache during Step 3, so it is normally present by Step 8. Pre-install
       # a system copy as a fallback so a cold runner never fails the step.
       - name: Ensure NSIS is available
         run: |

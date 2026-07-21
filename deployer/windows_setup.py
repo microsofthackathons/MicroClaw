@@ -683,10 +683,17 @@ class WindowsSetup:
             # exit code; -WindowStyle Hidden keeps the UAC-spawned console
             # off-screen.
             ps_cmd = (
+                "$ErrorActionPreference = 'Stop'; "
+                "try { "
                 "$p = Start-Process -FilePath msiexec.exe "
                 f"-ArgumentList '{msi_args}' "
                 "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
-                "exit $p.ExitCode"
+                "if ($null -eq $p) { throw 'Failed to start elevated msiexec process.' }; "
+                "exit [int]$p.ExitCode "
+                "} catch { "
+                "[Console]::Error.WriteLine($_.Exception.Message); "
+                "exit 1 "
+                "}"
             )
             try:
                 result = self._run(
@@ -707,6 +714,13 @@ class WindowsSetup:
 
             # msiexec exit codes: 0 = success, 3010 = success + reboot required
             if result.returncode not in (0, 3010):
+                process_error = (result.stderr or result.stdout or "").strip()
+                if process_error:
+                    self.log.error(f"Could not start elevated Node.js installer: {process_error}")
+                if not log_path.exists():
+                    self.log.error(
+                        "Node.js installer did not start. Approve the Windows UAC prompt and retry."
+                    )
                 self.log.error(
                     f"msiexec exited with code {result.returncode}; "
                     f"see log: {log_path}"
@@ -1037,7 +1051,7 @@ class WindowsSetup:
     def install_openclaw_windows(self) -> bool:
         """Install openclaw via npm on Windows."""
         channel = self.cfg.get("openclaw.channel", "stable")
-        tag = "2026.3.12" if channel == "stable" else channel
+        tag = "2026.7.1" if channel == "stable" else channel
         # Validate tag before passing to subprocess
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$", tag):
             self.log.error(f"Invalid npm tag: {tag!r}")

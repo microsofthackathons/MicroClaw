@@ -1,5 +1,5 @@
 import { decryptAesEcb } from "./aes-ecb.js";
-import { buildCdnDownloadUrl } from "./cdn-url.js";
+import { buildCdnDownloadUrl, ENABLE_CDN_URL_FALLBACK } from "./cdn-url.js";
 import { logger } from "../util/logger.js";
 
 /**
@@ -60,9 +60,17 @@ export async function downloadAndDecryptBuffer(
   aesKeyBase64: string,
   cdnBaseUrl: string,
   label: string,
+  fullUrl?: string,
 ): Promise<Buffer> {
   const key = parseAesKey(aesKeyBase64, label);
-  const url = buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
+  let url: string;
+  if (fullUrl) {
+    url = fullUrl;
+  } else if (ENABLE_CDN_URL_FALLBACK) {
+    url = buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
+  } else {
+    throw new Error(`${label}: fullUrl is required (CDN URL fallback is disabled)`);
+  }
   logger.debug(`${label}: fetching url=${url}`);
   const encrypted = await fetchCdnBytes(url, label);
   logger.debug(`${label}: downloaded ${encrypted.byteLength} bytes, decrypting`);
@@ -78,8 +86,16 @@ export async function downloadPlainCdnBuffer(
   encryptedQueryParam: string,
   cdnBaseUrl: string,
   label: string,
+  fullUrl?: string,
 ): Promise<Buffer> {
-  const url = buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
+  let url: string;
+  if (fullUrl) {
+    url = fullUrl;
+  } else if (ENABLE_CDN_URL_FALLBACK) {
+    url = buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
+  } else {
+    throw new Error(`${label}: fullUrl is required (CDN URL fallback is disabled)`);
+  }
   logger.debug(`${label}: fetching url=${url}`);
   return fetchCdnBytes(url, label);
 }

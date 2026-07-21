@@ -2,13 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";
+
 /**
  * Plugin logger — writes JSON lines to the main openclaw log file:
- *   /tmp/openclaw/openclaw-YYYY-MM-DD.log
+ *   <tmpDir>/openclaw-YYYY-MM-DD.log
  * Same file and format used by all other channels.
  */
 
-const MAIN_LOG_DIR = path.join("/tmp", "openclaw");
+const MAIN_LOG_DIR = resolvePreferredOpenClawTmpDir();
 const SUBSYSTEM = "gateway/channels/openclaw-weixin";
 const RUNTIME = "node";
 const RUNTIME_VERSION = process.versions.node;
@@ -39,9 +41,7 @@ let minLevelId = resolveMinLevel();
 export function setLogLevel(level: string): void {
   const upper = level.toUpperCase();
   if (!(upper in LEVEL_IDS)) {
-    throw new Error(
-      `Invalid log level: ${level}. Valid levels: ${Object.keys(LEVEL_IDS).join(", ")}`,
-    );
+    throw new Error(`Invalid log level: ${level}. Valid levels: ${Object.keys(LEVEL_IDS).join(", ")}`);
   }
   minLevelId = LEVEL_IDS[upper];
 }

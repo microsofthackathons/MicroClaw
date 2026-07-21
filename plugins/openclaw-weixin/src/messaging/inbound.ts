@@ -1,17 +1,20 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import { logger } from "../util/logger.js";
 import { generateId } from "../util/random.js";
 import type { WeixinMessage, MessageItem } from "../api/types.js";
 import { MessageItemType } from "../api/types.js";
+import { resolveStateDir } from "../storage/state-dir.js";
 
 // ---------------------------------------------------------------------------
-// Context token store (in-process cache: accountId+userId → contextToken)
+// Context token store (in-process cache + disk persistence)
 // ---------------------------------------------------------------------------
 
 /**
  * contextToken is issued per-message by the Weixin getupdates API and must
- * be echoed verbatim in every outbound send. It is not persisted: the monitor
- * loop populates this map on each inbound message, and the outbound adapter
- * reads it back when the agent sends a reply.
+ * be echoed verbatim in every outbound send. The in-memory map is the primary
+ * lookup; a disk-backed file per account ensures tokens survive gateway restarts.
  */
 const contextTokenStore = new Map<string, string>();
 
@@ -19,11 +22,84 @@ function contextTokenKey(accountId: string, userId: string): string {
   return `${accountId}:${userId}`;
 }
 
-/** Store a context token for a given account+user pair. */
+// ---------------------------------------------------------------------------
+// Disk persistence helpers
+// ---------------------------------------------------------------------------
+
+function resolveContextTokenFilePath(accountId: string): string {
+  return path.join(
+    resolveStateDir(),
+    "openclaw-weixin",
+    "accounts",
+    `${accountId}.context-tokens.json`,
+  );
+}
+
+/** Persist all context tokens for a given account to disk. */
+function persistContextTokens(accountId: string): void {
+  const prefix = `${accountId}:`;
+  const tokens: Record<string, string> = {};
+  for (const [k, v] of contextTokenStore) {
+    if (k.startsWith(prefix)) {
+      tokens[k.slice(prefix.length)] = v;
+    }
+  }
+  const filePath = resolveContextTokenFilePath(accountId);
+  try {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), "utf-8");
+  } catch (err) {
+    logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
+  }
+}
+
+/**
+ * Restore persisted context tokens for an account into the in-memory map.
+ * Called once during gateway startAccount to survive restarts.
+ */
+export function restoreContextTokens(accountId: string): void {
+  const filePath = resolveContextTokenFilePath(accountId);
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const tokens = JSON.parse(raw) as Record<string, string>;
+    let count = 0;
+    for (const [userId, token] of Object.entries(tokens)) {
+      if (typeof token === "string" && token) {
+        contextTokenStore.set(contextTokenKey(accountId, userId), token);
+        count++;
+      }
+    }
+    logger.info(`restoreContextTokens: restored ${count} tokens for account=${accountId}`);
+  } catch (err) {
+    logger.warn(`restoreContextTokens: failed to read ${filePath}: ${String(err)}`);
+  }
+}
+
+/** Remove all context tokens for a given account (memory + disk). */
+export function clearContextTokensForAccount(accountId: string): void {
+  const prefix = `${accountId}:`;
+  for (const k of [...contextTokenStore.keys()]) {
+    if (k.startsWith(prefix)) {
+      contextTokenStore.delete(k);
+    }
+  }
+  const filePath = resolveContextTokenFilePath(accountId);
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (err) {
+    logger.warn(`clearContextTokensForAccount: failed to remove ${filePath}: ${String(err)}`);
+  }
+  logger.info(`clearContextTokensForAccount: cleared tokens for account=${accountId}`);
+}
+
+/** Store a context token for a given account+user pair (memory + disk). */
 export function setContextToken(accountId: string, userId: string, token: string): void {
   const k = contextTokenKey(accountId, userId);
   logger.debug(`setContextToken: key=${k}`);
   contextTokenStore.set(k, token);
+  persistContextTokens(accountId);
 }
 
 /** Retrieve the cached context token for a given account+user pair. */
@@ -34,6 +110,21 @@ export function getContextToken(accountId: string, userId: string): string | und
     `getContextToken: key=${k} found=${val !== undefined} storeSize=${contextTokenStore.size}`,
   );
   return val;
+}
+
+/**
+ * Find all accountIds that have an active contextToken for the given userId.
+ * Used to infer the sending bot account from the recipient address when
+ * accountId is not explicitly provided (e.g. cron delivery).
+ *
+ * Returns all matching accountIds (not just the first) so the caller can
+ * detect ambiguity when multiple accounts have sessions with the same user.
+ */
+export function findAccountIdsByContextToken(
+  accountIds: string[],
+  userId: string,
+): string[] {
+  return accountIds.filter((id) => contextTokenStore.has(contextTokenKey(id, userId)));
 }
 
 // ---------------------------------------------------------------------------

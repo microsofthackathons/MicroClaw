@@ -47,7 +47,7 @@ if (-not $nodeFound) {
 }
 
 # -- Step 1: Build AppContainerLauncher.exe (.NET 9) --
-Write-Host "`n=== Step 1/7: Build AppContainerLauncher ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 1/8: Build AppContainerLauncher ===" -ForegroundColor Cyan
 $acProject = "$root\appcontainer"
 if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
     Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
@@ -88,7 +88,7 @@ if (Test-Path $preloadSrc) {
 }
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
-Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 2/8: Clean stale build artifacts ===" -ForegroundColor Cyan
 $distDir = "$root\desktop\dist"
 if (Test-Path $distDir) {
     Remove-Item "$distDir\*.js" -Force -ErrorAction SilentlyContinue
@@ -104,7 +104,7 @@ if (-not (Test-Path $outDist)) {
 }
 
 # -- Step 3: Build & pack desktop --
-Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 3/8: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
 try {
     # First-run bootstrap: install npm deps (including renderer via postinstall)
@@ -160,28 +160,101 @@ if (Test-Path $desktopAsar) {
     }
 }
 
-# Step 4: Create portable zip
-Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
+# Step 4: Stage a self-contained Weixin runtime. OpenClaw 2026.7.1 intentionally
+# does not install dependencies for local directory installs, so the installer
+# must carry the plugin's production node_modules.
+Write-Host "`n=== Step 4/8: Stage Weixin plugin ===" -ForegroundColor Cyan
+$weixinDir = "$root\plugins\openclaw-weixin"
+$weixinPackage = Get-Content "$weixinDir\package.json" -Raw | ConvertFrom-Json
+$weixinManifest = Get-Content "$weixinDir\openclaw.plugin.json" -Raw | ConvertFrom-Json
+if ($weixinPackage.version -ne $weixinManifest.version) {
+    Write-Host "  ERROR: Weixin package and manifest versions do not match" -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path "$weixinDir\dist\index.js")) {
+    Write-Host "  ERROR: Weixin plugin is missing dist\index.js" -ForegroundColor Red
+    exit 1
+}
+
+$weixinStage = "$outDist\openclaw-weixin"
+if (Test-Path $weixinStage) { Remove-Item $weixinStage -Recurse -Force }
+New-Item -ItemType Directory -Path $weixinStage -Force | Out-Null
+foreach ($item in @('package.json', 'openclaw.plugin.json', 'index.ts', 'LICENSE')) {
+    Copy-Item "$weixinDir\$item" "$weixinStage\$item" -Force
+}
+Copy-Item "$weixinDir\dist" "$weixinStage\dist" -Recurse -Force
+
+# The staged package is runtime-only. Removing devDependencies avoids pulling a
+# second OpenClaw toolchain when a clean build needs to restore production deps.
+$runtimePackage = Get-Content "$weixinStage\package.json" -Raw | ConvertFrom-Json
+$runtimePackage.PSObject.Properties.Remove('devDependencies')
+$runtimeJson = $runtimePackage | ConvertTo-Json -Depth 20
+[IO.File]::WriteAllText(
+    "$weixinStage\package.json",
+    $runtimeJson + [Environment]::NewLine,
+    (New-Object Text.UTF8Encoding($false))
+)
+
+$localModules = "$weixinDir\node_modules"
+$hasLocalRuntimeDeps =
+    (Test-Path "$localModules\zod\package.json") -and
+    (Test-Path "$localModules\qrcode-terminal\package.json")
+if ($hasLocalRuntimeDeps) {
+    New-Item -ItemType Directory -Path "$weixinStage\node_modules" -Force | Out-Null
+    Copy-Item "$localModules\zod" "$weixinStage\node_modules\zod" -Recurse -Force
+    Copy-Item "$localModules\qrcode-terminal" "$weixinStage\node_modules\qrcode-terminal" -Recurse -Force
+} else {
+    Push-Location $weixinStage
+    try {
+        npm install --omit=dev --omit=peer --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ERROR: Weixin production dependency install failed" -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+foreach ($dependency in @('zod', 'qrcode-terminal')) {
+    if (-not (Test-Path "$weixinStage\node_modules\$dependency\package.json")) {
+        Write-Host "  ERROR: Weixin runtime dependency '$dependency' is missing" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "  Verified: openclaw-weixin $($weixinPackage.version), runtime dependencies bundled" -ForegroundColor Green
+
+# Step 5: Create portable zip
+Write-Host "`n=== Step 5/8: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  -> $zipPath  ${zipSizeMB} MB"
 
-# Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
-Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan
+# Step 6: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
+Write-Host "`n=== Step 6/8: Build installer ===" -ForegroundColor Cyan
 Push-Location $root
 $installerBuilt = $false
 
 # --- Ensure Python dependencies are installed (like npm install for Node) ---
 $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
 if ($uvCmd) {
-    # uv manages .venv automatically; `uv sync` is fast and idempotent
+    # Python dependencies are declared in requirements.txt, not pyproject.toml.
     if (-not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
-        Write-Host "  Python deps not found — running 'uv sync'..." -ForegroundColor Yellow
-        uv sync 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  WARNING: uv sync failed" -ForegroundColor Yellow
+        $venvPython = "$root\.venv\Scripts\python.exe"
+        $venvReady = Test-Path $venvPython
+        if (-not $venvReady) {
+            Write-Host "  Python environment not found — running 'uv venv --python 3.12'..." -ForegroundColor Yellow
+            & $uvCmd.Source venv --python 3.12 "$root\.venv"
+            $venvReady = $LASTEXITCODE -eq 0 -and (Test-Path $venvPython)
+        }
+        if ($venvReady) {
+            Write-Host "  Python deps not found — running 'uv pip install -r requirements.txt'..." -ForegroundColor Yellow
+            & $uvCmd.Source pip install --python $venvPython -r "$root\requirements.txt"
+        }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
+            Write-Host "  WARNING: uv dependency installation failed" -ForegroundColor Yellow
         }
     }
 } else {
@@ -207,7 +280,7 @@ if ($uvCmd) {
 # Strategy 1: `uv run` — uses project .venv with all deps
 if (-not $installerBuilt -and $uvCmd) {
     Write-Host "  Trying: uv run pyinstaller" -ForegroundColor DarkGray
-    uv run pyinstaller MicroClawDeployer.spec --noconfirm
+    & $uvCmd.Source run pyinstaller MicroClawDeployer.spec --noconfirm
     if ($LASTEXITCODE -eq 0) { $installerBuilt = $true }
 }
 
@@ -259,8 +332,8 @@ if (-not $installerBuilt) {
     exit 1
 }
 
-# Step 6: Pack onedir output into a single distributable zip
-Write-Host "`n=== Step 6/7: Pack installer directory ===" -ForegroundColor Cyan
+# Step 7: Pack onedir output into a single distributable zip
+Write-Host "`n=== Step 7/8: Pack installer directory ===" -ForegroundColor Cyan
 $installerDir = "$root\dist\MicroClawInstaller"
 $installerZip = "$root\dist\MicroClawInstaller.zip"
 if (-not (Test-Path $installerDir)) {
@@ -273,12 +346,12 @@ Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
 $instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
 Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
 
-# Step 7: Build the single-exe setup (NSIS self-extractor) and code-sign it.
+# Step 8: Build the single-exe setup (NSIS self-extractor) and code-sign it.
 # This is the ONE file end users download. It extracts the onedir installer to a
 # real directory under %LOCALAPPDATA% (not %TEMP%, preserving WDAC safety) and
 # auto-launches MicroClawInstaller.exe. Only this stub needs signing to clear
 # SmartScreen (it is the only file that carries Mark-of-the-Web on download).
-Write-Host "`n=== Step 7/7: Build single-exe setup + sign ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 8/8: Build single-exe setup + sign ===" -ForegroundColor Cyan
 $setupExe = "$root\dist\MicroClawSetup.exe"
 $nsiScript = "$root\installer\microclaw-setup.nsi"
 $setupIcon = "$root\deployer\assets\microclaw.ico"
