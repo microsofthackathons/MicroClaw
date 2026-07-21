@@ -1550,7 +1550,7 @@ class WindowsSetup:
             ("v4-handshake", self._validate_gateway_status),
             ("config.get", lambda: self._validate_gateway_rpc("config.get")),
             ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
-            ("channels.list", lambda: self._validate_gateway_rpc("channels.list")),
+            ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
             ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
             ("weixin-plugin", self._validate_weixin_plugin),
             ("appcontainer", self._validate_appcontainer_smoke),

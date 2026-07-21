@@ -19,7 +19,7 @@ export const useChannelStore = defineStore("channels", () => {
         channels.value = result.channels as Channel[];
       }
     } catch {
-      // Gateway may not support channels.list yet — keep empty
+      // Keep the list empty if the Gateway channel status request fails.
     }
   }
 

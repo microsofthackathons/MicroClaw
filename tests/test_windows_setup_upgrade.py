@@ -308,7 +308,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 ("v4-handshake", True),
                 ("config.get", True),
                 ("agents.list", True),
-                ("channels.list", True),
+                ("channels.status", True),
                 ("cron.list", True),
                 ("weixin-plugin", True),
                 ("appcontainer", True),

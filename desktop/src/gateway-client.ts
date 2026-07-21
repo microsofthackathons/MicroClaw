@@ -52,6 +52,58 @@ export type ChatEventPayload = {
   errorMessage?: string;
 };
 
+export type ListedGatewayChannel = {
+  id: string;
+  name: string;
+  icon: string;
+  type: string;
+  connected: boolean;
+};
+
+type GatewayChannelState = {
+  connected?: boolean;
+  running?: boolean;
+  linked?: boolean;
+};
+
+type GatewayChannelsStatusPayload = {
+  channels?: Record<string, GatewayChannelState>;
+  channelAccounts?: Record<string, GatewayChannelState[]>;
+  channelOrder?: string[];
+  channelLabels?: Record<string, string>;
+  channelMeta?: Array<{
+    id: string;
+    label?: string;
+    systemImage?: string;
+  }>;
+};
+
+function isConnected(state: GatewayChannelState | undefined): boolean {
+  return state?.connected === true || state?.running === true || state?.linked === true;
+}
+
+export function normalizeGatewayChannelsStatus(
+  payload: GatewayChannelsStatusPayload,
+): ListedGatewayChannel[] {
+  const summaries = payload.channels ?? {};
+  const metadata = new Map((payload.channelMeta ?? []).map((entry) => [entry.id, entry]));
+  const orderedIds = Array.from(
+    new Set([...(payload.channelOrder ?? []), ...Object.keys(summaries)]),
+  ).filter((id) => Object.hasOwn(summaries, id));
+
+  return orderedIds.map((id) => {
+    const meta = metadata.get(id);
+    const accountConnected = (payload.channelAccounts?.[id] ?? []).some(isConnected);
+    return {
+      id,
+      name: payload.channelLabels?.[id] ?? meta?.label ?? id,
+      icon: meta?.systemImage ?? "",
+      type: id,
+      connected: isConnected(summaries[id]) || accountConnected,
+    };
+  });
+}
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -164,9 +216,12 @@ export class GatewayClient {
     return this.request("agents.list");
   }
 
-  /** List connected IM channels. */
-  listChannels(): Promise<{ channels?: unknown[] }> {
-    return this.request("channels.list");
+  /** List IM channels from the OpenClaw 7.1 status snapshot. */
+  async listChannels(): Promise<{ channels: ListedGatewayChannel[] }> {
+    const status = await this.request<GatewayChannelsStatusPayload>("channels.status", {
+      probe: false,
+    });
+    return { channels: normalizeGatewayChannelsStatus(status) };
   }
 
   /** Start WeChat QR login — returns QR data URL and session key. */
