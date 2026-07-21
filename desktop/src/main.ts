@@ -15,7 +15,7 @@ import {
 import { ToolSandbox } from "./tool-sandbox";
 import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { StudioBackendManager } from "./studio-backend-manager";
-import { t as mainT } from "./i18n";
+import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import {
   getOpenClawStateDir,
@@ -108,7 +108,7 @@ const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
 });
 
 const settingsStore = new Store<{
-  language: string;
+  language?: string;
   autoStart: boolean;
   startMinimized: boolean;
   themeMode: string;
@@ -130,7 +130,6 @@ const settingsStore = new Store<{
 }>({
   name: "settings",
   defaults: {
-    language: "en-US",
     autoStart: false,
     startMinimized: false,
     themeMode: "light",
@@ -1557,7 +1556,7 @@ function sendWeixinNotification(
 /** Notify the remote WeChat user that a permission dialog is waiting on the desktop. */
 function notifyRemotePermissionNeeded(): void {
   if (!lastInputFromRemote || !cachedRemoteSource) return;
-  const lang = settingsStore.get("language");
+  const lang = settingsStore.get("language") ?? "en-US";
   sendWeixinNotification(cachedRemoteSource, mainT(lang, "perm.remoteNotify"));
 }
 
@@ -4193,7 +4192,7 @@ function registerIpcHandlers(): void {
                 // Nudge the model to retry — user granted permission but the original
                 // command already failed, so the model doesn't know to try again.
                 if (activeChatSession && gwClient?.connected) {
-                  const lang = settingsStore.get("language");
+                  const lang = settingsStore.get("language") ?? "en-US";
                   const accessLabel = mainT(lang, isRW ? "perm.accessRW" : "perm.accessRO");
                   const retryMsg = mainT(lang, "perm.retryNudge")
                     .replace("{dir}", dirToAdd)
@@ -4305,6 +4304,10 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  if (!settingsStore.has("language")) {
+    settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
+  }
+
   registerIpcHandlers();
 
   // Sync auto-start with OS

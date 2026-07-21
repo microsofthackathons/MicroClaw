@@ -38,8 +38,7 @@ const router = createRouter({
     },
     {
       path: "/phone",
-      name: "phone",
-      component: () => import("@/views/ChannelsView.vue"),
+      redirect: "/settings/channels",
     },
   ],
 });
