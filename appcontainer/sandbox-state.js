@@ -66,6 +66,9 @@ var _safePaths = (function () {
   var home = process.env.USERPROFILE || "";
   if (home) {
     dirs.push(path.resolve(home, ".openclaw").toLowerCase() + path.sep);
+    // OpenClaw probes its XDG-style config directory during startup, including
+    // optional files that may not exist yet.
+    dirs.push(path.resolve(home, ".config", "openclaw").toLowerCase() + path.sep);
     // Legacy Node.js install location (zip extract). Still recognised for
     // upgrades; new installs use the MSI default below.
     dirs.push(path.resolve(home, ".openclaw-node").toLowerCase() + path.sep);
@@ -105,7 +108,18 @@ var _safePaths = (function () {
 var _safeExactPaths = (function () {
   var paths = [];
   var home = process.env.USERPROFILE || "";
-  if (home) paths.push(path.resolve(home).toLowerCase());
+  if (home) {
+    var current = path.resolve(home);
+    paths.push(current.toLowerCase());
+    // OpenClaw walks from the workspace to the drive root looking for a
+    // package.json. Permit only those exact manifest probes, not their dirs.
+    for (var i = 0; i < 12; i++) {
+      paths.push(path.join(current, "package.json").toLowerCase());
+      var parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
   var drives = new Set();
   drives.add((process.env.SystemDrive || "C:").toLowerCase());
   if (home) drives.add(path.parse(home).root.replace(/\\$/, "").toLowerCase());

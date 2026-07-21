@@ -2708,6 +2708,45 @@ describe("per-path independent enforcement", () => {
         sandboxState.state.sandboxActive = originalActive;
       }
     });
+
+    it("allows OpenClaw to probe its optional XDG config directory", () => {
+      const originalActive = sandboxState.state.sandboxActive;
+      try {
+        sandboxState.state.sandboxActive = true;
+        expect(
+          sandboxState.isReadBlockedPath(
+            path.join(process.env.USERPROFILE!, ".config", "openclaw", "gateway.env"),
+            false,
+          ),
+        ).toBe(false);
+      } finally {
+        sandboxState.state.sandboxActive = originalActive;
+      }
+    });
+
+    it("allows only package manifests while OpenClaw walks workspace ancestors", () => {
+      const originalActive = sandboxState.state.sandboxActive;
+      const originalRW = sandboxState.state._rwDirs.slice();
+      const originalRO = sandboxState.state._roDirs.slice();
+      try {
+        sandboxState.state.sandboxActive = true;
+        sandboxState.state._rwDirs = [];
+        sandboxState.state._roDirs = [];
+        const home = process.env.USERPROFILE!;
+        expect(sandboxState.isReadBlockedPath(path.join(home, "package.json"), false)).toBe(false);
+        expect(
+          sandboxState.isReadBlockedPath(path.join(path.dirname(home), "package.json"), false),
+        ).toBe(false);
+        expect(
+          sandboxState.isReadBlockedPath(path.join(path.parse(home).root, "package.json"), false),
+        ).toBe(false);
+        expect(sandboxState.isReadBlockedPath(path.join(home, "secrets.json"), false)).toBe(true);
+      } finally {
+        sandboxState.state.sandboxActive = originalActive;
+        sandboxState.state._rwDirs = originalRW;
+        sandboxState.state._roDirs = originalRO;
+      }
+    });
   });
 
   describe("end-to-end: declare A + command touches A,B,C", () => {
