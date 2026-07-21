@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import importlib
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 # Uses onedir mode to avoid WDAC (Windows Defender Application Control) blocking
@@ -25,7 +26,13 @@ a = Analysis(
     ['deploy.py'],
     pathex=[],
     binaries=webview_binaries,
-    datas=[('dist/microclaw-portable.zip', '.'), ('scripts/windows/setup-dependencies.ps1', '.'), ('skills', 'skills'), ('scripts', 'scripts'), ('deployer/assets', 'deployer/assets')] + weixin_plugin_datas + webview_datas + pythonnet_datas,
+    datas=[
+        ('dist/microclaw-portable.zip', '.'),
+        ('scripts/windows/setup-dependencies.ps1', '.'),
+        ('skills', 'skills'),
+        ('scripts', 'scripts'),
+        ('deployer/assets', 'deployer/assets'),
+    ] + weixin_plugin_datas + webview_datas + pythonnet_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

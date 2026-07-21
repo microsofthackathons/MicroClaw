@@ -160,9 +160,9 @@ if (Test-Path $desktopAsar) {
     }
 }
 
-# Step 4: Stage a self-contained Weixin runtime. OpenClaw 2026.7.1 intentionally
-# does not install dependencies for local directory installs, so the installer
-# must carry the plugin's production node_modules.
+# Step 4: Stage a self-contained Weixin runtime from pinned npm archives.
+# OpenClaw does not install dependencies for local directory installs, so the
+# installer must carry the plugin's production node_modules.
 Write-Host "`n=== Step 4/8: Stage Weixin plugin ===" -ForegroundColor Cyan
 $weixinDir = "$root\plugins\openclaw-weixin"
 $weixinPackage = Get-Content "$weixinDir\package.json" -Raw | ConvertFrom-Json
@@ -171,21 +171,84 @@ if ($weixinPackage.version -ne $weixinManifest.version) {
     Write-Host "  ERROR: Weixin package and manifest versions do not match" -ForegroundColor Red
     exit 1
 }
-if (-not (Test-Path "$weixinDir\dist\index.js")) {
-    Write-Host "  ERROR: Weixin plugin is missing dist\index.js" -ForegroundColor Red
-    exit 1
+
+$weixinVendor = "$weixinDir\vendor"
+$weixinArchive = "$weixinVendor\tencent-weixin-openclaw-weixin-2.4.6.tgz"
+$zodArchive = "$weixinVendor\zod-4.4.3.tgz"
+$qrcodeArchive = "$weixinVendor\qrcode-terminal-0.12.0.tgz"
+$weixinArchives = @(
+    [PSCustomObject]@{
+        Path = $weixinArchive
+        Sha256 = 'ef1c3600ca2fc0ee9076c1327af1e0d5d2e8e19fbb61e9f56c961fcde0bd07f6'
+    },
+    [PSCustomObject]@{
+        Path = $zodArchive
+        Sha256 = 'ee38f17f533fd500610685a483ae2f413c26f4eb33a51684314563c8d60f279c'
+    },
+    [PSCustomObject]@{
+        Path = $qrcodeArchive
+        Sha256 = '3a6260c4e0d80bd527a3f930e90ea2348c03646621f25aa0bd960ee205a0a706'
+    }
+)
+foreach ($archive in $weixinArchives) {
+    if (-not (Test-Path $archive.Path)) {
+        Write-Host "  ERROR: Vendored Weixin archive is missing: $($archive.Path)" -ForegroundColor Red
+        exit 1
+    }
+    $actualHash = (Get-FileHash $archive.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $archive.Sha256) {
+        Write-Host "  ERROR: Vendored Weixin archive checksum mismatch: $($archive.Path)" -ForegroundColor Red
+        exit 1
+    }
 }
 
 $weixinStage = "$outDist\openclaw-weixin"
 if (Test-Path $weixinStage) { Remove-Item $weixinStage -Recurse -Force }
-New-Item -ItemType Directory -Path $weixinStage -Force | Out-Null
-foreach ($item in @('package.json', 'openclaw.plugin.json', 'index.ts', 'LICENSE')) {
-    Copy-Item "$weixinDir\$item" "$weixinStage\$item" -Force
+$weixinInstallRoot = "$outDist\openclaw-weixin-offline-install"
+if (Test-Path $weixinInstallRoot) { Remove-Item $weixinInstallRoot -Recurse -Force }
+New-Item -ItemType Directory -Path $weixinInstallRoot -Force | Out-Null
+
+try {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    npm install --prefix $weixinInstallRoot --offline --ignore-scripts `
+        --omit=dev --omit=peer --legacy-peer-deps --no-package-lock --no-save `
+        $weixinArchive $zodArchive $qrcodeArchive 2>&1 |
+        ForEach-Object { Write-Host "  $_" }
+    $weixinInstallExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousPreference
+    if ($weixinInstallExitCode -ne 0) {
+        Write-Host "  ERROR: Vendored Weixin package installation failed" -ForegroundColor Red
+        exit 1
+    }
+
+    $weixinInstalled = "$weixinInstallRoot\node_modules\@tencent-weixin\openclaw-weixin"
+    $installedPackage = Get-Content "$weixinInstalled\package.json" -Raw | ConvertFrom-Json
+    $installedManifest = Get-Content "$weixinInstalled\openclaw.plugin.json" -Raw | ConvertFrom-Json
+    if ($installedPackage.version -ne $weixinPackage.version -or
+        $installedManifest.version -ne $weixinManifest.version) {
+        Write-Host "  ERROR: Vendored Weixin version does not match tracked metadata" -ForegroundColor Red
+        exit 1
+    }
+    if (-not (Test-Path "$weixinInstalled\dist\index.js")) {
+        Write-Host "  ERROR: Vendored Weixin plugin is missing dist\index.js" -ForegroundColor Red
+        exit 1
+    }
+
+    Copy-Item $weixinInstalled $weixinStage -Recurse -Force
+    New-Item -ItemType Directory -Path "$weixinStage\node_modules" -Force | Out-Null
+    Copy-Item "$weixinInstallRoot\node_modules\zod" `
+        "$weixinStage\node_modules\zod" -Recurse -Force
+    Copy-Item "$weixinInstallRoot\node_modules\qrcode-terminal" `
+        "$weixinStage\node_modules\qrcode-terminal" -Recurse -Force
+} finally {
+    if (Test-Path $weixinInstallRoot) {
+        Remove-Item $weixinInstallRoot -Recurse -Force
+    }
 }
-Copy-Item "$weixinDir\dist" "$weixinStage\dist" -Recurse -Force
 
 # The staged package is runtime-only. Removing devDependencies avoids pulling a
-# second OpenClaw toolchain when a clean build needs to restore production deps.
+# second OpenClaw toolchain if the staged package is inspected by npm tooling.
 $runtimePackage = Get-Content "$weixinStage\package.json" -Raw | ConvertFrom-Json
 $runtimePackage.PSObject.Properties.Remove('devDependencies')
 $runtimeJson = $runtimePackage | ConvertTo-Json -Depth 20
@@ -194,27 +257,6 @@ $runtimeJson = $runtimePackage | ConvertTo-Json -Depth 20
     $runtimeJson + [Environment]::NewLine,
     (New-Object Text.UTF8Encoding($false))
 )
-
-$localModules = "$weixinDir\node_modules"
-$hasLocalRuntimeDeps =
-    (Test-Path "$localModules\zod\package.json") -and
-    (Test-Path "$localModules\qrcode-terminal\package.json")
-if ($hasLocalRuntimeDeps) {
-    New-Item -ItemType Directory -Path "$weixinStage\node_modules" -Force | Out-Null
-    Copy-Item "$localModules\zod" "$weixinStage\node_modules\zod" -Recurse -Force
-    Copy-Item "$localModules\qrcode-terminal" "$weixinStage\node_modules\qrcode-terminal" -Recurse -Force
-} else {
-    Push-Location $weixinStage
-    try {
-        npm install --omit=dev --omit=peer --legacy-peer-deps --ignore-scripts --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  ERROR: Weixin production dependency install failed" -ForegroundColor Red
-            exit 1
-        }
-    } finally {
-        Pop-Location
-    }
-}
 
 foreach ($dependency in @('zod', 'qrcode-terminal')) {
     if (-not (Test-Path "$weixinStage\node_modules\$dependency\package.json")) {
@@ -239,8 +281,25 @@ $installerBuilt = $false
 
 # --- Ensure Python dependencies are installed (like npm install for Node) ---
 $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
-if ($uvCmd) {
-    # Python dependencies are declared in requirements.txt, not pyproject.toml.
+$hasUvProject = $false
+if ($uvCmd -and (Test-Path "$root\pyproject.toml")) {
+    $hasUvProject = [bool](Select-String -Path "$root\pyproject.toml" -Pattern '^\s*\[project\]\s*$')
+}
+if ($hasUvProject) {
+    # uv manages .venv automatically for installable projects.
+    if (-not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
+        Write-Host "  Python deps not found — running 'uv sync'..." -ForegroundColor Yellow
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $uvCmd.Source sync 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $uvExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousPreference
+        if ($uvExitCode -ne 0) {
+            Write-Host "  WARNING: uv sync failed" -ForegroundColor Yellow
+        }
+    }
+} elseif ($uvCmd) {
+    # This repository declares Python dependencies in requirements.txt.
     if (-not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
         $venvPython = "$root\.venv\Scripts\python.exe"
         $venvReady = Test-Path $venvPython
@@ -253,24 +312,29 @@ if ($uvCmd) {
             Write-Host "  Python deps not found — running 'uv pip install -r requirements.txt'..." -ForegroundColor Yellow
             & $uvCmd.Source pip install --python $venvPython -r "$root\requirements.txt"
         }
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
+        if (-not $venvReady -or $LASTEXITCODE -ne 0 -or
+            -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
             Write-Host "  WARNING: uv dependency installation failed" -ForegroundColor Yellow
         }
     }
 } else {
-    # Fallback: use pip with system/venv Python
-    $pipTarget = $null
-    if (Test-Path "$root\.venv\Scripts\pip.exe") {
-        $pipTarget = "$root\.venv\Scripts\pip.exe"
-    } else {
-        $pipCmd = Get-Command pip -ErrorAction SilentlyContinue
-        if ($pipCmd) { $pipTarget = $pipCmd.Source }
-    }
-    if ($pipTarget -and -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe") -and
-        -not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
+    # This repository keeps runtime/build dependencies in requirements.txt;
+    # pyproject.toml only configures Ruff and is not an installable uv project.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    python -c "import PyInstaller" *> $null
+    $pythonHasPyInstaller = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = $previousPreference
+    if (-not (Test-Path "$root\.venv\Scripts\pyinstaller.exe") -and
+        -not (Get-Command pyinstaller -ErrorAction SilentlyContinue) -and
+        -not $pythonHasPyInstaller) {
         Write-Host "  Python deps not found — running 'pip install -r requirements.txt'..." -ForegroundColor Yellow
-        & $pipTarget install -r "$root\requirements.txt" 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        python -m pip install -r "$root\requirements.txt" 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $pipExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousPreference
+        if ($pipExitCode -ne 0) {
             Write-Host "  WARNING: pip install failed" -ForegroundColor Yellow
         }
     }
@@ -278,7 +342,7 @@ if ($uvCmd) {
 
 # --- Run PyInstaller ---
 # Strategy 1: `uv run` — uses project .venv with all deps
-if (-not $installerBuilt -and $uvCmd) {
+if (-not $installerBuilt -and $hasUvProject) {
     Write-Host "  Trying: uv run pyinstaller" -ForegroundColor DarkGray
     & $uvCmd.Source run pyinstaller MicroClawDeployer.spec --noconfirm
     if ($LASTEXITCODE -eq 0) { $installerBuilt = $true }

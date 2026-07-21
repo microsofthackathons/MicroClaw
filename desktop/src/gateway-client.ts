@@ -23,6 +23,7 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
 } from "./constants";
+import { buildGatewayConnectParams } from "./gateway-protocol";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -46,6 +47,8 @@ export type ChatEventPayload = {
   sessionKey: string;
   state: "delta" | "final" | "aborted" | "error";
   message?: unknown;
+  deltaText?: string;
+  replace?: boolean;
   errorMessage?: string;
 };
 
@@ -184,31 +187,6 @@ export class GatewayClient {
     return this.request("web.login.wait", params);
   }
 
-  /**
-   * Trigger an in-process gateway restart via config.patch → SIGUSR1.
-   * This avoids the chat/model dependency of `/gateway restart` and
-   * correctly re-initialises all plugin channels (e.g. weixin).
-   */
-  async restart(): Promise<unknown> {
-    // 1. Read current config + hash
-    const snapshot = await this.request<{
-      hash?: string;
-      config?: unknown;
-    }>("config.get");
-    const hash = snapshot?.hash;
-    if (!hash) {
-      throw new Error("config.get did not return hash");
-    }
-    // 2. Apply a no-op patch — the server unconditionally schedules
-    //    a SIGUSR1 restart after every config.patch write.
-    return this.request("config.patch", { raw: "{}", baseHash: hash });
-  }
-
-  /** @deprecated Use restart() instead — gateway.reload RPC does not exist. */
-  reload(): Promise<unknown> {
-    return this.restart();
-  }
-
   // ── Internal ──
 
   private connect() {
@@ -280,30 +258,15 @@ export class GatewayClient {
     });
     const signature = signDevicePayload(this.deviceIdentity.privateKey, payload);
 
-    const params: Record<string, unknown> = {
-      minProtocol: 3,
-      maxProtocol: 3,
-      client: {
-        id: clientId,
-        version: "1.0.0",
-        platform: process.platform,
-        mode: clientMode,
-      },
-      role,
-      scopes,
-      device: {
-        id: this.deviceIdentity.deviceId,
-        publicKey: this.deviceIdentity.publicKey,
-        signature,
-        signedAt: signedAtMs,
-        nonce,
-      },
-      caps: ["tool-events"],
-    };
-
-    if (this.opts.token) {
-      params.auth = { token: this.opts.token };
-    }
+    const params = buildGatewayConnectParams({
+      token: this.opts.token,
+      platform: process.platform,
+      deviceId: this.deviceIdentity.deviceId,
+      publicKey: this.deviceIdentity.publicKey,
+      signature,
+      signedAt: signedAtMs,
+      nonce,
+    });
 
     this.request<Record<string, unknown>>("connect", params)
       .then((hello) => {
