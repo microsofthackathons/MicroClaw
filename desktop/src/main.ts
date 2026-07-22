@@ -44,6 +44,7 @@ import {
   HEALTH_CHECK_FAILURE_THRESHOLD,
   LOADING_WINDOW_WIDTH,
   LOADING_WINDOW_HEIGHT,
+  MODEL_CONNECTION_TEST_TIMEOUT_MS,
   SETUP_WINDOW_WIDTH,
   SETUP_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
@@ -53,6 +54,12 @@ import {
   USAGE_QUERY_DAYS,
   UPDATE_MANIFEST_URL,
 } from "./constants";
+import {
+  appendModelEndpoint,
+  prepareModelBaseUrl,
+  requestModelEndpoint,
+  resolveModelApiKey,
+} from "./model-connection";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -3089,41 +3096,17 @@ function registerIpcHandlers(): void {
         reasoningEffort?: string;
       },
     ) => {
-      const { baseUrl, apiKey, apiFormat, modelName, reasoningEffort } = params;
-      const base = baseUrl.trim().replace(/\/+$/, "");
+      const { baseUrl, apiKey: configuredApiKey, apiFormat, modelName, reasoningEffort } = params;
+      const apiKeyResult = resolveModelApiKey(configuredApiKey, {
+        ...process.env,
+        ...loadStateDirEnv(),
+      });
+      if (!apiKeyResult.ok) return apiKeyResult;
+      const apiKey = apiKeyResult.value;
 
-      // --- SSRF protection: validate URL scheme and block private/reserved IPs ---
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(base);
-      } catch {
-        return { ok: false, message: "Invalid URL" };
-      }
-      if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-        return { ok: false, message: "Only http:// and https:// URLs are allowed" };
-      }
-      const hostname = parsedUrl.hostname;
-      // Block private, loopback, link-local, and metadata IPs
-      const BLOCKED_PATTERNS = [
-        /^127\./,
-        /^10\./,
-        /^172\.(1[6-9]|2\d|3[01])\./,
-        /^192\.168\./,
-        /^169\.254\./,
-        /^0\./,
-        /^\[::1\]$/,
-        /^localhost$/i,
-        /^\[fe80:/i,
-        /^\[fc00:/i,
-        /^\[fd/i,
-      ];
-      if (BLOCKED_PATTERNS.some((p) => p.test(hostname))) {
-        return {
-          ok: false,
-          message: "URLs pointing to private or reserved network addresses are not allowed",
-        };
-      }
-      const versionedBase = base.endsWith("/v1") ? base : `${base}/v1`;
+      const baseUrlResult = prepareModelBaseUrl(baseUrl);
+      if (!baseUrlResult.ok) return baseUrlResult;
+      const versionedBase = baseUrlResult.value;
       const normalizedReasoning =
         reasoningEffort === "minimal" ||
         reasoningEffort === "low" ||
@@ -3134,9 +3117,9 @@ function registerIpcHandlers(): void {
           : undefined;
       try {
         if (apiFormat === "anthropic") {
-          const anthropicBase = base.endsWith("/v1") ? base : `${base}/v1`;
-          const res = await fetch(anthropicBase + "/messages", {
+          const res = await requestModelEndpoint(appendModelEndpoint(versionedBase, "messages"), {
             method: "POST",
+            signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
             headers: {
               "Content-Type": "application/json",
               "x-api-key": apiKey,
@@ -3149,7 +3132,11 @@ function registerIpcHandlers(): void {
             }),
           });
           if (res.ok || res.status === 400) {
-            return { ok: true, message: "Connection successful (Anthropic)" };
+            return {
+              ok: true,
+              message: "Connection successful (Anthropic)",
+              baseUrl: versionedBase,
+            };
           }
           return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
         } else if (apiFormat === "openai-responses") {
@@ -3165,29 +3152,42 @@ function registerIpcHandlers(): void {
             body.reasoning = { effort: normalizedReasoning };
           }
 
-          const res = await fetch(versionedBase + "/responses", {
+          const res = await requestModelEndpoint(appendModelEndpoint(versionedBase, "responses"), {
             method: "POST",
+            signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
             headers,
             body: JSON.stringify(body),
           });
           if (res.ok || res.status === 400) {
-            return { ok: true, message: "Connection successful (OpenAI Responses)" };
+            return {
+              ok: true,
+              message: "Connection successful (OpenAI Responses)",
+              baseUrl: versionedBase,
+            };
           }
           return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
         } else {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-          const res = await fetch(versionedBase + "/chat/completions", {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              model: modelName || "gpt-4o",
-              max_tokens: 1,
-              messages: [{ role: "user", content: "hi" }],
-            }),
-          });
+          const res = await requestModelEndpoint(
+            appendModelEndpoint(versionedBase, "chat/completions"),
+            {
+              method: "POST",
+              signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
+              headers,
+              body: JSON.stringify({
+                model: modelName || "gpt-4o",
+                max_tokens: 1,
+                messages: [{ role: "user", content: "hi" }],
+              }),
+            },
+          );
           if (res.ok || res.status === 400) {
-            return { ok: true, message: "Connection successful (OpenAI)" };
+            return {
+              ok: true,
+              message: "Connection successful (OpenAI)",
+              baseUrl: versionedBase,
+            };
           }
           return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
         }

@@ -7,6 +7,7 @@ import {
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
   GATEWAY_READY_TIMEOUT_MS,
   PORT_WAIT_TIMEOUT_MS,
+  MODEL_CONNECTION_TEST_TIMEOUT_MS,
   POST_SPAWN_RESTART_DELAY_MS,
   WEIXIN_LOGIN_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
@@ -44,6 +45,11 @@ describe("constants", () => {
 
     it("gateway ready timeout > port wait timeout", () => {
       expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(PORT_WAIT_TIMEOUT_MS);
+    });
+
+    it("model connection test has a finite timeout", () => {
+      expect(MODEL_CONNECTION_TEST_TIMEOUT_MS).toBeGreaterThan(0);
+      expect(MODEL_CONNECTION_TEST_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
     });
 
     it("weixin login timeout > 60s", () => {

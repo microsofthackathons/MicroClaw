@@ -38,9 +38,35 @@
             @click="selectFamily(family.id)"
           >
             <span class="family-icon" aria-hidden="true">
-              <img :src="family.logo" :alt="family.label" />
+              <img v-if="family.logo" :src="family.logo" :alt="getFamilyLabel(family)" />
+              <svg
+                v-else
+                class="custom-provider-icon"
+                viewBox="0 0 64 64"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  x="10"
+                  y="10"
+                  width="44"
+                  height="44"
+                  rx="14"
+                  fill="currentColor"
+                  opacity=".08"
+                />
+                <circle cx="24" cy="26" r="5" stroke="currentColor" stroke-width="3" />
+                <circle cx="42" cy="22" r="4" stroke="currentColor" stroke-width="3" />
+                <circle cx="39" cy="42" r="5" stroke="currentColor" stroke-width="3" />
+                <path
+                  d="M28.5 24.5 38 22.8M27.5 30 36 39M41.5 26 40 37"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                />
+              </svg>
             </span>
-            <span class="family-name">{{ family.label }}</span>
+            <span class="family-name">{{ getFamilyLabel(family) }}</span>
             <span
               v-if="selectedFamilyId === family.id"
               class="family-selected-badge"
@@ -59,21 +85,53 @@
           </button>
         </div>
 
-        <button class="primary-action" type="button" @click.stop="handleGetApiKey">
-          {{ t("modelSetup.getApiKey") }}
+        <button class="primary-action" type="button" @click.stop="handlePrimaryAction">
+          {{ isCustomProvider ? t("modelSetup.configureCustom") : t("modelSetup.getApiKey") }}
         </button>
-        <button class="text-action" type="button" @click.stop="goToKeyForm">
+        <button
+          v-if="!isCustomProvider"
+          class="text-action"
+          type="button"
+          @click.stop="goToKeyForm"
+        >
           {{ t("modelSetup.haveApiKey") }}
         </button>
       </template>
 
       <template v-else>
         <h2>{{ t("modelSetup.title") }}</h2>
-        <p class="model-setup-desc">{{ t("modelSetup.keyDesc") }}</p>
+        <p class="model-setup-desc">
+          {{ t(isCustomProvider ? "modelSetup.customDesc" : "modelSetup.keyDesc") }}
+        </p>
 
         <el-form label-position="top" class="model-key-form">
+          <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerId')">
+            <el-input
+              v-model="providerKey"
+              :placeholder="t('modelSetup.providerIdPlaceholder')"
+              @keydown.enter.prevent="saveAndStart"
+            />
+            <div class="field-hint">{{ t("modelSetup.providerIdHint") }}</div>
+          </el-form-item>
+          <el-form-item v-if="isCustomProvider" :label="t('modelSetup.apiFormat')">
+            <el-select v-model="selectedApiFormat" style="width: 100%">
+              <el-option :label="t('modelSetup.apiFormatOpenAIChat')" value="openai-chat" />
+              <el-option
+                :label="t('modelSetup.apiFormatOpenAIResponses')"
+                value="openai-responses"
+              />
+              <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
+            </el-select>
+          </el-form-item>
           <el-form-item :label="t('modelSetup.modelSelect')">
+            <el-input
+              v-if="isCustomProvider"
+              v-model="selectedModelName"
+              :placeholder="t('modelSetup.modelPlaceholder')"
+              @keydown.enter.prevent="saveAndStart"
+            />
             <el-select
+              v-else
               v-model="selectedModelName"
               style="width: 100%"
               filterable
@@ -84,7 +142,7 @@
               @change="handleModelChange"
             >
               <el-option-group
-                v-for="family in modelFamilies"
+                v-for="family in presetModelFamilies"
                 :key="family.id"
                 :label="family.label"
               >
@@ -104,7 +162,9 @@
               @keydown.enter.prevent="saveAndStart"
             />
           </el-form-item>
-          <el-form-item :label="t('modelSetup.apiKey')">
+          <el-form-item
+            :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
+          >
             <el-input
               v-model="apiKey"
               type="password"
@@ -112,6 +172,9 @@
               :placeholder="selectedFamily.apiKeyPlaceholder"
               @keydown.enter.prevent="saveAndStart"
             />
+            <div v-if="isCustomProvider" class="field-hint">
+              {{ t("modelSetup.credentialHint") }}
+            </div>
           </el-form-item>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
         </el-form>
@@ -130,7 +193,7 @@
             :disabled="saving"
             @mousedown.prevent.stop="saveAndStart"
           >
-            {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
+            {{ saving ? t("modelSetup.validating") : t("modelSetup.start") }}
           </button>
         </div>
       </template>
@@ -143,21 +206,27 @@ import { computed, ref, watch } from "vue";
 import { t } from "@/i18n";
 import qwenLogo from "@/assets/modelprovider/Qwen.png";
 import minimaxLogo from "@/assets/modelprovider/minimax.png";
-import { mergeProviderModelConfig } from "@/utils/model-provider-config";
+import {
+  mergeModelProviderConfig,
+  validateModelProviderInput,
+  type ModelApiFormat,
+  type ModelProviderInput,
+  type ModelProviderValidationError,
+} from "@/utils/model-provider";
 
-type ModelFamilyId = "qwen" | "minimax";
-type ApiFormat = "openai-chat";
+type ModelFamilyId = "qwen" | "minimax" | "custom";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
-  label: string;
+  label?: string;
+  labelKey?: string;
   providerKey: string;
   baseUrl: string;
-  apiFormat: ApiFormat;
+  apiFormat: ModelApiFormat;
   models: string[];
   defaultModel: string;
   apiKeyPlaceholder: string;
-  logo: string;
+  logo?: string;
 }
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -197,7 +266,19 @@ const modelFamilies: ModelFamilyPreset[] = [
     apiKeyPlaceholder: "sk-...",
     logo: minimaxLogo,
   },
+  {
+    id: "custom",
+    labelKey: "modelSetup.otherModel",
+    providerKey: "custom",
+    baseUrl: "",
+    apiFormat: "openai-chat",
+    models: [],
+    defaultModel: "",
+    apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
+  },
 ];
+
+const presetModelFamilies = modelFamilies.filter((family) => family.id !== "custom");
 
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
@@ -215,27 +296,30 @@ const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(getDefaultModel(modelFamilies[0]));
 const baseUrl = ref(modelFamilies[0].baseUrl);
+const providerKey = ref(modelFamilies[0].providerKey);
+const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
+let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
+const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
 
 watch(
   () => props.modelValue,
   (visible) => {
+    cancelPendingSubmission();
     if (!visible) return;
+    selectFamily("qwen");
     isKeyStep.value = false;
-    selectedFamilyId.value = modelFamilies[0].id;
-    selectedModelName.value = getDefaultModel(modelFamilies[0]);
-    baseUrl.value = modelFamilies[0].baseUrl;
     apiKey.value = "";
     errorMsg.value = "";
   },
 );
 
-function resolveApiValue(_apiFormat: ApiFormat): string {
-  return "openai-completions";
+function getFamilyLabel(family: ModelFamilyPreset): string {
+  return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
 }
 
 function decodeAsciiCodes(codes: number[]): string {
@@ -243,14 +327,16 @@ function decodeAsciiCodes(codes: number[]): string {
 }
 
 async function reloadGatewayAfterModelSetup() {
-  try {
-    await window.openclaw.gateway.restart();
-  } catch (err) {
-    console.warn("Gateway restart after model setup failed", err);
-  }
+  await window.openclaw.gateway.restart();
+}
+
+function cancelPendingSubmission() {
+  submissionGeneration += 1;
+  saving.value = false;
 }
 
 function close() {
+  cancelPendingSubmission();
   emit("update:modelValue", false);
 }
 
@@ -259,6 +345,8 @@ function selectFamily(familyId: ModelFamilyId) {
   selectedFamilyId.value = family.id;
   selectedModelName.value = getDefaultModel(family);
   baseUrl.value = family.baseUrl;
+  providerKey.value = family.providerKey;
+  selectedApiFormat.value = family.apiFormat;
   errorMsg.value = "";
 }
 
@@ -268,14 +356,26 @@ function handleModelChange(modelName: string) {
 
   selectedFamilyId.value = family.id;
   baseUrl.value = family.baseUrl;
+  providerKey.value = family.providerKey;
+  selectedApiFormat.value = family.apiFormat;
   errorMsg.value = "";
 }
 
 function goToKeyForm() {
   selectedModelName.value = getDefaultModel(selectedFamily.value);
   baseUrl.value = selectedFamily.value.baseUrl;
+  providerKey.value = selectedFamily.value.providerKey;
+  selectedApiFormat.value = selectedFamily.value.apiFormat;
   isKeyStep.value = true;
   errorMsg.value = "";
+}
+
+function handlePrimaryAction() {
+  if (isCustomProvider.value) {
+    goToKeyForm();
+    return;
+  }
+  handleGetApiKey();
 }
 
 function handleGetApiKey() {
@@ -292,70 +392,79 @@ function handleGetApiKey() {
 }
 
 function goToSelectStep() {
+  cancelPendingSubmission();
   isKeyStep.value = false;
   errorMsg.value = "";
 }
 
+function validationMessage(error: ModelProviderValidationError): string {
+  const keys: Record<ModelProviderValidationError, string> = {
+    providerKeyRequired: "modelSetup.enterProviderId",
+    invalidProviderKey: "modelSetup.invalidProviderId",
+    modelNameRequired: "modelSetup.enterModelName",
+    baseUrlRequired: "modelSetup.enterBaseUrl",
+    invalidBaseUrl: "modelSetup.invalidBaseUrl",
+    apiKeyRequired: "modelSetup.enterApiKey",
+    invalidCredentialReference: "modelSetup.invalidCredentialReference",
+  };
+  return t(keys[error]);
+}
+
 async function saveAndStart() {
-  const trimmedModelName = selectedModelName.value.trim();
-  const trimmedBaseUrl = baseUrl.value.trim();
-  const trimmedKey = apiKey.value.trim();
-  if (!trimmedModelName) {
-    errorMsg.value = t("modelSetup.enterModelName");
+  if (saving.value) return;
+
+  const input: ModelProviderInput = {
+    providerKey: providerKey.value,
+    baseUrl: baseUrl.value,
+    apiKey: apiKey.value,
+    apiFormat: selectedApiFormat.value,
+    modelName: selectedModelName.value,
+    input: isCustomProvider.value ? ["text"] : ["text", "image"],
+  };
+  const validationError = validateModelProviderInput(input, {
+    requireApiKey: !isCustomProvider.value,
+  });
+  if (validationError) {
+    errorMsg.value = validationMessage(validationError);
     return;
   }
-  if (!trimmedKey) {
-    errorMsg.value = t("modelSetup.enterApiKey");
-    return;
-  }
+
+  const generation = ++submissionGeneration;
   saving.value = true;
   errorMsg.value = "";
   try {
-    const family = selectedFamily.value;
-    const modelName = trimmedModelName;
-    const modelRef = `${family.providerKey}/${modelName}`;
+    const connection = await window.openclaw.model.testConnection({
+      baseUrl: input.baseUrl.trim(),
+      apiKey: input.apiKey.trim(),
+      apiFormat: input.apiFormat,
+      modelName: input.modelName.trim(),
+    });
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (!connection.ok) {
+      errorMsg.value = t("modelSetup.connectionFailed", { error: connection.message });
+      return;
+    }
+
+    const verifiedInput = {
+      ...input,
+      baseUrl: connection.baseUrl ?? input.baseUrl,
+    };
     const existing = (await window.openclaw.config.read()) || {};
-    const providerEntry = mergeProviderModelConfig(
-      existing.models?.providers?.[family.providerKey],
-      {
-        baseUrl: trimmedBaseUrl,
-        apiKey: trimmedKey,
-        api: resolveApiValue(family.apiFormat),
-        modelName,
-      },
-    );
-
-    existing.models = {
-      ...(existing.models ?? {}),
-      mode: existing.models?.mode ?? "merge",
-      providers: {
-        ...(existing.models?.providers ?? {}),
-        [family.providerKey]: providerEntry,
-      },
-    };
-    existing.agents = existing.agents || {};
-    existing.agents.defaults = existing.agents.defaults || {};
-    existing.agents.defaults.model = {
-      ...(typeof existing.agents.defaults.model === "object" && existing.agents.defaults.model
-        ? existing.agents.defaults.model
-        : {}),
-      primary: modelRef,
-    };
-
-    await window.openclaw.config.write(existing);
-  } catch (err: any) {
-    errorMsg.value = t("modelSetup.saveFailed", { error: err.message || err });
-    saving.value = false;
-    return;
-  }
-
-  await reloadGatewayAfterModelSetup();
-  try {
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    await window.openclaw.config.write(mergeModelProviderConfig(existing, verifiedInput));
+    await reloadGatewayAfterModelSetup();
+    if (generation !== submissionGeneration || !props.modelValue) return;
     await new Promise((resolve) => setTimeout(resolve, 500));
+    if (generation !== submissionGeneration || !props.modelValue) return;
     emit("update:modelValue", false);
     emit("configured");
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    errorMsg.value = t("modelSetup.saveFailed", { error: message });
   } finally {
-    saving.value = false;
+    if (generation === submissionGeneration) {
+      saving.value = false;
+    }
   }
 }
 </script>
@@ -368,6 +477,7 @@ async function saveAndStart() {
 .primary-action,
 .text-action,
 .model-key-form,
+.field-hint,
 .error-msg {
   --ux-overlay: rgba(255, 255, 255, 0.72);
   --ux-panel-bg: #fff;
@@ -418,8 +528,9 @@ async function saveAndStart() {
 }
 
 .model-setup-panel {
-  width: min(470px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 32px));
   min-height: 430px;
+  max-height: calc(100vh - 32px);
   position: relative;
   padding: 42px 34px 34px;
   border-radius: var(--ux-panel-radius);
@@ -428,6 +539,7 @@ async function saveAndStart() {
   font-family: var(--ux-font-family);
   box-shadow: var(--ux-shadow);
   text-align: center;
+  overflow-y: auto;
 }
 
 .model-setup-close {
@@ -472,8 +584,8 @@ h2 {
 
 .model-family-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 26px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
   margin-bottom: 28px;
 }
 
@@ -523,6 +635,12 @@ h2 {
   height: 76px;
   object-fit: contain;
   display: block;
+}
+
+.custom-provider-icon {
+  width: 76px;
+  height: 76px;
+  color: var(--ux-panel-text);
 }
 
 .family-name {
@@ -640,6 +758,15 @@ h2 {
   color: var(--ux-text-secondary);
   font-size: var(--ux-label-size);
   font-weight: var(--ux-label-weight);
+  line-height: 1.4;
+}
+
+.field-hint {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--ux-text-muted);
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1.4;
 }
 

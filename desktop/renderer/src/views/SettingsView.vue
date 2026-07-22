@@ -1020,7 +1020,12 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
-import { buildManagedProviderConfigs } from "@/utils/model-provider-config";
+import {
+  normalizeModelInput,
+  type ModelApiFormat,
+  type ModelInputCapability,
+} from "@/utils/model-provider";
+import { buildSettingsModelConfig } from "@/utils/model-settings-config";
 
 const route = useRoute();
 const router = useRouter();
@@ -1336,7 +1341,7 @@ const piiToggles = reactive({
 });
 
 // --- Models & API state ---
-type ApiFormat = "openai-chat" | "openai-responses" | "anthropic";
+type ApiFormat = ModelApiFormat;
 type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 
 interface ModelEntry {
@@ -1347,6 +1352,7 @@ interface ModelEntry {
   apiKey?: string;
   apiFormat?: ApiFormat;
   reasoningEffort?: ReasoningEffort;
+  input?: ModelInputCapability[];
 }
 
 interface ModelFormState {
@@ -1396,12 +1402,6 @@ function normalizeReasoningEffort(
   return fallback;
 }
 
-function resolveApiValue(apiFormat: ApiFormat): string {
-  if (apiFormat === "anthropic") return "anthropic-messages";
-  if (apiFormat === "openai-responses") return "openai-responses";
-  return "openai-completions";
-}
-
 function formatApiLabel(apiFormat?: ApiFormat): string {
   if (apiFormat === "anthropic") return t("settings.apiFormatAnthropic");
   if (apiFormat === "openai-responses") return t("settings.apiFormatOpenAIResponses");
@@ -1438,12 +1438,6 @@ function resetModelForm(form: ModelFormState): void {
   form.reasoningEffort = "off";
 }
 
-function ensureReasoningPreset(form: ModelFormState): void {
-  if (form.apiFormat === "openai-responses" && form.reasoningEffort === "off") {
-    form.reasoningEffort = "low";
-  }
-}
-
 const _builtinModels = ref<ModelEntry[]>([
   { providerKey: "", id: "MAI-01-Preview", name: "MAI-01-Preview" },
 ]);
@@ -1460,7 +1454,8 @@ const newModel = reactive<ModelFormState>({
   reasoningEffort: "off",
 });
 const testLoading = ref(false);
-const testResult = ref<{ ok: boolean; message: string } | null>(null);
+const testResult = ref<{ ok: boolean; message: string; baseUrl?: string } | null>(null);
+let addModelTestGeneration = 0;
 
 const showEditModel = ref(false);
 const editingIndex = ref(-1);
@@ -1472,7 +1467,8 @@ const editModel = reactive<ModelFormState>({
   reasoningEffort: "off",
 });
 const editTestLoading = ref(false);
-const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
+const editTestResult = ref<{ ok: boolean; message: string; baseUrl?: string } | null>(null);
+let editModelTestGeneration = 0;
 
 const builtinSkills = ref<SkillEntry[]>([]);
 const customSkills = ref<SkillEntry[]>([]);
@@ -1749,14 +1745,16 @@ function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
     settings.fileAccessAudit = true;
   }
 }
-watch(
-  () => newModel.apiFormat,
-  () => ensureReasoningPreset(newModel),
-);
-watch(
-  () => editModel.apiFormat,
-  () => ensureReasoningPreset(editModel),
-);
+watch(showAddModel, (visible) => {
+  addModelTestGeneration += 1;
+  testLoading.value = false;
+  if (!visible) testResult.value = null;
+});
+watch(showEditModel, (visible) => {
+  editModelTestGeneration += 1;
+  editTestLoading.value = false;
+  if (!visible) editTestResult.value = null;
+});
 
 // --- Auto-load data when tab is selected ---
 watch(activeSection, (v) => {
@@ -1794,6 +1792,7 @@ function applyModelsConfig(config: any): void {
           modelDefaults[modelRef]?.params?.thinking,
           reasoningFallback,
         ),
+        input: normalizeModelInput(m.input),
       });
     }
   }
@@ -1879,55 +1878,16 @@ async function persistModelsConfig() {
   }
 
   const config = (await window.openclaw.config.read()) || {};
-  const providerConfig = buildManagedProviderConfigs(
-    config.models?.providers,
-    customModels.value.map((model) => {
-      const apiFormat = model.apiFormat || "openai-chat";
-      const reasoningEffort = normalizeReasoningEffort(model.reasoningEffort);
-      return {
-        providerKey: buildProviderKey(model.providerKey || model.id),
-        baseUrl: model.baseUrl || "",
-        apiKey: model.apiKey || "",
-        api: resolveApiValue(apiFormat),
-        id: model.id,
-        name: model.name,
-        reasoning: apiFormat === "openai-responses" || reasoningEffort !== "off",
-        input: apiFormat !== "anthropic" ? ["text", "image"] : undefined,
-      };
-    }),
-  );
-  const existingProviderKeys = new Set(Object.keys(config.models?.providers ?? {}));
+  const existingProviders = config.models?.providers ?? {};
   const existingModelDefaults = config.agents?.defaults?.models ?? {};
-
-  const managedProviderKeys = new Set<string>([
-    ...existingProviderKeys,
-    ...Object.keys(providerConfig),
-  ]);
-  const nextModelDefaults: Record<string, any> = {};
-
-  for (const [modelRef, modelConfig] of Object.entries(existingModelDefaults) as [string, any][]) {
-    const providerKey = modelRef.split("/")[0];
-    if (!managedProviderKeys.has(providerKey)) {
-      nextModelDefaults[modelRef] = modelConfig;
-    }
-  }
-
-  for (const m of customModels.value) {
-    const modelRef = getModelRef(m);
-    const reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
-    if (m.apiFormat !== "openai-responses" && reasoningEffort === "off") continue;
-    const existingModelConfig =
-      typeof existingModelDefaults[modelRef] === "object" && existingModelDefaults[modelRef]
-        ? existingModelDefaults[modelRef]
-        : {};
-    nextModelDefaults[modelRef] = {
-      ...existingModelConfig,
-      params: {
-        ...(existingModelConfig.params ?? {}),
-        thinking: reasoningEffort,
-      },
-    };
-  }
+  const { providers: providerConfig, modelDefaults: nextModelDefaults } = buildSettingsModelConfig(
+    customModels.value.map((model) => ({
+      ...model,
+      providerKey: buildProviderKey(model.providerKey || model.id),
+    })),
+    existingProviders,
+    existingModelDefaults,
+  );
 
   config.models = {
     ...(config.models ?? {}),
@@ -2000,6 +1960,7 @@ async function addCustomModel() {
     apiKey: newModel.apiKey.trim(),
     apiFormat: newModel.apiFormat,
     reasoningEffort: normalizeReasoningEffort(newModel.reasoningEffort),
+    input: ["text"],
   });
   showAddModel.value = false;
   resetModelForm(newModel);
@@ -2038,16 +1999,6 @@ async function saveEditModel() {
     return;
   }
   const providerKey = customModels.value[idx].providerKey;
-  for (let modelIndex = 0; modelIndex < customModels.value.length; modelIndex++) {
-    const model = customModels.value[modelIndex];
-    if (modelIndex === idx || model.providerKey !== providerKey) continue;
-    customModels.value[modelIndex] = {
-      ...model,
-      baseUrl,
-      apiKey: editModel.apiKey.trim(),
-      apiFormat: editModel.apiFormat,
-    };
-  }
   customModels.value[idx] = {
     providerKey,
     id: name,
@@ -2056,37 +2007,67 @@ async function saveEditModel() {
     apiKey: editModel.apiKey.trim(),
     apiFormat: editModel.apiFormat,
     reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
+    input: normalizeModelInput(customModels.value[idx].input),
   };
+  for (let modelIndex = 0; modelIndex < customModels.value.length; modelIndex += 1) {
+    if (modelIndex === idx || customModels.value[modelIndex].providerKey !== providerKey) continue;
+    customModels.value[modelIndex] = {
+      ...customModels.value[modelIndex],
+      baseUrl,
+      apiKey: editModel.apiKey.trim(),
+      apiFormat: editModel.apiFormat,
+    };
+  }
   showEditModel.value = false;
   selectedModel.value = name;
   await persistAndRestart(t("settings.customModelUpdated"));
 }
 
 async function testEditModel() {
+  if (editTestLoading.value) return;
   const baseUrl = editModel.baseUrl.trim();
   const apiKey = editModel.apiKey.trim();
   if (!baseUrl) {
     ElMessage.warning(t("settings.baseUrlRequired"));
     return;
   }
+  const modelName = editModel.name.trim();
+  const apiFormat = editModel.apiFormat;
+  const reasoningEffort = normalizeReasoningEffort(editModel.reasoningEffort);
+  const generation = ++editModelTestGeneration;
+  const editingModelIndex = editingIndex.value;
   editTestLoading.value = true;
   editTestResult.value = null;
+  const isCurrentRequest = () =>
+    generation === editModelTestGeneration &&
+    showEditModel.value &&
+    editingIndex.value === editingModelIndex &&
+    editModel.baseUrl.trim() === baseUrl &&
+    editModel.apiKey.trim() === apiKey &&
+    editModel.name.trim() === modelName &&
+    editModel.apiFormat === apiFormat &&
+    normalizeReasoningEffort(editModel.reasoningEffort) === reasoningEffort;
   try {
     const result = await window.openclaw.model.testConnection({
       baseUrl,
       apiKey,
-      apiFormat: editModel.apiFormat,
-      modelName: editModel.name.trim(),
-      reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
+      apiFormat,
+      modelName,
+      reasoningEffort,
     });
+    if (!isCurrentRequest()) return;
+    if (result.ok && result.baseUrl) editModel.baseUrl = result.baseUrl;
     editTestResult.value = result;
   } catch (err: any) {
+    if (!isCurrentRequest()) return;
     editTestResult.value = {
       ok: false,
       message: t("settings.connectionFailed", { error: err.message || "Network error" }),
     };
   } finally {
-    editTestLoading.value = false;
+    if (generation === editModelTestGeneration) {
+      editTestLoading.value = false;
+    }
   }
 }
 
@@ -2100,30 +2081,48 @@ async function removeCustomModel(idx: number) {
 }
 
 async function testCustomModel() {
+  if (testLoading.value) return;
   const baseUrl = newModel.baseUrl.trim();
   const apiKey = newModel.apiKey.trim();
   if (!baseUrl) {
     ElMessage.warning(t("settings.baseUrlRequired"));
     return;
   }
+  const modelName = newModel.name.trim();
+  const apiFormat = newModel.apiFormat;
+  const reasoningEffort = normalizeReasoningEffort(newModel.reasoningEffort);
+  const generation = ++addModelTestGeneration;
   testLoading.value = true;
   testResult.value = null;
+  const isCurrentRequest = () =>
+    generation === addModelTestGeneration &&
+    showAddModel.value &&
+    newModel.baseUrl.trim() === baseUrl &&
+    newModel.apiKey.trim() === apiKey &&
+    newModel.name.trim() === modelName &&
+    newModel.apiFormat === apiFormat &&
+    normalizeReasoningEffort(newModel.reasoningEffort) === reasoningEffort;
   try {
     const result = await window.openclaw.model.testConnection({
       baseUrl,
       apiKey,
-      apiFormat: newModel.apiFormat,
-      modelName: newModel.name.trim(),
-      reasoningEffort: normalizeReasoningEffort(newModel.reasoningEffort),
+      apiFormat,
+      modelName,
+      reasoningEffort,
     });
+    if (!isCurrentRequest()) return;
+    if (result.ok && result.baseUrl) newModel.baseUrl = result.baseUrl;
     testResult.value = result;
   } catch (err: any) {
+    if (!isCurrentRequest()) return;
     testResult.value = {
       ok: false,
       message: t("settings.connectionFailed", { error: err.message || "Network error" }),
     };
   } finally {
-    testLoading.value = false;
+    if (generation === addModelTestGeneration) {
+      testLoading.value = false;
+    }
   }
 }
 

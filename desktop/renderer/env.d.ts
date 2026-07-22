@@ -195,7 +195,7 @@ interface OpenClawAPI {
       apiFormat: string;
       modelName: string;
       reasoningEffort?: string;
-    }): Promise<{ ok: boolean; message: string }>;
+    }): Promise<{ ok: boolean; message: string; baseUrl?: string }>;
   };
   studio: {
     start(): Promise<number>;
