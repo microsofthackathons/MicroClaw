@@ -2219,10 +2219,14 @@ async function clearChatHistory() {
     await ElMessageBox.confirm(t("settings.clearHistoryConfirm"), t("settings.confirm"), {
       type: "warning",
     });
-    chatStore.newSession();
-    ElMessage.success(t("settings.chatHistoryCleared"));
   } catch {
-    // Cancelled
+    return; // Cancelled
+  }
+  try {
+    await chatStore.clearAllHistory();
+    ElMessage.success(t("settings.chatHistoryCleared"));
+  } catch (err: any) {
+    ElMessage.error(t("settings.chatHistoryClearFailed", { error: err?.message ?? String(err) }));
   }
 }
 </script>

@@ -351,6 +351,7 @@ export default {
     "Are you sure you want to clear all chat history? This action cannot be undone.",
   "settings.confirm": "Confirm",
   "settings.chatHistoryCleared": "Chat history cleared",
+  "settings.chatHistoryClearFailed": "Failed to clear chat history: {error}",
   "settings.usageLoadFailed": "Failed to load usage data",
   // Menu items
   "settings.menu.general": "General",

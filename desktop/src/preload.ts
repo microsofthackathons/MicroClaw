@@ -83,6 +83,9 @@ contextBridge.exposeInMainWorld("openclaw", {
     /** Abort the current run on a session. */
     abort: (sessionKey: string) => ipcRenderer.invoke("chat:abort", { sessionKey }),
 
+    /** Clear ALL persisted chat history on the gateway. */
+    clearHistory: () => ipcRenderer.invoke("chat:clear-history"),
+
     /**
      * Subscribe to chat events (delta, final, aborted, error).
      * Returns an unsubscribe function.
