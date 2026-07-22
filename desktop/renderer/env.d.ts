@@ -31,6 +31,22 @@ interface SkillEntry {
   platform: string[];
   enabled: boolean;
   installed: boolean;
+  /** CLI binaries this skill needs on PATH to run (from SKILL.md requires.bins). */
+  requiredBins: string[];
+  /** Subset of requiredBins that were NOT found on PATH. */
+  missingBins: string[];
+  /** requires.anyBins list, present only when NONE of the alternatives are on PATH. */
+  missingAnyBins: string[];
+  /** requires.env vars that are not set (checked incl. skill env/apiKey overrides). */
+  missingEnv: string[];
+  /** requires.config dotted paths that are not truthy in the gateway config. */
+  missingConfig: string[];
+  /** metadata.os list this skill is restricted to (empty = any platform). */
+  osRequired: string[];
+  /** True when osRequired is non-empty and excludes the current platform. */
+  osMismatch: boolean;
+  /** True when ALL requirement types (bins/anyBins/env/config/os) are satisfied. */
+  eligible: boolean;
 }
 
 interface IntegrityChange {
@@ -98,6 +114,7 @@ interface OpenClawAPI {
   };
   skills: {
     list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
+    refresh(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
     integrityCheck(): Promise<IntegrityResult>;
