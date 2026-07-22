@@ -113,7 +113,7 @@
             type="button"
             @mousedown.prevent.stop="goToSelectStep"
           >
-            back
+            {{ t("modelSetup.back") }}
           </button>
           <button
             class="primary-action"
@@ -217,6 +217,10 @@ watch(
   (visible) => {
     if (!visible) return;
     isKeyStep.value = false;
+    selectedFamilyId.value = modelFamilies[0].id;
+    selectedModelName.value = getDefaultModel(modelFamilies[0]);
+    baseUrl.value = modelFamilies[0].baseUrl;
+    apiKey.value = "";
     errorMsg.value = "";
   },
 );
