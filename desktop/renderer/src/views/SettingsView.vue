@@ -505,7 +505,7 @@
         </div>
 
         <!-- ══ Custom Skills ══ -->
-        <div class="sub-label">Custom Skills ({{ customSkills.length }})</div>
+        <div class="sub-label">{{ t("settings.customSkills") }} ({{ customSkills.length }})</div>
         <div class="card-group">
           <template v-if="customSkills.length">
             <div

@@ -169,7 +169,7 @@ function respond(decision: string) {
           <code class="perm-command-code" v-html="commandHtml"></code>
         </div>
         <div v-if="SHOW_CALLER_STACK && request?.callerStack" class="perm-command">
-          <div class="perm-command-label">Caller</div>
+          <div class="perm-command-label">{{ t("perm.callerLabel") }}</div>
           <code class="perm-command-code perm-stack">{{ request.callerStack }}</code>
         </div>
         <div class="perm-countdown-wrap">

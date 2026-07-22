@@ -228,6 +228,7 @@ export default {
   "settings.skillsRefreshed": "技能已刷新",
   "settings.skillsRefreshFailed": "刷新技能失败：{error}",
   "settings.managedSkills": "托管技能",
+  "settings.customSkills": "自定义技能",
   "settings.notInstalled": "未安装",
   "settings.noManagedSkills": "暂无托管技能",
   "settings.noCustomSkills": "暂无自定义技能",
@@ -504,8 +505,7 @@ export default {
   "perm.riskCommandRW": "高风险：该命令可能修改文件或系统状态。",
   "perm.riskApp": "高风险：该应用将在沙箱外运行。",
   "perm.commandLabel": "命令",
-  "perm.allowAlways": "始终允许",
-  "perm.autoDeny": "{seconds}秒后自动拒绝",
+  "perm.allowAlways": "始终允许",  "perm.callerLabel": "调用者",  "perm.autoDeny": "{seconds}秒后自动拒绝",
   "perm.aclTimeout":
     "{dir} 的权限已授予，但 ACL 验证超时。如果访问仍然失败，请到 设置 > 安全 中重新授权。",
   "perm.aclIneffective":
@@ -537,6 +537,7 @@ export default {
   "usage.sessionsLabel": "会话",
   "usage.toolCallsLabel": "工具调用",
   "usage.viewMoreSkills": "查看更多",
+  "usage.skillsTitle": "技能",
   "usage.openSkills": "技能管理",
   "usage.noSkills": "暂未安装技能",
   "usage.modelOfflineTitle": "模型未连接，Agent 暂停服务",

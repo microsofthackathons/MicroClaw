@@ -240,6 +240,7 @@ export default {
   "settings.skillsRefreshed": "Skills refreshed",
   "settings.skillsRefreshFailed": "Failed to refresh skills: {error}",
   "settings.managedSkills": "Managed Skills",
+  "settings.customSkills": "Custom Skills",
   "settings.notInstalled": "Not Installed",
   "settings.noManagedSkills": "No managed skills",
   "settings.noCustomSkills": "No custom skills",
@@ -525,6 +526,7 @@ export default {
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Always allow",
+  "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
   "perm.aclTimeout":
     "Permission for {dir} was granted but ACL verification timed out. If access still fails, try re-granting in Settings > Security.",
@@ -557,6 +559,7 @@ export default {
   "usage.sessionsLabel": "sessions",
   "usage.toolCallsLabel": "tool calls",
   "usage.viewMoreSkills": "View more",
+  "usage.skillsTitle": "Skills",
   "usage.openSkills": "Manage skills",
   "usage.noSkills": "No skills installed",
   "usage.modelOfflineTitle": "Model not connected — agent paused",
