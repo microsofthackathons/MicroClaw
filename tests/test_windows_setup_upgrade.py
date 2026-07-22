@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import unittest.mock
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,8 +51,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.home_patch = unittest.mock.patch(
             "deployer.windows_setup.Path.home", return_value=self.home
         )
+        self.desktop_dir_patch = unittest.mock.patch(
+            "deployer.windows_setup.DEFAULT_DESKTOP_DIR", self.root / ".microclaw"
+        )
         self.env_patch.start()
         self.home_patch.start()
+        self.desktop_dir_patch.start()
 
         self.ws = WindowsSetup.__new__(WindowsSetup)
         self.ws.cfg = _Config({"gateway.port": 18789, "openclaw.channel": "stable"})
@@ -63,8 +68,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._openclaw_transaction = None
         self.ws.appcontainer_enabled = True
         self.ws.weixin_plugin_enabled = True
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
 
     def tearDown(self):
+        self.desktop_dir_patch.stop()
         self.home_patch.stop()
         self.env_patch.stop()
         self.temp.cleanup()
@@ -126,7 +133,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True):
             self.assertEqual(self.ws._find_active_gateway_lock()["pid"], 4321)
 
-    def test_declared_closed_lock_port_wins_over_reused_live_pid(self):
+    def test_reused_live_pid_does_not_activate_a_stale_gateway_lock(self):
         lock_dir = self.local_appdata / "Temp" / "openclaw"
         lock_dir.mkdir(parents=True)
         (lock_dir / "gateway.12345678.lock").write_text(
@@ -142,8 +149,38 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
 
-        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True):
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime(2026, 7, 21, tzinfo=UTC),
+            ),
+        ):
             self.assertIsNone(self.ws._find_active_gateway_lock())
+
+    def test_live_gateway_pid_is_detected_before_its_port_opens(self):
+        lock_dir = self.local_appdata / "Temp" / "openclaw"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "gateway.12345678.lock").write_text(
+            json.dumps(
+                {
+                    "pid": 4321,
+                    "createdAt": "2026-07-20T00:00:00Z",
+                    "configPath": str(self.home / ".openclaw" / "openclaw.json"),
+                    "port": 18789,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime(2026, 7, 20, 0, 0, 2, tzinfo=UTC),
+            ),
+        ):
+            self.assertEqual(self.ws._find_active_gateway_lock()["pid"], 4321)
 
     def test_prepare_refuses_a_live_gateway_even_when_target_is_installed(self):
         prefix = self.home / ".openclaw-node"
@@ -196,6 +233,36 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
     def test_interrupted_upgrade_is_rolled_back_before_new_preparation(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.phase = UpgradePhase.INSTALLING
+        transaction.manifest.source_version = None
+
+        def rollback():
+            transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+
+        transaction.rollback.side_effect = rollback
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.load",
+            return_value=transaction,
+        ) as load:
+            self.assertTrue(self.ws.recover_interrupted_openclaw_upgrade())
+
+        load.assert_called_once_with(self.root / ".microclaw")
+        transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+
+    def test_interrupted_recovery_health_checks_the_restored_gateway(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.phase = UpgradePhase.INSTALLING
+        transaction.manifest.source_version = "2026.3.12"
+        process = unittest.mock.Mock()
+
+        def rollback():
+            transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+
+        transaction.rollback.side_effect = rollback
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
 
         with unittest.mock.patch(
             "deployer.windows_setup.OpenClawUpgradeTransaction.load",
@@ -203,7 +270,39 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         ):
             self.assertTrue(self.ws.recover_interrupted_openclaw_upgrade())
 
-        transaction.rollback.assert_called_once()
+        self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
+        transaction.complete_rollback.assert_called_once()
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+
+    def test_recovery_releases_its_lock_if_gateway_starts_before_restore(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.phase = UpgradePhase.INSTALLING
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(side_effect=[None, {"pid": 4321}])
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.load",
+            return_value=transaction,
+        ):
+            self.assertFalse(self.ws.recover_interrupted_openclaw_upgrade())
+
+        transaction.close.assert_called_once()
+        transaction.rollback.assert_not_called()
+
+    def test_prepare_rechecks_gateway_after_acquiring_upgrade_lock(self):
+        transaction = unittest.mock.Mock()
+        self.ws._gateway_is_stopped_for_upgrade = unittest.mock.Mock(
+            side_effect=[True, True, True, False]
+        )
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ):
+            self.assertFalse(self.ws.prepare_openclaw_upgrade())
+
+        transaction.close.assert_called_once()
+        transaction.backup.assert_not_called()
+        self.assertIsNone(self.ws._openclaw_transaction)
 
     def test_registry_tls_failure_retries_next_registry(self):
         self.ws.cfg = _Config({"npm.registry": "https://registry.npmmirror.com"})
@@ -335,6 +434,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
     def test_rollback_restores_and_health_checks_previous_gateway(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.source_version = "2026.3.12"
+        transaction.manifest.phase = UpgradePhase.ROLLING_BACK
         process = unittest.mock.Mock()
         self.ws._openclaw_transaction = transaction
         self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
@@ -344,19 +444,38 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.rollback_openclaw_upgrade())
 
         transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+        transaction.mark_rollback_failed.assert_not_called()
         self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
         self.ws._stop_validation_gateway.assert_called_once_with(process)
 
     def test_new_install_rollback_does_not_start_a_missing_previous_gateway(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.source_version = None
+        transaction.manifest.phase = UpgradePhase.ROLLING_BACK
         self.ws._openclaw_transaction = transaction
         self.ws._start_validation_gateway = unittest.mock.Mock()
 
         self.assertTrue(self.ws.rollback_openclaw_upgrade())
 
         transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
         self.ws._start_validation_gateway.assert_not_called()
+
+    def test_failed_rollback_health_check_remains_recoverable(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = "2026.3.12"
+        transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=unittest.mock.Mock())
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=False)
+
+        self.assertFalse(self.ws.rollback_openclaw_upgrade())
+
+        transaction.mark_rollback_failed.assert_called_once()
+        transaction.complete_rollback.assert_not_called()
+        self.assertIs(self.ws._openclaw_transaction, transaction)
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"

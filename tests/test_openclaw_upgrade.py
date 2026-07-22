@@ -18,6 +18,7 @@ from deployer.openclaw_upgrade import (
     OpenClawUpgradeTransaction,
     UpgradePhase,
     process_is_alive,
+    process_started_at,
     prune_previous_committed_backups,
 )
 
@@ -1059,6 +1060,13 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertEqual((self.package / "old.txt").read_text(), "old-package")
         self.assertEqual(self.shim.read_text(), "@old")
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
+        self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLING_BACK)
+        with self.assertRaises(upgrade.UpgradeInProgressError):
+            OpenClawUpgradeTransaction.load(
+                self.microclaw,
+                trusted_prefixes=(self.prefix,),
+            )
+        tx.complete_rollback()
         self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLED_BACK)
         self.assertTrue(self.lock_path.exists())
 
@@ -1106,6 +1114,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             unittest.mock.patch.object(tx, "set_phase", side_effect=set_phase),
         ):
             tx.rollback()
+            tx.complete_rollback()
 
         rolled_back_index = events.index(("phase", UpgradePhase.ROLLED_BACK, None))
         for live in (self.package, self.state):
@@ -1382,6 +1391,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         (partial_state / "partial.txt").write_text("partial", encoding="utf-8")
 
         tx.rollback()
+        tx.complete_rollback()
 
         self.assertEqual((self.package / "old.txt").read_text(), "old-package")
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
@@ -1405,6 +1415,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             self.assertRaisesRegex(KeyboardInterrupt, "simulated process interruption"),
         ):
             tx.rollback()
+            tx.complete_rollback()
 
         failed = tx.backup_dir / "failed"
         self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLING_BACK)
@@ -1418,6 +1429,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertIsNotNone(resumed)
 
         resumed.rollback()  # type: ignore[union-attr]
+        resumed.complete_rollback()  # type: ignore[union-attr]
 
         self.assertEqual((self.package / "old.txt").read_text(), "old-package")
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
@@ -1433,6 +1445,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
         resumed = self._load()
         resumed.rollback()  # type: ignore[union-attr]
+        resumed.complete_rollback()  # type: ignore[union-attr]
 
         self.assertTrue(self.lock_path.exists())
 
@@ -1443,6 +1456,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self._write_lock(owner_pid=0, transaction_id=other_id)
 
         tx.rollback()
+        tx.complete_rollback()
 
         lock_data = json.loads(self.lock_path.read_text(encoding="utf-8"))
         self.assertEqual(lock_data["transaction_id"], other_id)
@@ -1455,6 +1469,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         (self.state / "openclaw.json").write_text("new-state", encoding="utf-8")
 
         tx.rollback()
+        tx.complete_rollback()
 
         self.assertEqual((self.package / "old.txt").read_text(), "old-package")
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
@@ -1514,6 +1529,11 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertTrue(process_is_alive(os.getpid()))
         self.assertFalse(process_is_alive(0))
         self.assertFalse(process_is_alive(-1))
+
+    def test_process_started_at_identifies_current_process(self) -> None:
+        self.assertIsNotNone(process_started_at(os.getpid()))
+        self.assertIsNone(process_started_at(0))
+        self.assertIsNone(process_started_at(True))
 
     @unittest.skipUnless(os.name == "nt", "Windows process API test")
     def test_process_is_alive_checks_windows_process_exit_code(self) -> None:

@@ -787,14 +787,11 @@ class OpenClawUpgradeTransaction:
 
     def rollback(self) -> None:
         original_phase = self.manifest.phase
-        if original_phase == UpgradePhase.BACKING_UP:
-            self.set_phase(UpgradePhase.ROLLED_BACK)
-            self.close()
-            return
         if original_phase == UpgradePhase.ROLLED_BACK:
             self.close()
             return
         if original_phase not in {
+            UpgradePhase.BACKING_UP,
             UpgradePhase.INSTALLING,
             UpgradePhase.VERIFYING,
             UpgradePhase.ROLLING_BACK,
@@ -804,22 +801,35 @@ class OpenClawUpgradeTransaction:
 
         try:
             self.set_phase(UpgradePhase.ROLLING_BACK)
-            failed_dir = self.backup_dir / "failed"
-            _durable_mkdir(failed_dir)
-            self._restore_package(failed_dir)
-            self._restore_shims()
-            self._restore_state(failed_dir)
-            self.set_phase(UpgradePhase.ROLLED_BACK)
-            self.close()
+            if original_phase != UpgradePhase.BACKING_UP:
+                failed_dir = self.backup_dir / "failed"
+                _durable_mkdir(failed_dir)
+                self._restore_package(failed_dir)
+                self._restore_shims()
+                self._restore_state(failed_dir)
         except Exception as error:
             try:
-                self.set_phase(UpgradePhase.ROLLBACK_FAILED)
+                self.mark_rollback_failed()
             except Exception as persist_error:
                 error.add_note(f"also failed to persist rollback-failed: {persist_error}")
+            raise
+
+    def complete_rollback(self) -> None:
+        if self.manifest.phase == UpgradePhase.ROLLED_BACK:
+            self.close()
+            return
+        if self.manifest.phase != UpgradePhase.ROLLING_BACK:
+            raise RuntimeError(f"cannot complete rollback from phase {self.manifest.phase.value}")
+        self.set_phase(UpgradePhase.ROLLED_BACK)
+        self.close()
+
+    def mark_rollback_failed(self) -> None:
+        try:
+            self.set_phase(UpgradePhase.ROLLBACK_FAILED)
+        finally:
             held_lock = self._held_lock
             if held_lock is not None and not held_lock.released:
                 _RETAINED_FAILED_LOCKS[held_lock.owner_token] = held_lock
-            raise
 
 
 def process_is_alive(pid: int) -> bool:
@@ -859,6 +869,65 @@ def process_is_alive(pid: int) -> bool:
     except (OSError, OverflowError):
         return False
     return True
+
+
+def process_started_at(pid: int) -> datetime | None:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return None
+        try:
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return None
+            ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+            unix_seconds = (ticks - 116_444_736_000_000_000) / 10_000_000
+            return datetime.fromtimestamp(unix_seconds, UTC)
+        finally:
+            kernel32.CloseHandle(handle)
+
+    proc_stat = Path(f"/proc/{pid}/stat")
+    proc_status = Path("/proc/stat")
+    try:
+        stat_fields = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        start_ticks = int(stat_fields[19])
+        boot_seconds = next(
+            int(line.split()[1])
+            for line in proc_status.read_text(encoding="utf-8").splitlines()
+            if line.startswith("btime ")
+        )
+        clock_ticks = os.sysconf("SC_CLK_TCK")
+    except (IndexError, OSError, StopIteration, ValueError):
+        return None
+    return datetime.fromtimestamp(boot_seconds + start_ticks / clock_ticks, UTC)
 
 
 def prune_previous_committed_backups(backup_root: Path, keep: Path) -> None:

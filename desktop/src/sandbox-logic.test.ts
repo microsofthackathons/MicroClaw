@@ -2719,6 +2719,23 @@ describe("per-path independent enforcement", () => {
             false,
           ),
         ).toBe(false);
+        expect(
+          sandboxState.isBlockedPath(
+            path.join(process.env.USERPROFILE!, ".config", "openclaw", "gateway.env"),
+          ),
+        ).toBe(true);
+        expect(
+          sandboxState.isReadBlockedPath(
+            path.join(process.env.USERPROFILE!, ".config", "openclaw", "gateway.env"),
+            true,
+          ),
+        ).toBe(true);
+        expect(
+          sandboxState.isReadBlockedPath(
+            path.join(process.env.USERPROFILE!, ".config", "openclaw", "other.env"),
+            false,
+          ),
+        ).toBe(true);
       } finally {
         sandboxState.state.sandboxActive = originalActive;
       }
@@ -2740,6 +2757,14 @@ describe("per-path independent enforcement", () => {
         expect(
           sandboxState.isReadBlockedPath(path.join(path.parse(home).root, "package.json"), false),
         ).toBe(false);
+        expect(sandboxState.isBlockedPath(path.join(home, "package.json"))).toBe(true);
+        expect(sandboxState.isBlockedPath(path.join(path.dirname(home), "package.json"))).toBe(
+          true,
+        );
+        expect(sandboxState.isBlockedPath(path.join(path.parse(home).root, "package.json"))).toBe(
+          true,
+        );
+        expect(sandboxState.isReadBlockedPath(path.join(home, "package.json"), true)).toBe(true);
         expect(sandboxState.isReadBlockedPath(path.join(home, "secrets.json"), false)).toBe(true);
       } finally {
         sandboxState.state.sandboxActive = originalActive;

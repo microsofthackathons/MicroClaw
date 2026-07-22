@@ -19,6 +19,7 @@ import urllib.request
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from deployer.logger import DeployerLogger
@@ -27,7 +28,9 @@ from deployer.openclaw_upgrade import (
     OpenClawInstallation,
     OpenClawUpgradeTransaction,
     UpgradeInProgressError,
+    UpgradePhase,
     process_is_alive,
+    process_started_at,
     prune_previous_committed_backups,
 )
 from deployer.openclaw_version import (
@@ -746,10 +749,7 @@ class WindowsSetup:
                     self.log.error(
                         "Node.js installer did not start. Approve the Windows UAC prompt and retry."
                     )
-                self.log.error(
-                    f"msiexec exited with code {result.returncode}; "
-                    f"see log: {log_path}"
-                )
+                self.log.error(f"msiexec exited with code {result.returncode}; see log: {log_path}")
                 # Surface a short tail of the log to help diagnose
                 try:
                     tail = log_path.read_text(encoding="utf-16-le", errors="replace").splitlines()[
@@ -1088,40 +1088,39 @@ class WindowsSetup:
                 continue
             pid = payload.get("pid")
             port = payload.get("port")
-            has_declared_port = isinstance(port, int) and 1 <= port <= 65535
-            active = (
-                self._is_tcp_port_open(port)
-                if has_declared_port
-                else isinstance(pid, int) and process_is_alive(pid)
+            has_declared_port = (
+                isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
             )
+            port_active = has_declared_port and self._is_tcp_port_open(port)
+            pid_active = False
+            if isinstance(pid, int) and process_is_alive(pid):
+                try:
+                    lock_created_at = datetime.fromisoformat(
+                        str(payload.get("createdAt")).replace("Z", "+00:00")
+                    )
+                    if lock_created_at.tzinfo is None:
+                        lock_created_at = lock_created_at.replace(tzinfo=UTC)
+                    process_created_at = process_started_at(pid)
+                    if process_created_at is not None:
+                        if process_created_at.tzinfo is None:
+                            process_created_at = process_created_at.replace(tzinfo=UTC)
+                        pid_active = (
+                            abs(
+                                (
+                                    lock_created_at.astimezone(UTC)
+                                    - process_created_at.astimezone(UTC)
+                                ).total_seconds()
+                            )
+                            <= 300
+                        )
+                except (TypeError, ValueError):
+                    pid_active = False
+            active = port_active or pid_active
             if active:
                 return {**payload, "lockPath": str(lock_path)}
         return None
 
-    def recover_interrupted_openclaw_upgrade(self) -> bool:
-        try:
-            transaction = OpenClawUpgradeTransaction.load(DEFAULT_DESKTOP_DIR)
-        except UpgradeInProgressError as error:
-            self.log.error(str(error))
-            return False
-        if transaction is None or transaction.manifest.phase not in RECOVERABLE_PHASES:
-            return True
-        self.log.warn("Recovering interrupted OpenClaw upgrade before continuing")
-        try:
-            transaction.rollback()
-            return True
-        except Exception as error:
-            self.log.error(
-                f"Interrupted OpenClaw upgrade recovery failed; backup retained at "
-                f"{transaction.backup_dir}: {error}"
-            )
-            return False
-
-    def prepare_openclaw_upgrade(self) -> bool:
-        """Block active gateways and snapshot the current package and state."""
-        if not self.recover_interrupted_openclaw_upgrade():
-            return False
-        installation = self._detect_openclaw_installation()
+    def _gateway_is_stopped_for_upgrade(self) -> bool:
         port = int(self.cfg.get("gateway.port", 18789))
         active_lock = self._find_active_gateway_lock()
         if self._is_tcp_port_open(port) or active_lock is not None:
@@ -1131,6 +1130,63 @@ class WindowsSetup:
                 f"OpenClaw Gateway is active{owner}. Exit MicroClaw and standalone "
                 "OpenClaw before upgrading."
             )
+            return False
+        return True
+
+    def _rollback_openclaw_transaction(self, transaction: OpenClawUpgradeTransaction) -> bool:
+        process: subprocess.Popen | None = None
+        try:
+            transaction.rollback()
+            if transaction.manifest.phase == UpgradePhase.ROLLED_BACK:
+                return True
+            source_version = transaction.manifest.source_version
+            if source_version is not None:
+                process = self._start_validation_gateway(expected_version=source_version)
+                if not self._validate_gateway_health():
+                    self.log.error(
+                        "Previous OpenClaw Gateway did not become healthy after rollback"
+                    )
+                    transaction.mark_rollback_failed()
+                    return False
+            transaction.complete_rollback()
+            return True
+        except Exception as error:
+            if transaction.manifest.phase == UpgradePhase.ROLLING_BACK:
+                try:
+                    transaction.mark_rollback_failed()
+                except Exception as persist_error:
+                    error.add_note(f"also failed to persist rollback-failed: {persist_error}")
+            self.log.error(
+                f"Failed to restore OpenClaw backup at {transaction.backup_dir}: {error}"
+            )
+            return False
+        finally:
+            self._stop_validation_gateway(process)
+
+    def recover_interrupted_openclaw_upgrade(self) -> bool:
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        try:
+            transaction = OpenClawUpgradeTransaction.load(DEFAULT_DESKTOP_DIR)
+        except UpgradeInProgressError as error:
+            self.log.error(str(error))
+            return False
+        if transaction is None or transaction.manifest.phase not in RECOVERABLE_PHASES:
+            return True
+        self.log.warn("Recovering interrupted OpenClaw upgrade before continuing")
+        if not self._gateway_is_stopped_for_upgrade():
+            transaction.close()
+            return False
+        return self._rollback_openclaw_transaction(transaction)
+
+    def prepare_openclaw_upgrade(self) -> bool:
+        """Block active gateways and snapshot the current package and state."""
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        if not self.recover_interrupted_openclaw_upgrade():
+            return False
+        installation = self._detect_openclaw_installation()
+        if not self._gateway_is_stopped_for_upgrade():
             return False
         prefix = (
             installation.prefix if installation is not None else self._choose_npm_install_prefix()
@@ -1153,16 +1209,17 @@ class WindowsSetup:
                 installation=source,
             )
             self._openclaw_transaction = transaction
+            if not self._gateway_is_stopped_for_upgrade():
+                transaction.close()
+                self._openclaw_transaction = None
+                return False
             transaction.backup()
             return True
         except Exception as error:
             self.log.error(f"Could not prepare OpenClaw upgrade backup: {error}")
             transaction = self._openclaw_transaction
-            if transaction is not None:
-                try:
-                    transaction.rollback()
-                except Exception as rollback_error:
-                    self.log.error(f"Could not close failed backup transaction: {rollback_error}")
+            if transaction is not None and self._rollback_openclaw_transaction(transaction):
+                self._openclaw_transaction = None
             return False
 
     def ensure_execution_policy(self) -> bool:
@@ -1585,31 +1642,10 @@ class WindowsSetup:
         transaction = self._openclaw_transaction
         if transaction is None:
             return True
-        try:
-            transaction.rollback()
-            if transaction.manifest.source_version is None:
-                self._openclaw_transaction = None
-                return True
-            process = self._start_validation_gateway(
-                expected_version=transaction.manifest.source_version
-            )
-            try:
-                healthy = self._validate_gateway_health()
-            finally:
-                self._stop_validation_gateway(process)
-            if healthy:
-                self._openclaw_transaction = None
-            else:
-                self.log.error(
-                    f"Restored OpenClaw {transaction.manifest.source_version} "
-                    "did not pass its health check"
-                )
-            return healthy
-        except Exception as error:
-            self.log.error(
-                f"OpenClaw rollback failed; backup retained at {transaction.backup_dir}: {error}"
-            )
+        if not self._rollback_openclaw_transaction(transaction):
             return False
+        self._openclaw_transaction = None
+        return True
 
     def _choose_npm_install_prefix(self) -> Path:
         """Return a writable directory to use as ``npm install -g --prefix``.
