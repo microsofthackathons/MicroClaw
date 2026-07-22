@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
+import { ElMessageBox, type MessageBoxData } from "element-plus";
 
 // ── Mock window.openclaw ──
 const mockLoadHistory = vi.fn().mockResolvedValue({ messages: [] });
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockAbort = vi.fn().mockResolvedValue(undefined);
 const mockIsConnected = vi.fn().mockResolvedValue(false);
+const mockGetSettings = vi.fn().mockResolvedValue({});
 
 Object.defineProperty(globalThis, "window", {
   value: {
@@ -30,7 +32,7 @@ Object.defineProperty(globalThis, "window", {
         onWsDisconnected: vi.fn(),
         restart: vi.fn(),
       },
-      settings: { get: vi.fn().mockResolvedValue({}) },
+      settings: { get: mockGetSettings },
       sandbox: { onPermissionRequest: vi.fn() },
       skills: { pendingIntegrityResult: vi.fn().mockResolvedValue(null) },
       cron: { list: vi.fn().mockResolvedValue({ jobs: [] }) },
@@ -147,6 +149,80 @@ describe("useChatStore — stale stream recovery", () => {
           "Hel",
         ),
       ).toBe("Hello");
+    });
+  });
+
+  describe("useChatStore — privacy protection", () => {
+    beforeEach(() => {
+      Object.keys(storage).forEach((key) => delete storage[key]);
+      setActivePinia(createPinia());
+      vi.restoreAllMocks();
+      mockSendMessage.mockClear();
+      mockGetSettings.mockReset();
+    });
+
+    it("highlights enabled PII and requires confirmation in balanced mode", async () => {
+      mockGetSettings.mockResolvedValue({
+        privacyLevel: "balanced",
+        piiDetection: { phone: true, email: false },
+      });
+      const confirm = vi
+        .spyOn(ElMessageBox, "confirm")
+        .mockResolvedValue("confirm" as MessageBoxData);
+      const store = useChatStore();
+
+      expect(await store.sendMessage("Call 13812345678 or alice@example.com")).toBe(true);
+
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(String(confirm.mock.calls[0][0])).toContain(
+        '<mark data-pii-type="phone">13812345678</mark>',
+      );
+      expect(String(confirm.mock.calls[0][0])).not.toContain('data-pii-type="email"');
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        "Call 13812345678 or alice@example.com",
+      );
+    });
+
+    it("does not send when the balanced PII warning is cancelled", async () => {
+      mockGetSettings.mockResolvedValue({ privacyLevel: "balanced" });
+      vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel");
+      const store = useChatStore();
+
+      expect(await store.sendMessage("Call 13812345678")).toBe(false);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(store.messages).toEqual([]);
+    });
+
+    it("auto-redacts enabled PII in strict mode without prompting", async () => {
+      mockGetSettings.mockResolvedValue({
+        privacyLevel: "strict",
+        piiDetection: { phone: true, email: false },
+      });
+      const confirm = vi.spyOn(ElMessageBox, "confirm");
+      const store = useChatStore();
+
+      expect(await store.sendMessage("Call 13812345678 or alice@example.com")).toBe(true);
+
+      expect(confirm).not.toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        "Call 138****5678 or alice@example.com",
+      );
+    });
+
+    it("skips disabled PII categories", async () => {
+      mockGetSettings.mockResolvedValue({
+        privacyLevel: "balanced",
+        piiDetection: { phone: false, email: false },
+      });
+      const confirm = vi.spyOn(ElMessageBox, "confirm");
+      const store = useChatStore();
+
+      expect(await store.sendMessage("Call 13812345678")).toBe(true);
+
+      expect(confirm).not.toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.any(String), "Call 13812345678");
     });
   });
 

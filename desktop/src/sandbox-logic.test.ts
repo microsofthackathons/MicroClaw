@@ -4,7 +4,8 @@
  * Tests pure functions and regex patterns used in sandbox-preload.js
  * and main.ts for permission management.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "fs";
 import path from "path";
 
 // ── likelyNeedsElevation heuristic ──
@@ -1111,12 +1112,16 @@ describe("isSafeDiagnosticCommand", () => {
       expect(isSafeDiagnosticCommand("cmd.exe", ["/c", "arp -a"])).toBe(true);
     });
 
-    it("arp piped to findstr", () => {
-      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'arp -a | findstr /C:"---"'])).toBe(true);
+    it("does not host-bypass arp piped to findstr", () => {
+      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'arp -a | findstr /C:"---"'])).toBe(
+        false,
+      );
     });
 
-    it("ping piped to find", () => {
-      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'ping 8.8.8.8 | find "Reply"'])).toBe(true);
+    it("does not host-bypass ping piped to find", () => {
+      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'ping 8.8.8.8 | find "Reply"'])).toBe(
+        false,
+      );
     });
 
     it("pathping", () => {
@@ -1131,12 +1136,12 @@ describe("isSafeDiagnosticCommand", () => {
       expect(isSafeDiagnosticCommand("powershell.exe", ["-Command", "ping 8.8.8.8"])).toBe(true);
     });
 
-    it("piped through more", () => {
-      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", "arp -a | more"])).toBe(true);
+    it("does not host-bypass more", () => {
+      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", "arp -a | more"])).toBe(false);
     });
 
-    it("piped through sort", () => {
-      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", "arp -a | sort"])).toBe(true);
+    it("does not host-bypass sort", () => {
+      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", "arp -a | sort"])).toBe(false);
     });
   });
 
@@ -1243,8 +1248,8 @@ describe("isSafeDiagnosticCommand", () => {
 });
 
 describe("isSafeDiagnosticCommandStr", () => {
-  it("allows arp -a | findstr", () => {
-    expect(isSafeDiagnosticCommandStr('arp -a | findstr /C:"---"')).toBe(true);
+  it("does not host-bypass arp piped to findstr", () => {
+    expect(isSafeDiagnosticCommandStr('arp -a | findstr /C:"---"')).toBe(false);
   });
 
   it("allows ping", () => {
@@ -1912,6 +1917,705 @@ describe("isSensitivePath", () => {
 
   it("detects .ssh directory", () => {
     expect(isSensitivePath("C:\\Users\\testuser\\.ssh")).toBe(true);
+  });
+
+  // ── Sensitive filename confirmation patterns ──
+
+  describe("isSensitiveFile", () => {
+    const sensitiveModule = require("../../appcontainer/sandbox-sensitive.js");
+    const isSensitiveFile = sensitiveModule.isSensitiveFile;
+
+    it.each([
+      "C:\\work\\.env",
+      "C:\\work\\.env.production",
+      "C:\\work\\service_key_backup.txt",
+      "C:\\work\\server.key",
+      "C:\\work\\certificate.pem",
+      "C:\\work\\certificate.crt",
+      "C:\\work\\certificate.cer",
+      "C:\\work\\certificate.p12",
+      "C:\\work\\certificate.pfx",
+      "C:\\work\\id_rsa",
+      "C:\\work\\id_ed25519",
+      "C:\\work\\credentials",
+      "C:\\work\\credentials.json",
+    ])("matches %s", (filePath) => {
+      expect(isSensitiveFile(filePath)).toBe(true);
+    });
+
+    it.each([
+      "C:\\work\\environment.txt",
+      "C:\\work\\public-keynote.txt",
+      "C:\\work\\id_rsa.pub",
+      "C:\\work\\credentials-backup.txt",
+      "C:\\work\\certificate.txt",
+    ])("does not match %s", (filePath) => {
+      expect(isSensitiveFile(filePath)).toBe(false);
+    });
+
+    it("is case-insensitive", () => {
+      expect(isSensitiveFile("C:\\work\\PRODUCTION_KEY.PEM")).toBe(true);
+      expect(isSensitiveFile("C:\\work\\CREDENTIALS.JSON")).toBe(true);
+    });
+
+    it("normalizes file URLs and NTFS alternate data streams", () => {
+      expect(isSensitiveFile(new URL("file:///C:/work/%2Eenv.production"))).toBe(true);
+      expect(isSensitiveFile("C:\\work\\server.pem::$DATA")).toBe(true);
+      expect(isSensitiveFile("C:\\work\\credentials:backup")).toBe(true);
+    });
+  });
+
+  describe("extractSensitiveRelativeReadPaths", () => {
+    const extractSensitiveRelativeReadPaths = cpHooks.extractSensitiveRelativeReadPaths;
+
+    it.each([
+      ["type .env", "C:\\work\\.env"],
+      ["Get-Content .\\secrets\\service_key.pem", "C:\\work\\secrets\\service_key.pem"],
+      ['Get-Content ".env.production"', "C:\\work\\.env.production"],
+      ["cat ..\\credentials", "C:\\credentials"],
+      [`python -c "open('.env').read()"`, "C:\\work\\.env"],
+      [`python -c "Path('.env').read_text()"`, "C:\\work\\.env"],
+      [`node -e "require('fs').readFileSync('.env')"`, "C:\\work\\.env"],
+      [`node -e "const f=require('fs');f.readFileSync('.env')"`, "C:\\work\\.env"],
+      [`ping 127.0.0.1 | find /v "__never__" .env`, "C:\\work\\.env"],
+      [`mklink /H public.txt .env`, "C:\\work\\.env"],
+      [`Rename-Item .env public.txt`, "C:\\work\\.env"],
+    ])("resolves %s against the child working directory", (command, expected) => {
+      expect(extractSensitiveRelativeReadPaths(command, "C:\\work")).toEqual([expected]);
+    });
+
+    it("does not treat sensitive-looking arguments to non-read commands as reads", () => {
+      expect(
+        extractSensitiveRelativeReadPaths("echo .env; Get-Content README.md", "C:\\work"),
+      ).toEqual([]);
+    });
+
+    it.each([
+      [`node -e "const {readFileSync:r}=require('fs');r('.env')"`, "C:\\work\\.env"],
+      [
+        `node -e "readFileSync(new URL('file:///C:/work/.env'))"`,
+        "C:\\work\\.env",
+      ],
+    ])("scans all sensitive literals for script interpreters: %s", (command, expected) => {
+      expect(extractSensitiveRelativeReadPaths(command, "C:\\work", true)).toEqual([expected]);
+    });
+
+    it("resolves relative protected-directory reads against the child cwd", () => {
+      const home = process.env.USERPROFILE!;
+      expect(extractSensitiveRelativeReadPaths("type .ssh\\config", home)).toEqual([
+        path.join(home, ".ssh", "config"),
+      ]);
+    });
+  });
+
+  describe("sensitive file read approval", () => {
+    const permissionModule = require("../../appcontainer/sandbox-permission.js");
+    const sandboxStateModule = require("../../appcontainer/sandbox-state.js");
+
+    it("prompts in balanced mode, caches allow-once, and bypasses the guard in basic mode", () => {
+      const originalSend = process.send;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      let requests = 0;
+      let requestKind = "";
+      let now = 1_000_000;
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string; requestKind: string };
+        requests++;
+        requestKind = request.requestKind;
+        now += 10_000;
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "allow-once" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.privacyLevel = "balanced";
+        expect(permissionModule.shouldBlockRead("C:\\work\\.env", true)).toBe(false);
+        expect(requestKind).toBe("sensitive-file");
+        expect(requests).toBe(1);
+
+        expect(permissionModule.shouldBlockRead("C:\\work\\.env", true)).toBe(false);
+        expect(requests).toBe(1);
+
+        permissionModule.clearCaches();
+        sandboxStateModule.state.privacyLevel = "basic";
+        expect(permissionModule.shouldBlockRead("C:\\work\\credentials.json", true)).toBe(false);
+        expect(requests).toBe(1);
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        nowSpy.mockRestore();
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+  });
+
+  describe("sensitive child-process preflight", () => {
+    const permissionModule = require("../../appcontainer/sandbox-permission.js");
+    const sandboxStateModule = require("../../appcontainer/sandbox-state.js");
+
+    it("runs before shell, diagnostic, Python, and Node execution paths", () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originals = {
+        spawn: vi.fn(),
+        spawnSync: vi.fn(),
+        execFile: vi.fn(),
+        execFileSync: vi.fn(),
+        exec: vi.fn(),
+        execSync: vi.fn(),
+      };
+      const cpMock: Record<string, unknown> = { ...originals };
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string };
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state.privacyLevel = "balanced";
+        cpHooks.install(cpMock, () => []);
+
+        expect(
+          (cpMock.spawnSync as CallableFunction)("type .env", {
+            shell: true,
+            cwd: "C:\\work",
+          }).status,
+        ).toBe(1);
+        expect(() =>
+          (cpMock.execSync as CallableFunction)(
+            'ping 127.0.0.1 | find /v "__never__" .env',
+            { cwd: "C:\\work" },
+          ),
+        ).toThrow(/permission denied/i);
+        expect(() =>
+          (cpMock.execFileSync as CallableFunction)(
+            "python",
+            ["-c", "open('.env').read()"],
+            { cwd: "C:\\work" },
+          ),
+        ).toThrow(/permission denied/i);
+        expect(
+          (cpMock.spawnSync as CallableFunction)(
+            "node",
+            ["-e", "require('fs').readFileSync('.env')"],
+            { cwd: "C:\\work" },
+          ).status,
+        ).toBe(1);
+        expect(() =>
+          (cpMock.execFileSync as CallableFunction)("type .env", {
+            shell: true,
+            cwd: "C:\\work",
+          }),
+        ).toThrow(/permission denied/i);
+        const blockedChild = (cpMock.execFile as CallableFunction)("type .env", {
+          shell: true,
+          cwd: "C:\\work",
+        });
+        expect(blockedChild).toEqual(
+          expect.objectContaining({
+            kill: expect.any(Function),
+            stderr: expect.any(Object),
+          }),
+        );
+        expect(() =>
+          (cpMock.execFileSync as CallableFunction)("type .ssh\\config", {
+            shell: "cmd.exe",
+            cwd: process.env.USERPROFILE,
+          }),
+        ).toThrow(/protected sensitive|denied/i);
+
+        expect(originals.spawnSync).not.toHaveBeenCalled();
+        expect(originals.execSync).not.toHaveBeenCalled();
+        expect(originals.execFile).not.toHaveBeenCalled();
+        expect(originals.execFileSync).not.toHaveBeenCalled();
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+  });
+
+  describe("PathLike authorization", () => {
+    const permissionModule = require("../../appcontainer/sandbox-permission.js");
+    const sandboxStateModule = require("../../appcontainer/sandbox-state.js");
+
+    it("applies normal RO and RW authorization to file URLs", () => {
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state._roDirs = sandboxStateModule.normDirList("C:\\authorized-read");
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\authorized-write");
+
+        expect(
+          permissionModule.shouldBlockRead(
+            new URL("file:///C:/authorized-read/report.txt"),
+            false,
+          ),
+        ).toBe(false);
+        expect(
+          permissionModule.shouldBlockWrite(new URL("file:///C:/authorized-write/output.txt")),
+        ).toBe(false);
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+      }
+    });
+
+    it("authorizes reads against the canonical symlink target", () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      let requestKind = "";
+      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((filePath: fs.PathLike) => {
+        return String(filePath).includes("sensitive-alias")
+          ? "D:\\private\\.env"
+          : "D:\\private\\notes.txt";
+      }) as typeof fs.realpathSync);
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string; requestKind?: string };
+        requestKind = request.requestKind || "";
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state.privacyLevel = "balanced";
+        sandboxStateModule.state._roDirs = sandboxStateModule.normDirList("C:\\authorized");
+        sandboxStateModule.state._rwDirs = [];
+
+        expect(permissionModule.shouldBlockRead("C:\\authorized\\alias.txt", false)).toBe(true);
+        expect(requestKind).toBe("directory-access");
+
+        permissionModule.clearCaches();
+        expect(permissionModule.shouldBlockRead("C:\\authorized\\sensitive-alias", false)).toBe(true);
+        expect(requestKind).toBe("sensitive-file");
+      } finally {
+        realpathSpy.mockRestore();
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+
+    it("resolves writes through the nearest existing junction ancestor", () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((filePath: fs.PathLike) => {
+        if (String(filePath).toLowerCase() === "c:\\safe\\junction") return "D:\\private";
+        const error = new Error("not found") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }) as typeof fs.realpathSync);
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string };
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\safe");
+
+        const nested = "C:\\safe\\junction\\new\\file.txt";
+        expect(permissionModule.canonicalizeWritePath(nested)).toBe(
+          "D:\\private\\new\\file.txt",
+        );
+        expect(permissionModule.shouldBlockWrite(nested)).toBe(true);
+      } finally {
+        realpathSpy.mockRestore();
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+
+    it("does not follow a leaf symlink for directory-entry writes", () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((filePath: fs.PathLike) => {
+        const value = String(filePath).toLowerCase();
+        if (value === "c:\\outside\\link.txt") return "C:\\safe\\target.txt";
+        return String(filePath);
+      }) as typeof fs.realpathSync);
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string };
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\safe");
+
+        expect(permissionModule.shouldBlockWrite("C:\\outside\\link.txt")).toBe(false);
+        expect(permissionModule.shouldBlockEntryWrite("C:\\outside\\link.txt")).toBe(true);
+      } finally {
+        realpathSpy.mockRestore();
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+  });
+
+  describe("copy source authorization", () => {
+    const fsHooks = require("../../appcontainer/sandbox-fs-hooks.js");
+    const permissionModule = require("../../appcontainer/sandbox-permission.js");
+    const sandboxStateModule = require("../../appcontainer/sandbox-state.js");
+
+    it("blocks copied and linked sensitive sources while honoring exclusions", async () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      const copyFileSync = vi.fn();
+      const copyFile = vi.fn();
+      const linkSync = vi.fn();
+      const renameSync = vi.fn();
+      const symlinkSync = vi.fn();
+      const copied: string[] = [];
+      let requests = 0;
+      const cpSync = vi.fn((src: string, dest: string, options: { filter: CallableFunction }) => {
+        if (options.filter(src, dest)) copied.push(src);
+        const sensitiveSource = path.join(src, ".env");
+        if (options.filter(sensitiveSource, path.join(dest, ".env"))) {
+          copied.push(sensitiveSource);
+        }
+      });
+      const fsMock: Record<string, unknown> = {
+        copyFileSync,
+        copyFile,
+        cpSync,
+        linkSync,
+        renameSync,
+        symlinkSync,
+      };
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string };
+        requests++;
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state.privacyLevel = "balanced";
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList(
+          "C:\\source,C:\\destination",
+        );
+        fsHooks.install(fsMock);
+
+        expect(() =>
+          (fsMock.copyFileSync as CallableFunction)(
+            "C:\\source\\.env",
+            "C:\\destination\\.env-copy",
+          ),
+        ).toThrow(/read blocked/i);
+        expect(copyFileSync).not.toHaveBeenCalled();
+
+        permissionModule.clearCaches();
+        expect(() =>
+          (fsMock.cpSync as CallableFunction)("C:\\source", "C:\\destination", {
+            recursive: true,
+          }),
+        ).toThrow(/read blocked/i);
+        expect(cpSync).toHaveBeenCalledOnce();
+        expect(copied).not.toContain("C:\\source\\.env");
+
+        permissionModule.clearCaches();
+        copied.length = 0;
+        const requestsBeforeExclusion = requests;
+        expect(() =>
+          (fsMock.cpSync as CallableFunction)("C:\\source", "C:\\destination", {
+            recursive: true,
+            filter: (src: string) => !src.endsWith(".env"),
+          }),
+        ).not.toThrow();
+        expect(requests).toBe(requestsBeforeExclusion);
+        expect(copied).not.toContain("C:\\source\\.env");
+
+        permissionModule.clearCaches();
+        expect(() =>
+          (fsMock.linkSync as CallableFunction)(
+            "C:\\source\\.env",
+            "C:\\destination\\public.txt",
+          ),
+        ).toThrow(/read blocked/i);
+        expect(linkSync).not.toHaveBeenCalled();
+
+        permissionModule.clearCaches();
+        expect(() =>
+          (fsMock.renameSync as CallableFunction)(
+            "C:\\source\\.env",
+            "C:\\destination\\public-renamed.txt",
+          ),
+        ).toThrow(/read blocked/i);
+        expect(renameSync).not.toHaveBeenCalled();
+
+        permissionModule.clearCaches();
+        expect(() =>
+          (fsMock.symlinkSync as CallableFunction)(
+            "..\\source\\.env",
+            "C:\\destination\\public-link",
+          ),
+        ).toThrow(/read blocked/i);
+        expect(symlinkSync).not.toHaveBeenCalled();
+
+        permissionModule.clearCaches();
+        let callbackWasSynchronous = true;
+        const observedSynchronously = await new Promise<boolean>((resolve) => {
+          (fsMock.copyFile as CallableFunction)(
+            "C:\\source\\.env",
+            "C:\\destination\\.env-copy",
+            () => resolve(callbackWasSynchronous),
+          );
+          callbackWasSynchronous = false;
+        });
+        expect(observedSynchronously).toBe(false);
+        expect(copyFile).not.toHaveBeenCalled();
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+  });
+
+  describe("open access mode authorization", () => {
+    const fsHooks = require("../../appcontainer/sandbox-fs-hooks.js");
+    const permissionModule = require("../../appcontainer/sandbox-permission.js");
+    const sandboxStateModule = require("../../appcontainer/sandbox-state.js");
+
+    it.each([
+      ["r+", true, true],
+      ["a+", true, true],
+      ["rs+", true, true],
+      ["sr", true, false],
+      ["xw", false, true],
+      ["xa", false, true],
+      ["sa", false, true],
+      ["sa+", true, true],
+      ["w", false, true],
+      [fs.constants.O_RDWR, true, true],
+      [fs.constants.O_WRONLY, false, true],
+      [fs.constants.O_RDONLY | fs.constants.O_CREAT, true, true],
+    ])("classifies %s independently for reads and writes", (flags, read, write) => {
+      expect(fsHooks.classifyOpenFlags(flags)).toEqual({ read, write });
+    });
+
+    it("requires sensitive-read approval for every read-capable overload", async () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      const openSync = vi.fn(() => 1);
+      const open = vi.fn();
+      const readFile = vi.fn();
+      const fsMock: Record<string, unknown> = { openSync, open, readFile };
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string };
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state.privacyLevel = "balanced";
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\work");
+        fsHooks.install(fsMock);
+
+        expect(() =>
+          (fsMock.openSync as CallableFunction)("C:\\work\\.env", "r+"),
+        ).toThrow(/read blocked/i);
+        permissionModule.clearCaches();
+        expect(() =>
+          (fsMock.openSync as CallableFunction)("C:\\work\\.env", fs.constants.O_RDWR),
+        ).toThrow(/read blocked/i);
+        expect(openSync).not.toHaveBeenCalled();
+
+        permissionModule.clearCaches();
+        expect((fsMock.openSync as CallableFunction)("C:\\work\\.env", "w")).toBe(1);
+        expect(openSync).toHaveBeenCalledOnce();
+
+        permissionModule.clearCaches();
+        sandboxStateModule.state._roDirs = sandboxStateModule.normDirList("C:\\work");
+        sandboxStateModule.state._rwDirs = [];
+        expect(() =>
+          (fsMock.openSync as CallableFunction)(
+            "C:\\work\\created.txt",
+            fs.constants.O_RDONLY | fs.constants.O_CREAT,
+          ),
+        ).toThrow(/read-only/i);
+        expect(openSync).toHaveBeenCalledOnce();
+
+        permissionModule.clearCaches();
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\work");
+        let openCallbackIsSynchronous = true;
+        const openObservedSynchronously = await new Promise<boolean>((resolve) => {
+          (fsMock.open as CallableFunction)("C:\\work\\.env", () => {
+            resolve(openCallbackIsSynchronous);
+          });
+          openCallbackIsSynchronous = false;
+        });
+        expect(openObservedSynchronously).toBe(false);
+        expect(open).not.toHaveBeenCalled();
+
+        permissionModule.clearCaches();
+        let readCallbackIsSynchronous = true;
+        const readObservedSynchronously = await new Promise<boolean>((resolve) => {
+          (fsMock.readFile as CallableFunction)("C:\\work\\.env", () => {
+            resolve(readCallbackIsSynchronous);
+          });
+          readCallbackIsSynchronous = false;
+        });
+        expect(readObservedSynchronously).toBe(false);
+        expect(readFile).not.toHaveBeenCalled();
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+  });
+
+  describe("runtime privacy updates", () => {
+    const sandboxStateModule = require("../../appcontainer/sandbox-state.js");
+
+    it("updates the environment inherited by descendant Node processes", () => {
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalEnv = process.env.OPENCLAW_PRIVACY_LEVEL;
+      try {
+        sandboxStateModule.handleMessage({
+          type: "sandbox-privacy-updated",
+          privacyLevel: "strict",
+        });
+        expect(sandboxStateModule.state.privacyLevel).toBe("strict");
+        expect(process.env.OPENCLAW_PRIVACY_LEVEL).toBe("strict");
+      } finally {
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        if (originalEnv === undefined) delete process.env.OPENCLAW_PRIVACY_LEVEL;
+        else process.env.OPENCLAW_PRIVACY_LEVEL = originalEnv;
+      }
+    });
+
+    it("overrides a stale privacy level in explicit child-process environments", () => {
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalNodeOptions = process.env.NODE_OPTIONS;
+      const originalComspec = process.env.COMSPEC;
+      const originalSandboxDirs = process.env.OPENCLAW_SANDBOX_DIRS_RW;
+      const spawn = vi.fn();
+      const fork = vi.fn();
+      const cpMock: Record<string, unknown> = {
+        fork,
+        spawn,
+        spawnSync: vi.fn(),
+        execFile: vi.fn(),
+        execFileSync: vi.fn(),
+        exec: vi.fn(),
+        execSync: vi.fn(),
+      };
+      try {
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state.privacyLevel = "strict";
+        process.env.NODE_OPTIONS = "--require sandbox-preload.js";
+        process.env.COMSPEC = "C:\\sandbox\\AppContainerLauncher.exe";
+        process.env.OPENCLAW_SANDBOX_DIRS_RW = "C:\\trusted";
+        cpHooks.install(cpMock, () => []);
+
+        (cpMock.spawn as CallableFunction)("tool", [], {
+          env: { OPENCLAW_PRIVACY_LEVEL: "basic" },
+        });
+
+        expect(spawn).toHaveBeenCalledWith(
+          "tool",
+          [],
+          expect.objectContaining({
+            env: expect.objectContaining({
+              COMSPEC: "C:\\sandbox\\AppContainerLauncher.exe",
+              NODE_OPTIONS: "--require sandbox-preload.js",
+              OPENCLAW_PRIVACY_LEVEL: "strict",
+              OPENCLAW_SANDBOX_DIRS_RW: "C:\\trusted",
+            }),
+          }),
+        );
+
+        (cpMock.fork as CallableFunction)("child.js", undefined, { env: {} });
+        expect(fork).toHaveBeenCalledWith(
+          "child.js",
+          undefined,
+          expect.objectContaining({
+            env: expect.objectContaining({
+              COMSPEC: "C:\\sandbox\\AppContainerLauncher.exe",
+              NODE_OPTIONS: "--require sandbox-preload.js",
+              OPENCLAW_PRIVACY_LEVEL: "strict",
+              OPENCLAW_SANDBOX_DIRS_RW: "C:\\trusted",
+            }),
+          }),
+        );
+      } finally {
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+        else process.env.NODE_OPTIONS = originalNodeOptions;
+        if (originalComspec === undefined) delete process.env.COMSPEC;
+        else process.env.COMSPEC = originalComspec;
+        if (originalSandboxDirs === undefined) delete process.env.OPENCLAW_SANDBOX_DIRS_RW;
+        else process.env.OPENCLAW_SANDBOX_DIRS_RW = originalSandboxDirs;
+      }
+    });
   });
 
   it("detects files inside .ssh", () => {

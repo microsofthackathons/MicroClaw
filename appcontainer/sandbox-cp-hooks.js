@@ -107,17 +107,14 @@ var SAFE_DIAG_TOOLS = new Set([
   "arp",
 ]);
 
-// Read-only filters allowed in pipes after a diagnostic tool
-var SAFE_PIPE_FILTERS = new Set(["findstr", "find", "more", "sort", "head", "tail"]);
-
 // Shell metacharacters that should never appear in a safe diagnostic command.
 // Catches: redirection (>, <), subexpression $(), backtick escapes, for/if blocks.
 var UNSAFE_SHELL_CHARS_RE = /[><]|\$\(|`[^`]/;
 
 /**
- * Check if a shell payload consists entirely of safe diagnostic commands
- * (optionally piped through read-only filters). Returns true if the entire
- * command line can safely bypass AppContainer.
+ * Check if a shell payload consists entirely of safe diagnostic commands.
+ * Piped commands do not bypass AppContainer because filter tools can accept
+ * file operands in addition to stdin.
  *
  * Security: rejects any payload containing redirection, subexpressions,
  * or backtick escapes. Splits on ALL cmd/PS separators including single &.
@@ -137,8 +134,9 @@ function isSafeDiagnosticCommand(cmd, args) {
     var stmt = statements[s].trim();
     if (!stmt) continue;
 
-    // Split by pipe — first segment must be a diag tool, rest must be filters
+    // Filters such as find/more/sort can also open named files.
     var segments = stmt.split(/\s*\|\s*/);
+    if (segments.length !== 1) return false;
     for (var p = 0; p < segments.length; p++) {
       var seg = segments[p].trim();
       if (!seg) continue;
@@ -150,13 +148,7 @@ function isSafeDiagnosticCommand(cmd, args) {
         .toLowerCase()
         .replace(/\.exe$/i, "");
 
-      if (p === 0) {
-        // First segment: must be a safe diagnostic tool
-        if (!SAFE_DIAG_TOOLS.has(exeName)) return false;
-      } else {
-        // Pipe target: must be a safe read-only filter
-        if (!SAFE_PIPE_FILTERS.has(exeName)) return false;
-      }
+      if (!SAFE_DIAG_TOOLS.has(exeName)) return false;
     }
   }
 
@@ -178,6 +170,7 @@ function isSafeDiagnosticCommandStr(cmdStr) {
     var stmt = statements[s].trim();
     if (!stmt) continue;
     var segments = stmt.split(/\s*\|\s*/);
+    if (segments.length !== 1) return false;
     for (var p = 0; p < segments.length; p++) {
       var seg = segments[p].trim();
       if (!seg) continue;
@@ -186,11 +179,7 @@ function isSafeDiagnosticCommandStr(cmdStr) {
         .basename(firstToken)
         .toLowerCase()
         .replace(/\.exe$/i, "");
-      if (p === 0) {
-        if (!SAFE_DIAG_TOOLS.has(exeName)) return false;
-      } else {
-        if (!SAFE_PIPE_FILTERS.has(exeName)) return false;
-      }
+      if (!SAFE_DIAG_TOOLS.has(exeName)) return false;
     }
   }
   return true;
@@ -207,6 +196,58 @@ function stripShell(opts) {
 function buildCmdPreview(cmd, args) {
   var argArr = Array.isArray(args) ? args : [];
   return String(cmd) + " " + argArr.join(" ");
+}
+
+function getChildOptions(args, opts) {
+  if (Array.isArray(args)) return opts;
+  if (args === null || args === undefined) {
+    return opts && typeof opts === "object" ? opts : undefined;
+  }
+  return typeof args === "object" ? args : undefined;
+}
+
+var TRUSTED_CHILD_ENV_KEYS = [
+  "COMSPEC",
+  "OPENCLAW_ORIGINAL_COMSPEC",
+  "OPENCLAW_SANDBOX_NAME",
+  "OPENCLAW_SANDBOX_CAPS",
+  "OPENCLAW_SANDBOX_DIRS_RW",
+  "OPENCLAW_SANDBOX_DIRS_RO",
+  "OPENCLAW_SANDBOX_PERMISSION_TIMEOUT",
+  "OPENCLAW_SANDBOX_HMAC_KEY",
+  "OPENCLAW_AC_EXTERNAL_APPS",
+  "OPENCLAW_STATE_DIR",
+  "OPENCLAW_NODE_DIR",
+  "USERPROFILE",
+  "HOME",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "TEMP",
+  "TMP",
+  "ProgramFiles",
+  "SystemDrive",
+  "SystemRoot",
+  "windir",
+];
+
+function withCurrentPrivacyEnv(options) {
+  if (!options || typeof options !== "object") return options;
+  var updated = Object.assign({}, options);
+  if (options.env && typeof options.env === "object") {
+    updated.env = Object.assign({}, options.env);
+    for (var i = 0; i < TRUSTED_CHILD_ENV_KEYS.length; i++) {
+      var key = TRUSTED_CHILD_ENV_KEYS[i];
+      if (process.env[key] !== undefined) updated.env[key] = process.env[key];
+    }
+    var pathValue = process.env.PATH || process.env.Path;
+    if (pathValue !== undefined) updated.env.PATH = pathValue;
+    updated.env.OPENCLAW_PRIVACY_LEVEL = S.state.privacyLevel;
+    if (process.env.NODE_OPTIONS) {
+      updated.env.NODE_OPTIONS = process.env.NODE_OPTIONS;
+    }
+  }
+  if (options.shell && S.LAUNCHER) updated.shell = S.LAUNCHER;
+  return updated;
 }
 
 function notifyExecCommand(cmd, args) {
@@ -464,16 +505,179 @@ function hasSensitivePaths(writePaths, readPaths) {
   return null;
 }
 
+var SENSITIVE_READ_OPERATION_RE =
+  /\b(?:Get-Content|gc|Select-String|sls|Import-Csv|Get-FileHash|type|more|find|findstr|sort|cat|head|tail|Copy-Item|Move-Item|Rename-Item|New-Item|copy|move|rename|ren|mklink|cp|mv)\b|(?:(?:fs|require\s*\(\s*["']fs["']\s*\))(?:\.promises)?\.(?:readFile|readFileSync|createReadStream|open)|\.(?:readFile|readFileSync|createReadStream|open|read_text|read_bytes)\s*\(|\bopen\s*\(|System\.IO\.(?:File|Directory).*::(?:Read|Get|Exists|Open))/i;
+
+function extractSensitiveRelativeReadPaths(command, cwd, scanAllCandidates) {
+  var results = [];
+  var seen = {};
+  var baseDir = cwd ? sensitive.normalizeFilePath(cwd) : process.cwd();
+  var statements = String(command || "").split(/\s*(?:&&|\|\||[;&\r\n])\s*/);
+
+  function addCandidate(token) {
+    token = String(token || "").replace(/[)\]}]+$/g, "");
+    if (!token) return;
+    var normalized = /^file:/i.test(token) ? sensitive.normalizeFilePath(token) : token;
+    if (!normalized) return;
+    var resolved = pathMod.isAbsolute(normalized)
+      ? pathMod.resolve(normalized)
+      : pathMod.resolve(baseDir, normalized);
+    if (!sensitive.isSensitiveFile(normalized) && !sensitive.isSensitivePath(resolved)) return;
+    var key = resolved.toLowerCase();
+    if (!seen[key]) {
+      seen[key] = true;
+      results.push(resolved);
+    }
+  }
+
+  for (var i = 0; i < statements.length; i++) {
+    var statement = statements[i];
+    if (!scanAllCandidates && !SENSITIVE_READ_OPERATION_RE.test(statement)) continue;
+    var quotedPatterns = [/"([^"]+)"/g, /'([^']+)'/g];
+    for (var q = 0; q < quotedPatterns.length; q++) {
+      var quotedMatch;
+      while ((quotedMatch = quotedPatterns[q].exec(statement)) !== null) {
+        addCandidate(quotedMatch[1]);
+      }
+    }
+    var tokenPattern = /"([^"]+)"|'([^']+)'|([^\s|(),]+)/g;
+    var match;
+    while ((match = tokenPattern.exec(statement)) !== null) {
+      addCandidate(match[1] || match[2] || match[3] || "");
+    }
+  }
+  return results;
+}
+
+function addSensitiveRelativeReadPaths(command, readPaths, cwd, scanAllCandidates) {
+  if (S.state.privacyLevel === "basic") return readPaths;
+  var combined = readPaths.slice();
+  var seen = {};
+  for (var i = 0; i < combined.length; i++) seen[combined[i].toLowerCase()] = true;
+  var relative = extractSensitiveRelativeReadPaths(command, cwd, scanAllCandidates);
+  for (var j = 0; j < relative.length; j++) {
+    var key = relative[j].toLowerCase();
+    if (!seen[key]) {
+      seen[key] = true;
+      combined.push(relative[j]);
+    }
+  }
+  return combined;
+}
+
+function isScriptInterpreterCommand(cmd, payload) {
+  var candidates = [String(cmd || "")];
+  var match = String(payload || "").match(/^\s*(?:"([^"]+)"|'([^']+)'|([^\s]+))/);
+  if (match) candidates.push(match[1] || match[2] || match[3] || "");
+  for (var i = 0; i < candidates.length; i++) {
+    var name = pathMod
+      .basename(candidates[i])
+      .toLowerCase()
+      .replace(/\.exe$/i, "");
+    if (name === "node" || name === "python" || name === "python3" || name === "py") return true;
+  }
+  return false;
+}
+
+function preBlockSensitiveCommand(cmd, args, cwd, commandIsPayload) {
+  var cmdPreview = buildCmdPreview(cmd, args).trim();
+  var payload = commandIsPayload ? cmdPreview : extractShellPayload(cmd, args);
+  var writePaths = extractWritePaths(payload);
+  var readPaths = addSensitiveRelativeReadPaths(
+    payload,
+    extractReadPaths(payload),
+    cwd,
+    isScriptInterpreterCommand(cmd, payload),
+  );
+  var sensitiveHit = hasSensitivePaths(writePaths, readPaths);
+  if (sensitiveHit) return { reason: "sensitive", path: sensitiveHit };
+
+  S.state._currentCmdPreview = cmdPreview;
+  for (var i = 0; i < readPaths.length; i++) {
+    if (perm.shouldBlockSensitiveRead(readPaths[i])) {
+      return { reason: "permission", path: readPaths[i] };
+    }
+  }
+  return false;
+}
+
+function blockedError(denied) {
+  return denied.reason === "sensitive"
+    ? sensitive.throwSensitiveDenied(denied.path)
+    : S.throwReadBlocked("sandbox permission denied");
+}
+
+function blockedMessage(denied) {
+  return denied.reason === "sensitive"
+    ? blockedError(denied).message
+    : "EACCES: sandbox permission denied";
+}
+
+function createBlockedChild(denied, callback) {
+  var EventEmitter = require("events");
+  var streams = require("stream");
+  var child = new EventEmitter();
+  var message = blockedMessage(denied);
+  child.stdin = new streams.Writable({
+    write: function (chunk, encoding, callback) {
+      callback();
+    },
+  });
+  child.stdout = new streams.Readable({
+    read: function () {
+      this.push(null);
+    },
+  });
+  child.stderr = new streams.Readable({
+    read: function () {
+      this.push(message + "\n");
+      this.push(null);
+      message = null;
+    },
+  });
+  child.pid = 0;
+  child.killed = true;
+  child.connected = false;
+  child.kill = function () {
+    return true;
+  };
+  child.ref = function () {
+    return child;
+  };
+  child.unref = function () {
+    return child;
+  };
+  process.nextTick(function () {
+    if (typeof callback === "function") callback(blockedError(denied), "", "");
+    child.emit("exit", 1, null);
+    child.emit("close", 1, null);
+  });
+  return child;
+}
+
+function createBlockedSyncResult(denied) {
+  var message = Buffer.from(blockedMessage(denied));
+  return {
+    pid: 0,
+    status: 1,
+    signal: null,
+    stdout: Buffer.alloc(0),
+    stderr: message,
+    output: [null, Buffer.alloc(0), message],
+    error: null,
+  };
+}
+
 // NOTE: Pre-blocking is a UX convenience layer, not a security boundary.
 // Commands that pass pre-blocking still run inside AppContainer (OS ACLs).
 // A crafted command may evade regex extraction — that's acceptable because
 // AppContainer will still enforce access control at the kernel level.
-function preBlockShellCommand(cmd, args) {
+function preBlockShellCommand(cmd, args, cwd) {
   var cmdPreview = buildCmdPreview(cmd, args);
   S.state._currentCmdPreview = cmdPreview;
   var payload = extractShellPayload(cmd, args);
   var writePaths = extractWritePaths(payload);
-  var readPaths = extractReadPaths(payload);
+  var readPaths = addSensitiveRelativeReadPaths(payload, extractReadPaths(payload), cwd);
   process.stderr.write(
     "[sandbox] Pre-block: cmd=" +
       cmdPreview.substring(0, 120) +
@@ -1001,13 +1205,48 @@ function rebuildShellArgs(shellExe, origArgs, newPayload) {
 // ── Install hooks ───────────────────────────────────────────────────────
 
 function install(cp, getExternalApps) {
+  // Node's fork() uses an internal spawn reference, so it must be wrapped
+  // separately to keep the preload and live privacy level in child processes.
+  if (cp.fork) {
+    var _fork = cp.fork;
+    cp.fork = function (modulePath, args, opts) {
+      if (!S.state.sandboxActive) return _fork.apply(this, arguments);
+      var forkOpts = getChildOptions(args, opts);
+      if (forkOpts) {
+        forkOpts = withCurrentPrivacyEnv(forkOpts);
+        if (Array.isArray(args) || args === null || args === undefined) {
+          opts = forkOpts;
+          arguments[2] = opts;
+        } else {
+          args = forkOpts;
+          arguments[1] = args;
+        }
+      }
+      return _fork.apply(this, arguments);
+    };
+  }
+
   // ── cp.spawn ──
 
   var _spawn = cp.spawn;
   cp.spawn = function (cmd, args, opts) {
+    if (S.state.sandboxActive) {
+      var effectiveSpawnOpts = getChildOptions(args, opts);
+      if (effectiveSpawnOpts) {
+        effectiveSpawnOpts = withCurrentPrivacyEnv(effectiveSpawnOpts);
+        if (Array.isArray(args) || args === null || args === undefined) {
+          opts = effectiveSpawnOpts;
+          arguments[2] = opts;
+        } else {
+          args = effectiveSpawnOpts;
+          arguments[1] = args;
+        }
+      }
+    }
     var bn = pathMod.basename(String(cmd));
     var isShell = isShellExe(cmd);
-    var hasShellOpt = (opts && opts.shell) || (args && !Array.isArray(args) && args.shell);
+    var spawnOpts = getChildOptions(args, opts);
+    var hasShellOpt = spawnOpts && spawnOpts.shell;
     process.stderr.write(
       "[sandbox-diag] spawn: cmd=" +
         String(cmd).substring(0, 80) +
@@ -1019,6 +1258,24 @@ function install(cp, getExternalApps) {
         !!hasShellOpt +
         "\n",
     );
+    if (S.state.sandboxActive) {
+      var _sensitiveDenied = preBlockSensitiveCommand(
+        cmd,
+        Array.isArray(args) ? args : [],
+        spawnOpts && spawnOpts.cwd,
+        !!hasShellOpt,
+      );
+      if (_sensitiveDenied) {
+        process.stderr.write(
+          "[sandbox] spawn: " +
+            bn +
+            " -> BLOCKED (" +
+            (_sensitiveDenied.reason || "permission") +
+            ")\n",
+        );
+        return createBlockedChild(_sensitiveDenied);
+      }
+    }
     if (S.state.sandboxActive && isShell) {
       // Intercept declare-access magic command — return synthetic stream
       var _spawnPayload = extractShellPayload(cmd, Array.isArray(args) ? args : []);
@@ -1092,7 +1349,7 @@ function install(cp, getExternalApps) {
           return _sensChild;
         }
         var _newArgs = rebuildShellArgs(cmd, Array.isArray(args) ? args : [], _spawnStripped);
-        var _newOpts = stripShell(Array.isArray(args) ? opts : args);
+        var _newOpts = stripShell(spawnOpts);
         var _laArgs = buildLA(cmd, ensureUtf8Args(cmd, _newArgs));
         process.stderr.write(
           "[sandbox] spawn: " + bn + " -> AC (inline declare-access stripped)\\n",
@@ -1109,8 +1366,12 @@ function install(cp, getExternalApps) {
         return _spawn.apply(this, arguments);
       }
       var la = buildLA(cmd, ensureUtf8Args(cmd, Array.isArray(args) ? args : []));
-      var co = stripShell(Array.isArray(args) ? opts : args);
-      var _denied = preBlockShellCommand(cmd, Array.isArray(args) ? args : []);
+      var co = stripShell(spawnOpts);
+      var _denied = preBlockShellCommand(
+        cmd,
+        Array.isArray(args) ? args : [],
+        co && co.cwd,
+      );
       if (_denied) {
         var _blockMsg =
           _denied.reason === "sensitive"
@@ -1183,8 +1444,23 @@ function install(cp, getExternalApps) {
 
   var _spawnSync = cp.spawnSync;
   cp.spawnSync = function (cmd, args, opts) {
+    if (S.state.sandboxActive) {
+      var effectiveSyncOpts = getChildOptions(args, opts);
+      if (effectiveSyncOpts) {
+        effectiveSyncOpts = withCurrentPrivacyEnv(effectiveSyncOpts);
+        if (Array.isArray(args) || args === null || args === undefined) {
+          opts = effectiveSyncOpts;
+          arguments[2] = opts;
+        } else {
+          args = effectiveSyncOpts;
+          arguments[1] = args;
+        }
+      }
+    }
     var bn = pathMod.basename(String(cmd));
     var isShell = isShellExe(cmd);
+    var syncOpts = getChildOptions(args, opts);
+    var hasShellOpt = syncOpts && syncOpts.shell;
     process.stderr.write(
       "[sandbox-diag] spawnSync: cmd=" +
         String(cmd).substring(0, 80) +
@@ -1194,6 +1470,24 @@ function install(cp, getExternalApps) {
         S.state.sandboxActive +
         "\n",
     );
+    if (S.state.sandboxActive) {
+      var _syncSensitiveDenied = preBlockSensitiveCommand(
+        cmd,
+        Array.isArray(args) ? args : [],
+        syncOpts && syncOpts.cwd,
+        !!hasShellOpt,
+      );
+      if (_syncSensitiveDenied) {
+        process.stderr.write(
+          "[sandbox] spawnSync: " +
+            bn +
+            " -> BLOCKED (" +
+            (_syncSensitiveDenied.reason || "permission") +
+            ")\n",
+        );
+        return createBlockedSyncResult(_syncSensitiveDenied);
+      }
+    }
     if (S.state.sandboxActive && isShell) {
       // Intercept declare-access magic command — return synthetic result
       var _syncPayload = extractShellPayload(cmd, Array.isArray(args) ? args : []);
@@ -1220,8 +1514,12 @@ function install(cp, getExternalApps) {
         return _spawnSync.apply(this, arguments);
       }
       var la = buildLA(cmd, ensureUtf8Args(cmd, Array.isArray(args) ? args : []));
-      var co = stripShell(Array.isArray(args) ? opts : args);
-      var _denied = preBlockShellCommand(cmd, Array.isArray(args) ? args : []);
+      var co = stripShell(syncOpts);
+      var _denied = preBlockShellCommand(
+        cmd,
+        Array.isArray(args) ? args : [],
+        co && co.cwd,
+      );
       if (_denied) {
         var _blockMsg =
           _denied.reason === "sensitive"
@@ -1263,6 +1561,32 @@ function install(cp, getExternalApps) {
 
   var _execFile = cp.execFile;
   cp.execFile = function (file, args, opts, cb) {
+    if (S.state.sandboxActive) {
+      var effectiveEfOpts = getChildOptions(args, opts);
+      if (effectiveEfOpts) {
+        effectiveEfOpts = withCurrentPrivacyEnv(effectiveEfOpts);
+        if (Array.isArray(args) || args === null || args === undefined) {
+          opts = effectiveEfOpts;
+          arguments[2] = opts;
+        } else {
+          args = effectiveEfOpts;
+          arguments[1] = args;
+        }
+      }
+    }
+    if (S.state.sandboxActive) {
+      var _earlyEfOpts = getChildOptions(args, opts);
+      var _earlyEfDenied = preBlockSensitiveCommand(
+        file,
+        Array.isArray(args) ? args : [],
+        _earlyEfOpts && _earlyEfOpts.cwd,
+        !!(_earlyEfOpts && _earlyEfOpts.shell),
+      );
+      if (_earlyEfDenied) {
+        var _earlyEfCb = typeof args === "function" ? args : typeof opts === "function" ? opts : cb;
+        return createBlockedChild(_earlyEfDenied, _earlyEfCb);
+      }
+    }
     if (S.state.sandboxActive && isShellExe(file)) {
       // Intercept declare-access magic command
       var _efPayload = extractShellPayload(file, Array.isArray(args) ? args : []);
@@ -1282,9 +1606,7 @@ function install(cp, getExternalApps) {
       if (_efStripped) {
         var _efNewArgs = rebuildShellArgs(file, Array.isArray(args) ? args : [], _efStripped);
         var _efNewla = buildLA(file, ensureUtf8Args(file, _efNewArgs));
-        var _efCleanOpts = stripShell(
-          typeof args === "object" && !Array.isArray(args) ? args : opts,
-        );
+        var _efCleanOpts = stripShell(getChildOptions(args, opts));
         var _efCb2 = typeof args === "function" ? args : typeof opts === "function" ? opts : cb;
         return _execFile.call(this, S.LAUNCHER, _efNewla, _efCleanOpts, _efCb2);
       }
@@ -1335,14 +1657,14 @@ function install(cp, getExternalApps) {
         return _execFile.apply(this, arguments);
       }
       var la = buildLA(file, ensureUtf8Args(file, Array.isArray(args) ? args : []));
-      var cleanOpts = stripShell(typeof args === "object" && !Array.isArray(args) ? args : opts);
+      var cleanOpts = stripShell(getChildOptions(args, opts));
       var callback = typeof args === "function" ? args : typeof opts === "function" ? opts : cb;
-      var _denied = preBlockShellCommand(file, Array.isArray(args) ? args : []);
+      var _denied = preBlockShellCommand(
+        file,
+        Array.isArray(args) ? args : [],
+        cleanOpts && cleanOpts.cwd,
+      );
       if (_denied) {
-        var _blockErr =
-          _denied.reason === "sensitive"
-            ? sensitive.throwSensitiveDenied(_denied.path)
-            : S.throwReadBlocked("sandbox permission denied");
         process.stderr.write(
           "[sandbox] execFile: " +
             pathMod.basename(String(file)) +
@@ -1350,12 +1672,7 @@ function install(cp, getExternalApps) {
             (_denied.reason || "permission") +
             ")\n",
         );
-        if (typeof callback === "function") {
-          process.nextTick(function () {
-            callback(_blockErr);
-          });
-        }
-        return;
+        return createBlockedChild(_denied, callback);
       }
       notifyExecCommand(file, Array.isArray(args) ? args : []);
       process.stderr.write("[sandbox] execFile: " + pathMod.basename(String(file)) + " -> AC\n");
@@ -1408,12 +1725,17 @@ function install(cp, getExternalApps) {
           }
           var _launcherCb2 =
             typeof args === "function" ? args : typeof opts === "function" ? opts : cb;
-          var _launcherOpts = typeof args === "object" && !Array.isArray(args) ? args : opts;
+          var _launcherOpts = getChildOptions(args, opts);
           return _execFile.call(this, file, _newArgs, _launcherOpts, _launcherCb2);
         }
         process.stderr.write("[sandbox] execFile(launcher): " + innerCmd.substring(0, 120) + "\n");
         var innerWritePaths = extractWritePaths(innerCmd);
-        var innerReadPaths = extractReadPaths(innerCmd);
+        var _launcherOptsForRead = getChildOptions(args, opts);
+        var innerReadPaths = addSensitiveRelativeReadPaths(
+          innerCmd,
+          extractReadPaths(innerCmd),
+          _launcherOptsForRead && _launcherOptsForRead.cwd,
+        );
         if (innerWritePaths.length > 0 || innerReadPaths.length > 0) {
           var _sensitiveHit = hasSensitivePaths(innerWritePaths, innerReadPaths);
           if (_sensitiveHit) {
@@ -1457,7 +1779,7 @@ function install(cp, getExternalApps) {
         }
       }
       var _cbOrig = typeof args === "function" ? args : typeof opts === "function" ? opts : cb;
-      var _optsOrig = typeof args === "object" && !Array.isArray(args) ? args : opts;
+      var _optsOrig = getChildOptions(args, opts);
       return _execFile.call(this, file, argArr, _optsOrig, function (err, stdout, stderr) {
         if (innerCmd) {
           var deniedPath = detectAccessDenied(stderr || "", stdout || "");
@@ -1475,6 +1797,29 @@ function install(cp, getExternalApps) {
 
   var _execFileSync = cp.execFileSync;
   cp.execFileSync = function (file, args, opts) {
+    if (S.state.sandboxActive) {
+      var effectiveEfsOpts = getChildOptions(args, opts);
+      if (effectiveEfsOpts) {
+        effectiveEfsOpts = withCurrentPrivacyEnv(effectiveEfsOpts);
+        if (Array.isArray(args) || args === null || args === undefined) {
+          opts = effectiveEfsOpts;
+          arguments[2] = opts;
+        } else {
+          args = effectiveEfsOpts;
+          arguments[1] = args;
+        }
+      }
+    }
+    if (S.state.sandboxActive) {
+      var _earlyEfsOpts = getChildOptions(args, opts);
+      var _earlyEfsDenied = preBlockSensitiveCommand(
+        file,
+        Array.isArray(args) ? args : [],
+        _earlyEfsOpts && _earlyEfsOpts.cwd,
+        !!(_earlyEfsOpts && _earlyEfsOpts.shell),
+      );
+      if (_earlyEfsDenied) throw blockedError(_earlyEfsDenied);
+    }
     if (S.state.sandboxActive && isShellExe(file)) {
       // Intercept declare-access magic command
       var _efsPayload = extractShellPayload(file, Array.isArray(args) ? args : []);
@@ -1528,8 +1873,12 @@ function install(cp, getExternalApps) {
         return _execFileSync.apply(this, arguments);
       }
       var la = buildLA(file, ensureUtf8Args(file, Array.isArray(args) ? args : []));
-      var co = stripShell(Array.isArray(args) ? opts : args);
-      var _denied = preBlockShellCommand(file, Array.isArray(args) ? args : []);
+      var co = stripShell(getChildOptions(args, opts));
+      var _denied = preBlockShellCommand(
+        file,
+        Array.isArray(args) ? args : [],
+        co && co.cwd,
+      );
       if (_denied) {
         process.stderr.write(
           "[sandbox] execFileSync: " +
@@ -1558,6 +1907,8 @@ function install(cp, getExternalApps) {
   var _exec = cp.exec;
   cp.exec = function (command, opts, cb) {
     if (!S.state.sandboxActive) return _exec.apply(this, arguments);
+    opts = withCurrentPrivacyEnv(opts);
+    arguments[1] = opts;
     var callback = typeof opts === "function" ? opts : cb;
     var execOpts = typeof opts === "object" ? opts : undefined;
     var cmdStr = String(command || "");
@@ -1568,6 +1919,20 @@ function install(cp, getExternalApps) {
       if (typeof callback === "function") {
         process.nextTick(function () {
           callback(null, output, "");
+        });
+      }
+      return;
+    }
+    var _execSensitiveDenied = preBlockSensitiveCommand(
+      cmdStr,
+      [],
+      execOpts && execOpts.cwd,
+      true,
+    );
+    if (_execSensitiveDenied) {
+      if (typeof callback === "function") {
+        process.nextTick(function () {
+          callback(blockedError(_execSensitiveDenied));
         });
       }
       return;
@@ -1594,7 +1959,11 @@ function install(cp, getExternalApps) {
     // Extract shell payload to avoid matching shell exe path (e.g. C:\Program Files\...\pwsh.exe)
     var _execPayload = extractShellPayloadFromString(cmdStr);
     var innerWritePaths = extractWritePaths(_execPayload);
-    var innerReadPaths = extractReadPaths(_execPayload);
+    var innerReadPaths = addSensitiveRelativeReadPaths(
+      _execPayload,
+      extractReadPaths(_execPayload),
+      execOpts && execOpts.cwd,
+    );
     if (innerWritePaths.length > 0 || innerReadPaths.length > 0) {
       process.stderr.write("[sandbox] exec: " + cmdStr.substring(0, 120) + "\n");
       var _sensitiveHitE = hasSensitivePaths(innerWritePaths, innerReadPaths);
@@ -1655,12 +2024,21 @@ function install(cp, getExternalApps) {
   var _execSync = cp.execSync;
   cp.execSync = function (command, opts) {
     if (!S.state.sandboxActive) return _execSync.apply(this, arguments);
+    opts = withCurrentPrivacyEnv(opts);
+    arguments[1] = opts;
     var cmdStr = String(command || "");
     // Intercept standalone declare-access magic command — never reaches the real shell
     var declareResult = tryDeclareAccess(cmdStr);
     if (declareResult) {
       return Buffer.from(formatDeclareResult(declareResult), "utf-8");
     }
+    var _execSyncSensitiveDenied = preBlockSensitiveCommand(
+      cmdStr,
+      [],
+      opts && opts.cwd,
+      true,
+    );
+    if (_execSyncSensitiveDenied) throw blockedError(_execSyncSensitiveDenied);
     // Intercept inline declare-access comment — strip it, request permissions, then execute the rest
     var strippedCmd = tryInlineDeclareAccess(cmdStr);
     if (strippedCmd) {
@@ -1678,7 +2056,11 @@ function install(cp, getExternalApps) {
     // Extract shell payload to avoid matching shell exe path (e.g. C:\Program Files\...\pwsh.exe)
     var _execSyncPayload = extractShellPayloadFromString(cmdStr);
     var innerWritePaths = extractWritePaths(_execSyncPayload);
-    var innerReadPaths = extractReadPaths(_execSyncPayload);
+    var innerReadPaths = addSensitiveRelativeReadPaths(
+      _execSyncPayload,
+      extractReadPaths(_execSyncPayload),
+      opts && opts.cwd,
+    );
     if (innerWritePaths.length > 0 || innerReadPaths.length > 0) {
       process.stderr.write("[sandbox] execSync: " + cmdStr.substring(0, 120) + "\n");
       var _sensitiveHitES = hasSensitivePaths(innerWritePaths, innerReadPaths);
@@ -1748,6 +2130,9 @@ module.exports = {
   // Exposed for testing
   detectAccessDenied: detectAccessDenied,
   preBlockShellCommand: preBlockShellCommand,
+  preBlockSensitiveCommand: preBlockSensitiveCommand,
+  withCurrentPrivacyEnv: withCurrentPrivacyEnv,
+  extractSensitiveRelativeReadPaths: extractSensitiveRelativeReadPaths,
   isShellExe: isShellExe,
   classifyAuthLevel: classifyAuthLevel,
   ensureUtf8Args: ensureUtf8Args,

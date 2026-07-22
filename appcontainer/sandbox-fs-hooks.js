@@ -10,6 +10,30 @@
 "use strict";
 
 var path = require("path");
+var fsConstants = require("fs").constants;
+
+function classifyOpenFlags(flags) {
+  if (typeof flags === "number") {
+    var accessMode = flags & 3;
+    var mutationMask =
+      (fsConstants.O_CREAT || 0) | (fsConstants.O_TRUNC || 0) | (fsConstants.O_APPEND || 0);
+    return {
+      read: accessMode !== 1,
+      write: accessMode !== 0 || (flags & mutationMask) !== 0,
+    };
+  }
+  var value = String(flags === undefined ? "r" : flags).toLowerCase();
+  if (value === "r" || value === "rs" || value === "sr") {
+    return { read: true, write: false };
+  }
+  if (/^(?:w|wx|xw|a|ax|xa|as|sa)$/.test(value)) {
+    return { read: false, write: true };
+  }
+  if (/^(?:r|rs|sr|w|wx|xw|a|ax|xa|as|sa)\+$/.test(value)) {
+    return { read: true, write: true };
+  }
+  return { read: false, write: false };
+}
 
 function install(fsMod) {
   var S = require(path.join(__dirname, "sandbox-state.js"));
@@ -18,6 +42,7 @@ function install(fsMod) {
   var throwReadOnly = S.throwReadOnly;
   var throwReadBlocked = S.throwReadBlocked;
   var _shouldBlockWrite = perm.shouldBlockWrite;
+  var _shouldBlockEntryWrite = perm.shouldBlockEntryWrite;
   var _shouldBlockRead = perm.shouldBlockRead;
   var isSensitivePath = sensitive.isSensitivePath;
   var throwSensitiveDenied = sensitive.throwSensitiveDenied;
@@ -29,6 +54,10 @@ function install(fsMod) {
   function shouldBlockWrite(filePath) {
     if (isSensitivePath(filePath)) return true;
     return _shouldBlockWrite(filePath);
+  }
+  function shouldBlockEntryWrite(filePath) {
+    if (isSensitivePath(filePath)) return true;
+    return _shouldBlockEntryWrite(filePath);
   }
   function shouldBlockRead(filePath, shellContext) {
     if (isSensitivePath(filePath)) return true;
@@ -51,6 +80,40 @@ function install(fsMod) {
     return typeof a === "function" ? a : b;
   }
 
+  function callbackError(callback, error) {
+    if (typeof callback !== "function") throw error;
+    process.nextTick(function () {
+      callback(error);
+    });
+  }
+
+  function resolveSymlinkTarget(target, linkPath) {
+    var normalizedTarget = sensitive.normalizeFilePath(target);
+    if (!normalizedTarget || path.isAbsolute(normalizedTarget)) return normalizedTarget;
+    var normalizedLink = sensitive.normalizeFilePath(linkPath);
+    return path.resolve(path.dirname(normalizedLink), normalizedTarget);
+  }
+
+  function withCopySourceFilter(options) {
+    if (options !== undefined && (options === null || typeof options !== "object")) return options;
+    var copyOptions = Object.assign({}, options || {});
+    var originalFilter = copyOptions.filter;
+    copyOptions.filter = function (src, dest) {
+      function authorize(included) {
+        if (!included) return false;
+        if (shouldBlockRead(src)) throw throwReadBlocked(src);
+        return true;
+      }
+      if (originalFilter === undefined) return authorize(true);
+      var included = originalFilter.call(this, src, dest);
+      if (included && typeof included.then === "function") {
+        return included.then(authorize);
+      }
+      return authorize(included);
+    };
+    return copyOptions;
+  }
+
   // ── Write operations ──────────────────────────────────────────────────
 
   var _writeFileSync = fsMod.writeFileSync;
@@ -70,11 +133,8 @@ function install(fsMod) {
     if (shouldBlockWrite(file)) {
       S.state._currentCmdPreview = null;
       var callback = getCb2(optsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadOnly(file));
-        return;
-      }
-      throw throwReadOnly(file);
+      callbackError(callback, throwReadOnly(file));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _writeFile.apply(this, arguments);
@@ -97,11 +157,8 @@ function install(fsMod) {
     if (shouldBlockWrite(file)) {
       S.state._currentCmdPreview = null;
       var callback = getCb2(optsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadOnly(file));
-        return;
-      }
-      throw throwReadOnly(file);
+      callbackError(callback, throwReadOnly(file));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _appendFile.apply(this, arguments);
@@ -114,6 +171,10 @@ function install(fsMod) {
       S.state._currentCmdPreview = null;
       throw throwReadOnly(dest);
     }
+    if (shouldBlockRead(src)) {
+      S.state._currentCmdPreview = null;
+      throw throwReadBlocked(src);
+    }
     S.state._currentCmdPreview = null;
     return _copyFileSync.apply(this, arguments);
   };
@@ -121,14 +182,16 @@ function install(fsMod) {
   var _copyFile = fsMod.copyFile;
   fsMod.copyFile = function (src, dest, flagsOrCb, cb) {
     S.state._currentCmdPreview = 'fs.copyFile("' + src + '", "' + dest + '")';
+    var callback = getCb2(flagsOrCb, cb);
     if (shouldBlockWrite(dest)) {
       S.state._currentCmdPreview = null;
-      var callback = getCb2(flagsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadOnly(dest));
-        return;
-      }
-      throw throwReadOnly(dest);
+      callbackError(callback, throwReadOnly(dest));
+      return;
+    }
+    if (shouldBlockRead(src)) {
+      S.state._currentCmdPreview = null;
+      callbackError(callback, throwReadBlocked(src));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _copyFile.apply(this, arguments);
@@ -137,13 +200,17 @@ function install(fsMod) {
   var _renameSync = fsMod.renameSync;
   fsMod.renameSync = function (oldPath, newPath) {
     S.state._currentCmdPreview = 'fs.renameSync("' + oldPath + '", "' + newPath + '")';
-    if (shouldBlockWrite(oldPath)) {
+    if (shouldBlockEntryWrite(oldPath)) {
       S.state._currentCmdPreview = null;
       throw throwReadOnly(oldPath);
     }
-    if (shouldBlockWrite(newPath)) {
+    if (shouldBlockEntryWrite(newPath)) {
       S.state._currentCmdPreview = null;
       throw throwReadOnly(newPath);
+    }
+    if (shouldBlockRead(oldPath)) {
+      S.state._currentCmdPreview = null;
+      throw throwReadBlocked(oldPath);
     }
     S.state._currentCmdPreview = null;
     return _renameSync.apply(this, arguments);
@@ -152,14 +219,20 @@ function install(fsMod) {
   var _rename = fsMod.rename;
   fsMod.rename = function (oldPath, newPath, cb) {
     S.state._currentCmdPreview = 'fs.rename("' + oldPath + '", "' + newPath + '")';
-    if (shouldBlockWrite(oldPath) || shouldBlockWrite(newPath)) {
+    if (shouldBlockEntryWrite(oldPath)) {
       S.state._currentCmdPreview = null;
-      var target = shouldBlockWrite(oldPath) ? oldPath : newPath;
-      if (typeof cb === "function") {
-        cb(throwReadOnly(target));
-        return;
-      }
-      throw throwReadOnly(target);
+      callbackError(cb, throwReadOnly(oldPath));
+      return;
+    }
+    if (shouldBlockEntryWrite(newPath)) {
+      S.state._currentCmdPreview = null;
+      callbackError(cb, throwReadOnly(newPath));
+      return;
+    }
+    if (shouldBlockRead(oldPath)) {
+      S.state._currentCmdPreview = null;
+      callbackError(cb, throwReadBlocked(oldPath));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _rename.apply(this, arguments);
@@ -168,7 +241,7 @@ function install(fsMod) {
   var _unlinkSync = fsMod.unlinkSync;
   fsMod.unlinkSync = function (file) {
     S.state._currentCmdPreview = 'fs.unlinkSync("' + file + '")';
-    if (shouldBlockWrite(file)) {
+    if (shouldBlockEntryWrite(file)) {
       S.state._currentCmdPreview = null;
       throw throwReadOnly(file);
     }
@@ -179,13 +252,10 @@ function install(fsMod) {
   var _unlink = fsMod.unlink;
   fsMod.unlink = function (file, cb) {
     S.state._currentCmdPreview = 'fs.unlink("' + file + '")';
-    if (shouldBlockWrite(file)) {
+    if (shouldBlockEntryWrite(file)) {
       S.state._currentCmdPreview = null;
-      if (typeof cb === "function") {
-        cb(throwReadOnly(file));
-        return;
-      }
-      throw throwReadOnly(file);
+      callbackError(cb, throwReadOnly(file));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _unlink.apply(this, arguments);
@@ -194,7 +264,7 @@ function install(fsMod) {
   var _mkdirSync = fsMod.mkdirSync;
   fsMod.mkdirSync = function (dir) {
     S.state._currentCmdPreview = 'fs.mkdirSync("' + dir + '")';
-    if (shouldBlockWrite(dir)) {
+    if (shouldBlockEntryWrite(dir)) {
       S.state._currentCmdPreview = null;
       throw throwReadOnly(dir);
     }
@@ -205,14 +275,11 @@ function install(fsMod) {
   var _mkdir = fsMod.mkdir;
   fsMod.mkdir = function (dir, optsOrCb, cb) {
     S.state._currentCmdPreview = 'fs.mkdir("' + dir + '")';
-    if (shouldBlockWrite(dir)) {
+    if (shouldBlockEntryWrite(dir)) {
       S.state._currentCmdPreview = null;
       var callback = getCb2(optsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadOnly(dir));
-        return;
-      }
-      throw throwReadOnly(dir);
+      callbackError(callback, throwReadOnly(dir));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _mkdir.apply(this, arguments);
@@ -221,7 +288,7 @@ function install(fsMod) {
   var _rmdirSync = fsMod.rmdirSync;
   fsMod.rmdirSync = function (dir) {
     S.state._currentCmdPreview = 'fs.rmdirSync("' + dir + '")';
-    if (shouldBlockWrite(dir)) {
+    if (shouldBlockEntryWrite(dir)) {
       S.state._currentCmdPreview = null;
       throw throwReadOnly(dir);
     }
@@ -232,14 +299,11 @@ function install(fsMod) {
   var _rmdir = fsMod.rmdir;
   fsMod.rmdir = function (dir, optsOrCb, cb) {
     S.state._currentCmdPreview = 'fs.rmdir("' + dir + '")';
-    if (shouldBlockWrite(dir)) {
+    if (shouldBlockEntryWrite(dir)) {
       S.state._currentCmdPreview = null;
       var callback = getCb2(optsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadOnly(dir));
-        return;
-      }
-      throw throwReadOnly(dir);
+      callbackError(callback, throwReadOnly(dir));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _rmdir.apply(this, arguments);
@@ -249,7 +313,7 @@ function install(fsMod) {
     var _rmSync = fsMod.rmSync;
     fsMod.rmSync = function (p) {
       S.state._currentCmdPreview = 'fs.rmSync("' + p + '")';
-      if (shouldBlockWrite(p)) {
+      if (shouldBlockEntryWrite(p)) {
         S.state._currentCmdPreview = null;
         throw throwReadOnly(p);
       }
@@ -262,14 +326,11 @@ function install(fsMod) {
     var _rm = fsMod.rm;
     fsMod.rm = function (p, optsOrCb, cb) {
       S.state._currentCmdPreview = 'fs.rm("' + p + '")';
-      if (shouldBlockWrite(p)) {
+      if (shouldBlockEntryWrite(p)) {
         S.state._currentCmdPreview = null;
         var callback = getCb2(optsOrCb, cb);
-        if (typeof callback === "function") {
-          callback(throwReadOnly(p));
-          return;
-        }
-        throw throwReadOnly(p);
+        callbackError(callback, throwReadOnly(p));
+        return;
       }
       S.state._currentCmdPreview = null;
       return _rm.apply(this, arguments);
@@ -298,11 +359,8 @@ function install(fsMod) {
       if (shouldBlockWrite(p)) {
         S.state._currentCmdPreview = null;
         var callback = getCb2(lenOrCb, cb);
-        if (typeof callback === "function") {
-          callback(throwReadOnly(p));
-          return;
-        }
-        throw throwReadOnly(p);
+        callbackError(callback, throwReadOnly(p));
+        return;
       }
       S.state._currentCmdPreview = null;
       return _truncate.apply(this, arguments);
@@ -315,9 +373,14 @@ function install(fsMod) {
     var _symlinkSync = fsMod.symlinkSync;
     fsMod.symlinkSync = function (target, p) {
       S.state._currentCmdPreview = 'fs.symlinkSync("' + target + '", "' + p + '")';
-      if (shouldBlockWrite(p)) {
+      if (shouldBlockEntryWrite(p)) {
         S.state._currentCmdPreview = null;
         throw throwReadOnly(p);
+      }
+      var resolvedTarget = resolveSymlinkTarget(target, p);
+      if (shouldBlockRead(resolvedTarget)) {
+        S.state._currentCmdPreview = null;
+        throw throwReadBlocked(target);
       }
       S.state._currentCmdPreview = null;
       return _symlinkSync.apply(this, arguments);
@@ -328,14 +391,18 @@ function install(fsMod) {
     var _symlink = fsMod.symlink;
     fsMod.symlink = function (target, p, typeOrCb, cb) {
       S.state._currentCmdPreview = 'fs.symlink("' + target + '", "' + p + '")';
-      if (shouldBlockWrite(p)) {
+      if (shouldBlockEntryWrite(p)) {
         S.state._currentCmdPreview = null;
         var callback = getCb2(typeOrCb, cb);
-        if (typeof callback === "function") {
-          callback(throwReadOnly(p));
-          return;
-        }
-        throw throwReadOnly(p);
+        callbackError(callback, throwReadOnly(p));
+        return;
+      }
+      var resolvedTarget = resolveSymlinkTarget(target, p);
+      if (shouldBlockRead(resolvedTarget)) {
+        S.state._currentCmdPreview = null;
+        var callback = getCb2(typeOrCb, cb);
+        callbackError(callback, throwReadBlocked(target));
+        return;
       }
       S.state._currentCmdPreview = null;
       return _symlink.apply(this, arguments);
@@ -348,9 +415,13 @@ function install(fsMod) {
     var _linkSync = fsMod.linkSync;
     fsMod.linkSync = function (existingPath, newPath) {
       S.state._currentCmdPreview = 'fs.linkSync("' + existingPath + '", "' + newPath + '")';
-      if (shouldBlockWrite(newPath)) {
+      if (shouldBlockEntryWrite(newPath)) {
         S.state._currentCmdPreview = null;
         throw throwReadOnly(newPath);
+      }
+      if (shouldBlockRead(existingPath)) {
+        S.state._currentCmdPreview = null;
+        throw throwReadBlocked(existingPath);
       }
       S.state._currentCmdPreview = null;
       return _linkSync.apply(this, arguments);
@@ -361,13 +432,15 @@ function install(fsMod) {
     var _link = fsMod.link;
     fsMod.link = function (existingPath, newPath, cb) {
       S.state._currentCmdPreview = 'fs.link("' + existingPath + '", "' + newPath + '")';
-      if (shouldBlockWrite(newPath)) {
+      if (shouldBlockEntryWrite(newPath)) {
         S.state._currentCmdPreview = null;
-        if (typeof cb === "function") {
-          cb(throwReadOnly(newPath));
-          return;
-        }
-        throw throwReadOnly(newPath);
+        callbackError(cb, throwReadOnly(newPath));
+        return;
+      }
+      if (shouldBlockRead(existingPath)) {
+        S.state._currentCmdPreview = null;
+        callbackError(cb, throwReadBlocked(existingPath));
+        return;
       }
       S.state._currentCmdPreview = null;
       return _link.apply(this, arguments);
@@ -395,11 +468,8 @@ function install(fsMod) {
       S.state._currentCmdPreview = 'fs.chmod("' + p + '")';
       if (shouldBlockWrite(p)) {
         S.state._currentCmdPreview = null;
-        if (typeof cb === "function") {
-          cb(throwReadOnly(p));
-          return;
-        }
-        throw throwReadOnly(p);
+        callbackError(cb, throwReadOnly(p));
+        return;
       }
       S.state._currentCmdPreview = null;
       return _chmod.apply(this, arguments);
@@ -410,14 +480,14 @@ function install(fsMod) {
 
   if (fsMod.cpSync) {
     var _cpSync = fsMod.cpSync;
-    fsMod.cpSync = function (src, dest) {
+    fsMod.cpSync = function (src, dest, options) {
       S.state._currentCmdPreview = 'fs.cpSync("' + src + '", "' + dest + '")';
       if (shouldBlockWrite(dest)) {
         S.state._currentCmdPreview = null;
         throw throwReadOnly(dest);
       }
       S.state._currentCmdPreview = null;
-      return _cpSync.apply(this, arguments);
+      return _cpSync.call(this, src, dest, withCopySourceFilter(options));
     };
   }
 
@@ -425,17 +495,15 @@ function install(fsMod) {
     var _cp = fsMod.cp;
     fsMod.cp = function (src, dest, optsOrCb, cb) {
       S.state._currentCmdPreview = 'fs.cp("' + src + '", "' + dest + '")';
+      var callback = getCb2(optsOrCb, cb);
       if (shouldBlockWrite(dest)) {
         S.state._currentCmdPreview = null;
-        var callback = getCb2(optsOrCb, cb);
-        if (typeof callback === "function") {
-          callback(throwReadOnly(dest));
-          return;
-        }
-        throw throwReadOnly(dest);
+        callbackError(callback, throwReadOnly(dest));
+        return;
       }
       S.state._currentCmdPreview = null;
-      return _cp.apply(this, arguments);
+      var options = typeof optsOrCb === "function" ? undefined : optsOrCb;
+      return _cp.call(this, src, dest, withCopySourceFilter(options), callback);
     };
   }
 
@@ -443,18 +511,16 @@ function install(fsMod) {
 
   var _openSync = fsMod.openSync;
   fsMod.openSync = function (file, flags) {
-    var f = String(flags || "r");
+    var f = String(flags === undefined ? "r" : flags);
+    var access = classifyOpenFlags(flags);
     S.state._currentCmdPreview = 'fs.openSync("' + file + '", "' + f + '")';
-    if (f === "r" || f === "rs" || f === "sr") {
-      if (shouldBlockRead(file)) {
-        S.state._currentCmdPreview = null;
-        throw throwReadBlocked(file);
-      }
-    } else {
-      if (shouldBlockWrite(file)) {
-        S.state._currentCmdPreview = null;
-        throw throwReadOnly(file);
-      }
+    if (access.read && shouldBlockRead(file)) {
+      S.state._currentCmdPreview = null;
+      throw throwReadBlocked(file);
+    }
+    if (access.write && shouldBlockWrite(file)) {
+      S.state._currentCmdPreview = null;
+      throw throwReadOnly(file);
     }
     S.state._currentCmdPreview = null;
     return _openSync.apply(this, arguments);
@@ -462,28 +528,20 @@ function install(fsMod) {
 
   var _open = fsMod.open;
   fsMod.open = function (file, flags, modeOrCb, cb) {
-    var f = String(flags || "r");
+    var effectiveFlags = typeof flags === "function" ? undefined : flags;
+    var f = String(effectiveFlags === undefined ? "r" : effectiveFlags);
+    var access = classifyOpenFlags(effectiveFlags);
+    var callback = typeof flags === "function" ? flags : getCb2(modeOrCb, cb);
     S.state._currentCmdPreview = 'fs.open("' + file + '", "' + f + '")';
-    if (f === "r" || f === "rs" || f === "sr") {
-      if (shouldBlockRead(file)) {
-        S.state._currentCmdPreview = null;
-        var callback = getCb2(modeOrCb, cb);
-        if (typeof callback === "function") {
-          callback(throwReadBlocked(file));
-          return;
-        }
-        throw throwReadBlocked(file);
-      }
-    } else {
-      if (shouldBlockWrite(file)) {
-        S.state._currentCmdPreview = null;
-        var callback = getCb2(modeOrCb, cb);
-        if (typeof callback === "function") {
-          callback(throwReadOnly(file));
-          return;
-        }
-        throw throwReadOnly(file);
-      }
+    if (access.read && shouldBlockRead(file)) {
+      S.state._currentCmdPreview = null;
+      callbackError(callback, throwReadBlocked(file));
+      return;
+    }
+    if (access.write && shouldBlockWrite(file)) {
+      S.state._currentCmdPreview = null;
+      callbackError(callback, throwReadOnly(file));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _open.apply(this, arguments);
@@ -519,11 +577,8 @@ function install(fsMod) {
     if (shouldBlockRead(file)) {
       S.state._currentCmdPreview = null;
       var callback = getCb2(optsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadBlocked(file));
-        return;
-      }
-      throw throwReadBlocked(file);
+      callbackError(callback, throwReadBlocked(file));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _readFile.apply(this, arguments);
@@ -546,11 +601,8 @@ function install(fsMod) {
     if (shouldBlockRead(dir)) {
       S.state._currentCmdPreview = null;
       var callback = getCb2(optsOrCb, cb);
-      if (typeof callback === "function") {
-        callback(throwReadBlocked(dir));
-        return;
-      }
-      throw throwReadBlocked(dir);
+      callbackError(callback, throwReadBlocked(dir));
+      return;
     }
     S.state._currentCmdPreview = null;
     return _readdir.apply(this, arguments);
@@ -607,6 +659,10 @@ function install(fsMod) {
         S.state._currentCmdPreview = null;
         return Promise.reject(throwReadOnly(dest));
       }
+      if (shouldBlockRead(src)) {
+        S.state._currentCmdPreview = null;
+        return Promise.reject(throwReadBlocked(src));
+      }
       S.state._currentCmdPreview = null;
       return _pCopyFile.apply(this, arguments);
     };
@@ -614,9 +670,13 @@ function install(fsMod) {
     var _pRename = fsPromises.rename;
     fsPromises.rename = function (oldPath, newPath) {
       S.state._currentCmdPreview = 'fs.promises.rename("' + oldPath + '", "' + newPath + '")';
-      if (shouldBlockWrite(oldPath) || shouldBlockWrite(newPath)) {
+      if (shouldBlockEntryWrite(oldPath) || shouldBlockEntryWrite(newPath)) {
         S.state._currentCmdPreview = null;
         return Promise.reject(throwReadOnly(oldPath));
+      }
+      if (shouldBlockRead(oldPath)) {
+        S.state._currentCmdPreview = null;
+        return Promise.reject(throwReadBlocked(oldPath));
       }
       S.state._currentCmdPreview = null;
       return _pRename.apply(this, arguments);
@@ -625,7 +685,7 @@ function install(fsMod) {
     var _pUnlink = fsPromises.unlink;
     fsPromises.unlink = function (file) {
       S.state._currentCmdPreview = 'fs.promises.unlink("' + file + '")';
-      if (shouldBlockWrite(file)) {
+      if (shouldBlockEntryWrite(file)) {
         S.state._currentCmdPreview = null;
         return Promise.reject(throwReadOnly(file));
       }
@@ -636,7 +696,7 @@ function install(fsMod) {
     var _pMkdir = fsPromises.mkdir;
     fsPromises.mkdir = function (dir) {
       S.state._currentCmdPreview = 'fs.promises.mkdir("' + dir + '")';
-      if (shouldBlockWrite(dir)) {
+      if (shouldBlockEntryWrite(dir)) {
         S.state._currentCmdPreview = null;
         return Promise.reject(throwReadOnly(dir));
       }
@@ -647,7 +707,7 @@ function install(fsMod) {
     var _pRmdir = fsPromises.rmdir;
     fsPromises.rmdir = function (dir) {
       S.state._currentCmdPreview = 'fs.promises.rmdir("' + dir + '")';
-      if (shouldBlockWrite(dir)) {
+      if (shouldBlockEntryWrite(dir)) {
         S.state._currentCmdPreview = null;
         return Promise.reject(throwReadOnly(dir));
       }
@@ -659,7 +719,7 @@ function install(fsMod) {
       var _pRm = fsPromises.rm;
       fsPromises.rm = function (p) {
         S.state._currentCmdPreview = 'fs.promises.rm("' + p + '")';
-        if (shouldBlockWrite(p)) {
+        if (shouldBlockEntryWrite(p)) {
           S.state._currentCmdPreview = null;
           return Promise.reject(throwReadOnly(p));
         }
@@ -670,18 +730,16 @@ function install(fsMod) {
 
     var _pOpen = fsPromises.open;
     fsPromises.open = function (file, flags) {
-      var f = String(flags || "r");
+      var f = String(flags === undefined ? "r" : flags);
+      var access = classifyOpenFlags(flags);
       S.state._currentCmdPreview = 'fs.promises.open("' + file + '", "' + f + '")';
-      if (f === "r" || f === "rs" || f === "sr") {
-        if (shouldBlockRead(file)) {
-          S.state._currentCmdPreview = null;
-          return Promise.reject(throwReadBlocked(file));
-        }
-      } else {
-        if (shouldBlockWrite(file)) {
-          S.state._currentCmdPreview = null;
-          return Promise.reject(throwReadOnly(file));
-        }
+      if (access.read && shouldBlockRead(file)) {
+        S.state._currentCmdPreview = null;
+        return Promise.reject(throwReadBlocked(file));
+      }
+      if (access.write && shouldBlockWrite(file)) {
+        S.state._currentCmdPreview = null;
+        return Promise.reject(throwReadOnly(file));
       }
       S.state._currentCmdPreview = null;
       return _pOpen.apply(this, arguments);
@@ -722,7 +780,10 @@ function install(fsMod) {
     if (fsPromises.symlink) {
       var _pSymlink = fsPromises.symlink;
       fsPromises.symlink = function (target, p) {
-        if (shouldBlockWrite(p)) return Promise.reject(throwReadOnly(p));
+        if (shouldBlockEntryWrite(p)) return Promise.reject(throwReadOnly(p));
+        if (shouldBlockRead(resolveSymlinkTarget(target, p))) {
+          return Promise.reject(throwReadBlocked(target));
+        }
         return _pSymlink.apply(this, arguments);
       };
     }
@@ -730,7 +791,8 @@ function install(fsMod) {
     if (fsPromises.link) {
       var _pLink = fsPromises.link;
       fsPromises.link = function (existingPath, newPath) {
-        if (shouldBlockWrite(newPath)) return Promise.reject(throwReadOnly(newPath));
+        if (shouldBlockEntryWrite(newPath)) return Promise.reject(throwReadOnly(newPath));
+        if (shouldBlockRead(existingPath)) return Promise.reject(throwReadBlocked(existingPath));
         return _pLink.apply(this, arguments);
       };
     }
@@ -745,9 +807,9 @@ function install(fsMod) {
 
     if (fsPromises.cp) {
       var _pCp = fsPromises.cp;
-      fsPromises.cp = function (src, dest) {
+      fsPromises.cp = function (src, dest, options) {
         if (shouldBlockWrite(dest)) return Promise.reject(throwReadOnly(dest));
-        return _pCp.apply(this, arguments);
+        return _pCp.call(this, src, dest, withCopySourceFilter(options));
       };
     }
 
@@ -766,4 +828,4 @@ function install(fsMod) {
   }
 }
 
-module.exports = { install: install };
+module.exports = { install: install, classifyOpenFlags: classifyOpenFlags };

@@ -66,6 +66,13 @@ function normalizeDirPath(dir: string): string {
   return d;
 }
 
+function notifySandboxPrivacyChanged(privacyLevel: string): void {
+  if (!gatewayProcess || gatewayProcess.killed) return;
+  try {
+    gatewayProcess.send({ type: "sandbox-privacy-updated", privacyLevel });
+  } catch {}
+}
+
 /**
  * Check if childDir is a proper subdirectory of parentDir (case-insensitive).
  * Returns false if the paths are the same directory.
@@ -134,6 +141,14 @@ const settingsStore = new Store<{
   sandboxGrantHistory: string[];
   /** Privacy protection level: basic, balanced, strict */
   privacyLevel: string;
+  /** PII categories enabled for outgoing-message scans. */
+  piiDetection: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+  };
 }>({
   name: "settings",
   defaults: {
@@ -157,6 +172,13 @@ const settingsStore = new Store<{
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
     privacyLevel: "balanced",
+    piiDetection: {
+      phone: true,
+      idCard: true,
+      bankCard: true,
+      email: true,
+      apiKey: true,
+    },
   },
 });
 
@@ -192,7 +214,7 @@ let studioBackendStatus: string = "stopped";
 /** Pending in-app permission requests (renderer UI replaces native dialogs). */
 const pendingPermissionRequests = new Map<
   string,
-  { type: "file" | "shell" | "shell-async" | "app-approval"; msg: any }
+  { type: "file" | "sensitive-file" | "shell" | "shell-async" | "app-approval"; msg: any }
 >();
 /** Per-session deny list: apps denied by the user during this session. */
 const sessionDeniedApps = new Map<string, Set<string>>();
@@ -1673,6 +1695,7 @@ async function startGatewayInner(): Promise<void> {
     // the OpenClaw launcher from self-respawning through the tool sandbox.
     OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
     OPENCLAW_NO_RESPAWN: "1",
+    OPENCLAW_PRIVACY_LEVEL: settingsStore.get("privacyLevel"),
     // HMAC key for verifying the external apps whitelist file
     OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
   };
@@ -1915,6 +1938,7 @@ async function startGatewayInner(): Promise<void> {
       command: blockedCommand,
       callerStack,
       responseFile,
+      requestKind,
     } = msg;
     console.log(
       `[sandbox] File permission request: path=${reqPath} roDir=${roDir} access=${accessNeeded} command=${blockedCommand || "(none)"} stack=${callerStack || "(none)"} id=${id}`,
@@ -1922,13 +1946,14 @@ async function startGatewayInner(): Promise<void> {
 
     pendingSyncPermissionRequests++;
     const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    pendingPermissionRequests.set(requestId, { type: "file", msg });
+    const requestType = requestKind === "sensitive-file" ? "sensitive-file" : "file";
+    pendingPermissionRequests.set(requestId, { type: requestType, msg });
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       notifyRemotePermissionNeeded();
       mainWindow.webContents.send("sandbox:permission-request", {
         requestId,
-        type: "file",
+        type: requestType,
         targetPath: reqPath,
         dirPath: roDir,
         accessNeeded: accessNeeded || "rw",
@@ -3427,6 +3452,14 @@ function registerIpcHandlers(): void {
   // --- Settings ---
   ipcMain.handle("settings:get", () => settingsStore.store);
   ipcMain.handle("settings:set", (_event, key: string, value: any) => {
+    if (
+      key === "privacyLevel" &&
+      value !== "basic" &&
+      value !== "balanced" &&
+      value !== "strict"
+    ) {
+      throw new Error(`Invalid privacy level: ${String(value)}`);
+    }
     settingsStore.set(key as any, value);
     if (key === "autoStart") {
       app.setLoginItemSettings({ openAtLogin: !!value });
@@ -3437,6 +3470,9 @@ function registerIpcHandlers(): void {
           ? { color: "#27272a", symbolColor: "#fafafa", height: 36 }
           : { color: "#ffffff", symbolColor: "#1e1f25", height: 36 },
       );
+    }
+    if (key === "privacyLevel") {
+      notifySandboxPrivacyChanged(value);
     }
   });
 
@@ -4099,7 +4135,17 @@ function registerIpcHandlers(): void {
       pendingPermissionRequests.delete(requestId);
       const { type, msg } = pending;
 
-      if (type === "file") {
+      if (type === "sensitive-file") {
+        const { id, filePath, responseFile } = msg;
+        const safeDecision = decision === "allow-once" ? "allow-once" : "deny";
+        console.log(`[sandbox] Sensitive file decision: ${safeDecision} for ${filePath}`);
+        try {
+          fs.writeFileSync(responseFile, JSON.stringify({ id, decision: safeDecision }), "utf-8");
+        } catch (err: any) {
+          console.error(`[sandbox] Failed to write sensitive file response: ${err.message}`);
+        }
+        pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+      } else if (type === "file") {
         const { id, roDir, responseFile } = msg;
         const reqPath = msg.filePath;
         console.log(`[sandbox] File permission decision: ${decision} for ${reqPath}`);

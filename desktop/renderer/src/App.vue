@@ -211,7 +211,7 @@ const integrityLoading = ref(false);
 // ── Permission dialog state (queue of pending requests) ──
 interface PermissionRequestData {
   requestId: string;
-  type: "file" | "shell" | "shell-async" | "app-approval";
+  type: "file" | "sensitive-file" | "shell" | "shell-async" | "app-approval";
   targetPath: string;
   dirPath: string;
   command?: string;
@@ -377,8 +377,10 @@ onMounted(async () => {
     // Add a pending entry to the exec panel so user sees what's waiting for permission
     if (chatStore.streaming) {
       const path = data.targetPath || data.dirPath;
-      const access = data.accessNeeded === "ro" ? "Read" : "Write";
-      const label = `${access} permission: ${path}`;
+      const label =
+        data.type === "sensitive-file"
+          ? t("perm.sensitiveFilePending", { path })
+          : `${data.accessNeeded === "ro" ? "Read" : "Write"} permission: ${path}`;
       chatStore.addPendingToolCall(data.requestId, label);
     }
   });

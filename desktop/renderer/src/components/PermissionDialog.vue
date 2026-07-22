@@ -10,7 +10,7 @@ const AUTO_DENY_SECONDS = 60;
 
 interface PermissionRequest {
   requestId: string;
-  type: "file" | "shell" | "shell-async" | "app-approval";
+  type: "file" | "sensitive-file" | "shell" | "shell-async" | "app-approval";
   targetPath?: string;
   dirPath?: string;
   command?: string;
@@ -72,6 +72,10 @@ const descriptionHtml = computed(() => {
     const appName = `<strong>${escapeHtml(props.request.app || "")}</strong>`;
     return t("perm.appDesc", { app: appName });
   }
+  if (props.request.type === "sensitive-file") {
+    const file = `<strong>${escapeHtml(props.request.targetPath || "")}</strong>`;
+    return t("perm.sensitiveFileDesc", { file });
+  }
   const dir = `<strong>${escapeHtml(props.request.dirPath || "")}</strong>`;
   const access = props.request.accessNeeded;
   if (props.request.type === "file") {
@@ -90,13 +94,15 @@ const commandHtml = computed(() => {
 });
 
 const isAppApproval = computed(() => props.request?.type === "app-approval");
+const isSensitiveFile = computed(() => props.request?.type === "sensitive-file");
 const isShellRequest = computed(
   () => props.request?.type === "shell" || props.request?.type === "shell-async",
 );
 const isReadOnly = computed(() => props.request?.accessNeeded === "ro");
 const riskLevel = computed<"low" | "medium" | "high">(() => {
   if (!props.request) return "low";
-  if (props.request.type === "app-approval") return "high";
+  if (props.request.type === "app-approval" || props.request.type === "sensitive-file")
+    return "high";
   if (isShellRequest.value) return isReadOnly.value ? "medium" : "high";
   return isReadOnly.value ? "low" : "medium";
 });
@@ -104,18 +110,21 @@ const isModal = computed(() => riskLevel.value !== "low");
 const dialogIcon = computed(() => {
   if (!props.request) return "📁";
   if (props.request.type === "app-approval") return "🚀";
+  if (props.request.type === "sensitive-file") return "🔐";
   if (isShellRequest.value) return "⌨";
   return isReadOnly.value ? "📁" : "✎";
 });
 const dialogTitle = computed(() => {
   if (!props.request) return t("perm.title");
   if (props.request.type === "app-approval") return t("perm.titleApp");
+  if (props.request.type === "sensitive-file") return t("perm.titleSensitiveFile");
   if (isShellRequest.value) return t("perm.titleCommand");
   return isReadOnly.value ? t("perm.titleRead") : t("perm.titleWrite");
 });
 const riskHint = computed(() => {
   if (!props.request) return "";
   if (props.request.type === "app-approval") return t("perm.riskApp");
+  if (props.request.type === "sensitive-file") return t("perm.riskSensitiveFile");
   if (isShellRequest.value)
     return isReadOnly.value ? t("perm.riskCommandRO") : t("perm.riskCommandRW");
   return isReadOnly.value ? t("perm.riskRead") : t("perm.riskWrite");
@@ -191,6 +200,11 @@ function respond(decision: string) {
             </button>
             <button class="perm-btn perm-btn-filled" @click="respond('allow-always')">
               {{ t("perm.allowAlways") }}
+            </button>
+          </template>
+          <template v-else-if="isSensitiveFile">
+            <button class="perm-btn perm-btn-filled" @click="respond('allow-once')">
+              {{ t("perm.allowOnce") }}
             </button>
           </template>
           <template v-else>

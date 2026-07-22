@@ -23,6 +23,13 @@ interface AppSettings {
   themeMode: string;
   accentColor: string;
   privacyLevel: string;
+  piiDetection: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+  };
 }
 
 interface SkillEntry {
@@ -252,10 +259,12 @@ interface OpenClawAPI {
     onPermissionRequest(
       callback: (data: {
         requestId: string;
-        type: "file" | "shell" | "shell-async";
+        type: "file" | "sensitive-file" | "shell" | "shell-async" | "app-approval";
         targetPath: string;
         dirPath: string;
         command?: string;
+        callerStack?: string;
+        accessNeeded?: string;
       }) => void,
     ): () => void;
     respondPermission(requestId: string, decision: string): Promise<void>;

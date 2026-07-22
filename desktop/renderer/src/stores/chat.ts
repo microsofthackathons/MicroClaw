@@ -1,7 +1,15 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
+import { ElMessageBox } from "element-plus";
 import { useSessionStore } from "./sessions";
-import { scanPii, redactPii } from "@/utils/pii-scanner";
+import { t } from "@/i18n";
+import {
+  scanPii,
+  redactPii,
+  normalizeScanOptions,
+  renderPiiHighlights,
+  type PiiMatch,
+} from "@/utils/pii-scanner";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -39,6 +47,41 @@ export interface ChatErrorInfo {
   raw?: string;
   /** HTTP status code when discernible from the raw error string. */
   status?: number;
+}
+
+const PII_TYPE_LABEL_KEYS: Record<PiiMatch["type"], string> = {
+  phone: "privacy.piiTypePhone",
+  idCard: "privacy.piiTypeIdCard",
+  bankCard: "privacy.piiTypeBankCard",
+  email: "privacy.piiTypeEmail",
+  apiKey: "privacy.piiTypeApiKey",
+};
+
+async function confirmPiiSend(message: string, matches: PiiMatch[]): Promise<boolean> {
+  const types = [...new Set(matches.map((match) => match.type))]
+    .map((type) => t(PII_TYPE_LABEL_KEYS[type]))
+    .join(", ");
+  const preview = renderPiiHighlights(message, matches);
+  const html = `
+    <p style="margin:0 0 12px">${t("privacy.piiWarningDesc", { types })}</p>
+    <div style="max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+      padding:10px 12px;border:1px solid var(--el-border-color);border-radius:8px;
+      background:var(--el-fill-color-light);font-family:Consolas,monospace">${preview}</div>
+  `;
+
+  try {
+    await ElMessageBox.confirm(html, t("privacy.piiWarningTitle"), {
+      dangerouslyUseHTMLString: true,
+      confirmButtonText: t("privacy.sendAnyway"),
+      cancelButtonText: t("privacy.cancelSend"),
+      type: "warning",
+      closeOnClickModal: false,
+    });
+    return true;
+  } catch (reason) {
+    if (reason === "cancel" || reason === "close") return false;
+    throw reason;
+  }
 }
 
 /**
@@ -566,21 +609,26 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** Send a message to the current session. */
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string): Promise<boolean> {
     const msg = text.trim();
-    if (!msg) return;
+    if (!msg) return false;
 
     // Privacy protection: scan for PII based on privacy level
     let finalMsg = msg;
     const privacySettings = await window.openclaw.settings.get();
     const privacyLevel = privacySettings?.privacyLevel ?? "balanced";
     if (privacyLevel !== "basic") {
-      const piiMatches = scanPii(msg);
+      const piiOptions = normalizeScanOptions(privacySettings?.piiDetection);
+      const piiMatches = scanPii(msg, piiOptions);
       if (privacyLevel === "strict" && piiMatches.length > 0) {
-        // Auto-redact in strict mode
-        finalMsg = redactPii(msg);
+        finalMsg = redactPii(msg, piiOptions);
+      } else if (
+        privacyLevel === "balanced" &&
+        piiMatches.length > 0 &&
+        !(await confirmPiiSend(msg, piiMatches))
+      ) {
+        return false;
       }
-      // In balanced mode, piiMatches are available for UI warning (future)
     }
 
     // Optimistic: add user message locally
@@ -611,9 +659,10 @@ export const useChatStore = defineStore("chat", () => {
       streaming.value = false;
       sending.value = false;
       lastStreamEventAt.value = null;
-      return;
+      return true;
     }
     sending.value = false;
+    return true;
   }
 
   /** Handle an incoming chat event from the gateway. */

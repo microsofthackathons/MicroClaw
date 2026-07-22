@@ -10,6 +10,7 @@ var path = require("path");
 var fs = require("fs");
 
 var S = require(path.join(__dirname, "sandbox-state.js"));
+var sensitive = require(path.join(__dirname, "sandbox-sensitive.js"));
 
 // ── Approval directory ──
 
@@ -23,6 +24,8 @@ var _approvalDir = (function () {
 var _filePermReadAllowed = {}; // dir -> expiry (RO grants)
 var _filePermWriteAllowed = {}; // dir -> expiry (RW grants)
 var _filePermDenied = new Set(); // paths denied this session
+var _sensitiveReadAllowed = {}; // exact file -> expiry
+var _sensitiveReadDenied = new Set(); // exact files denied this session
 
 // Pending async permission requests: normalizedDir -> { resFile, timestamp }.
 var _pendingAsyncDirs = {};
@@ -32,6 +35,8 @@ function clearCaches() {
   _filePermReadAllowed = {};
   _filePermWriteAllowed = {};
   _filePermDenied.clear();
+  _sensitiveReadAllowed = {};
+  _sensitiveReadDenied.clear();
   _pendingAsyncDirs = {};
 }
 
@@ -151,7 +156,7 @@ function handlePermissionDecision(decision, roDir, isWrite) {
 
 // ── File permission request (sync IPC) ──
 
-function requestFilePermission(filePath, roDir, accessNeeded) {
+function requestFilePermission(filePath, roDir, accessNeeded, requestKind) {
   if (!_approvalDir) return "deny";
   try {
     fs.mkdirSync(_approvalDir, { recursive: true });
@@ -180,6 +185,7 @@ function requestFilePermission(filePath, roDir, accessNeeded) {
       command: S.state._currentCmdPreview ? S.state._currentCmdPreview.substring(0, 500) : null,
       callerStack: stackTrace.substring(0, 500) || null,
       responseFile: resFile,
+      requestKind: requestKind || "directory-access",
     });
     process.stderr.write(
       "[sandbox] File permission requested via IPC for: " +
@@ -211,11 +217,75 @@ function requestFilePermission(filePath, roDir, accessNeeded) {
 
 // ── shouldBlockWrite / shouldBlockRead ──
 
-function shouldBlockWrite(filePath) {
-  if (!S.isBlockedPath(filePath)) return false;
+function canonicalizeReadPath(filePath) {
+  var normalized = sensitive.normalizeFilePath(filePath);
+  if (!normalized) return "";
+  try {
+    return fs.realpathSync(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+function canonicalizeWritePath(filePath) {
+  var normalized = sensitive.normalizeFilePath(filePath);
+  if (!normalized) return "";
+  var probe = normalized;
+  var missingParts = [];
+  while (true) {
+    try {
+      var canonical = fs.realpathSync(probe);
+      return missingParts.length > 0 ? path.join(canonical, ...missingParts) : canonical;
+    } catch {
+      var parent = path.dirname(probe);
+      if (parent === probe) return normalized;
+      missingParts.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+}
+
+function canonicalizeEntryWritePath(filePath) {
+  var normalized = sensitive.normalizeFilePath(filePath);
+  if (!normalized) return "";
+  var parent = path.dirname(normalized);
+  if (parent === normalized) return normalized;
+  return path.join(canonicalizeWritePath(parent), path.basename(normalized));
+}
+
+function shouldBlockSensitiveRead(filePath) {
+  if (S.state.privacyLevel === "basic") return false;
+  var normalized = sensitive.normalizeFilePath(filePath);
+  if (!normalized && filePath) return true;
+  var canonical = canonicalizeReadPath(normalized);
+  if (sensitive.isSensitivePath(canonical)) return true;
+  if (!sensitive.isSensitiveFile(normalized) && !sensitive.isSensitiveFile(canonical)) return false;
+  var resolved = path.resolve(canonical).toLowerCase();
+  var now = Date.now();
+  if (_sensitiveReadAllowed[resolved] && _sensitiveReadAllowed[resolved] > now) return false;
+  if (_sensitiveReadDenied.has(resolved)) return true;
+
+  var decision = requestFilePermission(
+    path.resolve(normalized).toLowerCase(),
+    path.dirname(resolved),
+    "ro",
+    "sensitive-file",
+  );
+  if (decision === "allow-once") {
+    _sensitiveReadAllowed[resolved] = Date.now() + 5000;
+    return false;
+  }
+  _sensitiveReadDenied.add(resolved);
+  return true;
+}
+
+function shouldBlockCanonicalWrite(normalized, filePath) {
+  if (!normalized && filePath) return true;
+  if (sensitive.isSensitivePath(normalized)) return true;
+  if (!S.isBlockedPath(normalized)) return false;
   var resolved;
   try {
-    resolved = S.resolvePathLower(filePath);
+    resolved = S.resolvePathLower(normalized);
   } catch {
     return true;
   }
@@ -245,11 +315,23 @@ function shouldBlockWrite(filePath) {
   }
 }
 
+function shouldBlockWrite(filePath) {
+  return shouldBlockCanonicalWrite(canonicalizeWritePath(filePath), filePath);
+}
+
+function shouldBlockEntryWrite(filePath) {
+  return shouldBlockCanonicalWrite(canonicalizeEntryWritePath(filePath), filePath);
+}
+
 function shouldBlockRead(filePath, shellContext) {
-  if (!S.isReadBlockedPath(filePath, shellContext)) return false;
+  var normalized = canonicalizeReadPath(filePath);
+  if (!normalized && filePath) return true;
+  if (sensitive.isSensitivePath(normalized)) return true;
+  if (shouldBlockSensitiveRead(filePath)) return true;
+  if (!S.isReadBlockedPath(normalized, shellContext)) return false;
   var resolved;
   try {
-    resolved = S.resolvePathLower(filePath);
+    resolved = S.resolvePathLower(normalized);
   } catch {
     return true;
   }
@@ -479,7 +561,12 @@ module.exports = {
   cleanupPendingForAuthorizedDirs: cleanupPendingForAuthorizedDirs,
   // Permission checks
   shouldBlockWrite: shouldBlockWrite,
+  shouldBlockEntryWrite: shouldBlockEntryWrite,
   shouldBlockRead: shouldBlockRead,
+  shouldBlockSensitiveRead: shouldBlockSensitiveRead,
+  canonicalizeReadPath: canonicalizeReadPath,
+  canonicalizeWritePath: canonicalizeWritePath,
+  canonicalizeEntryWritePath: canonicalizeEntryWritePath,
   // Request functions
   requestFilePermission: requestFilePermission,
   requestShellPermission: requestShellPermission,

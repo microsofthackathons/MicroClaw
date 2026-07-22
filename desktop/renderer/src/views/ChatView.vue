@@ -414,9 +414,11 @@ async function handleSend() {
 }
 
 async function sendText(text: string) {
-  inputText.value = "";
-  autoResize();
-  await chatStore.sendMessage(text);
+  const sent = await chatStore.sendMessage(text);
+  if (sent) {
+    inputText.value = "";
+    autoResize();
+  }
 }
 
 async function needsModelSetupBeforeSend(): Promise<boolean> {

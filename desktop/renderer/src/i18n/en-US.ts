@@ -275,10 +275,21 @@ export default {
   "settings.piiBankCard": "Bank card numbers",
   "settings.piiEmail": "Email addresses",
   "settings.piiApiKey": "API keys & secrets",
+  "privacy.piiWarningTitle": "Sensitive information detected",
+  "privacy.piiWarningDesc":
+    "MicroClaw found these enabled PII categories: {types}. Review the highlighted values before sending.",
+  "privacy.sendAnyway": "Send anyway",
+  "privacy.cancelSend": "Cancel",
+  "privacy.piiTypePhone": "phone number",
+  "privacy.piiTypeIdCard": "ID card number",
+  "privacy.piiTypeBankCard": "bank card number",
+  "privacy.piiTypeEmail": "email address",
+  "privacy.piiTypeApiKey": "API key or secret",
   "settings.sensitiveFiles": "Sensitive File Guard",
   "settings.sensitiveFilesDesc":
     "Prompt for confirmation before the agent reads files matching these patterns.",
-  "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
+  "settings.sensitiveFilePatterns":
+    ".env, .env.*, *_key*, *.key, *.pem, *.crt, *.cer, *.p12, *.pfx, id_rsa, id_dsa, id_ecdsa, id_ed25519, credentials",
   "settings.fileAccessAudit": "File Access Audit",
   "settings.fileAccessAuditDesc":
     "Log all files read by the agent during conversations. View audit logs in the workspace data directory.",
@@ -513,6 +524,7 @@ export default {
   "perm.titleWrite": "File access permission",
   "perm.titleCommand": "Command approval required",
   "perm.titleApp": "External app approval required",
+  "perm.titleSensitiveFile": "Sensitive file access",
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
@@ -524,11 +536,15 @@ export default {
   "perm.shellDescRO": "Allow read permission to {dir}",
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
+  "perm.sensitiveFileDesc":
+    "The agent is trying to read the sensitive file {file}. Allow this single read?",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",
   "perm.riskCommandRW": "High risk: this command may change files or system state.",
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
+  "perm.riskSensitiveFile": "High risk: this file may contain credentials or private keys.",
+  "perm.sensitiveFilePending": "Sensitive file review: {path}",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Always allow",
   "perm.callerLabel": "Caller",

@@ -1015,6 +1015,7 @@ import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import { buildManagedProviderConfigs } from "@/utils/model-provider-config";
+import { normalizeScanOptions } from "@/utils/pii-scanner";
 
 const route = useRoute();
 const router = useRouter();
@@ -1715,33 +1716,24 @@ watch(
     applyTheme(v);
   },
 );
+watch(
+  piiToggles,
+  (value) => window.openclaw.settings.set("piiDetection", { ...value }),
+  { deep: true },
+);
 
 function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
   settings.privacyLevel = level;
   window.openclaw.settings.set("privacyLevel", level);
-  // Auto-configure PII toggles based on level
-  if (level === "basic") {
-    piiToggles.phone = false;
-    piiToggles.idCard = false;
-    piiToggles.bankCard = false;
-    piiToggles.email = false;
-    piiToggles.apiKey = false;
-    settings.fileAccessAudit = false;
-  } else if (level === "balanced") {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  } else {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  }
+  const enabled = level !== "basic";
+  Object.assign(piiToggles, {
+    phone: enabled,
+    idCard: enabled,
+    bankCard: enabled,
+    email: enabled,
+    apiKey: enabled,
+  });
+  settings.fileAccessAudit = enabled;
 }
 watch(
   () => newModel.apiFormat,
@@ -1814,14 +1806,17 @@ onMounted(async () => {
     settings.startMinimized = saved.startMinimized ?? false;
     settings.themeMode = saved.themeMode ?? "light";
     settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
-    // Init PII toggles based on loaded privacy level
     if (settings.privacyLevel === "basic") {
-      piiToggles.phone = false;
-      piiToggles.idCard = false;
-      piiToggles.bankCard = false;
-      piiToggles.email = false;
-      piiToggles.apiKey = false;
+      Object.assign(piiToggles, {
+        phone: false,
+        idCard: false,
+        bankCard: false,
+        email: false,
+        apiKey: false,
+      });
       settings.fileAccessAudit = false;
+    } else {
+      Object.assign(piiToggles, normalizeScanOptions(saved.piiDetection));
     }
   }
 
