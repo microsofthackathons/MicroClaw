@@ -2360,6 +2360,159 @@ async function cleanupStaleAcls(): Promise<void> {
   }
 }
 
+// --- Skill dependency (PATH) indexing ---
+// Skills declare required CLIs in their SKILL.md metadata (requires.bins). To tell
+// whether a skill is actually usable we must check if those binaries are on PATH.
+// Doing a per-binary lookup (or spawning `where`/`which`) is extremely slow (~11s for
+// ~40 bins). Instead we list each PATH directory ONCE and build an in-memory Set of
+// executable basenames; membership checks are then O(1). The index is cached for the
+// session and only rebuilt on an explicit refresh (e.g. after the user installs a CLI).
+let pathExecutableIndexCache: Set<string> | null = null;
+
+function buildPathExecutableIndex(): Set<string> {
+  const exts = (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
+    .split(";")
+    .map((e) => e.toLowerCase())
+    .filter(Boolean);
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const index = new Set<string>();
+  for (const dir of dirs) {
+    let items: string[];
+    try {
+      items = fs.readdirSync(dir);
+    } catch {
+      continue; // missing/inaccessible PATH entry — skip
+    }
+    for (const item of items) {
+      const lower = item.toLowerCase();
+      index.add(lower); // bare name (covers scripts without an extension)
+      const ext = path.extname(lower);
+      if (ext && exts.includes(ext)) {
+        index.add(lower.slice(0, lower.length - ext.length));
+      }
+    }
+  }
+  return index;
+}
+
+function getPathExecutableIndex(forceRebuild = false): Set<string> {
+  if (forceRebuild || !pathExecutableIndexCache) {
+    pathExecutableIndexCache = buildPathExecutableIndex();
+  }
+  return pathExecutableIndexCache;
+}
+
+// A skill's usability requirements, mirroring openclaw's `metadata.openclaw.requires`
+// plus the top-level `os` gate. The runtime (`evaluateRuntimeRequires`) rejects a skill
+// unless ALL of these are satisfied, so the UI must evaluate every field — not just
+// `bins` — or it will show skills as available that the gateway silently drops.
+interface SkillRequirements {
+  bins: string[]; // every one of these CLIs must be on PATH
+  anyBins: string[]; // at least ONE of these CLIs must be on PATH
+  env: string[]; // every one of these env vars must be set
+  config: string[]; // every one of these dotted config paths must be truthy
+  os: string[]; // if non-empty, current platform must be included
+  primaryEnv?: string; // env var that a skill's `apiKey` config satisfies
+}
+
+// Extract the balanced `{ ... }` object following `metadata:` in a SKILL.md frontmatter.
+// The block is multi-line and, importantly, uses RELAXED JSON with trailing commas,
+// which `JSON.parse` rejects — callers must tolerate that (see parseSkillRequirements).
+function extractMetadataBlock(frontmatter: string): string | null {
+  const key = frontmatter.indexOf("metadata:");
+  if (key < 0) return null;
+  const start = frontmatter.indexOf("{", key);
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < frontmatter.length; i++) {
+    const c = frontmatter[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return frontmatter.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+// Parse a skill's requirements out of its SKILL.md frontmatter. Handles the multi-line,
+// trailing-comma "relaxed JSON" that openclaw skills ship with. Falls back to a
+// bins-only regex if the block can't be parsed, so we never regress the old behavior.
+function parseSkillRequirements(frontmatter: string): SkillRequirements {
+  const empty: SkillRequirements = { bins: [], anyBins: [], env: [], config: [], os: [] };
+  const asStringArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
+  const block = extractMetadataBlock(frontmatter);
+  if (block) {
+    // Strip trailing commas (`,` before `}` or `]`) so JSON.parse accepts the block.
+    const relaxed = block.replace(/,(\s*[}\]])/g, "$1");
+    try {
+      const meta = JSON.parse(relaxed);
+      const oc = meta?.openclaw ?? meta?.clawdbot ?? {};
+      const req = oc?.requires ?? {};
+      return {
+        bins: asStringArray(req.bins),
+        anyBins: asStringArray(req.anyBins),
+        env: asStringArray(req.env),
+        config: asStringArray(req.config),
+        os: asStringArray(oc.os),
+        primaryEnv: typeof oc.primaryEnv === "string" ? oc.primaryEnv : undefined,
+      };
+    } catch {
+      // fall through to regex fallback
+    }
+  }
+
+  // Fallback: pull just the `bins` array (legacy behavior) when the block is missing
+  // or unparseable.
+  const match = frontmatter.match(/"requires"\s*:\s*\{[^}]*?"bins"\s*:\s*\[([^\]]*)\]/);
+  if (!match) return empty;
+  return {
+    ...empty,
+    bins: match[1]
+      .split(",")
+      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean),
+  };
+}
+
+// Resolve a dotted config path (e.g. "channels.discord.token") to its value, mirroring
+// openclaw's `resolveConfigPath`.
+function resolveConfigPath(config: any, dotted: string): unknown {
+  const parts = dotted.split(".").filter(Boolean);
+  let current: any = config;
+  for (const part of parts) {
+    if (typeof current !== "object" || current === null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+// Truthiness check matching openclaw's `isTruthy`: empty/whitespace strings and 0 are
+// falsy; any non-empty object/array is truthy.
+function isConfigValueTruthy(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return value.trim().length > 0;
+  return true;
+}
+
+// Skills that ship in the OpenClaw package but are intentionally not surfaced in
+// MicroClaw because they cannot work on Windows (macOS-only tooling) or are otherwise
+// unusable here. These directories may still exist on disk, so we filter them out of
+// the Skills list by name. Keep in sync with deployer/skill_catalog.py removals.
+const EXCLUDED_SKILL_IDS = new Set<string>([
+  "apple-notes", // macOS Apple Notes
+  "apple-reminders", // macOS Apple Reminders
+  "imsg", // macOS Messages / iMessage
+  "peekaboo", // macOS-only UI automation
+  "model-usage", // restricted upstream to macOS / CodexBar
+  "tmux", // upstream supports macOS and Linux only
+  "desktop-beautify", // catalog-only, no skill dir; requires Notezilla
+]);
+
 function registerIpcHandlers(): void {
   // --- Gateway ---
   ipcMain.handle("gateway:get-port", () => gatewayPort);
@@ -2423,11 +2576,14 @@ function registerIpcHandlers(): void {
   });
 
   // --- Skills ---
-  ipcMain.handle("skills:list", () => {
+  const buildSkillsPayload = (forceRebuildPathIndex: boolean) => {
     const homeDir = app.getPath("home");
     const builtinDir = resolveBuiltinSkillsDir();
     const customDir = path.join(homeDir, ".agents", "skills");
     const managedDir = path.join(homeDir, ".openclaw", "skills");
+
+    // Build (or reuse) the PATH executable index used to resolve skill dependencies.
+    const pathIndex = getPathExecutableIndex(forceRebuildPathIndex);
 
     // Load certification catalog (builtin)
     let catalog: Record<string, { description: string; platform: string[] }> = {};
@@ -2459,16 +2615,68 @@ function registerIpcHandlers(): void {
       if (!fs.existsSync(dir)) return results;
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
+        if (EXCLUDED_SKILL_IDS.has(entry.name)) continue;
         const skillMd = path.join(dir, entry.name, "SKILL.md");
         let name = entry.name;
         let description = "";
+        let requirements: SkillRequirements = {
+          bins: [],
+          anyBins: [],
+          env: [],
+          config: [],
+          os: [],
+        };
         if (fs.existsSync(skillMd)) {
-          const head = fs.readFileSync(skillMd, "utf-8").slice(0, 1000);
-          const nameMatch = head.match(/^name:\s*(.+)/m);
-          const descMatch = head.match(/^description:\s*(.+)/m);
+          const content = fs.readFileSync(skillMd, "utf-8");
+          // Extract the YAML frontmatter block (between the first two `---` fences) so
+          // the full multi-line `metadata` object is available to the parser. Fall back
+          // to the whole file if the closing fence isn't found.
+          let frontmatter = content;
+          const fenceStart = content.indexOf("---");
+          if (fenceStart >= 0) {
+            const fenceEnd = content.indexOf("\n---", fenceStart + 3);
+            if (fenceEnd >= 0) frontmatter = content.slice(fenceStart, fenceEnd);
+          }
+          const nameMatch = frontmatter.match(/^name:\s*(.+)/m);
+          const descMatch = frontmatter.match(/^description:\s*(.+)/m);
           if (nameMatch) name = nameMatch[1].trim();
           if (descMatch) description = descMatch[1].replace(/^["']|["']$/g, "").trim();
+          requirements = parseSkillRequirements(frontmatter);
         }
+
+        // Evaluate every requirement type the runtime checks (see openclaw's
+        // `evaluateRuntimeRequires`). A skill is only usable when ALL are satisfied;
+        // checking `bins` alone (the old behavior) marked skills gated by env vars,
+        // channel config, or alternative CLIs as available even though the gateway
+        // silently drops them. See #83.
+        const skillCfg: any = (entries as Record<string, any>)[entry.name] ?? {};
+        const hasBin = (b: string): boolean => pathIndex.has(b.toLowerCase());
+        const hasEnv = (envName: string): boolean =>
+          Boolean(
+            process.env[envName] ||
+            skillCfg?.env?.[envName] ||
+            (skillCfg?.apiKey && requirements.primaryEnv === envName),
+          );
+
+        const missingBins = requirements.bins.filter((b) => !hasBin(b));
+        // `anyBins` is unmet only when NONE of the alternatives are present.
+        const missingAnyBins =
+          requirements.anyBins.length > 0 && !requirements.anyBins.some((b) => hasBin(b))
+            ? requirements.anyBins
+            : [];
+        const missingEnv = requirements.env.filter((e) => !hasEnv(e));
+        const missingConfig = requirements.config.filter(
+          (c) => !isConfigValueTruthy(resolveConfigPath(config, c)),
+        );
+        const osMismatch =
+          requirements.os.length > 0 && !requirements.os.includes(process.platform);
+
+        const eligible =
+          missingBins.length === 0 &&
+          missingAnyBins.length === 0 &&
+          missingEnv.length === 0 &&
+          missingConfig.length === 0 &&
+          !osMismatch;
 
         let enabled = true;
 
@@ -2478,6 +2686,10 @@ function registerIpcHandlers(): void {
           if (!description && managedCatalog[entry.name]?.description) {
             description = managedCatalog[entry.name].description;
           }
+        } else if (source === "custom") {
+          // Custom (user-authored) skills default to enabled; persisted per-skill via
+          // skills.entries so the user can toggle them on/off from the UI.
+          enabled = entries[entry.name]?.enabled ?? true;
         } else {
           if (source === "builtin" && allowBundled && allowBundled.length > 0) {
             enabled = allowBundled.includes(entry.name);
@@ -2492,6 +2704,14 @@ function registerIpcHandlers(): void {
           platform: catalog[entry.name]?.platform ?? managedCatalog[entry.name]?.platform ?? [],
           enabled,
           installed: true,
+          requiredBins: requirements.bins,
+          missingBins,
+          missingAnyBins,
+          missingEnv,
+          missingConfig,
+          osRequired: requirements.os,
+          osMismatch,
+          eligible,
         });
       }
       return results;
@@ -2505,8 +2725,26 @@ function registerIpcHandlers(): void {
     // entries (defined in managed_skill_catalog.json but not present on disk) are
     // intentionally omitted because there is no in-app install action for them. See #58.
 
-    return { builtin, custom, managed: managedOnDisk };
-  });
+    // Skills the user authors (e.g. via skill-creator) land in the managed skills
+    // directory but are NOT part of the shipped managed catalog. Reclassify those as
+    // custom so they appear under "Custom Skills" instead of the built-in workspace
+    // skills. Catalog workspace skills (officecli, excel-xlsx, …) stay managed.
+    const managedWorkspace = managedOnDisk.filter((s) => managedCatalog[s.id] !== undefined);
+    const userAuthored = managedOnDisk
+      .filter((s) => managedCatalog[s.id] === undefined)
+      // Reclassified from managed → custom: recompute `enabled` with custom
+      // semantics (default on) rather than the managed default (off when not
+      // windows-adapted in the catalog).
+      .map((s) => ({ ...s, source: "custom" as const, enabled: entries[s.id]?.enabled ?? true }));
+
+    return { builtin, custom: [...custom, ...userAuthored], managed: managedWorkspace };
+  };
+
+  ipcMain.handle("skills:list", () => buildSkillsPayload(false));
+
+  // Rebuild the PATH executable index (picks up CLIs the user installed/removed while
+  // the app was running) and recompute skill eligibility. Cheap — only re-indexes PATH.
+  ipcMain.handle("skills:refresh", () => buildSkillsPayload(true));
 
   ipcMain.handle("skills:update-allowlist", (_event, allowBundled: string[]) => {
     const config = readConfig() || {};
@@ -2566,6 +2804,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     await gwClient.abortChat(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:clear-history", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.clearAllHistory();
   });
 
   // Report as "not connected" while the post-spawn restart is pending.

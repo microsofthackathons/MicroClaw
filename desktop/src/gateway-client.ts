@@ -206,6 +206,41 @@ export class GatewayClient {
     return this.request("chat.abort", { sessionKey });
   }
 
+  /**
+   * Clear ALL persisted chat history on the gateway.
+   *
+   * Enumerates every session via `sessions.list`, then wipes each one:
+   *   - non-main sessions are removed entirely via `sessions.delete`
+   *     (which also archives/clears their transcript), and
+   *   - the main session (which the gateway refuses to delete) is cleared
+   *     via `sessions.reset`, giving it a fresh, empty transcript.
+   *
+   * Individual failures are swallowed so one bad session can't abort the
+   * whole sweep. Returns the number of sessions successfully cleared.
+   */
+  async clearAllHistory(): Promise<{ cleared: number }> {
+    const list = await this.request<{ sessions?: Array<{ key?: string }> }>("sessions.list", {});
+    const keys = (list?.sessions ?? [])
+      .map((s) => (typeof s?.key === "string" ? s.key : ""))
+      .filter(Boolean);
+    let cleared = 0;
+    for (const key of keys) {
+      try {
+        await this.request("sessions.delete", { key, deleteTranscript: true });
+        cleared++;
+      } catch {
+        // The main session can't be deleted — reset clears its transcript.
+        try {
+          await this.request("sessions.reset", { key, reason: "reset" });
+          cleared++;
+        } catch {
+          // Ignore individual session failures and continue the sweep.
+        }
+      }
+    }
+    return { cleared };
+  }
+
   /** List all cron jobs. */
   listCronJobs(): Promise<{ jobs?: unknown[] }> {
     return this.request("cron.list");

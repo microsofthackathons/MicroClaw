@@ -460,179 +460,51 @@
           <span class="sub-label" style="margin: 0"
             >{{ t("settings.builtinSkills") }} ({{ builtinSkills.length }})</span
           >
-          <span class="skill-count-label"
-            >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
-          >
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span class="skill-count-label"
+              >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
+            >
+            <el-button size="small" :loading="skillsRefreshing" @click="refreshSkills">{{
+              t("settings.refreshSkills")
+            }}</el-button>
+          </div>
         </div>
 
-        <!-- Windows Built-in -->
-        <div v-if="windowsSkills.length" class="sub-label" style="font-size: 12px; margin-top: 4px">
-          {{ t("settings.windowsAdapt") }} ({{ windowsSkills.length }})
-        </div>
-        <div v-if="windowsSkills.length" class="card-group">
+        <div v-if="builtinSkills.length" class="card-group">
           <div
-            v-for="(skill, idx) in windowsSkills"
+            v-for="(skill, idx) in builtinSkills"
             :key="skill.id"
             class="card-row"
-            :class="{ 'no-border': idx === windowsSkills.length - 1 }"
+            :class="{ 'no-border': idx === builtinSkills.length - 1 }"
           >
             <div class="skill-info">
               <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
                 <span class="row-label">{{ skill.name }}</span>
-                <span
-                  v-for="p in skill.platform"
-                  :key="p"
-                  class="badge platform-tag"
-                  :class="'platform-' + p"
-                  >{{ platformLabel(p) }}</span
-                >
+                <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
+                  <span class="badge badge-warn">{{ t("settings.skillUnavailable") }}</span>
+                </el-tooltip>
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-switch
-              :model-value="skill.enabled"
-              @change="(val: boolean) => toggleSkill(skill.id, val)"
-            />
+            <el-tooltip :disabled="skill.eligible" :content="missingTooltip(skill)" placement="top">
+              <span class="switch-wrap">
+                <el-switch
+                  :model-value="skill.enabled && skill.eligible"
+                  :disabled="!skill.eligible"
+                  @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
+                />
+              </span>
+            </el-tooltip>
           </div>
         </div>
 
-        <!-- Other Platform Built-in -->
-        <div v-if="otherPlatformSkills.length" class="sub-label" style="font-size: 12px">
-          {{ t("settings.otherPlatforms") }} ({{ otherPlatformSkills.length }})
-        </div>
-        <div v-if="otherPlatformSkills.length" class="card-group">
-          <div
-            v-for="(skill, idx) in otherPlatformSkills"
-            :key="skill.id"
-            class="card-row"
-            :class="{ 'no-border': idx === otherPlatformSkills.length - 1 }"
-          >
-            <div class="skill-info">
-              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-                <span class="row-label">{{ skill.name }}</span>
-                <span
-                  v-for="p in skill.platform"
-                  :key="p"
-                  class="badge platform-tag"
-                  :class="'platform-' + p"
-                  >{{ platformLabel(p) }}</span
-                >
-              </div>
-              <span class="skill-desc">{{ skill.description }}</span>
-            </div>
-            <el-switch
-              :model-value="skill.enabled"
-              @change="(val: boolean) => toggleSkill(skill.id, val)"
-            />
-          </div>
-        </div>
-
-        <div v-if="!builtinSkills.length" class="card-group">
+        <div v-else class="card-group">
           <div class="card-row no-border placeholder-row">
             <span class="placeholder-text">{{ t("settings.noBuiltinSkills") }}</span>
           </div>
         </div>
 
-        <!-- ══ Managed / Workspace Skills ══ -->
-        <div
-          style="
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 20px;
-            margin-bottom: 8px;
-          "
-        >
-          <span class="sub-label" style="margin: 0"
-            >{{ t("settings.managedSkills") }} ({{ managedSkills.length }})</span
-          >
-          <span class="skill-count-label"
-            >{{ managedEnabledCount }}/{{ managedSkills.length }}
-            {{ t("settings.enabledCount") }}</span
-          >
-        </div>
-
-        <!-- Windows Managed -->
-        <div
-          v-if="windowsManagedSkills.length"
-          class="sub-label"
-          style="font-size: 12px; margin-top: 4px"
-        >
-          {{ t("settings.windowsAdapt") }} ({{ windowsManagedSkills.length }})
-        </div>
-        <div v-if="windowsManagedSkills.length" class="card-group">
-          <div
-            v-for="(skill, idx) in windowsManagedSkills"
-            :key="skill.id"
-            class="card-row"
-            :class="{ 'no-border': idx === windowsManagedSkills.length - 1 }"
-          >
-            <div class="skill-info">
-              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-                <span class="row-label">{{ skill.name }}</span>
-                <span
-                  v-for="p in skill.platform"
-                  :key="p"
-                  class="badge platform-tag"
-                  :class="'platform-' + p"
-                  >{{ platformLabel(p) }}</span
-                >
-                <span v-if="!skill.installed" class="badge badge-gray">{{
-                  t("settings.notInstalled")
-                }}</span>
-              </div>
-              <span class="skill-desc">{{ skill.description }}</span>
-            </div>
-            <el-switch
-              :model-value="skill.enabled"
-              :disabled="!skill.installed"
-              @change="(val: boolean) => toggleManagedSkill(skill.id, val)"
-            />
-          </div>
-        </div>
-
-        <!-- Other Platform Managed -->
-        <div v-if="otherPlatformManagedSkills.length" class="sub-label" style="font-size: 12px">
-          {{ t("settings.otherPlatforms") }} ({{ otherPlatformManagedSkills.length }})
-        </div>
-        <div v-if="otherPlatformManagedSkills.length" class="card-group">
-          <div
-            v-for="(skill, idx) in otherPlatformManagedSkills"
-            :key="skill.id"
-            class="card-row"
-            :class="{ 'no-border': idx === otherPlatformManagedSkills.length - 1 }"
-          >
-            <div class="skill-info">
-              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-                <span class="row-label">{{ skill.name }}</span>
-                <span
-                  v-for="p in skill.platform"
-                  :key="p"
-                  class="badge platform-tag"
-                  :class="'platform-' + p"
-                  >{{ platformLabel(p) }}</span
-                >
-                <span v-if="!skill.installed" class="badge badge-gray">{{
-                  t("settings.notInstalled")
-                }}</span>
-              </div>
-              <span class="skill-desc">{{ skill.description }}</span>
-            </div>
-            <el-switch
-              :model-value="skill.enabled"
-              :disabled="!skill.installed"
-              @change="(val: boolean) => toggleManagedSkill(skill.id, val)"
-            />
-          </div>
-        </div>
-
-        <div v-if="!managedSkills.length" class="card-group">
-          <div class="card-row no-border placeholder-row">
-            <span class="placeholder-text">{{ t("settings.noManagedSkills") }}</span>
-          </div>
-        </div>
-
-        <!-- ══ Custom Skills (unchanged) ══ -->
+        <!-- ══ Custom Skills ══ -->
         <div class="sub-label">Custom Skills ({{ customSkills.length }})</div>
         <div class="card-group">
           <template v-if="customSkills.length">
@@ -643,10 +515,31 @@
               :class="{ 'no-border': idx === customSkills.length - 1 }"
             >
               <div class="skill-info">
-                <span class="row-label">{{ skill.name }}</span>
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
+                  <span class="row-label">{{ skill.name }}</span>
+                  <el-tooltip
+                    v-if="!skill.eligible"
+                    :content="missingTooltip(skill)"
+                    placement="top"
+                  >
+                    <span class="badge badge-warn">{{ t("settings.skillUnavailable") }}</span>
+                  </el-tooltip>
+                </div>
                 <span class="skill-desc">{{ skill.description }}</span>
               </div>
-              <span class="badge badge-blue">Custom</span>
+              <el-tooltip
+                :disabled="skill.eligible"
+                :content="missingTooltip(skill)"
+                placement="top"
+              >
+                <span class="switch-wrap">
+                  <el-switch
+                    :model-value="skill.enabled && skill.eligible"
+                    :disabled="!skill.eligible"
+                    @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
+                  />
+                </span>
+              </el-tooltip>
             </div>
           </template>
           <div v-else class="card-row no-border placeholder-row">
@@ -1603,42 +1496,76 @@ const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const builtinSkills = ref<SkillEntry[]>([]);
 const customSkills = ref<SkillEntry[]>([]);
-const managedSkills = ref<SkillEntry[]>([]);
+const skillsRefreshing = ref(false);
 
-const windowsSkills = computed(() =>
-  builtinSkills.value
-    .filter((s) => s.platform?.includes("windows"))
-    .sort((a, b) => a.name.localeCompare(b.name)),
+const enabledCount = computed(
+  () => builtinSkills.value.filter((s) => s.enabled && s.eligible).length,
 );
-const otherPlatformSkills = computed(() =>
-  builtinSkills.value
-    .filter((s) => !s.platform?.includes("windows"))
-    .sort((a, b) => a.name.localeCompare(b.name)),
-);
-const enabledCount = computed(() => builtinSkills.value.filter((s) => s.enabled).length);
 
-const windowsManagedSkills = computed(() =>
-  managedSkills.value
-    .filter((s) => s.platform?.includes("windows"))
-    .sort((a, b) => a.name.localeCompare(b.name)),
-);
-const otherPlatformManagedSkills = computed(() =>
-  managedSkills.value
-    .filter((s) => !s.platform?.includes("windows"))
-    .sort((a, b) => a.name.localeCompare(b.name)),
-);
-const managedEnabledCount = computed(() => managedSkills.value.filter((s) => s.enabled).length);
+function missingTooltip(skill: SkillEntry): string {
+  const reasons: string[] = [];
+  if (skill.missingBins?.length) {
+    reasons.push(t("settings.skillMissingBins", { bins: skill.missingBins.join(", ") }));
+  }
+  if (skill.missingAnyBins?.length) {
+    reasons.push(t("settings.skillMissingAnyBins", { bins: skill.missingAnyBins.join(", ") }));
+  }
+  if (skill.missingEnv?.length) {
+    reasons.push(t("settings.skillMissingEnv", { env: skill.missingEnv.join(", ") }));
+  }
+  if (skill.missingConfig?.length) {
+    reasons.push(t("settings.skillMissingConfig", { config: skill.missingConfig.join(", ") }));
+  }
+  if (skill.osMismatch) {
+    reasons.push(t("settings.skillOsMismatch", { os: (skill.osRequired ?? []).join(", ") }));
+  }
+  if (reasons.length === 0) return t("settings.skillUnavailable");
+  return `${t("settings.skillUnavailablePrefix")} ${reasons.join("; ")}`;
+}
 
-function platformLabel(p: string): string {
-  const labels: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
-  return labels[p] ?? p;
+async function loadSkills(refresh = false): Promise<void> {
+  const skills = refresh
+    ? await window.openclaw.skills.refresh()
+    : await window.openclaw.skills.list();
+  // Built-in and managed workspace skills are presented together as a single
+  // "Built-in Skills" list (we are Windows-only, so no platform grouping). Each
+  // entry keeps its `source` so toggles route to the correct backend handler.
+  builtinSkills.value = [...skills.builtin, ...(skills.managed ?? [])].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  customSkills.value = skills.custom;
+}
+
+async function refreshSkills(): Promise<void> {
+  skillsRefreshing.value = true;
+  try {
+    await loadSkills(true);
+    ElMessage.success(t("settings.skillsRefreshed"));
+  } catch (err: any) {
+    ElMessage.error(t("settings.skillsRefreshFailed", { error: err?.message || err }));
+  } finally {
+    skillsRefreshing.value = false;
+  }
+}
+
+async function toggleBuiltinSkill(skill: SkillEntry, enabled: boolean) {
+  // Managed workspace skills persist via skills.entries; bundled skills via the
+  // allowBundled allowlist. Route to the correct handler based on the skill source.
+  if (skill.source === "managed") {
+    await toggleManagedSkill(skill.id, enabled);
+  } else {
+    await toggleSkill(skill.id, enabled);
+  }
 }
 
 async function toggleSkill(skillId: string, enabled: boolean) {
   const skill = builtinSkills.value.find((s) => s.id === skillId);
   if (skill) skill.enabled = enabled;
 
-  const allowBundled = builtinSkills.value.filter((s) => s.enabled).map((s) => s.id);
+  // allowBundled must only list bundled built-in skills, never managed ones.
+  const allowBundled = builtinSkills.value
+    .filter((s) => s.source === "builtin" && s.enabled)
+    .map((s) => s.id);
 
   try {
     await window.openclaw.skills.updateAllowlist(allowBundled);
@@ -1650,7 +1577,7 @@ async function toggleSkill(skillId: string, enabled: boolean) {
 }
 
 async function toggleManagedSkill(skillId: string, enabled: boolean) {
-  const skill = managedSkills.value.find((s) => s.id === skillId);
+  const skill = builtinSkills.value.find((s) => s.id === skillId);
   if (skill) skill.enabled = enabled;
 
   try {
@@ -1659,6 +1586,20 @@ async function toggleManagedSkill(skillId: string, enabled: boolean) {
   } catch (err: any) {
     if (skill) skill.enabled = !enabled;
     ElMessage.error(t("settings.managedSkillConfigFailed", { error: err.message || err }));
+  }
+}
+
+async function toggleCustomSkill(skillId: string, enabled: boolean) {
+  const skill = customSkills.value.find((s) => s.id === skillId);
+  if (skill) skill.enabled = enabled;
+
+  // Custom skills persist their on/off state via the same per-skill entries map.
+  try {
+    await window.openclaw.skills.updateManagedEntries({ [skillId]: { enabled } });
+    ElMessage.success(t("settings.skillConfigUpdated"));
+  } catch (err: any) {
+    if (skill) skill.enabled = !enabled;
+    ElMessage.error(t("settings.skillConfigFailed", { error: err.message || err }));
   }
 }
 
@@ -1908,10 +1849,7 @@ onMounted(async () => {
 
   // Load skills from disk
   try {
-    const skills = await window.openclaw.skills.list();
-    builtinSkills.value = skills.builtin;
-    customSkills.value = skills.custom;
-    managedSkills.value = skills.managed ?? [];
+    await loadSkills(false);
   } catch {
     // Skills listing not available
   }
@@ -2281,10 +2219,14 @@ async function clearChatHistory() {
     await ElMessageBox.confirm(t("settings.clearHistoryConfirm"), t("settings.confirm"), {
       type: "warning",
     });
-    chatStore.newSession();
-    ElMessage.success(t("settings.chatHistoryCleared"));
   } catch {
-    // Cancelled
+    return; // Cancelled
+  }
+  try {
+    await chatStore.clearAllHistory();
+    ElMessage.success(t("settings.chatHistoryCleared"));
+  } catch (err: any) {
+    ElMessage.error(t("settings.chatHistoryClearFailed", { error: err?.message ?? String(err) }));
   }
 }
 </script>
@@ -2765,33 +2707,21 @@ async function clearChatHistory() {
   border: 1px solid rgba(255, 149, 0, 0.25);
 }
 
-.platform-tag {
-  font-size: 11px;
-  padding: 1px 8px;
-}
-
-.platform-windows {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  border: 1px solid var(--accent-light);
-}
-
-.platform-macos {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  border: 1px solid var(--accent-light);
-}
-
-.platform-linux {
-  background: rgba(255, 149, 0, 0.1);
-  color: #ff9500;
-  border: 1px solid rgba(255, 149, 0, 0.22);
-}
-
 .badge-gray {
   background: rgba(142, 142, 147, 0.12);
   color: #8e8e93;
   border: 1px solid rgba(142, 142, 147, 0.25);
+}
+
+.badge-warn {
+  background: rgba(255, 149, 0, 0.12);
+  color: #b26a00;
+  border: 1px solid rgba(255, 149, 0, 0.3);
+}
+
+.switch-wrap {
+  display: inline-flex;
+  align-items: center;
 }
 
 .skill-count-label {

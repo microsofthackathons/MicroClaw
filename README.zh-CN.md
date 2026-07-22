@@ -27,7 +27,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 - **唯一需要用户自备的是 LLM**：用户提供模型地址、API Key 和模型名，其余栈内组件由 MicroClaw 安装并连接起来
 - **首启路径很短**：如果还没有模型配置，应用只会引导填写模型凭据；如果 `.env` 里已有 `MODEL_*`，MicroClaw 还可以自动配置
 - **首屏自带推荐任务**：首页不是空白输入框，而是预置了任务卡片和提示词建议，安装后就能直接开始做事
-- **能力预装到位**：52 个内置技能加 7 个托管技能，作为默认 Windows 体验的一部分直接可用
+- **能力预装到位**：52 个内置技能加 6 个托管技能，作为默认 Windows 体验的一部分直接可用
 
 ### 内建信任
 
@@ -131,13 +131,13 @@ npm run dev
 |---|---|
 | 生产力 | obsidian, notion, trello, slack, discord, things-mac |
 | AI / 编码 | coding-agent, gh-issues, oracle, skill-creator |
-| 通信 | imsg, bluebubbles, wacli, voice-call |
+| 通信 | bluebubbles, wacli, voice-call |
 | 智能家居 | openhue, blucli, sonoscli, eightctl |
 | 媒体 | spotify-player, songsee, video-frames |
-| 工具 | weather, healthcheck, session-logs, model-usage, tmux |
+| 工具 | weather, healthcheck, session-logs |
 | 语音 | openai-whisper, sherpa-onnx-tts, sag |
 
-### 托管技能（7 个）
+### 托管技能（6 个）
 
 安装到 `~/.openclaw/skills/`，包含本项目定制的高级技能：
 
@@ -148,7 +148,6 @@ npm run dev
 | word-docx | Word 文档创建与编辑 |
 | officecli | Office 文档 CLI 工具（创建/编辑 .docx/.xlsx/.pptx） |
 | desktop-organizer | 扫描并整理 Windows 桌面文件 |
-| desktop-beautify | 整理桌面文件并创建桌面便签 |
 | security-practice | AI Agent 行为安全规范（红线/黄线规则、安装审计协议） |
 
 ---
@@ -208,7 +207,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ├── deployer/
 │   ├── config.py                # 配置管理（.env + YAML）
 │   ├── logger.py                # 线程安全日志 + 内存环形缓冲
-│   ├── skill_catalog.py         # 52 内置 + 7 托管技能目录
+│   ├── skill_catalog.py         # 52 内置 + 6 托管技能目录
 │   ├── skill_manager_ui.py      # 技能选择器对话框
 │   └── windows_setup.py         # Windows 安装逻辑（Node/npm/OpenClaw）
 ├── desktop/                     # Electron 桌面应用
