@@ -15,6 +15,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
+    "lint:weixin": "node scripts/lint-weixin.mjs",
     "lint:sarif": "eslint . --format @microsoft/eslint-formatter-sarif --output-file eslint-results.sarif",
     "prepare-resources": "node scripts/prepare-resources.mjs",
     "postinstall": "cd renderer && npm install"

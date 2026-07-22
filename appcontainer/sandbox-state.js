@@ -78,13 +78,9 @@ var _safePaths = (function () {
   if (programFiles) {
     dirs.push(path.resolve(programFiles, "nodejs").toLowerCase() + path.sep);
   }
-  var localAppData =
-    process.env.LOCALAPPDATA ||
-    (home ? path.join(home, "AppData", "Local") : "");
+  var localAppData = process.env.LOCALAPPDATA || (home ? path.join(home, "AppData", "Local") : "");
   if (localAppData) {
-    dirs.push(
-      path.resolve(localAppData, "Programs", "nodejs").toLowerCase() + path.sep
-    );
+    dirs.push(path.resolve(localAppData, "Programs", "nodejs").toLowerCase() + path.sep);
   }
   // Allow runtime override (mirrors OPENCLAW_NODE_DIR used by the deployer).
   var overrideDir = process.env.OPENCLAW_NODE_DIR || "";

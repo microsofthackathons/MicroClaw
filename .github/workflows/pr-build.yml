@@ -28,8 +28,8 @@ permissions:
 
 jobs:
   # ── ESLint + Prettier + Vitest on JS/TS sources ─────────────────
-  # Runs lint, prettier check, and Vitest across all four JS/TS packages
-  # (desktop, desktop/renderer, desktop/studio-backend, plugins/openclaw-weixin).
+  # Runs lint, prettier check, and Vitest across the app packages, and lints
+  # the source mirrored from the vendored Weixin release.
   lint-js:
     name: Lint, Format & Test (JS/TS)
     runs-on: [self-hosted, Windows, X64]
@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend', 'plugins/openclaw-weixin') {
+          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend') {
             Write-Host "── npm ci in $d ──"
             Push-Location $d
             try {

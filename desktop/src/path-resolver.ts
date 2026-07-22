@@ -115,14 +115,7 @@ export function resolveOpenClawEntry(): string {
       ? path.join(programFiles, "nodejs", "node_modules", "openclaw", "dist", "index.js")
       : "",
     localAppData
-      ? path.join(
-          localAppData,
-          "Programs",
-          "nodejs",
-          "node_modules",
-          "openclaw",
-          "openclaw.mjs",
-        )
+      ? path.join(localAppData, "Programs", "nodejs", "node_modules", "openclaw", "openclaw.mjs")
       : "",
     localAppData
       ? path.join(
