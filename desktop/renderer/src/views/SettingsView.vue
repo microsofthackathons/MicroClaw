@@ -1044,10 +1044,7 @@
         </div>
       </div>
 
-      <ModelSetupDialog
-        v-model="showProviderSetup"
-        @configured="handleProviderConfigured"
-      />
+      <ModelSetupDialog v-model="showProviderSetup" @configured="handleProviderConfigured" />
     </div>
   </div>
 </template>
@@ -1062,6 +1059,7 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import { buildManagedProviderConfigs } from "@/utils/model-provider-config";
 
 const route = useRoute();
 const gateway = useGatewayStore();
@@ -1896,28 +1894,25 @@ async function persistModelsConfig() {
   }
 
   const config = (await window.openclaw.config.read()) || {};
-  const providerConfig: Record<string, any> = {};
+  const providerConfig = buildManagedProviderConfigs(
+    config.models?.providers,
+    customModels.value.map((model) => {
+      const apiFormat = model.apiFormat || "openai-chat";
+      const reasoningEffort = normalizeReasoningEffort(model.reasoningEffort);
+      return {
+        providerKey: buildProviderKey(model.providerKey || model.id),
+        baseUrl: model.baseUrl || "",
+        apiKey: model.apiKey || "",
+        api: resolveApiValue(apiFormat),
+        id: model.id,
+        name: model.name,
+        reasoning: apiFormat === "openai-responses" || reasoningEffort !== "off",
+        input: apiFormat !== "anthropic" ? ["text", "image"] : undefined,
+      };
+    }),
+  );
   const existingProviderKeys = new Set(Object.keys(config.models?.providers ?? {}));
   const existingModelDefaults = config.agents?.defaults?.models ?? {};
-
-  for (const m of customModels.value) {
-    const providerKey = buildProviderKey(m.providerKey || m.id);
-    const reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
-    const reasoningEnabled = m.apiFormat === "openai-responses" || reasoningEffort !== "off";
-    providerConfig[providerKey] = {
-      ...(m.baseUrl ? { baseUrl: m.baseUrl } : {}),
-      apiKey: m.apiKey || "",
-      api: resolveApiValue(m.apiFormat || "openai-chat"),
-      models: [
-        {
-          id: m.id,
-          name: m.name,
-          ...(reasoningEnabled ? { reasoning: true } : {}),
-          ...(m.apiFormat !== "anthropic" ? { input: ["text", "image"] } : {}),
-        },
-      ],
-    };
-  }
 
   const managedProviderKeys = new Set<string>([
     ...existingProviderKeys,
@@ -2057,8 +2052,19 @@ async function saveEditModel() {
     ElMessage.warning(t("settings.modelNameExists"));
     return;
   }
+  const providerKey = customModels.value[idx].providerKey;
+  for (let modelIndex = 0; modelIndex < customModels.value.length; modelIndex++) {
+    const model = customModels.value[modelIndex];
+    if (modelIndex === idx || model.providerKey !== providerKey) continue;
+    customModels.value[modelIndex] = {
+      ...model,
+      baseUrl,
+      apiKey: editModel.apiKey.trim(),
+      apiFormat: editModel.apiFormat,
+    };
+  }
   customModels.value[idx] = {
-    providerKey: customModels.value[idx].providerKey,
+    providerKey,
     id: name,
     name,
     baseUrl,

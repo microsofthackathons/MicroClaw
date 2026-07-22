@@ -1,7 +1,12 @@
 <template>
   <div v-if="modelValue" class="model-setup-overlay">
     <div class="model-setup-panel" role="dialog" aria-modal="true">
-      <button class="model-setup-close" type="button" :aria-label="t('common.close')" @click="close">
+      <button
+        class="model-setup-close"
+        type="button"
+        :aria-label="t('common.close')"
+        @click="close"
+      >
         <svg
           width="12"
           height="12"
@@ -36,7 +41,11 @@
               <img :src="family.logo" :alt="family.label" />
             </span>
             <span class="family-name">{{ family.label }}</span>
-            <span v-if="selectedFamilyId === family.id" class="family-selected-badge" aria-hidden="true">
+            <span
+              v-if="selectedFamilyId === family.id"
+              class="family-selected-badge"
+              aria-hidden="true"
+            >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                 <path
                   d="M3.25 8.25L6.5 11.5L12.75 5.25"
@@ -134,6 +143,7 @@ import { computed, ref, watch } from "vue";
 import { t } from "@/i18n";
 import qwenLogo from "@/assets/modelprovider/Qwen.png";
 import minimaxLogo from "@/assets/modelprovider/minimax.png";
+import { mergeProviderModelConfig } from "@/utils/model-provider-config";
 
 type ModelFamilyId = "qwen" | "minimax";
 type ApiFormat = "openai-chat";
@@ -159,10 +169,9 @@ const emit = defineEmits<{
 const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const MINIMAX_OPENAI_COMPATIBLE_BASE_URL = "https://api.minimaxi.com/v1";
 const MINIMAX_SIGNUP_URL_CODES = [
-  104, 116, 116, 112, 115, 58, 47, 47, 112, 108, 97, 116, 102, 111, 114, 109, 46, 109, 105,
-  110, 105, 109, 97, 120, 105, 46, 99, 111, 109, 47, 98, 121, 111, 107, 45, 116, 114,
-  105, 97, 108, 63, 115, 111, 117, 114, 99, 101, 61, 109, 105, 99, 114, 111, 99, 108,
-  97, 119,
+  104, 116, 116, 112, 115, 58, 47, 47, 112, 108, 97, 116, 102, 111, 114, 109, 46, 109, 105, 110,
+  105, 109, 97, 120, 105, 46, 99, 111, 109, 47, 98, 121, 111, 107, 45, 116, 114, 105, 97, 108, 63,
+  115, 111, 117, 114, 99, 101, 61, 109, 105, 99, 114, 111, 99, 108, 97, 119,
 ];
 
 const modelFamilies: ModelFamilyPreset[] = [
@@ -306,18 +315,15 @@ async function saveAndStart() {
     const modelName = trimmedModelName;
     const modelRef = `${family.providerKey}/${modelName}`;
     const existing = (await window.openclaw.config.read()) || {};
-    const providerEntry: Record<string, unknown> = {
-      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
-      apiKey: trimmedKey,
-      api: resolveApiValue(family.apiFormat),
-      models: [
-        {
-          id: modelName,
-          name: modelName,
-          input: ["text", "image"],
-        },
-      ],
-    };
+    const providerEntry = mergeProviderModelConfig(
+      existing.models?.providers?.[family.providerKey],
+      {
+        baseUrl: trimmedBaseUrl,
+        apiKey: trimmedKey,
+        api: resolveApiValue(family.apiFormat),
+        modelName,
+      },
+    );
 
     existing.models = {
       ...(existing.models ?? {}),
@@ -352,7 +358,6 @@ async function saveAndStart() {
     saving.value = false;
   }
 }
-
 </script>
 
 <style scoped>
@@ -385,10 +390,12 @@ async function saveAndStart() {
   --ux-danger: var(--smtc-status-danger-foreground);
   --ux-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
   --ux-flyout-border: #e7e8ec;
-  --ux-flyout-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(250, 250, 252, 0.9) 100%);
-  --ux-flyout-shadow:
-    0 24px 44px rgba(21, 24, 31, 0.16),
-    0 8px 18px rgba(21, 24, 31, 0.1);
+  --ux-flyout-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(250, 250, 252, 0.9) 100%
+  );
+  --ux-flyout-shadow: 0 24px 44px rgba(21, 24, 31, 0.16), 0 8px 18px rgba(21, 24, 31, 0.1);
   --ux-font-family: "Segoe UI", "Noto Sans SC", sans-serif;
   --ux-title-size: 28px;
   --ux-title-weight: 700;

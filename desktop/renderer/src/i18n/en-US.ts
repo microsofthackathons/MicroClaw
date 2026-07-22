@@ -453,7 +453,8 @@ export default {
 
   // ── ModelSetupDialog ──
   "modelSetup.title": "Set Up Model",
-  "modelSetup.selectDesc": "Choose a model provider and sign in on the provider page to claim free credits.",
+  "modelSetup.selectDesc":
+    "Choose a model provider and sign in on the provider page to claim free credits.",
   "modelSetup.keyDesc": "Enter your model API key to start using the product with free credits.",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.haveApiKey": "I already have an API Key",
