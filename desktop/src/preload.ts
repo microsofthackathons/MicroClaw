@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Skills ---
   skills: {
     list: () => ipcRenderer.invoke("skills:list"),
+    refresh: () => ipcRenderer.invoke("skills:refresh"),
     updateAllowlist: (allowBundled: string[]) =>
       ipcRenderer.invoke("skills:update-allowlist", allowBundled),
     updateManagedEntries: (entries: Record<string, { enabled: boolean }>) =>

@@ -27,7 +27,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 - **Only the LLM is bring-your-own**: the user supplies the model endpoint, API key, and model name; the rest of the stack is installed and configured by MicroClaw
 - **Fast path on first launch**: if no provider is configured, the app opens a setup wizard that asks only for model credentials; if `MODEL_*` values already exist in `.env`, MicroClaw can auto-configure them
 - **Recommended tasks on day one**: the home screen ships with starter task cards and prompt suggestions so users can begin with concrete tasks instead of a blank chat box
-- **Preloaded capability surface**: 52 bundled skills plus 7 managed skills are available as part of the default Windows experience
+- **Preloaded capability surface**: 52 bundled skills plus 6 managed skills are available as part of the default Windows experience
 
 ### Built-In Trust
 
@@ -46,7 +46,7 @@ graph TB
 
     Desktop["Desktop App"]
     Gateway["OpenClaw Gateway"]
-    Skills["Skills<br/><i>52 built-in + 7 managed</i>"]
+    Skills["Skills<br/><i>52 built-in + 6 managed</i>"]
     Plugins["Plugins<br/><i>WeChat · Teams</i>"]
     PermMgr["Permission Manager"]
     Installer["Installer"]
@@ -216,13 +216,13 @@ Installed alongside OpenClaw and controlled via the `skills.allowBundled` allowl
 |---|---|
 | Productivity | obsidian, notion, trello, slack, discord, things-mac |
 | AI / Coding | coding-agent, gh-issues, oracle, skill-creator |
-| Communication | imsg, bluebubbles, wacli, voice-call |
+| Communication | bluebubbles, wacli, voice-call |
 | Smart Home | openhue, blucli, sonoscli, eightctl |
 | Media | spotify-player, songsee, video-frames |
-| Utilities | weather, healthcheck, session-logs, model-usage, tmux |
+| Utilities | weather, healthcheck, session-logs |
 | Voice | openai-whisper, sherpa-onnx-tts, sag |
 
-### Managed Skills (7)
+### Managed Skills (6)
 
 Installed to `~/.openclaw/skills/`, these are custom advanced skills included in this project:
 
@@ -233,7 +233,6 @@ Installed to `~/.openclaw/skills/`, these are custom advanced skills included in
 | word-docx | Create and edit Word documents |
 | officecli | Office document CLI tool (create/edit .docx/.xlsx/.pptx) |
 | desktop-organizer | Scan and organize files on the Windows desktop |
-| desktop-beautify | Tidy desktop files and create sticky notes |
 | security-practice | AI agent safety practices (red/yellow line rules, install audit protocol) |
 
 ---
@@ -293,7 +292,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── deployer/
 │   ├── config.py                # Configuration management (.env + YAML)
 │   ├── logger.py                # Thread-safe logger + in-memory ring buffer
-│   ├── skill_catalog.py         # 52 built-in + 7 managed skill catalog
+│   ├── skill_catalog.py         # 52 built-in + 6 managed skill catalog
 │   ├── skill_manager_ui.py      # Skill selector dialog
 │   └── windows_setup.py         # Windows install logic (Node/npm/OpenClaw)
 ├── desktop/                     # Electron desktop app

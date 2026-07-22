@@ -20,7 +20,7 @@ class SkillInfo(TypedDict):
     platform: list[str]  # e.g. ["windows"], ["macos"], ["windows", "macos", "linux"]
 
 
-# Complete catalog of the 23 bundled skills shipped with OpenClaw.
+# Complete catalog of the 17 bundled skills shipped with OpenClaw.
 # Keep alphabetically sorted by key.
 #
 # Hand-aligned reference table where every row's description and platform
@@ -30,27 +30,21 @@ class SkillInfo(TypedDict):
 # fmt: off
 SKILL_CATALOG: dict[str, SkillInfo] = {
     "1password":          {"description": "1Password 密码管理集成",               "platform": ["windows", "macos", "linux"]},
-    "apple-notes":        {"description": "Apple 备忘录管理",                     "platform": ["macos"]},
-    "apple-reminders":    {"description": "Apple 提醒事项管理",                   "platform": ["macos"]},
     "blucli":             {"description": "BluOS 音响控制",                       "platform": ["windows", "macos", "linux"]},
     "canvas":             {"description": "HTML 内容展示到 OpenClaw 节点",        "platform": ["windows", "macos", "linux"]},
     "coding-agent":       {"description": "委派编码任务给子代理",                 "platform": ["windows", "macos", "linux"]},
     "healthcheck":        {"description": "主机安全加固与风险配置",               "platform": ["windows", "macos", "linux"]},
-    "imsg":               {"description": "iMessage/SMS 收发",                    "platform": ["macos"]},
     "mcporter":           {"description": "MCP 服务器管理",                       "platform": ["windows", "macos", "linux"]},
-    "model-usage":        {"description": "模型用量与成本统计",                   "platform": ["windows", "macos", "linux"]},
     "nano-pdf":           {"description": "自然语言编辑 PDF",                     "platform": ["windows", "macos", "linux"]},
     "obsidian":           {"description": "Obsidian 笔记库管理",                  "platform": ["windows", "macos", "linux"]},
     "openai-whisper":     {"description": "本地语音转文字（离线）",               "platform": ["windows", "macos", "linux"]},
     "openhue":            {"description": "Philips Hue 灯光控制",                "platform": ["windows", "macos", "linux"]},
     "oracle":             {"description": "AI 代码分析最佳实践",                  "platform": ["windows", "macos", "linux"]},
-    "peekaboo":           {"description": "macOS UI 自动化与截图",               "platform": ["macos"]},
     "session-logs":       {"description": "搜索分析会话日志",                     "platform": ["windows", "macos", "linux"]},
     "sherpa-onnx-tts":    {"description": "本地文本转语音（离线）",               "platform": ["windows", "macos", "linux"]},
     "skill-creator":      {"description": "创建和编辑 AgentSkill",               "platform": ["windows", "macos", "linux"]},
     "songsee":            {"description": "音频频谱可视化",                       "platform": ["windows", "macos", "linux"]},
     "sonoscli":           {"description": "Sonos 音响控制",                       "platform": ["windows", "macos", "linux"]},
-    "tmux":               {"description": "tmux 会话远程控制",                    "platform": ["windows", "macos", "linux"]},
     "video-frames":       {"description": "视频帧提取（ffmpeg）",                 "platform": ["windows", "macos", "linux"]},
 }
 # fmt: on
@@ -65,7 +59,6 @@ MANAGED_SKILL_CATALOG: dict[str, SkillInfo] = {
     "powerpoint-pptx":            {"description": "Microsoft PowerPoint 演示文稿创建与编辑",                     "platform": ["windows"]},
     "security-practice":          {"description": "AI Agent 行为安全规范（红线/黄线规则、安装审计协议）",         "platform": ["windows"]},
     "word-docx":                  {"description": "Microsoft Word 文档创建与编辑",                               "platform": ["windows"]},
-    "desktop-beautify":           {"description": "整理桌面文件并通过 Notezilla 创建桌面便签",                   "platform": ["windows"]},
     "desktop-organizer":          {"description": "扫描 Windows 桌面文件与文件夹并分类整理",                     "platform": ["windows"]},
 }
 # fmt: on
