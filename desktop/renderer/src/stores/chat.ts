@@ -1226,6 +1226,41 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * Clear ALL chat history: wipe the persisted gateway transcripts, drop the
+   * renderer sidebar list + cached streaming state, and drop into a fresh,
+   * empty session. Throws if the gateway sweep fails so the caller can surface
+   * the error instead of showing a false success.
+   */
+  async function clearAllHistory() {
+    // 1. Wipe persisted transcripts on the gateway (source of truth).
+    await window.openclaw.chat.clearHistory();
+
+    // 2. Drop cached per-session streaming state.
+    sessionStateCache.clear();
+    lastMessageMap.value = {};
+    completedToolCallsMap.value = {};
+
+    // 3. Clear the sidebar session list.
+    const sessionStore = useSessionStore();
+    sessionStore.clearAll();
+
+    // 4. Drop into a fresh, empty session WITHOUT re-saving the stale one.
+    const newKey = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    pendingSessionAgentId.value = undefined;
+    sessionKey.value = newKey;
+    resolvedSessionKey.value = null;
+    messages.value = [];
+    streamText.value = "";
+    streamToolCalls.value = [];
+    streaming.value = false;
+    chatRunId.value = null;
+    streamStartedAt.value = null;
+    lastStreamEventAt.value = null;
+    lastError.value = null;
+    sessionStore.ensureSession(newKey);
+  }
+
   return {
     sessionKey,
     resolvedSessionKey,
@@ -1262,5 +1297,6 @@ export const useChatStore = defineStore("chat", () => {
     abort,
     newSession,
     deleteSession,
+    clearAllHistory,
   };
 });

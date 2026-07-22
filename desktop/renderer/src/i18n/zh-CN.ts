@@ -322,6 +322,7 @@ export default {
   "settings.clearHistoryConfirm": "确定要清除所有聊天记录吗？此操作不可撤销。",
   "settings.confirm": "确认",
   "settings.chatHistoryCleared": "聊天记录已清除",
+  "settings.chatHistoryClearFailed": "清除聊天记录失败：{error}",
   "settings.usageLoadFailed": "获取用量数据失败",
   // Menu items
   "settings.menu.general": "通用",

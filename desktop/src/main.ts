@@ -2612,6 +2612,11 @@ function registerIpcHandlers(): void {
     await gwClient.abortChat(params.sessionKey);
   });
 
+  ipcMain.handle("chat:clear-history", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.clearAllHistory();
+  });
+
   // Report as "not connected" while the post-spawn restart is pending.
   // Without this, the renderer's isConnected() poll on mount bypasses the
   // ws-connected gate and lets the user send messages before the gateway's

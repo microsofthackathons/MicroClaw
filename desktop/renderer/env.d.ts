@@ -111,6 +111,7 @@ interface OpenClawAPI {
     sendMessage(sessionKey: string, message: string): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     abort(sessionKey: string): Promise<void>;
+    clearHistory(): Promise<{ cleared: number }>;
     onEvent(callback: (payload: ChatEventPayload) => void): () => void;
     onToolEvent(
       callback: (payload: {
