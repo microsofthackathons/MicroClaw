@@ -61,7 +61,7 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
-import { useChatStore } from "./chat";
+import { applyChatDelta, useChatStore } from "./chat";
 // ChatEventPayload is declared globally in env.d.ts
 
 describe("useChatStore — stale stream recovery", () => {
@@ -70,6 +70,84 @@ describe("useChatStore — stale stream recovery", () => {
     setActivePinia(createPinia());
     vi.restoreAllMocks();
     mockLoadHistory.mockResolvedValue({ messages: [] });
+  });
+
+  describe("protocol-compatible chat deltas", () => {
+    beforeEach(() => {
+      Object.keys(storage).forEach((k) => delete storage[k]);
+      setActivePinia(createPinia());
+    });
+
+    function activeStore() {
+      const store = useChatStore();
+      store.streaming = true;
+      store.sessionKey = "main";
+      store.resolvedSessionKey = "agent:main:main";
+      return store;
+    }
+
+    it("appends protocol-v4 deltaText chunks", () => {
+      const store = activeStore();
+
+      store.handleChatEvent({
+        runId: "r1",
+        sessionKey: "agent:main:main",
+        state: "delta",
+        deltaText: "Hel",
+      });
+      store.handleChatEvent({
+        runId: "r1",
+        sessionKey: "agent:main:main",
+        state: "delta",
+        deltaText: "lo",
+      });
+
+      expect(store.streamText).toBe("Hello");
+    });
+
+    it("replaces accumulated text when protocol v4 requests replacement", () => {
+      const store = activeStore();
+      store.streamText = "stale";
+
+      store.handleChatEvent({
+        runId: "r1",
+        sessionKey: "agent:main:main",
+        state: "delta",
+        deltaText: "authoritative",
+        replace: true,
+      });
+
+      expect(store.streamText).toBe("authoritative");
+    });
+
+    it("keeps the protocol-v3 accumulated message fallback", () => {
+      const store = activeStore();
+      store.streamText = "Hel";
+
+      store.handleChatEvent({
+        runId: "r1",
+        sessionKey: "agent:main:main",
+        state: "delta",
+        message: { role: "assistant", content: "Hello" },
+      });
+
+      expect(store.streamText).toBe("Hello");
+    });
+
+    it("does not replace a longer legacy accumulation with an older message", () => {
+      expect(
+        applyChatDelta(
+          "Hello",
+          {
+            runId: "r1",
+            sessionKey: "agent:main:main",
+            state: "delta",
+            message: { role: "assistant", content: "Hel" },
+          },
+          "Hel",
+        ),
+      ).toBe("Hello");
+    });
   });
 
   it("initialises lastStreamEventAt as null", () => {

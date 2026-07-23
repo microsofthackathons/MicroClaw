@@ -24,7 +24,7 @@
     跳过 Git 安装
 
 .PARAMETER OpenClawTag
-    OpenClaw npm 安装 tag (默认: 2026.3.12)
+    OpenClaw npm 安装 tag (默认: 2026.7.1-1)
 
 .EXAMPLE
     .\setup-dependencies.ps1
@@ -37,7 +37,7 @@ param(
     [ValidateSet("npmmirror", "tencent")]
     [string]$Mirror = "npmmirror",
     [switch]$SkipGit,
-    [string]$OpenClawTag = "2026.3.12"
+    [string]$OpenClawTag = "2026.7.1-1"
 )
 
 Set-StrictMode -Version Latest
@@ -69,6 +69,20 @@ function Write-Ok    { param([string]$msg) Write-Host "  [OK] $msg" -ForegroundC
 function Write-Warn  { param([string]$msg) Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 function Write-Info  { param([string]$msg) Write-Host "  $msg" -ForegroundColor Gray }
 function Write-Err   { param([string]$msg) Write-Host "  [ERROR] $msg" -ForegroundColor Red }
+
+function Test-SupportedNodeVersion {
+    param([string]$Version)
+    try {
+        $parsed = [version]$Version.TrimStart("v")
+    } catch {
+        return $false
+    }
+    if ($parsed.Major -eq 22) { return $parsed -ge [version]"22.22.3" }
+    if ($parsed.Major -eq 23) { return $false }
+    if ($parsed.Major -eq 24) { return $parsed -ge [version]"24.15.0" }
+    if ($parsed.Major -ge 25) { return $parsed -ge [version]"25.9.0" }
+    return $false
+}
 
 # ── Helpers ──
 function Get-Arch {
@@ -228,7 +242,11 @@ if (Test-Path $nodeExe) {
     $ver = & $nodeExe --version 2>$null
     if ($ver) {
         Write-Info "Managed Node.js found: $ver"
-        $needInstall = $false
+        if (Test-SupportedNodeVersion $ver) {
+            $needInstall = $false
+        } else {
+            Write-Warn "Node.js $ver is unsupported by OpenClaw $OpenClawTag; upgrading"
+        }
     }
 }
 
@@ -237,7 +255,7 @@ if ($needInstall) {
     $arch = Get-Arch
 
     # Resolve latest Node.js 22.x version
-    $nodeVersion = "22.20.0"
+    $nodeVersion = "22.22.3"
     try {
         $versionIndex = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -TimeoutSec 15 -UseBasicParsing
         foreach ($entry in $versionIndex) {
@@ -359,12 +377,19 @@ if (-not $needOpenClaw) {
         $listOutput = & $npmCmd list -g openclaw --depth=0 2>$null
         if ($listOutput -match "openclaw@") {
             $ocVersion = ($listOutput -split "openclaw@")[-1].Trim() -split '\s+' | Select-Object -First 1
-            Write-Ok "OpenClaw already installed: $ocVersion"
+            if ($ocVersion -eq $OpenClawTag) {
+                Write-Ok "OpenClaw already installed: $ocVersion"
+            } else {
+                Write-Err "Existing OpenClaw $ocVersion requires transactional upgrade. Run the MicroClaw installer."
+                exit 1
+            }
         } else {
-            $needOpenClaw = $true
+            Write-Err "Existing OpenClaw version could not be determined. Run the MicroClaw installer."
+            exit 1
         }
     } catch {
-        $needOpenClaw = $true
+        Write-Err "Existing OpenClaw version check failed. Run the MicroClaw installer. $_"
+        exit 1
     }
 }
 
@@ -375,7 +400,7 @@ if ($needOpenClaw) {
         # (e.g. deprecation notices) don't abort under $ErrorActionPreference=Stop.
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        $npmOutput = & $npmCmd install -g "openclaw@$OpenClawTag" --prefix $NodeDir 2>&1
+        $npmOutput = & $npmCmd install -g "openclaw@$OpenClawTag" --prefix $NodeDir --registry $($MirrorConfig.NpmRegistry) --replace-registry-host always 2>&1
         $npmExitCode = $LASTEXITCODE
         foreach ($line in $npmOutput) {
             if ($line -is [System.Management.Automation.ErrorRecord]) {

@@ -377,7 +377,6 @@
             >{{ part }}
           </template>
         </div>
-
       </div>
 
       <!-- Skills -->
@@ -461,11 +460,7 @@
                 </div>
                 <span class="skill-desc">{{ skill.description }}</span>
               </div>
-              <el-tooltip
-                v-if="!skill.eligible"
-                :content="missingTooltip(skill)"
-                placement="top"
-              >
+              <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
                 <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
                   {{ t("settings.askAgent") }}
                 </el-button>

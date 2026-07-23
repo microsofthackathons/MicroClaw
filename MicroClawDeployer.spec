@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import importlib
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 # Uses onedir mode to avoid WDAC (Windows Defender Application Control) blocking
@@ -13,18 +14,25 @@ if importlib.util.find_spec('webview') is None:
     raise SystemExit(
         '\n*** BUILD ERROR: pywebview is not installed in this Python environment. ***\n'
         'The installer requires pywebview to bundle its WebView assets.\n'
-        'Fix: pip install pywebview   (or: uv sync)\n'
+        'Fix: pip install pywebview   (or: uv pip install -r requirements.txt)\n'
     )
 
 webview_datas = collect_data_files('webview', subdir='lib') + collect_data_files('webview', subdir='js')
 webview_binaries = collect_dynamic_libs('webview')
 pythonnet_datas = collect_data_files('pythonnet', subdir='runtime')
+weixin_plugin_datas = [('dist/openclaw-weixin', 'plugins/openclaw-weixin')]
 
 a = Analysis(
     ['deploy.py'],
     pathex=[],
     binaries=webview_binaries,
-    datas=[('dist/microclaw-portable.zip', '.'), ('scripts/windows/setup-dependencies.ps1', '.'), ('skills', 'skills'), ('plugins', 'plugins'), ('scripts', 'scripts'), ('deployer/assets', 'deployer/assets')] + webview_datas + pythonnet_datas,
+    datas=[
+        ('dist/microclaw-portable.zip', '.'),
+        ('scripts/windows/setup-dependencies.ps1', '.'),
+        ('skills', 'skills'),
+        ('scripts', 'scripts'),
+        ('deployer/assets', 'deployer/assets'),
+    ] + weixin_plugin_datas + webview_datas + pythonnet_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

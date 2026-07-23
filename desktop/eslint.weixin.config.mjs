@@ -4,22 +4,22 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/", "node_modules/", "coverage/"],
+    ignores: ["plugins/openclaw-weixin/{coverage,dist,node_modules}/**"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": [
-        "error",
+        "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/no-require-imports": "warn",
       "no-empty": ["error", { allowEmptyCatch: true }],
+      "no-useless-escape": "warn",
+      "prefer-const": "warn",
     },
   },
-  // Must be last: disables ESLint rules that conflict with Prettier formatting.
   prettierConfig,
 );

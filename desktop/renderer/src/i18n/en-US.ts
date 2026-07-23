@@ -239,7 +239,7 @@ export default {
   "settings.skillOsMismatch": "only supported on {os}",
   "settings.askAgent": "Ask Agent",
   "settings.askAgentPrompt":
-    "The skill \"{name}\" is unavailable in MicroClaw: {reason}. How can I resolve this so the skill becomes available?",
+    'The skill "{name}" is unavailable in MicroClaw: {reason}. How can I resolve this so the skill becomes available?',
   "settings.refreshSkills": "Refresh",
   "settings.skillsRefreshed": "Skills refreshed",
   "settings.skillsRefreshFailed": "Failed to refresh skills: {error}",
@@ -452,7 +452,8 @@ export default {
 
   // ── ModelSetupDialog ──
   "modelSetup.title": "Set Up Model",
-  "modelSetup.selectDesc": "Choose a model provider and sign in on the provider page to claim free credits.",
+  "modelSetup.selectDesc":
+    "Choose a model provider and sign in on the provider page to claim free credits.",
   "modelSetup.keyDesc": "Enter your model API key to start using the product with free credits.",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.haveApiKey": "I already have an API Key",
