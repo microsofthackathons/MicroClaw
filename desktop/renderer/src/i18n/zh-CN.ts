@@ -224,6 +224,9 @@ export default {
   "settings.skillMissingEnv": "需要环境变量 {env}",
   "settings.skillMissingConfig": "需要配置项：{config}",
   "settings.skillOsMismatch": "仅支持 {os}",
+  "settings.askAgent": "询问助手",
+  "settings.askAgentPrompt":
+    "技能“{name}”在 MicroClaw 中当前不可用：{reason}。我该如何解决才能启用该技能？",
   "settings.refreshSkills": "刷新",
   "settings.skillsRefreshed": "技能已刷新",
   "settings.skillsRefreshFailed": "刷新技能失败：{error}",
