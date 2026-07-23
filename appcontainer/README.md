@@ -119,4 +119,4 @@ The JS files don't need building — they're plain ES5 (no transpilation) for ma
 | `OPENCLAW_SANDBOX_DIRS_RO` | Comma-separated directories with read-only access |
 | `OPENCLAW_SANDBOX_HMAC_KEY` | Secret key for verifying external apps whitelist file |
 | `OPENCLAW_SANDBOX_PERMISSION_TIMEOUT` | Timeout in ms for permission dialogs (0 = wait forever) |
-| `OPENCLAW_PRIVACY_LEVEL` | `basic`, `balanced`, or `strict`; controls sensitive filename read prompts |
+| `OPENCLAW_PRIVACY_LEVEL` | `basic` bypasses sensitive-file prompts; `balanced` prompts for sensitive reads; `strict` also denies runtime access outside configured RO/RW directories |

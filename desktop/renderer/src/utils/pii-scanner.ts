@@ -28,6 +28,13 @@ const PII_RULES: PiiRule[] = [
     pattern: /(?<!\d)1[3-9]\d{9}(?!\d)/g,
     redact: (m) => m.slice(0, 3) + "****" + m.slice(7),
   },
+  // Common 10-digit phone numbers. This also protects phone-like values that
+  // users identify as a phone number even when they omit a country code.
+  {
+    type: "phone",
+    pattern: /(?<!\d)\d{10}(?!\d)/g,
+    redact: (m) => m.slice(0, 3) + "***" + m.slice(-4),
+  },
   // International phone with country code: +xx xxx...
   {
     type: "phone",

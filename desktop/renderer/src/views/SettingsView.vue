@@ -883,26 +883,43 @@
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
-            <el-switch v-model="piiToggles.phone" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.phone"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.phone = value)"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiIdCard") }}</span>
-            <el-switch v-model="piiToggles.idCard" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.idCard"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.idCard = value)"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiBankCard") }}</span>
             <el-switch
-              v-model="piiToggles.bankCard"
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.bankCard"
               :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.bankCard = value)"
             />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiEmail") }}</span>
-            <el-switch v-model="piiToggles.email" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.email"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.email = value)"
+            />
           </div>
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.piiApiKey") }}</span>
-            <el-switch v-model="piiToggles.apiKey" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.apiKey"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.apiKey = value)"
+            />
           </div>
         </div>
         <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
@@ -1724,13 +1741,6 @@ function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
   settings.privacyLevel = level;
   window.openclaw.settings.set("privacyLevel", level);
   const enabled = level !== "basic";
-  Object.assign(piiToggles, {
-    phone: enabled,
-    idCard: enabled,
-    bankCard: enabled,
-    email: enabled,
-    apiKey: enabled,
-  });
   settings.fileAccessAudit = enabled;
 }
 watch(
@@ -1804,17 +1814,9 @@ onMounted(async () => {
     settings.startMinimized = saved.startMinimized ?? false;
     settings.themeMode = saved.themeMode ?? "light";
     settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
+    Object.assign(piiToggles, normalizeScanOptions(saved.piiDetection));
     if (settings.privacyLevel === "basic") {
-      Object.assign(piiToggles, {
-        phone: false,
-        idCard: false,
-        bankCard: false,
-        email: false,
-        apiKey: false,
-      });
       settings.fileAccessAudit = false;
-    } else {
-      Object.assign(piiToggles, normalizeScanOptions(saved.piiDetection));
     }
   }
 

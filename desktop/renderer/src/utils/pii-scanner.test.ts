@@ -28,9 +28,14 @@ describe("scanPii — phone (CN mainland)", () => {
     expect(matches.filter((m) => m.type === "phone")).toHaveLength(0);
   });
 
-  it("does not match 10- or 12-digit numbers (lookaround boundary)", () => {
+  it("does not match 12-digit numbers (lookaround boundary)", () => {
     expect(scanPii("138123456789")).toEqual([]); // 12 digits — adjacent digit
-    expect(scanPii("1381234567")).toEqual([]); // 10 digits
+  });
+
+  it("detects and redacts a common 10-digit phone number", () => {
+    const [phone] = scanPii("我的电话是1398765432").filter((match) => match.type === "phone");
+    expect(phone.value).toBe("1398765432");
+    expect(phone.redacted).toBe("139***5432");
   });
 });
 
@@ -230,6 +235,10 @@ describe("redactPii", () => {
   it("preserves non-PII whitespace and punctuation", () => {
     const out = redactPii("  13812345678 !! ");
     expect(out).toBe("  138****5678 !! ");
+  });
+
+  it("redacts the 10-digit phone example shown in Strict mode", () => {
+    expect(redactPii("我的电话是1398765432")).toBe("我的电话是139***5432");
   });
 });
 

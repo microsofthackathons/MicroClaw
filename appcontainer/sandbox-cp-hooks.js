@@ -884,6 +884,16 @@ function handleAsyncAccessDenied(deniedPath, innerCmd, label) {
     );
     return false;
   }
+  if (S.state.privacyLevel === "strict") {
+    process.stderr.write(
+      "[sandbox] Async permission fallback disabled by Strict privacy mode (" +
+        label +
+        "): " +
+        deniedPath +
+        "\n",
+    );
+    return false;
+  }
   if (inRO) {
     // Directory has RO authorization but command needs write access.
     // This is NOT an ACL propagation issue — the user needs to upgrade RO → RW.
@@ -2113,6 +2123,7 @@ module.exports = {
   extractSensitiveRelativeReadPaths: extractSensitiveRelativeReadPaths,
   isShellExe: isShellExe,
   classifyAuthLevel: classifyAuthLevel,
+  handleAsyncAccessDenied: handleAsyncAccessDenied,
   ensureUtf8Args: ensureUtf8Args,
   isSafeDiagnosticCommand: isSafeDiagnosticCommand,
   isSafeDiagnosticCommandStr: isSafeDiagnosticCommandStr,

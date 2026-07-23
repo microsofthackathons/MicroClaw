@@ -2044,6 +2044,132 @@ describe("isSensitivePath", () => {
         else delete process.send;
       }
     });
+
+    it("enforces the Strict whitelist before runtime grants and sensitive-file prompts", () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      let requests = 0;
+      let requestKind = "";
+
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string; requestKind: string };
+        requests++;
+        requestKind = request.requestKind;
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state.privacyLevel = "strict";
+        sandboxStateModule.state._roDirs = sandboxStateModule.normDirList("C:\\strict-ro");
+        sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\strict-rw");
+
+        expect(permissionModule.shouldBlockRead("C:\\strict-ro\\report.txt", false)).toBe(false);
+        expect(permissionModule.shouldBlockRead("C:\\strict-rw\\report.txt", false)).toBe(false);
+        expect(permissionModule.shouldBlockWrite("C:\\strict-rw\\output.txt")).toBe(false);
+        expect(permissionModule.shouldBlockWrite("C:\\strict-ro\\output.txt")).toBe(true);
+        expect(permissionModule.shouldBlockRead("C:\\strict-outside\\report.txt", false)).toBe(
+          true,
+        );
+        expect(permissionModule.shouldBlockWrite("C:\\strict-outside\\output.txt")).toBe(true);
+        expect(requests).toBe(0);
+
+        expect(permissionModule.shouldBlockRead("C:\\strict-ro\\.env", false)).toBe(true);
+        expect(requests).toBe(1);
+        expect(requestKind).toBe("sensitive-file");
+
+        expect(permissionModule.shouldBlockRead("C:\\strict-outside\\.env", false)).toBe(true);
+        expect(requests).toBe(1);
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+
+    it("ignores a previously cached dynamic grant after switching to Strict", () => {
+      const originalSend = process.send;
+      const originalActive = sandboxStateModule.state.sandboxActive;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      let requests = 0;
+
+      process.send = ((message: unknown) => {
+        const request = message as { responseFile: string };
+        requests++;
+        fs.writeFileSync(request.responseFile, JSON.stringify({ decision: "allow-once" }), "utf-8");
+        return true;
+      }) as typeof process.send;
+
+      try {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = true;
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = [];
+        sandboxStateModule.state.privacyLevel = "balanced";
+        expect(permissionModule.shouldBlockRead("C:\\strict-outside\\cached.txt", false)).toBe(
+          false,
+        );
+        expect(requests).toBe(1);
+
+        sandboxStateModule.state.privacyLevel = "strict";
+        expect(permissionModule.shouldBlockRead("C:\\strict-outside\\cached.txt", false)).toBe(
+          true,
+        );
+        expect(requests).toBe(1);
+      } finally {
+        permissionModule.clearCaches();
+        sandboxStateModule.state.sandboxActive = originalActive;
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
+
+    it("does not send async fallback permission requests in Strict mode", () => {
+      const originalSend = process.send;
+      const originalPrivacyLevel = sandboxStateModule.state.privacyLevel;
+      const originalRo = sandboxStateModule.state._roDirs;
+      const originalRw = sandboxStateModule.state._rwDirs;
+      const sendAsync = vi
+        .spyOn(permissionModule, "sendAsyncPermissionRequest")
+        .mockImplementation(() => {});
+      process.send = vi.fn() as typeof process.send;
+
+      try {
+        sandboxStateModule.state.privacyLevel = "strict";
+        sandboxStateModule.state._roDirs = [];
+        sandboxStateModule.state._rwDirs = [];
+
+        expect(
+          cpHooks.handleAsyncAccessDenied(
+            "C:\\strict-outside\\report.txt",
+            "type C:\\strict-outside\\report.txt",
+            "spawn",
+          ),
+        ).toBe(false);
+        expect(sendAsync).not.toHaveBeenCalled();
+      } finally {
+        sendAsync.mockRestore();
+        sandboxStateModule.state.privacyLevel = originalPrivacyLevel;
+        sandboxStateModule.state._roDirs = originalRo;
+        sandboxStateModule.state._rwDirs = originalRw;
+        if (originalSend) process.send = originalSend;
+        else delete process.send;
+      }
+    });
   });
 
   describe("sensitive child-process preflight", () => {

@@ -283,6 +283,9 @@ function shouldBlockCanonicalWrite(normalized, filePath) {
   if (!normalized && filePath) return true;
   if (sensitive.isSensitivePath(normalized)) return true;
   if (!S.isBlockedPath(normalized)) return false;
+  // Strict mode is whitelist-only. Runtime grants must not expand the
+  // configured RO/RW directory set.
+  if (S.state.privacyLevel === "strict") return true;
   var resolved;
   try {
     resolved = S.resolvePathLower(normalized);
@@ -327,8 +330,12 @@ function shouldBlockRead(filePath, shellContext) {
   var normalized = canonicalizeReadPath(filePath);
   if (!normalized && filePath) return true;
   if (sensitive.isSensitivePath(normalized)) return true;
+  var outsideWhitelist = S.isReadBlockedPath(normalized, shellContext);
+  // Evaluate the whitelist before the sensitive-file prompt so Strict never
+  // offers allow-once access to a sensitive file outside an approved directory.
+  if (S.state.privacyLevel === "strict" && outsideWhitelist) return true;
   if (shouldBlockSensitiveRead(filePath)) return true;
-  if (!S.isReadBlockedPath(normalized, shellContext)) return false;
+  if (!outsideWhitelist) return false;
   var resolved;
   try {
     resolved = S.resolvePathLower(normalized);

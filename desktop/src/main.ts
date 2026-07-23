@@ -19,6 +19,7 @@ import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { StudioBackendManager } from "./studio-backend-manager";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
+import { shouldRejectStrictFilePermission, shouldRejectStrictRuntimeGrant } from "./privacy-guard";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
@@ -204,6 +205,23 @@ let gatewaySpawnedByUs = false;
 let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
+
+function getConfiguredSandboxDirectories(): string[] {
+  if (!toolSandbox) return [];
+  const status = toolSandbox.getStatus();
+  return [...status.sandboxDirsRW, ...status.sandboxDirsRO];
+}
+
+function denySandboxPermissionRequest(msg: any, reason: string): void {
+  console.warn(`[sandbox] Permission denied without prompt: ${reason}`);
+  if (!msg?.responseFile) return;
+  try {
+    fs.writeFileSync(msg.responseFile, JSON.stringify({ id: msg.id, decision: "deny" }), "utf-8");
+  } catch (err: any) {
+    console.error(`[sandbox] Failed to write denied permission response: ${err.message}`);
+  }
+}
+
 /** Per-session random key for HMAC-signing the external apps whitelist file. */
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
@@ -1944,6 +1962,18 @@ async function startGatewayInner(): Promise<void> {
       `[sandbox] File permission request: path=${reqPath} roDir=${roDir} access=${accessNeeded} command=${blockedCommand || "(none)"} stack=${callerStack || "(none)"} id=${id}`,
     );
 
+    if (
+      shouldRejectStrictFilePermission(
+        settingsStore.get("privacyLevel"),
+        requestKind,
+        reqPath,
+        getConfiguredSandboxDirectories(),
+      )
+    ) {
+      denySandboxPermissionRequest(msg, `Strict mode file request for ${reqPath}`);
+      return;
+    }
+
     pendingSyncPermissionRequests++;
     const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const requestType = requestKind === "sensitive-file" ? "sensitive-file" : "file";
@@ -1977,6 +2007,11 @@ async function startGatewayInner(): Promise<void> {
     console.log(
       `[sandbox] Shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded} id=${id}`,
     );
+
+    if (shouldRejectStrictRuntimeGrant(settingsStore.get("privacyLevel"))) {
+      denySandboxPermissionRequest(msg, `Strict mode shell request for ${deniedPath}`);
+      return;
+    }
 
     // If directory is already granted, re-grant ACL silently (may have been lost
     // e.g. startup provision failed due to admin requirement) and auto-approve.
@@ -2042,6 +2077,11 @@ async function startGatewayInner(): Promise<void> {
     console.log(
       `[sandbox] Async shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded}`,
     );
+
+    if (shouldRejectStrictRuntimeGrant(settingsStore.get("privacyLevel"))) {
+      denySandboxPermissionRequest(msg, `Strict mode async shell request for ${deniedPath}`);
+      return;
+    }
 
     // If directory is already in settings but command still failed with Access
     // Denied, silently re-grant ACL (may have been lost, e.g. startup provision
@@ -4129,6 +4169,26 @@ function registerIpcHandlers(): void {
       if (!pending) return;
       pendingPermissionRequests.delete(requestId);
       const { type, msg } = pending;
+
+      const rejectStrictPendingRequest =
+        shouldRejectStrictRuntimeGrant(settingsStore.get("privacyLevel")) &&
+        (type === "file" ||
+          type === "shell" ||
+          type === "shell-async" ||
+          (type === "sensitive-file" &&
+            shouldRejectStrictFilePermission(
+              "strict",
+              "sensitive-file",
+              msg.filePath,
+              getConfiguredSandboxDirectories(),
+            )));
+      if (rejectStrictPendingRequest) {
+        denySandboxPermissionRequest(msg, `Strict mode pending ${type} request`);
+        if (type === "file" || type === "sensitive-file") {
+          pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+        }
+        return;
+      }
 
       if (type === "sensitive-file") {
         const { id, filePath, responseFile } = msg;

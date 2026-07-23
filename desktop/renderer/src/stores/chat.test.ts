@@ -161,6 +161,26 @@ describe("useChatStore — stale stream recovery", () => {
       mockGetSettings.mockReset();
     });
 
+    it("sends the 10-digit phone example unchanged in basic mode", async () => {
+      mockGetSettings.mockResolvedValue({
+        privacyLevel: "basic",
+        piiDetection: { phone: true },
+      });
+      const confirm = vi.spyOn(ElMessageBox, "confirm");
+      const store = useChatStore();
+
+      expect(await store.sendMessage("我的电话是1398765432")).toBe(true);
+
+      expect(confirm).not.toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.any(String), "我的电话是1398765432");
+      expect(store.messages).toEqual([
+        expect.objectContaining({
+          role: "user",
+          content: [{ type: "text", text: "我的电话是1398765432" }],
+        }),
+      ]);
+    });
+
     it("highlights enabled PII and requires confirmation in balanced mode", async () => {
       mockGetSettings.mockResolvedValue({
         privacyLevel: "balanced",
@@ -182,6 +202,24 @@ describe("useChatStore — stale stream recovery", () => {
         expect.any(String),
         "Call 13812345678 or alice@example.com",
       );
+    });
+
+    it("highlights the 10-digit phone example and sends the original after confirmation", async () => {
+      mockGetSettings.mockResolvedValue({
+        privacyLevel: "balanced",
+        piiDetection: { phone: true },
+      });
+      const confirm = vi
+        .spyOn(ElMessageBox, "confirm")
+        .mockResolvedValue("confirm" as MessageBoxData);
+      const store = useChatStore();
+
+      expect(await store.sendMessage("我的电话是1398765432")).toBe(true);
+
+      expect(String(confirm.mock.calls[0][0])).toContain(
+        '<mark data-pii-type="phone">1398765432</mark>',
+      );
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.any(String), "我的电话是1398765432");
     });
 
     it("does not send when the balanced PII warning is cancelled", async () => {
@@ -209,6 +247,24 @@ describe("useChatStore — stale stream recovery", () => {
         expect.any(String),
         "Call 138****5678 or alice@example.com",
       );
+    });
+
+    it("redacts the 10-digit phone example in both the chat and model request", async () => {
+      mockGetSettings.mockResolvedValue({
+        privacyLevel: "strict",
+        piiDetection: { phone: true },
+      });
+      const store = useChatStore();
+
+      expect(await store.sendMessage("我的电话是1398765432")).toBe(true);
+
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.any(String), "我的电话是139***5432");
+      expect(store.messages).toEqual([
+        expect.objectContaining({
+          role: "user",
+          content: [{ type: "text", text: "我的电话是139***5432" }],
+        }),
+      ]);
     });
 
     it("skips disabled PII categories", async () => {
