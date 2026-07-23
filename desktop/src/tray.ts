@@ -19,7 +19,7 @@ export function createTray(callbacks: {
   const icon = nativeImage.createFromPath(iconPath);
 
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip("MicroClawDesktop");
+  tray.setToolTip("MicroClaw");
   quitCallback = callbacks.onQuit;
 
   updateTrayMenu("stopped", callbacks);

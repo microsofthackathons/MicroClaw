@@ -1,8 +1,7 @@
 <template>
-  <div class="channels-view">
+  <div class="channels-view" :class="{ embedded }">
     <div class="view-header">
-      <h2>{{ t("channels.title") }}</h2>
-      <p class="view-desc">{{ t("channels.desc") }}</p>
+      <h2 :class="{ 'settings-group-title': embedded }">{{ t("channels.title") }}</h2>
     </div>
 
     <!-- WeChat Plugin Card -->
@@ -13,7 +12,6 @@
         </div>
         <div class="plugin-info">
           <div class="plugin-name">{{ t("plugins.weixinName") }}</div>
-          <div class="plugin-desc">{{ t("plugins.weixinDesc") }}</div>
         </div>
         <div class="plugin-toggle">
           <el-switch v-model="weixinEnabled" :loading="toggling" @change="handleToggleEnabled" />
@@ -90,6 +88,7 @@
         </div>
       </div>
     </div>
+    <p class="view-desc">{{ t("plugins.weixinDesc") }}</p>
 
     <!-- Other channels -->
     <div v-if="channelStore.channels.length" class="channel-grid">
@@ -117,6 +116,10 @@ import { useGatewayStore } from "@/stores/gateway";
 import { t } from "@/i18n";
 import weixinIcon from "@/assets/wechat.png";
 import QRCode from "qrcode";
+
+withDefaults(defineProps<{ embedded?: boolean }>(), {
+  embedded: false,
+});
 
 const router = useRouter();
 const channelStore = useChannelStore();
@@ -415,6 +418,14 @@ function goToWeixinChat() {
   overflow-y: auto;
   padding: 24px 32px;
   max-width: 720px;
+  font-family: inherit;
+}
+
+.channels-view.embedded {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+  max-width: none;
 }
 
 .view-header {
@@ -426,15 +437,26 @@ function goToWeixinChat() {
   font-weight: 600;
 }
 
-.view-desc {
+.view-header h2.settings-group-title {
+  margin: 0;
+  padding-left: 4px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text-secondary);
-  font-size: 13px;
-  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.view-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: -14px 0 20px;
+  padding: 6px 4px 0;
 }
 
 /* Plugin card */
 .plugin-card {
-  background: var(--bg-secondary);
+  background: var(--bg-grouped);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
@@ -472,15 +494,9 @@ function goToWeixinChat() {
 }
 
 .plugin-name {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.plugin-desc {
   font-size: 13px;
-  color: var(--text-secondary);
-  margin-top: 2px;
+  font-weight: 400;
+  color: var(--text-primary);
 }
 
 .plugin-toggle {
@@ -502,15 +518,16 @@ function goToWeixinChat() {
 }
 
 .plugin-section-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
   margin-bottom: 4px;
 }
 
 .plugin-section-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
   margin-bottom: 14px;
 }
 
@@ -636,7 +653,7 @@ function goToWeixinChat() {
   align-items: center;
   gap: 16px;
   padding: 16px;
-  background: var(--bg-secondary);
+  background: var(--bg-grouped);
   border: 1px solid var(--border);
   border-radius: 8px;
   transition: border-color 0.15s;
@@ -662,13 +679,21 @@ function goToWeixinChat() {
 }
 
 .channel-name {
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-primary);
 }
 
 .channel-type {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
   margin-top: 2px;
+}
+
+.channels-view :deep(.el-button),
+.channels-view :deep(.el-switch) {
+  font-family: inherit;
 }
 
 .channel-status {

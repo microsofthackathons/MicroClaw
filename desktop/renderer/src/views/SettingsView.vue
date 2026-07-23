@@ -23,7 +23,7 @@
     <div class="settings-content">
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
-        <div class="section-label">{{ t("settings.general") }}</div>
+        <div class="section-label">{{ t("settings.application") }}</div>
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.language") }}</span>
@@ -41,13 +41,10 @@
             <el-switch v-model="settings.startMinimized" />
           </div>
         </div>
-      </div>
 
-      <!-- Theme -->
-      <div v-if="activeSection === 'theme'" class="section">
-        <div class="section-label">{{ t("settings.theme") }}</div>
+        <div class="sub-label">{{ t("settings.theme") }}</div>
         <div class="card-group">
-          <div class="card-row">
+          <div class="card-row no-border">
             <span class="row-label">{{ t("settings.themeMode") }}</span>
             <el-radio-group v-model="settings.themeMode" size="small">
               <el-radio value="light">{{ t("settings.themeLight") }}</el-radio>
@@ -176,16 +173,13 @@
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
       </div>
 
-      <!-- Models & API -->
+      <!-- Models -->
       <div v-if="activeSection === 'models'" class="section">
         <div class="section-header">
           <div class="section-header-title">{{ t("settings.modelsAndApi") }}</div>
           <div class="section-header-actions">
             <el-button size="small" type="primary" plain @click="showProviderSetup = true">
               {{ t("settings.switchProvider") }}
-            </el-button>
-            <el-button size="small" @click="reconnectGateway">
-              {{ t("settings.reconnect") }}
             </el-button>
           </div>
         </div>
@@ -354,63 +348,12 @@
           </template>
         </el-dialog>
 
-        <!-- Gateway URL -->
-        <div class="sub-label-row" style="margin-top: 40px">
-          <div style="display: flex; align-items: center; gap: 8px">
-            <span class="sub-label" style="margin-top: 0; margin-bottom: 0">{{
-              t("settings.gatewayUrl")
-            }}</span>
-            <span class="badge" :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'">
-              {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-            </span>
-          </div>
-          <div style="display: flex; gap: 8px">
-            <el-button size="small" @click="reconnectGateway">{{
-              t("settings.reconnect")
-            }}</el-button>
-            <el-button size="small" type="danger" @click="resetConnection">{{
-              t("settings.resetConnection")
-            }}</el-button>
-          </div>
-        </div>
-
-        <!-- Port -->
-        <div class="card-group" style="margin-top: 14px">
-          <div class="card-row no-border port-row">
-            <div class="port-info">
-              <div class="port-title">{{ t("settings.port") }}</div>
-              <div class="port-desc">{{ t("settings.portDesc") }}</div>
-            </div>
-            <div class="port-input-group">
-              <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                size="small"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
-            </div>
-          </div>
-        </div>
-
         <!-- Web Search (Brave) -->
         <div class="sub-label" style="margin-top: 40px">{{ t("settings.webSearch") }}</div>
         <div class="card-group">
           <div class="card-row no-border port-row">
             <div class="port-info">
               <div class="port-title">{{ t("settings.braveSearchApiKey") }}</div>
-              <div class="port-desc">
-                <template v-for="(part, i) in t('settings.braveDesc').split('{link}')" :key="i">
-                  <span v-if="i > 0"
-                    ><a
-                      href="#"
-                      @click.prevent="openExternal('https://brave.com/search/api/')"
-                      style="color: var(--accent)"
-                      >brave.com/search/api</a
-                    ></span
-                  >{{ part }}
-                </template>
-              </div>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0">
               <el-input
@@ -431,22 +374,19 @@
             </div>
           </div>
         </div>
+        <div class="section-footer">
+          <template v-for="(part, i) in t('settings.braveDesc').split('{link}')" :key="i">
+            <span v-if="i > 0"
+              ><a
+                href="#"
+                @click.prevent="openExternal('https://brave.com/search/api/')"
+                style="color: var(--accent)"
+                >brave.com/search/api</a
+              ></span
+            >{{ part }}
+          </template>
+        </div>
 
-        <!-- Gateway Logs -->
-        <div class="sub-label-row" style="margin-top: 24px">
-          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.gatewayLog") }}</span>
-          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
-        </div>
-        <div class="gateway-log-box">
-          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
-            {{ t("settings.noLogs") }}
-          </div>
-          <div v-else class="gateway-log-content" ref="logBoxRef">
-            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
-              {{ line }}
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- Skills -->
@@ -469,9 +409,6 @@
             <span class="skill-count-label"
               >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
             >
-            <el-button size="small" :loading="skillsRefreshing" @click="refreshSkills">{{
-              t("settings.refreshSkills")
-            }}</el-button>
           </div>
         </div>
 
@@ -491,15 +428,16 @@
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-tooltip :disabled="skill.eligible" :content="missingTooltip(skill)" placement="top">
-              <span class="switch-wrap">
-                <el-switch
-                  :model-value="skill.enabled && skill.eligible"
-                  :disabled="!skill.eligible"
-                  @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
-                />
-              </span>
+            <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
+              <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
+                {{ t("settings.askAgent") }}
+              </el-button>
             </el-tooltip>
+            <el-switch
+              v-else
+              :model-value="skill.enabled && skill.eligible"
+              @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
+            />
           </div>
         </div>
 
@@ -533,18 +471,19 @@
                 <span class="skill-desc">{{ skill.description }}</span>
               </div>
               <el-tooltip
-                :disabled="skill.eligible"
+                v-if="!skill.eligible"
                 :content="missingTooltip(skill)"
                 placement="top"
               >
-                <span class="switch-wrap">
-                  <el-switch
-                    :model-value="skill.enabled && skill.eligible"
-                    :disabled="!skill.eligible"
-                    @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
-                  />
-                </span>
+                <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
+                  {{ t("settings.askAgent") }}
+                </el-button>
               </el-tooltip>
+              <el-switch
+                v-else
+                :model-value="skill.enabled && skill.eligible"
+                @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
+              />
             </div>
           </template>
           <div v-else class="card-row no-border placeholder-row">
@@ -553,20 +492,61 @@
         </div>
       </div>
 
-      <!-- Workspace -->
-      <div v-if="activeSection === 'workspace'" class="section">
-        <div class="section-label">{{ t("settings.workspace") }}</div>
+      <!-- Gateway -->
+      <div v-if="activeSection === 'gateway'" class="section">
+        <div class="section-label">{{ t("settings.connectionStatus") }}</div>
         <div class="card-group">
-          <div class="card-row">
-            <span class="row-label">{{ t("settings.dataDir") }}</span>
-            <span class="row-value">{{ stateDir }}</span>
-          </div>
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.gatewayPort") }}</span>
-            <span class="row-value">{{ gateway.port }}</span>
+            <span class="row-label">{{ t("settings.status") }}</span>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span
+                class="badge"
+                :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'"
+              >
+                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+              </span>
+              <el-button size="small" @click="restartGateway">{{
+                t("settings.restart")
+              }}</el-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sub-label">{{ t("settings.port") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.port") }}</span>
+            <div class="port-input-group">
+              <span class="port-prefix">ws://127.0.0.1 :</span>
+              <el-input
+                v-model="gatewayPort"
+                size="small"
+                style="width: 80px"
+                @change="saveGatewayPort"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="section-footer">{{ t("settings.portDesc") }}</div>
+
+        <div class="sub-label-row">
+          <span class="sub-label" style="margin: 0">{{ t("settings.gatewayLog") }}</span>
+          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
+        </div>
+        <div class="gateway-log-box">
+          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
+            {{ t("settings.noLogs") }}
+          </div>
+          <div v-else class="gateway-log-content" ref="logBoxRef">
+            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
+              {{ line }}
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- Channels -->
+      <ChannelsView v-if="activeSection === 'channels'" embedded />
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
@@ -591,15 +571,7 @@
           <!-- Sandbox capabilities (network) -->
           <div class="card-group" style="margin-top: 12px">
             <div class="card-row">
-              <div>
-                <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
-                <div
-                  class="row-hint"
-                  style="font-size: 12px; color: var(--text-muted); margin-top: 2px"
-                >
-                  {{ t("settings.sandboxCapsHint") }}
-                </div>
-              </div>
+              <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
               <div style="display: flex; align-items: center; gap: 10px">
                 <span v-if="capsRestarting" class="restart-hint">{{
                   t("settings.sandboxCapsRestarting")
@@ -612,6 +584,7 @@
               </div>
             </div>
           </div>
+          <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
 
           <!-- External apps whitelist -->
           <div class="card-group" style="margin-top: 12px">
@@ -625,12 +598,6 @@
                 "
               >
                 <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
-              </div>
-              <div
-                class="row-hint"
-                style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted)"
-              >
-                {{ t("settings.externalAppsHint") }}
               </div>
               <div class="external-apps-list">
                 <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
@@ -649,6 +616,7 @@
               </div>
             </div>
           </div>
+          <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
 
           <!-- Sandbox directory permissions -->
           <div class="card-group" style="margin-top: 12px">
@@ -668,13 +636,6 @@
                   >{{ t("settings.sandboxDirs") }}</span
                 >
               </div>
-              <div
-                class="row-hint"
-                style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted)"
-              >
-                {{ t("settings.sandboxDirsHint") }}
-              </div>
-
               <!-- Read-Write directories -->
               <div class="dir-section">
                 <div
@@ -867,6 +828,7 @@
               </div>
             </div>
           </div>
+          <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
         </div>
         <!-- .sandbox-disabled wrapper -->
       </div>
@@ -875,7 +837,6 @@
       <div v-if="activeSection === 'privacy'" class="section">
         <!-- Privacy Protection Level -->
         <div class="section-label">{{ t("settings.privacyProtection") }}</div>
-        <div class="privacy-desc">{{ t("settings.privacyProtectionDesc") }}</div>
         <div class="privacy-levels">
           <div
             class="privacy-card"
@@ -924,10 +885,10 @@
             </ul>
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.privacyProtectionDesc") }}</div>
 
         <!-- PII Detection -->
         <div class="sub-label" style="margin-top: 36px">{{ t("settings.piiDetection") }}</div>
-        <div class="privacy-desc">{{ t("settings.piiDetectionDesc") }}</div>
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
@@ -953,10 +914,10 @@
             <el-switch v-model="piiToggles.apiKey" :disabled="settings.privacyLevel === 'basic'" />
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
 
         <!-- Sensitive File Guard -->
         <div class="sub-label" style="margin-top: 32px">{{ t("settings.sensitiveFiles") }}</div>
-        <div class="privacy-desc">{{ t("settings.sensitiveFilesDesc") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span
@@ -973,10 +934,10 @@
             </span>
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
 
         <!-- File Access Audit -->
         <div class="sub-label" style="margin-top: 32px">{{ t("settings.fileAccessAudit") }}</div>
-        <div class="privacy-desc">{{ t("settings.fileAccessAuditDesc") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
@@ -986,6 +947,7 @@
             />
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.fileAccessAuditDesc") }}</div>
 
         <!-- Chat History (existing) -->
         <div class="sub-label" style="margin-top: 32px">{{ t("settings.chatHistory") }}</div>
@@ -1004,7 +966,7 @@
         <div class="section-label">{{ t("settings.about") }}</div>
         <div class="about-card">
           <img class="about-icon" :src="microclawLogo" alt="MicroClaw" />
-          <div class="about-name">MicroClawDesktop</div>
+          <div class="about-name">{{ t("app.name") }}</div>
           <div class="about-version">{{ t("settings.version") }}</div>
           <el-button
             type="primary"
@@ -1039,7 +1001,7 @@
         <div class="card-group" style="margin-top: 16px">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.copyright") }}</span>
-            <span class="row-value">© 2026 MicroClawDesktop</span>
+            <span class="row-value">© 2026 {{ t("app.name") }}</span>
           </div>
         </div>
       </div>
@@ -1051,10 +1013,12 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch, computed, nextTick } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import { useAgentStore } from "@/stores/agents";
 import { ElMessage, ElMessageBox } from "element-plus";
+import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -1062,8 +1026,10 @@ import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import { buildManagedProviderConfigs } from "@/utils/model-provider-config";
 
 const route = useRoute();
+const router = useRouter();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const agentStore = useAgentStore();
 
 const logBoxRef = ref<HTMLElement | null>(null);
 
@@ -1079,7 +1045,6 @@ watch(
 );
 
 const activeSection = ref("general");
-const stateDir = ref("");
 const updateChecking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 
@@ -1110,19 +1075,26 @@ const updateStatusDetail = computed(() => {
 
 const VALID_SECTIONS = [
   "general",
-  "theme",
   "usage",
   "models",
   "skills",
-  "workspace",
+  "gateway",
+  "channels",
   "security",
   "privacy",
   "about",
 ];
 
+function normalizeSection(section: unknown) {
+  if (section === "theme") return "general";
+  if (section === "workspace") return "gateway";
+  return typeof section === "string" && VALID_SECTIONS.includes(section) ? section : null;
+}
+
 // Initialise activeSection from the route param (e.g. /settings/models)
-if (typeof route.params.section === "string" && VALID_SECTIONS.includes(route.params.section)) {
-  activeSection.value = route.params.section;
+const initialSection = normalizeSection(route.params.section);
+if (initialSection) {
+  activeSection.value = initialSection;
 }
 
 // React to route-param changes while this view is mounted (e.g. user clicks
@@ -1130,8 +1102,9 @@ if (typeof route.params.section === "string" && VALID_SECTIONS.includes(route.pa
 watch(
   () => route.params.section,
   (section) => {
-    if (typeof section === "string" && VALID_SECTIONS.includes(section)) {
-      activeSection.value = section;
+    const normalizedSection = normalizeSection(section);
+    if (normalizedSection) {
+      activeSection.value = normalizedSection;
     }
   },
 );
@@ -1533,6 +1506,20 @@ function missingTooltip(skill: SkillEntry): string {
   return `${t("settings.skillUnavailablePrefix")} ${reasons.join("; ")}`;
 }
 
+// Start a fresh MicroClaw (main agent) chat pre-filled with a prompt asking the
+// agent how to make an unavailable skill work. The prompt carries just the skill
+// name and the same "unavailable" reason shown in the hover tooltip.
+async function askAgentAboutSkill(skill: SkillEntry) {
+  const prompt = t("settings.askAgentPrompt", {
+    name: skill.name,
+    reason: missingTooltip(skill),
+  });
+  agentStore.selectAgent("main");
+  chatStore.newSession("main");
+  await router.push("/chat/main");
+  chatStore.pendingPrompt = prompt;
+}
+
 async function loadSkills(refresh = false): Promise<void> {
   const skills = refresh
     ? await window.openclaw.skills.refresh()
@@ -1546,13 +1533,13 @@ async function loadSkills(refresh = false): Promise<void> {
   customSkills.value = skills.custom;
 }
 
-async function refreshSkills(): Promise<void> {
+async function autoRefreshSkills(): Promise<void> {
+  if (skillsRefreshing.value) return;
   skillsRefreshing.value = true;
   try {
     await loadSkills(true);
-    ElMessage.success(t("settings.skillsRefreshed"));
-  } catch (err: any) {
-    ElMessage.error(t("settings.skillsRefreshFailed", { error: err?.message || err }));
+  } catch {
+    // Skills refresh not available; keep the last loaded list.
   } finally {
     skillsRefreshing.value = false;
   }
@@ -1679,12 +1666,12 @@ async function loadUsage() {
 }
 
 const svg = {
-  general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>`,
-  theme: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 3a7 7 0 0 1 0 14V3z" fill="currentColor" stroke="none"/></svg>`,
+  general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h3M10 5h7M3 10h7M14 10h3M3 15h2M9 15h8"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>`,
   usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
-  models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-5 6-5s6 1.686 6 5"/><circle cx="15" cy="5" r="1.5"/><circle cx="5" cy="5" r="1.5"/></svg>`,
+  models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
   skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5a2 2 0 0 1 2.83 2.83l-9.9 9.9-3.54.71.71-3.54 9.9-9.9z"/></svg>`,
-  workspace: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l7-3 7 3v10l-7 3-7-3V6z"/><path d="M10 3v14M3 6l7 4 7-4"/></svg>`,
+  gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
+  channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
   privacy: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="9" width="12" height="9" rx="2"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/><circle cx="10" cy="14" r="1" fill="currentColor" stroke="none"/></svg>`,
   about: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.75" fill="currentColor" stroke="none"/></svg>`,
@@ -1692,11 +1679,11 @@ const svg = {
 
 const menuItems = computed(() => [
   { id: "general", label: t("settings.menu.general"), color: "#636366", svg: svg.general },
-  { id: "theme", label: t("settings.menu.theme"), color: "#636366", svg: svg.theme },
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
   { id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills },
-  { id: "workspace", label: t("settings.menu.workspace"), color: "#636366", svg: svg.workspace },
+  { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
+  { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
   { id: "privacy", label: t("settings.menu.privacy"), color: "#636366", svg: svg.privacy },
   { id: "about", label: t("settings.menu.about"), color: "#636366", svg: svg.about },
@@ -1782,6 +1769,9 @@ watch(activeSection, (v) => {
   if (v === "security") {
     loadSandboxStatus();
   }
+  if (v === "skills") {
+    autoRefreshSkills();
+  }
 });
 
 function applyModelsConfig(config: any): void {
@@ -1825,8 +1815,6 @@ function applyModelsConfig(config: any): void {
 }
 
 onMounted(async () => {
-  stateDir.value = await window.openclaw.config.getStateDir();
-
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
@@ -2200,26 +2188,12 @@ function openUpdateDownload() {
   }
 }
 
-async function reconnectGateway() {
+async function restartGateway() {
   try {
     await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.gatewayReconnecting"));
+    ElMessage.success(t("settings.gatewayRestarting"));
   } catch (err: any) {
-    ElMessage.error(t("settings.reconnectFailed", { error: err.message }));
-  }
-}
-
-async function resetConnection() {
-  try {
-    await ElMessageBox.confirm(
-      "This will reset the gateway connection. Continue?",
-      "Reset Connection",
-      { type: "warning" },
-    );
-    await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.connectionReset"));
-  } catch {
-    // Cancelled
+    ElMessage.error(t("settings.restartFailed", { error: err.message }));
   }
 }
 
@@ -2264,6 +2238,7 @@ async function clearChatHistory() {
   flex: 1;
   min-height: 0;
   background: var(--bg-primary);
+  font-family: inherit;
 }
 
 /* ── Left sidebar ── */
@@ -2333,8 +2308,10 @@ async function clearChatHistory() {
 }
 
 .menu-icon :deep(svg) {
+  display: block;
   width: 16px;
   height: 16px;
+  flex: 0 0 16px;
 }
 
 .menu-label {
@@ -2349,12 +2326,17 @@ async function clearChatHistory() {
   container-type: inline-size;
 }
 
-.section-label {
+.section-label,
+.section-header-title,
+.sub-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.07em;
+}
+
+.section-label {
   margin-bottom: 8px;
   padding-left: 4px;
 }
@@ -2413,7 +2395,8 @@ async function clearChatHistory() {
 }
 
 .row-label {
-  font-size: 13.5px;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
   flex-shrink: 1;
   min-width: 0;
@@ -2421,6 +2404,7 @@ async function clearChatHistory() {
 
 .row-value {
   font-size: 13px;
+  font-weight: 400;
   color: var(--text-secondary);
   text-align: right;
   overflow: hidden;
@@ -2438,12 +2422,14 @@ async function clearChatHistory() {
 
 .placeholder-text {
   font-size: 13px;
+  font-weight: 400;
   color: var(--text-secondary);
   text-align: center;
 }
 
 .section-footer {
   font-size: 12px;
+  font-weight: 400;
   color: var(--text-muted);
   padding: 6px 4px 0;
 }
@@ -2538,10 +2524,7 @@ async function clearChatHistory() {
 }
 
 .section-header-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+  padding-left: 4px;
 }
 
 .section-header-actions {
@@ -2550,11 +2533,9 @@ async function clearChatHistory() {
 }
 
 .sub-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
   margin-bottom: 10px;
   margin-top: 32px;
+  padding-left: 4px;
 }
 
 .sub-label-row {
@@ -2563,6 +2544,10 @@ async function clearChatHistory() {
   justify-content: space-between;
   margin-top: 32px;
   margin-bottom: 10px;
+}
+
+.section > .sub-label-row:first-child {
+  margin-top: 0;
 }
 
 .badge {
@@ -2622,16 +2607,9 @@ async function clearChatHistory() {
 }
 
 .port-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.port-desc {
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  line-height: 1.5;
 }
 
 .port-input-group {
@@ -2692,7 +2670,16 @@ async function clearChatHistory() {
 .port-input-group :deep(.el-input__inner) {
   font-size: 13px;
   text-align: center;
-  font-weight: 600;
+  font-weight: 400;
+}
+
+.settings-view :deep(.el-input__inner),
+.settings-view :deep(.el-select__selected-item),
+.settings-view :deep(.el-radio__label),
+.settings-view :deep(.el-button) {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .test-result {
@@ -2754,6 +2741,13 @@ async function clearChatHistory() {
 .switch-wrap {
   display: inline-flex;
   align-items: center;
+}
+
+.ask-agent-btn {
+  flex-shrink: 0;
+  --el-button-hover-text-color: var(--accent);
+  --el-button-hover-border-color: var(--accent-light);
+  --el-button-hover-bg-color: var(--accent-subtle);
 }
 
 .skill-count-label {
@@ -2819,8 +2813,9 @@ async function clearChatHistory() {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 8px;
-  font-size: 12.5px;
-  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 .app-tag .tag-remove {
   background: none;
@@ -2841,7 +2836,9 @@ async function clearChatHistory() {
   background: none;
   border: none;
   outline: none;
-  font-size: 12.5px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
   width: 80px;
   color: var(--text-primary);
 }
@@ -2864,8 +2861,8 @@ async function clearChatHistory() {
   margin-top: 4px;
 }
 .dir-section-label {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
 }
 .dir-add-btn {
@@ -2894,7 +2891,8 @@ async function clearChatHistory() {
 }
 .cap-label {
   font-size: 13px;
-  color: var(--text-secondary);
+  font-weight: 400;
+  color: var(--text-primary);
 }
 .sandbox-disabled {
   opacity: 0.45;
@@ -2914,7 +2912,8 @@ async function clearChatHistory() {
   border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 4px;
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 400;
   background: var(--bg-tertiary);
 }
 .dir-path {
@@ -2989,13 +2988,6 @@ async function clearChatHistory() {
 }
 
 /* ── Privacy Protection ── */
-.privacy-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 16px;
-  line-height: 1.5;
-}
-
 .privacy-levels {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3034,8 +3026,8 @@ async function clearChatHistory() {
 }
 
 .privacy-card-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
 }
 
@@ -3056,8 +3048,9 @@ async function clearChatHistory() {
 }
 
 .privacy-card-list li {
-  font-size: 12.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
   line-height: 1.6;
   padding-left: 12px;
   position: relative;

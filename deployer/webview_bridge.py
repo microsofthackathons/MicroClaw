@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 import tkinter as tk
 import traceback
 import webbrowser
@@ -17,6 +18,13 @@ from deployer.windows_setup import DEFAULT_DESKTOP_DIR, WindowsSetup
 _ACTIVE_WINDOW = None
 INSTALLER_WINDOW_WIDTH = 710
 INSTALLER_WINDOW_HEIGHT = 680
+
+# Per-step retry budgets for the install pipeline (number of *additional*
+# attempts after the first). Network/download-bound steps get more attempts to
+# ride out transient connectivity failures; local/config steps still get one
+# retry as cheap insurance against flaky IO.
+NETWORK_RETRIES = 3
+LOCAL_RETRIES = 1
 
 
 def _get_centered_window_position(width, height):
@@ -329,40 +337,95 @@ class WebInstallerBridge:
         ws = WindowsSetup(self._config, log)
 
         steps = [
-            (3, "Configuring PowerShell execution policy...", ws.ensure_execution_policy),
+            (
+                3,
+                "Configuring PowerShell execution policy...",
+                ws.ensure_execution_policy,
+                LOCAL_RETRIES,
+            ),
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
-            (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions),
-            (10, "Installing Git...", ws.ensure_git),
-            (25, "Installing Node.js...", lambda: self._ensure_node(ws)),
-            (35, "Configuring npm registry...", ws.setup_npm_mirror),
-            (50, "Installing OpenClaw gateway...", lambda: self._ensure_openclaw(ws)),
-            (55, "Updating PATH...", ws.add_to_path),
-            (60, "Installing desktop client...", ws.install_desktop_client),
-            (62, "Copying bundled assets...", lambda: self._copy_bundled_assets()),
-            (65, "Writing API keys...", lambda: self._write_env_file()),
-            (70, "Writing OpenClaw configuration...", ws.write_config),
-            (75, "Warming up V8 compile cache...", ws.warmup_compile_cache),
-            (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
-            (90, "Installing WeChat plugin...", ws.install_weixin_plugin),
-            (95, "Creating desktop shortcut...", ws.create_desktop_shortcut),
+            (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions, LOCAL_RETRIES),
+            (10, "Installing Git...", ws.ensure_git, NETWORK_RETRIES),
+            (25, "Installing Node.js...", lambda: self._ensure_node(ws), NETWORK_RETRIES),
+            (35, "Configuring npm registry...", ws.setup_npm_mirror, NETWORK_RETRIES),
+            (
+                50,
+                "Installing OpenClaw gateway...",
+                lambda: self._ensure_openclaw(ws),
+                NETWORK_RETRIES,
+            ),
+            (55, "Updating PATH...", ws.add_to_path, LOCAL_RETRIES),
+            (60, "Installing desktop client...", ws.install_desktop_client, NETWORK_RETRIES),
+            (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
+            (65, "Writing API keys...", lambda: self._write_env_file(), LOCAL_RETRIES),
+            (70, "Writing OpenClaw configuration...", ws.write_config, LOCAL_RETRIES),
+            (75, "Warming up V8 compile cache...", ws.warmup_compile_cache, LOCAL_RETRIES),
+            (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer, LOCAL_RETRIES),
+            (90, "Installing WeChat plugin...", ws.install_weixin_plugin, NETWORK_RETRIES),
+            (95, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
         ]
 
-        for pct, label, fn in steps:
+        for pct, label, fn, retries in steps:
             if not self.get_state()["running"]:
                 self._finish_fail("Installation cancelled.")
                 return
             self._set_progress(pct, label)
-            try:
-                result = fn()
-                if result is not None and not result:
-                    self._finish_fail(label.rstrip(".") + " failed.")
-                    return
-            except Exception as exc:
-                log.error(f"{label} exception: {exc}")
-                self._finish_fail(label.rstrip(".") + " failed.")
+            if not self._run_step_with_retry(pct, label, fn, retries):
+                # _run_step_with_retry already reported the failure.
                 return
 
         self._finish_ok()
+
+    def _run_step_with_retry(self, pct, label, fn, retries):
+        """Execute one install step, retrying transient failures.
+
+        A step is considered failed if it raises or returns an explicit
+        falsy value; steps that return ``None`` are treated as success
+        (matching the original contract). On failure the step is retried up
+        to ``retries`` additional times with a short, capped exponential
+        backoff (1s, 2s, 4s, … max 8s), honouring cancellation between and
+        during attempts. Returns ``True`` on success. On final failure it
+        calls ``_finish_fail`` and returns ``False`` so the caller stops.
+
+        Every install step is check-first / idempotent (e.g. Node and the
+        OpenClaw gateway are re-checked before reinstalling), so re-running a
+        partially-failed step is safe.
+        """
+        log = self._logger
+        attempts = retries + 1
+        detail = ""
+        clean_label = label.rstrip(".")
+        for attempt in range(1, attempts + 1):
+            if not self.get_state()["running"]:
+                self._finish_fail("Installation cancelled.")
+                return False
+            try:
+                result = fn()
+                if result is None or result:
+                    if attempt > 1:
+                        log.success(f"{clean_label} succeeded on attempt {attempt}/{attempts}.")
+                    return True
+                detail = "step reported failure"
+            except Exception as exc:
+                detail = str(exc) or exc.__class__.__name__
+                log.error(f"{clean_label} attempt {attempt}/{attempts} raised: {exc}")
+
+            if attempt < attempts:
+                delay = min(2 ** (attempt - 1), 8)
+                log.warn(
+                    f"{clean_label} failed ({detail}); retrying in {delay}s "
+                    f"(attempt {attempt + 1}/{attempts})…"
+                )
+                self._set_progress(pct, f"{label} retrying ({attempt + 1}/{attempts})…")
+                # Cancellation-aware wait so a user can abort during backoff.
+                for _ in range(delay):
+                    if not self.get_state()["running"]:
+                        self._finish_fail("Installation cancelled.")
+                        return False
+                    time.sleep(1)
+
+        self._finish_fail(f"{clean_label} failed after {attempts} attempt(s).")
+        return False
 
     def _ensure_node(self, ws):
         if ws.check_node_windows():
