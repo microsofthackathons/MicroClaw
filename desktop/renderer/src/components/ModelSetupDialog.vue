@@ -122,7 +122,7 @@
             type="button"
             @mousedown.prevent.stop="goToSelectStep"
           >
-            back
+            {{ t("modelSetup.back") }}
           </button>
           <button
             class="primary-action"
@@ -143,6 +143,7 @@ import { computed, ref, watch } from "vue";
 import { t } from "@/i18n";
 import qwenLogo from "@/assets/modelprovider/Qwen.png";
 import minimaxLogo from "@/assets/modelprovider/minimax.png";
+import { mergeProviderModelConfig } from "@/utils/model-provider-config";
 
 type ModelFamilyId = "qwen" | "minimax";
 type ApiFormat = "openai-chat";
@@ -225,6 +226,10 @@ watch(
   (visible) => {
     if (!visible) return;
     isKeyStep.value = false;
+    selectedFamilyId.value = modelFamilies[0].id;
+    selectedModelName.value = getDefaultModel(modelFamilies[0]);
+    baseUrl.value = modelFamilies[0].baseUrl;
+    apiKey.value = "";
     errorMsg.value = "";
   },
 );
@@ -310,18 +315,15 @@ async function saveAndStart() {
     const modelName = trimmedModelName;
     const modelRef = `${family.providerKey}/${modelName}`;
     const existing = (await window.openclaw.config.read()) || {};
-    const providerEntry: Record<string, unknown> = {
-      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
-      apiKey: trimmedKey,
-      api: resolveApiValue(family.apiFormat),
-      models: [
-        {
-          id: modelName,
-          name: modelName,
-          input: ["text", "image"],
-        },
-      ],
-    };
+    const providerEntry = mergeProviderModelConfig(
+      existing.models?.providers?.[family.providerKey],
+      {
+        baseUrl: trimmedBaseUrl,
+        apiKey: trimmedKey,
+        api: resolveApiValue(family.apiFormat),
+        modelName,
+      },
+    );
 
     existing.models = {
       ...(existing.models ?? {}),

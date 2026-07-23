@@ -178,9 +178,14 @@
         <!-- Custom Models -->
         <div class="sub-label-row">
           <span class="sub-label" style="margin-bottom: 0">{{ t("settings.customModels") }}</span>
-          <el-button size="small" @click="showAddModel = true">{{
-            t("settings.addCustomModel")
-          }}</el-button>
+          <div class="sub-label-actions">
+            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
+              {{ t("settings.switchProvider") }}
+            </el-button>
+            <el-button size="small" @click="showAddModel = true">{{
+              t("settings.addCustomModel")
+            }}</el-button>
+          </div>
         </div>
         <div class="card-group">
           <template v-if="customModels.length">
@@ -991,6 +996,8 @@
           </div>
         </div>
       </div>
+
+      <ModelSetupDialog v-model="showProviderSetup" @configured="handleProviderConfigured" />
     </div>
   </div>
 </template>
@@ -1006,6 +1013,8 @@ import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
+import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import { buildManagedProviderConfigs } from "@/utils/model-provider-config";
 
 const route = useRoute();
 const router = useRouter();
@@ -1435,6 +1444,7 @@ const _builtinModels = ref<ModelEntry[]>([
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const gatewayPort = ref("18789");
+const showProviderSetup = ref(false);
 const showAddModel = ref(false);
 const newModel = reactive<ModelFormState>({
   name: "",
@@ -1755,6 +1765,46 @@ watch(activeSection, (v) => {
   }
 });
 
+function applyModelsConfig(config: any): void {
+  const providers = config.models?.providers ?? {};
+  const modelDefaults = config.agents?.defaults?.models ?? {};
+  const loaded: ModelEntry[] = [];
+  for (const [key, val] of Object.entries(providers) as [string, any][]) {
+    const models = val.models ?? [];
+    for (const m of models) {
+      const modelId = m.id ?? key;
+      const modelRef = `${key}/${modelId}`;
+      const apiFormat = normalizeApiFormat(val.api);
+      const reasoningFallback =
+        m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
+      loaded.push({
+        providerKey: key,
+        id: modelId,
+        name: m.name ?? modelId ?? key,
+        baseUrl: val.baseUrl ?? "",
+        apiKey: val.apiKey ?? "",
+        apiFormat,
+        reasoningEffort: normalizeReasoningEffort(
+          modelDefaults[modelRef]?.params?.thinking,
+          reasoningFallback,
+        ),
+      });
+    }
+  }
+  customModels.value = loaded;
+
+  const defaultModelConfig = config.agents?.defaults?.model;
+  const primary =
+    typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
+  if (primary) {
+    const matched = loaded.find((model) => getModelRef(model) === primary);
+    selectedModel.value =
+      matched?.id ?? (primary.includes("/") ? primary.split("/").pop()! : primary);
+  } else if (loaded.length > 0) {
+    selectedModel.value = loaded[0].id;
+  }
+}
+
 onMounted(async () => {
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
@@ -1781,44 +1831,7 @@ onMounted(async () => {
     // Gateway port
     gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
 
-    // Custom models from config
-    const providers = config.models?.providers ?? {};
-    const modelDefaults = config.agents?.defaults?.models ?? {};
-    const loaded: ModelEntry[] = [];
-    for (const [key, val] of Object.entries(providers) as [string, any][]) {
-      const models = val.models ?? [];
-      for (const m of models) {
-        const modelId = m.id ?? key;
-        const modelRef = `${key}/${modelId}`;
-        const apiFormat = normalizeApiFormat(val.api);
-        const reasoningFallback =
-          m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
-        loaded.push({
-          providerKey: key,
-          id: modelId,
-          name: m.name ?? modelId ?? key,
-          baseUrl: val.baseUrl ?? "",
-          apiKey: val.apiKey ?? "",
-          apiFormat,
-          reasoningEffort: normalizeReasoningEffort(
-            modelDefaults[modelRef]?.params?.thinking,
-            reasoningFallback,
-          ),
-        });
-      }
-    }
-    customModels.value = loaded;
-
-    const defaultModelConfig = config.agents?.defaults?.model;
-    const primary =
-      typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
-    if (primary) {
-      const matched = loaded.find((model) => getModelRef(model) === primary);
-      selectedModel.value =
-        matched?.id ?? (primary.includes("/") ? primary.split("/").pop()! : primary);
-    } else if (loaded.length > 0) {
-      selectedModel.value = loaded[0].id;
-    }
+    applyModelsConfig(config);
   }
 
   // Load Brave Search API key from config
@@ -1835,6 +1848,12 @@ onMounted(async () => {
 });
 
 // --- Model & Gateway actions ---
+
+async function handleProviderConfigured(): Promise<void> {
+  const config = await window.openclaw.config.read();
+  if (config) applyModelsConfig(config);
+  ElMessage.success(t("settings.providerConfigured"));
+}
 
 async function persistModelsConfig() {
   // Validate custom models before saving
@@ -1854,28 +1873,25 @@ async function persistModelsConfig() {
   }
 
   const config = (await window.openclaw.config.read()) || {};
-  const providerConfig: Record<string, any> = {};
+  const providerConfig = buildManagedProviderConfigs(
+    config.models?.providers,
+    customModels.value.map((model) => {
+      const apiFormat = model.apiFormat || "openai-chat";
+      const reasoningEffort = normalizeReasoningEffort(model.reasoningEffort);
+      return {
+        providerKey: buildProviderKey(model.providerKey || model.id),
+        baseUrl: model.baseUrl || "",
+        apiKey: model.apiKey || "",
+        api: resolveApiValue(apiFormat),
+        id: model.id,
+        name: model.name,
+        reasoning: apiFormat === "openai-responses" || reasoningEffort !== "off",
+        input: apiFormat !== "anthropic" ? ["text", "image"] : undefined,
+      };
+    }),
+  );
   const existingProviderKeys = new Set(Object.keys(config.models?.providers ?? {}));
   const existingModelDefaults = config.agents?.defaults?.models ?? {};
-
-  for (const m of customModels.value) {
-    const providerKey = buildProviderKey(m.providerKey || m.id);
-    const reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
-    const reasoningEnabled = m.apiFormat === "openai-responses" || reasoningEffort !== "off";
-    providerConfig[providerKey] = {
-      ...(m.baseUrl ? { baseUrl: m.baseUrl } : {}),
-      apiKey: m.apiKey || "",
-      api: resolveApiValue(m.apiFormat || "openai-chat"),
-      models: [
-        {
-          id: m.id,
-          name: m.name,
-          ...(reasoningEnabled ? { reasoning: true } : {}),
-          ...(m.apiFormat !== "anthropic" ? { input: ["text", "image"] } : {}),
-        },
-      ],
-    };
-  }
 
   const managedProviderKeys = new Set<string>([
     ...existingProviderKeys,
@@ -2015,8 +2031,19 @@ async function saveEditModel() {
     ElMessage.warning(t("settings.modelNameExists"));
     return;
   }
+  const providerKey = customModels.value[idx].providerKey;
+  for (let modelIndex = 0; modelIndex < customModels.value.length; modelIndex++) {
+    const model = customModels.value[modelIndex];
+    if (modelIndex === idx || model.providerKey !== providerKey) continue;
+    customModels.value[modelIndex] = {
+      ...model,
+      baseUrl,
+      apiKey: editModel.apiKey.trim(),
+      apiFormat: editModel.apiFormat,
+    };
+  }
   customModels.value[idx] = {
-    providerKey: customModels.value[idx].providerKey,
+    providerKey,
     id: name,
     name,
     baseUrl,
@@ -2291,7 +2318,6 @@ async function clearChatHistory() {
 }
 
 .section-label,
-.section-header-title,
 .sub-label {
   font-size: 11px;
   font-weight: 600;
@@ -2480,15 +2506,9 @@ async function clearChatHistory() {
 }
 
 /* Models & API */
-.section-header {
+.sub-label-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 28px;
-}
-
-.section-header-title {
-  padding-left: 4px;
+  gap: 8px;
 }
 
 .sub-label {

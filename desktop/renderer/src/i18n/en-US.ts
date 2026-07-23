@@ -371,6 +371,8 @@ export default {
   // Models & API
   "settings.modelsAndApi": "Models & API",
   "settings.restart": "Restart",
+  "settings.switchProvider": "Switch Model Provider",
+  "settings.providerConfigured": "Model provider updated",
   "settings.customModels": "Custom Models",
   "settings.addCustomModel": "Add Custom Model",
   "settings.currentSelection": "Current Selection",
@@ -457,6 +459,7 @@ export default {
   "modelSetup.keyDesc": "Enter your model API key to start using the product with free credits.",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.haveApiKey": "I already have an API Key",
+  "modelSetup.back": "Back",
   "modelSetup.modelSelect": "Model",
   "modelSetup.modelPlaceholder": "Select or enter a model name",
   "modelSetup.baseUrl": "Base URL",

@@ -353,6 +353,8 @@ export default {
   // Models & API
   "settings.modelsAndApi": "模型与 API",
   "settings.restart": "重启",
+  "settings.switchProvider": "切换模型供应商",
+  "settings.providerConfigured": "模型供应商已更新",
   "settings.customModels": "自定义模型",
   "settings.addCustomModel": "添加自定义模型",
   "settings.currentSelection": "当前选中",
@@ -437,6 +439,7 @@ export default {
   "modelSetup.keyDesc": "请输入你的模型 API 密钥，即刻开始使用免费额度体验产品功能。",
   "modelSetup.getApiKey": "获取 API 密钥",
   "modelSetup.haveApiKey": "已获取 API 密钥",
+  "modelSetup.back": "返回",
   "modelSetup.modelSelect": "模型选择",
   "modelSetup.modelPlaceholder": "选择或输入模型名称",
   "modelSetup.baseUrl": "Base URL",
