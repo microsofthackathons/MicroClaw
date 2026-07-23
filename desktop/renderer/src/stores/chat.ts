@@ -92,6 +92,20 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
   return { code: "generic", raw: text, status };
 }
 
+export function applyChatDelta(
+  current: string,
+  payload: ChatEventPayload,
+  legacyText: string | null = null,
+): string {
+  if (typeof payload.deltaText === "string") {
+    return payload.replace ? payload.deltaText : current + payload.deltaText;
+  }
+  if (typeof legacyText === "string" && (!current || legacyText.length >= current.length)) {
+    return legacyText;
+  }
+  return current;
+}
+
 export const useChatStore = defineStore("chat", () => {
   // ── State ──
   const sessionKey = ref("main");
@@ -635,14 +649,9 @@ export const useChatStore = defineStore("chat", () => {
     lastStreamEventAt.value = Date.now();
 
     if (payload.state === "delta") {
-      const text = extractText(payload.message);
-      if (typeof text === "string") {
-        // Delta contains full accumulated text
-        const current = streamText.value;
-        if (!current || text.length >= current.length) {
-          streamText.value = text;
-        }
-      }
+      const legacyText =
+        typeof payload.deltaText === "string" ? null : extractText(payload.message);
+      streamText.value = applyChatDelta(streamText.value, payload, legacyText);
     } else if (payload.state === "final") {
       // Track whether the model actually produced any observable output.
       // A silent "final" with no text + no tool calls usually indicates a
@@ -1101,12 +1110,9 @@ export const useChatStore = defineStore("chat", () => {
     payload: ChatEventPayload,
   ) {
     if (payload.state === "delta") {
-      const text = extractText(payload.message);
-      if (typeof text === "string") {
-        if (!cached.streamText || text.length >= cached.streamText.length) {
-          cached.streamText = text;
-        }
-      }
+      const legacyText =
+        typeof payload.deltaText === "string" ? null : extractText(payload.message);
+      cached.streamText = applyChatDelta(cached.streamText, payload, legacyText);
     } else if (payload.state === "final") {
       // Save tool calls to completedToolCallsMap keyed by assistant group index
       if (cached.streamToolCalls && cached.streamToolCalls.length > 0) {

@@ -31,6 +31,7 @@ import {
   loadStateDirEnv,
   resolveNodePath,
   resolveOpenClawEntry,
+  resolveOpenClawPackageDir,
 } from "./path-resolver";
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -194,5 +195,23 @@ describe("resolveOpenClawEntry", () => {
     );
     mockExistsSync.mockImplementation((p) => String(p) === programFilesPath);
     expect(resolveOpenClawEntry()).toBe(programFilesPath);
+  });
+});
+
+describe("resolveOpenClawPackageDir", () => {
+  it("returns the package root for the openclaw.mjs entry", () => {
+    expect(
+      resolveOpenClawPackageDir(
+        "C:\\Users\\testuser\\AppData\\Roaming\\npm\\node_modules\\openclaw\\openclaw.mjs",
+      ),
+    ).toBe("C:\\Users\\testuser\\AppData\\Roaming\\npm\\node_modules\\openclaw");
+  });
+
+  it("returns the parent of dist for a compiled entry", () => {
+    expect(
+      resolveOpenClawPackageDir(
+        "C:\\Users\\testuser\\AppData\\Roaming\\npm\\node_modules\\openclaw\\dist\\index.js",
+      ),
+    ).toBe("C:\\Users\\testuser\\AppData\\Roaming\\npm\\node_modules\\openclaw");
   });
 });

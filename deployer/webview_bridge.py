@@ -333,8 +333,7 @@ class WebInstallerBridge:
             self._state["running"] = True
 
     def _install_thread(self):
-        log = self._logger
-        ws = WindowsSetup(self._config, log)
+        ws = WindowsSetup(self._config, self._logger)
 
         steps = [
             (
@@ -346,6 +345,7 @@ class WebInstallerBridge:
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
             (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions, LOCAL_RETRIES),
             (10, "Installing Git...", ws.ensure_git, NETWORK_RETRIES),
+            (18, "Preparing OpenClaw upgrade...", ws.prepare_openclaw_upgrade, LOCAL_RETRIES),
             (25, "Installing Node.js...", lambda: self._ensure_node(ws), NETWORK_RETRIES),
             (35, "Configuring npm registry...", ws.setup_npm_mirror, NETWORK_RETRIES),
             (
@@ -362,16 +362,22 @@ class WebInstallerBridge:
             (75, "Warming up V8 compile cache...", ws.warmup_compile_cache, LOCAL_RETRIES),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer, LOCAL_RETRIES),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin, NETWORK_RETRIES),
-            (95, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
+            (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade, LOCAL_RETRIES),
+            (96, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
+            (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade, LOCAL_RETRIES),
         ]
 
         for pct, label, fn, retries in steps:
             if not self.get_state()["running"]:
-                self._finish_fail("Installation cancelled.")
+                rollback_ok = ws.rollback_openclaw_upgrade()
+                suffix = "" if rollback_ok else " Automatic rollback also failed."
+                self._finish_fail(f"Installation cancelled.{suffix}")
                 return
             self._set_progress(pct, label)
             if not self._run_step_with_retry(pct, label, fn, retries):
-                # _run_step_with_retry already reported the failure.
+                if not ws.rollback_openclaw_upgrade():
+                    with self._state_lock:
+                        self._state["error"] += " Automatic rollback also failed."
                 return
 
         self._finish_ok()

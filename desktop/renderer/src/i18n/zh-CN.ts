@@ -506,7 +506,9 @@ export default {
   "perm.riskCommandRW": "高风险：该命令可能修改文件或系统状态。",
   "perm.riskApp": "高风险：该应用将在沙箱外运行。",
   "perm.commandLabel": "命令",
-  "perm.allowAlways": "始终允许",  "perm.callerLabel": "调用者",  "perm.autoDeny": "{seconds}秒后自动拒绝",
+  "perm.allowAlways": "始终允许",
+  "perm.callerLabel": "调用者",
+  "perm.autoDeny": "{seconds}秒后自动拒绝",
   "perm.aclTimeout":
     "{dir} 的权限已授予，但 ACL 验证超时。如果访问仍然失败，请到 设置 > 安全 中重新授权。",
   "perm.aclIneffective":

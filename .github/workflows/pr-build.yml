@@ -28,8 +28,8 @@ permissions:
 
 jobs:
   # ── ESLint + Prettier + Vitest on JS/TS sources ─────────────────
-  # Runs lint, prettier check, and Vitest across all four JS/TS packages
-  # (desktop, desktop/renderer, desktop/studio-backend, plugins/openclaw-weixin).
+  # Runs lint, prettier check, and Vitest across the app packages, and lints
+  # the source mirrored from the vendored Weixin release.
   lint-js:
     name: Lint, Format & Test (JS/TS)
     runs-on: [self-hosted, Windows, X64]
@@ -49,14 +49,19 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $node = (& node --version).TrimStart('v')
-          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          $parsed = [version]$node
+          $supported =
+            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
+            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
+            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
+          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.7.1-1" }
           Write-Host "node $node"
 
       - name: Install dependencies (all packages)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend', 'plugins/openclaw-weixin') {
+          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend') {
             Write-Host "── npm ci in $d ──"
             Push-Location $d
             try {
@@ -111,6 +116,9 @@ jobs:
       - name: Run ruff format --check
         run: python -m ruff format --check .
 
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tests -v
+
   # ── Run build.ps1 end-to-end on Windows ─────────────────────────
   # Serialised after `lint-python` so lint failures short-circuit the build
   # and we never hold two self-hosted runners at once.
@@ -135,7 +143,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $node = (& node --version).TrimStart('v')
-          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          $parsed = [version]$node
+          $supported =
+            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
+            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
+            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
+          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.7.1-1" }
           Write-Host "node $node"
           $dotnet = & dotnet --version
           if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
