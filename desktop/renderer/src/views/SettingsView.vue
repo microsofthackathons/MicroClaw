@@ -464,9 +464,6 @@
             <span class="skill-count-label"
               >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
             >
-            <el-button size="small" :loading="skillsRefreshing" @click="refreshSkills">{{
-              t("settings.refreshSkills")
-            }}</el-button>
           </div>
         </div>
 
@@ -1555,13 +1552,13 @@ async function loadSkills(refresh = false): Promise<void> {
   customSkills.value = skills.custom;
 }
 
-async function refreshSkills(): Promise<void> {
+async function autoRefreshSkills(): Promise<void> {
+  if (skillsRefreshing.value) return;
   skillsRefreshing.value = true;
   try {
     await loadSkills(true);
-    ElMessage.success(t("settings.skillsRefreshed"));
-  } catch (err: any) {
-    ElMessage.error(t("settings.skillsRefreshFailed", { error: err?.message || err }));
+  } catch {
+    // Skills refresh not available; keep the last loaded list.
   } finally {
     skillsRefreshing.value = false;
   }
@@ -1790,6 +1787,9 @@ watch(activeSection, (v) => {
   }
   if (v === "security") {
     loadSandboxStatus();
+  }
+  if (v === "skills") {
+    autoRefreshSkills();
   }
 });
 
