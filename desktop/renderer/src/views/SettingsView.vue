@@ -486,15 +486,16 @@
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-tooltip :disabled="skill.eligible" :content="missingTooltip(skill)" placement="top">
-              <span class="switch-wrap">
-                <el-switch
-                  :model-value="skill.enabled && skill.eligible"
-                  :disabled="!skill.eligible"
-                  @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
-                />
-              </span>
+            <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
+              <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
+                {{ t("settings.askAgent") }}
+              </el-button>
             </el-tooltip>
+            <el-switch
+              v-else
+              :model-value="skill.enabled && skill.eligible"
+              @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
+            />
           </div>
         </div>
 
@@ -528,18 +529,19 @@
                 <span class="skill-desc">{{ skill.description }}</span>
               </div>
               <el-tooltip
-                :disabled="skill.eligible"
+                v-if="!skill.eligible"
                 :content="missingTooltip(skill)"
                 placement="top"
               >
-                <span class="switch-wrap">
-                  <el-switch
-                    :model-value="skill.enabled && skill.eligible"
-                    :disabled="!skill.eligible"
-                    @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
-                  />
-                </span>
+                <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
+                  {{ t("settings.askAgent") }}
+                </el-button>
               </el-tooltip>
+              <el-switch
+                v-else
+                :model-value="skill.enabled && skill.eligible"
+                @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
+              />
             </div>
           </template>
           <div v-else class="card-row no-border placeholder-row">
@@ -1044,17 +1046,20 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch, computed, nextTick } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import { useAgentStore } from "@/stores/agents";
 import { ElMessage, ElMessageBox } from "element-plus";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 
 const route = useRoute();
+const router = useRouter();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const agentStore = useAgentStore();
 
 const logBoxRef = ref<HTMLElement | null>(null);
 
@@ -1521,6 +1526,20 @@ function missingTooltip(skill: SkillEntry): string {
   }
   if (reasons.length === 0) return t("settings.skillUnavailable");
   return `${t("settings.skillUnavailablePrefix")} ${reasons.join("; ")}`;
+}
+
+// Start a fresh MicroClaw (main agent) chat pre-filled with a prompt asking the
+// agent how to make an unavailable skill work. The prompt carries just the skill
+// name and the same "unavailable" reason shown in the hover tooltip.
+async function askAgentAboutSkill(skill: SkillEntry) {
+  const prompt = t("settings.askAgentPrompt", {
+    name: skill.name,
+    reason: missingTooltip(skill),
+  });
+  agentStore.selectAgent("main");
+  chatStore.newSession("main");
+  await router.push("/chat/main");
+  chatStore.pendingPrompt = prompt;
 }
 
 async function loadSkills(refresh = false): Promise<void> {
@@ -2722,6 +2741,13 @@ async function clearChatHistory() {
 .switch-wrap {
   display: inline-flex;
   align-items: center;
+}
+
+.ask-agent-btn {
+  flex-shrink: 0;
+  --el-button-hover-text-color: var(--accent);
+  --el-button-hover-border-color: var(--accent-light);
+  --el-button-hover-bg-color: var(--accent-subtle);
 }
 
 .skill-count-label {

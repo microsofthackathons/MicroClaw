@@ -236,6 +236,9 @@ export default {
   "settings.skillMissingEnv": "requires environment variable(s) {env}",
   "settings.skillMissingConfig": "requires configuration: {config}",
   "settings.skillOsMismatch": "only supported on {os}",
+  "settings.askAgent": "Ask Agent",
+  "settings.askAgentPrompt":
+    "The skill \"{name}\" is unavailable in MicroClaw: {reason}. How can I resolve this so the skill becomes available?",
   "settings.refreshSkills": "Refresh",
   "settings.skillsRefreshed": "Skills refreshed",
   "settings.skillsRefreshFailed": "Failed to refresh skills: {error}",
