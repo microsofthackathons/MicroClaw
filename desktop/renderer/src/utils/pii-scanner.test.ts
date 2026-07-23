@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { scanPii, redactPii, type PiiType } from "./pii-scanner";
+import {
+  scanPii,
+  redactPii,
+  normalizeScanOptions,
+  renderPiiHighlights,
+  type PiiType,
+} from "./pii-scanner";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 function typesOf(text: string): PiiType[] {
@@ -22,9 +28,14 @@ describe("scanPii — phone (CN mainland)", () => {
     expect(matches.filter((m) => m.type === "phone")).toHaveLength(0);
   });
 
-  it("does not match 10- or 12-digit numbers (lookaround boundary)", () => {
+  it("does not match 12-digit numbers (lookaround boundary)", () => {
     expect(scanPii("138123456789")).toEqual([]); // 12 digits — adjacent digit
-    expect(scanPii("1381234567")).toEqual([]); // 10 digits
+  });
+
+  it("detects and redacts a common 10-digit phone number", () => {
+    const [phone] = scanPii("我的电话是1398765432").filter((match) => match.type === "phone");
+    expect(phone.value).toBe("1398765432");
+    expect(phone.redacted).toBe("139***5432");
   });
 });
 
@@ -153,6 +164,23 @@ describe("scanPii — options", () => {
     expect(types).toContain("phone");
     expect(types).toContain("email");
   });
+
+  it("normalizes persisted options and defaults missing values to enabled", () => {
+    expect(normalizeScanOptions({ phone: false, email: true })).toEqual({
+      phone: false,
+      idCard: true,
+      bankCard: true,
+      email: true,
+      apiKey: true,
+    });
+    expect(normalizeScanOptions(null)).toEqual({
+      phone: true,
+      idCard: true,
+      bankCard: true,
+      email: true,
+      apiKey: true,
+    });
+  });
 });
 
 // ── Sort + position stability ──────────────────────────────────────────
@@ -168,6 +196,12 @@ describe("scanPii — ordering", () => {
     const text = "AAA 13812345678 BBB";
     const [m] = scanPii(text);
     expect(text.slice(m.start, m.end)).toBe(m.value);
+  });
+
+  it("removes overlapping matches so redaction cannot duplicate text", () => {
+    const matches = scanPii("Call +86 13812345678 now");
+    expect(matches.filter((match) => match.type === "phone")).toHaveLength(1);
+    expect(redactPii("Call +86 13812345678 now")).toBe("Call +86 ****678 now");
   });
 });
 
@@ -201,5 +235,21 @@ describe("redactPii", () => {
   it("preserves non-PII whitespace and punctuation", () => {
     const out = redactPii("  13812345678 !! ");
     expect(out).toBe("  138****5678 !! ");
+  });
+
+  it("redacts the 10-digit phone example shown in Strict mode", () => {
+    expect(redactPii("我的电话是1398765432")).toBe("我的电话是139***5432");
+  });
+});
+
+describe("renderPiiHighlights", () => {
+  it("highlights matches while escaping all user-controlled HTML", () => {
+    const text = '<script>alert("x")</script> 13812345678';
+    const matches = scanPii(text);
+    const html = renderPiiHighlights(text, matches);
+
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain('<mark data-pii-type="phone">13812345678</mark>');
   });
 });

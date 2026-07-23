@@ -38,6 +38,9 @@ var state = {
   _roDirs: [],
   _rwDirs: [],
   _currentCmdPreview: null,
+  privacyLevel: /^(basic|balanced|strict)$/.test(process.env.OPENCLAW_PRIVACY_LEVEL || "")
+    ? process.env.OPENCLAW_PRIVACY_LEVEL
+    : "balanced",
 };
 
 // ── Directory initialization ──
@@ -281,27 +284,40 @@ function throwReadBlocked(filePath) {
 
 // ── IPC message handling for state updates ──
 
+function handleMessage(msg) {
+  if (!msg) return;
+  if (msg.type === "sandbox-session-changed") {
+    var perm = require(path.join(__dirname, "sandbox-permission.js"));
+    perm.clearCaches();
+    process.stderr.write("[sandbox] Session changed — cleared file permission caches\n");
+  } else if (msg.type === "sandbox-dirs-updated") {
+    state._roDirs = normDirList((msg.ro || []).join(","));
+    state._rwDirs = normDirList((msg.rw || []).join(","));
+    process.env.OPENCLAW_SANDBOX_DIRS_RO = (msg.ro || []).join(",");
+    process.env.OPENCLAW_SANDBOX_DIRS_RW = (msg.rw || []).join(",");
+    var perm = require(path.join(__dirname, "sandbox-permission.js"));
+    perm.cleanupPendingForAuthorizedDirs(state._rwDirs, state._roDirs);
+    process.stderr.write(
+      "[sandbox] Dirs updated — RO: " +
+        state._roDirs.length +
+        ", RW: " +
+        state._rwDirs.length +
+        "\n",
+    );
+  } else if (
+    msg.type === "sandbox-privacy-updated" &&
+    /^(basic|balanced|strict)$/.test(msg.privacyLevel || "")
+  ) {
+    state.privacyLevel = msg.privacyLevel;
+    process.env.OPENCLAW_PRIVACY_LEVEL = state.privacyLevel;
+    var perm = require(path.join(__dirname, "sandbox-permission.js"));
+    perm.clearCaches();
+    process.stderr.write("[sandbox] Privacy level updated: " + state.privacyLevel + "\n");
+  }
+}
+
 function setupMessageHandler() {
-  process.on("message", function (msg) {
-    if (!msg) return;
-    if (msg.type === "sandbox-session-changed") {
-      var perm = require(path.join(__dirname, "sandbox-permission.js"));
-      perm.clearCaches();
-      process.stderr.write("[sandbox] Session changed — cleared file permission caches\n");
-    } else if (msg.type === "sandbox-dirs-updated") {
-      state._roDirs = normDirList((msg.ro || []).join(","));
-      state._rwDirs = normDirList((msg.rw || []).join(","));
-      var perm = require(path.join(__dirname, "sandbox-permission.js"));
-      perm.cleanupPendingForAuthorizedDirs(state._rwDirs, state._roDirs);
-      process.stderr.write(
-        "[sandbox] Dirs updated — RO: " +
-          state._roDirs.length +
-          ", RW: " +
-          state._rwDirs.length +
-          "\n",
-      );
-    }
-  });
+  process.on("message", handleMessage);
 }
 
 // ── Exports ──
@@ -329,5 +345,6 @@ module.exports = {
   throwReadBlocked: throwReadBlocked,
   _safePaths: _safePaths,
   // Setup
+  handleMessage: handleMessage,
   setupMessageHandler: setupMessageHandler,
 };

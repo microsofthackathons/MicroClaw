@@ -28,6 +28,13 @@ const PII_RULES: PiiRule[] = [
     pattern: /(?<!\d)1[3-9]\d{9}(?!\d)/g,
     redact: (m) => m.slice(0, 3) + "****" + m.slice(7),
   },
+  // Common 10-digit phone numbers. This also protects phone-like values that
+  // users identify as a phone number even when they omit a country code.
+  {
+    type: "phone",
+    pattern: /(?<!\d)\d{10}(?!\d)/g,
+    redact: (m) => m.slice(0, 3) + "***" + m.slice(-4),
+  },
   // International phone with country code: +xx xxx...
   {
     type: "phone",
@@ -75,6 +82,26 @@ export interface ScanOptions {
   apiKey?: boolean;
 }
 
+export const DEFAULT_PII_SCAN_OPTIONS: Required<ScanOptions> = {
+  phone: true,
+  idCard: true,
+  bankCard: true,
+  email: true,
+  apiKey: true,
+};
+
+export function normalizeScanOptions(value: unknown): Required<ScanOptions> {
+  const options =
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  return {
+    phone: options.phone !== false,
+    idCard: options.idCard !== false,
+    bankCard: options.bankCard !== false,
+    email: options.email !== false,
+    apiKey: options.apiKey !== false,
+  };
+}
+
 /**
  * Scan text for PII matches.
  * @param text - The text to scan
@@ -109,9 +136,16 @@ export function scanPii(text: string, options: ScanOptions = {}): PiiMatch[] {
     }
   }
 
-  // Sort by position
-  matches.sort((a, b) => a.start - b.start);
-  return matches;
+  // Prefer the longest match when rules overlap (for example, an international
+  // phone rule containing a mainland number). Redaction and highlighting both
+  // require a non-overlapping set of offsets.
+  matches.sort((a, b) => a.start - b.start || b.end - a.end);
+  const nonOverlapping: PiiMatch[] = [];
+  for (const match of matches) {
+    const previous = nonOverlapping[nonOverlapping.length - 1];
+    if (!previous || match.start >= previous.end) nonOverlapping.push(match);
+  }
+  return nonOverlapping;
 }
 
 /**
@@ -132,4 +166,28 @@ export function redactPii(text: string, options: ScanOptions = {}): string {
   }
   result += text.slice(lastEnd);
   return result;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Render an escaped HTML preview with each detected value highlighted. */
+export function renderPiiHighlights(text: string, matches: PiiMatch[]): string {
+  let result = "";
+  let lastEnd = 0;
+  for (const match of matches) {
+    if (match.start < lastEnd || match.end > text.length) continue;
+    result += escapeHtml(text.slice(lastEnd, match.start));
+    result += `<mark data-pii-type="${match.type}">${escapeHtml(
+      text.slice(match.start, match.end),
+    )}</mark>`;
+    lastEnd = match.end;
+  }
+  return result + escapeHtml(text.slice(lastEnd));
 }

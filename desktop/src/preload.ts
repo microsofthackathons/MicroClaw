@@ -273,7 +273,7 @@ contextBridge.exposeInMainWorld("openclaw", {
     onPermissionRequest: (
       callback: (data: {
         requestId: string;
-        type: "file" | "shell" | "shell-async" | "app-approval";
+        type: "file" | "sensitive-file" | "shell" | "shell-async" | "app-approval";
         targetPath: string;
         dirPath: string;
         command?: string;

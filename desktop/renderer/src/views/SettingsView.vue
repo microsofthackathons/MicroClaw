@@ -883,26 +883,43 @@
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
-            <el-switch v-model="piiToggles.phone" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.phone"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.phone = value)"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiIdCard") }}</span>
-            <el-switch v-model="piiToggles.idCard" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.idCard"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.idCard = value)"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiBankCard") }}</span>
             <el-switch
-              v-model="piiToggles.bankCard"
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.bankCard"
               :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.bankCard = value)"
             />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiEmail") }}</span>
-            <el-switch v-model="piiToggles.email" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.email"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.email = value)"
+            />
           </div>
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.piiApiKey") }}</span>
-            <el-switch v-model="piiToggles.apiKey" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              :model-value="settings.privacyLevel !== 'basic' && piiToggles.apiKey"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="(value: boolean) => (piiToggles.apiKey = value)"
+            />
           </div>
         </div>
         <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
@@ -1015,6 +1032,7 @@ import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import { buildManagedProviderConfigs } from "@/utils/model-provider-config";
+import { normalizeScanOptions } from "@/utils/pii-scanner";
 
 const route = useRoute();
 const router = useRouter();
@@ -1715,33 +1733,15 @@ watch(
     applyTheme(v);
   },
 );
+watch(piiToggles, (value) => window.openclaw.settings.set("piiDetection", { ...value }), {
+  deep: true,
+});
 
 function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
   settings.privacyLevel = level;
   window.openclaw.settings.set("privacyLevel", level);
-  // Auto-configure PII toggles based on level
-  if (level === "basic") {
-    piiToggles.phone = false;
-    piiToggles.idCard = false;
-    piiToggles.bankCard = false;
-    piiToggles.email = false;
-    piiToggles.apiKey = false;
-    settings.fileAccessAudit = false;
-  } else if (level === "balanced") {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  } else {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  }
+  const enabled = level !== "basic";
+  settings.fileAccessAudit = enabled;
 }
 watch(
   () => newModel.apiFormat,
@@ -1814,13 +1814,8 @@ onMounted(async () => {
     settings.startMinimized = saved.startMinimized ?? false;
     settings.themeMode = saved.themeMode ?? "light";
     settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
-    // Init PII toggles based on loaded privacy level
+    Object.assign(piiToggles, normalizeScanOptions(saved.piiDetection));
     if (settings.privacyLevel === "basic") {
-      piiToggles.phone = false;
-      piiToggles.idCard = false;
-      piiToggles.bankCard = false;
-      piiToggles.email = false;
-      piiToggles.apiKey = false;
       settings.fileAccessAudit = false;
     }
   }

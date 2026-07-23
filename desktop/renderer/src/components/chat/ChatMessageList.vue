@@ -912,8 +912,7 @@ function cancelEdit() {
 async function confirmEdit() {
   const text = editText.value.trim();
   if (!text || !chatStore.wsConnected) return;
-  cancelEdit();
-  await chatStore.sendMessage(text);
+  if (await chatStore.sendMessage(text)) cancelEdit();
 }
 
 function handleEditKeydown(e: KeyboardEvent) {

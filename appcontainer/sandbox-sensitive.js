@@ -8,10 +8,28 @@
 
 var path = require("path");
 var S = require(path.join(__dirname, "sandbox-state.js"));
+var fileURLToPath = require("url").fileURLToPath;
 
 // ── Default sensitive directories (relative to user home) ──
 
 var SENSITIVE_DIRS = [".ssh", ".gnupg", ".aws", ".azure", path.join(".config", "gcloud")];
+var SENSITIVE_FILE_PATTERNS = [
+  ".env",
+  ".env.*",
+  "*_key*",
+  "*.key",
+  "*.pem",
+  "*.crt",
+  "*.cer",
+  "*.p12",
+  "*.pfx",
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "credentials",
+  "credentials.*",
+];
 
 var _home = (process.env.USERPROFILE || process.env.HOME || "").toLowerCase();
 var _resolvedSensitive = _home
@@ -19,6 +37,31 @@ var _resolvedSensitive = _home
       return path.join(_home, d).toLowerCase();
     })
   : [];
+
+function normalizeFilePath(filePath) {
+  if (!filePath) return "";
+  var value = filePath;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    String(value.protocol || "").toLowerCase() === "file:"
+  ) {
+    try {
+      return fileURLToPath(value);
+    } catch (e) {
+      return "";
+    }
+  }
+  var raw = String(value);
+  if (/^file:/i.test(raw)) {
+    try {
+      return fileURLToPath(raw);
+    } catch (e) {
+      return "";
+    }
+  }
+  return raw;
+}
 
 /**
  * Check if a file path is under a sensitive directory.
@@ -28,7 +71,9 @@ function isSensitivePath(filePath) {
   if (!_home || !filePath) return false;
   var resolved;
   try {
-    resolved = S.resolvePathLower(filePath);
+    var normalized = normalizeFilePath(filePath);
+    if (!normalized) return false;
+    resolved = S.resolvePathLower(normalized);
   } catch (e) {
     return false;
   }
@@ -37,6 +82,23 @@ function isSensitivePath(filePath) {
     if (resolved === s || resolved.indexOf(s + path.sep) === 0) return true;
   }
   return false;
+}
+
+/** Check filename patterns that require confirmation before reads. */
+function isSensitiveFile(filePath) {
+  if (!filePath) return false;
+  var base;
+  try {
+    base = path.basename(normalizeFilePath(filePath)).split(":")[0].toLowerCase();
+  } catch (e) {
+    return false;
+  }
+  if (!base) return false;
+  if (base === ".env" || base.indexOf(".env.") === 0) return true;
+  if (base.indexOf("_key") !== -1) return true;
+  if (/\.(?:key|pem|crt|cer|p12|pfx)$/.test(base)) return true;
+  if (/^id_(?:rsa|dsa|ecdsa|ed25519)$/.test(base)) return true;
+  return base === "credentials" || base.indexOf("credentials.") === 0;
 }
 
 /**
@@ -66,7 +128,9 @@ function parentOfSensitive(dirPath) {
   if (!_home || !dirPath) return false;
   var resolved;
   try {
-    resolved = S.resolvePathLower(dirPath).replace(/[\\/]+$/, "");
+    var normalized = normalizeFilePath(dirPath);
+    if (!normalized) return false;
+    resolved = S.resolvePathLower(normalized).replace(/[\\/]+$/, "");
   } catch (e) {
     return false;
   }
@@ -76,7 +140,10 @@ function parentOfSensitive(dirPath) {
 
 module.exports = {
   SENSITIVE_DIRS: SENSITIVE_DIRS,
+  SENSITIVE_FILE_PATTERNS: SENSITIVE_FILE_PATTERNS,
+  normalizeFilePath: normalizeFilePath,
   isSensitivePath: isSensitivePath,
+  isSensitiveFile: isSensitiveFile,
   parentOfSensitive: parentOfSensitive,
   throwSensitiveDenied: throwSensitiveDenied,
 };

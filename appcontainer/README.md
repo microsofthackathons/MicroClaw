@@ -19,6 +19,7 @@ Two layers of enforcement:
 - **JS layer** (preload modules): Pre-blocks known-bad paths before execution, prompts user via IPC dialog
 - **OS layer** (AppContainer + ACL): Blocks all unauthorized access regardless of JS-layer decisions
 - **Sensitive path shield**: Hard-denies access to credential directories (`.ssh`, `.azure`, etc.) — no permission dialog, no override
+- **Sensitive file guard**: In Balanced and Strict privacy modes, prompts before reading credential-like files such as `.env`, private keys, and certificates
 
 ## Files
 
@@ -118,3 +119,4 @@ The JS files don't need building — they're plain ES5 (no transpilation) for ma
 | `OPENCLAW_SANDBOX_DIRS_RO` | Comma-separated directories with read-only access |
 | `OPENCLAW_SANDBOX_HMAC_KEY` | Secret key for verifying external apps whitelist file |
 | `OPENCLAW_SANDBOX_PERMISSION_TIMEOUT` | Timeout in ms for permission dialogs (0 = wait forever) |
+| `OPENCLAW_PRIVACY_LEVEL` | `basic` bypasses sensitive-file prompts; `balanced` prompts for sensitive reads; `strict` also denies runtime access outside configured RO/RW directories |
