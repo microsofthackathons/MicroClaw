@@ -65,28 +65,6 @@
         </div>
       </div>
 
-      <!-- Phone -->
-      <button
-        class="sp-menu-item"
-        :class="{ active: route.path === '/phone' }"
-        @click="router.push('/phone')"
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="5" y="2" width="14" height="20" rx="2" />
-          <line x1="12" y1="18" x2="12.01" y2="18" />
-        </svg>
-        <span>{{ t("sidebar.phone") }}</span>
-      </button>
-
       <!-- Usage -->
       <button class="sp-menu-item" :class="{ active: route.path === '/usage' }" @click="openUsage">
         <svg
