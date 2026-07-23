@@ -175,21 +175,17 @@
 
       <!-- Models -->
       <div v-if="activeSection === 'models'" class="section">
-        <div class="section-header">
-          <div class="section-header-title">{{ t("settings.modelsAndApi") }}</div>
-          <div class="section-header-actions">
-            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
-              {{ t("settings.switchProvider") }}
-            </el-button>
-          </div>
-        </div>
-
         <!-- Custom Models -->
         <div class="sub-label-row">
           <span class="sub-label" style="margin-bottom: 0">{{ t("settings.customModels") }}</span>
-          <el-button size="small" @click="showAddModel = true">{{
-            t("settings.addCustomModel")
-          }}</el-button>
+          <div class="sub-label-actions">
+            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
+              {{ t("settings.switchProvider") }}
+            </el-button>
+            <el-button size="small" @click="showAddModel = true">{{
+              t("settings.addCustomModel")
+            }}</el-button>
+          </div>
         </div>
         <div class="card-group">
           <template v-if="customModels.length">
@@ -2327,7 +2323,6 @@ async function clearChatHistory() {
 }
 
 .section-label,
-.section-header-title,
 .sub-label {
   font-size: 11px;
   font-weight: 600;
@@ -2516,18 +2511,7 @@ async function clearChatHistory() {
 }
 
 /* Models & API */
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 28px;
-}
-
-.section-header-title {
-  padding-left: 4px;
-}
-
-.section-header-actions {
+.sub-label-actions {
   display: flex;
   gap: 8px;
 }
