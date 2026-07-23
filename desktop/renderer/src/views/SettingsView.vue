@@ -1716,11 +1716,9 @@ watch(
     applyTheme(v);
   },
 );
-watch(
-  piiToggles,
-  (value) => window.openclaw.settings.set("piiDetection", { ...value }),
-  { deep: true },
-);
+watch(piiToggles, (value) => window.openclaw.settings.set("piiDetection", { ...value }), {
+  deep: true,
+});
 
 function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
   settings.privacyLevel = level;

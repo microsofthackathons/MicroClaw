@@ -1113,15 +1113,11 @@ describe("isSafeDiagnosticCommand", () => {
     });
 
     it("does not host-bypass arp piped to findstr", () => {
-      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'arp -a | findstr /C:"---"'])).toBe(
-        false,
-      );
+      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'arp -a | findstr /C:"---"'])).toBe(false);
     });
 
     it("does not host-bypass ping piped to find", () => {
-      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'ping 8.8.8.8 | find "Reply"'])).toBe(
-        false,
-      );
+      expect(isSafeDiagnosticCommand("cmd.exe", ["/c", 'ping 8.8.8.8 | find "Reply"'])).toBe(false);
     });
 
     it("pathping", () => {
@@ -1992,10 +1988,7 @@ describe("isSensitivePath", () => {
 
     it.each([
       [`node -e "const {readFileSync:r}=require('fs');r('.env')"`, "C:\\work\\.env"],
-      [
-        `node -e "readFileSync(new URL('file:///C:/work/.env'))"`,
-        "C:\\work\\.env",
-      ],
+      [`node -e "readFileSync(new URL('file:///C:/work/.env'))"`, "C:\\work\\.env"],
     ])("scans all sensitive literals for script interpreters: %s", (command, expected) => {
       expect(extractSensitiveRelativeReadPaths(command, "C:\\work", true)).toEqual([expected]);
     });
@@ -2089,17 +2082,14 @@ describe("isSensitivePath", () => {
           }).status,
         ).toBe(1);
         expect(() =>
-          (cpMock.execSync as CallableFunction)(
-            'ping 127.0.0.1 | find /v "__never__" .env',
-            { cwd: "C:\\work" },
-          ),
+          (cpMock.execSync as CallableFunction)('ping 127.0.0.1 | find /v "__never__" .env', {
+            cwd: "C:\\work",
+          }),
         ).toThrow(/permission denied/i);
         expect(() =>
-          (cpMock.execFileSync as CallableFunction)(
-            "python",
-            ["-c", "open('.env').read()"],
-            { cwd: "C:\\work" },
-          ),
+          (cpMock.execFileSync as CallableFunction)("python", ["-c", "open('.env').read()"], {
+            cwd: "C:\\work",
+          }),
         ).toThrow(/permission denied/i);
         expect(
           (cpMock.spawnSync as CallableFunction)(
@@ -2160,10 +2150,7 @@ describe("isSensitivePath", () => {
         sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\authorized-write");
 
         expect(
-          permissionModule.shouldBlockRead(
-            new URL("file:///C:/authorized-read/report.txt"),
-            false,
-          ),
+          permissionModule.shouldBlockRead(new URL("file:///C:/authorized-read/report.txt"), false),
         ).toBe(false);
         expect(
           permissionModule.shouldBlockWrite(new URL("file:///C:/authorized-write/output.txt")),
@@ -2183,7 +2170,9 @@ describe("isSensitivePath", () => {
       const originalRo = sandboxStateModule.state._roDirs;
       const originalRw = sandboxStateModule.state._rwDirs;
       let requestKind = "";
-      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((filePath: fs.PathLike) => {
+      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((
+        filePath: fs.PathLike,
+      ) => {
         return String(filePath).includes("sensitive-alias")
           ? "D:\\private\\.env"
           : "D:\\private\\notes.txt";
@@ -2206,7 +2195,9 @@ describe("isSensitivePath", () => {
         expect(requestKind).toBe("directory-access");
 
         permissionModule.clearCaches();
-        expect(permissionModule.shouldBlockRead("C:\\authorized\\sensitive-alias", false)).toBe(true);
+        expect(permissionModule.shouldBlockRead("C:\\authorized\\sensitive-alias", false)).toBe(
+          true,
+        );
         expect(requestKind).toBe("sensitive-file");
       } finally {
         realpathSpy.mockRestore();
@@ -2225,7 +2216,9 @@ describe("isSensitivePath", () => {
       const originalActive = sandboxStateModule.state.sandboxActive;
       const originalRo = sandboxStateModule.state._roDirs;
       const originalRw = sandboxStateModule.state._rwDirs;
-      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((filePath: fs.PathLike) => {
+      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((
+        filePath: fs.PathLike,
+      ) => {
         if (String(filePath).toLowerCase() === "c:\\safe\\junction") return "D:\\private";
         const error = new Error("not found") as NodeJS.ErrnoException;
         error.code = "ENOENT";
@@ -2244,9 +2237,7 @@ describe("isSensitivePath", () => {
         sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\safe");
 
         const nested = "C:\\safe\\junction\\new\\file.txt";
-        expect(permissionModule.canonicalizeWritePath(nested)).toBe(
-          "D:\\private\\new\\file.txt",
-        );
+        expect(permissionModule.canonicalizeWritePath(nested)).toBe("D:\\private\\new\\file.txt");
         expect(permissionModule.shouldBlockWrite(nested)).toBe(true);
       } finally {
         realpathSpy.mockRestore();
@@ -2264,7 +2255,9 @@ describe("isSensitivePath", () => {
       const originalActive = sandboxStateModule.state.sandboxActive;
       const originalRo = sandboxStateModule.state._roDirs;
       const originalRw = sandboxStateModule.state._rwDirs;
-      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((filePath: fs.PathLike) => {
+      const realpathSpy = vi.spyOn(fs, "realpathSync").mockImplementation(((
+        filePath: fs.PathLike,
+      ) => {
         const value = String(filePath).toLowerCase();
         if (value === "c:\\outside\\link.txt") return "C:\\safe\\target.txt";
         return String(filePath);
@@ -2376,10 +2369,7 @@ describe("isSensitivePath", () => {
 
         permissionModule.clearCaches();
         expect(() =>
-          (fsMock.linkSync as CallableFunction)(
-            "C:\\source\\.env",
-            "C:\\destination\\public.txt",
-          ),
+          (fsMock.linkSync as CallableFunction)("C:\\source\\.env", "C:\\destination\\public.txt"),
         ).toThrow(/read blocked/i);
         expect(linkSync).not.toHaveBeenCalled();
 
@@ -2471,9 +2461,9 @@ describe("isSensitivePath", () => {
         sandboxStateModule.state._rwDirs = sandboxStateModule.normDirList("C:\\work");
         fsHooks.install(fsMock);
 
-        expect(() =>
-          (fsMock.openSync as CallableFunction)("C:\\work\\.env", "r+"),
-        ).toThrow(/read blocked/i);
+        expect(() => (fsMock.openSync as CallableFunction)("C:\\work\\.env", "r+")).toThrow(
+          /read blocked/i,
+        );
         permissionModule.clearCaches();
         expect(() =>
           (fsMock.openSync as CallableFunction)("C:\\work\\.env", fs.constants.O_RDWR),

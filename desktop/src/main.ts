@@ -3452,12 +3452,7 @@ function registerIpcHandlers(): void {
   // --- Settings ---
   ipcMain.handle("settings:get", () => settingsStore.store);
   ipcMain.handle("settings:set", (_event, key: string, value: any) => {
-    if (
-      key === "privacyLevel" &&
-      value !== "basic" &&
-      value !== "balanced" &&
-      value !== "strict"
-    ) {
+    if (key === "privacyLevel" && value !== "basic" && value !== "balanced" && value !== "strict") {
       throw new Error(`Invalid privacy level: ${String(value)}`);
     }
     settingsStore.set(key as any, value);

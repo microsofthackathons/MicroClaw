@@ -1367,11 +1367,7 @@ function install(cp, getExternalApps) {
       }
       var la = buildLA(cmd, ensureUtf8Args(cmd, Array.isArray(args) ? args : []));
       var co = stripShell(spawnOpts);
-      var _denied = preBlockShellCommand(
-        cmd,
-        Array.isArray(args) ? args : [],
-        co && co.cwd,
-      );
+      var _denied = preBlockShellCommand(cmd, Array.isArray(args) ? args : [], co && co.cwd);
       if (_denied) {
         var _blockMsg =
           _denied.reason === "sensitive"
@@ -1515,11 +1511,7 @@ function install(cp, getExternalApps) {
       }
       var la = buildLA(cmd, ensureUtf8Args(cmd, Array.isArray(args) ? args : []));
       var co = stripShell(syncOpts);
-      var _denied = preBlockShellCommand(
-        cmd,
-        Array.isArray(args) ? args : [],
-        co && co.cwd,
-      );
+      var _denied = preBlockShellCommand(cmd, Array.isArray(args) ? args : [], co && co.cwd);
       if (_denied) {
         var _blockMsg =
           _denied.reason === "sensitive"
@@ -1874,11 +1866,7 @@ function install(cp, getExternalApps) {
       }
       var la = buildLA(file, ensureUtf8Args(file, Array.isArray(args) ? args : []));
       var co = stripShell(getChildOptions(args, opts));
-      var _denied = preBlockShellCommand(
-        file,
-        Array.isArray(args) ? args : [],
-        co && co.cwd,
-      );
+      var _denied = preBlockShellCommand(file, Array.isArray(args) ? args : [], co && co.cwd);
       if (_denied) {
         process.stderr.write(
           "[sandbox] execFileSync: " +
@@ -1923,12 +1911,7 @@ function install(cp, getExternalApps) {
       }
       return;
     }
-    var _execSensitiveDenied = preBlockSensitiveCommand(
-      cmdStr,
-      [],
-      execOpts && execOpts.cwd,
-      true,
-    );
+    var _execSensitiveDenied = preBlockSensitiveCommand(cmdStr, [], execOpts && execOpts.cwd, true);
     if (_execSensitiveDenied) {
       if (typeof callback === "function") {
         process.nextTick(function () {
@@ -2032,12 +2015,7 @@ function install(cp, getExternalApps) {
     if (declareResult) {
       return Buffer.from(formatDeclareResult(declareResult), "utf-8");
     }
-    var _execSyncSensitiveDenied = preBlockSensitiveCommand(
-      cmdStr,
-      [],
-      opts && opts.cwd,
-      true,
-    );
+    var _execSyncSensitiveDenied = preBlockSensitiveCommand(cmdStr, [], opts && opts.cwd, true);
     if (_execSyncSensitiveDenied) throw blockedError(_execSyncSensitiveDenied);
     // Intercept inline declare-access comment — strip it, request permissions, then execute the rest
     var strippedCmd = tryInlineDeclareAccess(cmdStr);
