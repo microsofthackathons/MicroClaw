@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -748,6 +749,50 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertIn("package/old.txt", inventory)
         self.assertEqual(tx.manifest.phase, UpgradePhase.INSTALLING)
 
+    def test_backup_excludes_generated_plugin_skills_directory(self) -> None:
+        plugin_skills = self.state / "plugin-skills"
+        plugin_skills.mkdir()
+        (plugin_skills / "generated.txt").write_text("generated", encoding="utf-8")
+
+        tx = self._create()
+        tx.backup()
+
+        self.assertFalse((tx.backup_dir / "state" / "plugin-skills").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction behavior")
+    def test_backup_ignores_broken_plugin_skill_junction(self) -> None:
+        plugin_skills = self.state / "plugin-skills"
+        plugin_skills.mkdir()
+        target = self.root / "browser-skill-target"
+        target.mkdir()
+        junction = plugin_skills / "browser-automation"
+        result = subprocess.run(
+            [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                str(junction),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest(f"could not create test junction: {result.stderr.strip()}")
+        shutil.rmtree(target)
+
+        try:
+            tx = self._create()
+            tx.backup()
+
+            self.assertFalse((tx.backup_dir / "state" / "plugin-skills").exists())
+        finally:
+            if upgrade._is_link_or_junction(junction):
+                junction.rmdir()
+
     def test_backup_excludes_log_files_but_preserves_log_named_directories(self) -> None:
         audit_log = self.state / "audit.log"
         audit_log.mkdir()
@@ -1069,6 +1114,36 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         tx.complete_rollback()
         self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLED_BACK)
         self.assertTrue(self.lock_path.exists())
+
+    def test_cross_device_rollback_ignores_generated_plugin_skills_in_quarantine(self) -> None:
+        tx = self._create()
+        tx.backup()
+        plugin_skills = self.state / "plugin-skills"
+        plugin_skills.mkdir()
+        (plugin_skills / "generated.txt").write_text("generated", encoding="utf-8")
+        (self.state / "openclaw.json").write_text("failed-state", encoding="utf-8")
+        failed_state = tx.backup_dir / "failed" / "state"
+        real_rename = upgrade._durable_rename
+
+        def cross_device_state_move(
+            source: Path,
+            destination: Path,
+            *,
+            replace: bool = False,
+        ) -> None:
+            if source == self.state and destination == failed_state:
+                raise OSError(errno.EXDEV, "cross-device state move")
+            real_rename(source, destination, replace=replace)
+
+        with unittest.mock.patch.object(
+            upgrade,
+            "_durable_rename",
+            side_effect=cross_device_state_move,
+        ):
+            tx.rollback()
+
+        self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
+        self.assertFalse((failed_state / "plugin-skills").exists())
 
     def test_rollback_flushes_staging_before_durable_restore_and_rolled_back(self) -> None:
         tx = self._create()

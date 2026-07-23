@@ -449,6 +449,24 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
         self.ws._stop_validation_gateway.assert_called_once_with(process)
 
+    def test_backing_up_rollback_skips_gateway_health_check(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = "2026.3.12"
+        transaction.manifest.phase = UpgradePhase.BACKING_UP
+
+        def rollback():
+            transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+
+        transaction.rollback.side_effect = rollback
+        self.ws._start_validation_gateway = unittest.mock.Mock()
+
+        self.assertTrue(self.ws._rollback_openclaw_transaction(transaction))
+
+        transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+        transaction.mark_rollback_failed.assert_not_called()
+        self.ws._start_validation_gateway.assert_not_called()
+
     def test_new_install_rollback_does_not_start_a_missing_previous_gateway(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.source_version = None
