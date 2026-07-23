@@ -151,7 +151,7 @@
       <!-- Skills -->
       <section class="panel-section">
         <div class="section-head">
-          <span class="section-title">Skills</span>
+          <span class="section-title">{{ t("usage.skillsTitle") }}</span>
           <button class="section-add" :title="t('usage.openSkills')" @click="goSkillSettings">
             +
           </button>

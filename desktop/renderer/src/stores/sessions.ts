@@ -71,6 +71,13 @@ export const useSessionStore = defineStore("sessions", () => {
     saveToStorage(sessions.value);
   }
 
+  /** Remove every session from the sidebar list. */
+  function clearAll() {
+    sessions.value = [];
+    currentKey.value = null;
+    saveToStorage(sessions.value);
+  }
+
   /** Auto-generate a title from the first user message. */
   function autoTitle(key: string, firstMessage: string) {
     const s = sessions.value.find((s) => s.key === key);
@@ -88,6 +95,7 @@ export const useSessionStore = defineStore("sessions", () => {
     ensureSession,
     updateSession,
     removeSession,
+    clearAll,
     autoTitle,
   };
 });

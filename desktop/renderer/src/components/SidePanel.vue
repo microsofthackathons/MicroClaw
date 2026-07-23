@@ -128,31 +128,11 @@
       </div>
     </div>
 
-    <!-- Bottom user info -->
+    <!-- Bottom connection status -->
     <div class="sp-footer">
-      <div class="sp-user">
-        <div class="sp-user-avatar">
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
-        </div>
-        <div class="sp-user-info">
-          <div class="sp-user-name">{{ t("sidebar.userName") }}</div>
-          <div class="sp-user-status">
-            <span class="sp-status-dot"></span>
-            {{ t("sidebar.connected") }}
-          </div>
-        </div>
+      <div class="sp-status" :class="{ 'is-connected': chatStore.wsConnected }">
+        <span class="sp-status-dot"></span>
+        {{ chatStore.wsConnected ? t("sidebar.connected") : t("sidebar.disconnected") }}
       </div>
     </div>
   </aside>
@@ -552,52 +532,28 @@ html.dark .sp-menu-item.active {
   padding: 12px clamp(12px, 2vw, 24px) clamp(12px, 2vw, 24px);
 }
 
-.sp-user {
+.sp-status {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.sp-user-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: #8a9ba8;
-  color: #fff;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-}
-
-html.dark .sp-user-avatar {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-}
-
-.sp-user-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.sp-user-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.sp-user-status {
-  font-size: 11px;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
 }
 
 .sp-status-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  background: var(--text-muted);
+  transition: background 0.2s;
+}
+
+.sp-status.is-connected {
+  color: var(--text-secondary);
+}
+
+.sp-status.is-connected .sp-status-dot {
   background: var(--success);
 }
 

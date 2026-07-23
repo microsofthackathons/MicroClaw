@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Skills ---
   skills: {
     list: () => ipcRenderer.invoke("skills:list"),
+    refresh: () => ipcRenderer.invoke("skills:refresh"),
     updateAllowlist: (allowBundled: string[]) =>
       ipcRenderer.invoke("skills:update-allowlist", allowBundled),
     updateManagedEntries: (entries: Record<string, { enabled: boolean }>) =>
@@ -81,6 +82,9 @@ contextBridge.exposeInMainWorld("openclaw", {
 
     /** Abort the current run on a session. */
     abort: (sessionKey: string) => ipcRenderer.invoke("chat:abort", { sessionKey }),
+
+    /** Clear ALL persisted chat history on the gateway. */
+    clearHistory: () => ipcRenderer.invoke("chat:clear-history"),
 
     /**
      * Subscribe to chat events (delta, final, aborted, error).
