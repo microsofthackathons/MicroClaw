@@ -4,18 +4,82 @@
     <div class="sp-drag-region"></div>
 
     <!-- Brand / avatar row -->
-    <div class="sp-brand">
-      <div class="sp-brand-inner" @click="toggleMode">
+    <div class="sp-brand" ref="brandTriggerRef">
+      <div class="sp-brand-inner" @click="toggleAgentFlyout">
         <img class="sp-brand-avatar" :src="currentAgent.avatar" :alt="currentAgent.name" />
         <div>
           <div class="sp-brand-name">{{ currentAgent.name }}</div>
           <div class="sp-brand-tagline">{{ t("sidebar.tagline") }}</div>
         </div>
+        <span class="sp-conn-dot" :title="t('sidebar.connected')" :aria-label="t('sidebar.connected')"></span>
       </div>
     </div>
 
-    <!-- Navigation (default) -->
-    <nav v-if="panelMode === 'chats'" class="sp-nav">
+    <Teleport to="body">
+      <div
+        v-if="isAgentFlyoutOpen"
+        ref="flyoutRef"
+        class="sp-agent-flyout"
+        :style="flyoutStyle"
+        @click.stop
+      >
+        <div class="sp-agent-flyout-header">
+          <button class="sp-agent-flyout-search-btn" @click="focusAgentSearch">
+            {{ t("sidebar.agents") }}
+          </button>
+          <button
+            class="sp-agent-flyout-add-btn"
+            :title="t('sidebar.newAgent')"
+            :aria-label="t('sidebar.newAgent')"
+            @click="handleCreateAgent"
+          >
+            <IconPlus :size="16" />
+          </button>
+        </div>
+
+        <input
+          ref="flyoutSearchInputRef"
+          v-model="agentQuery"
+          class="sp-agent-flyout-input"
+          :placeholder="t('sidebar.searchAgents')"
+          type="text"
+        />
+
+        <div class="sp-agent-avatar-list">
+          <button
+            v-for="agent in filteredAgents"
+            :key="agent.id"
+            class="sp-agent-avatar-item"
+            :class="{ active: agentStore.currentAgentId === agent.id }"
+            :title="agent.name"
+            @click="handleAgentSelect(agent.id)"
+          >
+            <img class="sp-agent-avatar-img" :src="agent.avatar" :alt="agent.name" />
+            <span class="sp-agent-avatar-name">{{ agent.name }}</span>
+          </button>
+        </div>
+
+        <button class="sp-agent-flyout-footer" @click="handleExploreAgents">
+          <span>{{ t("sidebar.explorePopularAgents") }}</span>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </button>
+      </div>
+    </Teleport>
+
+    <!-- Navigation -->
+    <nav class="sp-nav">
       <!-- Create new chat button -->
       <button class="sp-create-btn" @click="createNewChat">
         <IconPlus :size="18" />
@@ -131,67 +195,18 @@
       </button>
     </nav>
 
-    <!-- Agent list (after clicking brand) -->
-    <div v-else class="sp-nav sp-agent-section">
-      <AgentSearch v-model="searchQuery" :placeholder="t('sidebar.searchAgents')" />
-      <button class="sp-create-btn" @click="handleCreateAgent">
-        <IconPlus :size="18" />
-        <span>{{ t("sidebar.newAgent") }}</span>
-      </button>
-      <div class="sp-agent-list">
-        <AgentListItem
-          v-for="agent in filteredAgents"
-          :key="agent.id"
-          :agent="agent"
-          :is-active="agentStore.currentAgentId === agent.id"
-          @select="handleAgentSelect"
-          @quick-task="handleQuickTask"
-        />
-      </div>
-    </div>
-
-    <!-- Bottom user info -->
-    <div class="sp-footer">
-      <div class="sp-user">
-        <div class="sp-user-avatar">
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
-        </div>
-        <div class="sp-user-info">
-          <div class="sp-user-name">{{ t("sidebar.userName") }}</div>
-          <div class="sp-user-status">
-            <span class="sp-status-dot"></span>
-            {{ t("sidebar.connected") }}
-          </div>
-        </div>
-      </div>
-    </div>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/sessions";
 import { useAgentStore } from "@/stores/agents";
-import { useAgentList } from "@/composables/useAgentList";
 import { t } from "@/i18n";
 import { useUsagePanel } from "@/composables/useUsagePanel";
-import AgentSearch from "@/components/agent/AgentSearch.vue";
-import AgentListItem from "@/components/agent/AgentListItem.vue";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
@@ -202,12 +217,32 @@ const gateway = useGatewayStore();
 const chatStore = useChatStore();
 const sessionStore = useSessionStore();
 const agentStore = useAgentStore();
-const { searchQuery, filteredAgents } = useAgentList(computed(() => agentStore.addedAgents));
 
 const { open: openUsage } = useUsagePanel();
 
 const chatExpanded = ref(true);
-const panelMode = ref<"chats" | "agents">("chats");
+const isAgentFlyoutOpen = ref(false);
+const agentQuery = ref("");
+const flyoutRef = ref<HTMLElement | null>(null);
+const brandTriggerRef = ref<HTMLElement | null>(null);
+const flyoutSearchInputRef = ref<HTMLInputElement | null>(null);
+const flyoutTop = ref(0);
+const flyoutLeft = ref(0);
+
+const flyoutStyle = computed(() => ({
+  top: `${flyoutTop.value}px`,
+  left: `${flyoutLeft.value}px`,
+}));
+
+const filteredAgents = computed(() => {
+  const q = agentQuery.value.trim().toLowerCase();
+  if (!q) return agentStore.agents;
+  return agentStore.agents.filter((agent) => {
+    const name = agent.name.toLowerCase();
+    const desc = (agent.description || "").toLowerCase();
+    return name.includes(q) || desc.includes(q);
+  });
+});
 
 const currentAgent = computed(() => {
   const session = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
@@ -217,6 +252,17 @@ const currentAgent = computed(() => {
 
 onMounted(() => {
   gateway.refreshWeixinStatus();
+  document.addEventListener("mousedown", handleDocumentPointerDown);
+  document.addEventListener("keydown", handleDocumentKeyDown);
+  window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("scroll", handleWindowScroll, true);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("mousedown", handleDocumentPointerDown);
+  document.removeEventListener("keydown", handleDocumentKeyDown);
+  window.removeEventListener("resize", handleWindowResize);
+  window.removeEventListener("scroll", handleWindowScroll, true);
 });
 
 /**
@@ -238,16 +284,67 @@ function ensureEmptySession() {
   }
 }
 
-function toggleMode() {
-  if (panelMode.value === "chats") {
-    panelMode.value = "agents";
-    ensureEmptySession();
-    router.push(`/chat/${agentStore.currentAgentId}`);
-  } else {
-    panelMode.value = "chats";
-    const currentSession = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
-    const agentId = currentSession?.agentId || "main";
-    router.push(`/chat/${agentId}`);
+function toggleAgentFlyout() {
+  isAgentFlyoutOpen.value = !isAgentFlyoutOpen.value;
+  if (isAgentFlyoutOpen.value) {
+    nextTick(() => {
+      updateFlyoutPosition();
+      flyoutSearchInputRef.value?.focus();
+    });
+  }
+}
+
+function closeAgentFlyout() {
+  isAgentFlyoutOpen.value = false;
+}
+
+function focusAgentSearch() {
+  if (!isAgentFlyoutOpen.value) {
+    isAgentFlyoutOpen.value = true;
+  }
+  nextTick(() => {
+    updateFlyoutPosition();
+    flyoutSearchInputRef.value?.focus();
+  });
+}
+
+function updateFlyoutPosition() {
+  const trigger = brandTriggerRef.value;
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  const gap = 12;
+  const flyoutWidth = flyoutRef.value?.offsetWidth || 260;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const maxTop = viewportHeight - 120;
+
+  flyoutLeft.value = Math.min(rect.right + gap, viewportWidth - flyoutWidth - 12);
+  flyoutTop.value = Math.max(8, Math.min(rect.top, maxTop));
+}
+
+function handleWindowResize() {
+  if (isAgentFlyoutOpen.value) {
+    updateFlyoutPosition();
+  }
+}
+
+function handleWindowScroll() {
+  if (isAgentFlyoutOpen.value) {
+    updateFlyoutPosition();
+  }
+}
+
+function handleDocumentPointerDown(event: MouseEvent) {
+  if (!isAgentFlyoutOpen.value) return;
+  const target = event.target as Node;
+  if (flyoutRef.value?.contains(target)) return;
+  if (brandTriggerRef.value?.contains(target)) return;
+  closeAgentFlyout();
+}
+
+function handleDocumentKeyDown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    closeAgentFlyout();
   }
 }
 
@@ -281,17 +378,20 @@ function clearComposeDraft() {
 function handleAgentSelect(agentId: string) {
   clearComposeDraft();
   agentStore.selectAgent(agentId);
-  ensureEmptySession();
-  router.push(`/chat/${agentId}`);
-}
-
-async function handleQuickTask(task: string) {
-  const agentId = agentStore.currentAgentId;
-  await router.push(`/chat/${agentId}`);
-  chatStore.pendingPrompt = task;
+  if (route.path.startsWith("/chat")) {
+    ensureEmptySession();
+    router.push(`/chat/${agentId}`);
+  }
+  closeAgentFlyout();
 }
 
 function handleCreateAgent() {
+  closeAgentFlyout();
+  router.push("/chat/market");
+}
+
+function handleExploreAgents() {
+  closeAgentFlyout();
   router.push("/chat/market");
 }
 </script>
@@ -316,7 +416,7 @@ html.dark .side-panel {
 }
 
 .sp-drag-region {
-  height: 36px;
+  height: 12px;
   -webkit-app-region: drag;
   flex-shrink: 0;
 }
@@ -327,6 +427,7 @@ html.dark .side-panel {
 }
 
 .sp-brand-inner {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -358,6 +459,21 @@ html.dark .sp-brand-inner:hover {
   flex-shrink: 0;
 }
 
+.sp-conn-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--success);
+  border: 2px solid #f9f5f2;
+}
+
+html.dark .sp-conn-dot {
+  border-color: var(--bg-tertiary);
+}
+
 .sp-brand-name {
   font-size: 16px;
   font-weight: 600;
@@ -370,13 +486,182 @@ html.dark .sp-brand-inner:hover {
   margin-top: 2px;
 }
 
+.sp-agent-flyout {
+  position: fixed;
+  width: min(260px, calc(100vw - 24px));
+  max-height: min(62vh, 520px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e9e5e1;
+  border-radius: 14px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.12);
+  z-index: 30;
+}
+
+html.dark .sp-agent-flyout {
+  background: var(--bg-secondary);
+  border-color: var(--border);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+}
+
+.sp-agent-flyout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sp-agent-flyout-search-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 2px;
+  font-family: inherit;
+}
+
+.sp-agent-flyout-search-btn:hover {
+  color: var(--text-primary);
+}
+
+.sp-agent-flyout-add-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: #f4efea;
+  color: var(--text-primary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.sp-agent-flyout-add-btn:hover {
+  background: #e9e2dc;
+}
+
+html.dark .sp-agent-flyout-add-btn {
+  background: var(--bg-tertiary);
+}
+
+html.dark .sp-agent-flyout-add-btn:hover {
+  background: var(--border);
+}
+
+.sp-agent-flyout-input {
+  width: 100%;
+  border: 1px solid #e3ddd7;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.sp-agent-flyout-input:focus {
+  border-color: #c9beb3;
+}
+
+html.dark .sp-agent-flyout-input {
+  background: var(--bg-primary);
+  border-color: var(--border);
+}
+
+.sp-agent-avatar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.sp-agent-avatar-item {
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.sp-agent-avatar-item:hover {
+  background: #f7f2ee;
+}
+
+html.dark .sp-agent-avatar-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.sp-agent-avatar-item.active {
+  background: #efe8e1;
+}
+
+html.dark .sp-agent-avatar-item.active {
+  background: var(--bg-tertiary);
+}
+
+.sp-agent-avatar-img {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.sp-agent-avatar-name {
+  flex: 1;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+.sp-agent-flyout-footer {
+  margin-top: 2px;
+  border: none;
+  border-top: 1px solid #ece7e2;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 4px 2px;
+  text-align: right;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.sp-agent-flyout-footer:hover {
+  color: var(--text-primary);
+}
+
+html.dark .sp-agent-flyout-footer {
+  border-top-color: var(--border);
+}
+
 /* ── Create chat button ── */
 .sp-create-btn {
   width: 100%;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 10px 16px;
+  padding: 10px 20px 10px 16px;
   margin-bottom: 16px;
   background: #1d1d1f;
   border: none;
@@ -569,60 +854,6 @@ html.dark .sp-menu-item.active {
   color: var(--text-primary);
 }
 
-/* ── Footer ── */
-.sp-footer {
-  padding: 12px clamp(12px, 2vw, 24px) clamp(12px, 2vw, 24px);
-}
-
-.sp-user {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.sp-user-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: #8a9ba8;
-  color: #fff;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-}
-
-html.dark .sp-user-avatar {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-}
-
-.sp-user-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.sp-user-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.sp-user-status {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.sp-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-}
-
 /* ── Agent section ── */
 .sp-agent-section {
   display: flex;
@@ -640,4 +871,5 @@ html.dark .sp-user-avatar {
   flex-direction: column;
   gap: 4px;
 }
+
 </style>

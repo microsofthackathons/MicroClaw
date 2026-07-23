@@ -40,9 +40,11 @@ export default {
   "sidebar.points": "Available: 500 Credits",
   "sidebar.settings": "Settings",
   "sidebar.usage": "Usage",
-  "sidebar.createChat": "Create Chat",
+  "sidebar.createChat": "Create New Chat",
   "sidebar.chats": "Chats",
   "sidebar.noChats": "No chats yet",
+  "sidebar.agents": "Agents",
+  "sidebar.explorePopularAgents": "Explore more popular agents",
   "sidebar.phone": "Phone",
   "sidebar.tagline": "Weave the future through conversation",
 
