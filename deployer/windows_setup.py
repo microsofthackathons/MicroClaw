@@ -1136,8 +1136,12 @@ class WindowsSetup:
     def _rollback_openclaw_transaction(self, transaction: OpenClawUpgradeTransaction) -> bool:
         process: subprocess.Popen | None = None
         try:
+            original_phase = transaction.manifest.phase
             transaction.rollback()
             if transaction.manifest.phase == UpgradePhase.ROLLED_BACK:
+                return True
+            if original_phase == UpgradePhase.BACKING_UP:
+                transaction.complete_rollback()
                 return True
             source_version = transaction.manifest.source_version
             if source_version is not None:

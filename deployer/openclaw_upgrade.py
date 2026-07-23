@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
@@ -255,6 +256,15 @@ def _remove_path(path: Path) -> None:
         path.unlink(missing_ok=True)
     elif path.exists():
         shutil.rmtree(path)
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        return bool(path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except (AttributeError, OSError):
+        return False
 
 
 def _durable_remove(path: Path) -> None:
@@ -625,11 +635,23 @@ class OpenClawUpgradeTransaction:
         self.manifest.phase = phase
         self._persist()
 
+    def _ignore_generated_state(self, directory: str, names: list[str]) -> set[str]:
+        current_dir = Path(directory)
+        if current_dir.resolve(strict=False) != Path(self.manifest.state_dir).resolve(strict=False):
+            return set()
+        plugin_skills = current_dir / "plugin-skills"
+        if "plugin-skills" in names and (
+            plugin_skills.is_dir() or _is_link_or_junction(plugin_skills)
+        ):
+            return {"plugin-skills"}
+        return set()
+
     def _ignore_state(self, directory: str, names: list[str]) -> set[str]:
         current_dir = Path(directory)
-        ignored = {
+        ignored = self._ignore_generated_state(directory, names)
+        ignored.update(
             name for name in names if name.endswith(".log") and (current_dir / name).is_file()
-        }
+        )
         if current_dir.resolve(strict=False) == Path(self.manifest.state_dir).resolve(strict=False):
             ignored.update(
                 name
@@ -732,7 +754,13 @@ class OpenClawUpgradeTransaction:
                 raise
             staging = failed.with_name(f".{failed.name}.{uuid.uuid4().hex}.quarantine")
             if live.is_dir() and not live.is_symlink():
-                shutil.copytree(live, staging)
+                ignore = (
+                    self._ignore_generated_state
+                    if live.resolve(strict=False)
+                    == Path(self.manifest.state_dir).resolve(strict=False)
+                    else None
+                )
+                shutil.copytree(live, staging, ignore=ignore)
                 _fsync_payload_tree(staging)
             else:
                 shutil.copy2(live, staging)
