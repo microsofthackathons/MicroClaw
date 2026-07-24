@@ -383,6 +383,52 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertFalse(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
         self.ws._install_openclaw_from_registry.assert_not_called()
 
+    def test_git_download_bases_start_with_selected_and_are_deduped(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        bases = self.ws._git_download_bases()
+
+        names = [name for name, _base in bases]
+        urls = [base for _name, base in bases]
+        self.assertEqual(names[0], MIRROR_NPMMIRROR)
+        self.assertIn(MIRROR_OFFICIAL, names)
+        # No duplicate download bases (official + huawei share the GitHub base).
+        self.assertEqual(len(urls), len(set(urls)))
+
+    def test_git_download_falls_through_blocked_mirror(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        attempted: list[str] = []
+        blocked_base = MIRRORS[MIRROR_NPMMIRROR]["git_mirror_base"]
+
+        def fake_download(url, dest):
+            attempted.append(url)
+            if url.startswith(blocked_base):
+                raise OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+            Path(dest).write_bytes(b"git")
+
+        self.ws._download_with_progress = fake_download
+
+        with tempfile.TemporaryDirectory() as directory:
+            dl_path = Path(directory) / "PortableGit.7z.exe"
+            self.assertTrue(
+                self.ws._download_git_installer("2.53.0", "PortableGit.7z.exe", dl_path)
+            )
+            self.assertTrue(dl_path.exists())
+
+        self.assertGreater(len(attempted), 1)
+        self.assertFalse(attempted[-1].startswith(blocked_base))
+
+    def test_git_download_fails_when_all_mirrors_blocked(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        self.ws._download_with_progress = unittest.mock.Mock(
+            side_effect=OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            dl_path = Path(directory) / "PortableGit.7z.exe"
+            self.assertFalse(
+                self.ws._download_git_installer("2.53.0", "PortableGit.7z.exe", dl_path)
+            )
+
     def test_automatic_registry_fallbacks_are_https(self):
         self.ws.cfg = _Config()
 
