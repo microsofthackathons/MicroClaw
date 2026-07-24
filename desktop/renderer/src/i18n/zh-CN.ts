@@ -364,8 +364,6 @@ export default {
   "settings.delete": "删除",
   "settings.noCustomModels": "暂无已配置模型",
   "settings.githubCopilotAuth": "GitHub Copilot · GitHub 设备登录",
-  "settings.loadingCopilotModels": "正在加载 GitHub Copilot 模型…",
-  "settings.copilotModelsLoadFailed": "无法加载 GitHub Copilot 模型：{error}",
   "settings.modelName": "模型名称",
   "settings.baseUrl": "Base URL",
   "settings.apiKey": "API Key",
