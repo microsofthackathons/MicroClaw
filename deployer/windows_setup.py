@@ -133,6 +133,9 @@ class WindowsSetup:
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
         self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
+        # Optional UI hook forwarded to upgrade transactions so long backup /
+        # restore file operations can report progress instead of looking frozen.
+        self.progress_callback: Callable[[str], None] | None = None
         self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
         self.weixin_plugin_enabled = True  # Install by default
 
@@ -1133,7 +1136,28 @@ class WindowsSetup:
             return False
         return True
 
+    def _discard_failed_transaction(
+        self, transaction: OpenClawUpgradeTransaction, reason: str
+    ) -> None:
+        """Abandon a transaction whose rollback failed so future installs work.
+
+        Leaving it in ``rollback-failed`` keeps the manifest recoverable and
+        retains the upgrade lock, which permanently blocks every subsequent
+        install with ``UpgradeInProgressError``. Discarding clears that state;
+        the live installation is left as-is and later steps reinstall OpenClaw.
+        """
+        self.log.warn(
+            f"OpenClaw upgrade rollback could not complete ({reason}); discarding "
+            "transaction state so future installs are not blocked. The existing "
+            "OpenClaw installation was left in place."
+        )
+        try:
+            transaction.discard()
+        except Exception as discard_error:
+            self.log.error(f"Failed to discard OpenClaw upgrade transaction: {discard_error}")
+
     def _rollback_openclaw_transaction(self, transaction: OpenClawUpgradeTransaction) -> bool:
+        transaction.progress_callback = self.progress_callback
         process: subprocess.Popen | None = None
         try:
             original_phase = transaction.manifest.phase
@@ -1150,19 +1174,17 @@ class WindowsSetup:
                     self.log.error(
                         "Previous OpenClaw Gateway did not become healthy after rollback"
                     )
-                    transaction.mark_rollback_failed()
+                    self._discard_failed_transaction(
+                        transaction, "restored gateway did not become healthy"
+                    )
                     return False
             transaction.complete_rollback()
             return True
         except Exception as error:
-            if transaction.manifest.phase == UpgradePhase.ROLLING_BACK:
-                try:
-                    transaction.mark_rollback_failed()
-                except Exception as persist_error:
-                    error.add_note(f"also failed to persist rollback-failed: {persist_error}")
             self.log.error(
                 f"Failed to restore OpenClaw backup at {transaction.backup_dir}: {error}"
             )
+            self._discard_failed_transaction(transaction, str(error) or error.__class__.__name__)
             return False
         finally:
             self._stop_validation_gateway(process)
@@ -1213,6 +1235,7 @@ class WindowsSetup:
                 installation=source,
             )
             self._openclaw_transaction = transaction
+            transaction.progress_callback = self.progress_callback
             if not self._gateway_is_stopped_for_upgrade():
                 transaction.close()
                 self._openclaw_transaction = None

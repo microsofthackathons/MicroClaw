@@ -9,7 +9,8 @@ import re
 import shutil
 import stat
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -110,8 +111,23 @@ def _flush_and_fsync(file: Any) -> None:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb+") as file:
-        os.fsync(file.fileno())
+    try:
+        with path.open("rb+") as file:
+            os.fsync(file.fileno())
+    except PermissionError:
+        # On Windows a file carrying the read-only attribute cannot be opened
+        # for writing, which os.fsync (FlushFileBuffers) requires. npm packages
+        # frequently ship read-only files, so temporarily clear the attribute so
+        # the durability flush still happens, then restore the original mode.
+        if os.name != "nt":
+            raise
+        original_mode = path.stat().st_mode
+        os.chmod(path, stat.S_IWRITE)
+        try:
+            with path.open("rb+") as file:
+                os.fsync(file.fileno())
+        finally:
+            os.chmod(path, original_mode)
 
 
 def _directory_fsync_is_unsupported(error: OSError) -> bool:
@@ -276,15 +292,61 @@ def _durable_remove(path: Path) -> None:
     _fsync_directory(path.parent)
 
 
-def _fsync_payload_tree(root: Path) -> None:
+def _make_writable_and_retry(func: Any, target: Any, _exc: Any) -> None:
+    """rmtree onexc handler: clear the read-only attribute, then retry once.
+
+    npm packages ship many read-only files that otherwise make ``rmtree`` fail
+    on Windows with ``WinError 5`` (access denied).
+    """
+    try:
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+    except OSError:
+        pass
+
+
+def _force_remove_tree(path: Path) -> None:
+    """Best-effort recursive removal that tolerates read-only files."""
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, onexc=_make_writable_and_retry)
+        return
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    path.unlink(missing_ok=True)
+
+
+_FSYNC_MAX_WORKERS = 16
+
+
+def _fsync_payload_tree(
+    root: Path,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> None:
     if not root.exists():
         return
+    files: list[Path] = []
     directories = [root]
     for path in root.rglob("*"):
         if path.is_file():
-            _fsync_file(path)
+            files.append(path)
         elif path.is_dir():
             directories.append(path)
+    total = len(files)
+    if total:
+        # fsync is a blocking C call that releases the GIL, so a thread pool
+        # turns the per-file durability flush from a serial ~90 files/sec crawl
+        # (22+ min for a 36k-file npm package) into a concurrent I/O batch.
+        done = 0
+        report_every = max(1, total // 100)
+        with ThreadPoolExecutor(max_workers=_FSYNC_MAX_WORKERS) as pool:
+            for _ in pool.map(_fsync_file, files):
+                done += 1
+                if on_progress is not None and (done % report_every == 0 or done == total):
+                    on_progress(done, total)
     for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
         _fsync_directory(directory)
 
@@ -437,6 +499,10 @@ class OpenClawUpgradeTransaction:
         self.microclaw_root = microclaw_root.resolve(strict=False)
         self.manifest = manifest
         self._held_lock = held_lock
+        # Optional UI hook: called with a human-readable status string during
+        # long per-file operations (backup / restore fsync) so the installer
+        # can show progress instead of appearing frozen.
+        self.progress_callback: Callable[[str], None] | None = None
         roots = trusted_openclaw_prefixes() if trusted_prefixes is None else trusted_prefixes
         self._trusted_prefixes = {_require_absolute(Path(path), "trusted prefix") for path in roots}
         self._validate_manifest()
@@ -666,6 +732,17 @@ class OpenClawUpgradeTransaction:
         )
         return (self.backup_dir if backup_dir is None else backup_dir) / "shims" / relative
 
+    def _payload_progress(self, action: str) -> Callable[[int, int], None] | None:
+        callback = self.progress_callback
+        if callback is None:
+            return None
+
+        def report(done: int, total: int) -> None:
+            if total:
+                callback(f"{action} ({done:,}/{total:,} files)")
+
+        return report
+
     def backup(self) -> None:
         self.set_phase(UpgradePhase.BACKING_UP)
         package_dir = Path(self.manifest.package_dir)
@@ -708,7 +785,7 @@ class OpenClawUpgradeTransaction:
             staging / "shims",
             staging / "state",
         ):
-            _fsync_payload_tree(payload_root)
+            _fsync_payload_tree(payload_root, self._payload_progress("Backing up OpenClaw files"))
 
         metadata_files = {
             staging / "transaction.json",
@@ -774,7 +851,7 @@ class OpenClawUpgradeTransaction:
             _durable_mkdir(live.parent)
             staging = live.with_name(f".{live.name}.{uuid.uuid4().hex}.restore")
             shutil.copytree(backup, staging)
-            _fsync_payload_tree(staging)
+            _fsync_payload_tree(staging, self._payload_progress("Restoring OpenClaw files"))
         self._move_to_failed(live, failed)
         if staging is not None:
             _durable_rename(staging, live)
@@ -858,6 +935,44 @@ class OpenClawUpgradeTransaction:
             held_lock = self._held_lock
             if held_lock is not None and not held_lock.released:
                 _RETAINED_FAILED_LOCKS[held_lock.owner_token] = held_lock
+
+    def discard(self) -> None:
+        """Abandon a transaction whose rollback could not complete.
+
+        Removes the on-disk manifest, lock file, and backup tree, and releases
+        the retained lock so future installs are not permanently blocked by a
+        ``rollback-failed`` transaction (which stays in ``RECOVERABLE_PHASES``
+        and re-acquires the lock on every ``load``). Because restores stage a
+        copy and only swap the live tree with a final atomic rename, a failure
+        during staging/fsync leaves the live installation intact; callers should
+        reinstall OpenClaw to repair any partial state. This never raises.
+        """
+        held_lock = self._held_lock
+        if held_lock is not None:
+            if _RETAINED_FAILED_LOCKS.get(held_lock.owner_token) is held_lock:
+                del _RETAINED_FAILED_LOCKS[held_lock.owner_token]
+            # Release (close) the lock handle before deleting the lock file so
+            # Windows does not refuse the unlink for an open file.
+            held_lock.release(held_lock.owner_token)
+            self._held_lock = None
+
+        backup_root = self.backup_root
+        for target in (self.manifest_path, self.lock_path, self.backup_dir):
+            try:
+                _force_remove_tree(target)
+            except OSError:
+                pass
+        # Sweep any orphaned staging/quarantine dirs left in the backup root.
+        try:
+            if backup_root.exists():
+                for child in backup_root.iterdir():
+                    if child.name.startswith("."):
+                        try:
+                            _force_remove_tree(child)
+                        except OSError:
+                            pass
+        except OSError:
+            pass
 
 
 def process_is_alive(pid: int) -> bool:
