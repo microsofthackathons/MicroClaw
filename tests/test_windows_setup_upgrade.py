@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from deployer.openclaw_upgrade import UpgradePhase
 from deployer.openclaw_version import OPENCLAW_TARGET_VERSION
-from deployer.windows_setup import WindowsSetup
+from deployer.windows_setup import ActiveGateway, ActiveInstallation, WindowsSetup, _ProcessInfo
 
 
 class _Config:
@@ -191,6 +191,92 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws.prepare_openclaw_upgrade())
         self.assertIsNone(self.ws._openclaw_transaction)
+
+    def test_active_gateway_uses_listening_pid_when_lock_is_missing(self):
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=True)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._find_listening_pid = unittest.mock.Mock(return_value=4321)
+
+        gateway = self.ws.get_active_gateway()
+
+        self.assertEqual(gateway, ActiveGateway(pid=4321, port=18789, lock_path=None))
+
+    def test_finds_microclaw_ancestor_for_gateway(self):
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={
+                100: _ProcessInfo(50, "MicroClawDesktop.exe", "MicroClawDesktop.exe"),
+                200: _ProcessInfo(100, "node.exe", "node helper.js"),
+                300: _ProcessInfo(200, "node.exe", "node openclaw.mjs gateway"),
+            }
+        )
+
+        self.assertEqual(self.ws._find_managing_desktop_pid(300), 100)
+
+    def test_active_installation_detects_desktop_without_a_gateway(self):
+        self.ws.get_active_gateway = unittest.mock.Mock(return_value=None)
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={
+                100: _ProcessInfo(50, "MicroClawDesktop.exe", "MicroClawDesktop.exe"),
+                200: _ProcessInfo(100, "MicroClawDesktop.exe", "MicroClawDesktop.exe --type=gpu"),
+            }
+        )
+
+        self.assertEqual(
+            self.ws.get_active_installation(),
+            ActiveInstallation(pids=(100,), gateway=None),
+        )
+
+    def test_unverified_port_owner_is_not_selected_for_termination(self):
+        gateway = ActiveGateway(pid=300, port=18789, lock_path=None)
+        self.ws.get_active_gateway = unittest.mock.Mock(return_value=gateway)
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={
+                300: _ProcessInfo(50, "unrelated-server.exe", "unrelated-server.exe"),
+            }
+        )
+
+        self.assertEqual(
+            self.ws.get_active_installation(),
+            ActiveInstallation(pids=(), gateway=gateway),
+        )
+
+    def test_confirmed_upgrade_stop_targets_only_the_managing_process_tree(self):
+        gateway = ActiveGateway(
+            pid=300,
+            port=18789,
+            lock_path=self.local_appdata / "Temp" / "openclaw" / "gateway.lock",
+        )
+        active = ActiveInstallation(pids=(100,), gateway=gateway)
+        self.ws.get_active_installation = unittest.mock.Mock(side_effect=[active, None])
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=False):
+            self.assertTrue(self.ws.stop_active_installation_for_upgrade(active))
+
+        self.ws._run.assert_any_call(
+            ["taskkill", "/PID", "100", "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertFalse(
+            any(
+                "/IM" in call.args[0] or "node.exe" in call.args[0]
+                for call in self.ws._run.call_args_list
+            )
+        )
+
+    def test_unknown_port_owner_is_never_terminated(self):
+        gateway = ActiveGateway(pid=300, port=18789, lock_path=None)
+        active = ActiveInstallation(pids=(), gateway=gateway)
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=active)
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertFalse(self.ws.stop_active_installation_for_upgrade(active))
+
+        self.ws._run.assert_not_called()
 
     def test_prepare_still_snapshots_a_stopped_exact_target_installation(self):
         prefix = self.home / ".openclaw-node"
@@ -523,6 +609,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             archive.writestr("MicroClawDesktop.exe", "new")
 
         self.ws._find_local_desktop_zip = unittest.mock.Mock(return_value=desktop_zip)
+        self.ws._process_snapshot = unittest.mock.Mock(return_value={})
         self.ws._run = unittest.mock.Mock(
             return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
         )
@@ -535,6 +622,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             (install_dir / "MicroClawDesktop.exe").read_text(encoding="utf-8"),
             "new",
         )
+        self.ws._run.assert_not_called()
 
 
 if __name__ == "__main__":

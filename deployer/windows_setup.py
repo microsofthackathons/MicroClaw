@@ -120,6 +120,26 @@ class OpenClawInstallAttempt:
     installed_version: str | None
 
 
+@dataclass(frozen=True)
+class ActiveGateway:
+    pid: int | None
+    port: int
+    lock_path: Path | None
+
+
+@dataclass(frozen=True)
+class ActiveInstallation:
+    pids: tuple[int, ...]
+    gateway: ActiveGateway | None
+
+
+@dataclass(frozen=True)
+class _ProcessInfo:
+    parent_pid: int
+    name: str
+    command_line: str
+
+
 class WindowsSetup:
     """Handles Node.js + OpenClaw installation on Windows natively."""
 
@@ -1123,12 +1143,229 @@ class WindowsSetup:
                 return {**payload, "lockPath": str(lock_path)}
         return None
 
-    def _gateway_is_stopped_for_upgrade(self) -> bool:
+    def _find_listening_pid(self, port: int) -> int | None:
+        try:
+            result = self._run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            columns = line.split()
+            if len(columns) < 5 or columns[0].upper() != "TCP":
+                continue
+            if columns[3].upper() != "LISTENING":
+                continue
+            local_address = columns[1].rsplit(":", 1)
+            if len(local_address) != 2 or local_address[1] != str(port):
+                continue
+            try:
+                pid = int(columns[4])
+            except ValueError:
+                continue
+            if pid > 0:
+                return pid
+        return None
+
+    def get_active_gateway(self) -> ActiveGateway | None:
         port = int(self.cfg.get("gateway.port", 18789))
         active_lock = self._find_active_gateway_lock()
-        if self._is_tcp_port_open(port) or active_lock is not None:
-            owner_pid = active_lock.get("pid") if active_lock else None
-            owner = f" (pid {owner_pid})" if isinstance(owner_pid, int) else ""
+        port_open = self._is_tcp_port_open(port)
+        if not port_open and active_lock is None:
+            return None
+
+        pid = active_lock.get("pid") if active_lock else None
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            pid = self._find_listening_pid(port) if port_open else None
+        lock_port = active_lock.get("port") if active_lock else None
+        if (
+            isinstance(lock_port, int)
+            and not isinstance(lock_port, bool)
+            and 1 <= lock_port <= 65535
+        ):
+            port = lock_port
+        lock_path = active_lock.get("lockPath") if active_lock else None
+        return ActiveGateway(
+            pid=pid,
+            port=port,
+            lock_path=Path(lock_path) if isinstance(lock_path, str) else None,
+        )
+
+    def _process_snapshot(self) -> dict[int, _ProcessInfo]:
+        command = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+        )
+        try:
+            result = self._run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {}
+        rows = payload if isinstance(payload, list) else [payload]
+        snapshot: dict[int, _ProcessInfo] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            pid = row.get("ProcessId")
+            parent_pid = row.get("ParentProcessId")
+            name = row.get("Name")
+            command_line = row.get("CommandLine")
+            if (
+                isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and pid > 0
+                and isinstance(parent_pid, int)
+                and not isinstance(parent_pid, bool)
+                and isinstance(name, str)
+            ):
+                snapshot[pid] = _ProcessInfo(
+                    parent_pid=parent_pid,
+                    name=name,
+                    command_line=command_line if isinstance(command_line, str) else "",
+                )
+        return snapshot
+
+    def _find_managing_desktop_pid(
+        self,
+        gateway_pid: int,
+        snapshot: dict[int, _ProcessInfo] | None = None,
+    ) -> int | None:
+        snapshot = snapshot if snapshot is not None else self._process_snapshot()
+        current_pid = gateway_pid
+        visited: set[int] = set()
+        while current_pid > 0 and current_pid not in visited:
+            visited.add(current_pid)
+            process = snapshot.get(current_pid)
+            if process is None:
+                return None
+            if process.name.casefold() in {"microclawdesktop.exe", "openclaw.exe"}:
+                return current_pid
+            current_pid = process.parent_pid
+        return None
+
+    @staticmethod
+    def _desktop_process_roots(snapshot: dict[int, _ProcessInfo]) -> tuple[int, ...]:
+        managed_names = {"microclawdesktop.exe", "openclaw.exe"}
+        managed_pids = {
+            pid for pid, process in snapshot.items() if process.name.casefold() in managed_names
+        }
+        return tuple(
+            sorted(pid for pid in managed_pids if snapshot[pid].parent_pid not in managed_pids)
+        )
+
+    @staticmethod
+    def _is_openclaw_gateway_process(
+        pid: int,
+        snapshot: dict[int, _ProcessInfo],
+    ) -> bool:
+        process = snapshot.get(pid)
+        if process is None:
+            return False
+        if process.name.casefold() in {"microclawdesktop.exe", "openclaw.exe"}:
+            return True
+        return "openclaw" in process.command_line.casefold()
+
+    def get_active_installation(self) -> ActiveInstallation | None:
+        gateway = self.get_active_gateway()
+        snapshot = self._process_snapshot()
+        target_pids = set(self._desktop_process_roots(snapshot))
+
+        if gateway is not None and gateway.pid is not None:
+            desktop_pid = self._find_managing_desktop_pid(gateway.pid, snapshot)
+            if desktop_pid is not None:
+                target_pids.add(desktop_pid)
+            elif gateway.lock_path is not None or self._is_openclaw_gateway_process(
+                gateway.pid, snapshot
+            ):
+                target_pids.add(gateway.pid)
+
+        if gateway is None and not target_pids:
+            return None
+        return ActiveInstallation(pids=tuple(sorted(target_pids)), gateway=gateway)
+
+    def stop_active_installation_for_upgrade(self, active: ActiveInstallation) -> bool:
+        current = self.get_active_installation()
+        if current is None:
+            return True
+        active = current
+        if not active.pids:
+            gateway = active.gateway
+            port = gateway.port if gateway is not None else int(self.cfg.get("gateway.port", 18789))
+            self.log.error(
+                f"Port {port} is in use, but the owning process could not be safely "
+                "identified as MicroClaw/OpenClaw."
+            )
+            return False
+
+        if os.getpid() in active.pids:
+            self.log.error("Refusing to stop the installer process while preparing the upgrade.")
+            return False
+
+        self.log.step("Closing the running MicroClaw/OpenClaw instance…")
+        if active.gateway is not None:
+            try:
+                self._run(
+                    ["schtasks", "/End", "/TN", "OpenClaw Gateway"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        for target_pid in active.pids:
+            try:
+                result = self._run(
+                    ["taskkill", "/PID", str(target_pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                self.log.error(f"Could not close MicroClaw/OpenClaw: {error}")
+                return False
+            if result.returncode != 0 and process_is_alive(target_pid):
+                detail = result.stderr.strip() or result.stdout.strip()
+                self.log.error(f"Could not close MicroClaw/OpenClaw: {detail}")
+                return False
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if self.get_active_installation() is None:
+                gateway = active.gateway
+                if gateway is not None and gateway.lock_path is not None:
+                    try:
+                        gateway.lock_path.unlink(missing_ok=True)
+                    except OSError as error:
+                        self.log.warn(f"Could not remove stale Gateway lock: {error}")
+                self.log.success("MicroClaw/OpenClaw closed; continuing installation")
+                return True
+            time.sleep(0.5)
+
+        self.log.error(
+            "MicroClaw/OpenClaw restarted or did not close. Exit it from the system tray and retry."
+        )
+        return False
+
+    def _gateway_is_stopped_for_upgrade(self) -> bool:
+        active_gateway = self.get_active_gateway()
+        if active_gateway is not None:
+            owner = f" (pid {active_gateway.pid})" if active_gateway.pid is not None else ""
             self.log.error(
                 f"OpenClaw Gateway is active{owner}. Exit MicroClaw and standalone "
                 "OpenClaw before upgrading."
@@ -2464,16 +2701,11 @@ class WindowsSetup:
         exe_path = install_dir / "MicroClawDesktop.exe"
         if exe_path.exists():
             self.log.info("检测到已有桌面客户端，将覆盖更新…")
-            # Kill running MicroClawDesktop.exe to release file locks
-            try:
-                self._run(
-                    ["taskkill", "/F", "/IM", "MicroClawDesktop.exe"],
-                    capture_output=True,
-                    timeout=10,
+            if self._desktop_process_roots(self._process_snapshot()):
+                self.log.error(
+                    "MicroClaw restarted during the upgrade. Exit it from the system tray and retry."
                 )
-                time.sleep(1)
-            except Exception:
-                pass
+                return False
             # Overlay the verified archive instead of deleting the whole
             # MicroClaw root: active upgrade manifests and backups live under
             # this directory and must survive until the transaction commits.

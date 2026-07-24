@@ -25,6 +25,18 @@ interface AppSettings {
   privacyLevel: string;
 }
 
+type GitHubCopilotLoginEvent =
+  | {
+      sessionId: string;
+      status: "code";
+      verificationUrl: string;
+      userCode: string;
+      expiresInMs: number;
+    }
+  | { sessionId: string; status: "success"; defaultModel?: string }
+  | { sessionId: string; status: "cancelled" }
+  | { sessionId: string; status: "error"; message: string };
+
 interface SkillEntry {
   id: string;
   name: string;
@@ -195,7 +207,14 @@ interface OpenClawAPI {
       apiFormat: string;
       modelName: string;
       reasoningEffort?: string;
-    }): Promise<{ ok: boolean; message: string }>;
+    }): Promise<{ ok: boolean; message: string; baseUrl?: string }>;
+    startGitHubCopilotLogin(): Promise<{ sessionId: string }>;
+    cancelGitHubCopilotLogin(sessionId?: string): Promise<{ cancelled: boolean }>;
+    getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
+    listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
+    onGitHubCopilotLoginEvent(
+      callback: (event: GitHubCopilotLoginEvent) => void,
+    ): () => void;
   };
   studio: {
     start(): Promise<number>;
