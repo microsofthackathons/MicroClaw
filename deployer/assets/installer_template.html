@@ -187,6 +187,15 @@
         border-radius: 99px;
         transition: width 0.18s linear;
       }
+      .install-progress-status {
+        margin: 0 0 12px;
+        max-width: 260px;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--text-secondary, #888);
+        text-align: center;
+        min-height: 16px;
+      }
 
       /* ---------- setup ---------- */
       .setup-wrap {
@@ -391,6 +400,7 @@
           <div id="progressWrap" class="install-progress-wrap hidden">
             <div id="progressBar" class="install-progress-bar"></div>
           </div>
+          <p id="progressStatus" class="install-progress-status hidden"></p>
           <button id="quick" class="btn-primary"></button>
           <button id="custom" class="btn-ghost"></button>
         </div>
@@ -459,6 +469,7 @@
         desc: $("desc"),
         progressWrap: $("progressWrap"),
         progressBar: $("progressBar"),
+        progressStatus: $("progressStatus"),
         quick: $("quick"),
         custom: $("custom"),
         close: $("close"),
@@ -499,7 +510,11 @@
         els.custom.classList.toggle("hidden", on);
         els.desc.classList.toggle("hidden", !on);
         els.progressWrap.classList.toggle("hidden", !on);
-        if (!on) els.progressBar.style.width = "0%";
+        if (!on) {
+          els.progressBar.style.width = "0%";
+          els.progressStatus.classList.add("hidden");
+          els.progressStatus.textContent = "";
+        }
       }
 
       function showError(msg) {
@@ -638,11 +653,17 @@
               startTextCycle();
             }
             els.progressBar.style.width = snap.progress + "%";
+            const step = snap.progress_text || "";
+            const detail = snap.progress_detail || "";
+            const statusText = detail ? step + " — " + detail : step;
+            els.progressStatus.textContent = statusText;
+            els.progressStatus.classList.toggle("hidden", !statusText);
           }
           if (snap.status === "success") {
             stopImageCycle();
             stopTextCycle();
             els.progressBar.style.width = "100%";
+            els.progressStatus.classList.add("hidden");
             if (!state.closeTimer) {
               state.closeTimer = setTimeout(() => window.pywebview.api.close_window(), 2000);
             }

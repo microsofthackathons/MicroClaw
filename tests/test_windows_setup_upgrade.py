@@ -66,6 +66,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._git_bin = None
         self.ws._rollback_actions = []
         self.ws._openclaw_transaction = None
+        self.ws.progress_callback = None
         self.ws.appcontainer_enabled = True
         self.ws.weixin_plugin_enabled = True
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
@@ -480,7 +481,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         transaction.complete_rollback.assert_called_once()
         self.ws._start_validation_gateway.assert_not_called()
 
-    def test_failed_rollback_health_check_remains_recoverable(self):
+    def test_failed_rollback_health_check_discards_transaction(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.source_version = "2026.3.12"
         transaction.manifest.phase = UpgradePhase.ROLLING_BACK
@@ -491,9 +492,11 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws.rollback_openclaw_upgrade())
 
-        transaction.mark_rollback_failed.assert_called_once()
+        # A failed post-rollback health check must not leave a permanent
+        # rollback-failed brick; the transaction is discarded so future
+        # installs are not blocked by the retained lock.
+        transaction.discard.assert_called_once()
         transaction.complete_rollback.assert_not_called()
-        self.assertIs(self.ws._openclaw_transaction, transaction)
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"

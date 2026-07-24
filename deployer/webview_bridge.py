@@ -207,6 +207,7 @@ class WebInstallerBridge:
             "allow_read": self._default_allow_read,
             "progress": 0,
             "progress_text": "",
+            "progress_detail": "",
             "status": "idle",
             "running": False,
             "error": "",
@@ -329,11 +330,23 @@ class WebInstallerBridge:
         with self._state_lock:
             self._state["progress"] = pct
             self._state["progress_text"] = text
+            # A new step supersedes any sub-status detail from the previous one.
+            self._state["progress_detail"] = ""
             self._state["status"] = "running"
             self._state["running"] = True
 
+    def _set_progress_detail(self, detail):
+        """Sub-status line fed by long-running file operations (backup/restore).
+
+        Keeps the installer from looking frozen during the multi-minute
+        per-file fsync of a large OpenClaw package.
+        """
+        with self._state_lock:
+            self._state["progress_detail"] = detail or ""
+
     def _install_thread(self):
         ws = WindowsSetup(self._config, self._logger)
+        ws.progress_callback = self._set_progress_detail
 
         steps = [
             (

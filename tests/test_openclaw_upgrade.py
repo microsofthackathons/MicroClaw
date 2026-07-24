@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -173,6 +174,38 @@ class DurabilityHelperTests(unittest.TestCase):
         self.assertTrue(hasattr(upgrade, "_flush_and_fsync"))
         self.assertTrue(hasattr(upgrade, "_fsync_file"))
         self.assertTrue(hasattr(upgrade, "_fsync_directory"))
+
+    def test_fsync_file_flushes_read_only_file_and_restores_attribute(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "readonly.bin"
+            path.write_bytes(b"payload")
+            os.chmod(path, stat.S_IREAD)
+            original_mode = path.stat().st_mode
+
+            # Must not raise even though the file carries the read-only bit
+            # (npm packages ship many such files; the old "rb+" open failed
+            # with WinError 5 and aborted rollback).
+            upgrade._fsync_file(path)
+
+            self.assertEqual(path.stat().st_mode, original_mode)
+            self.assertEqual(path.read_bytes(), b"payload")
+
+    def test_fsync_payload_tree_reports_progress_for_every_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(5):
+                (root / f"file-{index}.bin").write_bytes(b"x")
+            (root / "nested").mkdir()
+            (root / "nested" / "deep.bin").write_bytes(b"y")
+
+            observed: list[tuple[int, int]] = []
+            upgrade._fsync_payload_tree(
+                root, on_progress=lambda done, total: observed.append((done, total))
+            )
+
+            self.assertTrue(observed)
+            # Final callback reports completion of all six files.
+            self.assertEqual(observed[-1], (6, 6))
 
     def test_atomic_json_fsyncs_file_before_durable_replace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -880,7 +913,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         real_atomic_write = upgrade._atomic_json_write
         real_rename = upgrade._durable_rename
 
-        def flush_tree(path: Path) -> None:
+        def flush_tree(path: Path, on_progress=None) -> None:
             events.append(("payload-flush", path, None))
             real_flush_tree(path)
 
@@ -1158,7 +1191,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         real_replace = upgrade._durable_replace
         real_set_phase = tx.set_phase
 
-        def flush_tree(path: Path) -> None:
+        def flush_tree(path: Path, on_progress=None) -> None:
             events.append(("tree-flush", path, None))
             real_flush_tree(path)
 
@@ -1566,6 +1599,39 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         persisted = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(persisted["phase"], "rollback-failed")
         self.assertTrue(self.lock_path.exists())
+
+    def test_discard_clears_failed_transaction_and_unblocks_future_installs(self) -> None:
+        tx = self._create()
+        tx.backup()
+        # Add a read-only file to the backup so discard must tolerate the
+        # read-only attribute when removing the tree (as real npm files do).
+        readonly_backup_file = tx.backup_dir / "package" / "old.txt"
+        readonly_backup_file.parent.mkdir(parents=True, exist_ok=True)
+        readonly_backup_file.write_text("keep", encoding="utf-8")
+        os.chmod(readonly_backup_file, stat.S_IREAD)
+        with (
+            unittest.mock.patch(
+                "deployer.openclaw_upgrade.shutil.copytree",
+                side_effect=OSError("restore failed"),
+            ),
+            self.assertRaises(OSError),
+        ):
+            tx.rollback()
+        self.assertEqual(tx.manifest.phase, UpgradePhase.ROLLBACK_FAILED)
+
+        held_lock = tx._held_lock
+        tx.discard()
+
+        # On-disk transaction state is gone, and the retained lock is released.
+        self.assertFalse(tx.manifest_path.exists())
+        self.assertFalse(self.lock_path.exists())
+        self.assertFalse(tx.backup_dir.exists())
+        self.assertNotIn(held_lock, upgrade._RETAINED_FAILED_LOCKS.values())
+        # A fresh install is no longer blocked: load() finds nothing and a new
+        # transaction can acquire the lock.
+        self.assertIsNone(self._load())
+        replacement = self._create()
+        self.assertEqual(replacement.manifest.phase, UpgradePhase.BACKING_UP)
 
     def test_commit_requires_nonempty_all_true_validations(self) -> None:
         tx = self._create()
