@@ -10,7 +10,13 @@ from types import SimpleNamespace
 
 from deployer.openclaw_upgrade import UpgradePhase
 from deployer.openclaw_version import OPENCLAW_TARGET_VERSION
-from deployer.windows_setup import WindowsSetup
+from deployer.windows_setup import (
+    MIRROR_HUAWEI,
+    MIRROR_NPMMIRROR,
+    MIRROR_OFFICIAL,
+    MIRRORS,
+    WindowsSetup,
+)
 
 
 class _Config:
@@ -383,6 +389,56 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(
             all(registry.startswith("https://") for registry in self.ws._npm_registry_candidates())
         )
+
+    def test_node_download_bases_start_with_selected_and_are_deduped(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        bases = self.ws._node_download_bases()
+
+        names = [name for name, _base in bases]
+        urls = [base for _name, base in bases]
+        # Selected mirror is tried first, then the fallback order.
+        self.assertEqual(names[0], MIRROR_NPMMIRROR)
+        self.assertIn(MIRROR_OFFICIAL, names)
+        self.assertIn(MIRROR_HUAWEI, names)
+        # No duplicate download bases.
+        self.assertEqual(len(urls), len(set(urls)))
+
+    def test_node_download_falls_through_blocked_mirror(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        attempted: list[str] = []
+        blocked_base = MIRRORS[MIRROR_NPMMIRROR]["node_download_base"]
+
+        def fake_download(url, dest):
+            attempted.append(url)
+            if url.startswith(blocked_base):
+                raise OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+            Path(dest).write_bytes(b"msi")
+
+        self.ws._download_with_progress = fake_download
+        self.ws._verify_node_sha256 = lambda version, path: True
+
+        with tempfile.TemporaryDirectory() as directory:
+            msi_path = Path(directory) / "node.msi"
+            self.assertTrue(self.ws._download_and_verify_node_msi("22.23.1", msi_path))
+            self.assertTrue(msi_path.exists())
+
+        # It tried the blocked mirror first, then fell through to a working one.
+        self.assertGreater(len(attempted), 1)
+        self.assertFalse(self.ws._node_download_base.startswith(blocked_base))
+
+    def test_node_download_fails_when_all_mirrors_blocked(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        self.ws._download_with_progress = unittest.mock.Mock(
+            side_effect=OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+        )
+        self.ws._verify_node_sha256 = unittest.mock.Mock(return_value=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            msi_path = Path(directory) / "node.msi"
+            self.assertFalse(self.ws._download_and_verify_node_msi("22.23.1", msi_path))
+
+        # Verification is never reached when every download fails.
+        self.ws._verify_node_sha256.assert_not_called()
 
     def test_install_uses_prepared_prefix(self):
         prepared = self.home / ".openclaw-node"

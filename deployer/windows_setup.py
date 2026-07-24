@@ -45,6 +45,7 @@ from deployer.skill_catalog import export_catalog_json, export_managed_catalog_j
 MIRROR_OFFICIAL = "official"
 MIRROR_NPMMIRROR = "npmmirror"
 MIRROR_TENCENT = "tencent"
+MIRROR_HUAWEI = "huawei"
 MIRROR_FALLBACK = MIRROR_NPMMIRROR
 NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
 
@@ -64,7 +65,24 @@ MIRRORS = {
         "git_mirror_base": "https://registry.npmmirror.com/-/binary/git-for-windows",  # tencent has no Git mirror
         "npm_registry": "http://mirrors.cloud.tencent.com/npm/",
     },
+    MIRROR_HUAWEI: {
+        # Huawei Cloud mirrors nodejs.org/dist verbatim and stays reachable on
+        # locked-down corporate networks that block the *.npmmirror.com CDN.
+        "node_download_base": "https://repo.huaweicloud.com/nodejs",
+        "git_mirror_base": "https://github.com/git-for-windows/git/releases/download",
+        "npm_registry": NPM_REGISTRY_HUAWEI,
+    },
 }
+
+# Order in which Node.js binary mirrors are tried when the selected one is
+# unreachable. official + Huawei tend to work on corporate networks that block
+# the npmmirror CDN, so they lead the fallback chain.
+NODE_MIRROR_FALLBACK_ORDER = (
+    MIRROR_OFFICIAL,
+    MIRROR_HUAWEI,
+    MIRROR_TENCENT,
+    MIRROR_NPMMIRROR,
+)
 
 # Default install location.
 #
@@ -557,26 +575,86 @@ class WindowsSetup:
         arch = self._get_arch()
         return f"{self._node_download_base}/v{version}/node-v{version}-{arch}.msi"
 
+    def _node_download_bases(self) -> list[tuple[str, str]]:
+        """Ordered, de-duplicated list of ``(mirror_name, node_download_base)``.
+
+        The selected mirror is tried first, followed by ``NODE_MIRROR_FALLBACK_ORDER``
+        so a single blocked CDN (e.g. a corporate ``NPM URL Block`` on
+        npmmirror) no longer dead-ends the Node.js download.
+        """
+        ordered_names = [self._mirror_name, *NODE_MIRROR_FALLBACK_ORDER]
+        bases: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name in ordered_names:
+            mirror = MIRRORS.get(name)
+            if mirror is None:
+                continue
+            base = mirror["node_download_base"]
+            if base not in seen:
+                seen.add(base)
+                bases.append((name, base))
+        return bases
+
+    def _download_and_verify_node_msi(self, version: str, msi_path: Path) -> bool:
+        """Download the Node.js MSI, falling through mirrors until one works.
+
+        A single mirror can be unreachable on a given network (corporate
+        policies often block the npmmirror CDN with an SSL handshake failure),
+        so we try each mirror in turn instead of failing on the first blocked
+        host. Every candidate download is SHA256-verified against the official
+        checksums before it is accepted (fail-closed).
+        """
+        bases = self._node_download_bases()
+        last_error = "no mirrors configured"
+        for index, (name, base) in enumerate(bases, start=1):
+            self._node_download_base = base
+            url = self._get_node_download_url(version)
+            self.log.info(f"Downloading Node.js from {name} ({index}/{len(bases)}): {url}")
+            try:
+                self._download_with_progress(url, msi_path)
+            except Exception as error:
+                last_error = str(error) or error.__class__.__name__
+                self.log.warn(
+                    f"Node.js download from {name} failed ({last_error}); trying next mirror"
+                )
+                msi_path.unlink(missing_ok=True)
+                continue
+            if not self._verify_node_sha256(version, msi_path):
+                last_error = "SHA256 verification failed"
+                self.log.warn(f"Node.js MSI from {name} failed verification; trying next mirror")
+                msi_path.unlink(missing_ok=True)
+                continue
+            return True
+        self.log.error(
+            f"Could not download a verified Node.js MSI from any mirror. Last error: {last_error}"
+        )
+        return False
+
     def _resolve_latest_version(self, major: str) -> str:
         """Resolve '22' to the latest specific version like '22.14.0'."""
         self.log.debug(f"Resolving latest Node.js {major}.x version…")
         import json
         import re
 
-        # Method 1: Use nodejs.org version index (most reliable)
-        try:
-            url = "https://nodejs.org/dist/index.json"
-            req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
-            resp = urllib.request.urlopen(req, timeout=15)
-            with resp:
-                data = json.loads(resp.read())
-            for entry in data:
-                ver = entry.get("version", "").lstrip("v")
-                if ver.startswith(f"{major}."):
-                    self.log.debug(f"Resolved from nodejs.org: {ver}")
-                    return ver
-        except Exception as e:
-            self.log.debug(f"nodejs.org resolve failed: {e}")
+        # Method 1: Use a nodejs.org-compatible version index (most reliable).
+        # Try the official host first, then Huawei's verbatim mirror so version
+        # resolution still works on networks that block nodejs.org.
+        for url in (
+            "https://nodejs.org/dist/index.json",
+            "https://repo.huaweicloud.com/nodejs/index.json",
+        ):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
+                resp = urllib.request.urlopen(req, timeout=15)
+                with resp:
+                    data = json.loads(resp.read())
+                for entry in data:
+                    ver = entry.get("version", "").lstrip("v")
+                    if ver.startswith(f"{major}."):
+                        self.log.debug(f"Resolved from {url}: {ver}")
+                        return ver
+            except Exception as e:
+                self.log.debug(f"version index {url} resolve failed: {e}")
 
         # Method 2: Scrape npmmirror directory listing
         try:
@@ -680,19 +758,14 @@ class WindowsSetup:
             return False
         self.log.info(f"Resolved version: v{version}")
 
-        url = self._get_node_download_url(version)
-        self.log.info(f"Downloading: {url}")
-
         tmp_dir: Path | None = None
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_node_"))
             msi_path = tmp_dir / f"node-v{version}-{self._get_arch()}.msi"
 
-            self._download_with_progress(url, msi_path)
-
-            # Verify SHA256 integrity against official SHASUMS256.txt
-            if not self._verify_node_sha256(version, msi_path):
-                self.log.error("SHA256 verification FAILED — download may be tampered")
+            # Download from the first reachable mirror; each candidate is
+            # SHA256-verified before we accept it.
+            if not self._download_and_verify_node_msi(version, msi_path):
                 return False
 
             # Install via msiexec to the standard per-machine location
