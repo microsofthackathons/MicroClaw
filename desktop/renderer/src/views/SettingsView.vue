@@ -176,44 +176,48 @@
       <!-- Models -->
       <div v-if="activeSection === 'models'" class="section">
         <!-- Models -->
-        <div class="sub-label-row">
+        <div class="sub-label-row model-header-row">
           <span class="sub-label" style="margin-bottom: 0">{{ t("settings.customModels") }}</span>
-          <div class="sub-label-actions">
+          <div class="sub-label-actions model-header-actions">
+            <el-select
+              v-if="customModels.length"
+              class="model-picker-select"
+              :model-value="selectedModel"
+              :loading="Boolean(switchingModelRef)"
+              :disabled="Boolean(switchingModelRef)"
+              filterable
+              @change="selectModel"
+            >
+              <el-option-group
+                v-for="group in modelGroups"
+                :key="group.providerKey"
+                :label="group.label"
+              >
+                <el-option
+                  v-for="model in group.models"
+                  :key="getModelRef(model)"
+                  :label="model.name"
+                  :value="getModelRef(model)"
+                />
+              </el-option-group>
+            </el-select>
             <el-button size="small" type="primary" plain @click="showProviderSetup = true">
               {{ t("settings.switchProvider") }}
             </el-button>
           </div>
         </div>
         <div class="card-group">
-          <div v-if="customModels.length" class="card-row no-border model-picker-row">
+          <div
+            v-if="selectedModelEntry"
+            class="card-row"
+            :class="{ 'no-border': !copilotModelsLoading && !copilotModelsError }"
+          >
             <div class="custom-model-info">
-              <span class="row-label">{{ t("settings.currentModel") }}</span>
-              <span v-if="selectedModelEntry" class="row-sub">{{
-                describeCustomModel(selectedModelEntry)
-              }}</span>
+              <span class="row-label">{{ selectedModelEntry.name }}</span>
+              <span class="row-sub">{{ describeCustomModel(selectedModelEntry) }}</span>
             </div>
-            <div class="model-picker-actions">
-              <el-select
-                class="model-picker-select"
-                :model-value="selectedModel"
-                :loading="Boolean(switchingModelRef)"
-                :disabled="Boolean(switchingModelRef)"
-                filterable
-                @change="selectModel"
-              >
-                <el-option-group
-                  v-for="group in modelGroups"
-                  :key="group.providerKey"
-                  :label="group.label"
-                >
-                  <el-option
-                    v-for="model in group.models"
-                    :key="getModelRef(model)"
-                    :label="model.name"
-                    :value="getModelRef(model)"
-                  />
-                </el-option-group>
-              </el-select>
+            <div class="model-current-actions">
+              <span class="badge badge-green">{{ t("settings.currentSelection") }}</span>
               <template
                 v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
               >
@@ -2369,7 +2373,13 @@ async function clearChatHistory() {
     align-items: flex-start;
   }
 
-  .model-picker-actions {
+  .model-header-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .model-header-actions,
+  .model-current-actions {
     align-self: stretch;
     width: 100%;
     flex-wrap: wrap;
@@ -2509,6 +2519,7 @@ async function clearChatHistory() {
 /* Models & API */
 .sub-label-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 
@@ -2568,11 +2579,7 @@ async function clearChatHistory() {
   white-space: nowrap;
 }
 
-.model-picker-row {
-  gap: 24px;
-}
-
-.model-picker-actions {
+.model-current-actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2580,7 +2587,7 @@ async function clearChatHistory() {
 }
 
 .model-picker-select {
-  width: 360px;
+  width: 300px;
 }
 
 .port-row {
