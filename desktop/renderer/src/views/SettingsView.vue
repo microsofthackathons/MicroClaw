@@ -185,43 +185,51 @@
           </div>
         </div>
         <div class="card-group">
-          <template v-if="customModels.length">
-            <div
-              v-for="(m, idx) in customModels"
-              :key="getModelRef(m)"
-              class="card-row"
-              :class="{
-                'no-border':
-                  idx === customModels.length - 1 && !copilotModelsLoading && !copilotModelsError,
-              }"
-            >
-              <div class="custom-model-info">
-                <span class="row-label">{{ m.name }}</span>
-                <span class="row-sub">{{ describeCustomModel(m) }}</span>
-              </div>
-              <div class="custom-model-actions">
-                <span v-if="getModelRef(m) === selectedModel" class="badge badge-green">{{
-                  t("settings.currentSelection")
-                }}</span>
-                <el-button
-                  v-else
-                  size="small"
-                  :loading="switchingModelRef === getModelRef(m)"
-                  :disabled="Boolean(switchingModelRef)"
-                  @click="selectModel(getModelRef(m))"
-                  >{{ t("settings.select") }}</el-button
-                >
-                <template v-if="m.source !== 'auth-managed'">
-                  <el-button size="small" @click="editCustomModel(idx)">{{
-                    t("settings.edit")
-                  }}</el-button>
-                  <el-button size="small" type="danger" plain @click="removeCustomModel(idx)">{{
-                    t("settings.delete")
-                  }}</el-button>
-                </template>
-              </div>
+          <div v-if="customModels.length" class="card-row no-border model-picker-row">
+            <div class="custom-model-info">
+              <span class="row-label">{{ t("settings.currentModel") }}</span>
+              <span v-if="selectedModelEntry" class="row-sub">{{
+                describeCustomModel(selectedModelEntry)
+              }}</span>
             </div>
-          </template>
+            <div class="model-picker-actions">
+              <el-select
+                class="model-picker-select"
+                :model-value="selectedModel"
+                :loading="Boolean(switchingModelRef)"
+                :disabled="Boolean(switchingModelRef)"
+                filterable
+                @change="selectModel"
+              >
+                <el-option-group
+                  v-for="group in modelGroups"
+                  :key="group.providerKey"
+                  :label="group.label"
+                >
+                  <el-option
+                    v-for="model in group.models"
+                    :key="getModelRef(model)"
+                    :label="model.name"
+                    :value="getModelRef(model)"
+                  />
+                </el-option-group>
+              </el-select>
+              <template
+                v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
+              >
+                <el-button size="small" @click="editCustomModel(selectedModelIndex)">{{
+                  t("settings.edit")
+                }}</el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  @click="removeCustomModel(selectedModelIndex)"
+                  >{{ t("settings.delete") }}</el-button
+                >
+              </template>
+            </div>
+          </div>
           <div
             v-else-if="!copilotModelsLoading && !copilotModelsError"
             class="card-row no-border placeholder-row"
@@ -964,7 +972,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch, computed, nextTick } from "vue";
+import { ref, reactive, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -1320,6 +1328,12 @@ interface ModelFormState {
   reasoningEffort: ReasoningEffort;
 }
 
+interface ModelGroup {
+  providerKey: string;
+  label: string;
+  models: ModelEntry[];
+}
+
 const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }> = [
   { value: "off", labelKey: "settings.reasoningOff" },
   { value: "minimal", labelKey: "settings.reasoningMinimal" },
@@ -1399,6 +1413,25 @@ const switchingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const gatewayPort = ref("18789");
 const showProviderSetup = ref(false);
+const selectedModelEntry = computed(
+  () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
+);
+const selectedModelIndex = computed(() =>
+  customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
+);
+const modelGroups = computed<ModelGroup[]>(() => {
+  const groups = new Map<string, ModelEntry[]>();
+  for (const model of customModels.value) {
+    const models = groups.get(model.providerKey) ?? [];
+    models.push(model);
+    groups.set(model.providerKey, models);
+  }
+  return [...groups.entries()].map(([providerKey, models]) => ({
+    providerKey,
+    label: providerKey === "github-copilot" ? "GitHub Copilot" : providerKey,
+    models,
+  }));
+});
 
 const showEditModel = ref(false);
 const editingIndex = ref(-1);
@@ -1699,6 +1732,9 @@ watch(activeSection, (v) => {
   if (v === "usage" && !usageData.value && !usageLoading.value) {
     loadUsage();
   }
+  if (v === "models" && !showProviderSetup.value) {
+    void refreshModelsConfig();
+  }
   if (v === "security") {
     loadSandboxStatus();
   }
@@ -1791,7 +1827,30 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
   }
 }
 
+async function refreshModelsConfig(): Promise<void> {
+  try {
+    const config = await window.openclaw.config.read();
+    if (!config) return;
+    applyModelsConfig(config);
+    void loadSettingsGitHubCopilotModels();
+  } catch (error) {
+    console.warn("[settings] Failed to refresh model configuration:", error);
+  }
+}
+
+function handleSettingsWindowFocus(): void {
+  if (activeSection.value === "models" && !showProviderSetup.value) {
+    void refreshModelsConfig();
+  }
+}
+
+watch(showProviderSetup, (visible, wasVisible) => {
+  if (wasVisible && !visible) void refreshModelsConfig();
+});
+
 onMounted(async () => {
+  window.addEventListener("focus", handleSettingsWindowFocus);
+
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
@@ -1834,12 +1893,15 @@ onMounted(async () => {
   }
 });
 
+onUnmounted(() => {
+  window.removeEventListener("focus", handleSettingsWindowFocus);
+  copilotModelsGeneration += 1;
+});
+
 // --- Model & Gateway actions ---
 
 async function handleProviderConfigured(): Promise<void> {
-  const config = await window.openclaw.config.read();
-  if (config) applyModelsConfig(config);
-  void loadSettingsGitHubCopilotModels();
+  await refreshModelsConfig();
   ElMessage.success(t("settings.providerConfigured"));
 }
 
@@ -2307,8 +2369,15 @@ async function clearChatHistory() {
     align-items: flex-start;
   }
 
-  .custom-model-actions {
-    align-self: flex-end;
+  .model-picker-actions {
+    align-self: stretch;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .model-picker-select {
+    flex: 1;
+    min-width: 220px;
   }
 }
 
@@ -2487,6 +2556,7 @@ async function clearChatHistory() {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -2498,11 +2568,19 @@ async function clearChatHistory() {
   white-space: nowrap;
 }
 
-.custom-model-actions {
+.model-picker-row {
+  gap: 24px;
+}
+
+.model-picker-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.model-picker-select {
+  width: 360px;
 }
 
 .port-row {

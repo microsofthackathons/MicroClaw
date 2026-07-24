@@ -356,6 +356,7 @@ export default {
   "settings.switchProvider": "添加或切换模型",
   "settings.providerConfigured": "模型供应商已更新",
   "settings.customModels": "模型",
+  "settings.currentModel": "当前模型",
   "settings.addCustomModel": "添加自定义模型",
   "settings.currentSelection": "当前选中",
   "settings.select": "选择",

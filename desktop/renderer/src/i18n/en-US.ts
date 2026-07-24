@@ -374,6 +374,7 @@ export default {
   "settings.switchProvider": "Add or switch model",
   "settings.providerConfigured": "Model provider updated",
   "settings.customModels": "Models",
+  "settings.currentModel": "Current model",
   "settings.addCustomModel": "Add Custom Model",
   "settings.currentSelection": "Current Selection",
   "settings.select": "Select",
