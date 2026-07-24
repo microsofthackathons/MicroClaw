@@ -230,17 +230,8 @@
               </template>
             </div>
           </div>
-          <div
-            v-else-if="!copilotModelsLoading && !copilotModelsError"
-            class="card-row no-border placeholder-row"
-          >
+          <div v-else-if="!copilotModelsLoading" class="card-row no-border placeholder-row">
             <span class="placeholder-text">{{ t("settings.noCustomModels") }}</span>
-          </div>
-          <div v-if="copilotModelsLoading" class="card-row no-border placeholder-row">
-            <span class="placeholder-text">{{ t("settings.loadingCopilotModels") }}</span>
-          </div>
-          <div v-else-if="copilotModelsError" class="card-row no-border placeholder-row">
-            <span class="placeholder-text">{{ copilotModelsError }}</span>
           </div>
         </div>
 
@@ -1408,7 +1399,6 @@ const _builtinModels = ref<ModelEntry[]>([
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const copilotModelsLoading = ref(false);
-const copilotModelsError = ref("");
 const switchingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const gatewayPort = ref("18789");
@@ -1802,7 +1792,6 @@ function applyModelsConfig(config: any): void {
 async function loadSettingsGitHubCopilotModels(): Promise<void> {
   const generation = ++copilotModelsGeneration;
   copilotModelsLoading.value = true;
-  copilotModelsError.value = "";
   const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
   void modelsPromise.catch(() => {});
 
@@ -1819,9 +1808,7 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
     customModels.value = mergeGitHubCopilotModelEntries(customModels.value, models);
   } catch (error) {
     if (generation !== copilotModelsGeneration) return;
-    copilotModelsError.value = t("settings.copilotModelsLoadFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    console.warn("[settings] Could not load GitHub Copilot models:", error);
   } finally {
     if (generation === copilotModelsGeneration) copilotModelsLoading.value = false;
   }

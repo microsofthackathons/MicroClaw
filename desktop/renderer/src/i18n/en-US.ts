@@ -382,8 +382,6 @@ export default {
   "settings.delete": "Delete",
   "settings.noCustomModels": "No configured models yet",
   "settings.githubCopilotAuth": "GitHub Copilot · GitHub device login",
-  "settings.loadingCopilotModels": "Loading GitHub Copilot models…",
-  "settings.copilotModelsLoadFailed": "Could not load GitHub Copilot models: {error}",
   "settings.modelName": "Model Name",
   "settings.baseUrl": "Base URL",
   "settings.apiKey": "API Key",
