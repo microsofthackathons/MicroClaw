@@ -423,11 +423,14 @@
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
-              <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
-                {{ t("settings.askAgent") }}
-              </el-button>
-            </el-tooltip>
+            <el-button
+              v-if="!skill.eligible"
+              class="ask-agent-btn"
+              size="small"
+              @click="askAgentAboutSkill(skill)"
+            >
+              {{ t("settings.askAgent") }}
+            </el-button>
             <el-switch
               v-else
               :model-value="skill.enabled && skill.eligible"
@@ -465,11 +468,14 @@
                 </div>
                 <span class="skill-desc">{{ skill.description }}</span>
               </div>
-              <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
-                <el-button class="ask-agent-btn" size="small" @click="askAgentAboutSkill(skill)">
-                  {{ t("settings.askAgent") }}
-                </el-button>
-              </el-tooltip>
+              <el-button
+                v-if="!skill.eligible"
+                class="ask-agent-btn"
+                size="small"
+                @click="askAgentAboutSkill(skill)"
+              >
+                {{ t("settings.askAgent") }}
+              </el-button>
               <el-switch
                 v-else
                 :model-value="skill.enabled && skill.eligible"

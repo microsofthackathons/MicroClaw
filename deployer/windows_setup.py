@@ -1311,6 +1311,53 @@ class WindowsSetup:
                 registries.append(registry)
         return registries
 
+    def _reachable_npm_registries(self, candidates: list[str], timeout: float = 2.5) -> list[str]:
+        """Filter ``candidates`` down to registries that answer a quick probe.
+
+        Each candidate's ``/-/ping`` endpoint is probed in parallel with a
+        short per-registry ``timeout``. A registry counts as reachable if the
+        host responds at all — even a 4xx/5xx is fine, since that still proves
+        the TCP+TLS handshake completed. Registries that time out or fail to
+        connect (DNS, SSL, or a corporate ``NPM URL Block`` network policy)
+        are dropped so we never hand them to ``npm install``, which would
+        otherwise hang for up to 15 minutes retrying a blocked host.
+
+        Returns the reachable subset ordered fastest-first; unreachable
+        registries are omitted entirely.
+        """
+        import concurrent.futures as _cf
+
+        def _measure(registry: str) -> tuple[str, float]:
+            url = registry.rstrip("/") + "/-/ping"
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
+            start = time.monotonic()
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    resp.read(64)
+                return registry, time.monotonic() - start
+            except urllib.error.HTTPError:
+                # A 404/403 still means the host is reachable.
+                return registry, time.monotonic() - start
+            except Exception:
+                return registry, float("inf")
+
+        if not candidates:
+            return []
+
+        results: list[tuple[str, float]] = []
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+                futures = [pool.submit(_measure, r) for r in candidates]
+                for f in _cf.as_completed(futures, timeout=timeout + 1.0):
+                    results.append(f.result())
+        except Exception as e:
+            self.log.debug(f"npm registry reachability probe failed: {e}")
+
+        reachable = sorted((r for r in results if r[1] != float("inf")), key=lambda x: x[1])
+        for registry, latency in reachable:
+            self.log.debug(f"  npm registry {registry}: {int(latency * 1000)} ms")
+        return [registry for registry, _ in reachable]
+
     def _install_openclaw_from_registry(
         self, install_prefix: Path, registry: str
     ) -> OpenClawInstallAttempt:
@@ -1370,7 +1417,18 @@ class WindowsSetup:
         )
         channel = self.cfg.get("openclaw.channel", "stable")
         expected_version = OPENCLAW_TARGET_VERSION if channel == "stable" else None
-        for registry in self._npm_registry_candidates():
+        candidates = self._npm_registry_candidates()
+        registries = self._reachable_npm_registries(candidates)
+        if not registries:
+            self.log.error(
+                "Cannot reach any npm registry to install OpenClaw. Every candidate "
+                "registry failed a quick reachability probe, which usually means they "
+                "are blocked by your network or IT policy (e.g. a corporate "
+                "'NPM URL Block'). Tried: " + ", ".join(candidates) + ". "
+                "Configure an allowed npm registry via 'npm.registry' and retry."
+            )
+            return False
+        for registry in registries:
             self.log.info(f"  npm registry attempt: {registry}")
             attempt = self._install_openclaw_from_registry(install_prefix, registry)
             installed = attempt.installed_version

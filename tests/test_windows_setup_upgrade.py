@@ -306,6 +306,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_registry_tls_failure_retries_next_registry(self):
         self.ws.cfg = _Config({"npm.registry": "https://registry.npmmirror.com"})
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
         self.ws._install_openclaw_from_registry = unittest.mock.Mock(
             side_effect=[
                 SimpleNamespace(
@@ -326,6 +327,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_registry_policy_or_missing_package_retries_next_registry(self):
         self.ws.cfg = _Config({"npm.registry": "https://packagefeedproxy.microsoft.io/npm/"})
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
 
         for output in (
             "npm error code E404\nnpm error 404 Not Found - GET",
@@ -354,6 +356,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_non_network_npm_failure_does_not_change_registry(self):
         self.ws.cfg = _Config()
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
         self.ws._install_openclaw_from_registry = unittest.mock.Mock(
             return_value=SimpleNamespace(
                 installed_version=None,
@@ -364,6 +367,14 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
         self.assertEqual(self.ws._install_openclaw_from_registry.call_count, 1)
+
+    def test_all_registries_unreachable_fails_fast_without_install(self):
+        self.ws.cfg = _Config()
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: []
+        self.ws._install_openclaw_from_registry = unittest.mock.Mock()
+
+        self.assertFalse(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
+        self.ws._install_openclaw_from_registry.assert_not_called()
 
     def test_automatic_registry_fallbacks_are_https(self):
         self.ws.cfg = _Config()
