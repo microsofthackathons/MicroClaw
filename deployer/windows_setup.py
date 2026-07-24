@@ -84,6 +84,17 @@ NODE_MIRROR_FALLBACK_ORDER = (
     MIRROR_NPMMIRROR,
 )
 
+# Order in which Git-for-Windows mirrors are tried when the selected one is
+# unreachable. The official GitHub releases host works on corp networks that
+# block the npmmirror CDN, so it leads the fallback chain. (official + huawei
+# share the GitHub base and collapse to one entry after de-duplication.)
+GIT_MIRROR_FALLBACK_ORDER = (
+    MIRROR_OFFICIAL,
+    MIRROR_HUAWEI,
+    MIRROR_NPMMIRROR,
+    MIRROR_TENCENT,
+)
+
 # Default install location.
 #
 # The Node.js Windows MSI is authored as a per-machine installer (it does
@@ -334,15 +345,14 @@ class WindowsSetup:
             filename = f"MinGit-{git_version}-32-bit.zip"
         else:
             filename = f"PortableGit-{git_version}-64-bit.7z.exe"
-        url = f"{self._git_mirror_base}/v{git_version}.windows.1/{filename}"
-
         git_dir = Path.home() / ".openclaw-git"
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_git_"))
             dl_path = tmp_dir / filename
 
-            self.log.info(f"Downloading: {url}")
-            self._download_with_progress(url, dl_path)
+            if not self._download_git_installer(git_version, filename, dl_path):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return False
 
             self.log.step("Extracting Git…")
             git_dir.mkdir(parents=True, exist_ok=True)
@@ -390,8 +400,52 @@ class WindowsSetup:
             self.log.error(f"Git install failed: {e}")
             return False
 
+    def _git_download_bases(self) -> list[tuple[str, str]]:
+        """Ordered, de-duplicated list of ``(mirror_name, git_mirror_base)``.
+
+        The selected mirror is tried first, followed by ``GIT_MIRROR_FALLBACK_ORDER``
+        so a single blocked CDN (e.g. a corporate ``NPM URL Block`` on npmmirror)
+        no longer dead-ends the Git download.
+        """
+        ordered_names = [self._mirror_name, *GIT_MIRROR_FALLBACK_ORDER]
+        bases: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name in ordered_names:
+            mirror = MIRRORS.get(name)
+            if mirror is None:
+                continue
+            base = mirror["git_mirror_base"]
+            if base not in seen:
+                seen.add(base)
+                bases.append((name, base))
+        return bases
+
+    def _download_git_installer(self, git_version: str, filename: str, dl_path: Path) -> bool:
+        """Download the Git-for-Windows installer, falling through mirrors.
+
+        A single mirror can be unreachable on a given network (corporate
+        policies often block the npmmirror CDN with an SSL handshake failure),
+        so we try each mirror in turn instead of failing on the first blocked
+        host.
+        """
+        bases = self._git_download_bases()
+        last_error = "no mirrors configured"
+        for index, (name, base) in enumerate(bases, start=1):
+            url = f"{base}/v{git_version}.windows.1/{filename}"
+            self.log.info(f"Downloading Git from {name} ({index}/{len(bases)}): {url}")
+            try:
+                self._download_with_progress(url, dl_path)
+            except Exception as error:
+                last_error = str(error) or error.__class__.__name__
+                self.log.warn(f"Git download from {name} failed ({last_error}); trying next mirror")
+                dl_path.unlink(missing_ok=True)
+                continue
+            return True
+        self.log.error(f"Could not download Git from any mirror. Last error: {last_error}")
+        return False
+
     def _resolve_git_version(self) -> str | None:
-        """Resolve latest Git for Windows version from npmmirror."""
+        """Resolve latest Git for Windows version from GitHub."""
         import json
 
         try:
