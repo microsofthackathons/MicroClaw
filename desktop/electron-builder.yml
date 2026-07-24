@@ -20,6 +20,8 @@ nsis:
   shortcutName: OpenClaw
 
 extraResources:
+  - from: dist/github-copilot-auth-worker.js
+    to: github-copilot-auth-worker.js
   - from: resources/node.exe
     to: node.exe
   - from: resources/openclaw/

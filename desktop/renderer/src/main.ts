@@ -52,6 +52,14 @@ if (isBrowserDev) {
       abort: noopAsync,
       onStreamEvent: noopSub,
     },
+    model: {
+      testConnection: () => Promise.resolve({ ok: true, message: "Connection successful" }),
+      startGitHubCopilotLogin: () => Promise.resolve({ sessionId: "browser-dev" }),
+      cancelGitHubCopilotLogin: () => Promise.resolve({ cancelled: true }),
+      getGitHubCopilotStatus: () => Promise.resolve({ authenticated: false }),
+      listGitHubCopilotModels: () => Promise.resolve([]),
+      onGitHubCopilotLoginEvent: noopSub,
+    },
     plugin: {
       weixin: {
         getStatus: () => Promise.resolve({ loggedIn: false }),

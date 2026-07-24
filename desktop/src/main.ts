@@ -60,6 +60,15 @@ import {
   requestModelEndpoint,
   resolveModelApiKey,
 } from "./model-connection";
+import {
+  getGitHubCopilotAuthStatus,
+  GitHubCopilotAuthManager,
+  type GitHubCopilotAuthRuntime,
+  listGitHubCopilotModels,
+  parseGitHubCopilotGatewayAuthStatus,
+  parseGitHubCopilotGatewayModels,
+} from "./github-copilot-auth";
+import { ensureSelectedModelProviderPlugins } from "./model-provider-plugins";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -189,6 +198,10 @@ let gatewaySpawnedByUs = false;
 let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
+const githubCopilotAuthManager = new GitHubCopilotAuthManager(
+  (event) => mainWindow?.webContents.send("model:github-copilot:login-event", event),
+  (url) => shell.openExternal(url),
+);
 /** Per-session random key for HMAC-signing the external apps whitelist file. */
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
@@ -582,6 +595,23 @@ function readConfig(): any {
   } catch {
     return null;
   }
+}
+
+function resolveGitHubCopilotAuthRuntime(): GitHubCopilotAuthRuntime {
+  const entryPath = resolveOpenClawEntry();
+  const stateDir = getOpenClawStateDir();
+  const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+  fs.mkdirSync(compileCacheDir, { recursive: true });
+  return {
+    nodePath: resolveNodePath(),
+    entryPath,
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, "github-copilot-auth-worker.js")
+      : path.join(__dirname, "github-copilot-auth-worker.js"),
+    openClawPackageDir: resolveOpenClawPackageDir(entryPath),
+    stateDir,
+    compileCacheDir,
+  };
 }
 
 /**
@@ -1133,20 +1163,29 @@ function autoConfigureModelFromEnv(config: any, env: Record<string, string>): vo
 }
 
 /**
- * Ensure any enabled plugin in plugins.entries is also listed in plugins.allow.
- * This makes the gateway load plugins synchronously at startup instead of
- * async auto-discovery, preventing the race where channels miss the initial sweep.
+ * Enable plugins required by the selected model and keep enabled plugin entries
+ * in plugins.allow so the gateway loads them synchronously at startup.
  */
 function ensurePluginsAllow(): void {
   try {
     const config = readConfig();
-    if (!config?.plugins?.entries) return;
+    if (!config) return;
+    let changed = ensureSelectedModelProviderPlugins(config);
+    if (!config?.plugins?.entries) {
+      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      return;
+    }
     const entries = config.plugins.entries as Record<string, { enabled?: boolean }>;
     const enabledIds = Object.keys(entries).filter((id) => entries[id].enabled);
-    if (enabledIds.length === 0) return;
+    if (enabledIds.length === 0) {
+      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      return;
+    }
 
-    if (!config.plugins.allow) config.plugins.allow = [];
-    let changed = false;
+    if (!Array.isArray(config.plugins.allow)) {
+      config.plugins.allow = [];
+      changed = true;
+    }
     for (const id of enabledIds) {
       if (!config.plugins.allow.includes(id)) {
         config.plugins.allow.push(id);
@@ -2578,6 +2617,7 @@ function registerIpcHandlers(): void {
     }
     const stateDir = getOpenClawStateDir();
     await fs.promises.mkdir(stateDir, { recursive: true });
+    ensureSelectedModelProviderPlugins(config);
     await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
@@ -3196,6 +3236,39 @@ function registerIpcHandlers(): void {
       }
     },
   );
+
+  ipcMain.handle("model:github-copilot:start-login", () => ({
+    sessionId: githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime()),
+  }));
+
+  ipcMain.handle("model:github-copilot:cancel-login", (_event, sessionId?: string) => ({
+    cancelled: githubCopilotAuthManager.cancel(sessionId),
+  }));
+
+  ipcMain.handle("model:github-copilot:status", async () => {
+    if (gwClient?.connected) {
+      try {
+        const status = await gwClient.request("models.authStatus", {});
+        return { authenticated: parseGitHubCopilotGatewayAuthStatus(status) };
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway auth status unavailable:", error);
+      }
+    }
+    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime());
+  });
+
+  ipcMain.handle("model:github-copilot:list-models", async () => {
+    if (gwClient?.connected) {
+      try {
+        const result = await gwClient.request("models.list", { view: "all" });
+        const models = parseGitHubCopilotGatewayModels(result);
+        if (models.length > 0) return models;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
+      }
+    }
+    return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
+  });
 
   // --- Usage (via gateway WebSocket sessions.usage) ---
   ipcMain.handle("usage:get-stats", async () => {
@@ -4606,6 +4679,7 @@ app.on("before-quit", () => {
     watcherDebounceTimer = null;
   }
   destroyTray();
+  githubCopilotAuthManager.stop();
   gwClient?.stop();
   studioBackendManager?.stop();
   stopGatewayProcess();

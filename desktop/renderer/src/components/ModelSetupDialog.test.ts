@@ -58,6 +58,12 @@ describe("ModelSetupDialog", () => {
   const restart = vi.fn();
   const testConnection = vi.fn();
   const openExternal = vi.fn();
+  const startGitHubCopilotLogin = vi.fn();
+  const cancelGitHubCopilotLogin = vi.fn();
+  const getGitHubCopilotStatus = vi.fn();
+  const listGitHubCopilotModels = vi.fn();
+  const removeGitHubCopilotListener = vi.fn();
+  let githubCopilotLoginListener: ((event: GitHubCopilotLoginEvent) => void) | undefined;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -69,10 +75,25 @@ describe("ModelSetupDialog", () => {
       message: "Connection successful",
       baseUrl: "http://localhost:11434/v1",
     });
+    startGitHubCopilotLogin.mockResolvedValue({ sessionId: "copilot-session" });
+    cancelGitHubCopilotLogin.mockResolvedValue({ cancelled: true });
+    getGitHubCopilotStatus.mockResolvedValue({ authenticated: false });
+    listGitHubCopilotModels.mockResolvedValue([]);
+    githubCopilotLoginListener = undefined;
     window.openclaw = {
       config: { read, write },
       gateway: { restart },
-      model: { testConnection },
+      model: {
+        testConnection,
+        startGitHubCopilotLogin,
+        cancelGitHubCopilotLogin,
+        getGitHubCopilotStatus,
+        listGitHubCopilotModels,
+        onGitHubCopilotLoginEvent: (listener: (event: GitHubCopilotLoginEvent) => void) => {
+          githubCopilotLoginListener = listener;
+          return removeGitHubCopilotListener;
+        },
+      },
       shell: { openExternal },
     } as unknown as typeof window.openclaw;
   });
@@ -168,6 +189,73 @@ describe("ModelSetupDialog", () => {
     expect(wrapper.text()).toContain("Provider ID");
     expect(wrapper.text()).toContain("API Format");
     expect(wrapper.text()).toContain("API KEY (OPTIONAL)");
+  });
+
+  it("signs into GitHub Copilot with a device code and saves a full model reference", async () => {
+    listGitHubCopilotModels.mockResolvedValueOnce([
+      { id: "github-copilot/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
+      { id: "github-copilot/gpt-5.4", name: "GPT-5.4" },
+    ]);
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+
+    await wrapper.findAll("select")[0].setValue("github-copilot");
+    await flushPromises();
+    expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
+    expect(listGitHubCopilotModels).toHaveBeenCalledOnce();
+
+    await wrapper.find(".primary-action").trigger("mousedown");
+    await flushPromises();
+    expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
+
+    githubCopilotLoginListener?.({
+      sessionId: "copilot-session",
+      status: "code",
+      verificationUrl: "https://github.com/login/device",
+      userCode: "ABCD-1234",
+      expiresInMs: 900_000,
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("ABCD-1234");
+
+    githubCopilotLoginListener?.({
+      sessionId: "copilot-session",
+      status: "success",
+      defaultModel: "github-copilot/gpt-5.4",
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("GitHub Copilot connected");
+    expect(wrapper.findAll("select")[1].element.value).toBe("github-copilot/gpt-5.4");
+
+    await wrapper.find(".primary-action").trigger("mousedown");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0][0]).toMatchObject({
+      agents: {
+        defaults: {
+          model: { primary: "github-copilot/gpt-5.4" },
+        },
+      },
+    });
+    expect(write.mock.calls[0][0].models).toBeUndefined();
+    expect(restart).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an in-progress GitHub device login when the dialog closes", async () => {
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+    await wrapper.findAll("select")[0].setValue("github-copilot");
+    await flushPromises();
+    await wrapper.find(".primary-action").trigger("mousedown");
+    await flushPromises();
+
+    await wrapper.find(".model-setup-close").trigger("click");
+    await flushPromises();
+
+    expect(cancelGitHubCopilotLogin).toHaveBeenCalledWith("copilot-session");
+    expect(write).not.toHaveBeenCalled();
   });
 
   it("validates and saves a keyless local provider using the tested Base URL", async () => {
