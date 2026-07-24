@@ -676,6 +676,13 @@
             els.failMsg.textContent = snap.error + "\n\n" + state.bootstrap.strings.installFailMsg;
             show("failure");
           }
+          if (snap.status === "cancelled") {
+            stopImageCycle();
+            stopTextCycle();
+            setInstalling(false);
+            els.title.textContent = state.bootstrap.strings.installCancelled;
+            show("welcome");
+          }
         } catch (e) {
           /* swallow poll errors */
         }
