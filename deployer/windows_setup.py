@@ -169,6 +169,16 @@ class _ProcessInfo:
     command_line: str
 
 
+class NodeInstallBlocked(RuntimeError):
+    """Node.js MSI failed for a deterministic reason that a retry cannot fix.
+
+    Raised when msiexec aborts on a launch condition (e.g. a *later* version
+    of Node.js is already installed, so the MSI refuses to downgrade). Retrying
+    only re-triggers the UAC prompt and fails again, so the install pipeline
+    treats this as fatal instead of retrying.
+    """
+
+
 class WindowsSetup:
     """Handles Node.js + OpenClaw installation on Windows natively."""
 
@@ -815,6 +825,57 @@ class WindowsSetup:
 
         return False
 
+    def _installed_node_major(self) -> int | None:
+        """Highest major version of any Node.js already installed on the box.
+
+        The Node.js MSI is authored as per-machine and enforces a launch
+        condition that refuses to install an *older* product version over a
+        newer one (``A later version of Node.js is already installed`` ->
+        exit 1603). So we must never target a major below what is already
+        present. We inspect both the PATH ``node`` and the standard MSI
+        install directories.
+        """
+        candidates: list[str] = []
+        on_path = shutil.which("node")
+        if on_path:
+            candidates.append(on_path)
+        for std in _STANDARD_NODE_DIRS:
+            exe = std / "node.exe"
+            if exe.exists():
+                candidates.append(str(exe))
+
+        majors: list[int] = []
+        for exe in candidates:
+            ver = self._get_node_version(exe)
+            if ver:
+                match = re.match(r"v?(\d+)\.", ver)
+                if match:
+                    majors.append(int(match.group(1)))
+        return max(majors) if majors else None
+
+    def _resolve_target_node_version(self) -> str:
+        """Resolve the Node.js version to install, never downgrading.
+
+        Starts from the configured target line (``self.node_version``, default
+        ``22``) but bumps up to the major of any already-installed Node when
+        that is higher, so the per-machine MSI performs an upgrade rather than
+        a blocked downgrade.
+        """
+        target_line = str(self.node_version)
+        match = re.match(r"(\d+)", target_line)
+        target_major = int(match.group(1)) if match else 0
+
+        installed_major = self._installed_node_major()
+        if installed_major is not None and installed_major > target_major:
+            self.log.info(
+                f"Node.js v{installed_major}.x is already installed; targeting the "
+                f"{installed_major}.x line instead of {target_major}.x — the MSI refuses "
+                "to install an older version over a newer one."
+            )
+            target_line = str(installed_major)
+
+        return self._resolve_latest_version(target_line)
+
     def install_node_windows(self) -> bool:
         """Download and install Node.js on Windows via the official signed MSI.
 
@@ -826,7 +887,7 @@ class WindowsSetup:
         """
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
 
-        version = self._resolve_latest_version(self.node_version)
+        version = self._resolve_target_node_version()
         if not _VERSION_RE.match(version):
             self.log.error(f"Invalid resolved version: {version!r}")
             return False
@@ -900,15 +961,23 @@ class WindowsSetup:
                         "Node.js installer did not start. Approve the Windows UAC prompt and retry."
                     )
                 self.log.error(f"msiexec exited with code {result.returncode}; see log: {log_path}")
-                # Surface a short tail of the log to help diagnose
+                # Surface a short tail of the log to help diagnose.
+                msi_log = ""
                 try:
-                    tail = log_path.read_text(encoding="utf-16-le", errors="replace").splitlines()[
-                        -20:
-                    ]
-                    for line in tail:
+                    msi_log = log_path.read_text(encoding="utf-16-le", errors="replace")
+                    for line in msi_log.splitlines()[-20:]:
                         self.log.debug(f"  msi: {line}")
                 except Exception:
                     pass
+                # A launch-condition failure (e.g. a newer Node is already
+                # installed and the MSI refuses to downgrade) is deterministic —
+                # retrying only re-prompts UAC and fails again, so bail out.
+                if "later version" in msi_log.lower() or "LaunchConditions" in msi_log:
+                    raise NodeInstallBlocked(
+                        "A newer version of Node.js is already installed and the installer "
+                        "cannot replace it. Uninstall the existing Node.js (or install a "
+                        "matching/newer version) and run MicroClaw again."
+                    )
                 return False
 
             node_exe = self.node_dir / "node.exe"
@@ -958,6 +1027,10 @@ class WindowsSetup:
             self._register_rollback("删除 Node.js", _rollback_node)
             return True
 
+        except NodeInstallBlocked:
+            # Deterministic, non-retryable — propagate so the pipeline stops
+            # instead of re-prompting UAC on every retry.
+            raise
         except Exception as e:
             self.log.error(f"Node.js install failed: {e}")
             return False

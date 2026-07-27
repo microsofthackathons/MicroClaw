@@ -17,6 +17,7 @@ from deployer.windows_setup import (
     MIRRORS,
     ActiveGateway,
     ActiveInstallation,
+    NodeInstallBlocked,
     WindowsSetup,
     _ProcessInfo,
 )
@@ -517,6 +518,75 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             self.assertFalse(
                 self.ws._download_git_installer("2.53.0", "PortableGit.7z.exe", dl_path)
             )
+
+    def test_resolve_target_node_version_bumps_to_installed_major(self):
+        # An already-installed newer Node (e.g. 24.x) must not be downgraded to
+        # the default 22.x line — the MSI refuses to install an older version.
+        self.ws.node_version = "22"
+        self.ws._installed_node_major = lambda: 24
+        self.ws._resolve_latest_version = lambda major: {
+            "22": "22.23.1",
+            "24": "24.15.0",
+        }[major]
+
+        self.assertEqual(self.ws._resolve_target_node_version(), "24.15.0")
+
+    def test_resolve_target_node_version_keeps_default_when_no_newer(self):
+        self.ws.node_version = "22"
+        self.ws._resolve_latest_version = lambda major: "22.23.1" if major == "22" else "wrong"
+
+        self.ws._installed_node_major = lambda: None
+        self.assertEqual(self.ws._resolve_target_node_version(), "22.23.1")
+
+        self.ws._installed_node_major = lambda: 20
+        self.assertEqual(self.ws._resolve_target_node_version(), "22.23.1")
+
+    def test_installed_node_major_reads_highest(self):
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.shutil.which", return_value="C:/node/node.exe"
+            ),
+            unittest.mock.patch("deployer.windows_setup._STANDARD_NODE_DIRS", ()),
+        ):
+            self.ws._get_node_version = lambda _path: "v24.14.0"
+            self.assertEqual(self.ws._installed_node_major(), 24)
+
+    def test_installed_node_major_none_when_absent(self):
+        with (
+            unittest.mock.patch("deployer.windows_setup.shutil.which", return_value=None),
+            unittest.mock.patch("deployer.windows_setup._STANDARD_NODE_DIRS", ()),
+        ):
+            self.assertIsNone(self.ws._installed_node_major())
+
+    def test_install_node_raises_blocked_on_launch_condition(self):
+        # A downgrade-blocked MSI (exit 1603, "later version already installed")
+        # is deterministic: raise NodeInstallBlocked so the pipeline stops
+        # instead of re-prompting UAC on every retry.
+        self.ws._mirror_name = MIRROR_OFFICIAL
+        self.ws.node_version = "22"
+        self.ws._resolve_target_node_version = lambda: "24.15.0"
+        self.ws._download_and_verify_node_msi = lambda _version, _path: True
+        self.ws._get_arch = lambda: "x64"
+
+        fake_tmp = self.root / "node_tmp"
+        fake_tmp.mkdir()
+
+        def fake_run(_cmd, **_kwargs):
+            (fake_tmp / "msi-install.log").write_text(
+                "Product: Node.js -- A later version of Node.js is already installed.",
+                encoding="utf-16-le",
+            )
+            return SimpleNamespace(returncode=1603, stdout="", stderr="")
+
+        self.ws._run = fake_run
+
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.tempfile.mkdtemp", return_value=str(fake_tmp)
+            ),
+            self.assertRaises(NodeInstallBlocked),
+        ):
+            self.ws.install_node_windows()
 
     def test_automatic_registry_fallbacks_are_https(self):
         self.ws.cfg = _Config()
