@@ -3157,6 +3157,13 @@ class WindowsSetup:
             self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
             ok = self._create_url_shortcut(desktop)
 
+        # Start Menu shortcut so MicroClaw is discoverable via Windows Search
+        if desktop_exe:
+            self._create_start_menu_shortcut(desktop_exe)
+
+        # Register in Add/Remove Programs (Settings > Installed apps)
+        self._register_installed_app(desktop_exe)
+
         # Also create uninstall shortcut
         self._create_uninstall_shortcut(desktop)
         return ok
@@ -3350,6 +3357,154 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"Could not create desktop shortcut: {e}")
             return True  # Non-fatal
+
+    def _get_start_menu_path(self) -> Path:
+        """Resolve the user's Start Menu > Programs folder.
+
+        Windows Search indexes shortcuts placed here (not the Desktop), so a
+        Start Menu .lnk is what makes the app show up when the user types its
+        name into the search box.
+        """
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            )
+            programs_val, _ = winreg.QueryValueEx(key, "Programs")
+            winreg.CloseKey(key)
+            programs = Path(os.path.expandvars(programs_val))
+            if programs.exists():
+                return programs
+        except Exception:
+            pass
+        appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+        return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+    def _create_start_menu_shortcut(self, target_exe: Path) -> bool:
+        """Create a Start Menu shortcut so the app is findable via Windows Search."""
+        programs = self._get_start_menu_path()
+        try:
+            programs.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.log.warn(f"无法创建开始菜单目录: {e}")
+            return False
+
+        # Named "MicroClaw" (not "...Desktop") so searching "MicroClaw" matches.
+        shortcut_path = programs / "MicroClaw.lnk"
+
+        try:
+            ico_path = self._resolve_icon()
+            ico_arg = ""
+            if ico_path:
+                ico_arg = f'$s.IconLocation = "{ico_path},0";'
+
+            ps_script = (
+                f"$ws = New-Object -ComObject WScript.Shell;"
+                f'$s = $ws.CreateShortcut("{shortcut_path}");'
+                f'$s.TargetPath = "{target_exe}";'
+                f'$s.WorkingDirectory = "{target_exe.parent}";'
+                f'$s.Description = "MicroClaw";'
+                f"{ico_arg}"
+                f"$s.Save()"
+            )
+            import base64
+
+            encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+            self._run(
+                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
+                capture_output=True,
+                timeout=15,
+            )
+
+            if shortcut_path.exists():
+                self.log.success(f"开始菜单快捷方式已创建: {shortcut_path}")
+
+                def _rollback_start_menu(p=str(shortcut_path)):
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                self._register_rollback("删除开始菜单快捷方式", _rollback_start_menu)
+                return True
+
+            self.log.warn("开始菜单快捷方式创建失败: .lnk 未找到")
+            return False
+        except Exception as e:
+            self.log.warn(f"创建开始菜单快捷方式异常: {e}")
+            return False
+
+    _UNINSTALL_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\MicroClaw"
+
+    def _register_installed_app(self, target_exe: Path | None) -> bool:
+        """Register MicroClaw in HKCU Uninstall so it appears in Installed apps.
+
+        Settings > Apps > Installed apps (and Add/Remove Programs) enumerate the
+        Uninstall registry keys.  Writing one here also lets the user uninstall
+        from the standard Windows UI.
+        """
+        import sys
+
+        openclaw_dir = Path.home() / ".openclaw"
+        installer_dest = openclaw_dir / "MicroClawInstaller.exe"
+        # Fall back to the running installer if the persistent copy isn't there yet.
+        uninstall_exe = installer_dest
+        if not uninstall_exe.exists() and getattr(sys, "frozen", False):
+            uninstall_exe = Path(sys.executable)
+
+        install_location = DEFAULT_DESKTOP_DIR
+        ico_path = self._resolve_icon()
+        display_icon = str(ico_path) if ico_path else (str(target_exe) if target_exe else "")
+
+        try:
+            import winreg
+
+            key = winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, self._UNINSTALL_REG_KEY, 0, winreg.KEY_WRITE
+            )
+            try:
+                winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "MicroClaw")
+                winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, OPENCLAW_TARGET_VERSION)
+                winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "MicroClaw")
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install_location))
+                if display_icon:
+                    winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, display_icon)
+                winreg.SetValueEx(
+                    key,
+                    "UninstallString",
+                    0,
+                    winreg.REG_SZ,
+                    f'"{uninstall_exe}" --uninstall',
+                )
+                winreg.SetValueEx(
+                    key,
+                    "QuietUninstallString",
+                    0,
+                    winreg.REG_SZ,
+                    f'"{uninstall_exe}" --uninstall',
+                )
+                winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+            finally:
+                winreg.CloseKey(key)
+
+            self.log.success("已在“已安装的应用”中注册 MicroClaw")
+
+            def _rollback_reg(sub=self._UNINSTALL_REG_KEY):
+                try:
+                    import winreg as _wr
+
+                    _wr.DeleteKey(_wr.HKEY_CURRENT_USER, sub)
+                except Exception:
+                    pass
+
+            self._register_rollback("删除“已安装的应用”注册项", _rollback_reg)
+            return True
+        except Exception as e:
+            self.log.warn(f"注册“已安装的应用”失败: {e}")
+            return False
 
     # ────────────────────── AppContainer ──────────────────────
 
@@ -4185,6 +4340,26 @@ class WindowsSetup:
                 ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
             except Exception:
                 pass
+
+        # Remove Start Menu shortcut (indexed by Windows Search)
+        try:
+            start_menu_lnk = self._get_start_menu_path() / "MicroClaw.lnk"
+            if start_menu_lnk.exists():
+                start_menu_lnk.unlink(missing_ok=True)
+                self.log.info(f"  已删除 {start_menu_lnk.name}")
+        except Exception:
+            pass
+
+        # Remove Add/Remove Programs registration
+        try:
+            import winreg
+
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, self._UNINSTALL_REG_KEY)
+            self.log.info("  已删除“已安装的应用”注册项")
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
 
     def _uninstall_plugins(self) -> None:
         """Uninstall plugins via openclaw CLI before removing files."""
