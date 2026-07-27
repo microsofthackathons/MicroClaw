@@ -821,6 +821,67 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
         self.ws._run.assert_not_called()
 
+    def test_get_start_menu_path_uses_appdata(self):
+        # Force the winreg lookup to fail so the APPDATA fallback is exercised.
+        fake_winreg = unittest.mock.MagicMock()
+        fake_winreg.OpenKey.side_effect = OSError("no key")
+        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+            programs = self.ws._get_start_menu_path()
+        self.assertEqual(
+            programs,
+            self.appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+        )
+
+    def test_create_start_menu_shortcut_creates_lnk_and_registers_rollback(self):
+        target_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        target_exe.parent.mkdir(parents=True, exist_ok=True)
+        target_exe.write_text("exe", encoding="utf-8")
+
+        programs = self.appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        self.ws._get_start_menu_path = unittest.mock.Mock(return_value=programs)
+        self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
+
+        def _fake_run(cmd, **_kwargs):
+            # Simulate PowerShell creating the .lnk
+            (programs / "MicroClaw.lnk").write_text("lnk", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.ws._run = unittest.mock.Mock(side_effect=_fake_run)
+
+        self.assertTrue(self.ws._create_start_menu_shortcut(target_exe))
+        self.assertTrue((programs / "MicroClaw.lnk").exists())
+        # PowerShell invoked via EncodedCommand
+        args = self.ws._run.call_args[0][0]
+        self.assertIn("-EncodedCommand", args)
+        self.assertEqual(len(self.ws._rollback_actions), 1)
+
+    def test_register_installed_app_writes_hkcu_uninstall_key(self):
+        target_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
+
+        fake_winreg = unittest.mock.MagicMock()
+        fake_winreg.HKEY_CURRENT_USER = 0x11111111
+        fake_winreg.KEY_WRITE = 0x20006
+        fake_winreg.REG_SZ = 1
+        fake_winreg.REG_DWORD = 4
+        fake_key = unittest.mock.MagicMock()
+        fake_winreg.CreateKeyEx.return_value = fake_key
+
+        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+            self.assertTrue(self.ws._register_installed_app(target_exe))
+
+        fake_winreg.CreateKeyEx.assert_called_once()
+        create_args = fake_winreg.CreateKeyEx.call_args[0]
+        self.assertEqual(create_args[0], fake_winreg.HKEY_CURRENT_USER)
+        self.assertEqual(create_args[1], self.ws._UNINSTALL_REG_KEY)
+
+        values = {call.args[1]: call.args[4] for call in fake_winreg.SetValueEx.call_args_list}
+        self.assertEqual(values["DisplayName"], "MicroClaw")
+        self.assertEqual(values["DisplayVersion"], OPENCLAW_TARGET_VERSION)
+        self.assertIn("--uninstall", values["UninstallString"])
+        self.assertEqual(values["NoModify"], 1)
+        self.assertEqual(len(self.ws._rollback_actions), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
