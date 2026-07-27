@@ -997,7 +997,6 @@ import {
   mergeGitHubCopilotModelEntries,
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
-import { resolveModelConfigReloadPlan } from "@/utils/model-config-reload";
 import {
   getManagedModelProvider,
   isManagedModelProviderId,
@@ -1916,23 +1915,21 @@ async function handleProviderConfigured(): Promise<void> {
   ElMessage.success(t("settings.providerConfigured"));
 }
 
-async function applySavedSettingsModelConfig(config: unknown): Promise<void> {
-  const plan = resolveModelConfigReloadPlan(config);
-  if (plan.restart) await window.openclaw.gateway.restart();
-  await new Promise((resolve) => setTimeout(resolve, plan.settleMs));
+async function restartGatewayAfterModelConfig(): Promise<void> {
+  await window.openclaw.gateway.restart();
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
-async function persistAndApply(
+async function persistAndRestart(
   mutate: (config: Record<string, unknown>) => Record<string, unknown>,
   successMsg: string,
 ): Promise<boolean> {
-  let nextConfig: Record<string, unknown>;
   try {
     const existing = await window.openclaw.config.read();
     if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
       throw new Error("OpenClaw configuration is unavailable");
     }
-    nextConfig = mutate(existing);
+    const nextConfig = mutate(existing);
     await window.openclaw.config.write(nextConfig);
   } catch (err: any) {
     ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
@@ -1940,7 +1937,7 @@ async function persistAndApply(
     return false;
   }
   try {
-    await applySavedSettingsModelConfig(nextConfig);
+    await restartGatewayAfterModelConfig();
   } catch (err: any) {
     ElMessage.error(t("settings.restartFailed", { error: err.message || err }));
     await refreshModelsConfig();
@@ -1959,7 +1956,7 @@ async function selectModel(modelRef: string) {
   }
   switchingModelRef.value = modelRef;
   try {
-    await persistAndApply(
+    await persistAndRestart(
       (config) => selectPrimaryModelConfig(config, modelRef),
       t("settings.modelSwitched", { model: modelRef }),
     );
@@ -2011,7 +2008,7 @@ async function saveEditModel() {
     ElMessage.warning(t("settings.modelNameExists"));
     return;
   }
-  const saved = await persistAndApply(
+  const saved = await persistAndRestart(
     (config) =>
       updateModelProviderConfig(config, {
         providerKey: original.providerKey,
@@ -2083,7 +2080,7 @@ async function removeCustomModel(idx: number) {
   const fallback = customModels.value.find(
     (model, modelIndex) => modelIndex !== idx && model.source !== "auth-managed",
   );
-  await persistAndApply(
+  await persistAndRestart(
     (config) =>
       removeModelProviderConfig(
         config,
@@ -2142,7 +2139,7 @@ async function disconnectGitHubCopilot() {
     }
 
     try {
-      await applySavedSettingsModelConfig(nextConfig);
+      await restartGatewayAfterModelConfig();
     } catch (error) {
       await refreshModelsConfig();
       ElMessage.warning(

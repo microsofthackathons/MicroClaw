@@ -209,7 +209,7 @@ describe("ModelSetupDialog", () => {
       ],
     });
     expect(write.mock.calls[0][0].agents.defaults.model.primary).toBe("qwen/qwen3.7-plus");
-    expect(restart).not.toHaveBeenCalled();
+    expect(restart).toHaveBeenCalledOnce();
   });
 
   it("shows an Other model path with custom provider fields", async () => {
@@ -321,7 +321,7 @@ describe("ModelSetupDialog", () => {
         },
       },
     });
-    expect(restart).not.toHaveBeenCalled();
+    expect(restart).toHaveBeenCalledOnce();
     expect(wrapper.emitted("configured")).toHaveLength(1);
   });
 

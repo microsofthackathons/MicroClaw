@@ -297,7 +297,6 @@ import {
   type ModelProviderInput,
   type ModelProviderValidationError,
 } from "@/utils/model-provider";
-import { resolveModelConfigReloadPlan } from "@/utils/model-config-reload";
 import {
   MANAGED_MODEL_PROVIDERS,
   getManagedModelProvider,
@@ -444,10 +443,9 @@ function getFamilyLabel(family: ModelFamilyPreset): string {
   return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
 }
 
-async function applySavedModelConfig(config: unknown, forceRestart = false): Promise<void> {
-  const plan = resolveModelConfigReloadPlan(config, forceRestart);
-  if (plan.restart) await window.openclaw.gateway.restart();
-  await new Promise((resolve) => setTimeout(resolve, plan.settleMs));
+async function restartGatewayAfterModelSetup(): Promise<void> {
+  await window.openclaw.gateway.restart();
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
 function cancelPendingSubmission() {
@@ -521,7 +519,7 @@ async function saveGitHubCopilotModel(): Promise<void> {
   saving.value = true;
   errorMsg.value = "";
   try {
-    const readiness = await window.openclaw.model.prepareGitHubCopilot();
+    await window.openclaw.model.prepareGitHubCopilot();
     if (generation !== submissionGeneration || !props.modelValue) return;
     const existing = (await window.openclaw.config.read()) || {};
     if (generation !== submissionGeneration || !props.modelValue) return;
@@ -529,7 +527,7 @@ async function saveGitHubCopilotModel(): Promise<void> {
       ensureAllowed: true,
     });
     await window.openclaw.config.write(nextConfig);
-    await applySavedModelConfig(nextConfig, readiness.restartRequired);
+    await restartGatewayAfterModelSetup();
     if (generation !== submissionGeneration || !props.modelValue) return;
     emit("update:modelValue", false);
     emit("configured");
@@ -613,7 +611,7 @@ async function saveAndStart() {
     if (generation !== submissionGeneration || !props.modelValue) return;
     const nextConfig = mergeModelProviderConfig(existing, verifiedInput);
     await window.openclaw.config.write(nextConfig);
-    await applySavedModelConfig(nextConfig);
+    await restartGatewayAfterModelSetup();
     if (generation !== submissionGeneration || !props.modelValue) return;
     emit("update:modelValue", false);
     emit("configured");

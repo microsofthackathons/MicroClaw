@@ -60,6 +60,7 @@ import {
   requestModelEndpoint,
   resolveModelApiKey,
 } from "./model-connection";
+import { hasConfiguredModel } from "./model-setup";
 import {
   disconnectGitHubCopilot,
   getGitHubCopilotAuthStatus,
@@ -1016,17 +1017,15 @@ function isConfigured(): boolean {
 
 /**
  * Check if the user still needs to configure a model provider.
- * Returns true when there's no models/providers section in openclaw.json
- * AND no MODEL_API_KEY in .env.
+ * Returns true when there is no explicit custom provider, selected GitHub
+ * Copilot model, or MODEL_API_KEY in .env.
  *
  * When MODEL_API_KEY IS present in .env but openclaw.json has no provider,
  * auto-configures the provider from .env values before returning false.
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (config?.models?.providers && Object.keys(config.models.providers).length > 0) {
-    return false;
-  }
+  if (hasConfiguredModel(config)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
