@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   parseGitHubCopilotAuthStatus,
+  parseGitHubCopilotDisconnectResult,
   parseGitHubCopilotGatewayAuthStatus,
+  parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
   parseGitHubCopilotWorkerLine,
 } from "./github-copilot-auth";
@@ -65,6 +67,32 @@ describe("GitHub Copilot CLI output parsing", () => {
       ),
     ).toBe(true);
     expect(parseGitHubCopilotAuthStatus(JSON.stringify({ profiles: [] }))).toBe(false);
+  });
+
+  it("accepts only a GitHub Copilot provider logout result", () => {
+    expect(
+      parseGitHubCopilotDisconnectResult(
+        JSON.stringify({
+          provider: "github-copilot",
+          removedProfiles: ["github-copilot:device"],
+        }),
+      ),
+    ).toEqual({ disconnected: true, removedProfiles: 1 });
+    expect(() =>
+      parseGitHubCopilotDisconnectResult(
+        JSON.stringify({ provider: "openai", removedProfiles: [] }),
+      ),
+    ).toThrow("Invalid GitHub Copilot disconnect response");
+  });
+
+  it("accepts the Gateway logout response used to clear inherited profiles", () => {
+    expect(
+      parseGitHubCopilotGatewayDisconnectResult({
+        provider: "github-copilot",
+        removedProfiles: ["github-copilot:github"],
+        abortedRunIds: [],
+      }),
+    ).toEqual({ disconnected: true, removedProfiles: 1 });
   });
 
   it("reads GitHub Copilot authentication from the connected Gateway", () => {

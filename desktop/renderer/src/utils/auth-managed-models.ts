@@ -7,10 +7,33 @@ export interface SwitchableModelEntry {
   providerKey: string;
   id: string;
   name: string;
-  source?: "config-managed" | "auth-managed";
+  source: "managed" | "custom" | "auth-managed";
 }
 
 const GITHUB_COPILOT_PREFIX = "github-copilot/";
+
+type JsonObject = Record<string, unknown>;
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function removeCopilotPrimary(value: unknown, fallbackModelRef?: string): unknown {
+  if (typeof value === "string") {
+    return value.startsWith(GITHUB_COPILOT_PREFIX) ? fallbackModelRef : value;
+  }
+  if (!isJsonObject(value)) return value;
+  if (
+    typeof value.primary !== "string" ||
+    !value.primary.startsWith(GITHUB_COPILOT_PREFIX)
+  ) {
+    return value;
+  }
+  const next = { ...value };
+  if (fallbackModelRef) next.primary = fallbackModelRef;
+  else delete next.primary;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
 
 export function mergeGitHubCopilotModelEntries<T extends SwitchableModelEntry>(
   current: T[],
@@ -42,6 +65,41 @@ export function mergeGitHubCopilotModelEntries<T extends SwitchableModelEntry>(
     seen.add(model.id);
     merged.push(model);
   }
-
   return merged;
+}
+
+export function removeGitHubCopilotModelReferences(
+  config: JsonObject,
+  fallbackModelRef?: string,
+): JsonObject {
+  const safeFallback =
+    fallbackModelRef && !fallbackModelRef.startsWith(GITHUB_COPILOT_PREFIX)
+      ? fallbackModelRef
+      : undefined;
+  if (!isJsonObject(config.agents) || !isJsonObject(config.agents.defaults)) {
+    return { ...config };
+  }
+
+  const nextDefaults = { ...config.agents.defaults };
+  const model = removeCopilotPrimary(config.agents.defaults.model, safeFallback);
+  if (model === undefined) delete nextDefaults.model;
+  else nextDefaults.model = model;
+
+  if (isJsonObject(config.agents.defaults.models)) {
+    const models = Object.fromEntries(
+      Object.entries(config.agents.defaults.models).filter(
+        ([modelRef]) => !modelRef.startsWith(GITHUB_COPILOT_PREFIX),
+      ),
+    );
+    if (Object.keys(models).length > 0) nextDefaults.models = models;
+    else delete nextDefaults.models;
+  }
+
+  return {
+    ...config,
+    agents: {
+      ...config.agents,
+      defaults: nextDefaults,
+    },
+  };
 }

@@ -126,6 +126,9 @@ export default {
   "chat.error.not_found.title": "Model endpoint returned 404 Not Found",
   "chat.error.not_found.hint":
     "The Base URL appears to be incorrect or the path is wrong. Check the Base URL in Model Settings (e.g. it should usually end with /v1 for OpenAI-compatible providers).",
+  "chat.error.copilot_auth.title": "GitHub Copilot sign-in is no longer usable",
+  "chat.error.copilot_auth.hint":
+    "OpenClaw could not exchange the saved GitHub login for a Copilot token. Disconnect and reconnect GitHub Copilot in Model Settings, and verify that the GitHub account has active Copilot access.",
   "chat.error.unauthorized.title": "Authentication failed",
   "chat.error.unauthorized.hint":
     "The API key was rejected by the model provider. Verify the API key in Model Settings and make sure it has not expired or been revoked.",
@@ -348,6 +351,13 @@ export default {
   "settings.customModelAdded": "Custom model added",
   "settings.customModelUpdated": "Custom model updated",
   "settings.customModelDeleted": "Custom model deleted",
+  "settings.copilotDisconnected": "GitHub Copilot disconnected",
+  "settings.copilotDisconnectFailed": "Could not disconnect GitHub Copilot: {error}",
+  "settings.copilotDisconnectedRestartFailed":
+    "GitHub Copilot was disconnected, but the Gateway could not restart: {error}",
+  "settings.copilotDisconnectRollbackFailed":
+    "Disconnect failed ({error}) and the previous model configuration could not be restored ({rollbackError})",
+  "settings.copilotConfigUnavailable": "The current model configuration could not be read",
   "settings.braveApiKeySaved": "Brave API Key saved",
   "settings.braveApiKeyCleared": "Brave API Key cleared",
   "settings.saveFailed": "Save failed: {error}",
@@ -380,8 +390,11 @@ export default {
   "settings.select": "Select",
   "settings.edit": "Edit",
   "settings.delete": "Delete",
+  "settings.disconnect": "Disconnect",
   "settings.noCustomModels": "No configured models yet",
   "settings.githubCopilotAuth": "GitHub Copilot · GitHub device login",
+  "settings.copilotDisconnectConfirm":
+    "Disconnect GitHub Copilot? Saved credentials and all GitHub Copilot models will be removed.",
   "settings.modelName": "Model Name",
   "settings.baseUrl": "Base URL",
   "settings.apiKey": "API Key",
@@ -459,17 +472,15 @@ export default {
   "modelSetup.selectDesc":
     "Choose a guided provider, connect an account, or configure any compatible model endpoint.",
   "modelSetup.keyDesc": "Enter your model details and API key to start using MicroClaw.",
-  "modelSetup.customDesc": "Choose a provider and authentication method.",
+  "modelSetup.customDesc": "Configure any compatible model endpoint.",
   "modelSetup.copilotDesc":
     "Connect GitHub Copilot with GitHub's secure device login, then choose a model available to your account.",
+  "modelSetup.githubCopilot": "GitHub Copilot",
   "modelSetup.otherModel": "Other model",
   "modelSetup.configureCustom": "Configure custom provider",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.haveApiKey": "I already have an API Key",
   "modelSetup.providerId": "Provider ID",
-  "modelSetup.providerType": "Provider",
-  "modelSetup.providerTypeCustomEndpoint": "Custom API endpoint",
-  "modelSetup.providerTypeGitHubCopilot": "GitHub Copilot (device login)",
   "modelSetup.providerIdPlaceholder": "e.g. openai, deepseek, or ollama",
   "modelSetup.providerIdHint": "Use letters, numbers, hyphens, or underscores.",
   "modelSetup.apiFormat": "API Format",
@@ -489,12 +500,12 @@ export default {
   "modelSetup.starting": "Applying…",
   "modelSetup.copilotSignIn": "Sign in with GitHub",
   "modelSetup.copilotSignInHint": "Use your GitHub account to authorize GitHub Copilot.",
-  "modelSetup.copilotStarting": "Starting GitHub device login…",
+  "modelSetup.copilotStarting": "Starting GitHub sign-in…",
   "modelSetup.copilotChecking": "Checking GitHub Copilot sign-in…",
   "modelSetup.copilotWaiting": "Waiting for GitHub…",
   "modelSetup.copilotEnterCode": "Enter this one-time code on GitHub",
   "modelSetup.copilotCodeExpires": "This code expires in about {minutes} minutes.",
-  "modelSetup.copilotOpenGitHub": "Open GitHub device login",
+  "modelSetup.copilotOpenGitHub": "Open GitHub authorization",
   "modelSetup.copilotTokenPrivacy":
     "OpenClaw stores the credential securely; it is never sent to this form.",
   "modelSetup.copilotConnected": "GitHub Copilot connected",

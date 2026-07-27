@@ -86,13 +86,19 @@
         </div>
 
         <button class="primary-action" type="button" @click.stop="handlePrimaryAction">
-          {{ isCustomProvider ? t("modelSetup.configureCustom") : t("modelSetup.getApiKey") }}
+          {{
+            isGitHubCopilot
+              ? t("modelSetup.copilotSignIn")
+              : isCustomProvider
+                ? t("modelSetup.configureCustom")
+                : t("modelSetup.getApiKey")
+          }}
         </button>
         <button
-          v-if="!isCustomProvider"
+          v-if="!isCustomProvider && !isGitHubCopilot"
           class="text-action"
           type="button"
-          @click.stop="goToKeyForm"
+          @click.stop="goToKeyForm()"
         >
           {{ t("modelSetup.haveApiKey") }}
         </button>
@@ -113,19 +119,6 @@
         </p>
 
         <el-form label-position="top" class="model-key-form">
-          <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerType')">
-            <el-select v-model="selectedOtherProvider" style="width: 100%">
-              <el-option
-                :label="t('modelSetup.providerTypeCustomEndpoint')"
-                value="custom-endpoint"
-              />
-              <el-option
-                :label="t('modelSetup.providerTypeGitHubCopilot')"
-                value="github-copilot"
-              />
-            </el-select>
-          </el-form-item>
-
           <template v-if="isGitHubCopilot">
             <div class="copilot-auth-panel">
               <template v-if="githubAuthState === 'code'">
@@ -227,29 +220,20 @@
                 v-model="selectedModelName"
                 style="width: 100%"
                 filterable
-                allow-create
-                default-first-option
-                :reserve-keyword="false"
                 :placeholder="t('modelSetup.modelPlaceholder')"
-                @change="handleModelChange"
               >
-                <el-option-group
-                  v-for="family in presetModelFamilies"
-                  :key="family.id"
-                  :label="family.label"
-                >
-                  <el-option
-                    v-for="model in family.models"
-                    :key="`${family.id}:${model}`"
-                    :label="model"
-                    :value="model"
-                  />
-                </el-option-group>
+                <el-option
+                  v-for="model in selectedManagedProvider?.models ?? []"
+                  :key="model.id"
+                  :label="model.name"
+                  :value="model.id"
+                />
               </el-select>
             </el-form-item>
             <el-form-item :label="t('modelSetup.baseUrl')">
               <el-input
                 v-model="baseUrl"
+                :disabled="!isCustomProvider"
                 placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
                 @keydown.enter.prevent="saveAndStart"
               />
@@ -303,21 +287,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { t } from "@/i18n";
-import qwenLogo from "@/assets/modelprovider/Qwen.png";
-import minimaxLogo from "@/assets/modelprovider/minimax.png";
 import {
   mergeModelProviderConfig,
+  selectPrimaryModelConfig,
   validateModelProviderInput,
   type ModelApiFormat,
   type ModelProviderInput,
   type ModelProviderValidationError,
 } from "@/utils/model-provider";
+import { resolveModelConfigReloadPlan } from "@/utils/model-config-reload";
+import {
+  MANAGED_MODEL_PROVIDERS,
+  getManagedModelProvider,
+  type ManagedModelProviderId,
+  type ManagedModelPreset,
+} from "@/utils/managed-model-providers";
+import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
 
-type ModelFamilyId = "qwen" | "minimax" | "custom";
-type OtherProviderId = "custom-endpoint" | "github-copilot";
-type GitHubAuthState = "idle" | "checking" | "signing-in" | "code" | "authenticated" | "error";
+type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
@@ -326,10 +315,11 @@ interface ModelFamilyPreset {
   providerKey: string;
   baseUrl: string;
   apiFormat: ModelApiFormat;
-  models: string[];
+  models: ManagedModelPreset[];
   defaultModel: string;
   apiKeyPlaceholder: string;
   logo?: string;
+  signupUrl?: string;
 }
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -338,36 +328,20 @@ const emit = defineEmits<{
   configured: [];
 }>();
 
-const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const MINIMAX_OPENAI_COMPATIBLE_BASE_URL = "https://api.minimaxi.com/v1";
-const MINIMAX_SIGNUP_URL_CODES = [
-  104, 116, 116, 112, 115, 58, 47, 47, 112, 108, 97, 116, 102, 111, 114, 109, 46, 109, 105, 110,
-  105, 109, 97, 120, 105, 46, 99, 111, 109, 47, 98, 121, 111, 107, 45, 116, 114, 105, 97, 108, 63,
-  115, 111, 117, 114, 99, 101, 61, 109, 105, 99, 114, 111, 99, 108, 97, 119,
-];
-
 const modelFamilies: ModelFamilyPreset[] = [
+  ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
+    ...provider,
+    providerKey: provider.id,
+  })),
   {
-    id: "qwen",
-    label: "千问",
-    providerKey: "qwen",
-    baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
+    id: "github-copilot",
+    labelKey: "modelSetup.githubCopilot",
+    providerKey: "",
+    baseUrl: "",
     apiFormat: "openai-chat",
-    models: ["qwen", "qwen3.7-plus", "qwen3.6-plus", "qwen3-32b", "qwen3.6-flash", "qwen3.5-plus"],
-    defaultModel: "qwen3.7-plus",
+    models: [],
+    defaultModel: "",
     apiKeyPlaceholder: "sk-...",
-    logo: qwenLogo,
-  },
-  {
-    id: "minimax",
-    label: "MiniMax",
-    providerKey: "minimax",
-    baseUrl: MINIMAX_OPENAI_COMPATIBLE_BASE_URL,
-    apiFormat: "openai-chat",
-    models: ["MiniMax-M3", "MiniMax-M1"],
-    defaultModel: "MiniMax-M3",
-    apiKeyPlaceholder: "sk-...",
-    logo: minimaxLogo,
   },
   {
     id: "custom",
@@ -381,8 +355,6 @@ const modelFamilies: ModelFamilyPreset[] = [
   },
 ];
 
-const presetModelFamilies = modelFamilies.filter((family) => family.id !== "custom");
-
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
 }
@@ -391,66 +363,67 @@ function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
   return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
 }
 
-function getFamilyByModel(modelName: string): ModelFamilyPreset | undefined {
-  return modelFamilies.find((family) => family.models.includes(modelName));
-}
-
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(getDefaultModel(modelFamilies[0]));
 const baseUrl = ref(modelFamilies[0].baseUrl);
 const providerKey = ref(modelFamilies[0].providerKey);
 const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
-const selectedOtherProvider = ref<OtherProviderId>("custom-endpoint");
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
-const githubAuthState = ref<GitHubAuthState>("idle");
-const githubSessionId = ref<string | null>(null);
-const githubVerificationUrl = ref("https://github.com/login/device");
-const githubUserCode = ref("");
-const githubCodeExpiresInMs = ref(0);
-const githubModels = ref<Array<{ id: string; name: string }>>([]);
-const selectedGitHubModel = ref("");
 let submissionGeneration = 0;
-let githubRequestGeneration = 0;
-let removeGitHubAuthListener: (() => void) | undefined;
-let pendingGitHubAuthEvent: GitHubCopilotLoginEvent | null = null;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
+const selectedManagedProvider = computed(() =>
+  getManagedModelProvider(selectedFamilyId.value),
+);
 const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
-const isGitHubCopilot = computed(
-  () => isCustomProvider.value && selectedOtherProvider.value === "github-copilot",
-);
-const githubLoginInProgress = computed(
-  () => githubAuthState.value === "signing-in" || githubAuthState.value === "code",
-);
-const githubCodeExpiryMinutes = computed(() =>
-  Math.max(1, Math.ceil(githubCodeExpiresInMs.value / 60_000)),
-);
+const isGitHubCopilot = computed(() => selectedFamilyId.value === "github-copilot");
+const {
+  state: githubAuthState,
+  models: githubModels,
+  selectedModel: selectedGitHubModel,
+  userCode: githubUserCode,
+  loginInProgress: githubLoginInProgress,
+  codeExpiryMinutes: githubCodeExpiryMinutes,
+  loadStatus: loadGitHubCopilotStatus,
+  startLogin: startGitHubCopilotLogin,
+  cancelLogin: cancelGitHubCopilotLogin,
+  reset: resetGitHubCopilotState,
+  openVerificationPage: openGitHubVerificationPage,
+} = useGitHubCopilotAuth({
+  isActive: () => props.modelValue && isKeyStep.value && isGitHubCopilot.value,
+  clearError: () => {
+    errorMsg.value = "";
+  },
+  setError: (message) => {
+    errorMsg.value = message;
+  },
+});
 const formPrimaryDisabled = computed(
   () =>
     saving.value ||
     (isGitHubCopilot.value &&
-      (githubAuthState.value === "checking" ||
-        githubAuthState.value === "signing-in" ||
-        githubAuthState.value === "code" ||
-        (githubAuthState.value === "authenticated" && !selectedGitHubModel.value))),
+      (      githubAuthState.value === "checking" ||
+      githubAuthState.value === "signing-in" ||
+      githubAuthState.value === "code" ||
+      (githubAuthState.value === "authenticated" && !selectedGitHubModel.value))),
 );
 const formPrimaryLabel = computed(() => {
-  if (!isGitHubCopilot.value) {
-    return saving.value ? t("modelSetup.validating") : t("modelSetup.start");
+  if (isGitHubCopilot.value) {
+    if (saving.value) return t("modelSetup.starting");
+    if (githubAuthState.value === "authenticated") return t("modelSetup.copilotUseModel");
+    if (
+      githubAuthState.value === "checking" ||
+      githubAuthState.value === "signing-in" ||
+      githubAuthState.value === "code"
+    ) {
+      return t("modelSetup.copilotWaiting");
+    }
+    return t("modelSetup.copilotSignIn");
   }
-  if (saving.value) return t("modelSetup.starting");
-  if (githubAuthState.value === "authenticated") return t("modelSetup.copilotUseModel");
-  if (
-    githubAuthState.value === "checking" ||
-    githubAuthState.value === "signing-in" ||
-    githubAuthState.value === "code"
-  ) {
-    return t("modelSetup.copilotWaiting");
-  }
-  return t("modelSetup.copilotSignIn");
+  return saving.value ? t("modelSetup.validating") : t("modelSetup.start");
 });
 
 watch(
@@ -464,39 +437,17 @@ watch(
     apiKey.value = "";
     errorMsg.value = "";
   },
+  { immediate: true },
 );
-
-watch(selectedOtherProvider, (provider) => {
-  cancelPendingSubmission();
-  errorMsg.value = "";
-  if (provider === "github-copilot" && props.modelValue && isKeyStep.value) {
-    void loadGitHubCopilotStatus();
-  } else {
-    void resetGitHubCopilotState();
-  }
-});
-
-onMounted(() => {
-  removeGitHubAuthListener = window.openclaw.model.onGitHubCopilotLoginEvent(
-    handleGitHubCopilotLoginEvent,
-  );
-});
-
-onUnmounted(() => {
-  removeGitHubAuthListener?.();
-  void resetGitHubCopilotState();
-});
 
 function getFamilyLabel(family: ModelFamilyPreset): string {
   return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
 }
 
-function decodeAsciiCodes(codes: number[]): string {
-  return String.fromCharCode(...codes);
-}
-
-async function reloadGatewayAfterModelSetup() {
-  await window.openclaw.gateway.restart();
+async function applySavedModelConfig(config: unknown, forceRestart = false): Promise<void> {
+  const plan = resolveModelConfigReloadPlan(config, forceRestart);
+  if (plan.restart) await window.openclaw.gateway.restart();
+  await new Promise((resolve) => setTimeout(resolve, plan.settleMs));
 }
 
 function cancelPendingSubmission() {
@@ -517,18 +468,6 @@ function selectFamily(familyId: ModelFamilyId) {
   baseUrl.value = family.baseUrl;
   providerKey.value = family.providerKey;
   selectedApiFormat.value = family.apiFormat;
-  selectedOtherProvider.value = "custom-endpoint";
-  errorMsg.value = "";
-}
-
-function handleModelChange(modelName: string) {
-  const family = getFamilyByModel(modelName);
-  if (!family || family.id === selectedFamilyId.value) return;
-
-  selectedFamilyId.value = family.id;
-  baseUrl.value = family.baseUrl;
-  providerKey.value = family.providerKey;
-  selectedApiFormat.value = family.apiFormat;
   errorMsg.value = "";
 }
 
@@ -537,13 +476,13 @@ function goToKeyForm() {
   baseUrl.value = selectedFamily.value.baseUrl;
   providerKey.value = selectedFamily.value.providerKey;
   selectedApiFormat.value = selectedFamily.value.apiFormat;
-  if (isCustomProvider.value) selectedOtherProvider.value = "custom-endpoint";
   isKeyStep.value = true;
   errorMsg.value = "";
+  if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
 }
 
 function handlePrimaryAction() {
-  if (isCustomProvider.value) {
+  if (isCustomProvider.value || isGitHubCopilot.value) {
     goToKeyForm();
     return;
   }
@@ -551,10 +490,8 @@ function handlePrimaryAction() {
 }
 
 function handleGetApiKey() {
-  const signupUrl =
-    selectedFamily.value.id === "qwen"
-      ? "https://click.qianwenai.com/m/20000000741/"
-      : decodeAsciiCodes(MINIMAX_SIGNUP_URL_CODES);
+  const signupUrl = selectedManagedProvider.value?.signupUrl;
+  if (!signupUrl) return;
   try {
     window.openclaw?.shell?.openExternal?.(signupUrl);
   } catch {
@@ -568,182 +505,6 @@ function goToSelectStep() {
   void resetGitHubCopilotState();
   isKeyStep.value = false;
   errorMsg.value = "";
-}
-
-async function resetGitHubCopilotState(): Promise<void> {
-  githubRequestGeneration += 1;
-  const sessionId = githubSessionId.value;
-  githubSessionId.value = null;
-  pendingGitHubAuthEvent = null;
-  githubAuthState.value = "idle";
-  githubUserCode.value = "";
-  githubCodeExpiresInMs.value = 0;
-  githubModels.value = [];
-  selectedGitHubModel.value = "";
-  if (sessionId) {
-    try {
-      await window.openclaw.model.cancelGitHubCopilotLogin(sessionId);
-    } catch (error) {
-      console.warn("[github-copilot-auth] Failed to stop completed login worker:", error);
-    }
-  }
-}
-
-async function loadGitHubCopilotModels(generation: number, preferredModel?: string): Promise<void> {
-  const models = await window.openclaw.model.listGitHubCopilotModels();
-  applyGitHubCopilotModels(generation, models, preferredModel);
-}
-
-function applyGitHubCopilotModels(
-  generation: number,
-  models: Array<{ id: string; name: string }>,
-  preferredModel?: string,
-): void {
-  if (generation !== githubRequestGeneration || !props.modelValue || !isGitHubCopilot.value) {
-    return;
-  }
-  githubModels.value = models;
-  if (models.length === 0) {
-    githubAuthState.value = "error";
-    errorMsg.value = t("modelSetup.copilotNoModels");
-    return;
-  }
-  selectedGitHubModel.value =
-    models.find((model) => model.id === preferredModel)?.id ?? models[0].id;
-  githubAuthState.value = "authenticated";
-}
-
-async function loadGitHubCopilotStatus(): Promise<void> {
-  const generation = ++githubRequestGeneration;
-  githubAuthState.value = "checking";
-  githubModels.value = [];
-  selectedGitHubModel.value = "";
-  errorMsg.value = "";
-  const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
-  void modelsPromise.catch(() => {});
-  try {
-    const status = await window.openclaw.model.getGitHubCopilotStatus();
-    if (generation !== githubRequestGeneration || !props.modelValue || !isGitHubCopilot.value) {
-      return;
-    }
-    if (!status.authenticated) {
-      githubAuthState.value = "idle";
-      void modelsPromise
-        .then((models) => {
-          if (generation === githubRequestGeneration && props.modelValue && isGitHubCopilot.value) {
-            githubModels.value = models;
-          }
-        })
-        .catch((error) => {
-          console.warn("[github-copilot-auth] Could not preload model catalog:", error);
-        });
-      return;
-    }
-    applyGitHubCopilotModels(generation, await modelsPromise);
-  } catch (error) {
-    if (generation !== githubRequestGeneration) return;
-    githubAuthState.value = "error";
-    errorMsg.value = t("modelSetup.copilotStatusFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-function applyGitHubCopilotLoginEvent(event: GitHubCopilotLoginEvent): void {
-  if (event.status === "code") {
-    githubAuthState.value = "code";
-    githubVerificationUrl.value = event.verificationUrl;
-    githubUserCode.value = event.userCode;
-    githubCodeExpiresInMs.value = event.expiresInMs;
-    return;
-  }
-  if (event.status === "success") {
-    githubSessionId.value = null;
-    const generation = ++githubRequestGeneration;
-    if (githubModels.value.length > 0) {
-      applyGitHubCopilotModels(generation, githubModels.value, event.defaultModel);
-      return;
-    }
-    githubAuthState.value = "checking";
-    void loadGitHubCopilotModels(generation, event.defaultModel).catch((error) => {
-      if (generation !== githubRequestGeneration) return;
-      githubAuthState.value = "error";
-      errorMsg.value = t("modelSetup.copilotModelsFailed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-    return;
-  }
-  githubSessionId.value = null;
-  if (event.status === "cancelled") {
-    githubAuthState.value = githubModels.value.length ? "authenticated" : "idle";
-    return;
-  }
-  githubAuthState.value = "error";
-  errorMsg.value = t("modelSetup.copilotLoginFailed", { error: event.message });
-}
-
-function handleGitHubCopilotLoginEvent(event: GitHubCopilotLoginEvent): void {
-  if (!githubSessionId.value) {
-    if (githubAuthState.value === "signing-in") pendingGitHubAuthEvent = event;
-    return;
-  }
-  if (event.sessionId !== githubSessionId.value) return;
-  applyGitHubCopilotLoginEvent(event);
-}
-
-function takePendingGitHubAuthEvent(): GitHubCopilotLoginEvent | null {
-  const event = pendingGitHubAuthEvent;
-  pendingGitHubAuthEvent = null;
-  return event;
-}
-
-async function startGitHubCopilotLogin(): Promise<void> {
-  if (githubLoginInProgress.value) return;
-  const generation = ++githubRequestGeneration;
-  githubAuthState.value = "signing-in";
-  githubUserCode.value = "";
-  githubCodeExpiresInMs.value = 0;
-  errorMsg.value = "";
-  pendingGitHubAuthEvent = null;
-  try {
-    const result = await window.openclaw.model.startGitHubCopilotLogin();
-    if (generation !== githubRequestGeneration || !props.modelValue || !isGitHubCopilot.value) {
-      await window.openclaw.model.cancelGitHubCopilotLogin(result.sessionId);
-      return;
-    }
-    githubSessionId.value = result.sessionId;
-    const pendingEvent = takePendingGitHubAuthEvent();
-    if (pendingEvent?.sessionId === result.sessionId) applyGitHubCopilotLoginEvent(pendingEvent);
-  } catch (error) {
-    if (generation !== githubRequestGeneration) return;
-    githubAuthState.value = "error";
-    errorMsg.value = t("modelSetup.copilotLoginFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-async function cancelGitHubCopilotLogin(): Promise<void> {
-  githubRequestGeneration += 1;
-  const sessionId = githubSessionId.value;
-  githubSessionId.value = null;
-  pendingGitHubAuthEvent = null;
-  githubUserCode.value = "";
-  githubCodeExpiresInMs.value = 0;
-  githubAuthState.value = githubModels.value.length ? "authenticated" : "idle";
-  try {
-    await window.openclaw.model.cancelGitHubCopilotLogin(sessionId ?? undefined);
-  } catch (error) {
-    errorMsg.value = t("modelSetup.copilotCancelFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-function openGitHubVerificationPage(): void {
-  if (githubVerificationUrl.value !== "https://github.com/login/device") return;
-  void window.openclaw.shell.openExternal(githubVerificationUrl.value);
 }
 
 async function saveGitHubCopilotModel(): Promise<void> {
@@ -760,29 +521,15 @@ async function saveGitHubCopilotModel(): Promise<void> {
   saving.value = true;
   errorMsg.value = "";
   try {
+    const readiness = await window.openclaw.model.prepareGitHubCopilot();
+    if (generation !== submissionGeneration || !props.modelValue) return;
     const existing = (await window.openclaw.config.read()) || {};
     if (generation !== submissionGeneration || !props.modelValue) return;
-    existing.agents = existing.agents || {};
-    existing.agents.defaults = existing.agents.defaults || {};
-    const existingModel =
-      existing.agents.defaults.model &&
-      typeof existing.agents.defaults.model === "object" &&
-      !Array.isArray(existing.agents.defaults.model)
-        ? existing.agents.defaults.model
-        : {};
-    existing.agents.defaults.model = {
-      ...existingModel,
-      primary: selectedGitHubModel.value,
-    };
-    existing.agents.defaults.models = {
-      ...(existing.agents.defaults.models ?? {}),
-      [selectedGitHubModel.value]:
-        existing.agents.defaults.models?.[selectedGitHubModel.value] ?? {},
-    };
-    await window.openclaw.config.write(existing);
-    await reloadGatewayAfterModelSetup();
-    if (generation !== submissionGeneration || !props.modelValue) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const nextConfig = selectPrimaryModelConfig(existing, selectedGitHubModel.value, {
+      ensureAllowed: true,
+    });
+    await window.openclaw.config.write(nextConfig);
+    await applySavedModelConfig(nextConfig, readiness.restartRequired);
     if (generation !== submissionGeneration || !props.modelValue) return;
     emit("update:modelValue", false);
     emit("configured");
@@ -796,12 +543,14 @@ async function saveGitHubCopilotModel(): Promise<void> {
 }
 
 function handleFormPrimaryAction(): void {
-  if (!isGitHubCopilot.value) {
-    void saveAndStart();
-  } else if (githubAuthState.value === "authenticated") {
-    void saveGitHubCopilotModel();
+  if (isGitHubCopilot.value) {
+    if (githubAuthState.value === "authenticated") {
+      void saveGitHubCopilotModel();
+    } else {
+      void startGitHubCopilotLogin();
+    }
   } else {
-    void startGitHubCopilotLogin();
+    void saveAndStart();
   }
 }
 
@@ -821,13 +570,16 @@ function validationMessage(error: ModelProviderValidationError): string {
 async function saveAndStart() {
   if (saving.value) return;
 
+  const managedModel = selectedManagedProvider.value?.models.find(
+    (model) => model.id === selectedModelName.value,
+  );
   const input: ModelProviderInput = {
     providerKey: providerKey.value,
     baseUrl: baseUrl.value,
     apiKey: apiKey.value,
     apiFormat: selectedApiFormat.value,
     modelName: selectedModelName.value,
-    input: isCustomProvider.value ? ["text"] : ["text", "image"],
+    input: isCustomProvider.value ? ["text"] : managedModel?.input,
   };
   const validationError = validateModelProviderInput(input, {
     requireApiKey: !isCustomProvider.value,
@@ -859,10 +611,9 @@ async function saveAndStart() {
     };
     const existing = (await window.openclaw.config.read()) || {};
     if (generation !== submissionGeneration || !props.modelValue) return;
-    await window.openclaw.config.write(mergeModelProviderConfig(existing, verifiedInput));
-    await reloadGatewayAfterModelSetup();
-    if (generation !== submissionGeneration || !props.modelValue) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const nextConfig = mergeModelProviderConfig(existing, verifiedInput);
+    await window.openclaw.config.write(nextConfig);
+    await applySavedModelConfig(nextConfig);
     if (generation !== submissionGeneration || !props.modelValue) return;
     emit("update:modelValue", false);
     emit("configured");
@@ -993,7 +744,7 @@ h2 {
 
 .model-family-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
   gap: 14px;
   margin-bottom: 28px;
 }

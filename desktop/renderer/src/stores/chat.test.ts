@@ -61,8 +61,25 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
-import { applyChatDelta, useChatStore } from "./chat";
+import { applyChatDelta, classifyChatError, useChatStore } from "./chat";
 // ChatEventPayload is declared globally in env.d.ts
+
+describe("classifyChatError", () => {
+  it("treats a Copilot token-exchange 404 as an authentication failure", () => {
+    expect(classifyChatError("Copilot token exchange failed: HTTP 404")).toEqual({
+      code: "copilot_auth",
+      raw: "Copilot token exchange failed: HTTP 404",
+      status: 404,
+    });
+  });
+
+  it("keeps ordinary 404 responses classified as endpoint errors", () => {
+    expect(classifyChatError("Request failed: HTTP 404")).toMatchObject({
+      code: "not_found",
+      status: 404,
+    });
+  });
+});
 
 describe("useChatStore — stale stream recovery", () => {
   beforeEach(() => {

@@ -189,9 +189,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       modelName: string;
       reasoningEffort?: string;
     }) => ipcRenderer.invoke("model:test-connection", params),
+    prepareGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:prepare"),
     startGitHubCopilotLogin: () => ipcRenderer.invoke("model:github-copilot:start-login"),
     cancelGitHubCopilotLogin: (sessionId?: string) =>
       ipcRenderer.invoke("model:github-copilot:cancel-login", sessionId),
+    disconnectGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:disconnect"),
     getGitHubCopilotStatus: () => ipcRenderer.invoke("model:github-copilot:status"),
     listGitHubCopilotModels: () => ipcRenderer.invoke("model:github-copilot:list-models"),
     onGitHubCopilotLoginEvent: (callback: (event: unknown) => void) => {

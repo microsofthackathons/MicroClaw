@@ -10,6 +10,7 @@ const AUTH_TIMEOUT_MS = 20 * 60_000;
 const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
+const MAX_GATEWAY_MODELS = 5_000;
 
 let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | null = null;
 let authStatusInFlight: Promise<{ authenticated: boolean }> | null = null;
@@ -28,6 +29,11 @@ export interface GitHubCopilotAuthRuntime {
 export interface GitHubCopilotModel {
   id: string;
   name: string;
+}
+
+export interface GitHubCopilotDisconnectResult {
+  disconnected: true;
+  removedProfiles: number;
 }
 
 export type GitHubCopilotAuthEvent =
@@ -175,6 +181,43 @@ export function parseGitHubCopilotAuthStatus(output: string): boolean {
   return Array.isArray(parsed.profiles) && parsed.profiles.length > 0;
 }
 
+export function parseGitHubCopilotDisconnectResult(
+  output: string,
+): GitHubCopilotDisconnectResult {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(output);
+  } catch {
+    throw new Error("Invalid GitHub Copilot disconnect response");
+  }
+
+  return parseGitHubCopilotGatewayDisconnectResult(payload);
+}
+
+export function parseGitHubCopilotGatewayDisconnectResult(
+  payload: unknown,
+): GitHubCopilotDisconnectResult {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Invalid GitHub Copilot disconnect response");
+  }
+
+  const result = payload as { provider?: unknown; removedProfiles?: unknown };
+  if (result.provider !== "github-copilot" || !Array.isArray(result.removedProfiles)) {
+    throw new Error("Invalid GitHub Copilot disconnect response");
+  }
+  if (
+    result.removedProfiles.length > 100 ||
+    result.removedProfiles.some(
+      (profileId) =>
+        typeof profileId !== "string" || !profileId.trim() || profileId.length > 500,
+    )
+  ) {
+    throw new Error("Invalid GitHub Copilot disconnect response");
+  }
+
+  return { disconnected: true, removedProfiles: result.removedProfiles.length };
+}
+
 export function parseGitHubCopilotGatewayAuthStatus(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") {
     throw new Error("Invalid Gateway model authentication status");
@@ -204,30 +247,30 @@ export function parseGitHubCopilotGatewayAuthStatus(payload: unknown): boolean {
 
 export function parseGitHubCopilotGatewayModels(payload: unknown): GitHubCopilotModel[] {
   if (!payload || typeof payload !== "object") {
-    throw new Error("Invalid Gateway model catalog");
+    throw new Error("Invalid GitHub Copilot Gateway model list");
   }
-  const catalog = (payload as { models?: unknown }).models;
-  if (!Array.isArray(catalog)) throw new Error("Invalid Gateway model catalog");
+  const entries = (payload as { models?: unknown }).models;
+  if (!Array.isArray(entries) || entries.length > MAX_GATEWAY_MODELS) {
+    throw new Error("Invalid GitHub Copilot Gateway model list");
+  }
 
-  const models: GitHubCopilotModel[] = [];
-  for (const entry of catalog) {
+  const models = new Map<string, GitHubCopilotModel>();
+  for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
-    const model = entry as { provider?: unknown; id?: unknown; name?: unknown };
-    if (model.provider !== "github-copilot" || typeof model.id !== "string") continue;
-    const rawId = model.id.trim();
-    if (!rawId) continue;
-    const id = rawId.startsWith("github-copilot/")
-      ? rawId
-      : rawId.includes("/")
-        ? ""
-        : `github-copilot/${rawId}`;
-    if (!id) continue;
-    const modelId = id.slice("github-copilot/".length);
-    const name = typeof model.name === "string" && model.name.trim() ? model.name.trim() : modelId;
-    models.push({ id, name });
+    const value = entry as Record<string, unknown>;
+    if (value.provider !== "github-copilot" || typeof value.id !== "string") continue;
+    const rawId = value.id.trim();
+    const modelId = rawId.startsWith("github-copilot/")
+      ? rawId.slice("github-copilot/".length)
+      : rawId;
+    if (!modelId || modelId.length > 500 || modelId.includes("/")) continue;
+    const rawName = typeof value.name === "string" ? value.name.trim() : "";
+    const name = rawName && rawName.length <= 500 ? rawName : modelId;
+    const id = `github-copilot/${modelId}`;
+    models.set(id, { id, name });
   }
-  return [...new Map(models.map((model) => [model.id, model])).values()].sort((left, right) =>
-    left.name.localeCompare(right.name),
+  return [...models.values()].sort(
+    (left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
   );
 }
 
@@ -299,6 +342,38 @@ export async function getGitHubCopilotAuthStatus(
       authStatusInFlight = null;
     });
   return authStatusInFlight;
+}
+
+export async function disconnectGitHubCopilot(
+  runtime: GitHubCopilotAuthRuntime,
+): Promise<GitHubCopilotDisconnectResult> {
+  let removedProfiles = 0;
+  const errors: Error[] = [];
+  try {
+    for (const agentId of [undefined, "main"]) {
+      try {
+        const output = await runOpenClawJson(runtime, [
+          "infer",
+          "model",
+          "auth",
+          "logout",
+          "--provider",
+          "github-copilot",
+          ...(agentId ? ["--agent", agentId] : []),
+          "--json",
+        ]);
+        removedProfiles += parseGitHubCopilotDisconnectResult(output).removedProfiles;
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Failed to remove all GitHub Copilot credentials");
+    }
+    return { disconnected: true, removedProfiles };
+  } finally {
+    invalidateGitHubCopilotAuthStatusCache();
+  }
 }
 
 export async function listGitHubCopilotModels(
