@@ -13,7 +13,12 @@ from tkinter import filedialog
 
 from deployer.config import DeployerConfig
 from deployer.logger import DeployerLogger
-from deployer.windows_setup import DEFAULT_DESKTOP_DIR, ActiveInstallation, WindowsSetup
+from deployer.windows_setup import (
+    DEFAULT_DESKTOP_DIR,
+    ActiveInstallation,
+    NodeInstallBlocked,
+    WindowsSetup,
+)
 
 _ACTIVE_WINDOW = None
 INSTALLER_WINDOW_WIDTH = 710
@@ -441,6 +446,12 @@ class WebInstallerBridge:
                 detail = "step reported failure"
             except InstallationCancelled:
                 self._finish_cancelled()
+                return False
+            except NodeInstallBlocked as exc:
+                # Deterministic failure — a retry would only re-prompt UAC and
+                # fail again, so stop immediately with an actionable message.
+                log.error(f"{clean_label} cannot proceed: {exc}")
+                self._finish_fail(str(exc))
                 return False
             except Exception as exc:
                 detail = str(exc) or exc.__class__.__name__
