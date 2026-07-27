@@ -196,8 +196,8 @@
               <el-select
                 class="model-picker-select"
                 :model-value="selectedModel"
-                :loading="Boolean(switchingModelRef)"
-                :disabled="Boolean(switchingModelRef)"
+                :loading="Boolean(switchingModelRef) || copilotDisconnecting"
+                :disabled="Boolean(switchingModelRef) || copilotDisconnecting"
                 filterable
                 @change="selectModel"
               >
@@ -228,6 +228,16 @@
                   >{{ t("settings.delete") }}</el-button
                 >
               </template>
+              <el-button
+                v-else-if="selectedModelEntry?.providerKey === 'github-copilot'"
+                size="small"
+                type="danger"
+                plain
+                :loading="copilotDisconnecting"
+                @click="disconnectGitHubCopilot"
+              >
+                {{ t("settings.disconnect") }}
+              </el-button>
             </div>
           </div>
           <div v-else-if="!copilotModelsLoading" class="card-row no-border placeholder-row">
@@ -243,10 +253,10 @@
           :close-on-click-modal="false"
         >
           <el-form label-position="top" @submit.prevent>
-            <el-form-item :label="t('settings.modelName')">
+            <el-form-item v-if="!editingManagedProvider" :label="t('settings.modelName')">
               <el-input v-model="editModel.name" placeholder="e.g. my-gpt-4o" />
             </el-form-item>
-            <el-form-item :label="t('settings.baseUrl')">
+            <el-form-item v-if="!editingManagedProvider" :label="t('settings.baseUrl')">
               <el-input v-model="editModel.baseUrl" placeholder="https://api.example.com/v1" />
             </el-form-item>
             <el-form-item :label="t('settings.apiKey')">
@@ -257,7 +267,7 @@
                 placeholder="sk-..."
               />
             </el-form-item>
-            <el-form-item :label="t('settings.apiFormat')">
+            <el-form-item v-if="!editingManagedProvider" :label="t('settings.apiFormat')">
               <el-select v-model="editModel.apiFormat" style="width: 100%">
                 <el-option :label="t('settings.apiFormatOpenAIChat')" value="openai-chat" />
                 <el-option
@@ -976,11 +986,21 @@ import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import {
   normalizeModelInput,
+  removeModelProviderConfig,
+  selectPrimaryModelConfig,
+  updateModelProviderConfig,
   type ModelApiFormat,
   type ModelInputCapability,
+  type ModelReasoningEffort,
 } from "@/utils/model-provider";
-import { buildSettingsModelConfig } from "@/utils/model-settings-config";
-import { mergeGitHubCopilotModelEntries } from "@/utils/auth-managed-models";
+import {
+  mergeGitHubCopilotModelEntries,
+  removeGitHubCopilotModelReferences,
+} from "@/utils/auth-managed-models";
+import {
+  getManagedModelProvider,
+  isManagedModelProviderId,
+} from "@/utils/managed-model-providers";
 
 const route = useRoute();
 const router = useRouter();
@@ -1297,13 +1317,13 @@ const piiToggles = reactive({
 
 // --- Models & API state ---
 type ApiFormat = ModelApiFormat;
-type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+type ReasoningEffort = ModelReasoningEffort;
 
 interface ModelEntry {
   providerKey: string;
   id: string;
   name: string;
-  source?: "config-managed" | "auth-managed";
+  source: "managed" | "custom" | "auth-managed";
   baseUrl?: string;
   apiKey?: string;
   apiFormat?: ApiFormat;
@@ -1334,10 +1354,6 @@ const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }
   { value: "xhigh", labelKey: "settings.reasoningXHigh" },
   { value: "adaptive", labelKey: "settings.reasoningAdaptive" },
 ];
-
-function buildProviderKey(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
-}
 
 function normalizeApiFormat(api?: string): ApiFormat {
   if (api === "anthropic-messages") return "anthropic";
@@ -1393,12 +1409,10 @@ function describeCustomModel(model: ModelEntry): string {
   return parts.join(" · ");
 }
 
-const _builtinModels = ref<ModelEntry[]>([
-  { providerKey: "", id: "MAI-01-Preview", name: "MAI-01-Preview" },
-]);
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const copilotModelsLoading = ref(false);
+const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const gatewayPort = ref("18789");
@@ -1418,7 +1432,10 @@ const modelGroups = computed<ModelGroup[]>(() => {
   }
   return [...groups.entries()].map(([providerKey, models]) => ({
     providerKey,
-    label: providerKey === "github-copilot" ? "GitHub Copilot" : providerKey,
+    label:
+      providerKey === "github-copilot"
+        ? "GitHub Copilot"
+        : (getManagedModelProvider(providerKey)?.label ?? providerKey),
     models,
   }));
 });
@@ -1435,6 +1452,10 @@ const editModel = reactive<ModelFormState>({
 const editTestLoading = ref(false);
 const editTestResult = ref<{ ok: boolean; message: string; baseUrl?: string } | null>(null);
 let editModelTestGeneration = 0;
+const editingManagedProvider = computed(() => {
+  const model = customModels.value[editingIndex.value];
+  return model ? isManagedModelProviderId(model.providerKey) : false;
+});
 
 const builtinSkills = ref<SkillEntry[]>([]);
 const customSkills = ref<SkillEntry[]>([]);
@@ -1741,18 +1762,20 @@ function applyModelsConfig(config: any): void {
     typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
   const loaded: ModelEntry[] = [];
   for (const [key, val] of Object.entries(providers) as [string, any][]) {
+    const managedProvider = getManagedModelProvider(key);
     const models = val.models ?? [];
     for (const m of models) {
       const modelId = m.id ?? key;
       const modelRef = `${key}/${modelId}`;
+      const managedModel = managedProvider?.models.find((model) => model.id === modelId);
       const apiFormat = normalizeApiFormat(val.api);
       const reasoningFallback =
         m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
       loaded.push({
         providerKey: key,
         id: modelId,
-        name: m.name ?? modelId ?? key,
-        source: "config-managed",
+        name: m.name ?? managedModel?.name ?? modelId ?? key,
+        source: managedProvider ? "managed" : "custom",
         baseUrl: val.baseUrl ?? "",
         apiKey: val.apiKey ?? "",
         apiFormat,
@@ -1760,7 +1783,7 @@ function applyModelsConfig(config: any): void {
           modelDefaults[modelRef]?.params?.thinking,
           reasoningFallback,
         ),
-        input: normalizeModelInput(m.input),
+        input: normalizeModelInput(m.input ?? managedModel?.input),
       });
     }
   }
@@ -1892,92 +1915,51 @@ async function handleProviderConfigured(): Promise<void> {
   ElMessage.success(t("settings.providerConfigured"));
 }
 
-async function persistModelsConfig() {
-  const configManagedModels = customModels.value.filter((model) => model.source !== "auth-managed");
-  // Validate custom models before saving
-  const seenModelRefs = new Set<string>();
-  for (const m of configManagedModels) {
-    if (!m.id || !m.id.trim()) {
-      throw new Error("Model ID cannot be empty");
-    }
-    if (m.baseUrl !== undefined && m.baseUrl !== "" && !/^https?:\/\/.+/.test(m.baseUrl)) {
-      throw new Error(`Invalid Base URL for model "${m.name}"`);
-    }
-    const modelRef = getModelRef(m);
-    if (seenModelRefs.has(modelRef)) {
-      throw new Error(`Duplicate model entry "${modelRef}"`);
-    }
-    seenModelRefs.add(modelRef);
-  }
-
-  const config = (await window.openclaw.config.read()) || {};
-  const existingProviders = config.models?.providers ?? {};
-  const existingModelDefaults = config.agents?.defaults?.models ?? {};
-  const { providers: providerConfig, modelDefaults: nextModelDefaults } = buildSettingsModelConfig(
-    configManagedModels.map((model) => ({
-      ...model,
-      providerKey: buildProviderKey(model.providerKey || model.id),
-    })),
-    existingProviders,
-    existingModelDefaults,
-  );
-
-  config.models = {
-    ...(config.models ?? {}),
-    mode: config.models?.mode ?? "merge",
-    providers: providerConfig,
-  };
-  config.agents = config.agents || {};
-  config.agents.defaults = config.agents.defaults || {};
-
-  if (Object.keys(nextModelDefaults).length > 0) {
-    config.agents.defaults.models = nextModelDefaults;
-  } else {
-    delete config.agents.defaults.models;
-  }
-
-  const selectedEntry =
-    customModels.value.find((model) => getModelRef(model) === selectedModel.value) ??
-    customModels.value[0];
-  if (selectedEntry) {
-    const existingDefaultModel =
-      typeof config.agents.defaults.model === "object" && config.agents.defaults.model
-        ? config.agents.defaults.model
-        : {};
-    selectedModel.value = getModelRef(selectedEntry);
-    config.agents.defaults.model = {
-      ...existingDefaultModel,
-      primary: getModelRef(selectedEntry),
-    };
-  } else {
-    delete config.agents.defaults.model;
-  }
-
-  await window.openclaw.config.write(config);
+async function restartGatewayAfterModelConfig(): Promise<void> {
+  await window.openclaw.gateway.restart();
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
-async function persistAndRestart(successMsg: string) {
+async function persistAndRestart(
+  mutate: (config: Record<string, unknown>) => Record<string, unknown>,
+  successMsg: string,
+): Promise<boolean> {
   try {
-    await persistModelsConfig();
+    const existing = await window.openclaw.config.read();
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const nextConfig = mutate(existing);
+    await window.openclaw.config.write(nextConfig);
   } catch (err: any) {
     ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
-    return;
+    await refreshModelsConfig();
+    return false;
   }
   try {
-    await window.openclaw.gateway.restart();
+    await restartGatewayAfterModelConfig();
   } catch (err: any) {
     ElMessage.error(t("settings.restartFailed", { error: err.message || err }));
-    return;
+    await refreshModelsConfig();
+    return false;
   }
+  await refreshModelsConfig();
   ElMessage.success(successMsg);
+  return true;
 }
 
 async function selectModel(modelRef: string) {
   if (switchingModelRef.value) return;
+  if (!customModels.value.some((model) => getModelRef(model) === modelRef)) {
+    ElMessage.error(t("settings.configSaveFailed", { error: `Unknown model "${modelRef}"` }));
+    return;
+  }
   switchingModelRef.value = modelRef;
-  selectedModel.value = modelRef;
   try {
-    await persistAndRestart(t("settings.modelSwitched", { model: modelRef }));
+    await persistAndRestart(
+      (config) => selectPrimaryModelConfig(config, modelRef),
+      t("settings.modelSwitched", { model: modelRef }),
+    );
   } finally {
     switchingModelRef.value = "";
   }
@@ -1986,62 +1968,62 @@ async function selectModel(modelRef: string) {
 function editCustomModel(idx: number) {
   const m = customModels.value[idx];
   if (!m || m.source === "auth-managed") return;
+  const managedProvider = getManagedModelProvider(m.providerKey);
   editingIndex.value = idx;
-  editModel.name = m.name;
-  editModel.baseUrl = m.baseUrl || "";
+  editModel.name = managedProvider ? m.id : m.name;
+  editModel.baseUrl = managedProvider?.baseUrl ?? m.baseUrl ?? "";
   editModel.apiKey = m.apiKey || "";
-  editModel.apiFormat = m.apiFormat || "openai-chat";
+  editModel.apiFormat = managedProvider?.apiFormat ?? m.apiFormat ?? "openai-chat";
   editModel.reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
   editTestResult.value = null;
   showEditModel.value = true;
 }
 
 async function saveEditModel() {
-  const name = editModel.name.trim();
+  const idx = editingIndex.value;
+  const original = customModels.value[idx];
+  if (!original || original.source === "auth-managed") {
+    ElMessage.error(t("settings.configSaveFailed", { error: "Model is no longer available" }));
+    await refreshModelsConfig();
+    return;
+  }
+  const managedProvider = getManagedModelProvider(original.providerKey);
+  const managedModel = managedProvider?.models.find((model) => model.id === original.id);
+  const name = managedProvider ? original.id : editModel.name.trim();
   if (!name) {
     ElMessage.warning(t("settings.modelNameRequired"));
     return;
   }
-  const baseUrl = editModel.baseUrl.trim();
+  const baseUrl = managedProvider?.baseUrl ?? editModel.baseUrl.trim();
   if (!baseUrl) {
     ElMessage.warning(t("settings.baseUrlRequired"));
     return;
   }
-  const idx = editingIndex.value;
-  if (idx < 0 || idx >= customModels.value.length) return;
-  const providerKey = customModels.value[idx].providerKey;
   if (
     customModels.value.some(
       (model, modelIndex) =>
-        model.providerKey === providerKey && model.id === name && modelIndex !== idx,
+        model.providerKey === original.providerKey && model.id === name && modelIndex !== idx,
     )
   ) {
     ElMessage.warning(t("settings.modelNameExists"));
     return;
   }
-  customModels.value[idx] = {
-    providerKey,
-    id: name,
-    name,
-    source: "config-managed",
-    baseUrl,
-    apiKey: editModel.apiKey.trim(),
-    apiFormat: editModel.apiFormat,
-    reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
-    input: normalizeModelInput(customModels.value[idx].input),
-  };
-  for (let modelIndex = 0; modelIndex < customModels.value.length; modelIndex += 1) {
-    if (modelIndex === idx || customModels.value[modelIndex].providerKey !== providerKey) continue;
-    customModels.value[modelIndex] = {
-      ...customModels.value[modelIndex],
-      baseUrl,
-      apiKey: editModel.apiKey.trim(),
-      apiFormat: editModel.apiFormat,
-    };
-  }
-  showEditModel.value = false;
-  selectedModel.value = getModelRef(customModels.value[idx]);
-  await persistAndRestart(t("settings.customModelUpdated"));
+  const saved = await persistAndRestart(
+    (config) =>
+      updateModelProviderConfig(config, {
+        providerKey: original.providerKey,
+        originalModelName: original.id,
+        modelName: name,
+        displayName: managedModel?.name ?? name,
+        baseUrl,
+        apiKey: editModel.apiKey.trim(),
+        apiFormat: managedProvider?.apiFormat ?? editModel.apiFormat,
+        reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
+        input: managedModel?.input ?? normalizeModelInput(original.input),
+      }),
+    t("settings.customModelUpdated"),
+  );
+  if (saved) showEditModel.value = false;
 }
 
 async function testEditModel() {
@@ -2095,11 +2077,90 @@ async function testEditModel() {
 async function removeCustomModel(idx: number) {
   const removed = customModels.value[idx];
   if (!removed || removed.source === "auth-managed") return;
-  customModels.value.splice(idx, 1);
-  if (getModelRef(removed) === selectedModel.value && customModels.value.length) {
-    selectedModel.value = getModelRef(customModels.value[0]);
+  const fallback = customModels.value.find(
+    (model, modelIndex) => modelIndex !== idx && model.source !== "auth-managed",
+  );
+  await persistAndRestart(
+    (config) =>
+      removeModelProviderConfig(
+        config,
+        removed.providerKey,
+        removed.id,
+        fallback ? getModelRef(fallback) : undefined,
+      ),
+    t("settings.customModelDeleted"),
+  );
+}
+
+async function disconnectGitHubCopilot() {
+  if (copilotDisconnecting.value) return;
+  try {
+    await ElMessageBox.confirm(
+      t("settings.copilotDisconnectConfirm"),
+      t("settings.confirm"),
+      { type: "warning" },
+    );
+  } catch {
+    return;
   }
-  await persistAndRestart(t("settings.customModelDeleted"));
+
+  const fallbackModel = customModels.value.find(
+    (model) => model.providerKey !== "github-copilot" && model.source !== "auth-managed",
+  );
+  const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
+  copilotDisconnecting.value = true;
+  copilotModelsGeneration += 1;
+  copilotModelsLoading.value = false;
+
+  try {
+    const existingConfig = await window.openclaw.config.read();
+    if (!existingConfig || typeof existingConfig !== "object" || Array.isArray(existingConfig)) {
+      throw new Error(t("settings.copilotConfigUnavailable"));
+    }
+    const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
+    await window.openclaw.config.write(nextConfig);
+
+    try {
+      await window.openclaw.model.disconnectGitHubCopilot();
+    } catch (error) {
+      try {
+        await window.openclaw.config.write(existingConfig);
+      } catch (rollbackError) {
+        throw new Error(
+          t("settings.copilotDisconnectRollbackFailed", {
+            error: error instanceof Error ? error.message : String(error),
+            rollbackError:
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          }),
+          { cause: rollbackError },
+        );
+      }
+      throw error;
+    }
+
+    try {
+      await restartGatewayAfterModelConfig();
+    } catch (error) {
+      await refreshModelsConfig();
+      ElMessage.warning(
+        t("settings.copilotDisconnectedRestartFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return;
+    }
+    await refreshModelsConfig();
+    ElMessage.success(t("settings.copilotDisconnected"));
+  } catch (error) {
+    await refreshModelsConfig();
+    ElMessage.error(
+      t("settings.copilotDisconnectFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  } finally {
+    copilotDisconnecting.value = false;
+  }
 }
 
 async function saveBraveApiKey() {

@@ -67,6 +67,8 @@ describe("prepareModelBaseUrl", () => {
     const server = createServer((request, response) => {
       if (request.url === "/redirect") {
         response.writeHead(302, { Location: "http://169.254.169.254/latest" });
+      } else if (request.url === "/bad-request") {
+        response.writeHead(400);
       } else {
         response.writeHead(200);
       }
@@ -84,6 +86,14 @@ describe("prepareModelBaseUrl", () => {
           signal: AbortSignal.timeout(2_000),
         }),
       ).resolves.toMatchObject({ ok: true, status: 200 });
+      await expect(
+        requestModelEndpoint(`http://127.0.0.1:${port}/bad-request`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).resolves.toMatchObject({ ok: false, status: 400 });
       await expect(
         requestModelEndpoint(`http://127.0.0.1:${port}/redirect`, {
           method: "POST",

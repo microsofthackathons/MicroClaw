@@ -1,5 +1,13 @@
 export type ModelApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 export type ModelInputCapability = "text" | "image";
+export type ModelReasoningEffort =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "adaptive";
 
 export interface ModelProviderInput {
   providerKey: string;
@@ -8,6 +16,12 @@ export interface ModelProviderInput {
   apiFormat: ModelApiFormat;
   modelName: string;
   input?: ModelInputCapability[];
+}
+
+export interface ModelProviderUpdate extends ModelProviderInput {
+  originalModelName: string;
+  displayName: string;
+  reasoningEffort: ModelReasoningEffort;
 }
 
 export type ModelProviderValidationError =
@@ -30,6 +44,20 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 function asJsonObject(value: unknown): JsonObject {
   return isJsonObject(value) ? value : {};
+}
+
+function getPrimaryModel(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  const selector = asJsonObject(value);
+  return typeof selector.primary === "string" ? selector.primary : undefined;
+}
+
+function replacePrimaryModel(value: unknown, modelRef?: string): unknown {
+  if (typeof value === "string") return modelRef;
+  const selector = { ...asJsonObject(value) };
+  if (modelRef) selector.primary = modelRef;
+  else delete selector.primary;
+  return Object.keys(selector).length > 0 ? selector : undefined;
 }
 
 export function getCredentialReferenceName(value: string): string | null {
@@ -88,54 +116,120 @@ export function normalizeModelInput(value: unknown): ModelInputCapability[] {
   return capabilities.length > 0 ? capabilities : ["text"];
 }
 
-export function mergeModelProviderConfig(
+function updateModelDefaults(
+  existingDefaults: JsonObject,
+  oldModelRef: string,
+  newModelRef: string,
+  reasoningEffort?: ModelReasoningEffort,
+): JsonObject {
+  const nextDefaults = { ...existingDefaults };
+  if (getPrimaryModel(existingDefaults.model) === oldModelRef) {
+    nextDefaults.model = replacePrimaryModel(existingDefaults.model, newModelRef);
+  }
+
+  const existingModelDefaults = asJsonObject(existingDefaults.models);
+  const oldModelDefaults = asJsonObject(existingModelDefaults[oldModelRef]);
+  const newModelDefaults = asJsonObject(existingModelDefaults[newModelRef]);
+  const nextModelDefaults = { ...existingModelDefaults };
+  if (oldModelRef !== newModelRef) delete nextModelDefaults[oldModelRef];
+
+  const nextEntry = {
+    ...oldModelDefaults,
+    ...newModelDefaults,
+  };
+  if (reasoningEffort) {
+    const params = { ...asJsonObject(nextEntry.params) };
+    if (reasoningEffort === "off") delete params.thinking;
+    else params.thinking = reasoningEffort;
+    if (Object.keys(params).length > 0) nextEntry.params = params;
+    else delete nextEntry.params;
+  }
+
+  if (Object.keys(nextEntry).length > 0) nextModelDefaults[newModelRef] = nextEntry;
+  else delete nextModelDefaults[newModelRef];
+  if (Object.keys(nextModelDefaults).length > 0) nextDefaults.models = nextModelDefaults;
+  else delete nextDefaults.models;
+  return nextDefaults;
+}
+
+function writeProviderModel(
   existing: JsonObject,
   input: ModelProviderInput,
+  options: {
+    originalModelName: string;
+    displayName: string;
+    reasoningEffort?: ModelReasoningEffort;
+    select: boolean;
+  },
 ): JsonObject {
   const providerKey = input.providerKey.trim();
   const modelName = input.modelName.trim();
-  const modelRef = `${providerKey}/${modelName}`;
-  const existingModels = asJsonObject(existing.models);
-  const existingProviders = asJsonObject(existingModels.providers);
-  const existingAgents = asJsonObject(existing.agents);
-  const existingDefaults = asJsonObject(existingAgents.defaults);
-  const existingDefaultModel = asJsonObject(existingDefaults.model);
+  const originalModelName = options.originalModelName.trim();
+  const oldModelRef = `${providerKey}/${originalModelName}`;
+  const newModelRef = `${providerKey}/${modelName}`;
+  const existingModelsConfig = asJsonObject(existing.models);
+  const existingProviders = asJsonObject(existingModelsConfig.providers);
   const existingProvider = asJsonObject(existingProviders[providerKey]);
   const existingProviderModels = Array.isArray(existingProvider.models)
     ? existingProvider.models
     : [];
-  const existingModelIndex = existingProviderModels.findIndex(
+  const originalModel = existingProviderModels.find(
+    (model) => isJsonObject(model) && model.id === originalModelName,
+  );
+  const targetModel = existingProviderModels.find(
     (model) => isJsonObject(model) && model.id === modelName,
   );
-  const existingModel =
-    existingModelIndex >= 0 ? asJsonObject(existingProviderModels[existingModelIndex]) : null;
-
   const model: JsonObject = {
-    ...(existingModel ?? {}),
+    ...asJsonObject(originalModel),
+    ...asJsonObject(targetModel),
     id: modelName,
-    name: typeof existingModel?.name === "string" ? existingModel.name : modelName,
+    name: options.displayName.trim() || modelName,
   };
-  if (!existingModel && input.apiFormat !== "anthropic") {
-    model.input = normalizeModelInput(input.input);
+  if (input.apiFormat === "anthropic") delete model.input;
+  else model.input = normalizeModelInput(input.input);
+  if (options.reasoningEffort) {
+    if (options.reasoningEffort === "off") delete model.reasoning;
+    else model.reasoning = true;
   }
-  const providerModels =
-    existingModelIndex >= 0
-      ? existingProviderModels.map((entry, index) => (index === existingModelIndex ? model : entry))
-      : [...existingProviderModels, model];
 
-  const nextDefaults: JsonObject = {
-    ...existingDefaults,
-    model: {
-      ...existingDefaultModel,
-      primary: modelRef,
-    },
-  };
+  const originalModelIndex = existingProviderModels.findIndex(
+    (entry) => isJsonObject(entry) && entry.id === originalModelName,
+  );
+  const targetModelIndex = existingProviderModels.findIndex(
+    (entry) => isJsonObject(entry) && entry.id === modelName,
+  );
+  const providerModels = existingProviderModels.filter(
+    (entry) =>
+      !isJsonObject(entry) || (entry.id !== originalModelName && entry.id !== modelName),
+  );
+  const insertionIndex =
+    originalModelIndex >= 0
+      ? originalModelIndex
+      : targetModelIndex >= 0
+        ? targetModelIndex
+        : providerModels.length;
+  providerModels.splice(Math.min(insertionIndex, providerModels.length), 0, model);
+
+  const existingAgents = asJsonObject(existing.agents);
+  const existingDefaults = asJsonObject(existingAgents.defaults);
+  let nextDefaults = updateModelDefaults(
+    existingDefaults,
+    oldModelRef,
+    newModelRef,
+    options.reasoningEffort,
+  );
+  if (options.select) {
+    nextDefaults = {
+      ...nextDefaults,
+      model: replacePrimaryModel(nextDefaults.model, newModelRef),
+    };
+  }
 
   return {
     ...existing,
     models: {
-      ...existingModels,
-      mode: existingModels.mode ?? "merge",
+      ...existingModelsConfig,
+      mode: existingModelsConfig.mode ?? "merge",
       providers: {
         ...existingProviders,
         [providerKey]: {
@@ -146,6 +240,113 @@ export function mergeModelProviderConfig(
           models: providerModels,
         },
       },
+    },
+    agents: {
+      ...existingAgents,
+      defaults: nextDefaults,
+    },
+  };
+}
+
+export function mergeModelProviderConfig(
+  existing: JsonObject,
+  input: ModelProviderInput,
+): JsonObject {
+  return writeProviderModel(existing, input, {
+    originalModelName: input.modelName,
+    displayName: input.modelName,
+    select: true,
+  });
+}
+
+export function updateModelProviderConfig(
+  existing: JsonObject,
+  input: ModelProviderUpdate,
+): JsonObject {
+  return writeProviderModel(existing, input, {
+    originalModelName: input.originalModelName,
+    displayName: input.displayName,
+    reasoningEffort: input.reasoningEffort,
+    select: false,
+  });
+}
+
+export function selectPrimaryModelConfig(
+  existing: JsonObject,
+  modelRef: string,
+  options: { ensureAllowed?: boolean } = {},
+): JsonObject {
+  const existingAgents = asJsonObject(existing.agents);
+  const existingDefaults = asJsonObject(existingAgents.defaults);
+  const nextDefaults: JsonObject = {
+    ...existingDefaults,
+    model: replacePrimaryModel(existingDefaults.model, modelRef),
+  };
+  if (options.ensureAllowed) {
+    const existingAllowedModels = asJsonObject(existingDefaults.models);
+    nextDefaults.models = {
+      ...existingAllowedModels,
+      [modelRef]: asJsonObject(existingAllowedModels[modelRef]),
+    };
+  }
+  return {
+    ...existing,
+    agents: {
+      ...existingAgents,
+      defaults: nextDefaults,
+    },
+  };
+}
+
+export function removeModelProviderConfig(
+  existing: JsonObject,
+  providerKey: string,
+  modelName: string,
+  fallbackModelRef?: string,
+): JsonObject {
+  const modelRef = `${providerKey}/${modelName}`;
+  const existingModelsConfig = asJsonObject(existing.models);
+  const existingProviders = asJsonObject(existingModelsConfig.providers);
+  const existingProvider = asJsonObject(existingProviders[providerKey]);
+  const existingProviderModels = Array.isArray(existingProvider.models)
+    ? existingProvider.models
+    : [];
+  if (!existingProviderModels.some((model) => isJsonObject(model) && model.id === modelName)) {
+    throw new Error(`Model "${modelRef}" is not configured`);
+  }
+
+  const remainingModels = existingProviderModels.filter(
+    (model) => !isJsonObject(model) || model.id !== modelName,
+  );
+  const nextProviders = { ...existingProviders };
+  if (remainingModels.length > 0) {
+    nextProviders[providerKey] = { ...existingProvider, models: remainingModels };
+  } else {
+    delete nextProviders[providerKey];
+  }
+
+  const existingAgents = asJsonObject(existing.agents);
+  const existingDefaults = asJsonObject(existingAgents.defaults);
+  const nextDefaults = { ...existingDefaults };
+  if (getPrimaryModel(existingDefaults.model) === modelRef) {
+    const replacement = fallbackModelRef && fallbackModelRef !== modelRef ? fallbackModelRef : undefined;
+    const nextSelector = replacePrimaryModel(existingDefaults.model, replacement);
+    if (nextSelector === undefined) delete nextDefaults.model;
+    else nextDefaults.model = nextSelector;
+  }
+  const existingAllowedModels = asJsonObject(existingDefaults.models);
+  if (Object.prototype.hasOwnProperty.call(existingAllowedModels, modelRef)) {
+    const nextAllowedModels = { ...existingAllowedModels };
+    delete nextAllowedModels[modelRef];
+    if (Object.keys(nextAllowedModels).length > 0) nextDefaults.models = nextAllowedModels;
+    else delete nextDefaults.models;
+  }
+
+  return {
+    ...existing,
+    models: {
+      ...existingModelsConfig,
+      providers: nextProviders,
     },
     agents: {
       ...existingAgents,

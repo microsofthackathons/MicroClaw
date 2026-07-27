@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ensureSelectedModelProviderPlugins } from "./model-provider-plugins";
+import {
+  ensureGitHubCopilotProviderPlugin,
+  ensureSelectedModelProviderPlugins,
+} from "./model-provider-plugins";
 
 describe("ensureSelectedModelProviderPlugins", () => {
   it("enables the bundled GitHub Copilot plugin for a selected Copilot model", () => {
@@ -31,5 +34,16 @@ describe("ensureSelectedModelProviderPlugins", () => {
 
     expect(ensureSelectedModelProviderPlugins(config)).toBe(false);
     expect(config).not.toHaveProperty("plugins");
+  });
+
+  it("can explicitly prepare Copilot before it becomes the selected model", () => {
+    const config = { agents: { defaults: { model: "qwen/qwen3.7-plus" } } };
+    expect(ensureGitHubCopilotProviderPlugin(config)).toBe(true);
+    expect(config).toMatchObject({
+      plugins: {
+        allow: ["github-copilot"],
+        entries: { "github-copilot": { enabled: true } },
+      },
+    });
   });
 });

@@ -17,9 +17,9 @@ const SelectStub = defineComponent({
   props: {
     modelValue: { type: String, default: "" },
   },
-  emits: ["update:modelValue"],
+  emits: ["update:modelValue", "change"],
   template:
-    '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><slot /></select>',
+    '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value); $emit(\'change\', $event.target.value)"><slot /></select>',
 });
 
 const componentStubs = {
@@ -58,6 +58,7 @@ describe("ModelSetupDialog", () => {
   const restart = vi.fn();
   const testConnection = vi.fn();
   const openExternal = vi.fn();
+  const prepareGitHubCopilot = vi.fn();
   const startGitHubCopilotLogin = vi.fn();
   const cancelGitHubCopilotLogin = vi.fn();
   const getGitHubCopilotStatus = vi.fn();
@@ -75,6 +76,7 @@ describe("ModelSetupDialog", () => {
       message: "Connection successful",
       baseUrl: "http://localhost:11434/v1",
     });
+    prepareGitHubCopilot.mockResolvedValue({ restartRequired: false });
     startGitHubCopilotLogin.mockResolvedValue({ sessionId: "copilot-session" });
     cancelGitHubCopilotLogin.mockResolvedValue({ cancelled: true });
     getGitHubCopilotStatus.mockResolvedValue({ authenticated: false });
@@ -85,6 +87,7 @@ describe("ModelSetupDialog", () => {
       gateway: { restart },
       model: {
         testConnection,
+        prepareGitHubCopilot,
         startGitHubCopilotLogin,
         cancelGitHubCopilotLogin,
         getGitHubCopilotStatus,
@@ -105,11 +108,31 @@ describe("ModelSetupDialog", () => {
 
   async function openCustomForm(wrapper: ReturnType<typeof mountDialog>) {
     const cards = wrapper.findAll(".model-family-card");
-    expect(cards).toHaveLength(3);
-    await cards[2].trigger("click");
+    expect(cards).toHaveLength(4);
+    await cards[3].trigger("click");
     expect(wrapper.text()).toContain("Configure custom provider");
     await wrapper.find(".primary-action").trigger("click");
   }
+
+  async function openGitHubCopilotForm(wrapper: ReturnType<typeof mountDialog>) {
+    const cards = wrapper.findAll(".model-family-card");
+    expect(cards).toHaveLength(4);
+    await cards[2].trigger("click");
+    expect(wrapper.text()).toContain("GitHub Copilot");
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+  }
+
+  it("shows only MicroClaw-managed providers, Copilot, and custom setup", () => {
+    const wrapper = mountDialog();
+    expect(wrapper.findAll(".model-family-card").map((card) => card.text())).toEqual([
+      "千问",
+      "MiniMax",
+      "GitHub Copilot",
+      "Other model",
+    ]);
+    expect(wrapper.text()).not.toContain("OpenClaw catalog");
+  });
 
   it("opens the selected provider signup flow", async () => {
     const wrapper = mountDialog();
@@ -176,7 +199,14 @@ describe("ModelSetupDialog", () => {
       ...existingProvider,
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
       apiKey: "new-key",
-      models: existingProvider.models,
+      models: [
+        {
+          ...existingProvider.models[0],
+          name: "qwen3.7-plus",
+          input: ["text", "image"],
+        },
+        existingProvider.models[1],
+      ],
     });
     expect(write.mock.calls[0][0].agents.defaults.model.primary).toBe("qwen/qwen3.7-plus");
     expect(restart).toHaveBeenCalledOnce();
@@ -196,14 +226,12 @@ describe("ModelSetupDialog", () => {
       { id: "github-copilot/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
       { id: "github-copilot/gpt-5.4", name: "GPT-5.4" },
     ]);
+    prepareGitHubCopilot.mockResolvedValueOnce({ restartRequired: true });
     const wrapper = mountDialog();
-    await openCustomForm(wrapper);
-
-    await wrapper.findAll("select")[0].setValue("github-copilot");
-    await flushPromises();
+    await openGitHubCopilotForm(wrapper);
     expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
-    expect(listGitHubCopilotModels).toHaveBeenCalledOnce();
-
+    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(wrapper.find(".primary-action").text()).toContain("Sign in with GitHub");
     await wrapper.find(".primary-action").trigger("mousedown");
     await flushPromises();
     expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
@@ -224,8 +252,9 @@ describe("ModelSetupDialog", () => {
       defaultModel: "github-copilot/gpt-5.4",
     });
     await flushPromises();
+    expect(listGitHubCopilotModels).toHaveBeenCalledOnce();
     expect(wrapper.text()).toContain("GitHub Copilot connected");
-    expect(wrapper.findAll("select")[1].element.value).toBe("github-copilot/gpt-5.4");
+    expect(wrapper.find("select").element.value).toBe("github-copilot/gpt-5.4");
 
     await wrapper.find(".primary-action").trigger("mousedown");
     await flushPromises();
@@ -240,14 +269,13 @@ describe("ModelSetupDialog", () => {
       },
     });
     expect(write.mock.calls[0][0].models).toBeUndefined();
+    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
     expect(restart).toHaveBeenCalledOnce();
   });
 
   it("cancels an in-progress GitHub device login when the dialog closes", async () => {
     const wrapper = mountDialog();
-    await openCustomForm(wrapper);
-    await wrapper.findAll("select")[0].setValue("github-copilot");
-    await flushPromises();
+    await openGitHubCopilotForm(wrapper);
     await wrapper.find(".primary-action").trigger("mousedown");
     await flushPromises();
 
@@ -293,7 +321,7 @@ describe("ModelSetupDialog", () => {
         },
       },
     });
-    expect(restart).toHaveBeenCalledTimes(1);
+    expect(restart).toHaveBeenCalledOnce();
     expect(wrapper.emitted("configured")).toHaveLength(1);
   });
 

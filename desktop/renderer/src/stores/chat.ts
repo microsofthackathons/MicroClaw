@@ -28,6 +28,7 @@ export interface ChatMessage {
 export interface ChatErrorInfo {
   code:
     | "not_found" // 404 — likely wrong Base URL / endpoint path
+    | "copilot_auth" // GitHub login could not be exchanged for a Copilot API token
     | "unauthorized" // 401 / 403 / invalid api key
     | "rate_limited" // 429
     | "model_not_found" // model name typo
@@ -52,6 +53,9 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
   const statusMatch = text.match(/\b(4\d{2}|5\d{2})\b\s*(status\s*code|status|error)?/i);
   const status = statusMatch ? Number(statusMatch[1]) : undefined;
 
+  if (/copilot token exchange failed/i.test(text)) {
+    return { code: "copilot_auth", raw: text, status };
+  }
   if (status === 404 || /\b404\b/.test(text) || /not\s*found/i.test(text)) {
     if (/model/i.test(text)) return { code: "model_not_found", raw: text, status };
     return { code: "not_found", raw: text, status };

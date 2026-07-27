@@ -208,8 +208,10 @@ interface OpenClawAPI {
       modelName: string;
       reasoningEffort?: string;
     }): Promise<{ ok: boolean; message: string; baseUrl?: string }>;
+    prepareGitHubCopilot(): Promise<{ restartRequired: boolean }>;
     startGitHubCopilotLogin(): Promise<{ sessionId: string }>;
     cancelGitHubCopilotLogin(sessionId?: string): Promise<{ cancelled: boolean }>;
+    disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
     getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
     listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
     onGitHubCopilotLoginEvent(

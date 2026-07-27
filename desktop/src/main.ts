@@ -60,15 +60,22 @@ import {
   requestModelEndpoint,
   resolveModelApiKey,
 } from "./model-connection";
+import { hasConfiguredModel } from "./model-setup";
 import {
+  disconnectGitHubCopilot,
   getGitHubCopilotAuthStatus,
   GitHubCopilotAuthManager,
   type GitHubCopilotAuthRuntime,
+  invalidateGitHubCopilotAuthStatusCache,
   listGitHubCopilotModels,
   parseGitHubCopilotGatewayAuthStatus,
+  parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
 } from "./github-copilot-auth";
-import { ensureSelectedModelProviderPlugins } from "./model-provider-plugins";
+import {
+  ensureGitHubCopilotProviderPlugin,
+  ensureSelectedModelProviderPlugins,
+} from "./model-provider-plugins";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -181,6 +188,8 @@ let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
+let gatewayModelCatalogRequest: Promise<unknown> | null = null;
+let gatewayGitHubCopilotStatusRequest: Promise<{ authenticated: boolean }> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
@@ -1008,17 +1017,15 @@ function isConfigured(): boolean {
 
 /**
  * Check if the user still needs to configure a model provider.
- * Returns true when there's no models/providers section in openclaw.json
- * AND no MODEL_API_KEY in .env.
+ * Returns true when there is no explicit custom provider, selected GitHub
+ * Copilot model, or MODEL_API_KEY in .env.
  *
  * When MODEL_API_KEY IS present in .env but openclaw.json has no provider,
  * auto-configures the provider from .env values before returning false.
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (config?.models?.providers && Object.keys(config.models.providers).length > 0) {
-    return false;
-  }
+  if (hasConfiguredModel(config)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -2234,6 +2241,8 @@ let wsAuthRestartInProgress = false;
 
 function connectGatewayWs(): void {
   gwClient?.stop();
+  gatewayModelCatalogRequest = null;
+  gatewayGitHubCopilotStatusRequest = null;
 
   gwClient = new GatewayClient({
     port: gatewayPort,
@@ -2335,6 +2344,48 @@ function connectGatewayWs(): void {
     },
   });
   gwClient.start();
+}
+
+function requestGatewayModelCatalog(): Promise<unknown> {
+  if (gatewayModelCatalogRequest) return gatewayModelCatalogRequest;
+  const client = gwClient;
+  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
+
+  const request = client.request("models.list", { view: "all" });
+  gatewayModelCatalogRequest = request;
+  void request.then(
+    () => {
+      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
+    },
+    () => {
+      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
+    },
+  );
+  return request;
+}
+
+function requestGitHubCopilotGatewayStatus(): Promise<{ authenticated: boolean }> {
+  if (gatewayGitHubCopilotStatusRequest) return gatewayGitHubCopilotStatusRequest;
+  const client = gwClient;
+  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
+
+  const request = client
+    .request("models.authStatus", {})
+    .then((status) => ({ authenticated: parseGitHubCopilotGatewayAuthStatus(status) }));
+  gatewayGitHubCopilotStatusRequest = request;
+  void request.then(
+    () => {
+      if (gatewayGitHubCopilotStatusRequest === request) {
+        gatewayGitHubCopilotStatusRequest = null;
+      }
+    },
+    () => {
+      if (gatewayGitHubCopilotStatusRequest === request) {
+        gatewayGitHubCopilotStatusRequest = null;
+      }
+    },
+  );
+  return request;
 }
 
 // ---------------------------------------------------------------------------
@@ -2617,7 +2668,6 @@ function registerIpcHandlers(): void {
     }
     const stateDir = getOpenClawStateDir();
     await fs.promises.mkdir(stateDir, { recursive: true });
-    ensureSelectedModelProviderPlugins(config);
     await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
@@ -3171,7 +3221,7 @@ function registerIpcHandlers(): void {
               messages: [{ role: "user", content: "hi" }],
             }),
           });
-          if (res.ok || res.status === 400) {
+          if (res.ok) {
             return {
               ok: true,
               message: "Connection successful (Anthropic)",
@@ -3198,7 +3248,7 @@ function registerIpcHandlers(): void {
             headers,
             body: JSON.stringify(body),
           });
-          if (res.ok || res.status === 400) {
+          if (res.ok) {
             return {
               ok: true,
               message: "Connection successful (OpenAI Responses)",
@@ -3222,7 +3272,7 @@ function registerIpcHandlers(): void {
               }),
             },
           );
-          if (res.ok || res.status === 400) {
+          if (res.ok) {
             return {
               ok: true,
               message: "Connection successful (OpenAI)",
@@ -3237,6 +3287,19 @@ function registerIpcHandlers(): void {
     },
   );
 
+  ipcMain.handle("model:github-copilot:prepare", async () => {
+    const config = readConfig();
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const restartRequired = ensureGitHubCopilotProviderPlugin(config);
+    if (restartRequired) {
+      await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      invalidateGitHubCopilotAuthStatusCache();
+    }
+    return { restartRequired };
+  });
+
   ipcMain.handle("model:github-copilot:start-login", () => ({
     sessionId: githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime()),
   }));
@@ -3245,11 +3308,37 @@ function registerIpcHandlers(): void {
     cancelled: githubCopilotAuthManager.cancel(sessionId),
   }));
 
+  ipcMain.handle("model:github-copilot:disconnect", async () => {
+    githubCopilotAuthManager.stop();
+    if (gwClient?.connected) {
+      try {
+        const payload = await gwClient.request("models.authLogout", {
+          provider: "github-copilot",
+        });
+        const result = parseGitHubCopilotGatewayDisconnectResult(payload);
+        invalidateGitHubCopilotAuthStatusCache();
+        gatewayGitHubCopilotStatusRequest = null;
+        return result;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway logout unavailable:", error);
+      }
+    }
+
+    const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
+    if (gwClient?.connected) {
+      try {
+        await gwClient.request("models.authStatus", { refresh: true });
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
+      }
+    }
+    return result;
+  });
+
   ipcMain.handle("model:github-copilot:status", async () => {
     if (gwClient?.connected) {
       try {
-        const status = await gwClient.request("models.authStatus", {});
-        return { authenticated: parseGitHubCopilotGatewayAuthStatus(status) };
+        return await requestGitHubCopilotGatewayStatus();
       } catch (error) {
         console.warn("[github-copilot-auth] Gateway auth status unavailable:", error);
       }
@@ -3260,7 +3349,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("model:github-copilot:list-models", async () => {
     if (gwClient?.connected) {
       try {
-        const result = await gwClient.request("models.list", { view: "all" });
+        const result = await requestGatewayModelCatalog();
         const models = parseGitHubCopilotGatewayModels(result);
         if (models.length > 0) return models;
       } catch (error) {

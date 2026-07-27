@@ -18,12 +18,10 @@ function getPrimaryModel(config: JsonObject): string | undefined {
 }
 
 /**
- * Enable model-provider plugins required by the selected default model.
+ * Enable the bundled GitHub Copilot provider plugin.
  * Returns true when the config was changed.
  */
-export function ensureSelectedModelProviderPlugins(config: JsonObject): boolean {
-  if (!getPrimaryModel(config)?.startsWith(`${GITHUB_COPILOT_PROVIDER}/`)) return false;
-
+export function ensureGitHubCopilotProviderPlugin(config: JsonObject): boolean {
   let changed = false;
   let plugins = asJsonObject(config.plugins);
   if (!plugins) {
@@ -66,4 +64,9 @@ export function ensureSelectedModelProviderPlugins(config: JsonObject): boolean 
   }
 
   return changed;
+}
+
+export function ensureSelectedModelProviderPlugins(config: JsonObject): boolean {
+  if (!getPrimaryModel(config)?.startsWith(`${GITHUB_COPILOT_PROVIDER}/`)) return false;
+  return ensureGitHubCopilotProviderPlugin(config);
 }
