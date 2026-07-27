@@ -141,6 +141,13 @@ _VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 # Hide console windows spawned by subprocess on Windows
 _CREATE_NO_WINDOW = 0x08000000
 
+# Per-call timeout (seconds) for `openclaw gateway call ...` RPC probes run
+# during post-install validation. Each probe cold-starts the OpenClaw CLI, and
+# on freshly-provisioned machines (empty V8 compile cache + antivirus scanning
+# newly-written files) that start alone can take 30-60s, so this must be well
+# above the CLI boot time to avoid spurious validation failures.
+_OPENCLAW_RPC_TIMEOUT = 120
+
 
 @dataclass(frozen=True)
 class OpenClawInstallAttempt:
@@ -2031,16 +2038,28 @@ class WindowsSetup:
         if command is None:
             raise RuntimeError("openclaw command not found")
         state_dir = Path.home() / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         env = self._get_env()
         env.update(self._load_openclaw_state_env(state_dir))
         env["OPENCLAW_STATE_DIR"] = str(state_dir)
+        # Each `openclaw gateway call ...` spawns a fresh Node process that
+        # boots the whole CLI before issuing the RPC. On freshly-provisioned
+        # machines (cold V8 cache, antivirus scanning every newly written file)
+        # that cold start alone can take 30-60s, so share the gateway's compile
+        # cache and allow a generous, cold-start-tolerant timeout instead of the
+        # old 30s ceiling that spuriously failed post-install validation.
+        env.setdefault("NODE_COMPILE_CACHE", str(cache_dir))
         result = self._run(
             command + args,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=_OPENCLAW_RPC_TIMEOUT,
             env=env,
         )
         if result.returncode != 0:
