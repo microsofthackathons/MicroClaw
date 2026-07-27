@@ -207,6 +207,22 @@ export class GatewayClient {
   }
 
   /**
+   * Delete one persisted session and its transcript.
+   *
+   * OpenClaw does not allow deleting an agent's main session, so reset it
+   * instead. Other deletion failures must propagate rather than leaving a
+   * stale Gateway session behind while the renderer reports success.
+   */
+   async deleteSession(sessionKey: string): Promise<void> {
+     const isMainSession = sessionKey === "main" || /^agent:[^:]+:main$/.test(sessionKey);
+     if (isMainSession) {
+       await this.request("sessions.reset", { key: sessionKey, reason: "reset" });
+       return;
+     }
+     await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
+   }
+
+  /**
    * Clear ALL persisted chat history on the gateway.
    *
    * Enumerates every session via `sessions.list`, then wipes each one:

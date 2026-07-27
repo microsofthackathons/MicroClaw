@@ -5,6 +5,7 @@ import { setActivePinia, createPinia } from "pinia";
 const mockLoadHistory = vi.fn().mockResolvedValue({ messages: [] });
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockAbort = vi.fn().mockResolvedValue(undefined);
+const mockDeleteSession = vi.fn().mockResolvedValue(undefined);
 const mockIsConnected = vi.fn().mockResolvedValue(false);
 
 Object.defineProperty(globalThis, "window", {
@@ -15,6 +16,7 @@ Object.defineProperty(globalThis, "window", {
         loadHistory: mockLoadHistory,
         sendMessage: mockSendMessage,
         abort: mockAbort,
+        deleteSession: mockDeleteSession,
         isConnected: mockIsConnected,
         onEvent: vi.fn(),
         onToolEvent: vi.fn(),
@@ -62,6 +64,7 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 import { applyChatDelta, classifyChatError, useChatStore } from "./chat";
+import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
 describe("classifyChatError", () => {
@@ -547,6 +550,46 @@ describe("useChatStore — draft sessions", () => {
     expect(store.currentSessionAgentId).toBe("main");
   });
 });
+
+describe("useChatStore — session deletion", () => {
+  beforeEach(() => {
+    Object.keys(storage).forEach((k) => delete storage[k]);
+    setActivePinia(createPinia());
+    mockDeleteSession.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("deletes the resolved Gateway session before removing local state", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("main");
+    store.sessionKey = "main";
+    store.resolvedSessionKey = "agent:painter:main";
+    store.messages = [{ role: "user", content: "hello" }];
+
+    await store.deleteSession("main");
+
+    expect(mockDeleteSession).toHaveBeenCalledWith("agent:painter:main");
+    expect(sessionStore.sessions.some((session) => session.key === "main")).toBe(false);
+    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.messages).toEqual([]);
+  });
+
+  it("preserves local state when Gateway deletion fails", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("session-123");
+    store.sessionKey = "session-123";
+    store.messages = [{ role: "user", content: "keep me" }];
+    mockDeleteSession.mockRejectedValueOnce(new Error("Gateway not connected"));
+
+    await expect(store.deleteSession("session-123")).rejects.toThrow("Gateway not connected");
+
+    expect(sessionStore.sessions.some((session) => session.key === "session-123")).toBe(true);
+    expect(store.sessionKey).toBe("session-123");
+    expect(store.messages).toEqual([{ role: "user", content: "keep me" }]);
+  });
+});
+
 // ── Message content extraction tests ──
 
 describe("useChatStore — extractTextOnly", () => {

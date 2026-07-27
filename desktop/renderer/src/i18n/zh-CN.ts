@@ -41,6 +41,7 @@ export default {
   "sidebar.createChat": "创建对话",
   "sidebar.chats": "对话",
   "sidebar.noChats": "暂无对话",
+  "sidebar.chatDeleteFailed": "删除对话失败：{error}",
   "sidebar.phone": "手机",
   "sidebar.tagline": "透过对话，编织万物未来",
 

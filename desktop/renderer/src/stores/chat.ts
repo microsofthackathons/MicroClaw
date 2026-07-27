@@ -1190,8 +1190,19 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /** Delete a session — cleans up cache and switches away without re-adding. */
-  function deleteSession(key: string) {
+  /**
+   * Delete a session from the Gateway source of truth, then remove its local
+   * state and switch away without re-adding it.
+   */
+  async function deleteSession(key: string) {
+    const cached = sessionStateCache.get(key);
+    const gatewayKey =
+      key === sessionKey.value
+        ? resolvedSessionKey.value || key
+        : cached?.resolvedSessionKey || key;
+
+    await window.openclaw.chat.deleteSession(gatewayKey);
+
     // Clean up cached streaming state
     sessionStateCache.delete(key);
     delete lastMessageMap.value[key];

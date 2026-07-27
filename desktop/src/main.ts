@@ -2902,6 +2902,11 @@ function registerIpcHandlers(): void {
     await gwClient.abortChat(params.sessionKey);
   });
 
+  ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    await gwClient.deleteSession(params.sessionKey);
+  });
+
   ipcMain.handle("chat:clear-history", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     return await gwClient.clearAllHistory();
