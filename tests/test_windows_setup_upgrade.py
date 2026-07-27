@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from deployer.openclaw_upgrade import UpgradePhase
 from deployer.openclaw_version import OPENCLAW_TARGET_VERSION
 from deployer.windows_setup import (
+    _OPENCLAW_RPC_TIMEOUT,
     MIRROR_HUAWEI,
     MIRROR_NPMMIRROR,
     MIRROR_OFFICIAL,
@@ -656,6 +657,27 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.install_openclaw_windows())
 
         self.ws._install_openclaw_with_registry_fallback.assert_called_once_with(prepared)
+
+    def test_run_openclaw_json_uses_cold_start_tolerant_timeout(self):
+        # Each RPC probe cold-starts the OpenClaw CLI; the timeout must be well
+        # above the CLI boot time and the client must share the compile cache.
+        self.ws._find_openclaw_cmd = lambda: ["openclaw.cmd"]
+        self.ws._get_env = lambda: {}
+        self.ws._load_openclaw_state_env = lambda _state: {}
+        captured = {}
+
+        def fake_run(_cmd, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            captured["env"] = kwargs.get("env")
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+        self.ws._run = fake_run
+        result = self.ws._run_openclaw_json(["gateway", "call", "config.get", "--json"])
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(captured["timeout"], _OPENCLAW_RPC_TIMEOUT)
+        self.assertGreaterEqual(_OPENCLAW_RPC_TIMEOUT, 60)
+        self.assertIn("NODE_COMPILE_CACHE", captured["env"])
 
     def test_validation_records_every_required_check_and_stops_gateway(self):
         transaction = unittest.mock.Mock()
