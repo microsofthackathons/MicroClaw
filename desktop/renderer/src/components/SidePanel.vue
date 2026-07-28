@@ -141,6 +141,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
+import { ElMessage } from "element-plus";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/sessions";
@@ -226,8 +227,13 @@ function createNewChat() {
   router.push(`/chat/${agentStore.currentAgentId}`);
 }
 
-function deleteSession(key: string) {
-  chatStore.deleteSession(key);
+async function deleteSession(key: string) {
+  try {
+    await chatStore.deleteSession(key);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ElMessage.error(t("sidebar.chatDeleteFailed", { error: message }));
+  }
 }
 
 function clearComposeDraft() {

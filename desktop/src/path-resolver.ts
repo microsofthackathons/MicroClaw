@@ -115,14 +115,7 @@ export function resolveOpenClawEntry(): string {
       ? path.join(programFiles, "nodejs", "node_modules", "openclaw", "dist", "index.js")
       : "",
     localAppData
-      ? path.join(
-          localAppData,
-          "Programs",
-          "nodejs",
-          "node_modules",
-          "openclaw",
-          "openclaw.mjs",
-        )
+      ? path.join(localAppData, "Programs", "nodejs", "node_modules", "openclaw", "openclaw.mjs")
       : "",
     localAppData
       ? path.join(
@@ -140,6 +133,12 @@ export function resolveOpenClawEntry(): string {
     if (p && fs.existsSync(p)) return p;
   }
   return candidates[0];
+}
+
+/** Resolve the package root that must remain readable by the sandbox preload. */
+export function resolveOpenClawPackageDir(entryPath: string): string {
+  const entryDir = path.dirname(entryPath);
+  return path.basename(entryDir).toLowerCase() === "dist" ? path.dirname(entryDir) : entryDir;
 }
 
 /**

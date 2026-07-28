@@ -13,7 +13,12 @@ from tkinter import filedialog
 
 from deployer.config import DeployerConfig
 from deployer.logger import DeployerLogger
-from deployer.windows_setup import DEFAULT_DESKTOP_DIR, WindowsSetup
+from deployer.windows_setup import (
+    DEFAULT_DESKTOP_DIR,
+    ActiveInstallation,
+    NodeInstallBlocked,
+    WindowsSetup,
+)
 
 _ACTIVE_WINDOW = None
 INSTALLER_WINDOW_WIDTH = 710
@@ -25,6 +30,10 @@ INSTALLER_WINDOW_HEIGHT = 680
 # retry as cheap insurance against flaky IO.
 NETWORK_RETRIES = 3
 LOCAL_RETRIES = 1
+
+
+class InstallationCancelled(Exception):
+    """Raised when the user intentionally cancels an interactive install step."""
 
 
 def _get_centered_window_position(width, height):
@@ -160,6 +169,10 @@ _STRINGS = {
         "back": "← 返回",
         "viewLog": "查看日志",
         "close": "关闭",
+        "runningAppsTitle": "需要关闭 MicroClaw",
+        "runningAppsMessage": "检测到 MicroClaw 或 OpenClaw 正在运行{process}。继续安装会关闭应用并中断正在执行的任务。\n\n是否关闭并继续？",
+        "runningAppsCloseFailed": "无法自动关闭 MicroClaw/OpenClaw。请从系统托盘退出后重试。",
+        "installCancelled": "安装已取消，正在运行的应用未被关闭",
         "installFailTitle": "安装失败",
         "installFailMsg": "请检查日志后重试。",
         "carousel": [
@@ -183,6 +196,10 @@ _STRINGS = {
         "back": "← Back",
         "viewLog": "View Log",
         "close": "Close",
+        "runningAppsTitle": "MicroClaw must be closed",
+        "runningAppsMessage": "MicroClaw or OpenClaw is currently running{process}. Continuing will close the app and interrupt active tasks.\n\nClose it and continue?",
+        "runningAppsCloseFailed": "MicroClaw/OpenClaw could not be closed automatically. Exit it from the system tray and retry.",
+        "installCancelled": "Installation cancelled; the running app was not closed",
         "installFailTitle": "Installation Failed",
         "installFailMsg": "Please check the logs and retry.",
         "carousel": [
@@ -207,6 +224,7 @@ class WebInstallerBridge:
             "allow_read": self._default_allow_read,
             "progress": 0,
             "progress_text": "",
+            "progress_detail": "",
             "status": "idle",
             "running": False,
             "error": "",
@@ -329,12 +347,23 @@ class WebInstallerBridge:
         with self._state_lock:
             self._state["progress"] = pct
             self._state["progress_text"] = text
+            # A new step supersedes any sub-status detail from the previous one.
+            self._state["progress_detail"] = ""
             self._state["status"] = "running"
             self._state["running"] = True
 
+    def _set_progress_detail(self, detail):
+        """Sub-status line fed by long-running file operations (backup/restore).
+
+        Keeps the installer from looking frozen during the multi-minute
+        per-file fsync of a large OpenClaw package.
+        """
+        with self._state_lock:
+            self._state["progress_detail"] = detail or ""
+
     def _install_thread(self):
-        log = self._logger
-        ws = WindowsSetup(self._config, log)
+        ws = WindowsSetup(self._config, self._logger)
+        ws.progress_callback = self._set_progress_detail
 
         steps = [
             (
@@ -346,6 +375,7 @@ class WebInstallerBridge:
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
             (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions, LOCAL_RETRIES),
             (10, "Installing Git...", ws.ensure_git, NETWORK_RETRIES),
+            (18, "Preparing OpenClaw upgrade...", lambda: self._prepare_upgrade(ws), 0),
             (25, "Installing Node.js...", lambda: self._ensure_node(ws), NETWORK_RETRIES),
             (35, "Configuring npm registry...", ws.setup_npm_mirror, NETWORK_RETRIES),
             (
@@ -362,16 +392,24 @@ class WebInstallerBridge:
             (75, "Warming up V8 compile cache...", ws.warmup_compile_cache, LOCAL_RETRIES),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer, LOCAL_RETRIES),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin, NETWORK_RETRIES),
-            (95, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
+            (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade, LOCAL_RETRIES),
+            (96, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
+            (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade, LOCAL_RETRIES),
         ]
 
         for pct, label, fn, retries in steps:
             if not self.get_state()["running"]:
-                self._finish_fail("Installation cancelled.")
+                rollback_ok = ws.rollback_openclaw_upgrade()
+                suffix = "" if rollback_ok else " Automatic rollback also failed."
+                self._finish_fail(f"Installation cancelled.{suffix}")
                 return
             self._set_progress(pct, label)
             if not self._run_step_with_retry(pct, label, fn, retries):
-                # _run_step_with_retry already reported the failure.
+                if self.get_state()["status"] == "cancelled":
+                    return
+                if not ws.rollback_openclaw_upgrade():
+                    with self._state_lock:
+                        self._state["error"] += " Automatic rollback also failed."
                 return
 
         self._finish_ok()
@@ -406,6 +444,15 @@ class WebInstallerBridge:
                         log.success(f"{clean_label} succeeded on attempt {attempt}/{attempts}.")
                     return True
                 detail = "step reported failure"
+            except InstallationCancelled:
+                self._finish_cancelled()
+                return False
+            except NodeInstallBlocked as exc:
+                # Deterministic failure — a retry would only re-prompt UAC and
+                # fail again, so stop immediately with an actionable message.
+                log.error(f"{clean_label} cannot proceed: {exc}")
+                self._finish_fail(str(exc))
+                return False
             except Exception as exc:
                 detail = str(exc) or exc.__class__.__name__
                 log.error(f"{clean_label} attempt {attempt}/{attempts} raised: {exc}")
@@ -426,6 +473,23 @@ class WebInstallerBridge:
 
         self._finish_fail(f"{clean_label} failed after {attempts} attempt(s).")
         return False
+
+    def _prepare_upgrade(self, ws):
+        active = ws.get_active_installation()
+        if active is not None:
+            if not self._confirm_close_running_apps(active):
+                raise InstallationCancelled
+            if not ws.stop_active_installation_for_upgrade(active):
+                raise RuntimeError(_STRINGS[self._lang]["runningAppsCloseFailed"])
+        return ws.prepare_openclaw_upgrade()
+
+    def _confirm_close_running_apps(self, active: ActiveInstallation) -> bool:
+        if _ACTIVE_WINDOW is None:
+            raise RuntimeError("Installer window is unavailable")
+        process = f" (PID {', '.join(map(str, active.pids))})" if active.pids else ""
+        strings = _STRINGS[self._lang]
+        message = strings["runningAppsMessage"].format(process=process)
+        return bool(_ACTIVE_WINDOW.create_confirmation_dialog(strings["runningAppsTitle"], message))
 
     def _ensure_node(self, ws):
         if ws.check_node_windows():
@@ -545,6 +609,16 @@ class WebInstallerBridge:
                     "status": "failed",
                     "running": False,
                     "error": msg,
+                }
+            )
+
+    def _finish_cancelled(self):
+        with self._state_lock:
+            self._state.update(
+                {
+                    "status": "cancelled",
+                    "running": False,
+                    "error": "",
                 }
             )
 

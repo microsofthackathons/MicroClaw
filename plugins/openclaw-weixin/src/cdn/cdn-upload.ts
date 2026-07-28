@@ -13,15 +13,25 @@ const UPLOAD_MAX_RETRIES = 3;
  */
 export async function uploadBufferToCdn(params: {
   buf: Buffer;
-  uploadParam: string;
+  /** From getUploadUrl.upload_full_url; POST target when set (takes precedence over uploadParam). */
+  uploadFullUrl?: string;
+  uploadParam?: string;
   filekey: string;
   cdnBaseUrl: string;
   label: string;
   aeskey: Buffer;
 }): Promise<{ downloadParam: string }> {
-  const { buf, uploadParam, filekey, cdnBaseUrl, label, aeskey } = params;
+  const { buf, uploadFullUrl, uploadParam, filekey, cdnBaseUrl, label, aeskey } = params;
   const ciphertext = encryptAesEcb(buf, aeskey);
-  const cdnUrl = buildCdnUploadUrl({ cdnBaseUrl, uploadParam, filekey });
+  const trimmedFull = uploadFullUrl?.trim();
+  let cdnUrl: string;
+  if (trimmedFull) {
+    cdnUrl = trimmedFull;
+  } else if (uploadParam) {
+    cdnUrl = buildCdnUploadUrl({ cdnBaseUrl, uploadParam, filekey });
+  } else {
+    throw new Error(`${label}: CDN upload URL missing (need upload_full_url or upload_param)`);
+  }
   logger.debug(`${label}: CDN POST url=${redactUrl(cdnUrl)} ciphertextSize=${ciphertext.length}`);
 
   let downloadParam: string | undefined;
@@ -50,7 +60,9 @@ export async function uploadBufferToCdn(params: {
       }
       downloadParam = res.headers.get("x-encrypted-param") ?? undefined;
       if (!downloadParam) {
-        logger.error(`${label}: CDN response missing x-encrypted-param header attempt=${attempt}`);
+        logger.error(
+          `${label}: CDN response missing x-encrypted-param header attempt=${attempt}`,
+        );
         throw new Error("CDN upload response missing x-encrypted-param header");
       }
       logger.debug(`${label}: CDN upload success attempt=${attempt}`);
@@ -58,10 +70,16 @@ export async function uploadBufferToCdn(params: {
     } catch (err) {
       lastError = err;
       if (err instanceof Error && err.message.includes("client error")) throw err;
+      const cause =
+        (err as NodeJS.ErrnoException).cause ?? (err as NodeJS.ErrnoException).code ?? "";
       if (attempt < UPLOAD_MAX_RETRIES) {
-        logger.error(`${label}: attempt ${attempt} failed, retrying... err=${String(err)}`);
+        logger.error(
+          `${label}: attempt ${attempt} failed, retrying... url=${redactUrl(cdnUrl)} error=${String(err)}${cause ? ` cause=${cause}` : ""}`,
+        );
       } else {
-        logger.error(`${label}: all ${UPLOAD_MAX_RETRIES} attempts failed err=${String(err)}`);
+        logger.error(
+          `${label}: all ${UPLOAD_MAX_RETRIES} attempts failed url=${redactUrl(cdnUrl)} error=${String(err)}${cause ? ` cause=${cause}` : ""}`,
+        );
       }
     }
   }

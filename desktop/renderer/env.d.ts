@@ -11,6 +11,8 @@ interface ChatEventPayload {
   sessionKey: string;
   state: "delta" | "final" | "aborted" | "error";
   message?: unknown;
+  deltaText?: string;
+  replace?: boolean;
   errorMessage?: string;
 }
 
@@ -22,6 +24,18 @@ interface AppSettings {
   accentColor: string;
   privacyLevel: string;
 }
+
+type GitHubCopilotLoginEvent =
+  | {
+      sessionId: string;
+      status: "code";
+      verificationUrl: string;
+      userCode: string;
+      expiresInMs: number;
+    }
+  | { sessionId: string; status: "success"; defaultModel?: string }
+  | { sessionId: string; status: "cancelled" }
+  | { sessionId: string; status: "error"; message: string };
 
 interface SkillEntry {
   id: string;
@@ -128,6 +142,7 @@ interface OpenClawAPI {
     sendMessage(sessionKey: string, message: string): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     abort(sessionKey: string): Promise<void>;
+    deleteSession(sessionKey: string): Promise<void>;
     clearHistory(): Promise<{ cleared: number }>;
     onEvent(callback: (payload: ChatEventPayload) => void): () => void;
     onToolEvent(
@@ -193,7 +208,16 @@ interface OpenClawAPI {
       apiFormat: string;
       modelName: string;
       reasoningEffort?: string;
-    }): Promise<{ ok: boolean; message: string }>;
+    }): Promise<{ ok: boolean; message: string; baseUrl?: string }>;
+    prepareGitHubCopilot(): Promise<{ restartRequired: boolean }>;
+    startGitHubCopilotLogin(): Promise<{ sessionId: string }>;
+    cancelGitHubCopilotLogin(sessionId?: string): Promise<{ cancelled: boolean }>;
+    disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
+    getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
+    listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
+    onGitHubCopilotLoginEvent(
+      callback: (event: GitHubCopilotLoginEvent) => void,
+    ): () => void;
   };
   studio: {
     start(): Promise<number>;

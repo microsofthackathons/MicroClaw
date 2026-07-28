@@ -5,10 +5,12 @@ configures npm to use the taobao registry, and installs openclaw.
 """
 
 import hashlib
+import json
 import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -16,9 +18,26 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from deployer.logger import DeployerLogger
+from deployer.openclaw_upgrade import (
+    RECOVERABLE_PHASES,
+    OpenClawInstallation,
+    OpenClawUpgradeTransaction,
+    UpgradeInProgressError,
+    UpgradePhase,
+    process_is_alive,
+    process_started_at,
+    prune_previous_committed_backups,
+)
+from deployer.openclaw_version import (
+    NODE_FALLBACK_VERSION,
+    OPENCLAW_TARGET_VERSION,
+    is_supported_node_version,
+)
 from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
 
 # ── Mirror URLs ──
@@ -26,7 +45,9 @@ from deployer.skill_catalog import export_catalog_json, export_managed_catalog_j
 MIRROR_OFFICIAL = "official"
 MIRROR_NPMMIRROR = "npmmirror"
 MIRROR_TENCENT = "tencent"
+MIRROR_HUAWEI = "huawei"
 MIRROR_FALLBACK = MIRROR_NPMMIRROR
+NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
 
 MIRRORS = {
     MIRROR_OFFICIAL: {
@@ -44,7 +65,35 @@ MIRRORS = {
         "git_mirror_base": "https://registry.npmmirror.com/-/binary/git-for-windows",  # tencent has no Git mirror
         "npm_registry": "http://mirrors.cloud.tencent.com/npm/",
     },
+    MIRROR_HUAWEI: {
+        # Huawei Cloud mirrors nodejs.org/dist verbatim and stays reachable on
+        # locked-down corporate networks that block the *.npmmirror.com CDN.
+        "node_download_base": "https://repo.huaweicloud.com/nodejs",
+        "git_mirror_base": "https://github.com/git-for-windows/git/releases/download",
+        "npm_registry": NPM_REGISTRY_HUAWEI,
+    },
 }
+
+# Order in which Node.js binary mirrors are tried when the selected one is
+# unreachable. official + Huawei tend to work on corporate networks that block
+# the npmmirror CDN, so they lead the fallback chain.
+NODE_MIRROR_FALLBACK_ORDER = (
+    MIRROR_OFFICIAL,
+    MIRROR_HUAWEI,
+    MIRROR_TENCENT,
+    MIRROR_NPMMIRROR,
+)
+
+# Order in which Git-for-Windows mirrors are tried when the selected one is
+# unreachable. The official GitHub releases host works on corp networks that
+# block the npmmirror CDN, so it leads the fallback chain. (official + huawei
+# share the GitHub base and collapse to one entry after de-duplication.)
+GIT_MIRROR_FALLBACK_ORDER = (
+    MIRROR_OFFICIAL,
+    MIRROR_HUAWEI,
+    MIRROR_NPMMIRROR,
+    MIRROR_TENCENT,
+)
 
 # Default install location.
 #
@@ -60,9 +109,7 @@ MIRRORS = {
 # runtime for users upgrading from earlier builds (see check_node_windows /
 # sandbox-state.js).
 _PROGRAM_FILES = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-_LOCAL_APPDATA = Path(
-    os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-)
+_LOCAL_APPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
 DEFAULT_NODE_DIR = Path(
     os.environ.get(
         "OPENCLAW_NODE_DIR",
@@ -94,6 +141,50 @@ _VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 # Hide console windows spawned by subprocess on Windows
 _CREATE_NO_WINDOW = 0x08000000
 
+# Per-call timeout (seconds) for `openclaw gateway call ...` RPC probes run
+# during post-install validation. Each probe cold-starts the OpenClaw CLI, and
+# on freshly-provisioned machines (empty V8 compile cache + antivirus scanning
+# newly-written files) that start alone can take 30-60s, so this must be well
+# above the CLI boot time to avoid spurious validation failures.
+_OPENCLAW_RPC_TIMEOUT = 120
+
+
+@dataclass(frozen=True)
+class OpenClawInstallAttempt:
+    returncode: int
+    output: str
+    installed_version: str | None
+
+
+@dataclass(frozen=True)
+class ActiveGateway:
+    pid: int | None
+    port: int
+    lock_path: Path | None
+
+
+@dataclass(frozen=True)
+class ActiveInstallation:
+    pids: tuple[int, ...]
+    gateway: ActiveGateway | None
+
+
+@dataclass(frozen=True)
+class _ProcessInfo:
+    parent_pid: int
+    name: str
+    command_line: str
+
+
+class NodeInstallBlocked(RuntimeError):
+    """Node.js MSI failed for a deterministic reason that a retry cannot fix.
+
+    Raised when msiexec aborts on a launch condition (e.g. a *later* version
+    of Node.js is already installed, so the MSI refuses to downgrade). Retrying
+    only re-triggers the UAC prompt and fails again, so the install pipeline
+    treats this as fatal instead of retrying.
+    """
+
 
 class WindowsSetup:
     """Handles Node.js + OpenClaw installation on Windows natively."""
@@ -107,6 +198,10 @@ class WindowsSetup:
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
+        self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
+        # Optional UI hook forwarded to upgrade transactions so long backup /
+        # restore file operations can report progress instead of looking frozen.
+        self.progress_callback: Callable[[str], None] | None = None
         self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
         self.weixin_plugin_enabled = True  # Install by default
 
@@ -267,15 +362,14 @@ class WindowsSetup:
             filename = f"MinGit-{git_version}-32-bit.zip"
         else:
             filename = f"PortableGit-{git_version}-64-bit.7z.exe"
-        url = f"{self._git_mirror_base}/v{git_version}.windows.1/{filename}"
-
         git_dir = Path.home() / ".openclaw-git"
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_git_"))
             dl_path = tmp_dir / filename
 
-            self.log.info(f"Downloading: {url}")
-            self._download_with_progress(url, dl_path)
+            if not self._download_git_installer(git_version, filename, dl_path):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return False
 
             self.log.step("Extracting Git…")
             git_dir.mkdir(parents=True, exist_ok=True)
@@ -323,8 +417,52 @@ class WindowsSetup:
             self.log.error(f"Git install failed: {e}")
             return False
 
+    def _git_download_bases(self) -> list[tuple[str, str]]:
+        """Ordered, de-duplicated list of ``(mirror_name, git_mirror_base)``.
+
+        The selected mirror is tried first, followed by ``GIT_MIRROR_FALLBACK_ORDER``
+        so a single blocked CDN (e.g. a corporate ``NPM URL Block`` on npmmirror)
+        no longer dead-ends the Git download.
+        """
+        ordered_names = [self._mirror_name, *GIT_MIRROR_FALLBACK_ORDER]
+        bases: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name in ordered_names:
+            mirror = MIRRORS.get(name)
+            if mirror is None:
+                continue
+            base = mirror["git_mirror_base"]
+            if base not in seen:
+                seen.add(base)
+                bases.append((name, base))
+        return bases
+
+    def _download_git_installer(self, git_version: str, filename: str, dl_path: Path) -> bool:
+        """Download the Git-for-Windows installer, falling through mirrors.
+
+        A single mirror can be unreachable on a given network (corporate
+        policies often block the npmmirror CDN with an SSL handshake failure),
+        so we try each mirror in turn instead of failing on the first blocked
+        host.
+        """
+        bases = self._git_download_bases()
+        last_error = "no mirrors configured"
+        for index, (name, base) in enumerate(bases, start=1):
+            url = f"{base}/v{git_version}.windows.1/{filename}"
+            self.log.info(f"Downloading Git from {name} ({index}/{len(bases)}): {url}")
+            try:
+                self._download_with_progress(url, dl_path)
+            except Exception as error:
+                last_error = str(error) or error.__class__.__name__
+                self.log.warn(f"Git download from {name} failed ({last_error}); trying next mirror")
+                dl_path.unlink(missing_ok=True)
+                continue
+            return True
+        self.log.error(f"Could not download Git from any mirror. Last error: {last_error}")
+        return False
+
     def _resolve_git_version(self) -> str | None:
-        """Resolve latest Git for Windows version from npmmirror."""
+        """Resolve latest Git for Windows version from GitHub."""
         import json
 
         try:
@@ -528,26 +666,86 @@ class WindowsSetup:
         arch = self._get_arch()
         return f"{self._node_download_base}/v{version}/node-v{version}-{arch}.msi"
 
+    def _node_download_bases(self) -> list[tuple[str, str]]:
+        """Ordered, de-duplicated list of ``(mirror_name, node_download_base)``.
+
+        The selected mirror is tried first, followed by ``NODE_MIRROR_FALLBACK_ORDER``
+        so a single blocked CDN (e.g. a corporate ``NPM URL Block`` on
+        npmmirror) no longer dead-ends the Node.js download.
+        """
+        ordered_names = [self._mirror_name, *NODE_MIRROR_FALLBACK_ORDER]
+        bases: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name in ordered_names:
+            mirror = MIRRORS.get(name)
+            if mirror is None:
+                continue
+            base = mirror["node_download_base"]
+            if base not in seen:
+                seen.add(base)
+                bases.append((name, base))
+        return bases
+
+    def _download_and_verify_node_msi(self, version: str, msi_path: Path) -> bool:
+        """Download the Node.js MSI, falling through mirrors until one works.
+
+        A single mirror can be unreachable on a given network (corporate
+        policies often block the npmmirror CDN with an SSL handshake failure),
+        so we try each mirror in turn instead of failing on the first blocked
+        host. Every candidate download is SHA256-verified against the official
+        checksums before it is accepted (fail-closed).
+        """
+        bases = self._node_download_bases()
+        last_error = "no mirrors configured"
+        for index, (name, base) in enumerate(bases, start=1):
+            self._node_download_base = base
+            url = self._get_node_download_url(version)
+            self.log.info(f"Downloading Node.js from {name} ({index}/{len(bases)}): {url}")
+            try:
+                self._download_with_progress(url, msi_path)
+            except Exception as error:
+                last_error = str(error) or error.__class__.__name__
+                self.log.warn(
+                    f"Node.js download from {name} failed ({last_error}); trying next mirror"
+                )
+                msi_path.unlink(missing_ok=True)
+                continue
+            if not self._verify_node_sha256(version, msi_path):
+                last_error = "SHA256 verification failed"
+                self.log.warn(f"Node.js MSI from {name} failed verification; trying next mirror")
+                msi_path.unlink(missing_ok=True)
+                continue
+            return True
+        self.log.error(
+            f"Could not download a verified Node.js MSI from any mirror. Last error: {last_error}"
+        )
+        return False
+
     def _resolve_latest_version(self, major: str) -> str:
         """Resolve '22' to the latest specific version like '22.14.0'."""
         self.log.debug(f"Resolving latest Node.js {major}.x version…")
         import json
         import re
 
-        # Method 1: Use nodejs.org version index (most reliable)
-        try:
-            url = "https://nodejs.org/dist/index.json"
-            req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
-            resp = urllib.request.urlopen(req, timeout=15)
-            with resp:
-                data = json.loads(resp.read())
-            for entry in data:
-                ver = entry.get("version", "").lstrip("v")
-                if ver.startswith(f"{major}."):
-                    self.log.debug(f"Resolved from nodejs.org: {ver}")
-                    return ver
-        except Exception as e:
-            self.log.debug(f"nodejs.org resolve failed: {e}")
+        # Method 1: Use a nodejs.org-compatible version index (most reliable).
+        # Try the official host first, then Huawei's verbatim mirror so version
+        # resolution still works on networks that block nodejs.org.
+        for url in (
+            "https://nodejs.org/dist/index.json",
+            "https://repo.huaweicloud.com/nodejs/index.json",
+        ):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
+                resp = urllib.request.urlopen(req, timeout=15)
+                with resp:
+                    data = json.loads(resp.read())
+                for entry in data:
+                    ver = entry.get("version", "").lstrip("v")
+                    if ver.startswith(f"{major}."):
+                        self.log.debug(f"Resolved from {url}: {ver}")
+                        return ver
+            except Exception as e:
+                self.log.debug(f"version index {url} resolve failed: {e}")
 
         # Method 2: Scrape npmmirror directory listing
         try:
@@ -565,8 +763,8 @@ class WindowsSetup:
         except Exception as e:
             self.log.debug(f"npmmirror resolve failed: {e}")
 
-        # Fallback — must satisfy OpenClaw's v22.12+ requirement
-        fallback = f"{major}.20.0"
+        # Fallback — use the pinned supported Node.js release.
+        fallback = NODE_FALLBACK_VERSION
         self.log.warn(f"Could not resolve version, using fallback: {fallback}")
         return fallback
 
@@ -581,7 +779,7 @@ class WindowsSetup:
         managed_node = self.node_dir / "node.exe"
         if managed_node.exists():
             ver = self._get_node_version(str(managed_node))
-            if ver and self._version_ok(ver):
+            if ver and is_supported_node_version(ver):
                 self.log.info(f"Node.js (managed) found: {ver}")
                 self._node_bin = managed_node.parent
                 # Verify npm is also available — a partial install (e.g. after
@@ -593,7 +791,11 @@ class WindowsSetup:
                     return False
                 return True
             elif ver:
-                self.log.info(f"Managed Node.js {ver} is outdated (need ≥22.16.0), will reinstall")
+                self.log.info(
+                    "Managed Node.js "
+                    f"{ver} is outdated (need >=22.22.3, <23 / >=24.15.0, <25 / >=25.9.0), "
+                    "will reinstall"
+                )
 
         # Log system node for diagnostics. Accept it when it lives at a
         # standard, Authenticode-trusted location (Program Files or the
@@ -610,10 +812,8 @@ class WindowsSetup:
                     parent == std.resolve() if std.exists() else parent == std
                     for std in _STANDARD_NODE_DIRS
                 )
-                if is_standard and self._version_ok(ver):
-                    self.log.info(
-                        f"Node.js (system) accepted: {ver} at {node_path}"
-                    )
+                if is_standard and is_supported_node_version(ver):
+                    self.log.info(f"Node.js (system) accepted: {ver} at {node_path}")
                     # Pin the discovered directory so all later logic
                     # (AppContainer ACLs, PATH, npm prefix) targets the
                     # actual install location rather than the configured
@@ -632,6 +832,57 @@ class WindowsSetup:
 
         return False
 
+    def _installed_node_major(self) -> int | None:
+        """Highest major version of any Node.js already installed on the box.
+
+        The Node.js MSI is authored as per-machine and enforces a launch
+        condition that refuses to install an *older* product version over a
+        newer one (``A later version of Node.js is already installed`` ->
+        exit 1603). So we must never target a major below what is already
+        present. We inspect both the PATH ``node`` and the standard MSI
+        install directories.
+        """
+        candidates: list[str] = []
+        on_path = shutil.which("node")
+        if on_path:
+            candidates.append(on_path)
+        for std in _STANDARD_NODE_DIRS:
+            exe = std / "node.exe"
+            if exe.exists():
+                candidates.append(str(exe))
+
+        majors: list[int] = []
+        for exe in candidates:
+            ver = self._get_node_version(exe)
+            if ver:
+                match = re.match(r"v?(\d+)\.", ver)
+                if match:
+                    majors.append(int(match.group(1)))
+        return max(majors) if majors else None
+
+    def _resolve_target_node_version(self) -> str:
+        """Resolve the Node.js version to install, never downgrading.
+
+        Starts from the configured target line (``self.node_version``, default
+        ``22``) but bumps up to the major of any already-installed Node when
+        that is higher, so the per-machine MSI performs an upgrade rather than
+        a blocked downgrade.
+        """
+        target_line = str(self.node_version)
+        match = re.match(r"(\d+)", target_line)
+        target_major = int(match.group(1)) if match else 0
+
+        installed_major = self._installed_node_major()
+        if installed_major is not None and installed_major > target_major:
+            self.log.info(
+                f"Node.js v{installed_major}.x is already installed; targeting the "
+                f"{installed_major}.x line instead of {target_major}.x — the MSI refuses "
+                "to install an older version over a newer one."
+            )
+            target_line = str(installed_major)
+
+        return self._resolve_latest_version(target_line)
+
     def install_node_windows(self) -> bool:
         """Download and install Node.js on Windows via the official signed MSI.
 
@@ -643,25 +894,20 @@ class WindowsSetup:
         """
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
 
-        version = self._resolve_latest_version(self.node_version)
+        version = self._resolve_target_node_version()
         if not _VERSION_RE.match(version):
             self.log.error(f"Invalid resolved version: {version!r}")
             return False
         self.log.info(f"Resolved version: v{version}")
-
-        url = self._get_node_download_url(version)
-        self.log.info(f"Downloading: {url}")
 
         tmp_dir: Path | None = None
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_node_"))
             msi_path = tmp_dir / f"node-v{version}-{self._get_arch()}.msi"
 
-            self._download_with_progress(url, msi_path)
-
-            # Verify SHA256 integrity against official SHASUMS256.txt
-            if not self._verify_node_sha256(version, msi_path):
-                self.log.error("SHA256 verification FAILED — download may be tampered")
+            # Download from the first reachable mirror; each candidate is
+            # SHA256-verified before we accept it.
+            if not self._download_and_verify_node_msi(version, msi_path):
                 return False
 
             # Install via msiexec to the standard per-machine location
@@ -675,7 +921,7 @@ class WindowsSetup:
             msi_args = (
                 f'/i "{msi_path}" /qn /norestart '
                 f'INSTALLDIR="{install_dir}\\" '
-                f'ADDLOCAL=NodeRuntime,npm '
+                f"ADDLOCAL=NodeRuntime,npm "
                 f'/L*V "{log_path}"'
             )
             # Use PowerShell Start-Process -Verb RunAs to elevate.  -Wait
@@ -683,10 +929,17 @@ class WindowsSetup:
             # exit code; -WindowStyle Hidden keeps the UAC-spawned console
             # off-screen.
             ps_cmd = (
+                "$ErrorActionPreference = 'Stop'; "
+                "try { "
                 "$p = Start-Process -FilePath msiexec.exe "
                 f"-ArgumentList '{msi_args}' "
                 "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
-                "exit $p.ExitCode"
+                "if ($null -eq $p) { throw 'Failed to start elevated msiexec process.' }; "
+                "exit [int]$p.ExitCode "
+                "} catch { "
+                "[Console]::Error.WriteLine($_.Exception.Message); "
+                "exit 1 "
+                "}"
             )
             try:
                 result = self._run(
@@ -707,17 +960,31 @@ class WindowsSetup:
 
             # msiexec exit codes: 0 = success, 3010 = success + reboot required
             if result.returncode not in (0, 3010):
-                self.log.error(
-                    f"msiexec exited with code {result.returncode}; "
-                    f"see log: {log_path}"
-                )
-                # Surface a short tail of the log to help diagnose
+                process_error = (result.stderr or result.stdout or "").strip()
+                if process_error:
+                    self.log.error(f"Could not start elevated Node.js installer: {process_error}")
+                if not log_path.exists():
+                    self.log.error(
+                        "Node.js installer did not start. Approve the Windows UAC prompt and retry."
+                    )
+                self.log.error(f"msiexec exited with code {result.returncode}; see log: {log_path}")
+                # Surface a short tail of the log to help diagnose.
+                msi_log = ""
                 try:
-                    tail = log_path.read_text(encoding="utf-16-le", errors="replace").splitlines()[-20:]
-                    for line in tail:
+                    msi_log = log_path.read_text(encoding="utf-16-le", errors="replace")
+                    for line in msi_log.splitlines()[-20:]:
                         self.log.debug(f"  msi: {line}")
                 except Exception:
                     pass
+                # A launch-condition failure (e.g. a newer Node is already
+                # installed and the MSI refuses to downgrade) is deterministic —
+                # retrying only re-prompts UAC and fails again, so bail out.
+                if "later version" in msi_log.lower() or "LaunchConditions" in msi_log:
+                    raise NodeInstallBlocked(
+                        "A newer version of Node.js is already installed and the installer "
+                        "cannot replace it. Uninstall the existing Node.js (or install a "
+                        "matching/newer version) and run MicroClaw again."
+                    )
                 return False
 
             node_exe = self.node_dir / "node.exe"
@@ -767,6 +1034,10 @@ class WindowsSetup:
             self._register_rollback("删除 Node.js", _rollback_node)
             return True
 
+        except NodeInstallBlocked:
+            # Deterministic, non-retryable — propagate so the pipeline stops
+            # instead of re-prompting UAC on every retry.
+            raise
         except Exception as e:
             self.log.error(f"Node.js install failed: {e}")
             return False
@@ -945,55 +1216,482 @@ class WindowsSetup:
 
     # ────────────────────── OpenClaw ──────────────────────
 
+    def _openclaw_search_roots(self) -> list[Path]:
+        """Return package roots in the same precedence used by the desktop."""
+        appdata = Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming"))
+        local_appdata = Path(
+            os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        )
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        candidates = [
+            getattr(self, "install_prefix", None),
+            Path.home() / ".openclaw-node",
+            appdata / "npm",
+            program_files / "nodejs",
+            local_appdata / "Programs" / "nodejs",
+            self.node_dir,
+        ]
+        roots: list[Path] = []
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            path = Path(candidate).resolve(strict=False)
+            if path not in roots:
+                roots.append(path)
+        return roots
+
+    @staticmethod
+    def _openclaw_installation_at_prefix(prefix: Path) -> OpenClawInstallation | None:
+        prefix = prefix.resolve(strict=False)
+        for package_dir in (
+            prefix / "node_modules" / "openclaw",
+            prefix / "lib" / "node_modules" / "openclaw",
+        ):
+            package_json = package_dir / "package.json"
+            if not package_json.exists():
+                continue
+            try:
+                package = json.loads(package_json.read_text(encoding="utf-8"))
+                version = package["version"]
+            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(version, str) or not version:
+                continue
+            entry = package_dir / "openclaw.mjs"
+            if not entry.exists():
+                entry = package_dir / "dist" / "index.js"
+            if not entry.exists():
+                continue
+            return OpenClawInstallation(
+                version=version,
+                prefix=prefix,
+                package_dir=package_dir,
+                entry_path=entry,
+                shim_paths=tuple(
+                    prefix / name for name in ("openclaw", "openclaw.cmd", "openclaw.ps1")
+                ),
+            )
+        return None
+
+    def _detect_openclaw_installation(self) -> OpenClawInstallation | None:
+        for root in self._openclaw_search_roots():
+            installation = self._openclaw_installation_at_prefix(root)
+            if installation is not None:
+                return installation
+        return None
+
     def check_openclaw_windows(self) -> bool:
-        """Check if openclaw is installed **inside our managed node_dir**.
-
-        A system-level openclaw (e.g. via Node v24 in Program Files) does
-        NOT count — the Electron desktop app resolves the entry point from
-        node_dir/node_modules/openclaw/, so the package must live there.
-        """
-        # Primary check: the actual entry file that Electron uses
-        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        search_roots = [self.node_dir, Path(appdata) / "npm"]
-        entry: Path | None = None
-        for root in search_roots:
-            for sub in (
-                ("node_modules", "openclaw", "openclaw.mjs"),
-                ("node_modules", "openclaw", "dist", "index.js"),
-                ("lib", "node_modules", "openclaw", "openclaw.mjs"),
-                ("lib", "node_modules", "openclaw", "dist", "index.js"),
-            ):
-                candidate = root.joinpath(*sub)
-                if candidate.exists():
-                    entry = candidate
-                    break
-            if entry:
-                break
-        if not entry:
+        """Return whether the exact pinned OpenClaw package is installed."""
+        installation = self._detect_openclaw_installation()
+        if installation is None:
             return False
-
-        # Verify version via npm list (using our managed npm)
-        npm = self._get_npm_path()
-        if not npm:
+        self.log.info(f"OpenClaw found on Windows: {installation.version}")
+        if installation.version != OPENCLAW_TARGET_VERSION:
+            self.log.info(
+                f"OpenClaw {installation.version} requires upgrade to {OPENCLAW_TARGET_VERSION}"
+            )
             return False
+        self.install_prefix = installation.prefix
+        return True
+
+    @staticmethod
+    def _is_tcp_port_open(port: int) -> bool:
         try:
-            env = self._get_env()
-            r = self._run(
-                [npm, "list", "-g", "openclaw", "--depth=0"],
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            return False
+
+    def _find_active_gateway_lock(self) -> dict | None:
+        local_appdata = Path(
+            os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        )
+        lock_dir = local_appdata / "Temp" / "openclaw"
+        if not lock_dir.is_dir():
+            return None
+        for lock_path in lock_dir.glob("gateway.*.lock"):
+            try:
+                payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            pid = payload.get("pid")
+            port = payload.get("port")
+            has_declared_port = (
+                isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
+            )
+            port_active = has_declared_port and self._is_tcp_port_open(port)
+            pid_active = False
+            if isinstance(pid, int) and process_is_alive(pid):
+                try:
+                    lock_created_at = datetime.fromisoformat(
+                        str(payload.get("createdAt")).replace("Z", "+00:00")
+                    )
+                    if lock_created_at.tzinfo is None:
+                        lock_created_at = lock_created_at.replace(tzinfo=UTC)
+                    process_created_at = process_started_at(pid)
+                    if process_created_at is not None:
+                        if process_created_at.tzinfo is None:
+                            process_created_at = process_created_at.replace(tzinfo=UTC)
+                        pid_active = (
+                            abs(
+                                (
+                                    lock_created_at.astimezone(UTC)
+                                    - process_created_at.astimezone(UTC)
+                                ).total_seconds()
+                            )
+                            <= 300
+                        )
+                except (TypeError, ValueError):
+                    pid_active = False
+            active = port_active or pid_active
+            if active:
+                return {**payload, "lockPath": str(lock_path)}
+        return None
+
+    def _find_listening_pid(self, port: int) -> int | None:
+        try:
+            result = self._run(
+                ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                env=env,
+                timeout=10,
             )
-            if "openclaw@" in r.stdout:
-                version = r.stdout.strip().split("openclaw@")[-1].split()[0]
-                self.log.info(f"OpenClaw found on Windows: {version}")
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            columns = line.split()
+            if len(columns) < 5 or columns[0].upper() != "TCP":
+                continue
+            if columns[3].upper() != "LISTENING":
+                continue
+            local_address = columns[1].rsplit(":", 1)
+            if len(local_address) != 2 or local_address[1] != str(port):
+                continue
+            try:
+                pid = int(columns[4])
+            except ValueError:
+                continue
+            if pid > 0:
+                return pid
+        return None
+
+    def get_active_gateway(self) -> ActiveGateway | None:
+        port = int(self.cfg.get("gateway.port", 18789))
+        active_lock = self._find_active_gateway_lock()
+        port_open = self._is_tcp_port_open(port)
+        if not port_open and active_lock is None:
+            return None
+
+        pid = active_lock.get("pid") if active_lock else None
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            pid = self._find_listening_pid(port) if port_open else None
+        lock_port = active_lock.get("port") if active_lock else None
+        if (
+            isinstance(lock_port, int)
+            and not isinstance(lock_port, bool)
+            and 1 <= lock_port <= 65535
+        ):
+            port = lock_port
+        lock_path = active_lock.get("lockPath") if active_lock else None
+        return ActiveGateway(
+            pid=pid,
+            port=port,
+            lock_path=Path(lock_path) if isinstance(lock_path, str) else None,
+        )
+
+    def _process_snapshot(self) -> dict[int, _ProcessInfo]:
+        command = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+        )
+        try:
+            result = self._run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {}
+        rows = payload if isinstance(payload, list) else [payload]
+        snapshot: dict[int, _ProcessInfo] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            pid = row.get("ProcessId")
+            parent_pid = row.get("ParentProcessId")
+            name = row.get("Name")
+            command_line = row.get("CommandLine")
+            if (
+                isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and pid > 0
+                and isinstance(parent_pid, int)
+                and not isinstance(parent_pid, bool)
+                and isinstance(name, str)
+            ):
+                snapshot[pid] = _ProcessInfo(
+                    parent_pid=parent_pid,
+                    name=name,
+                    command_line=command_line if isinstance(command_line, str) else "",
+                )
+        return snapshot
+
+    def _find_managing_desktop_pid(
+        self,
+        gateway_pid: int,
+        snapshot: dict[int, _ProcessInfo] | None = None,
+    ) -> int | None:
+        snapshot = snapshot if snapshot is not None else self._process_snapshot()
+        current_pid = gateway_pid
+        visited: set[int] = set()
+        while current_pid > 0 and current_pid not in visited:
+            visited.add(current_pid)
+            process = snapshot.get(current_pid)
+            if process is None:
+                return None
+            if process.name.casefold() in {"microclawdesktop.exe", "openclaw.exe"}:
+                return current_pid
+            current_pid = process.parent_pid
+        return None
+
+    @staticmethod
+    def _desktop_process_roots(snapshot: dict[int, _ProcessInfo]) -> tuple[int, ...]:
+        managed_names = {"microclawdesktop.exe", "openclaw.exe"}
+        managed_pids = {
+            pid for pid, process in snapshot.items() if process.name.casefold() in managed_names
+        }
+        return tuple(
+            sorted(pid for pid in managed_pids if snapshot[pid].parent_pid not in managed_pids)
+        )
+
+    @staticmethod
+    def _is_openclaw_gateway_process(
+        pid: int,
+        snapshot: dict[int, _ProcessInfo],
+    ) -> bool:
+        process = snapshot.get(pid)
+        if process is None:
+            return False
+        if process.name.casefold() in {"microclawdesktop.exe", "openclaw.exe"}:
+            return True
+        return "openclaw" in process.command_line.casefold()
+
+    def get_active_installation(self) -> ActiveInstallation | None:
+        gateway = self.get_active_gateway()
+        snapshot = self._process_snapshot()
+        target_pids = set(self._desktop_process_roots(snapshot))
+
+        if gateway is not None and gateway.pid is not None:
+            desktop_pid = self._find_managing_desktop_pid(gateway.pid, snapshot)
+            if desktop_pid is not None:
+                target_pids.add(desktop_pid)
+            elif gateway.lock_path is not None or self._is_openclaw_gateway_process(
+                gateway.pid, snapshot
+            ):
+                target_pids.add(gateway.pid)
+
+        if gateway is None and not target_pids:
+            return None
+        return ActiveInstallation(pids=tuple(sorted(target_pids)), gateway=gateway)
+
+    def stop_active_installation_for_upgrade(self, active: ActiveInstallation) -> bool:
+        current = self.get_active_installation()
+        if current is None:
+            return True
+        active = current
+        if not active.pids:
+            gateway = active.gateway
+            port = gateway.port if gateway is not None else int(self.cfg.get("gateway.port", 18789))
+            self.log.error(
+                f"Port {port} is in use, but the owning process could not be safely "
+                "identified as MicroClaw/OpenClaw."
+            )
+            return False
+
+        if os.getpid() in active.pids:
+            self.log.error("Refusing to stop the installer process while preparing the upgrade.")
+            return False
+
+        self.log.step("Closing the running MicroClaw/OpenClaw instance…")
+        if active.gateway is not None:
+            try:
+                self._run(
+                    ["schtasks", "/End", "/TN", "OpenClaw Gateway"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        for target_pid in active.pids:
+            try:
+                result = self._run(
+                    ["taskkill", "/PID", str(target_pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                self.log.error(f"Could not close MicroClaw/OpenClaw: {error}")
+                return False
+            if result.returncode != 0 and process_is_alive(target_pid):
+                detail = result.stderr.strip() or result.stdout.strip()
+                self.log.error(f"Could not close MicroClaw/OpenClaw: {detail}")
+                return False
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if self.get_active_installation() is None:
+                gateway = active.gateway
+                if gateway is not None and gateway.lock_path is not None:
+                    try:
+                        gateway.lock_path.unlink(missing_ok=True)
+                    except OSError as error:
+                        self.log.warn(f"Could not remove stale Gateway lock: {error}")
+                self.log.success("MicroClaw/OpenClaw closed; continuing installation")
                 return True
-        except Exception:
-            pass
+            time.sleep(0.5)
+
+        self.log.error(
+            "MicroClaw/OpenClaw restarted or did not close. Exit it from the system tray and retry."
+        )
         return False
+
+    def _gateway_is_stopped_for_upgrade(self) -> bool:
+        active_gateway = self.get_active_gateway()
+        if active_gateway is not None:
+            owner = f" (pid {active_gateway.pid})" if active_gateway.pid is not None else ""
+            self.log.error(
+                f"OpenClaw Gateway is active{owner}. Exit MicroClaw and standalone "
+                "OpenClaw before upgrading."
+            )
+            return False
+        return True
+
+    def _discard_failed_transaction(
+        self, transaction: OpenClawUpgradeTransaction, reason: str
+    ) -> None:
+        """Abandon a transaction whose rollback failed so future installs work.
+
+        Leaving it in ``rollback-failed`` keeps the manifest recoverable and
+        retains the upgrade lock, which permanently blocks every subsequent
+        install with ``UpgradeInProgressError``. Discarding clears that state;
+        the live installation is left as-is and later steps reinstall OpenClaw.
+        """
+        self.log.warn(
+            f"OpenClaw upgrade rollback could not complete ({reason}); discarding "
+            "transaction state so future installs are not blocked. The existing "
+            "OpenClaw installation was left in place."
+        )
+        try:
+            transaction.discard()
+        except Exception as discard_error:
+            self.log.error(f"Failed to discard OpenClaw upgrade transaction: {discard_error}")
+
+    def _rollback_openclaw_transaction(self, transaction: OpenClawUpgradeTransaction) -> bool:
+        transaction.progress_callback = self.progress_callback
+        process: subprocess.Popen | None = None
+        try:
+            original_phase = transaction.manifest.phase
+            transaction.rollback()
+            if transaction.manifest.phase == UpgradePhase.ROLLED_BACK:
+                return True
+            if original_phase == UpgradePhase.BACKING_UP:
+                transaction.complete_rollback()
+                return True
+            source_version = transaction.manifest.source_version
+            if source_version is not None:
+                process = self._start_validation_gateway(expected_version=source_version)
+                if not self._validate_gateway_health():
+                    self.log.error(
+                        "Previous OpenClaw Gateway did not become healthy after rollback"
+                    )
+                    self._discard_failed_transaction(
+                        transaction, "restored gateway did not become healthy"
+                    )
+                    return False
+            transaction.complete_rollback()
+            return True
+        except Exception as error:
+            self.log.error(
+                f"Failed to restore OpenClaw backup at {transaction.backup_dir}: {error}"
+            )
+            self._discard_failed_transaction(transaction, str(error) or error.__class__.__name__)
+            return False
+        finally:
+            self._stop_validation_gateway(process)
+
+    def recover_interrupted_openclaw_upgrade(self) -> bool:
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        try:
+            transaction = OpenClawUpgradeTransaction.load(DEFAULT_DESKTOP_DIR)
+        except UpgradeInProgressError as error:
+            self.log.error(str(error))
+            return False
+        if transaction is None or transaction.manifest.phase not in RECOVERABLE_PHASES:
+            return True
+        self.log.warn("Recovering interrupted OpenClaw upgrade before continuing")
+        if not self._gateway_is_stopped_for_upgrade():
+            transaction.close()
+            return False
+        return self._rollback_openclaw_transaction(transaction)
+
+    def prepare_openclaw_upgrade(self) -> bool:
+        """Block active gateways and snapshot the current package and state."""
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        if not self.recover_interrupted_openclaw_upgrade():
+            return False
+        installation = self._detect_openclaw_installation()
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        prefix = (
+            installation.prefix if installation is not None else self._choose_npm_install_prefix()
+        )
+        source = installation or OpenClawInstallation(
+            version="",
+            prefix=prefix,
+            package_dir=prefix / "node_modules" / "openclaw",
+            entry_path=prefix / "node_modules" / "openclaw" / "openclaw.mjs",
+            shim_paths=tuple(
+                prefix / name for name in ("openclaw", "openclaw.cmd", "openclaw.ps1")
+            ),
+        )
+        self.install_prefix = prefix
+        try:
+            transaction = OpenClawUpgradeTransaction.create(
+                microclaw_root=DEFAULT_DESKTOP_DIR,
+                state_dir=Path.home() / ".openclaw",
+                target_version=OPENCLAW_TARGET_VERSION,
+                installation=source,
+            )
+            self._openclaw_transaction = transaction
+            transaction.progress_callback = self.progress_callback
+            if not self._gateway_is_stopped_for_upgrade():
+                transaction.close()
+                self._openclaw_transaction = None
+                return False
+            transaction.backup()
+            return True
+        except Exception as error:
+            self.log.error(f"Could not prepare OpenClaw upgrade backup: {error}")
+            transaction = self._openclaw_transaction
+            if transaction is not None and self._rollback_openclaw_transaction(transaction):
+                self._openclaw_transaction = None
+            return False
 
     def ensure_execution_policy(self) -> bool:
         """Set PowerShell ExecutionPolicy to RemoteSigned for current user.
@@ -1037,7 +1735,7 @@ class WindowsSetup:
     def install_openclaw_windows(self) -> bool:
         """Install openclaw via npm on Windows."""
         channel = self.cfg.get("openclaw.channel", "stable")
-        tag = "2026.3.12" if channel == "stable" else channel
+        tag = OPENCLAW_TARGET_VERSION if channel == "stable" else channel
         # Validate tag before passing to subprocess
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$", tag):
             self.log.error(f"Invalid npm tag: {tag!r}")
@@ -1050,105 +1748,445 @@ class WindowsSetup:
             return False
 
         try:
-            env = self._get_env()
-            # Skip llama.cpp binary download (avoids build failures on Windows)
-            env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
-            self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
-
-            # Choose an npm --prefix that the current user can actually write
-            # to.  When Node.js is installed per-machine under
-            # ``C:\Program Files\nodejs`` (the standard MSI layout) the
-            # node_modules directory is owned by Administrators and a normal
-            # (non-elevated) user gets EPERM on ``npm install -g``.  Fall
-            # back to a user-writable directory in those cases.
-            install_prefix = self._choose_npm_install_prefix()
-            self.install_prefix = install_prefix  # remember for _find_openclaw_cmd
+            install_prefix = Path(
+                getattr(self, "install_prefix", None) or self._choose_npm_install_prefix()
+            )
+            self.install_prefix = install_prefix
             self.log.info(f"  npm install prefix: {install_prefix}")
-
-            # Stream npm output line-by-line so the UI stays responsive
-            proc = subprocess.Popen(
-                [
-                    npm,
-                    "install",
-                    "-g",
-                    f"openclaw@{tag}",
-                    "--prefix",
-                    str(install_prefix),
-                    "--loglevel",
-                    "info",
-                    "--no-progress",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                env=env,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-            collected = []
-            for line in proc.stdout:
-                stripped = line.rstrip()
-                if stripped:
-                    collected.append(stripped)
-                    # Show fetch/reify lines as concise progress
-                    self.log.info(f"  npm: {stripped}")
-            proc.wait(timeout=900)
-
-            # Verify the entry file actually landed under the chosen prefix.
-            # npm exit code alone is unreliable: it may print warnings (e.g.
-            # EBADENGINE) and still return non-zero, and the previous
-            # heuristic ("'openclaw' substring in output") was triggered by
-            # cache-hit URLs like ``https://registry.npmjs.org/openclaw``
-            # even when the install failed with EPERM.
-            entry_found: Path | None = None
-            for _p in [
-                install_prefix / "node_modules" / "openclaw" / "openclaw.mjs",
-                install_prefix / "lib" / "node_modules" / "openclaw" / "openclaw.mjs",
-                install_prefix / "node_modules" / "openclaw" / "dist" / "index.js",
-                install_prefix / "lib" / "node_modules" / "openclaw" / "dist" / "index.js",
-            ]:
-                if _p.exists():
-                    entry_found = _p
-                    break
-
-            if entry_found:
-                if proc.returncode == 0:
-                    self.log.success("OpenClaw installed on Windows")
-                else:
-                    self.log.warn(
-                        f"npm exited with code {proc.returncode} but openclaw entry was written"
-                    )
-                    self.log.success("OpenClaw installed on Windows (with warnings)")
-                self.log.debug(f"  Entry verified: {entry_found}")
-                self._register_rollback_openclaw(npm, env)
+            if self._install_openclaw_with_registry_fallback(install_prefix):
                 self._patch_pi_ai_usage_streaming()
+                self.log.success(f"OpenClaw {tag} installed on Windows")
                 return True
-
-            # Entry file missing → install really failed. Log npm prefix for
-            # diagnostics and surface the tail of npm's output (where the
-            # real error message lives).
-            try:
-                _r = self._run(
-                    [npm, "config", "get", "prefix"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    env=env,
-                )
-                self.log.warn(f"  npm prefix = {_r.stdout.strip()}")
-            except Exception:
-                pass
-            err_out = "\n".join(collected)
-            self.log.error(
-                f"npm install failed (exit {proc.returncode}): openclaw entry not found under "
-                f"{install_prefix}\n{err_out[-1500:]}"
-            )
             return False
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
             return False
+
+    def _npm_registry_candidates(self) -> list[str]:
+        configured = self.cfg.get("npm.registry", "") or getattr(self, "_resolved_npm_registry", "")
+        candidates = [
+            configured,
+            MIRRORS[MIRROR_OFFICIAL]["npm_registry"],
+            MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+            NPM_REGISTRY_HUAWEI,
+        ]
+        registries: list[str] = []
+        for registry in candidates:
+            if registry and registry.rstrip("/") not in {
+                existing.rstrip("/") for existing in registries
+            }:
+                registries.append(registry)
+        return registries
+
+    def _reachable_npm_registries(self, candidates: list[str], timeout: float = 2.5) -> list[str]:
+        """Filter ``candidates`` down to registries that answer a quick probe.
+
+        Each candidate's ``/-/ping`` endpoint is probed in parallel with a
+        short per-registry ``timeout``. A registry counts as reachable if the
+        host responds at all — even a 4xx/5xx is fine, since that still proves
+        the TCP+TLS handshake completed. Registries that time out or fail to
+        connect (DNS, SSL, or a corporate ``NPM URL Block`` network policy)
+        are dropped so we never hand them to ``npm install``, which would
+        otherwise hang for up to 15 minutes retrying a blocked host.
+
+        Returns the reachable subset ordered fastest-first; unreachable
+        registries are omitted entirely.
+        """
+        import concurrent.futures as _cf
+
+        def _measure(registry: str) -> tuple[str, float]:
+            url = registry.rstrip("/") + "/-/ping"
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
+            start = time.monotonic()
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    resp.read(64)
+                return registry, time.monotonic() - start
+            except urllib.error.HTTPError:
+                # A 404/403 still means the host is reachable.
+                return registry, time.monotonic() - start
+            except Exception:
+                return registry, float("inf")
+
+        if not candidates:
+            return []
+
+        results: list[tuple[str, float]] = []
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+                futures = [pool.submit(_measure, r) for r in candidates]
+                for f in _cf.as_completed(futures, timeout=timeout + 1.0):
+                    results.append(f.result())
+        except Exception as e:
+            self.log.debug(f"npm registry reachability probe failed: {e}")
+
+        reachable = sorted((r for r in results if r[1] != float("inf")), key=lambda x: x[1])
+        for registry, latency in reachable:
+            self.log.debug(f"  npm registry {registry}: {int(latency * 1000)} ms")
+        return [registry for registry, _ in reachable]
+
+    def _install_openclaw_from_registry(
+        self, install_prefix: Path, registry: str
+    ) -> OpenClawInstallAttempt:
+        npm = self._get_npm_path()
+        if not npm:
+            raise RuntimeError("npm not found — install Node.js first")
+        channel = self.cfg.get("openclaw.channel", "stable")
+        tag = OPENCLAW_TARGET_VERSION if channel == "stable" else channel
+        env = self._get_env()
+        env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
+        proc = subprocess.Popen(
+            [
+                npm,
+                "install",
+                "-g",
+                f"openclaw@{tag}",
+                "--prefix",
+                str(install_prefix),
+                "--registry",
+                registry,
+                "--replace-registry-host",
+                "always",
+                "--loglevel",
+                "info",
+                "--no-progress",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=env,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        collected: list[str] = []
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                stripped = line.rstrip()
+                if stripped:
+                    collected.append(stripped)
+                    self.log.info(f"  npm: {stripped}")
+        proc.wait(timeout=900)
+        installation = self._openclaw_installation_at_prefix(install_prefix)
+        return OpenClawInstallAttempt(
+            returncode=proc.returncode,
+            output="\n".join(collected),
+            installed_version=installation.version if installation else None,
+        )
+
+    def _install_openclaw_with_registry_fallback(self, install_prefix: Path) -> bool:
+        retryable_registry_error = re.compile(
+            r"ERR_SSL|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|"
+            r"\bE(?:401|403|404|408|429|5\d{2})\b|"
+            r"\b(?:401|403|404|408|429|5\d{2})\b",
+            re.IGNORECASE,
+        )
+        channel = self.cfg.get("openclaw.channel", "stable")
+        expected_version = OPENCLAW_TARGET_VERSION if channel == "stable" else None
+        candidates = self._npm_registry_candidates()
+        registries = self._reachable_npm_registries(candidates)
+        if not registries:
+            self.log.error(
+                "Cannot reach any npm registry to install OpenClaw. Every candidate "
+                "registry failed a quick reachability probe, which usually means they "
+                "are blocked by your network or IT policy (e.g. a corporate "
+                "'NPM URL Block'). Tried: " + ", ".join(candidates) + ". "
+                "Configure an allowed npm registry via 'npm.registry' and retry."
+            )
+            return False
+        for registry in registries:
+            self.log.info(f"  npm registry attempt: {registry}")
+            attempt = self._install_openclaw_from_registry(install_prefix, registry)
+            installed = attempt.installed_version
+            success = (
+                installed == expected_version
+                if expected_version is not None
+                else attempt.returncode == 0 and installed is not None
+            )
+            if success:
+                if attempt.returncode != 0:
+                    self.log.warn(
+                        f"npm exited with code {attempt.returncode} but the exact "
+                        "OpenClaw package and entry were verified"
+                    )
+                return True
+            if not retryable_registry_error.search(attempt.output):
+                self.log.error(
+                    f"npm install failed (exit {attempt.returncode}) via {registry}:\n"
+                    f"{attempt.output[-1500:]}"
+                )
+                return False
+            self.log.warn(f"npm registry failure via {registry}; trying next registry")
+        self.log.error("OpenClaw install failed through every configured npm registry")
+        return False
+
+    def _load_openclaw_state_env(self, state_dir: Path) -> dict[str, str]:
+        values: dict[str, str] = {}
+        env_path = state_dir / ".env"
+        try:
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, separator, value = line.partition("=")
+                if separator and key.strip():
+                    values[key.strip()] = value.strip()
+        except FileNotFoundError:
+            pass
+        return values
+
+    def _resolve_validation_node(self) -> Path:
+        candidates = []
+        if self._node_bin is not None:
+            candidates.append(Path(self._node_bin) / "node.exe")
+        candidates.append(self.node_dir / "node.exe")
+        path_node = shutil.which("node")
+        if path_node:
+            candidates.append(Path(path_node))
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError("node.exe not found for OpenClaw validation")
+
+    def _start_validation_gateway(
+        self, expected_version: str | None = OPENCLAW_TARGET_VERSION
+    ) -> subprocess.Popen:
+        installation = self._detect_openclaw_installation()
+        if installation is None or (
+            expected_version is not None and installation.version != expected_version
+        ):
+            raise RuntimeError(f"Expected OpenClaw package is not installed: {expected_version}")
+        node = self._resolve_validation_node()
+        state_dir = Path.home() / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env.update(
+            {
+                "OPENCLAW_STATE_DIR": str(state_dir),
+                "NODE_COMPILE_CACHE": str(cache_dir),
+                "NODE_ENV": "production",
+                "OPENCLAW_NO_RESPAWN": "1",
+            }
+        )
+        return subprocess.Popen(
+            [
+                str(node),
+                str(installation.entry_path),
+                "gateway",
+                "run",
+                "--port",
+                str(self.cfg.get("gateway.port", 18789)),
+                "--bind",
+                "loopback",
+                "--allow-unconfigured",
+            ],
+            cwd=str(installation.package_dir),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+
+    def _stop_validation_gateway(self, process: subprocess.Popen | None) -> None:
+        if process is None or process.poll() is not None:
+            return
+        if platform.system() == "Windows" and process.pid:
+            result = self._run(
+                ["taskkill", "/pid", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode not in (0, 128):
+                self.log.warn(
+                    f"Could not stop validation Gateway process tree: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+        else:
+            process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+    def _validate_installed_version(self) -> bool:
+        installation = self._detect_openclaw_installation()
+        return bool(
+            installation
+            and installation.version == OPENCLAW_TARGET_VERSION
+            and installation.entry_path.exists()
+        )
+
+    def _validate_gateway_health(self) -> bool:
+        url = f"http://127.0.0.1:{self.cfg.get('gateway.port', 18789)}/health"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(url, timeout=2) as response:
+                    if response.status == 200:
+                        return True
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.5)
+        return False
+
+    def _run_openclaw_json(self, args: list[str]) -> object:
+        command = self._find_openclaw_cmd()
+        if command is None:
+            raise RuntimeError("openclaw command not found")
+        state_dir = Path.home() / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env["OPENCLAW_STATE_DIR"] = str(state_dir)
+        # Each `openclaw gateway call ...` spawns a fresh Node process that
+        # boots the whole CLI before issuing the RPC. On freshly-provisioned
+        # machines (cold V8 cache, antivirus scanning every newly written file)
+        # that cold start alone can take 30-60s, so share the gateway's compile
+        # cache and allow a generous, cold-start-tolerant timeout instead of the
+        # old 30s ceiling that spuriously failed post-install validation.
+        env.setdefault("NODE_COMPILE_CACHE", str(cache_dir))
+        result = self._run(
+            command + args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_OPENCLAW_RPC_TIMEOUT,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"OpenClaw returned invalid JSON for {' '.join(args)}") from error
+
+    def _validate_gateway_status(self) -> bool:
+        payload = self._run_openclaw_json(["gateway", "status", "--require-rpc", "--json"])
+        return isinstance(payload, dict)
+
+    def _validate_gateway_rpc(self, method: str) -> bool:
+        return self._run_openclaw_json(["gateway", "call", method, "--json"]) is not None
+
+    @staticmethod
+    def _contains_enabled_weixin_plugin(value: object) -> bool:
+        if isinstance(value, dict):
+            identifier = value.get("id") or value.get("name")
+            if identifier == "openclaw-weixin":
+                status = str(value.get("status", "")).lower()
+                return value.get("enabled", True) is not False and status not in {
+                    "disabled",
+                    "error",
+                    "failed",
+                }
+            return any(
+                WindowsSetup._contains_enabled_weixin_plugin(child) for child in value.values()
+            )
+        if isinstance(value, list):
+            return any(WindowsSetup._contains_enabled_weixin_plugin(child) for child in value)
+        return False
+
+    def _validate_weixin_plugin(self) -> bool:
+        payload = self._run_openclaw_json(["plugins", "list", "--json"])
+        return self._contains_enabled_weixin_plugin(payload)
+
+    def _validate_appcontainer_smoke(self) -> bool:
+        if not self.appcontainer_enabled:
+            return True
+        launcher = self._find_appcontainer_launcher()
+        if launcher is None:
+            return False
+        result = self._run(
+            [
+                str(launcher),
+                "run",
+                "--name",
+                "MicroClaw",
+                "--exe",
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "--no-window",
+                "--quiet",
+                "--",
+                "/c",
+                "echo",
+                "microclaw-sandbox-ok",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        return result.returncode == 0 and "microclaw-sandbox-ok" in result.stdout
+
+    def verify_openclaw_upgrade(self) -> bool:
+        transaction = self._openclaw_transaction
+        if transaction is not None:
+            transaction.mark_verifying()
+
+        def record(name: str, passed: bool) -> None:
+            if transaction is not None:
+                transaction.record_validation(name, passed)
+
+        version_ok = self._validate_installed_version()
+        record("version", version_ok)
+        if not version_ok:
+            self.log.error("OpenClaw validation failed: version")
+            return False
+
+        process = None
+        checks = [
+            ("health", self._validate_gateway_health),
+            ("v4-handshake", self._validate_gateway_status),
+            ("config.get", lambda: self._validate_gateway_rpc("config.get")),
+            ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
+            ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
+            ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
+            ("weixin-plugin", self._validate_weixin_plugin),
+            ("appcontainer", self._validate_appcontainer_smoke),
+        ]
+        try:
+            process = self._start_validation_gateway()
+            for name, check in checks:
+                passed = bool(check())
+                record(name, passed)
+                if not passed:
+                    raise RuntimeError(f"OpenClaw validation failed: {name}")
+            return True
+        except Exception as error:
+            self.log.error(str(error))
+            return False
+        finally:
+            self._stop_validation_gateway(process)
+
+    def commit_openclaw_upgrade(self) -> bool:
+        transaction = self._openclaw_transaction
+        if transaction is None:
+            return True
+        transaction.commit()
+        try:
+            prune_previous_committed_backups(transaction.backup_root, keep=transaction.backup_dir)
+        except OSError as error:
+            self.log.warn(f"Could not prune an older OpenClaw backup: {error}")
+        self._openclaw_transaction = None
+        return True
+
+    def rollback_openclaw_upgrade(self) -> bool:
+        transaction = self._openclaw_transaction
+        if transaction is None:
+            return True
+        if not self._rollback_openclaw_transaction(transaction):
+            return False
+        self._openclaw_transaction = None
+        return True
 
     def _choose_npm_install_prefix(self) -> Path:
         """Return a writable directory to use as ``npm install -g --prefix``.
@@ -1173,9 +2211,7 @@ class WindowsSetup:
             appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
             fallback = Path(appdata) / "npm"
             fallback.mkdir(parents=True, exist_ok=True)
-            self.log.info(
-                f"  {candidate} 不可写，改用用户目录 {fallback}（无需管理员权限）"
-            )
+            self.log.info(f"  {candidate} 不可写，改用用户目录 {fallback}（无需管理员权限）")
             return fallback
 
     def _patch_pi_ai_usage_streaming(self) -> None:
@@ -1354,22 +2390,6 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"Compile cache warmup failed (non-fatal): {e}")
             return True  # non-fatal
-
-    def _register_rollback_openclaw(self, npm: str, env: dict):
-        """Register rollback action for OpenClaw npm uninstall."""
-
-        def _rollback_openclaw():
-            try:
-                WindowsSetup._run(
-                    [npm, "uninstall", "-g", "openclaw"],
-                    capture_output=True,
-                    timeout=120,
-                    env=env,
-                )
-            except Exception:
-                pass
-
-        self._register_rollback("卸载 OpenClaw", _rollback_openclaw)
 
     # ────────────────────── Managed Skills ──────────────────────
 
@@ -1900,17 +2920,14 @@ class WindowsSetup:
         exe_path = install_dir / "MicroClawDesktop.exe"
         if exe_path.exists():
             self.log.info("检测到已有桌面客户端，将覆盖更新…")
-            # Kill running MicroClawDesktop.exe to release file locks
-            try:
-                self._run(
-                    ["taskkill", "/F", "/IM", "MicroClawDesktop.exe"],
-                    capture_output=True,
-                    timeout=10,
+            if self._desktop_process_roots(self._process_snapshot()):
+                self.log.error(
+                    "MicroClaw restarted during the upgrade. Exit it from the system tray and retry."
                 )
-                time.sleep(1)
-            except Exception:
-                pass
-            shutil.rmtree(install_dir, ignore_errors=True)
+                return False
+            # Overlay the verified archive instead of deleting the whole
+            # MicroClaw root: active upgrade manifests and backups live under
+            # this directory and must survive until the transaction commits.
 
         # 1. Try local bundled zip
         local_zip = self._find_local_desktop_zip()
@@ -2140,6 +3157,13 @@ class WindowsSetup:
             self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
             ok = self._create_url_shortcut(desktop)
 
+        # Start Menu shortcut so MicroClaw is discoverable via Windows Search
+        if desktop_exe:
+            self._create_start_menu_shortcut(desktop_exe)
+
+        # Register in Add/Remove Programs (Settings > Installed apps)
+        self._register_installed_app(desktop_exe)
+
         # Also create uninstall shortcut
         self._create_uninstall_shortcut(desktop)
         return ok
@@ -2333,6 +3357,154 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"Could not create desktop shortcut: {e}")
             return True  # Non-fatal
+
+    def _get_start_menu_path(self) -> Path:
+        """Resolve the user's Start Menu > Programs folder.
+
+        Windows Search indexes shortcuts placed here (not the Desktop), so a
+        Start Menu .lnk is what makes the app show up when the user types its
+        name into the search box.
+        """
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            )
+            programs_val, _ = winreg.QueryValueEx(key, "Programs")
+            winreg.CloseKey(key)
+            programs = Path(os.path.expandvars(programs_val))
+            if programs.exists():
+                return programs
+        except Exception:
+            pass
+        appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+        return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+    def _create_start_menu_shortcut(self, target_exe: Path) -> bool:
+        """Create a Start Menu shortcut so the app is findable via Windows Search."""
+        programs = self._get_start_menu_path()
+        try:
+            programs.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.log.warn(f"无法创建开始菜单目录: {e}")
+            return False
+
+        # Named "MicroClaw" (not "...Desktop") so searching "MicroClaw" matches.
+        shortcut_path = programs / "MicroClaw.lnk"
+
+        try:
+            ico_path = self._resolve_icon()
+            ico_arg = ""
+            if ico_path:
+                ico_arg = f'$s.IconLocation = "{ico_path},0";'
+
+            ps_script = (
+                f"$ws = New-Object -ComObject WScript.Shell;"
+                f'$s = $ws.CreateShortcut("{shortcut_path}");'
+                f'$s.TargetPath = "{target_exe}";'
+                f'$s.WorkingDirectory = "{target_exe.parent}";'
+                f'$s.Description = "MicroClaw";'
+                f"{ico_arg}"
+                f"$s.Save()"
+            )
+            import base64
+
+            encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+            self._run(
+                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
+                capture_output=True,
+                timeout=15,
+            )
+
+            if shortcut_path.exists():
+                self.log.success(f"开始菜单快捷方式已创建: {shortcut_path}")
+
+                def _rollback_start_menu(p=str(shortcut_path)):
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                self._register_rollback("删除开始菜单快捷方式", _rollback_start_menu)
+                return True
+
+            self.log.warn("开始菜单快捷方式创建失败: .lnk 未找到")
+            return False
+        except Exception as e:
+            self.log.warn(f"创建开始菜单快捷方式异常: {e}")
+            return False
+
+    _UNINSTALL_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\MicroClaw"
+
+    def _register_installed_app(self, target_exe: Path | None) -> bool:
+        """Register MicroClaw in HKCU Uninstall so it appears in Installed apps.
+
+        Settings > Apps > Installed apps (and Add/Remove Programs) enumerate the
+        Uninstall registry keys.  Writing one here also lets the user uninstall
+        from the standard Windows UI.
+        """
+        import sys
+
+        openclaw_dir = Path.home() / ".openclaw"
+        installer_dest = openclaw_dir / "MicroClawInstaller.exe"
+        # Fall back to the running installer if the persistent copy isn't there yet.
+        uninstall_exe = installer_dest
+        if not uninstall_exe.exists() and getattr(sys, "frozen", False):
+            uninstall_exe = Path(sys.executable)
+
+        install_location = DEFAULT_DESKTOP_DIR
+        ico_path = self._resolve_icon()
+        display_icon = str(ico_path) if ico_path else (str(target_exe) if target_exe else "")
+
+        try:
+            import winreg
+
+            key = winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, self._UNINSTALL_REG_KEY, 0, winreg.KEY_WRITE
+            )
+            try:
+                winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "MicroClaw")
+                winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, OPENCLAW_TARGET_VERSION)
+                winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "MicroClaw")
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install_location))
+                if display_icon:
+                    winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, display_icon)
+                winreg.SetValueEx(
+                    key,
+                    "UninstallString",
+                    0,
+                    winreg.REG_SZ,
+                    f'"{uninstall_exe}" --uninstall',
+                )
+                winreg.SetValueEx(
+                    key,
+                    "QuietUninstallString",
+                    0,
+                    winreg.REG_SZ,
+                    f'"{uninstall_exe}" --uninstall',
+                )
+                winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+            finally:
+                winreg.CloseKey(key)
+
+            self.log.success("已在“已安装的应用”中注册 MicroClaw")
+
+            def _rollback_reg(sub=self._UNINSTALL_REG_KEY):
+                try:
+                    import winreg as _wr
+
+                    _wr.DeleteKey(_wr.HKEY_CURRENT_USER, sub)
+                except Exception:
+                    pass
+
+            self._register_rollback("删除“已安装的应用”注册项", _rollback_reg)
+            return True
+        except Exception as e:
+            self.log.warn(f"注册“已安装的应用”失败: {e}")
+            return False
 
     # ────────────────────── AppContainer ──────────────────────
 
@@ -3169,6 +4341,26 @@ class WindowsSetup:
             except Exception:
                 pass
 
+        # Remove Start Menu shortcut (indexed by Windows Search)
+        try:
+            start_menu_lnk = self._get_start_menu_path() / "MicroClaw.lnk"
+            if start_menu_lnk.exists():
+                start_menu_lnk.unlink(missing_ok=True)
+                self.log.info(f"  已删除 {start_menu_lnk.name}")
+        except Exception:
+            pass
+
+        # Remove Add/Remove Programs registration
+        try:
+            import winreg
+
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, self._UNINSTALL_REG_KEY)
+            self.log.info("  已删除“已安装的应用”注册项")
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
     def _uninstall_plugins(self) -> None:
         """Uninstall plugins via openclaw CLI before removing files."""
         self.log.step("卸载插件…")
@@ -3427,18 +4619,6 @@ class WindowsSetup:
             return ver if ver.startswith("v") else None
         except Exception:
             return None
-
-    def _version_ok(self, ver: str) -> bool:
-        """Check if version is >= 22.16.0 (OpenClaw CLI minimum)."""
-        try:
-            parts = ver.lstrip("v").split(".")
-            major = int(parts[0])
-            minor = int(parts[1]) if len(parts) > 1 else 0
-            if major > 22:
-                return True
-            return major == 22 and minor >= 16
-        except Exception:
-            return False
 
     def add_to_path(self) -> bool:
         """Add managed node dir + npm global bin to the user's persistent PATH."""

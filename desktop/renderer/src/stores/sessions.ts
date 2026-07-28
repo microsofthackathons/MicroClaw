@@ -54,6 +54,31 @@ export const useSessionStore = defineStore("sessions", () => {
     currentKey.value = key;
   }
 
+  /**
+   * Reuse the single empty sidebar placeholder for the canonical main session.
+   * Empty drafts have no conversation to preserve and should not accumulate
+   * under generated keys across app restarts.
+   */
+  function reconcileEmptySessions(key: string, agentId?: string) {
+    const emptySessions = sessions.value.filter((session) => !session.preview.trim());
+    if (emptySessions.length === 0) return;
+
+    const target = sessions.value.find((session) => session.key === key);
+    const reusable =
+      target ??
+      emptySessions.reduce((newest, session) =>
+        session.updatedAt > newest.updatedAt ? session : newest,
+      );
+
+    reusable.key = key;
+    if (agentId) reusable.agentId = agentId;
+    sessions.value = sessions.value.filter(
+      (session) => session === reusable || !emptySessions.includes(session),
+    );
+    currentKey.value = key;
+    saveToStorage(sessions.value);
+  }
+
   /** Update session metadata (title / preview). */
   function updateSession(key: string, patch: Partial<Pick<Session, "title" | "preview">>) {
     const s = sessions.value.find((s) => s.key === key);
@@ -68,7 +93,39 @@ export const useSessionStore = defineStore("sessions", () => {
   /** Remove a session. */
   function removeSession(key: string) {
     sessions.value = sessions.value.filter((s) => s.key !== key);
+    if (currentKey.value === key) currentKey.value = null;
     saveToStorage(sessions.value);
+  }
+
+  /** Replace a local alias with its canonical Gateway key and merge duplicates. */
+  function canonicalizeSession(aliasKey: string, canonicalKey: string) {
+    if (!aliasKey || aliasKey === canonicalKey) return;
+
+    const alias = sessions.value.find((s) => s.key === aliasKey);
+    const canonical = sessions.value.find((s) => s.key === canonicalKey);
+    if (alias && canonical) {
+      const newer = alias.updatedAt > canonical.updatedAt ? alias : canonical;
+      const older = newer === alias ? canonical : alias;
+      const defaultTitle = t("store.newChat");
+      const merged: Session = {
+        ...newer,
+        key: canonicalKey,
+        title: newer.title !== defaultTitle ? newer.title : older.title,
+        preview: newer.preview || older.preview,
+        agentId: newer.agentId || older.agentId,
+        createdAt: Math.min(alias.createdAt, canonical.createdAt),
+        updatedAt: Math.max(alias.updatedAt, canonical.updatedAt),
+      };
+      sessions.value = sessions.value.filter(
+        (session) => session.key !== aliasKey && session.key !== canonicalKey,
+      );
+      sessions.value.push(merged);
+    } else if (alias) {
+      alias.key = canonicalKey;
+    }
+
+    if (currentKey.value === aliasKey) currentKey.value = canonicalKey;
+    if (alias) saveToStorage(sessions.value);
   }
 
   /** Remove every session from the sidebar list. */
@@ -93,8 +150,10 @@ export const useSessionStore = defineStore("sessions", () => {
     currentKey,
     sortedSessions,
     ensureSession,
+    reconcileEmptySessions,
     updateSession,
     removeSession,
+    canonicalizeSession,
     clearAll,
     autoTitle,
   };

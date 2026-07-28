@@ -1,13 +1,13 @@
 /**
  * sandbox-sensitive.js — Sensitive path detection and blocking.
  *
- * Standalone module. Single source of truth for which paths are
- * considered sensitive and must never be accessed by the sandbox.
- * Does NOT depend on sandbox-permission.js or sandbox-state.js.
+ * Single source of truth for which paths are considered sensitive and must
+ * never be accessed by the sandbox.
  */
 "use strict";
 
 var path = require("path");
+var S = require(path.join(__dirname, "sandbox-state.js"));
 
 // ── Default sensitive directories (relative to user home) ──
 
@@ -28,7 +28,7 @@ function isSensitivePath(filePath) {
   if (!_home || !filePath) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = S.resolvePathLower(filePath);
   } catch (e) {
     return false;
   }
@@ -66,10 +66,7 @@ function parentOfSensitive(dirPath) {
   if (!_home || !dirPath) return false;
   var resolved;
   try {
-    resolved = path
-      .resolve(String(dirPath))
-      .toLowerCase()
-      .replace(/[\\/]+$/, "");
+    resolved = S.resolvePathLower(dirPath).replace(/[\\/]+$/, "");
   } catch (e) {
     return false;
   }

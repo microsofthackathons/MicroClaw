@@ -6,6 +6,19 @@
 /** Common request metadata attached to every CGI request. */
 export interface BaseInfo {
   channel_version?: string;
+  /**
+   * Self-declared identity of the upstream bot/app, analogous to HTTP
+   * `User-Agent`. Filled from `channels.openclaw-weixin.botAgent` in
+   * openclaw.json; defaults to `"OpenClaw"` when unset.
+   *
+   * Format: UA-style `Name/Version` tokens, optionally followed by
+   * `(comment)`, multiple tokens space-separated. ASCII only, total
+   * length <= 256 bytes after sanitization.
+   *
+   * For observability only (logging, monitoring aggregation); not used
+   * for authentication or routing.
+   */
+  bot_agent?: string;
 }
 
 /** proto: UploadMediaType */
@@ -44,6 +57,8 @@ export interface GetUploadUrlResp {
   upload_param?: string;
   /** 缩略图上传加密参数，无缩略图时为空 */
   thumb_upload_param?: string;
+  /** 完整上传 URL（服务端直接返回，无需客户端拼接） */
+  upload_full_url?: string;
 }
 
 export const MessageType = {
@@ -59,6 +74,8 @@ export const MessageItemType = {
   VOICE: 3,
   FILE: 4,
   VIDEO: 5,
+  TOOL_CALL_START: 11,
+  TOOL_CALL_RESULT: 12,
 } as const;
 
 export const MessageState = {
@@ -77,6 +94,8 @@ export interface CDNMedia {
   aes_key?: string;
   /** 加密类型: 0=只加密fileid, 1=打包缩略图/中图等信息 */
   encrypt_type?: number;
+  /** 完整下载 URL（服务端直接返回，无需客户端拼接） */
+  full_url?: string;
 }
 
 export interface ImageItem {
@@ -130,6 +149,17 @@ export interface RefMessage {
   title?: string; // 摘要
 }
 
+export interface ToolCallStartItem {
+  tool_name?: string;
+  tool_call_id?: string;
+}
+
+export interface ToolCallResultItem {
+  tool_name?: string;
+  tool_call_id?: string;
+  status?: string;
+}
+
 export interface MessageItem {
   type?: number;
   create_time_ms?: number;
@@ -142,6 +172,8 @@ export interface MessageItem {
   voice_item?: VoiceItem;
   file_item?: FileItem;
   video_item?: VideoItem;
+  tool_call_start_item?: ToolCallStartItem;
+  tool_call_result_item?: ToolCallResultItem;
 }
 
 /** Unified message (proto: WeixinMessage). Replaces the old split Message + MessageContent + FullMessage. */
@@ -160,6 +192,7 @@ export interface WeixinMessage {
   message_state?: number;
   item_list?: MessageItem[];
   context_token?: string;
+  run_id?: string;
 }
 
 /** GetUpdates request: bytes fields are base64 strings in JSON. */
@@ -190,7 +223,10 @@ export interface SendMessageReq {
   msg?: WeixinMessage;
 }
 
-export type SendMessageResp = Record<string, never>;
+export interface SendMessageResp {
+  ret?: number;
+  errmsg?: string;
+}
 
 /** Typing status: 1 = typing (default), 2 = cancel typing. */
 export const TypingStatus = {
@@ -217,4 +253,26 @@ export interface GetConfigResp {
   errmsg?: string;
   /** Base64-encoded typing ticket for sendTyping. */
   typing_ticket?: string;
+}
+
+/** proto: NotifyStopReq — notify server when the channel client is stopping. */
+export interface NotifyStopReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStopResp */
+export interface NotifyStopResp {
+  ret?: number;
+  errmsg?: string;
+}
+
+/** proto: NotifyStartReq — notify server when the channel client is starting. */
+export interface NotifyStartReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStartResp */
+export interface NotifyStartResp {
+  ret?: number;
+  errmsg?: string;
 }

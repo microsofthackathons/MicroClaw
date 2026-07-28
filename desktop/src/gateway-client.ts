@@ -23,6 +23,7 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
 } from "./constants";
+import { buildGatewayConnectParams } from "./gateway-protocol";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -46,8 +47,62 @@ export type ChatEventPayload = {
   sessionKey: string;
   state: "delta" | "final" | "aborted" | "error";
   message?: unknown;
+  deltaText?: string;
+  replace?: boolean;
   errorMessage?: string;
 };
+
+export type ListedGatewayChannel = {
+  id: string;
+  name: string;
+  icon: string;
+  type: string;
+  connected: boolean;
+};
+
+type GatewayChannelState = {
+  connected?: boolean;
+  running?: boolean;
+  linked?: boolean;
+};
+
+type GatewayChannelsStatusPayload = {
+  channels?: Record<string, GatewayChannelState>;
+  channelAccounts?: Record<string, GatewayChannelState[]>;
+  channelOrder?: string[];
+  channelLabels?: Record<string, string>;
+  channelMeta?: Array<{
+    id: string;
+    label?: string;
+    systemImage?: string;
+  }>;
+};
+
+function isConnected(state: GatewayChannelState | undefined): boolean {
+  return state?.connected === true || state?.running === true || state?.linked === true;
+}
+
+export function normalizeGatewayChannelsStatus(
+  payload: GatewayChannelsStatusPayload,
+): ListedGatewayChannel[] {
+  const summaries = payload.channels ?? {};
+  const metadata = new Map((payload.channelMeta ?? []).map((entry) => [entry.id, entry]));
+  const orderedIds = Array.from(
+    new Set([...(payload.channelOrder ?? []), ...Object.keys(summaries)]),
+  ).filter((id) => Object.hasOwn(summaries, id));
+
+  return orderedIds.map((id) => {
+    const meta = metadata.get(id);
+    const accountConnected = (payload.channelAccounts?.[id] ?? []).some(isConnected);
+    return {
+      id,
+      name: payload.channelLabels?.[id] ?? meta?.label ?? id,
+      icon: meta?.systemImage ?? "",
+      type: id,
+      connected: isConnected(summaries[id]) || accountConnected,
+    };
+  });
+}
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -64,6 +119,17 @@ export type GatewayClientOptions = {
   onAuthError?: (message: string) => void;
 };
 
+export function extractMainSessionKey(hello: Record<string, unknown>): string | null {
+  const snapshot = hello.snapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const sessionDefaults = (snapshot as Record<string, unknown>).sessionDefaults;
+  if (!sessionDefaults || typeof sessionDefaults !== "object" || Array.isArray(sessionDefaults)) {
+    return null;
+  }
+  const key = (sessionDefaults as Record<string, unknown>).mainSessionKey;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
 // ── Client ──────────────────────────────────────────────────────────────
 
 export class GatewayClient {
@@ -76,6 +142,7 @@ export class GatewayClient {
   private connectSent = false;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private deviceIdentity: DeviceIdentity;
+  private _mainSessionKey: string | null = null;
 
   constructor(private opts: GatewayClientOptions) {
     this.deviceIdentity = loadOrCreateDeviceIdentity();
@@ -83,6 +150,10 @@ export class GatewayClient {
 
   get connected() {
     return this._connected;
+  }
+
+  get mainSessionKey() {
+    return this._mainSessionKey;
   }
 
   start() {
@@ -152,6 +223,21 @@ export class GatewayClient {
   }
 
   /**
+   * Delete one persisted session and its transcript.
+   *
+   * OpenClaw does not allow deleting the configured main session, so reset
+   * that exact canonical key instead. Other sessions, including a non-default
+   * agent's `main`-named session, are deleted normally.
+   */
+  async deleteSession(sessionKey: string): Promise<void> {
+    if (sessionKey === this._mainSessionKey) {
+      await this.request("sessions.reset", { key: sessionKey, reason: "reset" });
+      return;
+    }
+    await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
+  }
+
+  /**
    * Clear ALL persisted chat history on the gateway.
    *
    * Enumerates every session via `sessions.list`, then wipes each one:
@@ -196,9 +282,12 @@ export class GatewayClient {
     return this.request("agents.list");
   }
 
-  /** List connected IM channels. */
-  listChannels(): Promise<{ channels?: unknown[] }> {
-    return this.request("channels.list");
+  /** List IM channels from the OpenClaw 7.1 status snapshot. */
+  async listChannels(): Promise<{ channels: ListedGatewayChannel[] }> {
+    const status = await this.request<GatewayChannelsStatusPayload>("channels.status", {
+      probe: false,
+    });
+    return { channels: normalizeGatewayChannelsStatus(status) };
   }
 
   /** Start WeChat QR login — returns QR data URL and session key. */
@@ -217,31 +306,6 @@ export class GatewayClient {
     timeoutMs?: number;
   }): Promise<{ connected: boolean; message: string; accountId?: string }> {
     return this.request("web.login.wait", params);
-  }
-
-  /**
-   * Trigger an in-process gateway restart via config.patch → SIGUSR1.
-   * This avoids the chat/model dependency of `/gateway restart` and
-   * correctly re-initialises all plugin channels (e.g. weixin).
-   */
-  async restart(): Promise<unknown> {
-    // 1. Read current config + hash
-    const snapshot = await this.request<{
-      hash?: string;
-      config?: unknown;
-    }>("config.get");
-    const hash = snapshot?.hash;
-    if (!hash) {
-      throw new Error("config.get did not return hash");
-    }
-    // 2. Apply a no-op patch — the server unconditionally schedules
-    //    a SIGUSR1 restart after every config.patch write.
-    return this.request("config.patch", { raw: "{}", baseHash: hash });
-  }
-
-  /** @deprecated Use restart() instead — gateway.reload RPC does not exist. */
-  reload(): Promise<unknown> {
-    return this.restart();
   }
 
   // ── Internal ──
@@ -315,35 +379,21 @@ export class GatewayClient {
     });
     const signature = signDevicePayload(this.deviceIdentity.privateKey, payload);
 
-    const params: Record<string, unknown> = {
-      minProtocol: 3,
-      maxProtocol: 3,
-      client: {
-        id: clientId,
-        version: "1.0.0",
-        platform: process.platform,
-        mode: clientMode,
-      },
-      role,
-      scopes,
-      device: {
-        id: this.deviceIdentity.deviceId,
-        publicKey: this.deviceIdentity.publicKey,
-        signature,
-        signedAt: signedAtMs,
-        nonce,
-      },
-      caps: ["tool-events"],
-    };
-
-    if (this.opts.token) {
-      params.auth = { token: this.opts.token };
-    }
+    const params = buildGatewayConnectParams({
+      token: this.opts.token,
+      platform: process.platform,
+      deviceId: this.deviceIdentity.deviceId,
+      publicKey: this.deviceIdentity.publicKey,
+      signature,
+      signedAt: signedAtMs,
+      nonce,
+    });
 
     this.request<Record<string, unknown>>("connect", params)
       .then((hello) => {
         this._connected = true;
         this.backoffMs = WS_RECONNECT_INITIAL_MS;
+        this._mainSessionKey = extractMainSessionKey(hello);
         this.opts.onConnected?.(hello ?? {});
       })
       .catch((err) => {
