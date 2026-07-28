@@ -659,8 +659,6 @@ export default {
   "agentMarket.pageTitle": "Popular Agents",
   "agentMarket.add": "Add",
   "agentMarket.added": "Added",
-  "agentMarket.customAgent": "Custom Agent",
-  "agentMarket.customAgentComingSoon": "Custom Agent coming soon",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",

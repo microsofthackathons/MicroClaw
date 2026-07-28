@@ -635,8 +635,6 @@ export default {
   "agentMarket.pageTitle": "热门 Agent",
   "agentMarket.add": "添加",
   "agentMarket.added": "已添加",
-  "agentMarket.customAgent": "自定义 Agent",
-  "agentMarket.customAgentComingSoon": "自定义 Agent 即将推出",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "快捷任务",
