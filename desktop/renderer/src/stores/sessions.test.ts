@@ -49,6 +49,39 @@ describe("useSessionStore", () => {
     expect(store.sessions).toHaveLength(1);
   });
 
+  it("reconciles stale empty sessions with the canonical main session", () => {
+    const store = useSessionStore();
+    store.ensureSession("session-stale-1");
+    store.ensureSession("session-stale-2");
+
+    store.reconcileEmptySessions("agent:main:main", "main");
+
+    expect(store.sessions).toEqual([
+      expect.objectContaining({
+        key: "agent:main:main",
+        agentId: "main",
+      }),
+    ]);
+    expect(store.currentKey).toBe("agent:main:main");
+  });
+
+  it("does not discard sessions that contain messages during reconciliation", () => {
+    const store = useSessionStore();
+    store.ensureSession("existing");
+    store.updateSession("existing", { title: "Existing chat", preview: "hello" });
+    store.ensureSession("session-stale");
+
+    store.reconcileEmptySessions("agent:main:main", "main");
+
+    expect(store.sessions).toHaveLength(2);
+    expect(store.sessions).toContainEqual(
+      expect.objectContaining({ key: "existing", preview: "hello" }),
+    );
+    expect(store.sessions).toContainEqual(
+      expect.objectContaining({ key: "agent:main:main", agentId: "main" }),
+    );
+  });
+
   it("ensureSession sets the default title from i18n", () => {
     const store = useSessionStore();
     store.ensureSession("test-1");
