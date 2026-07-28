@@ -293,10 +293,26 @@ class DurabilityHelperTests(unittest.TestCase):
         self.assertEqual(
             kernel32.MoveFileExW.call_args_list,
             [
-                unittest.mock.call(str(source), str(destination), 0x8),
-                unittest.mock.call(str(source), str(destination), 0x9),
+                unittest.mock.call(
+                    str(upgrade._native_io_path(source)),
+                    str(upgrade._native_io_path(destination)),
+                    0x8,
+                ),
+                unittest.mock.call(
+                    str(upgrade._native_io_path(source)),
+                    str(upgrade._native_io_path(destination)),
+                    0x9,
+                ),
             ],
         )
+
+    @unittest.skipUnless(os.name == "nt", "Windows extended path behavior")
+    def test_native_io_path_uses_extended_windows_syntax(self) -> None:
+        local = upgrade._native_io_path(Path(r"C:\upgrade\payload"))
+        network = upgrade._native_io_path(Path(r"\\server\share\payload"))
+
+        self.assertEqual(str(local), r"\\?\C:\upgrade\payload")
+        self.assertEqual(str(network), r"\\?\UNC\server\share\payload")
 
     def test_windows_durable_mkdir_publishes_unique_sibling_with_write_through(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -782,6 +798,30 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         self.assertIn("package/old.txt", inventory)
         self.assertEqual(tx.manifest.phase, UpgradePhase.INSTALLING)
 
+    @unittest.skipUnless(os.name == "nt", "Windows extended path behavior")
+    def test_backup_and_rollback_support_package_paths_beyond_max_path(self) -> None:
+        relative = (
+            Path("node_modules")
+            / ("dependency-" + "a" * 70)
+            / "node_modules"
+            / ("dependency-" + "b" * 70)
+            / "payload.d.ts.map"
+        )
+        package_file = self.package / relative
+        io_package_file = upgrade._native_io_path(package_file)
+        io_package_file.parent.mkdir(parents=True)
+        io_package_file.write_text("old-deep-package", encoding="utf-8")
+        self.assertGreater(len(str(package_file)), 260)
+
+        tx = self._create()
+        tx.backup()
+        io_package_file.write_text("new-deep-package", encoding="utf-8")
+        tx.rollback()
+
+        self.assertEqual(io_package_file.read_text(encoding="utf-8"), "old-deep-package")
+        inventory = json.loads((tx.backup_dir / "backup-files.json").read_text(encoding="utf-8"))
+        self.assertIn(f"package/{relative.as_posix()}", inventory)
+
     def test_backup_excludes_generated_plugin_skills_directory(self) -> None:
         plugin_skills = self.state / "plugin-skills"
         plugin_skills.mkdir()
@@ -1006,16 +1046,18 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         tx = self._create()
         events: list[tuple[str, object, str | None]] = []
         published_staging: list[Path] = []
+        io_backup_root = upgrade._native_io_path(tx.backup_root)
         real_atomic_write = upgrade._atomic_json_write
         real_flush = upgrade._flush_and_fsync
         real_rename = upgrade._durable_rename
 
         def record_file(path: Path) -> None:
-            events.append(("file-fsync", path, None))
+            events.append(("file-fsync", upgrade._native_io_path(path), None))
 
         def record_directory(path: Path) -> None:
-            if path.is_relative_to(tx.backup_root):
-                events.append(("directory-fsync", path, None))
+            io_path = upgrade._native_io_path(path)
+            if io_path.is_relative_to(io_backup_root):
+                events.append(("directory-fsync", io_path, None))
 
         def record_json(path: Path, payload: dict[str, object]) -> None:
             events.append(
@@ -1063,9 +1105,10 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
         self.assertEqual(len(published_staging), 1)
         staging = published_staging[0]
+        io_staging = upgrade._native_io_path(staging)
         inventory = json.loads((tx.backup_dir / "backup-files.json").read_text(encoding="utf-8"))
         fsynced_files = {
-            path.relative_to(staging).as_posix()
+            path.relative_to(io_staging).as_posix()
             for event, path, _ in events
             if event == "file-fsync" and isinstance(path, Path)
         }
@@ -1079,11 +1122,11 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             if path.is_dir()
         }
         fsynced_directories = {
-            path.relative_to(staging).as_posix()
+            path.relative_to(io_staging).as_posix()
             for event, path, _ in events
             if event == "directory-fsync"
             and isinstance(path, Path)
-            and path.is_relative_to(staging)
+            and path.is_relative_to(io_staging)
         }
         self.assertTrue(expected_directories.issubset(fsynced_directories))
 
@@ -1098,8 +1141,8 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             for index, (event, path, _) in enumerate(events)
             if event in {"file-fsync", "directory-fsync"}
             and isinstance(path, Path)
-            and path.is_relative_to(staging)
-            and path.relative_to(staging).as_posix() in fsynced_files | expected_directories
+            and path.is_relative_to(io_staging)
+            and path.relative_to(io_staging).as_posix() in fsynced_files | expected_directories
         ]
         self.assertLess(max(payload_indexes), inventory_index)
         inventory_fsync_index = next(
