@@ -259,6 +259,39 @@ export function mergeModelProviderConfig(
   });
 }
 
+/**
+ * Removes every configured model provider (the `models.providers` map). The single-provider
+ * setup flow calls this before writing so that only the newly configured provider survives.
+ */
+export function clearModelProviders(existing: JsonObject): JsonObject {
+  const existingModels = asJsonObject(existing.models);
+  if (!isJsonObject(existingModels.providers)) return existing;
+  const nextModels = { ...existingModels };
+  delete nextModels.providers;
+  return { ...existing, models: nextModels };
+}
+
+/**
+ * Keeps only `providerKey` in the `models.providers` map, dropping every other configured
+ * provider so a single active provider remains. When the active model is auth-managed and has no
+ * `providers` entry (e.g. GitHub Copilot), pass its key and all providers are cleared.
+ */
+export function retainOnlyProvider(existing: JsonObject, providerKey: string): JsonObject {
+  const existingModels = asJsonObject(existing.models);
+  if (!isJsonObject(existingModels.providers)) return existing;
+  const existingProviders = existingModels.providers;
+  const providerKeys = Object.keys(existingProviders);
+  if (providerKeys.length === 0) return existing;
+  if (providerKeys.length === 1 && providerKeys[0] === providerKey) return existing;
+  const nextModels = { ...existingModels };
+  if (Object.prototype.hasOwnProperty.call(existingProviders, providerKey)) {
+    nextModels.providers = { [providerKey]: existingProviders[providerKey] };
+  } else {
+    delete nextModels.providers;
+  }
+  return { ...existing, models: nextModels };
+}
+
 export function updateModelProviderConfig(
   existing: JsonObject,
   input: ModelProviderUpdate,

@@ -87,6 +87,31 @@ body,
   --el-switch-off-color: #c2c8d4;
 }
 
+/*
+  Off-state switch. Element Plus defaults the off track to --el-border-color,
+  a near-white gray in this theme, so an off (but enabled) switch reads as
+  disabled. Render the off state as an outlined pill: a white (light theme)
+  track with a visible gray border and a solid gray knob on the left, so the
+  switch stays legible without looking filled/checked. Disabled switches remain
+  distinct via Element Plus's reduced opacity (.el-switch.is-disabled { opacity: .6 }).
+*/
+html .el-switch:not(.is-checked) .el-switch__core {
+  background-color: #ffffff;
+  border-color: #8e8e93;
+}
+html .el-switch:not(.is-checked) .el-switch__core .el-switch__action {
+  background-color: #636366;
+  border: none;
+}
+html.dark .el-switch:not(.is-checked) .el-switch__core {
+  background-color: transparent;
+  border-color: #8e8e93;
+}
+html.dark .el-switch:not(.is-checked) .el-switch__core .el-switch__action {
+  background-color: #a1a1aa;
+  border: none;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 5px;

@@ -27,7 +27,7 @@
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.language") }}</span>
-            <el-select v-model="settings.language" size="small" style="width: 140px">
+            <el-select v-model="settings.language" style="width: 140px">
               <el-option label="简体中文" value="zh-CN" />
               <el-option label="English" value="en-US" />
             </el-select>
@@ -57,7 +57,12 @@
 
       <!-- Usage -->
       <div v-if="activeSection === 'usage'" class="section">
-        <div class="section-label">{{ t("settings.usage") }}</div>
+        <div class="section-label-row">
+          <span class="section-label">{{ t("settings.usage") }}</span>
+          <el-button v-if="usageData" size="small" :loading="usageLoading" @click="loadUsage">{{
+            t("settings.refresh")
+          }}</el-button>
+        </div>
 
         <!-- Loading / Error states -->
         <div v-if="usageLoading" class="card-group">
@@ -163,11 +168,6 @@
             </div>
           </template>
 
-          <div class="section-actions">
-            <el-button size="small" @click="loadUsage" :loading="usageLoading">{{
-              t("settings.refresh")
-            }}</el-button>
-          </div>
         </template>
 
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
@@ -175,177 +175,88 @@
 
       <!-- Models -->
       <div v-if="activeSection === 'models'" class="section">
-        <!-- Models -->
+        <!-- Model -->
         <div class="sub-label-row">
-          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.customModels") }}</span>
-          <div class="sub-label-actions">
+          <span class="sub-label">{{ t("settings.customModels") }}</span>
+          <div v-if="customModels.length" class="sub-label-actions">
             <el-button size="small" type="primary" plain @click="showProviderSetup = true">
-              {{ t("settings.switchProvider") }}
+              {{ t("settings.setUpProvider") }}
             </el-button>
           </div>
         </div>
         <div class="card-group">
-          <div v-if="customModels.length" class="card-row no-border model-picker-row">
-            <div class="custom-model-info">
-              <span class="row-label">{{ t("settings.currentModel") }}</span>
-              <span v-if="selectedModelEntry" class="row-sub">{{
-                describeCustomModel(selectedModelEntry)
-              }}</span>
+          <template v-if="customModels.length">
+            <div class="card-row">
+              <span class="row-label">{{ t("settings.provider") }}</span>
+              <span class="row-value">{{ currentProviderName }}</span>
             </div>
-            <div class="model-picker-actions">
+            <div class="card-row no-border">
+              <span class="row-label">{{ t("settings.currentModel") }}</span>
               <el-select
-                class="model-picker-select"
                 :model-value="selectedModel"
-                :loading="Boolean(switchingModelRef) || copilotDisconnecting"
-                :disabled="Boolean(switchingModelRef) || copilotDisconnecting"
+                :loading="Boolean(switchingModelRef)"
+                :disabled="Boolean(switchingModelRef)"
                 filterable
+                style="min-width: 240px; max-width: 340px"
                 @change="selectModel"
               >
-                <el-option-group
-                  v-for="group in modelGroups"
-                  :key="group.providerKey"
-                  :label="group.label"
-                >
-                  <el-option
-                    v-for="model in group.models"
-                    :key="getModelRef(model)"
-                    :label="model.name"
-                    :value="getModelRef(model)"
-                  />
-                </el-option-group>
+                <el-option
+                  v-for="model in customModels"
+                  :key="getModelRef(model)"
+                  :label="model.name"
+                  :value="getModelRef(model)"
+                />
               </el-select>
-              <template
-                v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
-              >
-                <el-button size="small" @click="editCustomModel(selectedModelIndex)">{{
-                  t("settings.edit")
-                }}</el-button>
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="removeCustomModel(selectedModelIndex)"
-                  >{{ t("settings.delete") }}</el-button
-                >
-              </template>
-              <el-button
-                v-else-if="selectedModelEntry?.providerKey === 'github-copilot'"
-                size="small"
-                type="danger"
-                plain
-                :loading="copilotDisconnecting"
-                @click="disconnectGitHubCopilot"
-              >
-                {{ t("settings.disconnect") }}
-              </el-button>
             </div>
-          </div>
-          <div v-else-if="!copilotModelsLoading" class="card-row no-border placeholder-row">
-            <span class="placeholder-text">{{ t("settings.noCustomModels") }}</span>
+          </template>
+          <div v-else-if="!copilotModelsLoading" class="card-row no-border">
+            <span class="placeholder-text">{{ t("settings.noProviderConfigured") }}</span>
+            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
+              {{ t("settings.setUpModelProvider") }}
+            </el-button>
           </div>
         </div>
 
-        <!-- Edit Custom Model dialog -->
-        <el-dialog
-          v-model="showEditModel"
-          :title="t('settings.editCustomModel')"
-          width="460px"
-          :close-on-click-modal="false"
-        >
-          <el-form label-position="top" @submit.prevent>
-            <el-form-item v-if="!editingManagedProvider" :label="t('settings.modelName')">
-              <el-input v-model="editModel.name" placeholder="e.g. my-gpt-4o" />
-            </el-form-item>
-            <el-form-item v-if="!editingManagedProvider" :label="t('settings.baseUrl')">
-              <el-input v-model="editModel.baseUrl" placeholder="https://api.example.com/v1" />
-            </el-form-item>
-            <el-form-item :label="t('settings.apiKey')">
-              <el-input
-                v-model="editModel.apiKey"
-                type="password"
-                show-password
-                placeholder="sk-..."
-              />
-            </el-form-item>
-            <el-form-item v-if="!editingManagedProvider" :label="t('settings.apiFormat')">
-              <el-select v-model="editModel.apiFormat" style="width: 100%">
-                <el-option :label="t('settings.apiFormatOpenAIChat')" value="openai-chat" />
-                <el-option
-                  :label="t('settings.apiFormatOpenAIResponses')"
-                  value="openai-responses"
-                />
-                <el-option :label="t('settings.apiFormatAnthropic')" value="anthropic" />
-              </el-select>
-            </el-form-item>
-            <el-form-item :label="t('settings.reasoningEffort')">
-              <el-select v-model="editModel.reasoningEffort" style="width: 100%">
-                <el-option
-                  v-for="option in reasoningEffortOptions"
-                  :key="option.value"
-                  :label="t(option.labelKey)"
-                  :value="option.value"
-                />
-              </el-select>
-            </el-form-item>
-          </el-form>
-          <div class="test-result" v-if="editTestResult">
-            <span :class="editTestResult.ok ? 'test-ok' : 'test-fail'">{{
-              editTestResult.message
-            }}</span>
+        <!-- Web search -->
+        <div class="sub-label-row">
+          <span class="sub-label">{{ t("settings.webSearch") }}</span>
+          <div class="sub-label-actions">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :disabled="!searchDirty"
+              :loading="searchSavingAll"
+              @click="saveSearchSettings"
+              >{{ t("settings.save") }}</el-button
+            >
           </div>
-          <template #footer>
-            <div style="display: flex; justify-content: space-between; width: 100%">
-              <el-button :loading="editTestLoading" @click="testEditModel">{{
-                t("settings.testConnection")
-              }}</el-button>
-              <div style="display: flex; gap: 8px">
-                <el-button @click="showEditModel = false">{{ t("settings.cancel") }}</el-button>
-                <el-button type="primary" @click="saveEditModel">{{
-                  t("settings.save")
-                }}</el-button>
-              </div>
-            </div>
-          </template>
-        </el-dialog>
-
-        <!-- Web Search (Brave) -->
-        <div class="sub-label" style="margin-top: 40px">{{ t("settings.webSearch") }}</div>
+        </div>
         <div class="card-group">
-          <div class="card-row no-border port-row">
-            <div class="port-info">
-              <div class="port-title">{{ t("settings.braveSearchApiKey") }}</div>
-            </div>
-            <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0">
-              <el-input
-                v-model="braveApiKey"
-                type="password"
-                show-password
-                size="small"
-                placeholder="BSA..."
-                style="width: 240px"
-              />
-              <el-button
-                size="small"
-                type="primary"
-                @click="saveBraveApiKey"
-                :loading="braveApiKeySaving"
-                >{{ t("settings.save") }}</el-button
-              >
-            </div>
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.provider") }}</span>
+            <el-select v-model="searchProvider" style="width: 130px">
+              <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
+            </el-select>
+          </div>
+          <div class="card-row no-border api-key-row">
+            <span class="row-label">{{ t("settings.apiKey") }}</span>
+            <a
+              href="#"
+              class="provider-link"
+              @click.prevent="openExternal(activeSearchProvider.link)"
+              >{{ t("settings.getApiKey") }}<span class="provider-link-arrow">↗</span></a
+            >
+            <el-input
+              v-model="searchKeys[searchProvider]"
+              type="password"
+              show-password
+              :placeholder="activeSearchProvider.placeholder"
+              class="provider-key-input"
+            />
           </div>
         </div>
-        <div class="section-footer">
-          <template v-for="(part, i) in t('settings.braveDesc').split('{link}')" :key="i">
-            <span v-if="i > 0"
-              ><a
-                href="#"
-                @click.prevent="openExternal('https://brave.com/search/api/')"
-                style="color: var(--accent)"
-                >brave.com/search/api</a
-              ></span
-            >{{ part }}
-          </template>
-        </div>
+        <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
       </div>
 
       <!-- Skills -->
@@ -353,22 +264,13 @@
         <div class="section-label">{{ t("settings.skillManagement") }}</div>
 
         <!-- ══ Built-in Skills ══ -->
-        <div
-          style="
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 8px;
-          "
-        >
-          <span class="sub-label" style="margin: 0"
+        <div class="sub-label-row">
+          <span class="sub-label"
             >{{ t("settings.builtinSkills") }} ({{ builtinSkills.length }})</span
           >
-          <div style="display: flex; align-items: center; gap: 8px">
-            <span class="skill-count-label"
-              >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
-            >
-          </div>
+          <span class="skill-count-label"
+            >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
+          >
         </div>
 
         <div v-if="builtinSkills.length" class="card-group">
@@ -382,7 +284,9 @@
               <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
                 <span class="row-label">{{ skill.name }}</span>
                 <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
-                  <span class="badge badge-warn">{{ t("settings.skillUnavailable") }}</span>
+                  <span class="status-indicator status-indicator--warn"
+                    ><span class="status-dot"></span>{{ t("settings.skillUnavailable") }}</span
+                  >
                 </el-tooltip>
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
@@ -427,7 +331,9 @@
                     :content="missingTooltip(skill)"
                     placement="top"
                   >
-                    <span class="badge badge-warn">{{ t("settings.skillUnavailable") }}</span>
+                    <span class="status-indicator status-indicator--warn"
+                      ><span class="status-dot"></span>{{ t("settings.skillUnavailable") }}</span
+                    >
                   </el-tooltip>
                 </div>
                 <span class="skill-desc">{{ skill.description }}</span>
@@ -461,9 +367,14 @@
             <span class="row-label">{{ t("settings.status") }}</span>
             <div style="display: flex; align-items: center; gap: 8px">
               <span
-                class="badge"
-                :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'"
+                class="status-indicator"
+                :class="
+                  gateway.status === 'running'
+                    ? 'status-indicator--ok'
+                    : 'status-indicator--error'
+                "
               >
+                <span class="status-dot"></span>
                 {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
               </span>
               <el-button size="small" @click="restartGateway">{{
@@ -481,7 +392,6 @@
               <span class="port-prefix">ws://127.0.0.1 :</span>
               <el-input
                 v-model="gatewayPort"
-                size="small"
                 style="width: 80px"
                 @change="saveGatewayPort"
               />
@@ -491,7 +401,7 @@
         <div class="section-footer">{{ t("settings.portDesc") }}</div>
 
         <div class="sub-label-row">
-          <span class="sub-label" style="margin: 0">{{ t("settings.gatewayLog") }}</span>
+          <span class="sub-label">{{ t("settings.gatewayLog") }}</span>
           <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
         </div>
         <div class="gateway-log-box">
@@ -608,9 +518,9 @@
                   "
                 >
                   <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <button class="dir-add-btn" @click="addSandboxDir('rw')">
-                    + {{ t("settings.sandboxAddDir") }}
-                  </button>
+                  <el-button size="small" type="primary" plain @click="addSandboxDir('rw')">
+                    {{ t("settings.sandboxAddDir") }}
+                  </el-button>
                 </div>
                 <div
                   v-for="(dir, idx) in sandboxSystemDirs.rw"
@@ -647,9 +557,9 @@
                   "
                 >
                   <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <button class="dir-add-btn" @click="addSandboxDir('ro')">
-                    + {{ t("settings.sandboxAddDir") }}
-                  </button>
+                  <el-button size="small" type="primary" plain @click="addSandboxDir('ro')">
+                    {{ t("settings.sandboxAddDir") }}
+                  </el-button>
                 </div>
                 <div
                   v-for="(dir, idx) in sandboxSystemDirs.ro"
@@ -849,7 +759,7 @@
         <div class="section-footer">{{ t("settings.privacyProtectionDesc") }}</div>
 
         <!-- PII Detection -->
-        <div class="sub-label" style="margin-top: 36px">{{ t("settings.piiDetection") }}</div>
+        <div class="sub-label">{{ t("settings.piiDetection") }}</div>
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
@@ -878,7 +788,7 @@
         <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
 
         <!-- Sensitive File Guard -->
-        <div class="sub-label" style="margin-top: 32px">{{ t("settings.sensitiveFiles") }}</div>
+        <div class="sub-label">{{ t("settings.sensitiveFiles") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span
@@ -898,7 +808,7 @@
         <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
 
         <!-- File Access Audit -->
-        <div class="sub-label" style="margin-top: 32px">{{ t("settings.fileAccessAudit") }}</div>
+        <div class="sub-label">{{ t("settings.fileAccessAudit") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
@@ -911,7 +821,7 @@
         <div class="section-footer">{{ t("settings.fileAccessAuditDesc") }}</div>
 
         <!-- Chat History (existing) -->
-        <div class="sub-label" style="margin-top: 32px">{{ t("settings.chatHistory") }}</div>
+        <div class="sub-label">{{ t("settings.chatHistory") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.chatHistory") }}</span>
@@ -967,7 +877,12 @@
         </div>
       </div>
 
-      <ModelSetupDialog v-model="showProviderSetup" @configured="handleProviderConfigured" />
+      <ModelSetupDialog
+        v-model="showProviderSetup"
+        single-provider
+        :current-provider="currentProviderPrefill"
+        @configured="handleProviderConfigured"
+      />
     </div>
   </div>
 </template>
@@ -986,17 +901,13 @@ import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import {
   normalizeModelInput,
-  removeModelProviderConfig,
   selectPrimaryModelConfig,
-  updateModelProviderConfig,
+  retainOnlyProvider,
   type ModelApiFormat,
   type ModelInputCapability,
   type ModelReasoningEffort,
 } from "@/utils/model-provider";
-import {
-  mergeGitHubCopilotModelEntries,
-  removeGitHubCopilotModelReferences,
-} from "@/utils/auth-managed-models";
+import { mergeGitHubCopilotModelEntries } from "@/utils/auth-managed-models";
 import {
   getManagedModelProvider,
   isManagedModelProviderId,
@@ -1331,30 +1242,6 @@ interface ModelEntry {
   input?: ModelInputCapability[];
 }
 
-interface ModelFormState {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  apiFormat: ApiFormat;
-  reasoningEffort: ReasoningEffort;
-}
-
-interface ModelGroup {
-  providerKey: string;
-  label: string;
-  models: ModelEntry[];
-}
-
-const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }> = [
-  { value: "off", labelKey: "settings.reasoningOff" },
-  { value: "minimal", labelKey: "settings.reasoningMinimal" },
-  { value: "low", labelKey: "settings.reasoningLow" },
-  { value: "medium", labelKey: "settings.reasoningMedium" },
-  { value: "high", labelKey: "settings.reasoningHigh" },
-  { value: "xhigh", labelKey: "settings.reasoningXHigh" },
-  { value: "adaptive", labelKey: "settings.reasoningAdaptive" },
-];
-
 function normalizeApiFormat(api?: string): ApiFormat {
   if (api === "anthropic-messages") return "anthropic";
   if (api === "openai-responses") return "openai-responses";
@@ -1380,39 +1267,13 @@ function normalizeReasoningEffort(
   return fallback;
 }
 
-function formatApiLabel(apiFormat?: ApiFormat): string {
-  if (apiFormat === "anthropic") return t("settings.apiFormatAnthropic");
-  if (apiFormat === "openai-responses") return t("settings.apiFormatOpenAIResponses");
-  return t("settings.apiFormatOpenAIChat");
-}
-
-function formatReasoningEffort(value?: ReasoningEffort): string {
-  const key = reasoningEffortOptions.find((option) => option.value === value)?.labelKey;
-  return key ? t(key) : t("settings.reasoningOff");
-}
-
 function getModelRef(model: Pick<ModelEntry, "providerKey" | "id">): string {
   return `${model.providerKey}/${model.id}`;
-}
-
-function describeCustomModel(model: ModelEntry): string {
-  if (model.source === "auth-managed") return t("settings.githubCopilotAuth");
-  const parts = [] as string[];
-  if (model.baseUrl) parts.push(model.baseUrl);
-  parts.push(formatApiLabel(model.apiFormat));
-  const reasoningEffort = normalizeReasoningEffort(model.reasoningEffort);
-  parts.push(
-    reasoningEffort === "off"
-      ? t("settings.reasoningOffDesc")
-      : t("settings.reasoningDesc", { level: formatReasoningEffort(reasoningEffort) }),
-  );
-  return parts.join(" · ");
 }
 
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const copilotModelsLoading = ref(false);
-const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const gatewayPort = ref("18789");
@@ -1420,41 +1281,33 @@ const showProviderSetup = ref(false);
 const selectedModelEntry = computed(
   () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
 );
-const selectedModelIndex = computed(() =>
-  customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
-);
-const modelGroups = computed<ModelGroup[]>(() => {
-  const groups = new Map<string, ModelEntry[]>();
-  for (const model of customModels.value) {
-    const models = groups.get(model.providerKey) ?? [];
-    models.push(model);
-    groups.set(model.providerKey, models);
-  }
-  return [...groups.entries()].map(([providerKey, models]) => ({
-    providerKey,
-    label:
-      providerKey === "github-copilot"
-        ? "GitHub Copilot"
-        : (getManagedModelProvider(providerKey)?.label ?? providerKey),
-    models,
-  }));
+// Pre-fill payload so "Set up provider" reopens the wizard on the configured provider, ready to
+// adjust. Null when nothing is configured yet.
+const currentProviderPrefill = computed(() => {
+  const entry = selectedModelEntry.value;
+  if (!entry) return null;
+  const familyId =
+    entry.providerKey === "github-copilot"
+      ? "github-copilot"
+      : isManagedModelProviderId(entry.providerKey)
+        ? entry.providerKey
+        : "custom";
+  return {
+    familyId,
+    providerKey: entry.providerKey,
+    modelName: entry.id,
+    baseUrl: entry.baseUrl ?? "",
+    apiKey: entry.apiKey ?? "",
+    apiFormat: entry.apiFormat ?? "openai-chat",
+  };
 });
 
-const showEditModel = ref(false);
-const editingIndex = ref(-1);
-const editModel = reactive<ModelFormState>({
-  name: "",
-  baseUrl: "",
-  apiKey: "",
-  apiFormat: "openai-chat",
-  reasoningEffort: "off",
-});
-const editTestLoading = ref(false);
-const editTestResult = ref<{ ok: boolean; message: string; baseUrl?: string } | null>(null);
-let editModelTestGeneration = 0;
-const editingManagedProvider = computed(() => {
-  const model = customModels.value[editingIndex.value];
-  return model ? isManagedModelProviderId(model.providerKey) : false;
+// Display name of the configured provider shown in the Model section.
+const currentProviderName = computed(() => {
+  const entry = selectedModelEntry.value;
+  if (!entry) return "";
+  if (entry.providerKey === "github-copilot") return "GitHub Copilot";
+  return getManagedModelProvider(entry.providerKey)?.label ?? entry.providerKey;
 });
 
 const builtinSkills = ref<SkillEntry[]>([]);
@@ -1580,9 +1433,32 @@ async function toggleCustomSkill(skillId: string, enabled: boolean) {
   }
 }
 
-// --- Brave Search API ---
-const braveApiKey = ref("");
-const braveApiKeySaving = ref(false);
+// --- Web search providers ---
+type SearchProviderId = "brave" | "tavily";
+const searchProviders: {
+  id: SearchProviderId;
+  name: string;
+  placeholder: string;
+  link: string;
+}[] = [
+  { id: "brave", name: "Brave", placeholder: "BSA...", link: "https://brave.com/search/api/" },
+  { id: "tavily", name: "Tavily", placeholder: "tvly-...", link: "https://tavily.com/" },
+];
+const searchProvider = ref<SearchProviderId>("brave");
+const searchKeys = reactive<Record<SearchProviderId, string>>({ brave: "", tavily: "" });
+// The provider metadata (placeholder, docs link) for the currently selected provider.
+const activeSearchProvider = computed(
+  () => searchProviders.find((p) => p.id === searchProvider.value) ?? searchProviders[0],
+);
+// Snapshot of the last persisted state, used to drive the "Configured" status and the
+// enabled/disabled state of the single Save button.
+const savedSearchProvider = ref<SearchProviderId>("brave");
+const savedSearchKeys = reactive<Record<SearchProviderId, string>>({ brave: "", tavily: "" });
+const searchSavingAll = ref(false);
+const searchDirty = computed(() => {
+  if (searchProvider.value !== savedSearchProvider.value) return true;
+  return searchProviders.some((p) => searchKeys[p.id].trim() !== savedSearchKeys[p.id]);
+});
 
 // --- Usage state ---
 interface UsageStats {
@@ -1732,11 +1608,6 @@ function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
     settings.fileAccessAudit = true;
   }
 }
-watch(showEditModel, (visible) => {
-  editModelTestGeneration += 1;
-  editTestLoading.value = false;
-  if (!visible) editTestResult.value = null;
-});
 
 // --- Auto-load data when tab is selected ---
 watch(activeSection, (v) => {
@@ -1890,10 +1761,8 @@ onMounted(async () => {
     void loadSettingsGitHubCopilotModels();
   }
 
-  // Load Brave Search API key from config
-  if (config?.tools?.web?.search?.apiKey) {
-    braveApiKey.value = config.tools.web.search.apiKey;
-  }
+  // Load web search provider configuration
+  loadSearchConfig(config);
 
   // Load skills from disk
   try {
@@ -1957,7 +1826,12 @@ async function selectModel(modelRef: string) {
   switchingModelRef.value = modelRef;
   try {
     await persistAndRestart(
-      (config) => selectPrimaryModelConfig(config, modelRef),
+      (config) => {
+        const selected = selectPrimaryModelConfig(config, modelRef);
+        // Keep only the active model's provider so the config never accumulates stale providers.
+        const providerKey = modelRef.split("/")[0];
+        return retainOnlyProvider(selected, providerKey);
+      },
       t("settings.modelSwitched", { model: modelRef }),
     );
   } finally {
@@ -1965,226 +1839,54 @@ async function selectModel(modelRef: string) {
   }
 }
 
-function editCustomModel(idx: number) {
-  const m = customModels.value[idx];
-  if (!m || m.source === "auth-managed") return;
-  const managedProvider = getManagedModelProvider(m.providerKey);
-  editingIndex.value = idx;
-  editModel.name = managedProvider ? m.id : m.name;
-  editModel.baseUrl = managedProvider?.baseUrl ?? m.baseUrl ?? "";
-  editModel.apiKey = m.apiKey || "";
-  editModel.apiFormat = managedProvider?.apiFormat ?? m.apiFormat ?? "openai-chat";
-  editModel.reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
-  editTestResult.value = null;
-  showEditModel.value = true;
+function loadSearchConfig(config: any): void {
+  const active = config?.tools?.web?.search;
+  if (active?.provider === "brave" || active?.provider === "tavily") {
+    const provider: SearchProviderId = active.provider;
+    searchProvider.value = provider;
+    if (typeof active.apiKey === "string" && active.apiKey) {
+      searchKeys[provider] = active.apiKey;
+    }
+  }
+  snapshotSearchConfig();
 }
 
-async function saveEditModel() {
-  const idx = editingIndex.value;
-  const original = customModels.value[idx];
-  if (!original || original.source === "auth-managed") {
-    ElMessage.error(t("settings.configSaveFailed", { error: "Model is no longer available" }));
-    await refreshModelsConfig();
-    return;
-  }
-  const managedProvider = getManagedModelProvider(original.providerKey);
-  const managedModel = managedProvider?.models.find((model) => model.id === original.id);
-  const name = managedProvider ? original.id : editModel.name.trim();
-  if (!name) {
-    ElMessage.warning(t("settings.modelNameRequired"));
-    return;
-  }
-  const baseUrl = managedProvider?.baseUrl ?? editModel.baseUrl.trim();
-  if (!baseUrl) {
-    ElMessage.warning(t("settings.baseUrlRequired"));
-    return;
-  }
-  if (
-    customModels.value.some(
-      (model, modelIndex) =>
-        model.providerKey === original.providerKey && model.id === name && modelIndex !== idx,
-    )
-  ) {
-    ElMessage.warning(t("settings.modelNameExists"));
-    return;
-  }
-  const saved = await persistAndRestart(
-    (config) =>
-      updateModelProviderConfig(config, {
-        providerKey: original.providerKey,
-        originalModelName: original.id,
-        modelName: name,
-        displayName: managedModel?.name ?? name,
-        baseUrl,
-        apiKey: editModel.apiKey.trim(),
-        apiFormat: managedProvider?.apiFormat ?? editModel.apiFormat,
-        reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
-        input: managedModel?.input ?? normalizeModelInput(original.input),
-      }),
-    t("settings.customModelUpdated"),
-  );
-  if (saved) showEditModel.value = false;
+// Records the current selection + keys as the persisted baseline that drives the Configured
+// status badges and whether the Save button is enabled.
+function snapshotSearchConfig(): void {
+  savedSearchProvider.value = searchProvider.value;
+  for (const p of searchProviders) savedSearchKeys[p.id] = searchKeys[p.id].trim();
 }
 
-async function testEditModel() {
-  if (editTestLoading.value) return;
-  const baseUrl = editModel.baseUrl.trim();
-  const apiKey = editModel.apiKey.trim();
-  if (!baseUrl) {
-    ElMessage.warning(t("settings.baseUrlRequired"));
-    return;
+// Writes only the active provider into tools.web.search — the single object the gateway
+// consumes. The gateway schema rejects any extra keys under tools.web, so no per-provider map
+// is persisted; unsaved keys for other providers live only in-memory for quick switching.
+async function persistSearchConfig(): Promise<void> {
+  const config = (await window.openclaw.config.read()) || {};
+  config.tools = config.tools || {};
+  config.tools.web = config.tools.web || {};
+  delete config.tools.web.searchProviders;
+  const activeKey = searchKeys[searchProvider.value].trim();
+  if (activeKey) {
+    config.tools.web.search = { provider: searchProvider.value, apiKey: activeKey };
+  } else {
+    delete config.tools.web.search;
   }
-  const modelName = editModel.name.trim();
-  const apiFormat = editModel.apiFormat;
-  const reasoningEffort = normalizeReasoningEffort(editModel.reasoningEffort);
-  const generation = ++editModelTestGeneration;
-  const editingModelIndex = editingIndex.value;
-  editTestLoading.value = true;
-  editTestResult.value = null;
-  const isCurrentRequest = () =>
-    generation === editModelTestGeneration &&
-    showEditModel.value &&
-    editingIndex.value === editingModelIndex &&
-    editModel.baseUrl.trim() === baseUrl &&
-    editModel.apiKey.trim() === apiKey &&
-    editModel.name.trim() === modelName &&
-    editModel.apiFormat === apiFormat &&
-    normalizeReasoningEffort(editModel.reasoningEffort) === reasoningEffort;
+  await window.openclaw.config.write(config);
+}
+
+// Single save for the Web search section: commits both provider keys and the selected default
+// provider in one action. The gateway hot-reloads the tools config on write.
+async function saveSearchSettings(): Promise<void> {
+  searchSavingAll.value = true;
   try {
-    const result = await window.openclaw.model.testConnection({
-      baseUrl,
-      apiKey,
-      apiFormat,
-      modelName,
-      reasoningEffort,
-    });
-    if (!isCurrentRequest()) return;
-    if (result.ok && result.baseUrl) editModel.baseUrl = result.baseUrl;
-    editTestResult.value = result;
-  } catch (err: any) {
-    if (!isCurrentRequest()) return;
-    editTestResult.value = {
-      ok: false,
-      message: t("settings.connectionFailed", { error: err.message || "Network error" }),
-    };
-  } finally {
-    if (generation === editModelTestGeneration) {
-      editTestLoading.value = false;
-    }
-  }
-}
-
-async function removeCustomModel(idx: number) {
-  const removed = customModels.value[idx];
-  if (!removed || removed.source === "auth-managed") return;
-  const fallback = customModels.value.find(
-    (model, modelIndex) => modelIndex !== idx && model.source !== "auth-managed",
-  );
-  await persistAndRestart(
-    (config) =>
-      removeModelProviderConfig(
-        config,
-        removed.providerKey,
-        removed.id,
-        fallback ? getModelRef(fallback) : undefined,
-      ),
-    t("settings.customModelDeleted"),
-  );
-}
-
-async function disconnectGitHubCopilot() {
-  if (copilotDisconnecting.value) return;
-  try {
-    await ElMessageBox.confirm(
-      t("settings.copilotDisconnectConfirm"),
-      t("settings.confirm"),
-      { type: "warning" },
-    );
-  } catch {
-    return;
-  }
-
-  const fallbackModel = customModels.value.find(
-    (model) => model.providerKey !== "github-copilot" && model.source !== "auth-managed",
-  );
-  const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
-  copilotDisconnecting.value = true;
-  copilotModelsGeneration += 1;
-  copilotModelsLoading.value = false;
-
-  try {
-    const existingConfig = await window.openclaw.config.read();
-    if (!existingConfig || typeof existingConfig !== "object" || Array.isArray(existingConfig)) {
-      throw new Error(t("settings.copilotConfigUnavailable"));
-    }
-    const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
-    await window.openclaw.config.write(nextConfig);
-
-    try {
-      await window.openclaw.model.disconnectGitHubCopilot();
-    } catch (error) {
-      try {
-        await window.openclaw.config.write(existingConfig);
-      } catch (rollbackError) {
-        throw new Error(
-          t("settings.copilotDisconnectRollbackFailed", {
-            error: error instanceof Error ? error.message : String(error),
-            rollbackError:
-              rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
-          }),
-          { cause: rollbackError },
-        );
-      }
-      throw error;
-    }
-
-    try {
-      await restartGatewayAfterModelConfig();
-    } catch (error) {
-      await refreshModelsConfig();
-      ElMessage.warning(
-        t("settings.copilotDisconnectedRestartFailed", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      return;
-    }
-    await refreshModelsConfig();
-    ElMessage.success(t("settings.copilotDisconnected"));
-  } catch (error) {
-    await refreshModelsConfig();
-    ElMessage.error(
-      t("settings.copilotDisconnectFailed", {
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
-  } finally {
-    copilotDisconnecting.value = false;
-  }
-}
-
-async function saveBraveApiKey() {
-  const key = braveApiKey.value.trim();
-  braveApiKeySaving.value = true;
-  try {
-    const config = (await window.openclaw.config.read()) || {};
-    config.tools = config.tools || {};
-    config.tools.web = config.tools.web || {};
-    if (key) {
-      config.tools.web.search = {
-        ...config.tools.web.search,
-        provider: "brave",
-        apiKey: key,
-      };
-    } else {
-      delete config.tools.web.search;
-    }
-    await window.openclaw.config.write(config);
-    ElMessage.success(key ? t("settings.braveApiKeySaved") : t("settings.braveApiKeyCleared"));
+    await persistSearchConfig();
+    snapshotSearchConfig();
+    ElMessage.success(t("settings.searchSettingsSaved"));
   } catch (err: any) {
     ElMessage.error(t("settings.saveFailed", { error: err.message || err }));
   } finally {
-    braveApiKeySaving.value = false;
+    searchSavingAll.value = false;
   }
 }
 
@@ -2373,6 +2075,17 @@ async function clearChatHistory() {
   padding-left: 4px;
 }
 
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.section-label-row .section-label {
+  margin-bottom: 0;
+}
+
 /* Grouped card */
 .card-group {
   background: var(--bg-grouped);
@@ -2471,11 +2184,6 @@ async function clearChatHistory() {
   font-weight: 400;
   color: var(--text-muted);
   padding: 6px 4px 0;
-}
-
-.section-actions {
-  margin-top: 16px;
-  padding-left: 2px;
 }
 
 /* About card */
@@ -2578,26 +2286,8 @@ async function clearChatHistory() {
   margin-top: 0;
 }
 
-.badge {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 3px 12px;
-  border-radius: 20px;
-  white-space: nowrap;
-}
-
-.badge-green {
-  background: rgba(52, 199, 89, 0.12);
-  color: #34c759;
-  border: 1px solid rgba(52, 199, 89, 0.25);
-}
-
-.badge-red {
-  background: rgba(255, 59, 48, 0.12);
-  color: #ff3b30;
-  border: 1px solid rgba(255, 59, 48, 0.25);
+.sub-label-row .sub-label {
+  margin: 0;
 }
 
 .custom-model-info {
@@ -2641,6 +2331,86 @@ async function clearChatHistory() {
 .port-info {
   flex: 1;
   min-width: 0;
+}
+
+.search-provider-group {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  align-items: stretch;
+}
+
+/* Higher specificity than .card-row so the row content is truly left-aligned. */
+.search-provider-group .card-row {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.provider-key-input {
+  min-width: 240px;
+  max-width: 340px;
+}
+
+/* API key row: [label] [get-key link] on the left, key input right-aligned. */
+.api-key-row {
+  justify-content: flex-start;
+}
+
+.api-key-row .provider-key-input {
+  margin-left: auto;
+}
+
+/* Shared status indicator (dot + text) — the single status style across Settings. */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.status-indicator--ok {
+  color: #16a34a;
+}
+
+.status-indicator--error {
+  color: #ff3b30;
+}
+
+.status-indicator--warn {
+  color: #b26a00;
+}
+
+.status-indicator--muted {
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.provider-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.provider-link-arrow {
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.provider-link:hover {
+  opacity: 0.8;
 }
 
 .port-title {
@@ -2749,30 +2519,6 @@ async function clearChatHistory() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.badge-blue {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  border: 1px solid var(--accent-light);
-}
-
-.badge-orange {
-  background: rgba(255, 149, 0, 0.12);
-  color: #ff9500;
-  border: 1px solid rgba(255, 149, 0, 0.25);
-}
-
-.badge-gray {
-  background: rgba(142, 142, 147, 0.12);
-  color: #8e8e93;
-  border: 1px solid rgba(142, 142, 147, 0.25);
-}
-
-.badge-warn {
-  background: rgba(255, 149, 0, 0.12);
-  color: #b26a00;
-  border: 1px solid rgba(255, 149, 0, 0.3);
 }
 
 .switch-wrap {
@@ -2901,19 +2647,6 @@ async function clearChatHistory() {
   font-size: 13px;
   font-weight: 400;
   color: var(--text-primary);
-}
-.dir-add-btn {
-  background: none;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--accent);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.dir-add-btn:hover {
-  background: var(--bg-tertiary);
 }
 .caps-list {
   display: flex;

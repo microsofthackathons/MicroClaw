@@ -6,6 +6,7 @@ import {
   normalizeModelInput,
   removeModelProviderConfig,
   resolveApiValue,
+  retainOnlyProvider,
   selectPrimaryModelConfig,
   updateModelProviderConfig,
   validateModelProviderInput,
@@ -371,5 +372,52 @@ describe("model provider config", () => {
       },
       hooks: { mappings: [{ model: "custom/model-a" }] },
     });
+  });
+});
+
+describe("retainOnlyProvider", () => {
+  it("keeps only the active model's provider", () => {
+    const existing = {
+      models: {
+        mode: "merge",
+        providers: {
+          custom: { models: [{ id: "model-a" }] },
+          stale: { models: [{ id: "old" }] },
+        },
+      },
+      agents: { defaults: { model: { primary: "custom/model-a" } } },
+    };
+
+    const result = retainOnlyProvider(existing, "custom");
+    expect(result.models).toEqual({
+      mode: "merge",
+      providers: { custom: { models: [{ id: "model-a" }] } },
+    });
+    expect(result.agents).toBe(existing.agents);
+  });
+
+  it("clears all providers when the active model is auth-managed", () => {
+    const existing = {
+      models: {
+        mode: "merge",
+        providers: { custom: { models: [{ id: "model-a" }] } },
+      },
+      agents: { defaults: { model: { primary: "github-copilot/gpt-5.4" } } },
+    };
+
+    const result = retainOnlyProvider(existing, "github-copilot");
+    expect(result.models).toEqual({ mode: "merge" });
+  });
+
+  it("returns the config unchanged when only the active provider exists", () => {
+    const existing = {
+      models: { providers: { custom: { models: [{ id: "model-a" }] } } },
+    };
+    expect(retainOnlyProvider(existing, "custom")).toBe(existing);
+  });
+
+  it("returns the config unchanged when no providers are configured", () => {
+    const existing = { models: { mode: "merge" } };
+    expect(retainOnlyProvider(existing, "custom")).toBe(existing);
   });
 });
