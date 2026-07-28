@@ -83,6 +83,10 @@ contextBridge.exposeInMainWorld("openclaw", {
     /** Abort the current run on a session. */
     abort: (sessionKey: string) => ipcRenderer.invoke("chat:abort", { sessionKey }),
 
+    /** Delete one persisted session and its transcript. */
+    deleteSession: (sessionKey: string) =>
+      ipcRenderer.invoke("chat:delete-session", { sessionKey }),
+
     /** Clear ALL persisted chat history on the gateway. */
     clearHistory: () => ipcRenderer.invoke("chat:clear-history"),
 
@@ -189,6 +193,18 @@ contextBridge.exposeInMainWorld("openclaw", {
       modelName: string;
       reasoningEffort?: string;
     }) => ipcRenderer.invoke("model:test-connection", params),
+    prepareGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:prepare"),
+    startGitHubCopilotLogin: () => ipcRenderer.invoke("model:github-copilot:start-login"),
+    cancelGitHubCopilotLogin: (sessionId?: string) =>
+      ipcRenderer.invoke("model:github-copilot:cancel-login", sessionId),
+    disconnectGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:disconnect"),
+    getGitHubCopilotStatus: () => ipcRenderer.invoke("model:github-copilot:status"),
+    listGitHubCopilotModels: () => ipcRenderer.invoke("model:github-copilot:list-models"),
+    onGitHubCopilotLoginEvent: (callback: (event: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
+      ipcRenderer.on("model:github-copilot:login-event", listener);
+      return () => ipcRenderer.removeListener("model:github-copilot:login-event", listener);
+    },
   },
 
   // --- Usage ---

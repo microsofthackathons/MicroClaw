@@ -7,6 +7,7 @@ import type { WeixinApiOptions } from "../api/api.js";
 import { aesEcbPaddedSize } from "./aes-ecb.js";
 import { uploadBufferToCdn } from "./cdn-upload.js";
 import { logger } from "../util/logger.js";
+import { redactUrl } from "../util/redact.js";
 import { getExtensionFromContentTypeOrUrl } from "../media/mime.js";
 import { tempFileName } from "../util/random.js";
 import { UploadMediaType } from "../api/types.js";
@@ -28,10 +29,20 @@ export type UploadedFileInfo = {
  * Returns the local file path; extension is inferred from Content-Type / URL.
  */
 export async function downloadRemoteImageToTemp(url: string, destDir: string): Promise<string> {
-  logger.debug(`downloadRemoteImageToTemp: fetching url=${url}`);
-  const res = await fetch(url);
+  logger.debug(`downloadRemoteImageToTemp: fetching url=${redactUrl(url)}`);
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    const cause =
+      (err as NodeJS.ErrnoException).cause ?? (err as NodeJS.ErrnoException).code ?? "";
+    logger.error(
+      `downloadRemoteImageToTemp: fetch network error url=${redactUrl(url)} error=${String(err)}${cause ? ` cause=${cause}` : ""}`,
+    );
+    throw err;
+  }
   if (!res.ok) {
-    const msg = `remote media download failed: ${res.status} ${res.statusText} url=${url}`;
+    const msg = `remote media download failed: ${res.status} ${res.statusText} url=${redactUrl(url)}`;
     logger.error(`downloadRemoteImageToTemp: ${msg}`);
     throw new Error(msg);
   }
@@ -82,17 +93,19 @@ async function uploadMediaToCdn(params: {
     aeskey: aeskey.toString("hex"),
   });
 
+  const uploadFullUrl = uploadUrlResp.upload_full_url?.trim();
   const uploadParam = uploadUrlResp.upload_param;
-  if (!uploadParam) {
+  if (!uploadFullUrl && !uploadParam) {
     logger.error(
-      `${label}: getUploadUrl returned no upload_param, resp=${JSON.stringify(uploadUrlResp)}`,
+      `${label}: getUploadUrl returned no upload URL (need upload_full_url or upload_param), resp=${JSON.stringify(uploadUrlResp)}`,
     );
-    throw new Error(`${label}: getUploadUrl returned no upload_param`);
+    throw new Error(`${label}: getUploadUrl returned no upload URL`);
   }
 
   const { downloadParam: downloadEncryptedQueryParam } = await uploadBufferToCdn({
     buf: plaintext,
-    uploadParam,
+    uploadFullUrl: uploadFullUrl || undefined,
+    uploadParam: uploadParam ?? undefined,
     filekey,
     cdnBaseUrl,
     aeskey,

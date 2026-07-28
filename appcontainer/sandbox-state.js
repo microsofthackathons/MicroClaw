@@ -7,6 +7,7 @@
 "use strict";
 
 var path = require("path");
+var fileURLToPath = require("url").fileURLToPath;
 
 // ── Configuration ──
 
@@ -74,13 +75,9 @@ var _safePaths = (function () {
   if (programFiles) {
     dirs.push(path.resolve(programFiles, "nodejs").toLowerCase() + path.sep);
   }
-  var localAppData =
-    process.env.LOCALAPPDATA ||
-    (home ? path.join(home, "AppData", "Local") : "");
+  var localAppData = process.env.LOCALAPPDATA || (home ? path.join(home, "AppData", "Local") : "");
   if (localAppData) {
-    dirs.push(
-      path.resolve(localAppData, "Programs", "nodejs").toLowerCase() + path.sep
-    );
+    dirs.push(path.resolve(localAppData, "Programs", "nodejs").toLowerCase() + path.sep);
   }
   // Allow runtime override (mirrors OPENCLAW_NODE_DIR used by the deployer).
   var overrideDir = process.env.OPENCLAW_NODE_DIR || "";
@@ -104,7 +101,10 @@ var _safePaths = (function () {
 var _safeExactPaths = (function () {
   var paths = [];
   var home = process.env.USERPROFILE || "";
-  if (home) paths.push(path.resolve(home).toLowerCase());
+  if (home) {
+    var current = path.resolve(home);
+    paths.push(current.toLowerCase());
+  }
   var drives = new Set();
   drives.add((process.env.SystemDrive || "C:").toLowerCase());
   if (home) drives.add(path.parse(home).root.replace(/\\$/, "").toLowerCase());
@@ -114,9 +114,38 @@ var _safeExactPaths = (function () {
   return paths;
 })();
 
+var _safeReadExactPaths = (function () {
+  var paths = [];
+  var home = process.env.USERPROFILE || "";
+  if (!home) return paths;
+  paths.push(path.resolve(home, ".config", "openclaw", "gateway.env").toLowerCase());
+  var current = path.resolve(home);
+  // OpenClaw walks from the workspace to the drive root looking for a
+  // package.json. These probes must never bypass write enforcement.
+  for (var i = 0; i < 12; i++) {
+    paths.push(path.join(current, "package.json").toLowerCase());
+    var parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return paths;
+})();
+
 // ── Path checking functions ──
 
+function resolvePathLower(filePath) {
+  var value = Buffer.isBuffer(filePath) ? filePath.toString() : filePath;
+  var stringValue = String(value);
+  if (/^file:/i.test(stringValue)) {
+    value = fileURLToPath(value);
+  }
+  return path.resolve(String(value)).toLowerCase();
+}
+
 function isNonFilePath(p) {
+  // Numeric values are already-open file descriptors. The original open call
+  // is where path authorization is enforced.
+  if (typeof p === "number") return true;
   var s = String(p);
   if (s.indexOf("\\\\.\\") === 0 || s.indexOf("\\\\?\\") === 0) return true;
   if (/^\\\\[.?]\\/.test(s)) return true;
@@ -142,12 +171,19 @@ function isSafePrefixPath(resolvedLower) {
   return false;
 }
 
+function isSafeReadProbe(resolvedLower) {
+  for (var j = 0; j < _safeReadExactPaths.length; j++) {
+    if (resolvedLower === _safeReadExactPaths[j]) return true;
+  }
+  return false;
+}
+
 function isBlockedPath(filePath) {
   if (!state.sandboxActive || !filePath) return false;
   if (isNonFilePath(filePath)) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = resolvePathLower(filePath);
   } catch {
     return false;
   }
@@ -175,12 +211,13 @@ function isReadBlockedPath(filePath, shellContext) {
   if (isNonFilePath(filePath)) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = resolvePathLower(filePath);
   } catch {
     return false;
   }
   // Allow reading any file in the sandbox module directory (our own infrastructure)
   if (resolved.indexOf(_selfDir) === 0) return false;
+  if (!shellContext && isSafeReadProbe(resolved)) return false;
   if (shellContext ? isSafePrefixPath(resolved) : isSafePath(resolved)) return false;
   for (var j = 0; j < state._rwDirs.length; j++) {
     var rw = state._rwDirs[j];
@@ -281,6 +318,7 @@ module.exports = {
   state: state,
   // Path functions
   normDirList: normDirList,
+  resolvePathLower: resolvePathLower,
   isNonFilePath: isNonFilePath,
   isSafePath: isSafePath,
   isSafePrefixPath: isSafePrefixPath,

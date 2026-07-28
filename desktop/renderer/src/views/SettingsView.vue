@@ -23,7 +23,7 @@
     <div class="settings-content">
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
-        <div class="section-label">{{ t("settings.general") }}</div>
+        <div class="section-label">{{ t("settings.application") }}</div>
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.language") }}</span>
@@ -41,13 +41,10 @@
             <el-switch v-model="settings.startMinimized" />
           </div>
         </div>
-      </div>
 
-      <!-- Theme -->
-      <div v-if="activeSection === 'theme'" class="section">
-        <div class="section-label">{{ t("settings.theme") }}</div>
+        <div class="sub-label">{{ t("settings.theme") }}</div>
         <div class="card-group">
-          <div class="card-row">
+          <div class="card-row no-border">
             <span class="row-label">{{ t("settings.themeMode") }}</span>
             <el-radio-group v-model="settings.themeMode" size="small">
               <el-radio value="light">{{ t("settings.themeLight") }}</el-radio>
@@ -176,115 +173,77 @@
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
       </div>
 
-      <!-- Models & API -->
+      <!-- Models -->
       <div v-if="activeSection === 'models'" class="section">
-        <div class="section-header">
-          <div class="section-header-title">{{ t("settings.modelsAndApi") }}</div>
-          <el-button size="small" @click="reconnectGateway">{{
-            t("settings.reconnect")
-          }}</el-button>
-        </div>
-
-        <!-- Custom Models -->
+        <!-- Models -->
         <div class="sub-label-row">
           <span class="sub-label" style="margin-bottom: 0">{{ t("settings.customModels") }}</span>
-          <el-button size="small" @click="showAddModel = true">{{
-            t("settings.addCustomModel")
-          }}</el-button>
+          <div class="sub-label-actions">
+            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
+              {{ t("settings.switchProvider") }}
+            </el-button>
+          </div>
         </div>
         <div class="card-group">
-          <template v-if="customModels.length">
-            <div
-              v-for="(m, idx) in customModels"
-              :key="m.id"
-              class="card-row"
-              :class="{ 'no-border': idx === customModels.length - 1 }"
-            >
-              <div class="custom-model-info">
-                <span class="row-label">{{ m.name }}</span>
-                <span class="row-sub">{{ describeCustomModel(m) }}</span>
-              </div>
-              <div class="custom-model-actions">
-                <span v-if="m.id === selectedModel" class="badge badge-green">{{
-                  t("settings.currentSelection")
-                }}</span>
-                <el-button v-else size="small" @click="selectModel(m.id)">{{
-                  t("settings.select")
-                }}</el-button>
-                <el-button size="small" @click="editCustomModel(idx)">{{
+          <div v-if="customModels.length" class="card-row no-border model-picker-row">
+            <div class="custom-model-info">
+              <span class="row-label">{{ t("settings.currentModel") }}</span>
+              <span v-if="selectedModelEntry" class="row-sub">{{
+                describeCustomModel(selectedModelEntry)
+              }}</span>
+            </div>
+            <div class="model-picker-actions">
+              <el-select
+                class="model-picker-select"
+                :model-value="selectedModel"
+                :loading="Boolean(switchingModelRef) || copilotDisconnecting"
+                :disabled="Boolean(switchingModelRef) || copilotDisconnecting"
+                filterable
+                @change="selectModel"
+              >
+                <el-option-group
+                  v-for="group in modelGroups"
+                  :key="group.providerKey"
+                  :label="group.label"
+                >
+                  <el-option
+                    v-for="model in group.models"
+                    :key="getModelRef(model)"
+                    :label="model.name"
+                    :value="getModelRef(model)"
+                  />
+                </el-option-group>
+              </el-select>
+              <template
+                v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
+              >
+                <el-button size="small" @click="editCustomModel(selectedModelIndex)">{{
                   t("settings.edit")
                 }}</el-button>
-                <el-button size="small" type="danger" plain @click="removeCustomModel(idx)">{{
-                  t("settings.delete")
-                }}</el-button>
-              </div>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  @click="removeCustomModel(selectedModelIndex)"
+                  >{{ t("settings.delete") }}</el-button
+                >
+              </template>
+              <el-button
+                v-else-if="selectedModelEntry?.providerKey === 'github-copilot'"
+                size="small"
+                type="danger"
+                plain
+                :loading="copilotDisconnecting"
+                @click="disconnectGitHubCopilot"
+              >
+                {{ t("settings.disconnect") }}
+              </el-button>
             </div>
-          </template>
-          <div v-else class="card-row no-border placeholder-row">
+          </div>
+          <div v-else-if="!copilotModelsLoading" class="card-row no-border placeholder-row">
             <span class="placeholder-text">{{ t("settings.noCustomModels") }}</span>
           </div>
         </div>
-
-        <!-- Add Custom Model dialog -->
-        <el-dialog
-          v-model="showAddModel"
-          :title="t('settings.addCustomModel')"
-          width="460px"
-          :close-on-click-modal="false"
-        >
-          <el-form label-position="top" @submit.prevent>
-            <el-form-item :label="t('settings.modelName')">
-              <el-input v-model="newModel.name" placeholder="e.g. my-gpt-4o" />
-            </el-form-item>
-            <el-form-item :label="t('settings.baseUrl')">
-              <el-input v-model="newModel.baseUrl" placeholder="https://api.example.com/v1" />
-            </el-form-item>
-            <el-form-item :label="t('settings.apiKey')">
-              <el-input
-                v-model="newModel.apiKey"
-                type="password"
-                show-password
-                placeholder="sk-..."
-              />
-            </el-form-item>
-            <el-form-item :label="t('settings.apiFormat')">
-              <el-select v-model="newModel.apiFormat" style="width: 100%">
-                <el-option :label="t('settings.apiFormatOpenAIChat')" value="openai-chat" />
-                <el-option
-                  :label="t('settings.apiFormatOpenAIResponses')"
-                  value="openai-responses"
-                />
-                <el-option :label="t('settings.apiFormatAnthropic')" value="anthropic" />
-              </el-select>
-            </el-form-item>
-            <el-form-item :label="t('settings.reasoningEffort')">
-              <el-select v-model="newModel.reasoningEffort" style="width: 100%">
-                <el-option
-                  v-for="option in reasoningEffortOptions"
-                  :key="option.value"
-                  :label="t(option.labelKey)"
-                  :value="option.value"
-                />
-              </el-select>
-            </el-form-item>
-          </el-form>
-          <div class="test-result" v-if="testResult">
-            <span :class="testResult.ok ? 'test-ok' : 'test-fail'">{{ testResult.message }}</span>
-          </div>
-          <template #footer>
-            <div style="display: flex; justify-content: space-between; width: 100%">
-              <el-button :loading="testLoading" @click="testCustomModel">{{
-                t("settings.testConnection")
-              }}</el-button>
-              <div style="display: flex; gap: 8px">
-                <el-button @click="showAddModel = false">{{ t("settings.cancel") }}</el-button>
-                <el-button type="primary" @click="addCustomModel">{{
-                  t("settings.add")
-                }}</el-button>
-              </div>
-            </div>
-          </template>
-        </el-dialog>
 
         <!-- Edit Custom Model dialog -->
         <el-dialog
@@ -294,10 +253,10 @@
           :close-on-click-modal="false"
         >
           <el-form label-position="top" @submit.prevent>
-            <el-form-item :label="t('settings.modelName')">
+            <el-form-item v-if="!editingManagedProvider" :label="t('settings.modelName')">
               <el-input v-model="editModel.name" placeholder="e.g. my-gpt-4o" />
             </el-form-item>
-            <el-form-item :label="t('settings.baseUrl')">
+            <el-form-item v-if="!editingManagedProvider" :label="t('settings.baseUrl')">
               <el-input v-model="editModel.baseUrl" placeholder="https://api.example.com/v1" />
             </el-form-item>
             <el-form-item :label="t('settings.apiKey')">
@@ -308,7 +267,7 @@
                 placeholder="sk-..."
               />
             </el-form-item>
-            <el-form-item :label="t('settings.apiFormat')">
+            <el-form-item v-if="!editingManagedProvider" :label="t('settings.apiFormat')">
               <el-select v-model="editModel.apiFormat" style="width: 100%">
                 <el-option :label="t('settings.apiFormatOpenAIChat')" value="openai-chat" />
                 <el-option
@@ -349,63 +308,12 @@
           </template>
         </el-dialog>
 
-        <!-- Gateway URL -->
-        <div class="sub-label-row" style="margin-top: 40px">
-          <div style="display: flex; align-items: center; gap: 8px">
-            <span class="sub-label" style="margin-top: 0; margin-bottom: 0">{{
-              t("settings.gatewayUrl")
-            }}</span>
-            <span class="badge" :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'">
-              {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-            </span>
-          </div>
-          <div style="display: flex; gap: 8px">
-            <el-button size="small" @click="reconnectGateway">{{
-              t("settings.reconnect")
-            }}</el-button>
-            <el-button size="small" type="danger" @click="resetConnection">{{
-              t("settings.resetConnection")
-            }}</el-button>
-          </div>
-        </div>
-
-        <!-- Port -->
-        <div class="card-group" style="margin-top: 14px">
-          <div class="card-row no-border port-row">
-            <div class="port-info">
-              <div class="port-title">{{ t("settings.port") }}</div>
-              <div class="port-desc">{{ t("settings.portDesc") }}</div>
-            </div>
-            <div class="port-input-group">
-              <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                size="small"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
-            </div>
-          </div>
-        </div>
-
         <!-- Web Search (Brave) -->
         <div class="sub-label" style="margin-top: 40px">{{ t("settings.webSearch") }}</div>
         <div class="card-group">
           <div class="card-row no-border port-row">
             <div class="port-info">
               <div class="port-title">{{ t("settings.braveSearchApiKey") }}</div>
-              <div class="port-desc">
-                <template v-for="(part, i) in t('settings.braveDesc').split('{link}')" :key="i">
-                  <span v-if="i > 0"
-                    ><a
-                      href="#"
-                      @click.prevent="openExternal('https://brave.com/search/api/')"
-                      style="color: var(--accent)"
-                      >brave.com/search/api</a
-                    ></span
-                  >{{ part }}
-                </template>
-              </div>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0">
               <el-input
@@ -426,21 +334,17 @@
             </div>
           </div>
         </div>
-
-        <!-- Gateway Logs -->
-        <div class="sub-label-row" style="margin-top: 24px">
-          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.gatewayLog") }}</span>
-          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
-        </div>
-        <div class="gateway-log-box">
-          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
-            {{ t("settings.noLogs") }}
-          </div>
-          <div v-else class="gateway-log-content" ref="logBoxRef">
-            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
-              {{ line }}
-            </div>
-          </div>
+        <div class="section-footer">
+          <template v-for="(part, i) in t('settings.braveDesc').split('{link}')" :key="i">
+            <span v-if="i > 0"
+              ><a
+                href="#"
+                @click.prevent="openExternal('https://brave.com/search/api/')"
+                style="color: var(--accent)"
+                >brave.com/search/api</a
+              ></span
+            >{{ part }}
+          </template>
         </div>
       </div>
 
@@ -464,9 +368,6 @@
             <span class="skill-count-label"
               >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
             >
-            <el-button size="small" :loading="skillsRefreshing" @click="refreshSkills">{{
-              t("settings.refreshSkills")
-            }}</el-button>
           </div>
         </div>
 
@@ -486,15 +387,19 @@
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-tooltip :disabled="skill.eligible" :content="missingTooltip(skill)" placement="top">
-              <span class="switch-wrap">
-                <el-switch
-                  :model-value="skill.enabled && skill.eligible"
-                  :disabled="!skill.eligible"
-                  @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
-                />
-              </span>
-            </el-tooltip>
+            <el-button
+              v-if="!skill.eligible"
+              class="ask-agent-btn"
+              size="small"
+              @click="askAgentAboutSkill(skill)"
+            >
+              {{ t("settings.askAgent") }}
+            </el-button>
+            <el-switch
+              v-else
+              :model-value="skill.enabled && skill.eligible"
+              @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
+            />
           </div>
         </div>
 
@@ -505,7 +410,7 @@
         </div>
 
         <!-- ══ Custom Skills ══ -->
-        <div class="sub-label">Custom Skills ({{ customSkills.length }})</div>
+        <div class="sub-label">{{ t("settings.customSkills") }} ({{ customSkills.length }})</div>
         <div class="card-group">
           <template v-if="customSkills.length">
             <div
@@ -527,19 +432,19 @@
                 </div>
                 <span class="skill-desc">{{ skill.description }}</span>
               </div>
-              <el-tooltip
-                :disabled="skill.eligible"
-                :content="missingTooltip(skill)"
-                placement="top"
+              <el-button
+                v-if="!skill.eligible"
+                class="ask-agent-btn"
+                size="small"
+                @click="askAgentAboutSkill(skill)"
               >
-                <span class="switch-wrap">
-                  <el-switch
-                    :model-value="skill.enabled && skill.eligible"
-                    :disabled="!skill.eligible"
-                    @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
-                  />
-                </span>
-              </el-tooltip>
+                {{ t("settings.askAgent") }}
+              </el-button>
+              <el-switch
+                v-else
+                :model-value="skill.enabled && skill.eligible"
+                @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
+              />
             </div>
           </template>
           <div v-else class="card-row no-border placeholder-row">
@@ -548,20 +453,61 @@
         </div>
       </div>
 
-      <!-- Workspace -->
-      <div v-if="activeSection === 'workspace'" class="section">
-        <div class="section-label">{{ t("settings.workspace") }}</div>
+      <!-- Gateway -->
+      <div v-if="activeSection === 'gateway'" class="section">
+        <div class="section-label">{{ t("settings.connectionStatus") }}</div>
         <div class="card-group">
-          <div class="card-row">
-            <span class="row-label">{{ t("settings.dataDir") }}</span>
-            <span class="row-value">{{ stateDir }}</span>
-          </div>
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.gatewayPort") }}</span>
-            <span class="row-value">{{ gateway.port }}</span>
+            <span class="row-label">{{ t("settings.status") }}</span>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span
+                class="badge"
+                :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'"
+              >
+                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+              </span>
+              <el-button size="small" @click="restartGateway">{{
+                t("settings.restart")
+              }}</el-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sub-label">{{ t("settings.port") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.port") }}</span>
+            <div class="port-input-group">
+              <span class="port-prefix">ws://127.0.0.1 :</span>
+              <el-input
+                v-model="gatewayPort"
+                size="small"
+                style="width: 80px"
+                @change="saveGatewayPort"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="section-footer">{{ t("settings.portDesc") }}</div>
+
+        <div class="sub-label-row">
+          <span class="sub-label" style="margin: 0">{{ t("settings.gatewayLog") }}</span>
+          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
+        </div>
+        <div class="gateway-log-box">
+          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
+            {{ t("settings.noLogs") }}
+          </div>
+          <div v-else class="gateway-log-content" ref="logBoxRef">
+            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
+              {{ line }}
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- Channels -->
+      <ChannelsView v-if="activeSection === 'channels'" embedded />
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
@@ -586,15 +532,7 @@
           <!-- Sandbox capabilities (network) -->
           <div class="card-group" style="margin-top: 12px">
             <div class="card-row">
-              <div>
-                <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
-                <div
-                  class="row-hint"
-                  style="font-size: 12px; color: var(--text-muted); margin-top: 2px"
-                >
-                  {{ t("settings.sandboxCapsHint") }}
-                </div>
-              </div>
+              <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
               <div style="display: flex; align-items: center; gap: 10px">
                 <span v-if="capsRestarting" class="restart-hint">{{
                   t("settings.sandboxCapsRestarting")
@@ -607,6 +545,7 @@
               </div>
             </div>
           </div>
+          <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
 
           <!-- External apps whitelist -->
           <div class="card-group" style="margin-top: 12px">
@@ -620,12 +559,6 @@
                 "
               >
                 <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
-              </div>
-              <div
-                class="row-hint"
-                style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted)"
-              >
-                {{ t("settings.externalAppsHint") }}
               </div>
               <div class="external-apps-list">
                 <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
@@ -644,6 +577,7 @@
               </div>
             </div>
           </div>
+          <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
 
           <!-- Sandbox directory permissions -->
           <div class="card-group" style="margin-top: 12px">
@@ -663,13 +597,6 @@
                   >{{ t("settings.sandboxDirs") }}</span
                 >
               </div>
-              <div
-                class="row-hint"
-                style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted)"
-              >
-                {{ t("settings.sandboxDirsHint") }}
-              </div>
-
               <!-- Read-Write directories -->
               <div class="dir-section">
                 <div
@@ -862,6 +789,7 @@
               </div>
             </div>
           </div>
+          <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
         </div>
         <!-- .sandbox-disabled wrapper -->
       </div>
@@ -870,7 +798,6 @@
       <div v-if="activeSection === 'privacy'" class="section">
         <!-- Privacy Protection Level -->
         <div class="section-label">{{ t("settings.privacyProtection") }}</div>
-        <div class="privacy-desc">{{ t("settings.privacyProtectionDesc") }}</div>
         <div class="privacy-levels">
           <div
             class="privacy-card"
@@ -919,10 +846,10 @@
             </ul>
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.privacyProtectionDesc") }}</div>
 
         <!-- PII Detection -->
         <div class="sub-label" style="margin-top: 36px">{{ t("settings.piiDetection") }}</div>
-        <div class="privacy-desc">{{ t("settings.piiDetectionDesc") }}</div>
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
@@ -948,10 +875,10 @@
             <el-switch v-model="piiToggles.apiKey" :disabled="settings.privacyLevel === 'basic'" />
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
 
         <!-- Sensitive File Guard -->
         <div class="sub-label" style="margin-top: 32px">{{ t("settings.sensitiveFiles") }}</div>
-        <div class="privacy-desc">{{ t("settings.sensitiveFilesDesc") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span
@@ -968,10 +895,10 @@
             </span>
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
 
         <!-- File Access Audit -->
         <div class="sub-label" style="margin-top: 32px">{{ t("settings.fileAccessAudit") }}</div>
-        <div class="privacy-desc">{{ t("settings.fileAccessAuditDesc") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
@@ -981,6 +908,7 @@
             />
           </div>
         </div>
+        <div class="section-footer">{{ t("settings.fileAccessAuditDesc") }}</div>
 
         <!-- Chat History (existing) -->
         <div class="sub-label" style="margin-top: 32px">{{ t("settings.chatHistory") }}</div>
@@ -999,7 +927,7 @@
         <div class="section-label">{{ t("settings.about") }}</div>
         <div class="about-card">
           <img class="about-icon" :src="microclawLogo" alt="MicroClaw" />
-          <div class="about-name">MicroClawDesktop</div>
+          <div class="about-name">{{ t("app.name") }}</div>
           <div class="about-version">{{ t("settings.version") }}</div>
           <el-button
             type="primary"
@@ -1034,27 +962,51 @@
         <div class="card-group" style="margin-top: 16px">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.copyright") }}</span>
-            <span class="row-value">© 2026 MicroClawDesktop</span>
+            <span class="row-value">© 2026 {{ t("app.name") }}</span>
           </div>
         </div>
       </div>
+
+      <ModelSetupDialog v-model="showProviderSetup" @configured="handleProviderConfigured" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch, computed, nextTick } from "vue";
-import { useRoute } from "vue-router";
+import { ref, reactive, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import { useAgentStore } from "@/stores/agents";
 import { ElMessage, ElMessageBox } from "element-plus";
+import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
+import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import {
+  normalizeModelInput,
+  removeModelProviderConfig,
+  selectPrimaryModelConfig,
+  updateModelProviderConfig,
+  type ModelApiFormat,
+  type ModelInputCapability,
+  type ModelReasoningEffort,
+} from "@/utils/model-provider";
+import {
+  mergeGitHubCopilotModelEntries,
+  removeGitHubCopilotModelReferences,
+} from "@/utils/auth-managed-models";
+import {
+  getManagedModelProvider,
+  isManagedModelProviderId,
+} from "@/utils/managed-model-providers";
 
 const route = useRoute();
+const router = useRouter();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const agentStore = useAgentStore();
 
 const logBoxRef = ref<HTMLElement | null>(null);
 
@@ -1070,7 +1022,6 @@ watch(
 );
 
 const activeSection = ref("general");
-const stateDir = ref("");
 const updateChecking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 
@@ -1101,19 +1052,26 @@ const updateStatusDetail = computed(() => {
 
 const VALID_SECTIONS = [
   "general",
-  "theme",
   "usage",
   "models",
   "skills",
-  "workspace",
+  "gateway",
+  "channels",
   "security",
   "privacy",
   "about",
 ];
 
+function normalizeSection(section: unknown) {
+  if (section === "theme") return "general";
+  if (section === "workspace") return "gateway";
+  return typeof section === "string" && VALID_SECTIONS.includes(section) ? section : null;
+}
+
 // Initialise activeSection from the route param (e.g. /settings/models)
-if (typeof route.params.section === "string" && VALID_SECTIONS.includes(route.params.section)) {
-  activeSection.value = route.params.section;
+const initialSection = normalizeSection(route.params.section);
+if (initialSection) {
+  activeSection.value = initialSection;
 }
 
 // React to route-param changes while this view is mounted (e.g. user clicks
@@ -1121,8 +1079,9 @@ if (typeof route.params.section === "string" && VALID_SECTIONS.includes(route.pa
 watch(
   () => route.params.section,
   (section) => {
-    if (typeof section === "string" && VALID_SECTIONS.includes(section)) {
-      activeSection.value = section;
+    const normalizedSection = normalizeSection(section);
+    if (normalizedSection) {
+      activeSection.value = normalizedSection;
     }
   },
 );
@@ -1357,17 +1316,19 @@ const piiToggles = reactive({
 });
 
 // --- Models & API state ---
-type ApiFormat = "openai-chat" | "openai-responses" | "anthropic";
-type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+type ApiFormat = ModelApiFormat;
+type ReasoningEffort = ModelReasoningEffort;
 
 interface ModelEntry {
   providerKey: string;
   id: string;
   name: string;
+  source: "managed" | "custom" | "auth-managed";
   baseUrl?: string;
   apiKey?: string;
   apiFormat?: ApiFormat;
   reasoningEffort?: ReasoningEffort;
+  input?: ModelInputCapability[];
 }
 
 interface ModelFormState {
@@ -1376,6 +1337,12 @@ interface ModelFormState {
   apiKey: string;
   apiFormat: ApiFormat;
   reasoningEffort: ReasoningEffort;
+}
+
+interface ModelGroup {
+  providerKey: string;
+  label: string;
+  models: ModelEntry[];
 }
 
 const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }> = [
@@ -1387,10 +1354,6 @@ const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }
   { value: "xhigh", labelKey: "settings.reasoningXHigh" },
   { value: "adaptive", labelKey: "settings.reasoningAdaptive" },
 ];
-
-function buildProviderKey(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
-}
 
 function normalizeApiFormat(api?: string): ApiFormat {
   if (api === "anthropic-messages") return "anthropic";
@@ -1417,12 +1380,6 @@ function normalizeReasoningEffort(
   return fallback;
 }
 
-function resolveApiValue(apiFormat: ApiFormat): string {
-  if (apiFormat === "anthropic") return "anthropic-messages";
-  if (apiFormat === "openai-responses") return "openai-responses";
-  return "openai-completions";
-}
-
 function formatApiLabel(apiFormat?: ApiFormat): string {
   if (apiFormat === "anthropic") return t("settings.apiFormatAnthropic");
   if (apiFormat === "openai-responses") return t("settings.apiFormatOpenAIResponses");
@@ -1439,6 +1396,7 @@ function getModelRef(model: Pick<ModelEntry, "providerKey" | "id">): string {
 }
 
 function describeCustomModel(model: ModelEntry): string {
+  if (model.source === "auth-managed") return t("settings.githubCopilotAuth");
   const parts = [] as string[];
   if (model.baseUrl) parts.push(model.baseUrl);
   parts.push(formatApiLabel(model.apiFormat));
@@ -1451,36 +1409,36 @@ function describeCustomModel(model: ModelEntry): string {
   return parts.join(" · ");
 }
 
-function resetModelForm(form: ModelFormState): void {
-  form.name = "";
-  form.baseUrl = "";
-  form.apiKey = "";
-  form.apiFormat = "openai-chat";
-  form.reasoningEffort = "off";
-}
-
-function ensureReasoningPreset(form: ModelFormState): void {
-  if (form.apiFormat === "openai-responses" && form.reasoningEffort === "off") {
-    form.reasoningEffort = "low";
-  }
-}
-
-const _builtinModels = ref<ModelEntry[]>([
-  { providerKey: "", id: "MAI-01-Preview", name: "MAI-01-Preview" },
-]);
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
+const copilotModelsLoading = ref(false);
+const copilotDisconnecting = ref(false);
+const switchingModelRef = ref("");
+let copilotModelsGeneration = 0;
 const gatewayPort = ref("18789");
-const showAddModel = ref(false);
-const newModel = reactive<ModelFormState>({
-  name: "",
-  baseUrl: "",
-  apiKey: "",
-  apiFormat: "openai-chat",
-  reasoningEffort: "off",
+const showProviderSetup = ref(false);
+const selectedModelEntry = computed(
+  () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
+);
+const selectedModelIndex = computed(() =>
+  customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
+);
+const modelGroups = computed<ModelGroup[]>(() => {
+  const groups = new Map<string, ModelEntry[]>();
+  for (const model of customModels.value) {
+    const models = groups.get(model.providerKey) ?? [];
+    models.push(model);
+    groups.set(model.providerKey, models);
+  }
+  return [...groups.entries()].map(([providerKey, models]) => ({
+    providerKey,
+    label:
+      providerKey === "github-copilot"
+        ? "GitHub Copilot"
+        : (getManagedModelProvider(providerKey)?.label ?? providerKey),
+    models,
+  }));
 });
-const testLoading = ref(false);
-const testResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const showEditModel = ref(false);
 const editingIndex = ref(-1);
@@ -1492,7 +1450,12 @@ const editModel = reactive<ModelFormState>({
   reasoningEffort: "off",
 });
 const editTestLoading = ref(false);
-const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
+const editTestResult = ref<{ ok: boolean; message: string; baseUrl?: string } | null>(null);
+let editModelTestGeneration = 0;
+const editingManagedProvider = computed(() => {
+  const model = customModels.value[editingIndex.value];
+  return model ? isManagedModelProviderId(model.providerKey) : false;
+});
 
 const builtinSkills = ref<SkillEntry[]>([]);
 const customSkills = ref<SkillEntry[]>([]);
@@ -1523,6 +1486,20 @@ function missingTooltip(skill: SkillEntry): string {
   return `${t("settings.skillUnavailablePrefix")} ${reasons.join("; ")}`;
 }
 
+// Start a fresh MicroClaw (main agent) chat pre-filled with a prompt asking the
+// agent how to make an unavailable skill work. The prompt carries just the skill
+// name and the same "unavailable" reason shown in the hover tooltip.
+async function askAgentAboutSkill(skill: SkillEntry) {
+  const prompt = t("settings.askAgentPrompt", {
+    name: skill.name,
+    reason: missingTooltip(skill),
+  });
+  agentStore.selectAgent("main");
+  chatStore.newSession("main");
+  await router.push("/chat/main");
+  chatStore.pendingPrompt = prompt;
+}
+
 async function loadSkills(refresh = false): Promise<void> {
   const skills = refresh
     ? await window.openclaw.skills.refresh()
@@ -1536,13 +1513,13 @@ async function loadSkills(refresh = false): Promise<void> {
   customSkills.value = skills.custom;
 }
 
-async function refreshSkills(): Promise<void> {
+async function autoRefreshSkills(): Promise<void> {
+  if (skillsRefreshing.value) return;
   skillsRefreshing.value = true;
   try {
     await loadSkills(true);
-    ElMessage.success(t("settings.skillsRefreshed"));
-  } catch (err: any) {
-    ElMessage.error(t("settings.skillsRefreshFailed", { error: err?.message || err }));
+  } catch {
+    // Skills refresh not available; keep the last loaded list.
   } finally {
     skillsRefreshing.value = false;
   }
@@ -1669,12 +1646,12 @@ async function loadUsage() {
 }
 
 const svg = {
-  general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>`,
-  theme: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 3a7 7 0 0 1 0 14V3z" fill="currentColor" stroke="none"/></svg>`,
+  general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h3M10 5h7M3 10h7M14 10h3M3 15h2M9 15h8"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>`,
   usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
-  models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-5 6-5s6 1.686 6 5"/><circle cx="15" cy="5" r="1.5"/><circle cx="5" cy="5" r="1.5"/></svg>`,
+  models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
   skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5a2 2 0 0 1 2.83 2.83l-9.9 9.9-3.54.71.71-3.54 9.9-9.9z"/></svg>`,
-  workspace: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l7-3 7 3v10l-7 3-7-3V6z"/><path d="M10 3v14M3 6l7 4 7-4"/></svg>`,
+  gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
+  channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
   privacy: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="9" width="12" height="9" rx="2"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/><circle cx="10" cy="14" r="1" fill="currentColor" stroke="none"/></svg>`,
   about: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.75" fill="currentColor" stroke="none"/></svg>`,
@@ -1682,11 +1659,11 @@ const svg = {
 
 const menuItems = computed(() => [
   { id: "general", label: t("settings.menu.general"), color: "#636366", svg: svg.general },
-  { id: "theme", label: t("settings.menu.theme"), color: "#636366", svg: svg.theme },
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
   { id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills },
-  { id: "workspace", label: t("settings.menu.workspace"), color: "#636366", svg: svg.workspace },
+  { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
+  { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
   { id: "privacy", label: t("settings.menu.privacy"), color: "#636366", svg: svg.privacy },
   { id: "about", label: t("settings.menu.about"), color: "#636366", svg: svg.about },
@@ -1755,27 +1732,134 @@ function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
     settings.fileAccessAudit = true;
   }
 }
-watch(
-  () => newModel.apiFormat,
-  () => ensureReasoningPreset(newModel),
-);
-watch(
-  () => editModel.apiFormat,
-  () => ensureReasoningPreset(editModel),
-);
+watch(showEditModel, (visible) => {
+  editModelTestGeneration += 1;
+  editTestLoading.value = false;
+  if (!visible) editTestResult.value = null;
+});
 
 // --- Auto-load data when tab is selected ---
 watch(activeSection, (v) => {
   if (v === "usage" && !usageData.value && !usageLoading.value) {
     loadUsage();
   }
+  if (v === "models" && !showProviderSetup.value) {
+    void refreshModelsConfig();
+  }
   if (v === "security") {
     loadSandboxStatus();
   }
+  if (v === "skills") {
+    autoRefreshSkills();
+  }
+});
+
+function applyModelsConfig(config: any): void {
+  const providers = config.models?.providers ?? {};
+  const modelDefaults = config.agents?.defaults?.models ?? {};
+  const defaultModelConfig = config.agents?.defaults?.model;
+  const primary =
+    typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
+  const loaded: ModelEntry[] = [];
+  for (const [key, val] of Object.entries(providers) as [string, any][]) {
+    const managedProvider = getManagedModelProvider(key);
+    const models = val.models ?? [];
+    for (const m of models) {
+      const modelId = m.id ?? key;
+      const modelRef = `${key}/${modelId}`;
+      const managedModel = managedProvider?.models.find((model) => model.id === modelId);
+      const apiFormat = normalizeApiFormat(val.api);
+      const reasoningFallback =
+        m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
+      loaded.push({
+        providerKey: key,
+        id: modelId,
+        name: m.name ?? managedModel?.name ?? modelId ?? key,
+        source: managedProvider ? "managed" : "custom",
+        baseUrl: val.baseUrl ?? "",
+        apiKey: val.apiKey ?? "",
+        apiFormat,
+        reasoningEffort: normalizeReasoningEffort(
+          modelDefaults[modelRef]?.params?.thinking,
+          reasoningFallback,
+        ),
+        input: normalizeModelInput(m.input ?? managedModel?.input),
+      });
+    }
+  }
+  if (
+    typeof primary === "string" &&
+    primary.startsWith("github-copilot/") &&
+    !loaded.some((model) => getModelRef(model) === primary)
+  ) {
+    const modelId = primary.slice("github-copilot/".length);
+    loaded.unshift({
+      providerKey: "github-copilot",
+      id: modelId,
+      name: modelId,
+      source: "auth-managed",
+    });
+  }
+  customModels.value = loaded;
+
+  if (primary) {
+    const matched = loaded.find((model) => getModelRef(model) === primary);
+    selectedModel.value = matched ? getModelRef(matched) : primary;
+  } else if (loaded.length > 0) {
+    selectedModel.value = getModelRef(loaded[0]);
+  } else {
+    selectedModel.value = "";
+  }
+}
+
+async function loadSettingsGitHubCopilotModels(): Promise<void> {
+  const generation = ++copilotModelsGeneration;
+  copilotModelsLoading.value = true;
+  const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
+  void modelsPromise.catch(() => {});
+
+  try {
+    const status = await window.openclaw.model.getGitHubCopilotStatus();
+    if (generation !== copilotModelsGeneration) return;
+    if (!status.authenticated) {
+      copilotModelsLoading.value = false;
+      return;
+    }
+
+    const models = await modelsPromise;
+    if (generation !== copilotModelsGeneration) return;
+    customModels.value = mergeGitHubCopilotModelEntries(customModels.value, models);
+  } catch (error) {
+    if (generation !== copilotModelsGeneration) return;
+    console.warn("[settings] Could not load GitHub Copilot models:", error);
+  } finally {
+    if (generation === copilotModelsGeneration) copilotModelsLoading.value = false;
+  }
+}
+
+async function refreshModelsConfig(): Promise<void> {
+  try {
+    const config = await window.openclaw.config.read();
+    if (!config) return;
+    applyModelsConfig(config);
+    void loadSettingsGitHubCopilotModels();
+  } catch (error) {
+    console.warn("[settings] Failed to refresh model configuration:", error);
+  }
+}
+
+function handleSettingsWindowFocus(): void {
+  if (activeSection.value === "models" && !showProviderSetup.value) {
+    void refreshModelsConfig();
+  }
+}
+
+watch(showProviderSetup, (visible, wasVisible) => {
+  if (wasVisible && !visible) void refreshModelsConfig();
 });
 
 onMounted(async () => {
-  stateDir.value = await window.openclaw.config.getStateDir();
+  window.addEventListener("focus", handleSettingsWindowFocus);
 
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
@@ -1802,44 +1886,8 @@ onMounted(async () => {
     // Gateway port
     gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
 
-    // Custom models from config
-    const providers = config.models?.providers ?? {};
-    const modelDefaults = config.agents?.defaults?.models ?? {};
-    const loaded: ModelEntry[] = [];
-    for (const [key, val] of Object.entries(providers) as [string, any][]) {
-      const models = val.models ?? [];
-      for (const m of models) {
-        const modelId = m.id ?? key;
-        const modelRef = `${key}/${modelId}`;
-        const apiFormat = normalizeApiFormat(val.api);
-        const reasoningFallback =
-          m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
-        loaded.push({
-          providerKey: key,
-          id: modelId,
-          name: m.name ?? modelId ?? key,
-          baseUrl: val.baseUrl ?? "",
-          apiKey: val.apiKey ?? "",
-          apiFormat,
-          reasoningEffort: normalizeReasoningEffort(
-            modelDefaults[modelRef]?.params?.thinking,
-            reasoningFallback,
-          ),
-        });
-      }
-    }
-    customModels.value = loaded;
-
-    const defaultModelConfig = config.agents?.defaults?.model;
-    const primary =
-      typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
-    if (primary) {
-      const matched = loaded.find((model) => getModelRef(model) === primary);
-      selectedModel.value =
-        matched?.id ?? (primary.includes("/") ? primary.split("/").pop()! : primary);
-    } else if (loaded.length > 0) {
-      selectedModel.value = loaded[0].id;
-    }
+    applyModelsConfig(config);
+    void loadSettingsGitHubCopilotModels();
   }
 
   // Load Brave Search API key from config
@@ -1855,263 +1903,263 @@ onMounted(async () => {
   }
 });
 
+onUnmounted(() => {
+  window.removeEventListener("focus", handleSettingsWindowFocus);
+  copilotModelsGeneration += 1;
+});
+
 // --- Model & Gateway actions ---
 
-async function persistModelsConfig() {
-  // Validate custom models before saving
-  const seenModelRefs = new Set<string>();
-  for (const m of customModels.value) {
-    if (!m.id || !m.id.trim()) {
-      throw new Error("Model ID cannot be empty");
-    }
-    if (m.baseUrl !== undefined && m.baseUrl !== "" && !/^https?:\/\/.+/.test(m.baseUrl)) {
-      throw new Error(`Invalid Base URL for model "${m.name}"`);
-    }
-    const modelRef = getModelRef(m);
-    if (seenModelRefs.has(modelRef)) {
-      throw new Error(`Duplicate model entry "${modelRef}"`);
-    }
-    seenModelRefs.add(modelRef);
-  }
-
-  const config = (await window.openclaw.config.read()) || {};
-  const providerConfig: Record<string, any> = {};
-  const existingProviderKeys = new Set(Object.keys(config.models?.providers ?? {}));
-  const existingModelDefaults = config.agents?.defaults?.models ?? {};
-
-  for (const m of customModels.value) {
-    const providerKey = buildProviderKey(m.providerKey || m.id);
-    const reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
-    const reasoningEnabled = m.apiFormat === "openai-responses" || reasoningEffort !== "off";
-    providerConfig[providerKey] = {
-      ...(m.baseUrl ? { baseUrl: m.baseUrl } : {}),
-      apiKey: m.apiKey || "",
-      api: resolveApiValue(m.apiFormat || "openai-chat"),
-      models: [
-        {
-          id: m.id,
-          name: m.name,
-          ...(reasoningEnabled ? { reasoning: true } : {}),
-          ...(m.apiFormat !== "anthropic" ? { input: ["text", "image"] } : {}),
-        },
-      ],
-    };
-  }
-
-  const managedProviderKeys = new Set<string>([
-    ...existingProviderKeys,
-    ...Object.keys(providerConfig),
-  ]);
-  const nextModelDefaults: Record<string, any> = {};
-
-  for (const [modelRef, modelConfig] of Object.entries(existingModelDefaults) as [string, any][]) {
-    const providerKey = modelRef.split("/")[0];
-    if (!managedProviderKeys.has(providerKey)) {
-      nextModelDefaults[modelRef] = modelConfig;
-    }
-  }
-
-  for (const m of customModels.value) {
-    const modelRef = getModelRef(m);
-    const reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
-    if (m.apiFormat !== "openai-responses" && reasoningEffort === "off") continue;
-    const existingModelConfig =
-      typeof existingModelDefaults[modelRef] === "object" && existingModelDefaults[modelRef]
-        ? existingModelDefaults[modelRef]
-        : {};
-    nextModelDefaults[modelRef] = {
-      ...existingModelConfig,
-      params: {
-        ...(existingModelConfig.params ?? {}),
-        thinking: reasoningEffort,
-      },
-    };
-  }
-
-  config.models = {
-    ...(config.models ?? {}),
-    mode: config.models?.mode ?? "merge",
-    providers: providerConfig,
-  };
-  config.agents = config.agents || {};
-  config.agents.defaults = config.agents.defaults || {};
-
-  if (Object.keys(nextModelDefaults).length > 0) {
-    config.agents.defaults.models = nextModelDefaults;
-  } else {
-    delete config.agents.defaults.models;
-  }
-
-  const selectedEntry =
-    customModels.value.find((model) => model.id === selectedModel.value) ?? customModels.value[0];
-  if (selectedEntry) {
-    const existingDefaultModel =
-      typeof config.agents.defaults.model === "object" && config.agents.defaults.model
-        ? config.agents.defaults.model
-        : {};
-    selectedModel.value = selectedEntry.id;
-    config.agents.defaults.model = {
-      ...existingDefaultModel,
-      primary: getModelRef(selectedEntry),
-    };
-  } else {
-    delete config.agents.defaults.model;
-  }
-
-  await window.openclaw.config.write(config);
+async function handleProviderConfigured(): Promise<void> {
+  await refreshModelsConfig();
+  ElMessage.success(t("settings.providerConfigured"));
 }
 
-async function persistAndRestart(successMsg: string) {
+async function restartGatewayAfterModelConfig(): Promise<void> {
+  await window.openclaw.gateway.restart();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
+async function persistAndRestart(
+  mutate: (config: Record<string, unknown>) => Record<string, unknown>,
+  successMsg: string,
+): Promise<boolean> {
   try {
-    await persistModelsConfig();
+    const existing = await window.openclaw.config.read();
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const nextConfig = mutate(existing);
+    await window.openclaw.config.write(nextConfig);
   } catch (err: any) {
     ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
-    return;
+    await refreshModelsConfig();
+    return false;
   }
+  try {
+    await restartGatewayAfterModelConfig();
+  } catch (err: any) {
+    ElMessage.error(t("settings.restartFailed", { error: err.message || err }));
+    await refreshModelsConfig();
+    return false;
+  }
+  await refreshModelsConfig();
   ElMessage.success(successMsg);
+  return true;
 }
 
-async function selectModel(id: string) {
-  selectedModel.value = id;
-  await persistAndRestart(t("settings.modelSwitched", { model: id }));
-}
-
-async function addCustomModel() {
-  const name = newModel.name.trim();
-  if (!name) {
-    ElMessage.warning(t("settings.modelNameRequired"));
+async function selectModel(modelRef: string) {
+  if (switchingModelRef.value) return;
+  if (!customModels.value.some((model) => getModelRef(model) === modelRef)) {
+    ElMessage.error(t("settings.configSaveFailed", { error: `Unknown model "${modelRef}"` }));
     return;
   }
-  const baseUrl = newModel.baseUrl.trim();
-  if (!baseUrl) {
-    ElMessage.warning(t("settings.baseUrlRequired"));
-    return;
+  switchingModelRef.value = modelRef;
+  try {
+    await persistAndRestart(
+      (config) => selectPrimaryModelConfig(config, modelRef),
+      t("settings.modelSwitched", { model: modelRef }),
+    );
+  } finally {
+    switchingModelRef.value = "";
   }
-  if (customModels.value.some((model) => model.id === name)) {
-    ElMessage.warning(t("settings.modelNameExists"));
-    return;
-  }
-  customModels.value.push({
-    providerKey: buildProviderKey(name),
-    id: name,
-    name,
-    baseUrl,
-    apiKey: newModel.apiKey.trim(),
-    apiFormat: newModel.apiFormat,
-    reasoningEffort: normalizeReasoningEffort(newModel.reasoningEffort),
-  });
-  showAddModel.value = false;
-  resetModelForm(newModel);
-  testResult.value = null;
-  selectedModel.value = name;
-  await persistAndRestart(t("settings.customModelAdded"));
 }
 
 function editCustomModel(idx: number) {
   const m = customModels.value[idx];
+  if (!m || m.source === "auth-managed") return;
+  const managedProvider = getManagedModelProvider(m.providerKey);
   editingIndex.value = idx;
-  editModel.name = m.name;
-  editModel.baseUrl = m.baseUrl || "";
+  editModel.name = managedProvider ? m.id : m.name;
+  editModel.baseUrl = managedProvider?.baseUrl ?? m.baseUrl ?? "";
   editModel.apiKey = m.apiKey || "";
-  editModel.apiFormat = m.apiFormat || "openai-chat";
+  editModel.apiFormat = managedProvider?.apiFormat ?? m.apiFormat ?? "openai-chat";
   editModel.reasoningEffort = normalizeReasoningEffort(m.reasoningEffort);
   editTestResult.value = null;
   showEditModel.value = true;
 }
 
 async function saveEditModel() {
-  const name = editModel.name.trim();
+  const idx = editingIndex.value;
+  const original = customModels.value[idx];
+  if (!original || original.source === "auth-managed") {
+    ElMessage.error(t("settings.configSaveFailed", { error: "Model is no longer available" }));
+    await refreshModelsConfig();
+    return;
+  }
+  const managedProvider = getManagedModelProvider(original.providerKey);
+  const managedModel = managedProvider?.models.find((model) => model.id === original.id);
+  const name = managedProvider ? original.id : editModel.name.trim();
   if (!name) {
     ElMessage.warning(t("settings.modelNameRequired"));
     return;
   }
-  const baseUrl = editModel.baseUrl.trim();
+  const baseUrl = managedProvider?.baseUrl ?? editModel.baseUrl.trim();
   if (!baseUrl) {
     ElMessage.warning(t("settings.baseUrlRequired"));
     return;
   }
-  const idx = editingIndex.value;
-  if (idx < 0 || idx >= customModels.value.length) return;
-  if (customModels.value.some((model, modelIndex) => model.id === name && modelIndex !== idx)) {
+  if (
+    customModels.value.some(
+      (model, modelIndex) =>
+        model.providerKey === original.providerKey && model.id === name && modelIndex !== idx,
+    )
+  ) {
     ElMessage.warning(t("settings.modelNameExists"));
     return;
   }
-  customModels.value[idx] = {
-    providerKey: customModels.value[idx].providerKey,
-    id: name,
-    name,
-    baseUrl,
-    apiKey: editModel.apiKey.trim(),
-    apiFormat: editModel.apiFormat,
-    reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
-  };
-  showEditModel.value = false;
-  selectedModel.value = name;
-  await persistAndRestart(t("settings.customModelUpdated"));
+  const saved = await persistAndRestart(
+    (config) =>
+      updateModelProviderConfig(config, {
+        providerKey: original.providerKey,
+        originalModelName: original.id,
+        modelName: name,
+        displayName: managedModel?.name ?? name,
+        baseUrl,
+        apiKey: editModel.apiKey.trim(),
+        apiFormat: managedProvider?.apiFormat ?? editModel.apiFormat,
+        reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
+        input: managedModel?.input ?? normalizeModelInput(original.input),
+      }),
+    t("settings.customModelUpdated"),
+  );
+  if (saved) showEditModel.value = false;
 }
 
 async function testEditModel() {
+  if (editTestLoading.value) return;
   const baseUrl = editModel.baseUrl.trim();
   const apiKey = editModel.apiKey.trim();
   if (!baseUrl) {
     ElMessage.warning(t("settings.baseUrlRequired"));
     return;
   }
+  const modelName = editModel.name.trim();
+  const apiFormat = editModel.apiFormat;
+  const reasoningEffort = normalizeReasoningEffort(editModel.reasoningEffort);
+  const generation = ++editModelTestGeneration;
+  const editingModelIndex = editingIndex.value;
   editTestLoading.value = true;
   editTestResult.value = null;
+  const isCurrentRequest = () =>
+    generation === editModelTestGeneration &&
+    showEditModel.value &&
+    editingIndex.value === editingModelIndex &&
+    editModel.baseUrl.trim() === baseUrl &&
+    editModel.apiKey.trim() === apiKey &&
+    editModel.name.trim() === modelName &&
+    editModel.apiFormat === apiFormat &&
+    normalizeReasoningEffort(editModel.reasoningEffort) === reasoningEffort;
   try {
     const result = await window.openclaw.model.testConnection({
       baseUrl,
       apiKey,
-      apiFormat: editModel.apiFormat,
-      modelName: editModel.name.trim(),
-      reasoningEffort: normalizeReasoningEffort(editModel.reasoningEffort),
+      apiFormat,
+      modelName,
+      reasoningEffort,
     });
+    if (!isCurrentRequest()) return;
+    if (result.ok && result.baseUrl) editModel.baseUrl = result.baseUrl;
     editTestResult.value = result;
   } catch (err: any) {
+    if (!isCurrentRequest()) return;
     editTestResult.value = {
       ok: false,
       message: t("settings.connectionFailed", { error: err.message || "Network error" }),
     };
   } finally {
-    editTestLoading.value = false;
+    if (generation === editModelTestGeneration) {
+      editTestLoading.value = false;
+    }
   }
 }
 
 async function removeCustomModel(idx: number) {
   const removed = customModels.value[idx];
-  customModels.value.splice(idx, 1);
-  if (removed.id === selectedModel.value && customModels.value.length) {
-    selectedModel.value = customModels.value[0].id;
-  }
-  await persistAndRestart(t("settings.customModelDeleted"));
+  if (!removed || removed.source === "auth-managed") return;
+  const fallback = customModels.value.find(
+    (model, modelIndex) => modelIndex !== idx && model.source !== "auth-managed",
+  );
+  await persistAndRestart(
+    (config) =>
+      removeModelProviderConfig(
+        config,
+        removed.providerKey,
+        removed.id,
+        fallback ? getModelRef(fallback) : undefined,
+      ),
+    t("settings.customModelDeleted"),
+  );
 }
 
-async function testCustomModel() {
-  const baseUrl = newModel.baseUrl.trim();
-  const apiKey = newModel.apiKey.trim();
-  if (!baseUrl) {
-    ElMessage.warning(t("settings.baseUrlRequired"));
+async function disconnectGitHubCopilot() {
+  if (copilotDisconnecting.value) return;
+  try {
+    await ElMessageBox.confirm(
+      t("settings.copilotDisconnectConfirm"),
+      t("settings.confirm"),
+      { type: "warning" },
+    );
+  } catch {
     return;
   }
-  testLoading.value = true;
-  testResult.value = null;
+
+  const fallbackModel = customModels.value.find(
+    (model) => model.providerKey !== "github-copilot" && model.source !== "auth-managed",
+  );
+  const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
+  copilotDisconnecting.value = true;
+  copilotModelsGeneration += 1;
+  copilotModelsLoading.value = false;
+
   try {
-    const result = await window.openclaw.model.testConnection({
-      baseUrl,
-      apiKey,
-      apiFormat: newModel.apiFormat,
-      modelName: newModel.name.trim(),
-      reasoningEffort: normalizeReasoningEffort(newModel.reasoningEffort),
-    });
-    testResult.value = result;
-  } catch (err: any) {
-    testResult.value = {
-      ok: false,
-      message: t("settings.connectionFailed", { error: err.message || "Network error" }),
-    };
+    const existingConfig = await window.openclaw.config.read();
+    if (!existingConfig || typeof existingConfig !== "object" || Array.isArray(existingConfig)) {
+      throw new Error(t("settings.copilotConfigUnavailable"));
+    }
+    const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
+    await window.openclaw.config.write(nextConfig);
+
+    try {
+      await window.openclaw.model.disconnectGitHubCopilot();
+    } catch (error) {
+      try {
+        await window.openclaw.config.write(existingConfig);
+      } catch (rollbackError) {
+        throw new Error(
+          t("settings.copilotDisconnectRollbackFailed", {
+            error: error instanceof Error ? error.message : String(error),
+            rollbackError:
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          }),
+          { cause: rollbackError },
+        );
+      }
+      throw error;
+    }
+
+    try {
+      await restartGatewayAfterModelConfig();
+    } catch (error) {
+      await refreshModelsConfig();
+      ElMessage.warning(
+        t("settings.copilotDisconnectedRestartFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return;
+    }
+    await refreshModelsConfig();
+    ElMessage.success(t("settings.copilotDisconnected"));
+  } catch (error) {
+    await refreshModelsConfig();
+    ElMessage.error(
+      t("settings.copilotDisconnectFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   } finally {
-    testLoading.value = false;
+    copilotDisconnecting.value = false;
   }
 }
 
@@ -2173,26 +2221,12 @@ function openUpdateDownload() {
   }
 }
 
-async function reconnectGateway() {
+async function restartGateway() {
   try {
     await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.gatewayReconnecting"));
+    ElMessage.success(t("settings.gatewayRestarting"));
   } catch (err: any) {
-    ElMessage.error(t("settings.reconnectFailed", { error: err.message }));
-  }
-}
-
-async function resetConnection() {
-  try {
-    await ElMessageBox.confirm(
-      "This will reset the gateway connection. Continue?",
-      "Reset Connection",
-      { type: "warning" },
-    );
-    await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.connectionReset"));
-  } catch {
-    // Cancelled
+    ElMessage.error(t("settings.restartFailed", { error: err.message }));
   }
 }
 
@@ -2237,6 +2271,7 @@ async function clearChatHistory() {
   flex: 1;
   min-height: 0;
   background: var(--bg-primary);
+  font-family: inherit;
 }
 
 /* ── Left sidebar ── */
@@ -2306,8 +2341,10 @@ async function clearChatHistory() {
 }
 
 .menu-icon :deep(svg) {
+  display: block;
   width: 16px;
   height: 16px;
+  flex: 0 0 16px;
 }
 
 .menu-label {
@@ -2322,12 +2359,16 @@ async function clearChatHistory() {
   container-type: inline-size;
 }
 
-.section-label {
+.section-label,
+.sub-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.07em;
+}
+
+.section-label {
   margin-bottom: 8px;
   padding-left: 4px;
 }
@@ -2376,8 +2417,15 @@ async function clearChatHistory() {
     align-items: flex-start;
   }
 
-  .custom-model-actions {
-    align-self: flex-end;
+  .model-picker-actions {
+    align-self: stretch;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .model-picker-select {
+    flex: 1;
+    min-width: 220px;
   }
 }
 
@@ -2386,7 +2434,8 @@ async function clearChatHistory() {
 }
 
 .row-label {
-  font-size: 13.5px;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
   flex-shrink: 1;
   min-width: 0;
@@ -2394,6 +2443,7 @@ async function clearChatHistory() {
 
 .row-value {
   font-size: 13px;
+  font-weight: 400;
   color: var(--text-secondary);
   text-align: right;
   overflow: hidden;
@@ -2411,12 +2461,14 @@ async function clearChatHistory() {
 
 .placeholder-text {
   font-size: 13px;
+  font-weight: 400;
   color: var(--text-secondary);
   text-align: center;
 }
 
 .section-footer {
   font-size: 12px;
+  font-weight: 400;
   color: var(--text-muted);
   padding: 6px 4px 0;
 }
@@ -2503,26 +2555,15 @@ async function clearChatHistory() {
 }
 
 /* Models & API */
-.section-header {
+.sub-label-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 28px;
-}
-
-.section-header-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+  gap: 8px;
 }
 
 .sub-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
   margin-bottom: 10px;
   margin-top: 32px;
+  padding-left: 4px;
 }
 
 .sub-label-row {
@@ -2531,6 +2572,10 @@ async function clearChatHistory() {
   justify-content: space-between;
   margin-top: 32px;
   margin-bottom: 10px;
+}
+
+.section > .sub-label-row:first-child {
+  margin-top: 0;
 }
 
 .badge {
@@ -2559,6 +2604,7 @@ async function clearChatHistory() {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -2570,11 +2616,19 @@ async function clearChatHistory() {
   white-space: nowrap;
 }
 
-.custom-model-actions {
+.model-picker-row {
+  gap: 24px;
+}
+
+.model-picker-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.model-picker-select {
+  width: 360px;
 }
 
 .port-row {
@@ -2590,16 +2644,9 @@ async function clearChatHistory() {
 }
 
 .port-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.port-desc {
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  line-height: 1.5;
 }
 
 .port-input-group {
@@ -2660,7 +2707,16 @@ async function clearChatHistory() {
 .port-input-group :deep(.el-input__inner) {
   font-size: 13px;
   text-align: center;
-  font-weight: 600;
+  font-weight: 400;
+}
+
+.settings-view :deep(.el-input__inner),
+.settings-view :deep(.el-select__selected-item),
+.settings-view :deep(.el-radio__label),
+.settings-view :deep(.el-button) {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .test-result {
@@ -2722,6 +2778,13 @@ async function clearChatHistory() {
 .switch-wrap {
   display: inline-flex;
   align-items: center;
+}
+
+.ask-agent-btn {
+  flex-shrink: 0;
+  --el-button-hover-text-color: var(--accent);
+  --el-button-hover-border-color: var(--accent-light);
+  --el-button-hover-bg-color: var(--accent-subtle);
 }
 
 .skill-count-label {
@@ -2787,8 +2850,9 @@ async function clearChatHistory() {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 8px;
-  font-size: 12.5px;
-  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 .app-tag .tag-remove {
   background: none;
@@ -2809,7 +2873,9 @@ async function clearChatHistory() {
   background: none;
   border: none;
   outline: none;
-  font-size: 12.5px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
   width: 80px;
   color: var(--text-primary);
 }
@@ -2832,8 +2898,8 @@ async function clearChatHistory() {
   margin-top: 4px;
 }
 .dir-section-label {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
 }
 .dir-add-btn {
@@ -2862,7 +2928,8 @@ async function clearChatHistory() {
 }
 .cap-label {
   font-size: 13px;
-  color: var(--text-secondary);
+  font-weight: 400;
+  color: var(--text-primary);
 }
 .sandbox-disabled {
   opacity: 0.45;
@@ -2882,7 +2949,8 @@ async function clearChatHistory() {
   border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 4px;
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 400;
   background: var(--bg-tertiary);
 }
 .dir-path {
@@ -2957,13 +3025,6 @@ async function clearChatHistory() {
 }
 
 /* ── Privacy Protection ── */
-.privacy-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 16px;
-  line-height: 1.5;
-}
-
 .privacy-levels {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3002,8 +3063,8 @@ async function clearChatHistory() {
 }
 
 .privacy-card-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--text-primary);
 }
 
@@ -3024,8 +3085,9 @@ async function clearChatHistory() {
 }
 
 .privacy-card-list li {
-  font-size: 12.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
   line-height: 1.6;
   padding-left: 12px;
   position: relative;

@@ -215,7 +215,7 @@ function shouldBlockWrite(filePath) {
   if (!S.isBlockedPath(filePath)) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = S.resolvePathLower(filePath);
   } catch {
     return true;
   }
@@ -249,7 +249,7 @@ function shouldBlockRead(filePath, shellContext) {
   if (!S.isReadBlockedPath(filePath, shellContext)) return false;
   var resolved;
   try {
-    resolved = path.resolve(String(filePath)).toLowerCase();
+    resolved = S.resolvePathLower(filePath);
   } catch {
     return true;
   }

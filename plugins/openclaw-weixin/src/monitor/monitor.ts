@@ -1,14 +1,10 @@
-import type { ChannelAccountSnapshot, PluginRuntime } from "openclaw/plugin-sdk";
+import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
+import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 
-import { getUpdates } from "../api/api.js";
+import { getUpdates, classifyFetchError } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
-import {
-  SESSION_EXPIRED_ERRCODE,
-  pauseSession,
-  getRemainingPauseMs,
-} from "../api/session-guard.js";
+import { STALE_TOKEN_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
 import { processOneMessage } from "../messaging/process-message.js";
-import { waitForWeixinRuntime } from "../runtime.js";
 import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "../storage/sync-buf.js";
 import { logger } from "../util/logger.js";
 import type { Logger } from "../util/logger.js";
@@ -28,6 +24,11 @@ export type MonitorWeixinOpts = {
   allowFrom?: string[];
   config: import("openclaw/plugin-sdk/core").OpenClawConfig;
   runtime?: { log?: (msg: string) => void; error?: (msg: string) => void };
+  /**
+   * Gateway-injected channel runtime surface (reply/routing/session/media/commands/...).
+   * Required for inbound message processing; provided by `ChannelGatewayContext.channelRuntime`.
+   */
+  channelRuntime: PluginRuntime["channel"];
   abortSignal?: AbortSignal;
   longPollTimeoutMs?: number;
   /** Gateway status callback — called on each successful poll and inbound message. */
@@ -45,6 +46,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
     token,
     accountId,
     config,
+    channelRuntime,
     abortSignal,
     longPollTimeoutMs,
     setStatus,
@@ -53,15 +55,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   const errLog = opts.runtime?.error ?? ((m: string) => log(m));
   const aLog: Logger = logger.withAccount(accountId);
 
-  aLog.info(`waiting for Weixin runtime...`);
-  let channelRuntime: PluginRuntime["channel"];
-  try {
-    const pluginRuntime = await waitForWeixinRuntime();
-    channelRuntime = pluginRuntime.channel;
-    aLog.info(`Weixin runtime acquired, channelRuntime type: ${typeof channelRuntime}`);
-  } catch (err) {
-    aLog.error(`waitForWeixinRuntime() failed: ${String(err)}`);
-    throw err;
+  if (!channelRuntime) {
+    const msg =
+      "channelRuntime missing on monitor opts; gateway must inject ChannelGatewayContext.channelRuntime";
+    aLog.error(msg);
+    throw new Error(msg);
   }
 
   log(`weixin monitor started (${baseUrl}, account=${accountId})`);
@@ -98,6 +96,9 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         token,
         get_updates_buf: getUpdatesBuf,
         timeoutMs: nextTimeoutMs,
+        // Stop/hot-reload should cancel the in-flight long-poll immediately
+        // instead of waiting for the server-side long-poll timeout.
+        abortSignal,
       });
       aLog.debug(
         `getUpdates response: ret=${resp.ret}, msgs=${resp.msgs?.length ?? 0}, get_updates_buf_length=${resp.get_updates_buf?.length ?? 0}`,
@@ -111,17 +112,14 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         (resp.ret !== undefined && resp.ret !== 0) ||
         (resp.errcode !== undefined && resp.errcode !== 0);
       if (isApiError) {
-        const isSessionExpired =
-          resp.errcode === SESSION_EXPIRED_ERRCODE || resp.ret === SESSION_EXPIRED_ERRCODE;
+        const isStaleToken =
+          resp.errcode === STALE_TOKEN_ERRCODE || resp.ret === STALE_TOKEN_ERRCODE;
 
-        if (isSessionExpired) {
+        if (isStaleToken) {
           pauseSession(accountId);
           const pauseMs = getRemainingPauseMs(accountId);
-          errLog(
-            `weixin getUpdates: session expired (errcode ${SESSION_EXPIRED_ERRCODE}), pausing bot for ${Math.ceil(pauseMs / 60_000)} min`,
-          );
           aLog.error(
-            `getUpdates: session expired (errcode=${resp.errcode} ret=${resp.ret}), pausing all requests for ${Math.ceil(pauseMs / 60_000)} min`,
+            `getUpdates: token for ${accountId} is stale, pausing all requests for ${Math.ceil(pauseMs / 60_000)} min`,
           );
           consecutiveFailures = 0;
           await sleep(pauseMs, abortSignal);
@@ -189,15 +187,18 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         return;
       }
       consecutiveFailures += 1;
+      const classified = classifyFetchError(err);
       errLog(
-        `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)}`,
+        `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)} type=${classified.type} description=${classified.description}${classified.code ? ` code=${classified.code}` : ""}`,
       );
-      aLog.error(`getUpdates error: ${String(err)}, stack=${(err as Error).stack}`);
+      aLog.error(`getUpdates error: ${String(err)}, type=${classified.type} code=${classified.code ?? "none"}, stack=${(err as Error).stack}`);
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         errLog(
           `weixin getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
         );
-        aLog.error(`getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`);
+        aLog.error(
+          `getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
+        );
         consecutiveFailures = 0;
         await sleep(30_000, abortSignal);
       } else {

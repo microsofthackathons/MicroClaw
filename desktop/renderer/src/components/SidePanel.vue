@@ -11,7 +11,12 @@
           <div class="sp-brand-name">{{ currentAgent.name }}</div>
           <div class="sp-brand-tagline">{{ t("sidebar.tagline") }}</div>
         </div>
-        <span class="sp-conn-dot" :title="t('sidebar.connected')" :aria-label="t('sidebar.connected')"></span>
+        <span
+          class="sp-conn-dot"
+          :class="{ 'is-connected': chatStore.wsConnected }"
+          :title="chatStore.wsConnected ? t('sidebar.connected') : t('sidebar.disconnected')"
+          :aria-label="chatStore.wsConnected ? t('sidebar.connected') : t('sidebar.disconnected')"
+        ></span>
       </div>
     </div>
 
@@ -129,28 +134,6 @@
         </div>
       </div>
 
-      <!-- Phone -->
-      <button
-        class="sp-menu-item"
-        :class="{ active: route.path === '/phone' }"
-        @click="router.push('/phone')"
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="5" y="2" width="14" height="20" rx="2" />
-          <line x1="12" y1="18" x2="12.01" y2="18" />
-        </svg>
-        <span>{{ t("sidebar.phone") }}</span>
-      </button>
-
       <!-- Usage -->
       <button class="sp-menu-item" :class="{ active: route.path === '/usage' }" @click="openUsage">
         <svg
@@ -194,13 +177,13 @@
         <span>{{ t("sidebar.settings") }}</span>
       </button>
     </nav>
-
   </aside>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
+import { ElMessage } from "element-plus";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/sessions";
@@ -365,8 +348,13 @@ function createNewChat() {
   router.push(`/chat/${agentStore.currentAgentId}`);
 }
 
-function deleteSession(key: string) {
-  chatStore.deleteSession(key);
+async function deleteSession(key: string) {
+  try {
+    await chatStore.deleteSession(key);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ElMessage.error(t("sidebar.chatDeleteFailed", { error: message }));
+  }
 }
 
 function clearComposeDraft() {
@@ -466,8 +454,13 @@ html.dark .sp-brand-inner:hover {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--success);
+  background: var(--text-muted);
   border: 2px solid #f9f5f2;
+  transition: background 0.2s;
+}
+
+.sp-conn-dot.is-connected {
+  background: var(--success);
 }
 
 html.dark .sp-conn-dot {

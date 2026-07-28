@@ -2,8 +2,10 @@ import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
-import { ChildProcess, spawn } from "child_process";
+import * as net from "net";
+import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
+import { hardRestartGateway } from "./gateway-lifecycle";
 import { createTray, destroyTray } from "./tray";
 import Store from "electron-store";
 import {
@@ -15,14 +17,19 @@ import {
 import { ToolSandbox } from "./tool-sandbox";
 import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { StudioBackendManager } from "./studio-backend-manager";
-import { t as mainT } from "./i18n";
+import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
+import {
+  recoverInterruptedOpenClawUpgrade,
+  UpgradeInProgressError,
+} from "./openclaw-upgrade-recovery";
 import {
   getOpenClawStateDir,
   loadStateDirEnv,
   resolveBuiltinSkillsDir,
   resolveNodePath,
   resolveOpenClawEntry,
+  resolveOpenClawPackageDir,
 } from "./path-resolver";
 import {
   type GatewayStatus,
@@ -37,6 +44,7 @@ import {
   HEALTH_CHECK_FAILURE_THRESHOLD,
   LOADING_WINDOW_WIDTH,
   LOADING_WINDOW_HEIGHT,
+  MODEL_CONNECTION_TEST_TIMEOUT_MS,
   SETUP_WINDOW_WIDTH,
   SETUP_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
@@ -46,6 +54,28 @@ import {
   USAGE_QUERY_DAYS,
   UPDATE_MANIFEST_URL,
 } from "./constants";
+import {
+  appendModelEndpoint,
+  prepareModelBaseUrl,
+  requestModelEndpoint,
+  resolveModelApiKey,
+} from "./model-connection";
+import { hasConfiguredModel } from "./model-setup";
+import {
+  disconnectGitHubCopilot,
+  getGitHubCopilotAuthStatus,
+  GitHubCopilotAuthManager,
+  type GitHubCopilotAuthRuntime,
+  invalidateGitHubCopilotAuthStatusCache,
+  listGitHubCopilotModels,
+  parseGitHubCopilotGatewayAuthStatus,
+  parseGitHubCopilotGatewayDisconnectResult,
+  parseGitHubCopilotGatewayModels,
+} from "./github-copilot-auth";
+import {
+  ensureGitHubCopilotProviderPlugin,
+  ensureSelectedModelProviderPlugins,
+} from "./model-provider-plugins";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -108,7 +138,7 @@ const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
 });
 
 const settingsStore = new Store<{
-  language: string;
+  language?: string;
   autoStart: boolean;
   startMinimized: boolean;
   themeMode: string;
@@ -130,7 +160,6 @@ const settingsStore = new Store<{
 }>({
   name: "settings",
   defaults: {
-    language: "en-US",
     autoStart: false,
     startMinimized: false,
     themeMode: "light",
@@ -156,12 +185,11 @@ const settingsStore = new Store<{
 
 /** Module-level quit flag — replaces `(app as any).isQuitting`. */
 let isQuitting = false;
-/** Force hard restart (kill + respawn) on next gateway:restart. Set when env-var-level config changes. */
-let forceHardRestart = false;
-
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
+let gatewayModelCatalogRequest: Promise<unknown> | null = null;
+let gatewayGitHubCopilotStatusRequest: Promise<{ authenticated: boolean }> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
@@ -169,6 +197,7 @@ let weixinLoginProcess: ChildProcess | null = null;
 let pendingIntegrityResult: IntegrityResult | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 let gatewayRestarting = false;
+let gatewayRestartPromise: Promise<void> | null = null;
 /** Number of pending sync permission requests that block the gateway process.
  *  While > 0, the health-monitor skips checks to avoid killing the gateway. */
 let pendingSyncPermissionRequests = 0;
@@ -178,6 +207,10 @@ let gatewaySpawnedByUs = false;
 let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
+const githubCopilotAuthManager = new GitHubCopilotAuthManager(
+  (event) => mainWindow?.webContents.send("model:github-copilot:login-event", event),
+  (url) => shell.openExternal(url),
+);
 /** Per-session random key for HMAC-signing the external apps whitelist file. */
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
@@ -571,6 +604,23 @@ function readConfig(): any {
   } catch {
     return null;
   }
+}
+
+function resolveGitHubCopilotAuthRuntime(): GitHubCopilotAuthRuntime {
+  const entryPath = resolveOpenClawEntry();
+  const stateDir = getOpenClawStateDir();
+  const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+  fs.mkdirSync(compileCacheDir, { recursive: true });
+  return {
+    nodePath: resolveNodePath(),
+    entryPath,
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, "github-copilot-auth-worker.js")
+      : path.join(__dirname, "github-copilot-auth-worker.js"),
+    openClawPackageDir: resolveOpenClawPackageDir(entryPath),
+    stateDir,
+    compileCacheDir,
+  };
 }
 
 /**
@@ -967,17 +1017,15 @@ function isConfigured(): boolean {
 
 /**
  * Check if the user still needs to configure a model provider.
- * Returns true when there's no models/providers section in openclaw.json
- * AND no MODEL_API_KEY in .env.
+ * Returns true when there is no explicit custom provider, selected GitHub
+ * Copilot model, or MODEL_API_KEY in .env.
  *
  * When MODEL_API_KEY IS present in .env but openclaw.json has no provider,
  * auto-configures the provider from .env values before returning false.
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (config?.models?.providers && Object.keys(config.models.providers).length > 0) {
-    return false;
-  }
+  if (hasConfiguredModel(config)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -1122,20 +1170,29 @@ function autoConfigureModelFromEnv(config: any, env: Record<string, string>): vo
 }
 
 /**
- * Ensure any enabled plugin in plugins.entries is also listed in plugins.allow.
- * This makes the gateway load plugins synchronously at startup instead of
- * async auto-discovery, preventing the race where channels miss the initial sweep.
+ * Enable plugins required by the selected model and keep enabled plugin entries
+ * in plugins.allow so the gateway loads them synchronously at startup.
  */
 function ensurePluginsAllow(): void {
   try {
     const config = readConfig();
-    if (!config?.plugins?.entries) return;
+    if (!config) return;
+    let changed = ensureSelectedModelProviderPlugins(config);
+    if (!config?.plugins?.entries) {
+      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      return;
+    }
     const entries = config.plugins.entries as Record<string, { enabled?: boolean }>;
     const enabledIds = Object.keys(entries).filter((id) => entries[id].enabled);
-    if (enabledIds.length === 0) return;
+    if (enabledIds.length === 0) {
+      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      return;
+    }
 
-    if (!config.plugins.allow) config.plugins.allow = [];
-    let changed = false;
+    if (!Array.isArray(config.plugins.allow)) {
+      config.plugins.allow = [];
+      changed = true;
+    }
     for (const id of enabledIds) {
       if (!config.plugins.allow.includes(id)) {
         config.plugins.allow.push(id);
@@ -1283,6 +1340,22 @@ function checkExistingGateway(port: number): Promise<boolean> {
   });
 }
 
+function isGatewayPortOccupied(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const finish = (occupied: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(occupied);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(1_000, () => finish(false));
+  });
+}
+
 /** Resolve AppContainerLauncher.exe path, or null if unavailable. */
 function resolveAppContainerLauncher(): string | null {
   if (process.platform !== "win32") return null;
@@ -1320,78 +1393,83 @@ async function waitForGatewayReady(
   return false;
 }
 
-/** Kill the gateway by finding the process listening on gatewayPort */
+/** Kill the managed gateway and any listener still holding gatewayPort. */
 function stopGatewayProcess(): void {
+  const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
-  if (!gatewayPort) return;
-  try {
-    // Find PID listening on the gateway port and kill it
-    const result = require("child_process").execSync(
-      `netstat -ano | findstr "LISTENING" | findstr ":${gatewayPort} "`,
-      { windowsHide: true, encoding: "utf-8", timeout: 5000 },
-    );
-    const pids = new Set<string>();
-    for (const line of result.split("\n")) {
-      const m = line.trim().match(/(\d+)\s*$/);
-      if (m) pids.add(m[1]);
+  const pids = new Set<number>();
+  if (knownPid) pids.add(knownPid);
+  if (gatewayPort && process.platform === "win32") {
+    try {
+      const result = execFileSync("netstat", ["-ano"], {
+        windowsHide: true,
+        encoding: "utf-8",
+        timeout: 5_000,
+      });
+      for (const line of result.split(/\r?\n/)) {
+        const columns = line.trim().split(/\s+/);
+        if (
+          columns.length >= 5 &&
+          columns[0].toUpperCase() === "TCP" &&
+          columns[1].endsWith(`:${gatewayPort}`) &&
+          columns[3].toUpperCase() === "LISTENING"
+        ) {
+          const pid = Number.parseInt(columns[4], 10);
+          if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+        }
+      }
+    } catch {
+      // No listener or netstat unavailable; the known child PID is still used.
     }
-    for (const pid of pids) {
-      if (pid === "0") continue;
-      console.log(`[gateway] killing process ${pid} on port ${gatewayPort}`);
+  }
+  for (const pid of pids) {
+    console.log(`[gateway] killing process ${pid} on port ${gatewayPort}`);
+    if (process.platform === "win32") {
       try {
-        require("child_process").execSync(`taskkill /pid ${pid} /T /F`, {
+        execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
-          timeout: 10000,
+          timeout: 10_000,
           stdio: "ignore",
         });
       } catch {}
+    } else {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {}
     }
-  } catch {
-    // netstat may return empty if nothing is listening — that's fine
   }
 }
 
-/**
- * Send SIGUSR1 to the gateway process to trigger an in-process restart.
- * This preserves plugin registrations so channels (like weixin) start correctly.
- * Returns true if the signal was sent successfully.
- */
-function _signalGatewayRestart(): boolean {
-  if (!gatewayProcess?.pid) {
-    // No child process ref — try to find the gateway PID from the port
+async function restartManagedGateway(reason: string): Promise<void> {
+  if (gatewayRestartPromise) return gatewayRestartPromise;
+  const restart = (async () => {
+    gatewayRestarting = true;
+    gatewayStatus = "restarting";
+    mainWindow?.webContents.send("gateway:status", "restarting");
+    mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
     try {
-      const result = require("child_process").execSync(
-        `netstat -ano | findstr "LISTENING" | findstr ":${gatewayPort} "`,
-        { windowsHide: true, encoding: "utf-8", timeout: 5000 },
-      );
-      for (const line of result.split("\n")) {
-        const m = line.trim().match(/(\d+)\s*$/);
-        if (m && m[1] !== "0") {
-          const pid = parseInt(m[1], 10);
-          console.log(`[gateway] sending SIGUSR1 to PID ${pid} (found via port ${gatewayPort})`);
-          process.kill(pid, "SIGUSR1");
-          mainWindow?.webContents.send(
-            "gateway:log",
-            "[restart] 已发送 SIGUSR1 信号 (in-process restart)",
-          );
-          return true;
-        }
-      }
-    } catch {}
-    console.log("[gateway] no gateway process found for SIGUSR1");
-    return false;
-  }
+      await hardRestartGateway({
+        stopClient: () => gwClient?.stop(),
+        stopProcess: stopGatewayProcess,
+        isPortOccupied: () => isGatewayPortOccupied(gatewayPort),
+        startGateway,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        timeoutMs: 8_000,
+        pollMs: 500,
+      });
+    } catch (error) {
+      gatewayStatus = "failed";
+      mainWindow?.webContents.send("gateway:status", "failed");
+      throw error;
+    } finally {
+      gatewayRestarting = false;
+    }
+  })();
+  gatewayRestartPromise = restart;
   try {
-    console.log(`[gateway] sending SIGUSR1 to gateway PID ${gatewayProcess.pid}`);
-    process.kill(gatewayProcess.pid, "SIGUSR1");
-    mainWindow?.webContents.send(
-      "gateway:log",
-      "[restart] 已发送 SIGUSR1 信号 (in-process restart)",
-    );
-    return true;
-  } catch (err: any) {
-    console.error(`[gateway] SIGUSR1 failed: ${err.message}`);
-    return false;
+    await restart;
+  } finally {
+    if (gatewayRestartPromise === restart) gatewayRestartPromise = null;
   }
 }
 
@@ -1427,32 +1505,10 @@ function startHealthMonitor(): void {
     if (consecutiveFailures < HEALTH_CHECK_FAILURE_THRESHOLD) return;
     consecutiveFailures = 0;
 
-    // Gateway truly unresponsive — try in-process restart first (preserves
-    // plugin state and avoids killing a busy process). Fall back to a hard
-    // restart only if SIGUSR1 fails.
-    console.log("[health-monitor] Gateway unresponsive — attempting in-process restart (SIGUSR1)…");
-    let signaled: boolean;
     try {
-      signaled = await Promise.race([
-        gwClient
-          ?.restart()
-          .then(() => true)
-          .catch(() => false) ?? Promise.resolve(false),
-        new Promise<boolean>((r) => setTimeout(() => r(false), 5_000)),
-      ]);
-    } catch {
-      signaled = false;
-    }
-    if (signaled) {
-      console.log("[health-monitor] SIGUSR1 restart scheduled — skipping hard restart");
-      return;
-    }
-    console.log("[health-monitor] SIGUSR1 path failed — falling back to hard restart");
-    gatewayRestarting = true;
-    try {
-      await startGateway();
-    } finally {
-      gatewayRestarting = false;
+      await restartManagedGateway("Gateway health check failed; replacing process");
+    } catch (error) {
+      console.error("[health-monitor] Gateway restart failed:", error);
     }
   }, HEALTH_CHECK_INTERVAL_MS);
 }
@@ -1473,14 +1529,8 @@ async function ensureGatewayConnected(): Promise<void> {
       connectGatewayWs();
     }
   } else {
-    // Gateway is down — restart it
     console.log("[ensure-gateway] Gateway not reachable — restarting...");
-    gatewayRestarting = true;
-    try {
-      await startGateway();
-    } finally {
-      gatewayRestarting = false;
-    }
+    await restartManagedGateway("Gateway was unreachable when the window became active");
   }
 }
 
@@ -1557,7 +1607,7 @@ function sendWeixinNotification(
 /** Notify the remote WeChat user that a permission dialog is waiting on the desktop. */
 function notifyRemotePermissionNeeded(): void {
   if (!lastInputFromRemote || !cachedRemoteSource) return;
-  const lang = settingsStore.get("language");
+  const lang = settingsStore.get("language") ?? "en-US";
   sendWeixinNotification(cachedRemoteSource, mainT(lang, "perm.remoteNotify"));
 }
 
@@ -1586,11 +1636,11 @@ async function startGatewayInner(): Promise<void> {
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
 
-  // If gateway is already healthy, just connect WS and return — no new terminal.
-  // Exception: forceHardRestart means env vars (COMSPEC, NODE_OPTIONS) changed,
-  // so the old process MUST be replaced even if it looks healthy.
+  // If gateway is already healthy, just connect WS and return — no new process.
+  // Callers that need replacement use restartManagedGateway(), which stops the
+  // old process and waits for the port before invoking this function.
   const alreadyRunning = await checkExistingGateway(configuredPort);
-  if (alreadyRunning && !forceHardRestart) {
+  if (alreadyRunning) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
     gatewaySpawnedByUs = false;
     gatewayStatus = "running";
@@ -1598,19 +1648,6 @@ async function startGatewayInner(): Promise<void> {
     connectGatewayWs();
     startHealthMonitor();
     return;
-  }
-  if (alreadyRunning && forceHardRestart) {
-    console.log(
-      `[gateway] Stale gateway still alive on port ${configuredPort} — force-killing for env change`,
-    );
-    stopGatewayProcess();
-    // Give the OS a moment to release the port
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      const still = await checkExistingGateway(configuredPort);
-      if (!still) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
   }
 
   const stateDir = getOpenClawStateDir();
@@ -1685,6 +1722,9 @@ async function startGatewayInner(): Promise<void> {
     NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
     NODE_ENV: "production",
     NODE_COMPILE_CACHE: compileCacheDir,
+    // The Desktop process already supplies a stable cache directory. Prevent
+    // the OpenClaw launcher from self-respawning through the tool sandbox.
+    OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
     OPENCLAW_NO_RESPAWN: "1",
     // HMAC key for verifying the external apps whitelist file
     OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
@@ -1704,8 +1744,14 @@ async function startGatewayInner(): Promise<void> {
     toolSandbox.setEnabled(false);
   }
 
-  // Grant sandbox read access to openclaw state dir and node modules
+  // Grant sandbox access to the state directory and the resolved runtimes.
   if (fs.existsSync(stateDir)) toolSandbox.addDirRW(stateDir);
+  const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
+  if (fs.existsSync(openClawPackageDir)) toolSandbox.addDirRO(openClawPackageDir);
+  const nodeRuntimeDir = path.dirname(nodePath);
+  if (fs.existsSync(nodeRuntimeDir)) toolSandbox.addDirRO(nodeRuntimeDir);
+
+  // Preserve support for the legacy per-user runtime layout.
   const ocNodeDir = process.env.USERPROFILE
     ? path.join(process.env.USERPROFILE, ".openclaw-node")
     : "";
@@ -2195,11 +2241,13 @@ let wsAuthRestartInProgress = false;
 
 function connectGatewayWs(): void {
   gwClient?.stop();
+  gatewayModelCatalogRequest = null;
+  gatewayGitHubCopilotStatusRequest = null;
 
   gwClient = new GatewayClient({
     port: gatewayPort,
     token: gatewayToken,
-    onConnected: (hello) => {
+    onConnected: () => {
       console.log("[gateway-ws] connected");
       wsAuthRestartInProgress = false;
       // Sync the status indicator — fixes "timeout" showing while WS is actually connected
@@ -2207,14 +2255,11 @@ function connectGatewayWs(): void {
         gatewayStatus = "running";
         mainWindow?.webContents.send("gateway:status", "running");
       }
-      // Extract the canonical session key from hello → snapshot → sessionDefaults
-      const snapshot = hello?.snapshot as Record<string, unknown> | undefined;
-      const sessionDefaults = snapshot?.sessionDefaults as Record<string, unknown> | undefined;
-      const mainSessionKey = sessionDefaults?.mainSessionKey as string | undefined;
+      const mainSessionKey = gwClient?.mainSessionKey;
 
       // After a fresh spawn, auto-discovered plugins (like weixin) may miss
-      // the initial channel-start sweep.  Trigger an in-process restart via
-      // config.patch → SIGUSR1 which properly re-initialises all channels.
+      // the initial channel-start sweep. Replace the process once so every
+      // channel initializes from the final plugin configuration.
       // IMPORTANT: Do NOT notify the renderer of ws-connected yet — if we
       // announce connectivity now, the user can send a message that will be
       // killed when the restart fires seconds later (causing a 30s timeout).
@@ -2226,8 +2271,7 @@ function connectGatewayWs(): void {
         setTimeout(async () => {
           console.log("[gateway-ws] post-spawn: restarting gateway to activate plugin channels");
           try {
-            await gwClient?.restart();
-            console.log("[gateway-ws] post-spawn restart scheduled (SIGUSR1)");
+            await restartManagedGateway("Activating installed plugin channels");
           } catch (err: any) {
             console.error("[gateway-ws] post-spawn restart failed:", err.message);
             // Restart failed — notify renderer anyway so it's not stuck
@@ -2250,10 +2294,9 @@ function connectGatewayWs(): void {
       mainWindow?.webContents.send("gateway:log", `[warn] 网关认证失败 (token 不匹配)，正在重启…`);
       if (!wsAuthRestartInProgress) {
         wsAuthRestartInProgress = true;
-        stopGatewayProcess();
         setTimeout(async () => {
           try {
-            await startGateway();
+            await restartManagedGateway("Replacing Gateway after authentication failure");
           } catch (err: any) {
             console.error("[gateway-ws] restart after auth error failed:", err);
             mainWindow?.webContents.send(
@@ -2298,6 +2341,48 @@ function connectGatewayWs(): void {
     },
   });
   gwClient.start();
+}
+
+function requestGatewayModelCatalog(): Promise<unknown> {
+  if (gatewayModelCatalogRequest) return gatewayModelCatalogRequest;
+  const client = gwClient;
+  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
+
+  const request = client.request("models.list", { view: "all" });
+  gatewayModelCatalogRequest = request;
+  void request.then(
+    () => {
+      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
+    },
+    () => {
+      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
+    },
+  );
+  return request;
+}
+
+function requestGitHubCopilotGatewayStatus(): Promise<{ authenticated: boolean }> {
+  if (gatewayGitHubCopilotStatusRequest) return gatewayGitHubCopilotStatusRequest;
+  const client = gwClient;
+  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
+
+  const request = client
+    .request("models.authStatus", {})
+    .then((status) => ({ authenticated: parseGitHubCopilotGatewayAuthStatus(status) }));
+  gatewayGitHubCopilotStatusRequest = request;
+  void request.then(
+    () => {
+      if (gatewayGitHubCopilotStatusRequest === request) {
+        gatewayGitHubCopilotStatusRequest = null;
+      }
+    },
+    () => {
+      if (gatewayGitHubCopilotStatusRequest === request) {
+        gatewayGitHubCopilotStatusRequest = null;
+      }
+    },
+  );
+  return request;
 }
 
 // ---------------------------------------------------------------------------
@@ -2528,52 +2613,16 @@ function registerIpcHandlers(): void {
   // direct access to the gateway auth token.  All gateway communication
   // flows through main-process IPC handlers (chat:send-message, etc.).
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
-  ipcMain.handle("gateway:restart", async (_event, options?: { hard?: boolean }) => {
-    if (options?.hard) {
-      forceHardRestart = true;
-    }
-    mainWindow?.webContents.send("gateway:log", "[restart] 正在重启网关…");
-
-    // 1. Try in-process restart via config.patch → SIGUSR1 (no model needed)
-    //    Skip if forceHardRestart is set (e.g. capabilities changed — env vars
-    //    are baked at process start and SIGUSR1 won't update them).
-    if (!forceHardRestart && gwClient?.connected) {
-      try {
-        mainWindow?.webContents.send("gateway:log", "[restart] 触发网关内重启 (SIGUSR1)…");
-        await gwClient.restart();
-        mainWindow?.webContents.send(
-          "gateway:log",
-          "[restart] 重启指令已发送，网关将在数秒内重启…",
-        );
-        return;
-      } catch (err: any) {
-        mainWindow?.webContents.send(
-          "gateway:log",
-          `[restart] 内重启失败 (${err.message})，回退到硬重启…`,
-        );
-      }
-    }
-
-    // 2. Fallback: hard kill + cold restart
-    gwClient?.stop();
-    stopGatewayProcess();
-    // Wait until the port is actually free (old process may take a moment to die)
-    const portFreeDeadline = Date.now() + 8000;
-    while (Date.now() < portFreeDeadline) {
-      const still = await checkExistingGateway(gatewayPort);
-      if (!still) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
+  ipcMain.handle("gateway:restart", async (_event, _options?: { hard?: boolean }) => {
     try {
-      await startGateway();
+      await restartManagedGateway("Restart requested by user");
+      mainWindow?.webContents.send("gateway:log", "[restart] 网关重启完成");
     } catch (err: any) {
       const msg = `[error] Gateway restart failed: ${err?.message || err}`;
       console.error(msg);
       mainWindow?.webContents.send("gateway:log", msg);
-      gatewayStatus = "failed";
-      mainWindow?.webContents.send("gateway:status", "failed");
+      throw err;
     }
-    forceHardRestart = false;
   });
 
   // --- Config ---
@@ -2663,7 +2712,13 @@ function registerIpcHandlers(): void {
         const skillMd = path.join(dir, entry.name, "SKILL.md");
         let name = entry.name;
         let description = "";
-        let requirements: SkillRequirements = { bins: [], anyBins: [], env: [], config: [], os: [] };
+        let requirements: SkillRequirements = {
+          bins: [],
+          anyBins: [],
+          env: [],
+          config: [],
+          os: [],
+        };
         if (fs.existsSync(skillMd)) {
           const content = fs.readFileSync(skillMd, "utf-8");
           // Extract the YAML frontmatter block (between the first two `---` fences) so
@@ -2692,8 +2747,8 @@ function registerIpcHandlers(): void {
         const hasEnv = (envName: string): boolean =>
           Boolean(
             process.env[envName] ||
-              skillCfg?.env?.[envName] ||
-              (skillCfg?.apiKey && requirements.primaryEnv === envName),
+            skillCfg?.env?.[envName] ||
+            (skillCfg?.apiKey && requirements.primaryEnv === envName),
           );
 
         const missingBins = requirements.bins.filter((b) => !hasBin(b));
@@ -2844,6 +2899,11 @@ function registerIpcHandlers(): void {
     await gwClient.abortChat(params.sessionKey);
   });
 
+  ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    await gwClient.deleteSession(params.sessionKey);
+  });
+
   ipcMain.handle("chat:clear-history", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     return await gwClient.clearAllHistory();
@@ -2852,7 +2912,7 @@ function registerIpcHandlers(): void {
   // Report as "not connected" while the post-spawn restart is pending.
   // Without this, the renderer's isConnected() poll on mount bypasses the
   // ws-connected gate and lets the user send messages before the gateway's
-  // SIGUSR1 restart completes (sandbox runtime not yet initialized).
+  // post-spawn process replacement completes (sandbox runtime not yet initialized).
   ipcMain.handle("chat:is-connected", () => (gwClient?.connected ?? false) && postSpawnRestartDone);
 
   // --- Cron / Scheduled Tasks ---
@@ -2986,11 +3046,7 @@ function registerIpcHandlers(): void {
           );
           setTimeout(async () => {
             try {
-              console.log(
-                `[weixin-login] gwClient=${gwClient ? "connected" : "null"}, triggering restart`,
-              );
-              await gwClient?.restart();
-              console.log("[weixin-login] gateway restart scheduled (SIGUSR1)");
+              await restartManagedGateway("Activating Weixin after login");
             } catch (err: any) {
               console.error("[weixin-login] restart failed:", err.message);
             }
@@ -3111,11 +3167,7 @@ function registerIpcHandlers(): void {
       // Restart gateway so the channel stops
       console.log("[weixin:disconnect] Credentials removed, restarting gateway...");
       mainWindow?.webContents.send("gateway:log", "[weixin] 微信账号已断开，正在重启网关…");
-      try {
-        await gwClient?.restart();
-      } catch (err: any) {
-        console.error("[weixin:disconnect] restart failed:", err.message);
-      }
+      await restartManagedGateway("Applying Weixin account disconnection");
 
       return { ok: true };
     } catch (err: any) {
@@ -3136,41 +3188,17 @@ function registerIpcHandlers(): void {
         reasoningEffort?: string;
       },
     ) => {
-      const { baseUrl, apiKey, apiFormat, modelName, reasoningEffort } = params;
-      const base = baseUrl.trim().replace(/\/+$/, "");
+      const { baseUrl, apiKey: configuredApiKey, apiFormat, modelName, reasoningEffort } = params;
+      const apiKeyResult = resolveModelApiKey(configuredApiKey, {
+        ...process.env,
+        ...loadStateDirEnv(),
+      });
+      if (!apiKeyResult.ok) return apiKeyResult;
+      const apiKey = apiKeyResult.value;
 
-      // --- SSRF protection: validate URL scheme and block private/reserved IPs ---
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(base);
-      } catch {
-        return { ok: false, message: "Invalid URL" };
-      }
-      if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-        return { ok: false, message: "Only http:// and https:// URLs are allowed" };
-      }
-      const hostname = parsedUrl.hostname;
-      // Block private, loopback, link-local, and metadata IPs
-      const BLOCKED_PATTERNS = [
-        /^127\./,
-        /^10\./,
-        /^172\.(1[6-9]|2\d|3[01])\./,
-        /^192\.168\./,
-        /^169\.254\./,
-        /^0\./,
-        /^\[::1\]$/,
-        /^localhost$/i,
-        /^\[fe80:/i,
-        /^\[fc00:/i,
-        /^\[fd/i,
-      ];
-      if (BLOCKED_PATTERNS.some((p) => p.test(hostname))) {
-        return {
-          ok: false,
-          message: "URLs pointing to private or reserved network addresses are not allowed",
-        };
-      }
-      const versionedBase = base.endsWith("/v1") ? base : `${base}/v1`;
+      const baseUrlResult = prepareModelBaseUrl(baseUrl);
+      if (!baseUrlResult.ok) return baseUrlResult;
+      const versionedBase = baseUrlResult.value;
       const normalizedReasoning =
         reasoningEffort === "minimal" ||
         reasoningEffort === "low" ||
@@ -3181,9 +3209,9 @@ function registerIpcHandlers(): void {
           : undefined;
       try {
         if (apiFormat === "anthropic") {
-          const anthropicBase = base.endsWith("/v1") ? base : `${base}/v1`;
-          const res = await fetch(anthropicBase + "/messages", {
+          const res = await requestModelEndpoint(appendModelEndpoint(versionedBase, "messages"), {
             method: "POST",
+            signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
             headers: {
               "Content-Type": "application/json",
               "x-api-key": apiKey,
@@ -3195,8 +3223,12 @@ function registerIpcHandlers(): void {
               messages: [{ role: "user", content: "hi" }],
             }),
           });
-          if (res.ok || res.status === 400) {
-            return { ok: true, message: "Connection successful (Anthropic)" };
+          if (res.ok) {
+            return {
+              ok: true,
+              message: "Connection successful (Anthropic)",
+              baseUrl: versionedBase,
+            };
           }
           return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
         } else if (apiFormat === "openai-responses") {
@@ -3212,29 +3244,42 @@ function registerIpcHandlers(): void {
             body.reasoning = { effort: normalizedReasoning };
           }
 
-          const res = await fetch(versionedBase + "/responses", {
+          const res = await requestModelEndpoint(appendModelEndpoint(versionedBase, "responses"), {
             method: "POST",
+            signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
             headers,
             body: JSON.stringify(body),
           });
-          if (res.ok || res.status === 400) {
-            return { ok: true, message: "Connection successful (OpenAI Responses)" };
+          if (res.ok) {
+            return {
+              ok: true,
+              message: "Connection successful (OpenAI Responses)",
+              baseUrl: versionedBase,
+            };
           }
           return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
         } else {
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-          const res = await fetch(versionedBase + "/chat/completions", {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              model: modelName || "gpt-4o",
-              max_tokens: 1,
-              messages: [{ role: "user", content: "hi" }],
-            }),
-          });
-          if (res.ok || res.status === 400) {
-            return { ok: true, message: "Connection successful (OpenAI)" };
+          const res = await requestModelEndpoint(
+            appendModelEndpoint(versionedBase, "chat/completions"),
+            {
+              method: "POST",
+              signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
+              headers,
+              body: JSON.stringify({
+                model: modelName || "gpt-4o",
+                max_tokens: 1,
+                messages: [{ role: "user", content: "hi" }],
+              }),
+            },
+          );
+          if (res.ok) {
+            return {
+              ok: true,
+              message: "Connection successful (OpenAI)",
+              baseUrl: versionedBase,
+            };
           }
           return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
         }
@@ -3243,6 +3288,78 @@ function registerIpcHandlers(): void {
       }
     },
   );
+
+  ipcMain.handle("model:github-copilot:prepare", async () => {
+    const config = readConfig();
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const restartRequired = ensureGitHubCopilotProviderPlugin(config);
+    if (restartRequired) {
+      await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      invalidateGitHubCopilotAuthStatusCache();
+    }
+    return { restartRequired };
+  });
+
+  ipcMain.handle("model:github-copilot:start-login", () => ({
+    sessionId: githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime()),
+  }));
+
+  ipcMain.handle("model:github-copilot:cancel-login", (_event, sessionId?: string) => ({
+    cancelled: githubCopilotAuthManager.cancel(sessionId),
+  }));
+
+  ipcMain.handle("model:github-copilot:disconnect", async () => {
+    githubCopilotAuthManager.stop();
+    if (gwClient?.connected) {
+      try {
+        const payload = await gwClient.request("models.authLogout", {
+          provider: "github-copilot",
+        });
+        const result = parseGitHubCopilotGatewayDisconnectResult(payload);
+        invalidateGitHubCopilotAuthStatusCache();
+        gatewayGitHubCopilotStatusRequest = null;
+        return result;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway logout unavailable:", error);
+      }
+    }
+
+    const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
+    if (gwClient?.connected) {
+      try {
+        await gwClient.request("models.authStatus", { refresh: true });
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
+      }
+    }
+    return result;
+  });
+
+  ipcMain.handle("model:github-copilot:status", async () => {
+    if (gwClient?.connected) {
+      try {
+        return await requestGitHubCopilotGatewayStatus();
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway auth status unavailable:", error);
+      }
+    }
+    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime());
+  });
+
+  ipcMain.handle("model:github-copilot:list-models", async () => {
+    if (gwClient?.connected) {
+      try {
+        const result = await requestGatewayModelCatalog();
+        const models = parseGitHubCopilotGatewayModels(result);
+        if (models.length > 0) return models;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
+      }
+    }
+    return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
+  });
 
   // --- Usage (via gateway WebSocket sessions.usage) ---
   ipcMain.handle("usage:get-stats", async () => {
@@ -3577,26 +3694,19 @@ function registerIpcHandlers(): void {
     settingsStore.set("sandboxEnabled", enabled);
     // Sandbox enabled/disabled requires hard gateway restart — COMSPEC and
     // NODE_OPTIONS are baked at process start, can't change for running gateway.
-    forceHardRestart = true;
     mainWindow?.webContents.send(
       "gateway:log",
       `[sandbox] Sandbox ${enabled ? "enabled" : "disabled"} — restarting gateway…`,
     );
-    gwClient?.stop();
-    stopGatewayProcess();
-    const portFreeDeadline = Date.now() + 8000;
-    while (Date.now() < portFreeDeadline) {
-      const still = await checkExistingGateway(gatewayPort);
-      if (!still) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    // Keep forceHardRestart=true so startGatewayInner won't reconnect to
-    // a stale process that still has the old COMSPEC/NODE_OPTIONS env vars.
     try {
-      await startGateway();
-    } catch {}
-    forceHardRestart = false;
-    return { ok: true };
+      await restartManagedGateway(`Applying sandbox ${enabled ? "enablement" : "disablement"}`);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   });
 
   ipcMain.handle(
@@ -3716,9 +3826,8 @@ function registerIpcHandlers(): void {
     const clean = caps.filter((c) => KNOWN_CAPS.has(c));
     settingsStore.set("sandboxCapabilities", clean);
     toolSandbox?.setCapabilities(clean);
-    // Capabilities are baked into env var at gateway start — need hard restart
-    // (SIGUSR1 in-process restart doesn't update env vars).
-    forceHardRestart = true;
+    // Capabilities are baked into the Gateway environment, so the renderer
+    // asks the user to apply them through the hard restart IPC.
     return { ok: true, caps: clean, needsRestart: true };
   });
 
@@ -4430,7 +4539,7 @@ function registerIpcHandlers(): void {
                 // Nudge the model to retry — user granted permission but the original
                 // command already failed, so the model doesn't know to try again.
                 if (activeChatSession && gwClient?.connected) {
-                  const lang = settingsStore.get("language");
+                  const lang = settingsStore.get("language") ?? "en-US";
                   const accessLabel = mainT(lang, isRW ? "perm.accessRW" : "perm.accessRO");
                   const retryMsg = mainT(lang, "perm.retryNudge")
                     .replace("{dir}", dirToAdd)
@@ -4542,6 +4651,28 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  if (!settingsStore.has("language")) {
+    settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
+  }
+
+  try {
+    const home = app.getPath("home");
+    const recovery = recoverInterruptedOpenClawUpgrade(path.join(home, ".microclaw"), {
+      expectedStateDir: path.join(home, ".openclaw"),
+    });
+    if (recovery.status === "rolled-back") {
+      console.log("[upgrade] Restored the previous OpenClaw package and state");
+    }
+  } catch (error) {
+    const inProgress = error instanceof UpgradeInProgressError;
+    dialog.showErrorBox(
+      inProgress ? "MicroClaw upgrade in progress" : "OpenClaw recovery failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    app.quit();
+    return;
+  }
+
   registerIpcHandlers();
 
   // Sync auto-start with OS
@@ -4561,8 +4692,9 @@ app.whenReady().then(async () => {
       );
     },
     onRestartGateway: () => {
-      stopGatewayProcess();
-      startGateway();
+      restartManagedGateway("Restart requested from system tray").catch((error) =>
+        console.error("[tray] Gateway restart failed:", error),
+      );
     },
     onQuit: () => {
       isQuitting = true;
@@ -4638,6 +4770,7 @@ app.on("before-quit", () => {
     watcherDebounceTimer = null;
   }
   destroyTray();
+  githubCopilotAuthManager.stop();
   gwClient?.stop();
   studioBackendManager?.stop();
   stopGatewayProcess();

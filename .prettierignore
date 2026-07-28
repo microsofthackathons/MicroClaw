@@ -4,6 +4,7 @@
 **/release/
 **/coverage/
 **/build/
+**/obj/
 desktop/release/
 desktop/dist/
 build/
@@ -50,9 +51,8 @@ skills/**/_meta.json
 # Studio backend test fixtures (if any get added later)
 desktop/studio-backend/data/
 
-# Plugin docs and changelog that have specific formatting
-plugins/openclaw-weixin/CHANGELOG*.md
-plugins/openclaw-weixin/README*.md
+# Mirrored third-party plugin source; runtime comes from the pinned release archive.
+plugins/openclaw-weixin/
 
 # Top-level legal / generated text
 LICENSE

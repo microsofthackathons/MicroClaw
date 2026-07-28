@@ -3,11 +3,7 @@ import type { WeixinApiOptions } from "../api/api.js";
 import { logger } from "../util/logger.js";
 import { getMimeFromFilename } from "../media/mime.js";
 import { sendFileMessageWeixin, sendImageMessageWeixin, sendVideoMessageWeixin } from "./send.js";
-import {
-  uploadFileAttachmentToWeixin,
-  uploadFileToWeixin,
-  uploadVideoToWeixin,
-} from "../cdn/upload.js";
+import { uploadFileAttachmentToWeixin, uploadFileToWeixin, uploadVideoToWeixin } from "../cdn/upload.js";
 
 /**
  * Upload a local file and send it as a weixin message, routing by MIME type:
@@ -22,7 +18,7 @@ export async function sendWeixinMediaFile(params: {
   filePath: string;
   to: string;
   text: string;
-  opts: WeixinApiOptions & { contextToken?: string };
+  opts: WeixinApiOptions & { contextToken?: string; runId?: string };
   cdnBaseUrl: string;
 }): Promise<{ messageId: string }> {
   const { filePath, to, text, opts, cdnBaseUrl } = params;

@@ -1,7 +1,12 @@
 <template>
   <div v-if="modelValue" class="model-setup-overlay">
     <div class="model-setup-panel" role="dialog" aria-modal="true">
-      <button class="model-setup-close" type="button" :aria-label="t('common.close')" @click="close">
+      <button
+        class="model-setup-close"
+        type="button"
+        :aria-label="t('common.close')"
+        @click="close"
+      >
         <svg
           width="12"
           height="12"
@@ -33,10 +38,40 @@
             @click="selectFamily(family.id)"
           >
             <span class="family-icon" aria-hidden="true">
-              <img :src="family.logo" :alt="family.label" />
+              <img v-if="family.logo" :src="family.logo" :alt="getFamilyLabel(family)" />
+              <svg
+                v-else
+                class="custom-provider-icon"
+                viewBox="0 0 64 64"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  x="10"
+                  y="10"
+                  width="44"
+                  height="44"
+                  rx="14"
+                  fill="currentColor"
+                  opacity=".08"
+                />
+                <circle cx="24" cy="26" r="5" stroke="currentColor" stroke-width="3" />
+                <circle cx="42" cy="22" r="4" stroke="currentColor" stroke-width="3" />
+                <circle cx="39" cy="42" r="5" stroke="currentColor" stroke-width="3" />
+                <path
+                  d="M28.5 24.5 38 22.8M27.5 30 36 39M41.5 26 40 37"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                />
+              </svg>
             </span>
-            <span class="family-name">{{ family.label }}</span>
-            <span v-if="selectedFamilyId === family.id" class="family-selected-badge" aria-hidden="true">
+            <span class="family-name">{{ getFamilyLabel(family) }}</span>
+            <span
+              v-if="selectedFamilyId === family.id"
+              class="family-selected-badge"
+              aria-hidden="true"
+            >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                 <path
                   d="M3.25 8.25L6.5 11.5L12.75 5.25"
@@ -50,60 +85,174 @@
           </button>
         </div>
 
-        <button class="primary-action" type="button" @click.stop="handleGetApiKey">
-          {{ t("modelSetup.getApiKey") }}
+        <button class="primary-action" type="button" @click.stop="handlePrimaryAction">
+          {{
+            isGitHubCopilot
+              ? t("modelSetup.copilotSignIn")
+              : isCustomProvider
+                ? t("modelSetup.configureCustom")
+                : t("modelSetup.getApiKey")
+          }}
         </button>
-        <button class="text-action" type="button" @click.stop="goToKeyForm">
+        <button
+          v-if="!isCustomProvider && !isGitHubCopilot"
+          class="text-action"
+          type="button"
+          @click.stop="goToKeyForm()"
+        >
           {{ t("modelSetup.haveApiKey") }}
         </button>
       </template>
 
       <template v-else>
         <h2>{{ t("modelSetup.title") }}</h2>
-        <p class="model-setup-desc">{{ t("modelSetup.keyDesc") }}</p>
+        <p class="model-setup-desc">
+          {{
+            t(
+              isGitHubCopilot
+                ? "modelSetup.copilotDesc"
+                : isCustomProvider
+                  ? "modelSetup.customDesc"
+                  : "modelSetup.keyDesc",
+            )
+          }}
+        </p>
 
         <el-form label-position="top" class="model-key-form">
-          <el-form-item :label="t('modelSetup.modelSelect')">
-            <el-select
-              v-model="selectedModelName"
-              style="width: 100%"
-              filterable
-              allow-create
-              default-first-option
-              :reserve-keyword="false"
-              :placeholder="t('modelSetup.modelPlaceholder')"
-              @change="handleModelChange"
+          <template v-if="isGitHubCopilot">
+            <div class="copilot-auth-panel">
+              <template v-if="githubAuthState === 'code'">
+                <span class="copilot-auth-label">{{ t("modelSetup.copilotEnterCode") }}</span>
+                <strong class="copilot-device-code">{{ githubUserCode }}</strong>
+                <span class="copilot-auth-hint">
+                  {{
+                    t("modelSetup.copilotCodeExpires", {
+                      minutes: githubCodeExpiryMinutes,
+                    })
+                  }}
+                </span>
+                <button
+                  class="text-action copilot-open-action"
+                  type="button"
+                  @click.stop="openGitHubVerificationPage"
+                >
+                  {{ t("modelSetup.copilotOpenGitHub") }}
+                </button>
+              </template>
+              <template
+                v-else-if="githubAuthState === 'checking' || githubAuthState === 'signing-in'"
+              >
+                <span class="copilot-auth-label">
+                  {{
+                    t(
+                      githubAuthState === "checking"
+                        ? "modelSetup.copilotChecking"
+                        : "modelSetup.copilotStarting",
+                    )
+                  }}
+                </span>
+                <span class="copilot-auth-hint">{{ t("modelSetup.copilotTokenPrivacy") }}</span>
+              </template>
+              <template v-else-if="githubAuthState === 'authenticated'">
+                <span class="copilot-auth-success">{{ t("modelSetup.copilotConnected") }}</span>
+                <button
+                  class="text-action copilot-open-action"
+                  type="button"
+                  @click.stop="startGitHubCopilotLogin"
+                >
+                  {{ t("modelSetup.copilotUseAnotherAccount") }}
+                </button>
+              </template>
+              <template v-else>
+                <span class="copilot-auth-label">{{ t("modelSetup.copilotSignInHint") }}</span>
+                <span class="copilot-auth-hint">{{ t("modelSetup.copilotTokenPrivacy") }}</span>
+              </template>
+            </div>
+
+            <el-form-item
+              v-if="githubAuthState === 'authenticated'"
+              :label="t('modelSetup.modelSelect')"
             >
-              <el-option-group
-                v-for="family in modelFamilies"
-                :key="family.id"
-                :label="family.label"
+              <el-select
+                v-model="selectedGitHubModel"
+                style="width: 100%"
+                filterable
+                :placeholder="t('modelSetup.copilotModelPlaceholder')"
               >
                 <el-option
-                  v-for="model in family.models"
-                  :key="`${family.id}:${model}`"
-                  :label="model"
-                  :value="model"
+                  v-for="model in githubModels"
+                  :key="model.id"
+                  :label="model.name"
+                  :value="model.id"
                 />
-              </el-option-group>
-            </el-select>
-          </el-form-item>
-          <el-form-item :label="t('modelSetup.baseUrl')">
-            <el-input
-              v-model="baseUrl"
-              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-              @keydown.enter.prevent="saveAndStart"
-            />
-          </el-form-item>
-          <el-form-item :label="t('modelSetup.apiKey')">
-            <el-input
-              v-model="apiKey"
-              type="password"
-              show-password
-              :placeholder="selectedFamily.apiKeyPlaceholder"
-              @keydown.enter.prevent="saveAndStart"
-            />
-          </el-form-item>
+              </el-select>
+            </el-form-item>
+          </template>
+
+          <template v-else>
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerId')">
+              <el-input
+                v-model="providerKey"
+                :placeholder="t('modelSetup.providerIdPlaceholder')"
+                @keydown.enter.prevent="saveAndStart"
+              />
+              <div class="field-hint">{{ t("modelSetup.providerIdHint") }}</div>
+            </el-form-item>
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.apiFormat')">
+              <el-select v-model="selectedApiFormat" style="width: 100%">
+                <el-option :label="t('modelSetup.apiFormatOpenAIChat')" value="openai-chat" />
+                <el-option
+                  :label="t('modelSetup.apiFormatOpenAIResponses')"
+                  value="openai-responses"
+                />
+                <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
+              </el-select>
+            </el-form-item>
+            <el-form-item :label="t('modelSetup.modelSelect')">
+              <el-input
+                v-if="isCustomProvider"
+                v-model="selectedModelName"
+                :placeholder="t('modelSetup.modelPlaceholder')"
+                @keydown.enter.prevent="saveAndStart"
+              />
+              <el-select
+                v-else
+                v-model="selectedModelName"
+                style="width: 100%"
+                filterable
+                :placeholder="t('modelSetup.modelPlaceholder')"
+              >
+                <el-option
+                  v-for="model in selectedManagedProvider?.models ?? []"
+                  :key="model.id"
+                  :label="model.name"
+                  :value="model.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item :label="t('modelSetup.baseUrl')">
+              <el-input
+                v-model="baseUrl"
+                :disabled="!isCustomProvider"
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                @keydown.enter.prevent="saveAndStart"
+              />
+            </el-form-item>
+            <el-form-item
+              :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
+            >
+              <el-input
+                v-model="apiKey"
+                type="password"
+                show-password
+                :placeholder="selectedFamily.apiKeyPlaceholder"
+                @keydown.enter.prevent="saveAndStart"
+              />
+              <div v-if="isCustomProvider" class="field-hint">
+                {{ t("modelSetup.credentialHint") }}
+              </div>
+            </el-form-item>
+          </template>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
         </el-form>
 
@@ -113,15 +262,23 @@
             type="button"
             @mousedown.prevent.stop="goToSelectStep"
           >
-            back
+            {{ t("modelSetup.back") }}
+          </button>
+          <button
+            v-if="isGitHubCopilot && githubLoginInProgress"
+            class="text-action"
+            type="button"
+            @mousedown.prevent.stop="cancelGitHubCopilotLogin"
+          >
+            {{ t("modelSetup.copilotCancel") }}
           </button>
           <button
             class="primary-action"
             type="button"
-            :disabled="saving"
-            @mousedown.prevent.stop="saveAndStart"
+            :disabled="formPrimaryDisabled"
+            @mousedown.prevent.stop="handleFormPrimaryAction"
           >
-            {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
+            {{ formPrimaryLabel }}
           </button>
         </div>
       </template>
@@ -132,22 +289,36 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { t } from "@/i18n";
-import qwenLogo from "@/assets/modelprovider/Qwen.png";
-import minimaxLogo from "@/assets/modelprovider/minimax.png";
+import {
+  mergeModelProviderConfig,
+  selectPrimaryModelConfig,
+  validateModelProviderInput,
+  type ModelApiFormat,
+  type ModelProviderInput,
+  type ModelProviderValidationError,
+} from "@/utils/model-provider";
+import {
+  MANAGED_MODEL_PROVIDERS,
+  getManagedModelProvider,
+  type ManagedModelProviderId,
+  type ManagedModelPreset,
+} from "@/utils/managed-model-providers";
+import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
 
-type ModelFamilyId = "qwen" | "minimax";
-type ApiFormat = "openai-chat";
+type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
-  label: string;
+  label?: string;
+  labelKey?: string;
   providerKey: string;
   baseUrl: string;
-  apiFormat: ApiFormat;
-  models: string[];
+  apiFormat: ModelApiFormat;
+  models: ManagedModelPreset[];
   defaultModel: string;
   apiKeyPlaceholder: string;
-  logo: string;
+  logo?: string;
+  signupUrl?: string;
 }
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -156,37 +327,30 @@ const emit = defineEmits<{
   configured: [];
 }>();
 
-const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const MINIMAX_OPENAI_COMPATIBLE_BASE_URL = "https://api.minimaxi.com/v1";
-const MINIMAX_SIGNUP_URL_CODES = [
-  104, 116, 116, 112, 115, 58, 47, 47, 112, 108, 97, 116, 102, 111, 114, 109, 46, 109, 105,
-  110, 105, 109, 97, 120, 105, 46, 99, 111, 109, 47, 98, 121, 111, 107, 45, 116, 114,
-  105, 97, 108, 63, 115, 111, 117, 114, 99, 101, 61, 109, 105, 99, 114, 111, 99, 108,
-  97, 119,
-];
-
 const modelFamilies: ModelFamilyPreset[] = [
+  ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
+    ...provider,
+    providerKey: provider.id,
+  })),
   {
-    id: "qwen",
-    label: "千问",
-    providerKey: "qwen",
-    baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
+    id: "github-copilot",
+    labelKey: "modelSetup.githubCopilot",
+    providerKey: "",
+    baseUrl: "",
     apiFormat: "openai-chat",
-    models: ["qwen", "qwen3.7-plus", "qwen3.6-plus", "qwen3-32b", "qwen3.6-flash", "qwen3.5-plus"],
-    defaultModel: "qwen3.7-plus",
+    models: [],
+    defaultModel: "",
     apiKeyPlaceholder: "sk-...",
-    logo: qwenLogo,
   },
   {
-    id: "minimax",
-    label: "MiniMax",
-    providerKey: "minimax",
-    baseUrl: MINIMAX_OPENAI_COMPATIBLE_BASE_URL,
+    id: "custom",
+    labelKey: "modelSetup.otherModel",
+    providerKey: "custom",
+    baseUrl: "",
     apiFormat: "openai-chat",
-    models: ["MiniMax-M3", "MiniMax-M1"],
-    defaultModel: "MiniMax-M3",
-    apiKeyPlaceholder: "sk-...",
-    logo: minimaxLogo,
+    models: [],
+    defaultModel: "",
+    apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
   },
 ];
 
@@ -198,46 +362,100 @@ function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
   return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
 }
 
-function getFamilyByModel(modelName: string): ModelFamilyPreset | undefined {
-  return modelFamilies.find((family) => family.models.includes(modelName));
-}
-
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
 const selectedModelName = ref(getDefaultModel(modelFamilies[0]));
 const baseUrl = ref(modelFamilies[0].baseUrl);
+const providerKey = ref(modelFamilies[0].providerKey);
+const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
+let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
+const selectedManagedProvider = computed(() =>
+  getManagedModelProvider(selectedFamilyId.value),
+);
+const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
+const isGitHubCopilot = computed(() => selectedFamilyId.value === "github-copilot");
+const {
+  state: githubAuthState,
+  models: githubModels,
+  selectedModel: selectedGitHubModel,
+  userCode: githubUserCode,
+  loginInProgress: githubLoginInProgress,
+  codeExpiryMinutes: githubCodeExpiryMinutes,
+  loadStatus: loadGitHubCopilotStatus,
+  startLogin: startGitHubCopilotLogin,
+  cancelLogin: cancelGitHubCopilotLogin,
+  reset: resetGitHubCopilotState,
+  openVerificationPage: openGitHubVerificationPage,
+} = useGitHubCopilotAuth({
+  isActive: () => props.modelValue && isKeyStep.value && isGitHubCopilot.value,
+  clearError: () => {
+    errorMsg.value = "";
+  },
+  setError: (message) => {
+    errorMsg.value = message;
+  },
+});
+const formPrimaryDisabled = computed(
+  () =>
+    saving.value ||
+    (isGitHubCopilot.value &&
+      (      githubAuthState.value === "checking" ||
+      githubAuthState.value === "signing-in" ||
+      githubAuthState.value === "code" ||
+      (githubAuthState.value === "authenticated" && !selectedGitHubModel.value))),
+);
+const formPrimaryLabel = computed(() => {
+  if (isGitHubCopilot.value) {
+    if (saving.value) return t("modelSetup.starting");
+    if (githubAuthState.value === "authenticated") return t("modelSetup.copilotUseModel");
+    if (
+      githubAuthState.value === "checking" ||
+      githubAuthState.value === "signing-in" ||
+      githubAuthState.value === "code"
+    ) {
+      return t("modelSetup.copilotWaiting");
+    }
+    return t("modelSetup.copilotSignIn");
+  }
+  return saving.value ? t("modelSetup.validating") : t("modelSetup.start");
+});
 
 watch(
   () => props.modelValue,
   (visible) => {
+    cancelPendingSubmission();
+    void resetGitHubCopilotState();
     if (!visible) return;
+    selectFamily("qwen");
     isKeyStep.value = false;
+    apiKey.value = "";
     errorMsg.value = "";
   },
+  { immediate: true },
 );
 
-function resolveApiValue(_apiFormat: ApiFormat): string {
-  return "openai-completions";
+function getFamilyLabel(family: ModelFamilyPreset): string {
+  return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
 }
 
-function decodeAsciiCodes(codes: number[]): string {
-  return String.fromCharCode(...codes);
+async function restartGatewayAfterModelSetup(): Promise<void> {
+  await window.openclaw.gateway.restart();
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
-async function reloadGatewayAfterModelSetup() {
-  try {
-    await window.openclaw.gateway.restart();
-  } catch (err) {
-    console.warn("Gateway restart after model setup failed", err);
-  }
+function cancelPendingSubmission() {
+  submissionGeneration += 1;
+  saving.value = false;
 }
 
 function close() {
+  cancelPendingSubmission();
+  void resetGitHubCopilotState();
   emit("update:modelValue", false);
 }
 
@@ -246,30 +464,32 @@ function selectFamily(familyId: ModelFamilyId) {
   selectedFamilyId.value = family.id;
   selectedModelName.value = getDefaultModel(family);
   baseUrl.value = family.baseUrl;
-  errorMsg.value = "";
-}
-
-function handleModelChange(modelName: string) {
-  const family = getFamilyByModel(modelName);
-  if (!family || family.id === selectedFamilyId.value) return;
-
-  selectedFamilyId.value = family.id;
-  baseUrl.value = family.baseUrl;
+  providerKey.value = family.providerKey;
+  selectedApiFormat.value = family.apiFormat;
   errorMsg.value = "";
 }
 
 function goToKeyForm() {
   selectedModelName.value = getDefaultModel(selectedFamily.value);
   baseUrl.value = selectedFamily.value.baseUrl;
+  providerKey.value = selectedFamily.value.providerKey;
+  selectedApiFormat.value = selectedFamily.value.apiFormat;
   isKeyStep.value = true;
   errorMsg.value = "";
+  if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
+}
+
+function handlePrimaryAction() {
+  if (isCustomProvider.value || isGitHubCopilot.value) {
+    goToKeyForm();
+    return;
+  }
+  handleGetApiKey();
 }
 
 function handleGetApiKey() {
-  const signupUrl =
-    selectedFamily.value.id === "qwen"
-      ? "https://click.qianwenai.com/m/20000000741/"
-      : decodeAsciiCodes(MINIMAX_SIGNUP_URL_CODES);
+  const signupUrl = selectedManagedProvider.value?.signupUrl;
+  if (!signupUrl) return;
   try {
     window.openclaw?.shell?.openExternal?.(signupUrl);
   } catch {
@@ -279,76 +499,131 @@ function handleGetApiKey() {
 }
 
 function goToSelectStep() {
+  cancelPendingSubmission();
+  void resetGitHubCopilotState();
   isKeyStep.value = false;
   errorMsg.value = "";
 }
 
-async function saveAndStart() {
-  const trimmedModelName = selectedModelName.value.trim();
-  const trimmedBaseUrl = baseUrl.value.trim();
-  const trimmedKey = apiKey.value.trim();
-  if (!trimmedModelName) {
-    errorMsg.value = t("modelSetup.enterModelName");
+async function saveGitHubCopilotModel(): Promise<void> {
+  if (saving.value) return;
+  if (
+    !selectedGitHubModel.value.startsWith("github-copilot/") ||
+    !githubModels.value.some((model) => model.id === selectedGitHubModel.value)
+  ) {
+    errorMsg.value = t("modelSetup.copilotSelectModel");
     return;
   }
-  if (!trimmedKey) {
-    errorMsg.value = t("modelSetup.enterApiKey");
-    return;
-  }
+
+  const generation = ++submissionGeneration;
   saving.value = true;
   errorMsg.value = "";
   try {
-    const family = selectedFamily.value;
-    const modelName = trimmedModelName;
-    const modelRef = `${family.providerKey}/${modelName}`;
+    await window.openclaw.model.prepareGitHubCopilot();
+    if (generation !== submissionGeneration || !props.modelValue) return;
     const existing = (await window.openclaw.config.read()) || {};
-    const providerEntry: Record<string, unknown> = {
-      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
-      apiKey: trimmedKey,
-      api: resolveApiValue(family.apiFormat),
-      models: [
-        {
-          id: modelName,
-          name: modelName,
-          input: ["text", "image"],
-        },
-      ],
-    };
-
-    existing.models = {
-      ...(existing.models ?? {}),
-      mode: existing.models?.mode ?? "merge",
-      providers: {
-        ...(existing.models?.providers ?? {}),
-        [family.providerKey]: providerEntry,
-      },
-    };
-    existing.agents = existing.agents || {};
-    existing.agents.defaults = existing.agents.defaults || {};
-    existing.agents.defaults.model = {
-      ...(typeof existing.agents.defaults.model === "object" && existing.agents.defaults.model
-        ? existing.agents.defaults.model
-        : {}),
-      primary: modelRef,
-    };
-
-    await window.openclaw.config.write(existing);
-  } catch (err: any) {
-    errorMsg.value = t("modelSetup.saveFailed", { error: err.message || err });
-    saving.value = false;
-    return;
-  }
-
-  await reloadGatewayAfterModelSetup();
-  try {
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    const nextConfig = selectPrimaryModelConfig(existing, selectedGitHubModel.value, {
+      ensureAllowed: true,
+    });
+    await window.openclaw.config.write(nextConfig);
+    await restartGatewayAfterModelSetup();
+    if (generation !== submissionGeneration || !props.modelValue) return;
     emit("update:modelValue", false);
     emit("configured");
+  } catch (error) {
+    errorMsg.value = t("modelSetup.saveFailed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   } finally {
-    saving.value = false;
+    if (generation === submissionGeneration) saving.value = false;
   }
 }
 
+function handleFormPrimaryAction(): void {
+  if (isGitHubCopilot.value) {
+    if (githubAuthState.value === "authenticated") {
+      void saveGitHubCopilotModel();
+    } else {
+      void startGitHubCopilotLogin();
+    }
+  } else {
+    void saveAndStart();
+  }
+}
+
+function validationMessage(error: ModelProviderValidationError): string {
+  const keys: Record<ModelProviderValidationError, string> = {
+    providerKeyRequired: "modelSetup.enterProviderId",
+    invalidProviderKey: "modelSetup.invalidProviderId",
+    modelNameRequired: "modelSetup.enterModelName",
+    baseUrlRequired: "modelSetup.enterBaseUrl",
+    invalidBaseUrl: "modelSetup.invalidBaseUrl",
+    apiKeyRequired: "modelSetup.enterApiKey",
+    invalidCredentialReference: "modelSetup.invalidCredentialReference",
+  };
+  return t(keys[error]);
+}
+
+async function saveAndStart() {
+  if (saving.value) return;
+
+  const managedModel = selectedManagedProvider.value?.models.find(
+    (model) => model.id === selectedModelName.value,
+  );
+  const input: ModelProviderInput = {
+    providerKey: providerKey.value,
+    baseUrl: baseUrl.value,
+    apiKey: apiKey.value,
+    apiFormat: selectedApiFormat.value,
+    modelName: selectedModelName.value,
+    input: isCustomProvider.value ? ["text"] : managedModel?.input,
+  };
+  const validationError = validateModelProviderInput(input, {
+    requireApiKey: !isCustomProvider.value,
+  });
+  if (validationError) {
+    errorMsg.value = validationMessage(validationError);
+    return;
+  }
+
+  const generation = ++submissionGeneration;
+  saving.value = true;
+  errorMsg.value = "";
+  try {
+    const connection = await window.openclaw.model.testConnection({
+      baseUrl: input.baseUrl.trim(),
+      apiKey: input.apiKey.trim(),
+      apiFormat: input.apiFormat,
+      modelName: input.modelName.trim(),
+    });
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (!connection.ok) {
+      errorMsg.value = t("modelSetup.connectionFailed", { error: connection.message });
+      return;
+    }
+
+    const verifiedInput = {
+      ...input,
+      baseUrl: connection.baseUrl ?? input.baseUrl,
+    };
+    const existing = (await window.openclaw.config.read()) || {};
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    const nextConfig = mergeModelProviderConfig(existing, verifiedInput);
+    await window.openclaw.config.write(nextConfig);
+    await restartGatewayAfterModelSetup();
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    emit("update:modelValue", false);
+    emit("configured");
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    errorMsg.value = t("modelSetup.saveFailed", { error: message });
+  } finally {
+    if (generation === submissionGeneration) {
+      saving.value = false;
+    }
+  }
+}
 </script>
 
 <style scoped>
@@ -359,6 +634,8 @@ async function saveAndStart() {
 .primary-action,
 .text-action,
 .model-key-form,
+.copilot-auth-panel,
+.field-hint,
 .error-msg {
   --ux-overlay: rgba(255, 255, 255, 0.72);
   --ux-panel-bg: #fff;
@@ -381,10 +658,12 @@ async function saveAndStart() {
   --ux-danger: var(--smtc-status-danger-foreground);
   --ux-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
   --ux-flyout-border: #e7e8ec;
-  --ux-flyout-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(250, 250, 252, 0.9) 100%);
-  --ux-flyout-shadow:
-    0 24px 44px rgba(21, 24, 31, 0.16),
-    0 8px 18px rgba(21, 24, 31, 0.1);
+  --ux-flyout-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(250, 250, 252, 0.9) 100%
+  );
+  --ux-flyout-shadow: 0 24px 44px rgba(21, 24, 31, 0.16), 0 8px 18px rgba(21, 24, 31, 0.1);
   --ux-font-family: "Segoe UI", "Noto Sans SC", sans-serif;
   --ux-title-size: 28px;
   --ux-title-weight: 700;
@@ -407,8 +686,9 @@ async function saveAndStart() {
 }
 
 .model-setup-panel {
-  width: min(470px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 32px));
   min-height: 430px;
+  max-height: calc(100vh - 32px);
   position: relative;
   padding: 42px 34px 34px;
   border-radius: var(--ux-panel-radius);
@@ -417,6 +697,7 @@ async function saveAndStart() {
   font-family: var(--ux-font-family);
   box-shadow: var(--ux-shadow);
   text-align: center;
+  overflow-y: auto;
 }
 
 .model-setup-close {
@@ -461,8 +742,8 @@ h2 {
 
 .model-family-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 26px;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 14px;
   margin-bottom: 28px;
 }
 
@@ -512,6 +793,12 @@ h2 {
   height: 76px;
   object-fit: contain;
   display: block;
+}
+
+.custom-provider-icon {
+  width: 76px;
+  height: 76px;
+  color: var(--ux-panel-text);
 }
 
 .family-name {
@@ -610,13 +897,14 @@ h2 {
 
 .key-actions {
   margin-top: 16px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 12px;
 }
 
 .key-actions .text-action,
 .key-actions .primary-action {
+  flex: 1 1 0;
+  width: auto;
   margin-top: 0;
   height: 46px;
 }
@@ -630,6 +918,64 @@ h2 {
   font-size: var(--ux-label-size);
   font-weight: var(--ux-label-weight);
   line-height: 1.4;
+}
+
+.field-hint {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--ux-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.copilot-auth-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid var(--ux-border);
+  border-radius: 14px;
+  background: var(--ux-card-active);
+  text-align: center;
+}
+
+.copilot-auth-label,
+.copilot-auth-success {
+  color: var(--ux-panel-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.copilot-auth-success {
+  color: #238636;
+}
+
+.copilot-auth-hint {
+  color: var(--ux-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.copilot-device-code {
+  padding: 8px 14px;
+  border: 1px solid var(--ux-border);
+  border-radius: 10px;
+  background: var(--ux-panel-bg);
+  color: var(--ux-panel-text);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 24px;
+  letter-spacing: 2px;
+  user-select: all;
+}
+
+.copilot-open-action {
+  width: auto;
+  height: auto;
+  margin-top: 2px;
+  padding: 6px 12px;
 }
 
 .model-key-form :deep(.el-input__wrapper),
