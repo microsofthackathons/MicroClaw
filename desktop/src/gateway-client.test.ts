@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { GatewayClient, normalizeGatewayChannelsStatus } from "./gateway-client";
+import {
+  extractMainSessionKey,
+  GatewayClient,
+  normalizeGatewayChannelsStatus,
+} from "./gateway-client";
 
 describe("normalizeGatewayChannelsStatus", () => {
   it("preserves Gateway order and derives connection state from accounts", () => {
@@ -44,9 +48,28 @@ describe("normalizeGatewayChannelsStatus", () => {
   });
 });
 
+describe("extractMainSessionKey", () => {
+  it("reads the canonical main key from the Gateway hello snapshot", () => {
+    expect(
+      extractMainSessionKey({
+        snapshot: { sessionDefaults: { mainSessionKey: "global" } },
+      }),
+    ).toBe("global");
+  });
+
+  it("returns null for a malformed Gateway hello snapshot", () => {
+    expect(extractMainSessionKey({ snapshot: { sessionDefaults: [] } })).toBeNull();
+  });
+});
+
 describe("GatewayClient.deleteSession", () => {
-  function createClient() {
-    return Object.create(GatewayClient.prototype) as GatewayClient;
+  function createClient(mainSessionKey: string | null = "agent:main:main") {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.defineProperty(client, "_mainSessionKey", {
+      value: mainSessionKey,
+      writable: true,
+    });
+    return client;
   }
 
   it("deletes ordinary sessions and their transcripts", async () => {
@@ -62,17 +85,29 @@ describe("GatewayClient.deleteSession", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("resets an agent's main session instead of attempting to delete it", async () => {
-    const client = createClient();
+  it("resets the exact canonical main session from the Gateway handshake", async () => {
+    const client = createClient("global");
     const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
 
-    await client.deleteSession("agent:painter:main");
+    await client.deleteSession("global");
 
     expect(request).toHaveBeenCalledWith("sessions.reset", {
-      key: "agent:painter:main",
+      key: "global",
       reason: "reset",
     });
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes a non-default agent's main-named session", async () => {
+    const client = createClient("agent:painter:main");
+    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+
+    await client.deleteSession("agent:writer:main");
+
+    expect(request).toHaveBeenCalledWith("sessions.delete", {
+      key: "agent:writer:main",
+      deleteTranscript: true,
+    });
   });
 
   it("does not mask ordinary deletion failures with a session reset", async () => {

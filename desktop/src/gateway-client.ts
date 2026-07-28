@@ -119,6 +119,17 @@ export type GatewayClientOptions = {
   onAuthError?: (message: string) => void;
 };
 
+export function extractMainSessionKey(hello: Record<string, unknown>): string | null {
+  const snapshot = hello.snapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const sessionDefaults = (snapshot as Record<string, unknown>).sessionDefaults;
+  if (!sessionDefaults || typeof sessionDefaults !== "object" || Array.isArray(sessionDefaults)) {
+    return null;
+  }
+  const key = (sessionDefaults as Record<string, unknown>).mainSessionKey;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
 // ── Client ──────────────────────────────────────────────────────────────
 
 export class GatewayClient {
@@ -131,6 +142,7 @@ export class GatewayClient {
   private connectSent = false;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private deviceIdentity: DeviceIdentity;
+  private _mainSessionKey: string | null = null;
 
   constructor(private opts: GatewayClientOptions) {
     this.deviceIdentity = loadOrCreateDeviceIdentity();
@@ -138,6 +150,10 @@ export class GatewayClient {
 
   get connected() {
     return this._connected;
+  }
+
+  get mainSessionKey() {
+    return this._mainSessionKey;
   }
 
   start() {
@@ -209,18 +225,17 @@ export class GatewayClient {
   /**
    * Delete one persisted session and its transcript.
    *
-   * OpenClaw does not allow deleting an agent's main session, so reset it
-   * instead. Other deletion failures must propagate rather than leaving a
-   * stale Gateway session behind while the renderer reports success.
+   * OpenClaw does not allow deleting the configured main session, so reset
+   * that exact canonical key instead. Other sessions, including a non-default
+   * agent's `main`-named session, are deleted normally.
    */
-   async deleteSession(sessionKey: string): Promise<void> {
-     const isMainSession = sessionKey === "main" || /^agent:[^:]+:main$/.test(sessionKey);
-     if (isMainSession) {
-       await this.request("sessions.reset", { key: sessionKey, reason: "reset" });
-       return;
-     }
-     await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
-   }
+  async deleteSession(sessionKey: string): Promise<void> {
+    if (sessionKey === this._mainSessionKey) {
+      await this.request("sessions.reset", { key: sessionKey, reason: "reset" });
+      return;
+    }
+    await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
+  }
 
   /**
    * Clear ALL persisted chat history on the gateway.
@@ -378,6 +393,7 @@ export class GatewayClient {
       .then((hello) => {
         this._connected = true;
         this.backoffMs = WS_RECONNECT_INITIAL_MS;
+        this._mainSessionKey = extractMainSessionKey(hello);
         this.opts.onConnected?.(hello ?? {});
       })
       .catch((err) => {

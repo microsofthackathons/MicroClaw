@@ -407,7 +407,7 @@ async function handleToggleEnabled(val: boolean) {
 }
 
 function goToWeixinChat() {
-  chatStore.switchSession("main");
+  chatStore.switchToMainSession();
   router.push("/chat");
 }
 </script>

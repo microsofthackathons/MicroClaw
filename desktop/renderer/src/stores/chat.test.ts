@@ -468,17 +468,23 @@ describe("useChatStore — session key learning", () => {
 
   it("learns the resolved session key from first delta event", () => {
     const store = useChatStore();
+    const sessionStore = useSessionStore();
     store.streaming = true;
-    store.sessionKey = "main";
+    store.sessionKey = "session-abc";
+    sessionStore.ensureSession("session-abc");
 
     store.handleChatEvent({
       runId: "r1",
-      sessionKey: "agent:main:main",
+      sessionKey: "agent:main:session-abc",
       state: "delta",
       message: { role: "assistant", content: "Hi" },
     } as ChatEventPayload);
 
-    expect(store.resolvedSessionKey).toBe("agent:main:main");
+    expect(store.sessionKey).toBe("agent:main:session-abc");
+    expect(store.resolvedSessionKey).toBe("agent:main:session-abc");
+    expect(sessionStore.sessions.map((session) => session.key)).toEqual([
+      "agent:main:session-abc",
+    ]);
   });
 
   it("drops events from unrelated sessions", () => {
@@ -497,6 +503,25 @@ describe("useChatStore — session key learning", () => {
 
     // Should still be streaming (event was dropped)
     expect(store.streaming).toBe(true);
+  });
+
+  it("does not canonicalize a session from a substring-only event match", () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    store.streaming = true;
+    store.sessionKey = "session-abc";
+    sessionStore.ensureSession("session-abc");
+
+    store.handleChatEvent({
+      runId: "r2",
+      sessionKey: "agent:main:session-abc-extra",
+      state: "delta",
+      message: { role: "assistant", content: "Wrong session" },
+    } as ChatEventPayload);
+
+    expect(store.sessionKey).toBe("session-abc");
+    expect(store.resolvedSessionKey).toBeNull();
+    expect(sessionStore.sessions.map((session) => session.key)).toEqual(["session-abc"]);
   });
 });
 
@@ -558,17 +583,27 @@ describe("useChatStore — session deletion", () => {
     mockDeleteSession.mockReset().mockResolvedValue(undefined);
   });
 
-  it("deletes the resolved Gateway session before removing local state", async () => {
+  it("uses the canonical main key and removes its local alias before deletion", async () => {
     const store = useChatStore();
     const sessionStore = useSessionStore();
     sessionStore.ensureSession("main");
-    store.sessionKey = "main";
-    store.resolvedSessionKey = "agent:painter:main";
+    sessionStore.updateSession("main", { title: "Existing chat", preview: "hello" });
+    sessionStore.ensureSession("global");
     store.messages = [{ role: "user", content: "hello" }];
 
-    await store.deleteSession("main");
+    store.setMainSessionKey("global");
 
-    expect(mockDeleteSession).toHaveBeenCalledWith("agent:painter:main");
+    expect(store.sessionKey).toBe("global");
+    expect(sessionStore.sessions).toHaveLength(1);
+    expect(sessionStore.sessions[0]).toMatchObject({
+      key: "global",
+      title: "Existing chat",
+      preview: "hello",
+    });
+
+    await store.deleteSession("global");
+
+    expect(mockDeleteSession).toHaveBeenCalledWith("global");
     expect(sessionStore.sessions.some((session) => session.key === "main")).toBe(false);
     expect(store.sessionKey).toMatch(/^session-/);
     expect(store.messages).toEqual([]);

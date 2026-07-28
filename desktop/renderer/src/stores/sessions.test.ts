@@ -74,6 +74,39 @@ describe("useSessionStore", () => {
     expect(store.sessions[0].key).toBe("test-2");
   });
 
+  it("canonicalizeSession replaces a local alias", () => {
+    const store = useSessionStore();
+    store.ensureSession("main");
+    store.updateSession("main", { title: "Existing chat", preview: "hello" });
+
+    store.canonicalizeSession("main", "global");
+
+    expect(store.sessions).toEqual([
+      expect.objectContaining({
+        key: "global",
+        title: "Existing chat",
+        preview: "hello",
+      }),
+    ]);
+    expect(store.currentKey).toBe("global");
+  });
+
+  it("canonicalizeSession merges duplicate aliases without losing metadata", () => {
+    const store = useSessionStore();
+    store.ensureSession("main");
+    store.updateSession("main", { title: "Existing chat", preview: "hello" });
+    store.ensureSession("global");
+
+    store.canonicalizeSession("main", "global");
+
+    expect(store.sessions).toHaveLength(1);
+    expect(store.sessions[0]).toMatchObject({
+      key: "global",
+      title: "Existing chat",
+      preview: "hello",
+    });
+  });
+
   it("autoTitle updates title from first user message", () => {
     const store = useSessionStore();
     store.ensureSession("test-1");
