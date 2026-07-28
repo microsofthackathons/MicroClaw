@@ -163,6 +163,7 @@ export const useChatStore = defineStore("chat", () => {
   const chatRunId = ref<string | null>(null);
   const lastError = ref<ChatErrorInfo | null>(null);
   const wsConnected = ref(false);
+  const mainSessionKey = ref<string | null>(null);
   /** Timestamp of the last streaming event (delta, tool, final). Used for stale-stream detection. */
   const lastStreamEventAt = ref<number | null>(null);
 
@@ -220,6 +221,41 @@ export const useChatStore = defineStore("chat", () => {
     sending: boolean;
   }
   const sessionStateCache = new Map<string, SessionStreamState>();
+
+  /** Move all renderer-owned state from a local alias to its Gateway key. */
+  function _canonicalizeSessionKey(aliasKey: string, canonicalKey: string) {
+    if (!aliasKey || aliasKey === canonicalKey) {
+      if (sessionKey.value === canonicalKey) resolvedSessionKey.value = canonicalKey;
+      return;
+    }
+
+    const aliasCache = sessionStateCache.get(aliasKey);
+    if (aliasCache && !sessionStateCache.has(canonicalKey)) {
+      sessionStateCache.set(canonicalKey, {
+        ...aliasCache,
+        resolvedSessionKey: canonicalKey,
+      });
+    }
+    sessionStateCache.delete(aliasKey);
+
+    if (lastMessageMap.value[aliasKey] && !lastMessageMap.value[canonicalKey]) {
+      lastMessageMap.value[canonicalKey] = lastMessageMap.value[aliasKey];
+    }
+    delete lastMessageMap.value[aliasKey];
+
+    useSessionStore().canonicalizeSession(aliasKey, canonicalKey);
+
+    if (sessionKey.value === aliasKey) {
+      sessionKey.value = canonicalKey;
+      resolvedSessionKey.value = canonicalKey;
+    }
+  }
+
+  /** Record and apply the canonical main-session identity from Gateway hello. */
+  function setMainSessionKey(key: string) {
+    mainSessionKey.value = key;
+    _canonicalizeSessionKey("main", key);
+  }
 
   /** Save current session's volatile state into the cache. */
   function _saveCurrentState() {
@@ -487,16 +523,17 @@ export const useChatStore = defineStore("chat", () => {
 
   /** Switch to a different session. */
   async function switchSession(key: string) {
+    const targetKey = key === "main" ? mainSessionKey.value || key : key;
     // Save the current session's volatile state (including streaming)
     _syncToSessionStore();
     _saveCurrentState();
 
-    sessionKey.value = key;
+    sessionKey.value = targetKey;
     const sessionStore = useSessionStore();
-    sessionStore.ensureSession(key);
+    sessionStore.ensureSession(targetKey);
 
     // Try to restore cached state (streaming session we switched away from)
-    if (_restoreState(key)) {
+    if (_restoreState(targetKey)) {
       return; // restored — don't overwrite with loadHistory
     }
 
@@ -642,8 +679,8 @@ export const useChatStore = defineStore("chat", () => {
       // (before gateway normalisation) is a suffix of the incoming key,
       // preventing a late event from a *different* session from poisoning
       // the current session's resolvedSessionKey.
-      if (streaming.value && incoming.includes(sessionKey.value)) {
-        resolvedSessionKey.value = incoming;
+      if (streaming.value && incoming.endsWith(sessionKey.value)) {
+        _canonicalizeSessionKey(sessionKey.value, incoming);
       } else {
         return;
       }
@@ -808,7 +845,7 @@ export const useChatStore = defineStore("chat", () => {
 
     // Learn the resolved key early from tool events (before first chat delta)
     if (streaming.value && !resolvedSessionKey.value && incoming !== sessionKey.value) {
-      resolvedSessionKey.value = incoming;
+      _canonicalizeSessionKey(sessionKey.value, incoming);
     }
 
     const { phase, name, toolCallId, meta } = payload.data;
@@ -1069,6 +1106,10 @@ export const useChatStore = defineStore("chat", () => {
     lastError.value = null;
   }
 
+  function switchToMainSession() {
+    return switchSession(mainSessionKey.value || "main");
+  }
+
   /** Update last message preview for current session key. */
   function _updateLastPreview() {
     const key = sessionKey.value;
@@ -1190,8 +1231,19 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /** Delete a session — cleans up cache and switches away without re-adding. */
-  function deleteSession(key: string) {
+  /**
+   * Delete a session from the Gateway source of truth, then remove its local
+   * state and switch away without re-adding it.
+   */
+  async function deleteSession(key: string) {
+    const cached = sessionStateCache.get(key);
+    const gatewayKey =
+      key === sessionKey.value
+        ? resolvedSessionKey.value || key
+        : cached?.resolvedSessionKey || key;
+
+    await window.openclaw.chat.deleteSession(gatewayKey);
+
     // Clean up cached streaming state
     sessionStateCache.delete(key);
     delete lastMessageMap.value[key];
@@ -1287,6 +1339,7 @@ export const useChatStore = defineStore("chat", () => {
     chatRunId,
     lastError,
     wsConnected,
+    mainSessionKey,
     lastMessageMap,
     lastStreamEventAt,
     pendingPrompt,
@@ -1295,6 +1348,8 @@ export const useChatStore = defineStore("chat", () => {
     extractThinking,
     extractToolUseBlocks,
     switchSession,
+    switchToMainSession,
+    setMainSessionKey,
     loadHistory,
     sendMessage,
     handleChatEvent,

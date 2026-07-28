@@ -455,17 +455,8 @@ onMounted(async () => {
     const wasStreaming = chatStore.streaming;
     chatStore.wsConnected = true;
     markConnected();
-    // Apply the canonical session key from gateway hello, but only if
-    // the user is still on the default/initial session.  If the user
-    // switched to a custom session before the reconnect, preserve it
-    // to avoid duplicating or orphaning that session.
     if (mainSessionKey) {
-      const current = chatStore.sessionKey;
-      const isDefaultSession = !current || current === "main" || current === mainSessionKey;
-      if (isDefaultSession) {
-        chatStore.sessionKey = mainSessionKey;
-        chatStore.resolvedSessionKey = mainSessionKey;
-      }
+      chatStore.setMainSessionKey(mainSessionKey);
     }
     // Register in session store
     sessionStore.ensureSession(chatStore.sessionKey);

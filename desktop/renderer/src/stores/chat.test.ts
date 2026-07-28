@@ -5,6 +5,7 @@ import { setActivePinia, createPinia } from "pinia";
 const mockLoadHistory = vi.fn().mockResolvedValue({ messages: [] });
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockAbort = vi.fn().mockResolvedValue(undefined);
+const mockDeleteSession = vi.fn().mockResolvedValue(undefined);
 const mockIsConnected = vi.fn().mockResolvedValue(false);
 
 Object.defineProperty(globalThis, "window", {
@@ -15,6 +16,7 @@ Object.defineProperty(globalThis, "window", {
         loadHistory: mockLoadHistory,
         sendMessage: mockSendMessage,
         abort: mockAbort,
+        deleteSession: mockDeleteSession,
         isConnected: mockIsConnected,
         onEvent: vi.fn(),
         onToolEvent: vi.fn(),
@@ -62,6 +64,7 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 import { applyChatDelta, classifyChatError, useChatStore } from "./chat";
+import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
 describe("classifyChatError", () => {
@@ -465,17 +468,23 @@ describe("useChatStore — session key learning", () => {
 
   it("learns the resolved session key from first delta event", () => {
     const store = useChatStore();
+    const sessionStore = useSessionStore();
     store.streaming = true;
-    store.sessionKey = "main";
+    store.sessionKey = "session-abc";
+    sessionStore.ensureSession("session-abc");
 
     store.handleChatEvent({
       runId: "r1",
-      sessionKey: "agent:main:main",
+      sessionKey: "agent:main:session-abc",
       state: "delta",
       message: { role: "assistant", content: "Hi" },
     } as ChatEventPayload);
 
-    expect(store.resolvedSessionKey).toBe("agent:main:main");
+    expect(store.sessionKey).toBe("agent:main:session-abc");
+    expect(store.resolvedSessionKey).toBe("agent:main:session-abc");
+    expect(sessionStore.sessions.map((session) => session.key)).toEqual([
+      "agent:main:session-abc",
+    ]);
   });
 
   it("drops events from unrelated sessions", () => {
@@ -494,6 +503,25 @@ describe("useChatStore — session key learning", () => {
 
     // Should still be streaming (event was dropped)
     expect(store.streaming).toBe(true);
+  });
+
+  it("does not canonicalize a session from a substring-only event match", () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    store.streaming = true;
+    store.sessionKey = "session-abc";
+    sessionStore.ensureSession("session-abc");
+
+    store.handleChatEvent({
+      runId: "r2",
+      sessionKey: "agent:main:session-abc-extra",
+      state: "delta",
+      message: { role: "assistant", content: "Wrong session" },
+    } as ChatEventPayload);
+
+    expect(store.sessionKey).toBe("session-abc");
+    expect(store.resolvedSessionKey).toBeNull();
+    expect(sessionStore.sessions.map((session) => session.key)).toEqual(["session-abc"]);
   });
 });
 
@@ -547,6 +575,56 @@ describe("useChatStore — draft sessions", () => {
     expect(store.currentSessionAgentId).toBe("main");
   });
 });
+
+describe("useChatStore — session deletion", () => {
+  beforeEach(() => {
+    Object.keys(storage).forEach((k) => delete storage[k]);
+    setActivePinia(createPinia());
+    mockDeleteSession.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("uses the canonical main key and removes its local alias before deletion", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("main");
+    sessionStore.updateSession("main", { title: "Existing chat", preview: "hello" });
+    sessionStore.ensureSession("global");
+    store.messages = [{ role: "user", content: "hello" }];
+
+    store.setMainSessionKey("global");
+
+    expect(store.sessionKey).toBe("global");
+    expect(sessionStore.sessions).toHaveLength(1);
+    expect(sessionStore.sessions[0]).toMatchObject({
+      key: "global",
+      title: "Existing chat",
+      preview: "hello",
+    });
+
+    await store.deleteSession("global");
+
+    expect(mockDeleteSession).toHaveBeenCalledWith("global");
+    expect(sessionStore.sessions.some((session) => session.key === "main")).toBe(false);
+    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.messages).toEqual([]);
+  });
+
+  it("preserves local state when Gateway deletion fails", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("session-123");
+    store.sessionKey = "session-123";
+    store.messages = [{ role: "user", content: "keep me" }];
+    mockDeleteSession.mockRejectedValueOnce(new Error("Gateway not connected"));
+
+    await expect(store.deleteSession("session-123")).rejects.toThrow("Gateway not connected");
+
+    expect(sessionStore.sessions.some((session) => session.key === "session-123")).toBe(true);
+    expect(store.sessionKey).toBe("session-123");
+    expect(store.messages).toEqual([{ role: "user", content: "keep me" }]);
+  });
+});
+
 // ── Message content extraction tests ──
 
 describe("useChatStore — extractTextOnly", () => {

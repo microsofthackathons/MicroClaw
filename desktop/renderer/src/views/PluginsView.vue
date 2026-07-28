@@ -460,7 +460,7 @@ async function restartGateway() {
 }
 
 function goToWeixinChat() {
-  chatStore.switchSession("main");
+  chatStore.switchToMainSession();
   router.push("/chat");
 }
 </script>

@@ -43,6 +43,7 @@ export default {
   "sidebar.createChat": "Create Chat",
   "sidebar.chats": "Chats",
   "sidebar.noChats": "No chats yet",
+  "sidebar.chatDeleteFailed": "Failed to delete chat: {error}",
   "sidebar.phone": "Phone",
   "sidebar.tagline": "Weave the future through conversation",
 

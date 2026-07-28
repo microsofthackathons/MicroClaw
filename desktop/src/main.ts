@@ -2247,7 +2247,7 @@ function connectGatewayWs(): void {
   gwClient = new GatewayClient({
     port: gatewayPort,
     token: gatewayToken,
-    onConnected: (hello) => {
+    onConnected: () => {
       console.log("[gateway-ws] connected");
       wsAuthRestartInProgress = false;
       // Sync the status indicator — fixes "timeout" showing while WS is actually connected
@@ -2255,10 +2255,7 @@ function connectGatewayWs(): void {
         gatewayStatus = "running";
         mainWindow?.webContents.send("gateway:status", "running");
       }
-      // Extract the canonical session key from hello → snapshot → sessionDefaults
-      const snapshot = hello?.snapshot as Record<string, unknown> | undefined;
-      const sessionDefaults = snapshot?.sessionDefaults as Record<string, unknown> | undefined;
-      const mainSessionKey = sessionDefaults?.mainSessionKey as string | undefined;
+      const mainSessionKey = gwClient?.mainSessionKey;
 
       // After a fresh spawn, auto-discovered plugins (like weixin) may miss
       // the initial channel-start sweep. Replace the process once so every
@@ -2900,6 +2897,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     await gwClient.abortChat(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    await gwClient.deleteSession(params.sessionKey);
   });
 
   ipcMain.handle("chat:clear-history", async () => {
