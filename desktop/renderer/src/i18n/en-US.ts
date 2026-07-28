@@ -223,7 +223,7 @@ export default {
   "settings.toolCalls": "Tool Calls",
   "settings.modelBreakdown": "Model Usage Breakdown",
   "settings.refresh": "Refresh",
-  "settings.usageFooter": "Data sourced from OpenClaw Gateway. Requires the gateway to be running.",
+  "settings.usageFooter": "Data comes from the MicroClaw gateway and is available only while the gateway is running.",
   "settings.callsSuffix": "calls",
   "settings.inputSuffix": "input",
   "settings.outputSuffix": "output",
@@ -257,7 +257,7 @@ export default {
   "settings.privacy": "Data & Privacy",
   "settings.privacyProtection": "Privacy Protection",
   "settings.privacyProtectionDesc":
-    "Control how MicroClaw handles your sensitive data before sending it to AI models.",
+    "Control how MicroClaw handles your sensitive data before it's sent to AI models.",
   "settings.privacyBasic": "Basic",
   "settings.privacyBasicDesc1": "Allow reading all accessible files",
   "settings.privacyBasicDesc2": "No PII detection or filtering",
@@ -273,7 +273,7 @@ export default {
   "settings.privacyRecommended": "Recommended",
   "settings.piiDetection": "PII Detection",
   "settings.piiDetectionDesc":
-    "Scan outgoing messages for sensitive personal information patterns before sending to the AI model.",
+    "Scan outgoing messages for personal information before they're sent to the AI model.",
   "settings.piiPhone": "Phone numbers",
   "settings.piiIdCard": "ID card numbers",
   "settings.piiBankCard": "Bank card numbers",
@@ -281,20 +281,20 @@ export default {
   "settings.piiApiKey": "API keys & secrets",
   "settings.sensitiveFiles": "Sensitive File Guard",
   "settings.sensitiveFilesDesc":
-    "Prompt for confirmation before the agent reads files matching these patterns.",
+    "Ask for confirmation before the agent reads files that match these patterns.",
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.fileAccessAudit": "File Access Audit",
   "settings.fileAccessAuditDesc":
-    "Log all files read by the agent during conversations. View audit logs in the workspace data directory.",
+    "Log every file the agent reads during conversations. Audit logs are saved in the workspace data directory.",
   "settings.security": "Security Sandbox",
   "settings.sandboxEnabled": "Enable tool sandbox (AppContainer)",
   "settings.externalApps": "Sandbox bypass whitelist",
   "settings.externalAppsHint":
-    "These apps run outside the sandbox when invoked by AI tools (they need COM/RPC). Only add apps you trust.",
+    "These apps run outside the sandbox when AI tools invoke them, because they need COM/RPC access. Only add apps you trust.",
   "settings.addApp": "App name",
   "settings.sandboxDirs": "Sandbox directory permissions",
   "settings.sandboxDirsHint":
-    "Grant the AppContainer read or read-write access to additional directories. Changes take effect immediately. When a parent directory is added, redundant child entries are removed automatically. A child directory can have read-write access under a read-only parent, but not vice versa. Note: Modifying permissions on drive roots (e.g. C:\\) requires admin privileges and may be slow due to file enumeration.",
+    "Grant the sandbox read-only or read-write access to additional directories. Changes take effect immediately. Adding a parent directory automatically removes redundant child entries. A child directory can be read-write under a read-only parent, but not the reverse. Note: changing permissions on a drive root (e.g. C:\\) requires administrator privileges and may be slow while files are enumerated.",
   "settings.sandboxDirsRW": "Read-Write",
   "settings.sandboxDirsRO": "Read-Only",
   "settings.sandboxAddDir": "Add folder",
@@ -306,10 +306,10 @@ export default {
   "settings.sandboxChildrenRemoved":
     "Auto-removed {count} subdirectory(s) now covered by the parent directory.",
   "settings.sandboxSystemDir": "System",
-  "settings.sandboxRestartHint": "Gateway restart required to take effect",
+  "settings.sandboxRestartHint": "Requires a gateway restart to take effect",
   "settings.sandboxCaps": "Sandbox capabilities",
   "settings.sandboxCapsHint":
-    "Allow sandboxed tool processes to access the network. Toggling this will restart the gateway.",
+    "Let sandboxed tool processes access the network. Changing this restarts the gateway.",
   "settings.sandboxCapsRestarting": "Restarting gateway…",
   "settings.cap.internetClient": "Allow outbound network access",
   "settings.cap.internetClientServer": "Inbound + outbound network (internetClientServer)",
@@ -341,7 +341,7 @@ export default {
   "settings.noLogs": "No logs",
   "settings.clear": "Clear",
   "settings.braveDesc":
-    "For OpenClaw's web search capability. Get an API Key at {link}. The gateway will restart automatically after saving.",
+    "Enables web search in MicroClaw. Get a free API key at {link}. The gateway restarts automatically after you save.",
   "settings.save": "Save",
   "settings.skillConfigUpdated": "Skill configuration updated",
   "settings.skillConfigFailed": "Failed to update skill config: {error}",
@@ -418,7 +418,7 @@ export default {
   "settings.connected": "Connected",
   "settings.port": "Port",
   "settings.portDesc":
-    "Gateway will restart automatically after changing the port. If the default port is occupied, the system will try adjacent ports.",
+    "The gateway restarts automatically when you change the port. If the chosen port is in use, MicroClaw tries nearby ports.",
   "settings.webSearch": "Web search provider",
   "settings.braveSearchApiKey": "Brave Search API Key",
   "settings.reasoningOffDesc": "Reasoning off",
@@ -724,8 +724,6 @@ export default {
   "agentMarket.pageTitle": "Popular Agents",
   "agentMarket.add": "Add",
   "agentMarket.added": "Added",
-  "agentMarket.customAgent": "Custom Agent",
-  "agentMarket.customAgentComingSoon": "Custom Agent coming soon",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",

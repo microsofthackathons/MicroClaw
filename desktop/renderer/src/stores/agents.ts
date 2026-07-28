@@ -170,11 +170,17 @@ export const useAgentStore = defineStore("agents", () => {
   /** Reactively translated agent list — re-evaluates when locale changes. */
   const agents = computed<Agent[]>(() => {
     void locale.value; // explicit dependency on locale for reactivity
-    if (remoteAgents.value.length > 0) return remoteAgents.value;
-    return AGENT_DEFS.map((def) => ({
+    const localAgents = AGENT_DEFS.map((def) => ({
       ...resolveAgent(def),
       isAdded: agentIsAdded.value[def.id] ?? def.isAdded,
     }));
+    if (remoteAgents.value.length === 0) return localAgents;
+    // The gateway's agents.list only carries id/name, not the rich local
+    // metadata (avatars, tags, quick tasks). Keep the local persona for any
+    // id we know about and only append genuinely custom remote agents.
+    const localIds = new Set(localAgents.map((a) => a.id));
+    const extraRemote = remoteAgents.value.filter((a) => !localIds.has(a.id));
+    return [...localAgents, ...extraRemote];
   });
   const currentAgentId = ref("main");
 
