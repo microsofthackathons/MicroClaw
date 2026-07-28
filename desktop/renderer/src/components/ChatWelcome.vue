@@ -78,7 +78,8 @@ const defaultCards = computed(() => {
       title: t("home.card.news.title"),
       desc: t("home.card.news.desc"),
       prompt: t("home.card.news.prompt"),
-      style: "--rot: 12deg; --dx: clamp(35px, 6vw, 75px); --stack-order: 3",
+      style:
+        "--rot: 12deg; --dx: clamp(35px, 6vw, 75px); --hover-dx: clamp(22px, 2.8vw, 38px); --hover-dy: -24px; --stack-order: 3",
     },
     {
       id: "desktop",
@@ -86,7 +87,7 @@ const defaultCards = computed(() => {
       title: t("home.card.desktop.title"),
       desc: t("home.card.desktop.desc"),
       prompt: t("home.card.desktop.prompt"),
-      style: "--rot: 0deg; --stack-order: 2",
+      style: "--rot: 0deg; --hover-dx: 0px; --hover-dy: -36px; --stack-order: 2",
     },
     {
       id: "travel",
@@ -94,7 +95,8 @@ const defaultCards = computed(() => {
       title: t("home.card.travel.title"),
       desc: t("home.card.travel.desc"),
       prompt: t("home.card.travel.prompt"),
-      style: "--rot: -12deg; --dx: clamp(-75px, -6vw, -35px); --stack-order: 1",
+      style:
+        "--rot: -12deg; --dx: clamp(-75px, -6vw, -35px); --hover-dx: clamp(-38px, -2.8vw, -22px); --hover-dy: -24px; --stack-order: 1",
     },
   ];
 });
@@ -169,7 +171,7 @@ function onSuggestionsScroll() {
   font-weight: 500;
   color: var(--text-secondary);
   text-align: center;
-  margin-bottom: clamp(16px, 4vh, 56px);
+  margin-bottom: clamp(28px, 6vh, 84px);
   position: relative;
   z-index: 10;
 }
@@ -205,8 +207,12 @@ function onSuggestionsScroll() {
 }
 
 .fan-card:hover {
+  transform:
+    translateX(calc(var(--dx, 0px) + var(--hover-dx, 0px)))
+    rotate(var(--rot))
+    translateY(var(--hover-dy, -36px))
+    translateZ(0);
   z-index: 4;
-  transform: translateX(var(--dx, 0px)) rotate(var(--rot)) translateY(-36px) translateZ(0);
   box-shadow: var(--card-shadow-hover);
 }
 

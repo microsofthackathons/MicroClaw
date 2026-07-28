@@ -488,8 +488,8 @@ function handleThreadClick(e: MouseEvent) {
 .mode-toggle-bar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px clamp(12px, 3vw, 32px) 4px;
+  gap: 8px;
+  padding: clamp(8px, 2vw, 20px) clamp(8px, 2vw, 20px) 4px;
   flex-shrink: 0;
 }
 
