@@ -500,6 +500,8 @@ onMounted(async () => {
     if (c && !chatStore.wsConnected) {
       chatStore.wsConnected = c;
       markConnected();
+      sessionStore.reconcileEmptySessions(chatStore.sessionKey, "main");
+      sessionStore.ensureSession(chatStore.sessionKey, "main");
       chatStore.loadHistory();
     }
   });

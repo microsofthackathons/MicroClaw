@@ -605,8 +605,25 @@ describe("useChatStore — session deletion", () => {
 
     expect(mockDeleteSession).toHaveBeenCalledWith("global");
     expect(sessionStore.sessions.some((session) => session.key === "main")).toBe(false);
-    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.sessionKey).toBe("global");
+    expect(store.resolvedSessionKey).toBe("global");
+    expect(sessionStore.sessions).toEqual([
+      expect.objectContaining({ key: "global", agentId: "main", preview: "" }),
+    ]);
     expect(store.messages).toEqual([]);
+  });
+
+  it("does not persist a generated empty draft after deleting the last session", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("session-123");
+    store.sessionKey = "session-123";
+
+    await store.deleteSession("session-123");
+
+    expect(store.sessionKey).toMatch(/^session-/);
+    expect(sessionStore.sessions).toEqual([]);
+    expect(JSON.parse(storage["openclaw-sessions"] ?? "[]")).toEqual([]);
   });
 
   it("preserves local state when Gateway deletion fails", async () => {
@@ -622,6 +639,29 @@ describe("useChatStore — session deletion", () => {
     expect(sessionStore.sessions.some((session) => session.key === "session-123")).toBe(true);
     expect(store.sessionKey).toBe("session-123");
     expect(store.messages).toEqual([{ role: "user", content: "keep me" }]);
+  });
+});
+
+describe("useChatStore — clearing history", () => {
+  beforeEach(() => {
+    Object.keys(storage).forEach((k) => delete storage[k]);
+    setActivePinia(createPinia());
+    window.openclaw.chat.clearHistory = vi.fn().mockResolvedValue({ cleared: 2 });
+  });
+
+  it("returns to the canonical main session without creating another empty chat", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    store.setMainSessionKey("global");
+    sessionStore.ensureSession("session-123");
+
+    await store.clearAllHistory();
+
+    expect(store.sessionKey).toBe("global");
+    expect(store.resolvedSessionKey).toBe("global");
+    expect(sessionStore.sessions).toEqual([
+      expect.objectContaining({ key: "global", agentId: "main", preview: "" }),
+    ]);
   });
 });
 

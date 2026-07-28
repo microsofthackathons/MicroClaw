@@ -255,6 +255,7 @@ export const useChatStore = defineStore("chat", () => {
   function setMainSessionKey(key: string) {
     mainSessionKey.value = key;
     _canonicalizeSessionKey("main", key);
+    useSessionStore().reconcileEmptySessions(key, "main");
   }
 
   /** Save current session's volatile state into the cache. */
@@ -1271,10 +1272,15 @@ export const useChatStore = defineStore("chat", () => {
           loadHistory();
         }
       } else {
-        // No sessions left — create a fresh one (skip _syncToSessionStore)
-        const newKey = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // The Gateway main session is reset rather than deleted, so reuse it.
+        // Without a canonical key, keep the generated draft in memory until
+        // its first message instead of persisting an empty sidebar entry.
+        const newKey =
+          mainSessionKey.value ??
+          `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        pendingSessionAgentId.value = mainSessionKey.value ? "main" : undefined;
         sessionKey.value = newKey;
-        resolvedSessionKey.value = null;
+        resolvedSessionKey.value = mainSessionKey.value ? newKey : null;
         messages.value = [];
         streamText.value = "";
         streamToolCalls.value = [];
@@ -1283,7 +1289,7 @@ export const useChatStore = defineStore("chat", () => {
         streamStartedAt.value = null;
         lastStreamEventAt.value = null;
         lastError.value = null;
-        sessionStore.ensureSession(newKey);
+        if (mainSessionKey.value) sessionStore.ensureSession(newKey, "main");
       }
     }
   }
@@ -1307,11 +1313,13 @@ export const useChatStore = defineStore("chat", () => {
     const sessionStore = useSessionStore();
     sessionStore.clearAll();
 
-    // 4. Drop into a fresh, empty session WITHOUT re-saving the stale one.
-    const newKey = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 4. Return to the reset main session. If its canonical key is not known,
+    // keep a generated draft in memory until the first message.
+    const newKey =
+      mainSessionKey.value ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     pendingSessionAgentId.value = undefined;
     sessionKey.value = newKey;
-    resolvedSessionKey.value = null;
+    resolvedSessionKey.value = mainSessionKey.value ? newKey : null;
     messages.value = [];
     streamText.value = "";
     streamToolCalls.value = [];
@@ -1320,7 +1328,7 @@ export const useChatStore = defineStore("chat", () => {
     streamStartedAt.value = null;
     lastStreamEventAt.value = null;
     lastError.value = null;
-    sessionStore.ensureSession(newKey);
+    if (mainSessionKey.value) sessionStore.ensureSession(newKey, "main");
   }
 
   return {

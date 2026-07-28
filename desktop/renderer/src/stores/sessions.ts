@@ -54,6 +54,31 @@ export const useSessionStore = defineStore("sessions", () => {
     currentKey.value = key;
   }
 
+  /**
+   * Reuse the single empty sidebar placeholder for the canonical main session.
+   * Empty drafts have no conversation to preserve and should not accumulate
+   * under generated keys across app restarts.
+   */
+  function reconcileEmptySessions(key: string, agentId?: string) {
+    const emptySessions = sessions.value.filter((session) => !session.preview.trim());
+    if (emptySessions.length === 0) return;
+
+    const target = sessions.value.find((session) => session.key === key);
+    const reusable =
+      target ??
+      emptySessions.reduce((newest, session) =>
+        session.updatedAt > newest.updatedAt ? session : newest,
+      );
+
+    reusable.key = key;
+    if (agentId) reusable.agentId = agentId;
+    sessions.value = sessions.value.filter(
+      (session) => session === reusable || !emptySessions.includes(session),
+    );
+    currentKey.value = key;
+    saveToStorage(sessions.value);
+  }
+
   /** Update session metadata (title / preview). */
   function updateSession(key: string, patch: Partial<Pick<Session, "title" | "preview">>) {
     const s = sessions.value.find((s) => s.key === key);
@@ -125,6 +150,7 @@ export const useSessionStore = defineStore("sessions", () => {
     currentKey,
     sortedSessions,
     ensureSession,
+    reconcileEmptySessions,
     updateSession,
     removeSession,
     canonicalizeSession,
