@@ -78,13 +78,31 @@ body,
   --el-border-color: var(--border);
   --el-color-primary: var(--accent);
   --el-border-radius-base: 8px;
-  /*
-    Off-state switch track. Element Plus defaults this to --el-border-color,
-    which in this theme is a near-white gray — an off (but enabled) switch
-    then reads as disabled. Use a clearly visible neutral so "off" still
-    looks interactive. Disabled switches remain distinct via reduced opacity.
-  */
-  --el-switch-off-color: #c2c8d4;
+}
+
+/*
+  Off-state switch. Element Plus defaults the off track to --el-border-color,
+  a near-white gray in this theme, so an off (but enabled) switch reads as
+  disabled. Render the off state as an outlined pill: a white (light theme)
+  track with a visible gray border and a solid gray knob on the left, so the
+  switch stays legible without looking filled/checked. Disabled switches remain
+  distinct via Element Plus's reduced opacity (.el-switch.is-disabled { opacity: .6 }).
+*/
+html .el-switch:not(.is-checked) .el-switch__core {
+  background-color: #ffffff;
+  border-color: #8e8e93;
+}
+html .el-switch:not(.is-checked) .el-switch__core .el-switch__action {
+  background-color: #636366;
+  border: none;
+}
+html.dark .el-switch:not(.is-checked) .el-switch__core {
+  background-color: transparent;
+  border-color: #8e8e93;
+}
+html.dark .el-switch:not(.is-checked) .el-switch__core .el-switch__action {
+  background-color: #a1a1aa;
+  border: none;
 }
 
 /* Scrollbar styling */
@@ -175,8 +193,6 @@ html.dark {
   --el-color-primary-dark-2: #e2bb5e;
   --el-mask-color: rgba(0, 0, 0, 0.6);
   --el-dialog-bg-color: var(--bg-secondary);
-  /* Visible off-state track on dark backgrounds (see light-theme note). */
-  --el-switch-off-color: #52525b;
 }
 
 /* Light theme explicit */

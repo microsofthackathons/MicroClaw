@@ -291,6 +291,7 @@ import { computed, ref, watch } from "vue";
 import { t } from "@/i18n";
 import {
   mergeModelProviderConfig,
+  clearModelProviders,
   selectPrimaryModelConfig,
   validateModelProviderInput,
   type ModelApiFormat,
@@ -321,7 +322,22 @@ interface ModelFamilyPreset {
   signupUrl?: string;
 }
 
-const props = defineProps<{ modelValue: boolean }>();
+// The provider that is currently configured, so the wizard can reopen pre-filled for quick
+// adjustment. Null when nothing is configured yet.
+interface ModelProviderPrefill {
+  familyId: string;
+  providerKey: string;
+  modelName: string;
+  baseUrl: string;
+  apiKey: string;
+  apiFormat: ModelApiFormat;
+}
+
+const props = defineProps<{
+  modelValue: boolean;
+  singleProvider?: boolean;
+  currentProvider?: ModelProviderPrefill | null;
+}>();
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   configured: [];
@@ -431,6 +447,20 @@ watch(
     cancelPendingSubmission();
     void resetGitHubCopilotState();
     if (!visible) return;
+    const prefill = props.currentProvider;
+    if (prefill) {
+      // Reopen on the configured provider, pre-filled and jumped to the key form so the user
+      // can adjust the model, base URL or key without re-selecting the family.
+      selectFamily(prefill.familyId as ModelFamilyId);
+      selectedModelName.value = prefill.modelName || getDefaultModel(selectedFamily.value);
+      baseUrl.value = prefill.baseUrl || selectedFamily.value.baseUrl;
+      selectedApiFormat.value = prefill.apiFormat;
+      apiKey.value = prefill.apiKey;
+      isKeyStep.value = selectedFamilyId.value !== "github-copilot";
+      if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
+      errorMsg.value = "";
+      return;
+    }
     selectFamily("qwen");
     isKeyStep.value = false;
     apiKey.value = "";
@@ -523,7 +553,8 @@ async function saveGitHubCopilotModel(): Promise<void> {
     if (generation !== submissionGeneration || !props.modelValue) return;
     const existing = (await window.openclaw.config.read()) || {};
     if (generation !== submissionGeneration || !props.modelValue) return;
-    const nextConfig = selectPrimaryModelConfig(existing, selectedGitHubModel.value, {
+    const base = props.singleProvider ? clearModelProviders(existing) : existing;
+    const nextConfig = selectPrimaryModelConfig(base, selectedGitHubModel.value, {
       ensureAllowed: true,
     });
     await window.openclaw.config.write(nextConfig);
@@ -609,7 +640,8 @@ async function saveAndStart() {
     };
     const existing = (await window.openclaw.config.read()) || {};
     if (generation !== submissionGeneration || !props.modelValue) return;
-    const nextConfig = mergeModelProviderConfig(existing, verifiedInput);
+    const base = props.singleProvider ? clearModelProviders(existing) : existing;
+    const nextConfig = mergeModelProviderConfig(base, verifiedInput);
     await window.openclaw.config.write(nextConfig);
     await restartGatewayAfterModelSetup();
     if (generation !== submissionGeneration || !props.modelValue) return;
