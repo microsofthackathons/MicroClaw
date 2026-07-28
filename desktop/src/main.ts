@@ -1150,6 +1150,72 @@ function ensurePluginsAllow(): void {
   }
 }
 
+/**
+ * Agent personas the MicroClaw UI can start a chat with. OpenClaw only accepts
+ * an agent id that appears in `agents.list`; when that list is empty it knows
+ * only the built-in "main" agent and rejects every other id with
+ * `unknown agent id "<id>"`. Keep these ids in sync with the renderer's
+ * AGENT_DEFS (desktop/renderer/src/stores/agents.ts) so every selectable
+ * persona can actually be chatted with.
+ */
+const AGENT_PERSONAS: readonly { id: string; name: string }[] = [
+  { id: "main", name: "Assistant" },
+  { id: "coder", name: "Coder" },
+  { id: "painter", name: "Painter" },
+  { id: "master", name: "Master" },
+  { id: "growth-hacker", name: "Growth Hacker" },
+  { id: "leopard", name: "Leopard" },
+  { id: "singer", name: "Singer" },
+];
+
+/**
+ * Register every UI agent persona in `agents.list` so OpenClaw accepts a chat
+ * request for it. Entries inherit the model from `agents.defaults`; "main" is
+ * marked as the default agent so behavior is unchanged for it. Existing entries
+ * are preserved by id (never overwritten), and the config is only rewritten
+ * when something actually changed.
+ */
+function ensureAgentsList(): void {
+  try {
+    const config = readConfig();
+    if (!config) return;
+    if (!config.agents) config.agents = {};
+    const existing = Array.isArray(config.agents.list) ? config.agents.list : [];
+    const knownIds = new Set(
+      existing
+        .map((entry: { id?: unknown }) => (typeof entry?.id === "string" ? entry.id : ""))
+        .filter(Boolean)
+    );
+
+    const list = [...existing];
+    let changed = false;
+    for (const persona of AGENT_PERSONAS) {
+      if (knownIds.has(persona.id)) continue;
+      const entry: Record<string, unknown> = { id: persona.id, name: persona.name };
+      if (persona.id === "main") entry.default = true;
+      list.push(entry);
+      changed = true;
+    }
+
+    // Once the list is non-empty, exactly one entry must be the default agent.
+    if (list.length > 0 && !list.some((entry: { default?: unknown }) => entry?.default)) {
+      const main = list.find((entry: { id?: unknown }) => entry?.id === "main");
+      if (main) {
+        (main as Record<string, unknown>).default = true;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      config.agents.list = list;
+      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      console.log(`[config] Registered agent personas in agents.list: ${list.map((e: { id?: unknown }) => e?.id).join(", ")}`);
+    }
+  } catch (err) {
+    console.error("[config] Failed to update agents.list:", err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Renderer URL (Vite dev server vs built files)
 // ---------------------------------------------------------------------------
@@ -1584,6 +1650,10 @@ async function startGatewayInner(): Promise<void> {
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
+
+  // Register the UI agent personas so OpenClaw will accept a chat request for
+  // any of them (otherwise only the built-in "main" agent is recognized).
+  ensureAgentsList();
 
   // If gateway is already healthy, just connect WS and return — no new terminal.
   // Exception: forceHardRestart means env vars (COMSPEC, NODE_OPTIONS) changed,
