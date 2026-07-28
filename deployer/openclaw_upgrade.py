@@ -111,8 +111,9 @@ def _flush_and_fsync(file: Any) -> None:
 
 
 def _fsync_file(path: Path) -> None:
+    io_path = _native_io_path(path)
     try:
-        with path.open("rb+") as file:
+        with io_path.open("rb+") as file:
             os.fsync(file.fileno())
     except PermissionError:
         # On Windows a file carrying the read-only attribute cannot be opened
@@ -121,13 +122,13 @@ def _fsync_file(path: Path) -> None:
         # the durability flush still happens, then restore the original mode.
         if os.name != "nt":
             raise
-        original_mode = path.stat().st_mode
-        os.chmod(path, stat.S_IWRITE)
+        original_mode = io_path.stat().st_mode
+        os.chmod(io_path, stat.S_IWRITE)
         try:
-            with path.open("rb+") as file:
+            with io_path.open("rb+") as file:
                 os.fsync(file.fileno())
         finally:
-            os.chmod(path, original_mode)
+            os.chmod(io_path, original_mode)
 
 
 def _directory_fsync_is_unsupported(error: OSError) -> bool:
@@ -145,9 +146,10 @@ def _directory_fsync_is_unsupported(error: OSError) -> bool:
 
 
 def _fsync_directory(path: Path) -> None:
+    io_path = _native_io_path(path)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = os.open(io_path, flags)
     except OSError as error:
         if _directory_fsync_is_unsupported(error):
             return
@@ -163,6 +165,22 @@ def _fsync_directory(path: Path) -> None:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _native_io_path(path: Path) -> Path:
+    """Use Win32 extended paths so installer file I/O is not limited by MAX_PATH."""
+    path = Path(path)
+    if not _is_windows():
+        return path
+
+    value = os.fspath(path)
+    if value.startswith(("\\\\?\\", "\\\\.\\")):
+        return path
+
+    absolute = os.path.abspath(value)
+    if absolute.startswith("\\\\"):
+        return Path(f"\\\\?\\UNC\\{absolute[2:]}")
+    return Path(f"\\\\?\\{absolute}")
 
 
 def _windows_move_file(source: Path, destination: Path, *, replace: bool) -> None:
@@ -182,7 +200,11 @@ def _windows_move_file(source: Path, destination: Path, *, replace: bool) -> Non
         wintypes.DWORD,
     ]
     kernel32.MoveFileExW.restype = wintypes.BOOL
-    if not kernel32.MoveFileExW(str(source), str(destination), flags):
+    if not kernel32.MoveFileExW(
+        str(_native_io_path(source)),
+        str(_native_io_path(destination)),
+        flags,
+    ):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
@@ -268,17 +290,19 @@ def _require_within(path: Path, root: Path, label: str) -> Path:
 
 
 def _remove_path(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink(missing_ok=True)
-    elif path.exists():
-        shutil.rmtree(path)
+    io_path = _native_io_path(path)
+    if io_path.is_symlink() or io_path.is_file():
+        io_path.unlink(missing_ok=True)
+    elif io_path.exists():
+        shutil.rmtree(io_path)
 
 
 def _is_link_or_junction(path: Path) -> bool:
-    if path.is_symlink():
+    io_path = _native_io_path(path)
+    if io_path.is_symlink():
         return True
     try:
-        return bool(path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        return bool(io_path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
     except (AttributeError, OSError):
         return False
 
@@ -307,16 +331,17 @@ def _make_writable_and_retry(func: Any, target: Any, _exc: Any) -> None:
 
 def _force_remove_tree(path: Path) -> None:
     """Best-effort recursive removal that tolerates read-only files."""
-    if not path.exists() and not path.is_symlink():
+    io_path = _native_io_path(path)
+    if not io_path.exists() and not io_path.is_symlink():
         return
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path, onexc=_make_writable_and_retry)
+    if io_path.is_dir() and not io_path.is_symlink():
+        shutil.rmtree(io_path, onexc=_make_writable_and_retry)
         return
     try:
-        os.chmod(path, stat.S_IWRITE)
+        os.chmod(io_path, stat.S_IWRITE)
     except OSError:
         pass
-    path.unlink(missing_ok=True)
+    io_path.unlink(missing_ok=True)
 
 
 _FSYNC_MAX_WORKERS = 16
@@ -326,11 +351,12 @@ def _fsync_payload_tree(
     root: Path,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    if not root.exists():
+    io_root = _native_io_path(root)
+    if not io_root.exists():
         return
     files: list[Path] = []
-    directories = [root]
-    for path in root.rglob("*"):
+    directories = [io_root]
+    for path in io_root.rglob("*"):
         if path.is_file():
             files.append(path)
         elif path.is_dir():
@@ -703,7 +729,7 @@ class OpenClawUpgradeTransaction:
 
     def _ignore_generated_state(self, directory: str, names: list[str]) -> set[str]:
         current_dir = Path(directory)
-        if current_dir.resolve(strict=False) != Path(self.manifest.state_dir).resolve(strict=False):
+        if _native_io_path(current_dir) != _native_io_path(Path(self.manifest.state_dir)):
             return set()
         plugin_skills = current_dir / "plugin-skills"
         if "plugin-skills" in names and (
@@ -718,7 +744,7 @@ class OpenClawUpgradeTransaction:
         ignored.update(
             name for name in names if name.endswith(".log") and (current_dir / name).is_file()
         )
-        if current_dir.resolve(strict=False) == Path(self.manifest.state_dir).resolve(strict=False):
+        if _native_io_path(current_dir) == _native_io_path(Path(self.manifest.state_dir)):
             ignored.update(
                 name
                 for name in ("compile-cache", "logs")
@@ -763,7 +789,10 @@ class OpenClawUpgradeTransaction:
         )
         _durable_mkdir(staging)
         if self.manifest.package_existed:
-            shutil.copytree(package_dir, staging / "package")
+            shutil.copytree(
+                _native_io_path(package_dir),
+                _native_io_path(staging / "package"),
+            )
 
         _durable_mkdir(staging / "shims")
         for shim_value in self.manifest.shim_paths:
@@ -771,12 +800,12 @@ class OpenClawUpgradeTransaction:
             if shim.exists():
                 destination = self._shim_backup_path(shim, staging)
                 _durable_mkdir(destination.parent)
-                shutil.copy2(shim, destination)
+                shutil.copy2(_native_io_path(shim), _native_io_path(destination))
 
         if self.manifest.state_existed:
             shutil.copytree(
-                state_dir,
-                staging / "state",
+                _native_io_path(state_dir),
+                _native_io_path(staging / "state"),
                 ignore=self._ignore_state,
             )
 
@@ -787,15 +816,13 @@ class OpenClawUpgradeTransaction:
         ):
             _fsync_payload_tree(payload_root, self._payload_progress("Backing up OpenClaw files"))
 
-        metadata_files = {
-            staging / "transaction.json",
-            staging / "backup-files.json",
-        }
-        inventory = {
-            path.relative_to(staging).as_posix(): path.stat().st_size
-            for path in staging.rglob("*")
-            if path.is_file() and path not in metadata_files
-        }
+        metadata_files = {"transaction.json", "backup-files.json"}
+        io_staging = _native_io_path(staging)
+        inventory = {}
+        for path in io_staging.rglob("*"):
+            relative = path.relative_to(io_staging).as_posix()
+            if path.is_file() and relative not in metadata_files:
+                inventory[relative] = path.stat().st_size
         _atomic_json_write(staging / "backup-files.json", inventory)
         _atomic_json_write(staging / "transaction.json", self._payload())
         _fsync_directory(staging)
@@ -837,10 +864,14 @@ class OpenClawUpgradeTransaction:
                     == Path(self.manifest.state_dir).resolve(strict=False)
                     else None
                 )
-                shutil.copytree(live, staging, ignore=ignore)
+                shutil.copytree(
+                    _native_io_path(live),
+                    _native_io_path(staging),
+                    ignore=ignore,
+                )
                 _fsync_payload_tree(staging)
             else:
-                shutil.copy2(live, staging)
+                shutil.copy2(_native_io_path(live), _native_io_path(staging))
                 _fsync_file(staging)
             _durable_rename(staging, failed)
             _durable_remove(live)
@@ -850,7 +881,10 @@ class OpenClawUpgradeTransaction:
         if existed:
             _durable_mkdir(live.parent)
             staging = live.with_name(f".{live.name}.{uuid.uuid4().hex}.restore")
-            shutil.copytree(backup, staging)
+            shutil.copytree(
+                _native_io_path(backup),
+                _native_io_path(staging),
+            )
             _fsync_payload_tree(staging, self._payload_progress("Restoring OpenClaw files"))
         self._move_to_failed(live, failed)
         if staging is not None:
@@ -873,7 +907,10 @@ class OpenClawUpgradeTransaction:
                 _durable_mkdir(shim.parent)
                 staging = shim.with_name(f".{shim.name}.{uuid.uuid4().hex}.restore")
                 try:
-                    shutil.copy2(backup_shim, staging)
+                    shutil.copy2(
+                        _native_io_path(backup_shim),
+                        _native_io_path(staging),
+                    )
                     _fsync_file(staging)
                     _durable_replace(staging, shim)
                 finally:
@@ -1104,4 +1141,4 @@ def prune_previous_committed_backups(backup_root: Path, keep: Path) -> None:
             created_at = created_at.replace(tzinfo=UTC)
         created_at = created_at.astimezone(UTC)
         if phase == UpgradePhase.COMMITTED.value and created_at < keep_created_at:
-            shutil.rmtree(candidate)
+            _force_remove_tree(candidate)
