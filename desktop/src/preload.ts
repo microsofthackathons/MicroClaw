@@ -212,6 +212,7 @@ contextBridge.exposeInMainWorld("openclaw", {
     getStats: () => ipcRenderer.invoke("usage:get-stats"),
     getDetailedStats: (params: { startDate?: string; endDate?: string; filter?: string }) =>
       ipcRenderer.invoke("usage:get-detailed-stats", params),
+    getExchangeRate: () => ipcRenderer.invoke("usage:get-exchange-rate"),
   },
 
   // --- Studio Backend ---

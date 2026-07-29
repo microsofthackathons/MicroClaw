@@ -19,6 +19,7 @@ import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { StudioBackendManager } from "./studio-backend-manager";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
+import { getUsdToCnyRate } from "./exchange-rate";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
@@ -3434,7 +3435,6 @@ function registerIpcHandlers(): void {
   // --- Usage (via gateway WebSocket sessions.usage) ---
   ipcMain.handle("usage:get-stats", async () => {
     if (!gwClient?.connected) throw new Error("Gateway 未连接");
-
     const endDate = new Date().toISOString().split("T")[0];
     const startDate = new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000)
       .toISOString()
@@ -3483,6 +3483,10 @@ function registerIpcHandlers(): void {
       if (d.date) dailySpend[d.date] = d.cost || 0;
     }
 
+    // The gateway reports cost in USD; fetch the live USD→CNY rate so the
+    // renderer can convert + relabel spend to ¥ (falls back gracefully offline).
+    const fx = await getUsdToCnyRate();
+
     return {
       totalSpend: totals.totalCost || 0,
       maxBudget: null,
@@ -3502,7 +3506,15 @@ function registerIpcHandlers(): void {
       cacheWriteTokens: totals.cacheWrite || 0,
       sessionCount: result?.sessions?.length || 0,
       toolCalls: aggregates.tools?.totalCalls || 0,
+      // USD→CNY conversion metadata (spend values above remain raw USD)
+      exchangeRate: fx.rate,
+      currency: fx.currency,
     };
+  });
+
+  // Live USD→CNY exchange rate used to render spend figures in CNY.
+  ipcMain.handle("usage:get-exchange-rate", async () => {
+    return getUsdToCnyRate();
   });
 
   // Detailed usage stats for the full Usage dashboard page

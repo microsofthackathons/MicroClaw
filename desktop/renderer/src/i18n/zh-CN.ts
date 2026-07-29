@@ -202,6 +202,7 @@ export default {
   "settings.usageLoading": "正在加载用量数据…",
   "settings.retry": "重试",
   "settings.totalSpend": "总花费",
+  "settings.currencySymbol": "¥",
   "settings.budget": "预算",
   "settings.tokenUsage30d": "Token 用量（近 30 天）",
   "settings.sessionCount": "会话数",

@@ -214,6 +214,7 @@ export default {
   "settings.usageLoading": "Loading usage data…",
   "settings.retry": "Retry",
   "settings.totalSpend": "Total Spend",
+  "settings.currencySymbol": "¥",
   "settings.budget": "Budget",
   "settings.tokenUsage30d": "Token Usage (Last 30 Days)",
   "settings.sessionCount": "Sessions",
