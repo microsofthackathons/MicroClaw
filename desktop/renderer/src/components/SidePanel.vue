@@ -219,8 +219,8 @@ const flyoutStyle = computed(() => ({
 
 const filteredAgents = computed(() => {
   const q = agentQuery.value.trim().toLowerCase();
-  if (!q) return agentStore.agents;
-  return agentStore.agents.filter((agent) => {
+  if (!q) return agentStore.addedAgents;
+  return agentStore.addedAgents.filter((agent) => {
     const name = agent.name.toLowerCase();
     const desc = (agent.description || "").toLowerCase();
     return name.includes(q) || desc.includes(q);

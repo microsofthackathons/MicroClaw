@@ -75,6 +75,33 @@ const AGENT_DEFS: AgentDef[] = [
     isAdded: true,
   },
   {
+    id: "master-archive",
+    nameKey: "agent.masterArchive.name",
+    descKey: "agent.masterArchive.desc",
+    avatar: getAvatarUrl("Archaeologist.png"),
+    image: getAvatarUrl("Archaeologist.png"),
+    tagKeys: [
+      "agent.masterArchive.tag.1",
+      "agent.masterArchive.tag.2",
+      "agent.masterArchive.tag.3",
+    ],
+    taskKeys: [
+      {
+        titleKey: "agent.masterArchive.task.1.title",
+        descKey: "agent.masterArchive.task.1.desc",
+      },
+      {
+        titleKey: "agent.masterArchive.task.2.title",
+        descKey: "agent.masterArchive.task.2.desc",
+      },
+      {
+        titleKey: "agent.masterArchive.task.3.title",
+        descKey: "agent.masterArchive.task.3.desc",
+      },
+    ],
+    isAdded: false,
+  },
+  {
     id: "coder",
     nameKey: "agent.coder.name",
     descKey: "agent.coder.desc",
@@ -160,6 +187,8 @@ const AGENT_DEFS: AgentDef[] = [
   },
 ];
 
+const DEFAULT_ADDED_AGENT_IDS = AGENT_DEFS.filter((def) => def.isAdded).map((def) => def.id);
+
 export const useAgentStore = defineStore("agents", () => {
   const agentIsAdded = ref<Record<string, boolean>>(
     Object.fromEntries(AGENT_DEFS.map((d) => [d.id, d.isAdded])),
@@ -179,7 +208,9 @@ export const useAgentStore = defineStore("agents", () => {
     // metadata (avatars, tags, quick tasks). Keep the local persona for any
     // id we know about and only append genuinely custom remote agents.
     const localIds = new Set(localAgents.map((a) => a.id));
-    const extraRemote = remoteAgents.value.filter((a) => !localIds.has(a.id));
+    const extraRemote = remoteAgents.value
+      .filter((a) => !localIds.has(a.id))
+      .map((agent) => ({ ...agent, isAdded: true }));
     return [...localAgents, ...extraRemote];
   });
   const currentAgentId = ref("main");
@@ -188,9 +219,25 @@ export const useAgentStore = defineStore("agents", () => {
 
   const marketAgents = computed(() => agents.value.filter((a) => a.id !== "main"));
 
-  function toggleAgent(agentId: string) {
-    if (agentId in agentIsAdded.value) {
-      agentIsAdded.value[agentId] = !agentIsAdded.value[agentId];
+  function restoreAddedAgents(agentIds?: string[]) {
+    const restoredIds = new Set(Array.isArray(agentIds) ? agentIds : DEFAULT_ADDED_AGENT_IDS);
+    agentIsAdded.value = Object.fromEntries(
+      AGENT_DEFS.map((def) => [def.id, def.id === "main" || restoredIds.has(def.id)]),
+    );
+  }
+
+  async function toggleAgent(agentId: string) {
+    if (!(agentId in agentIsAdded.value) || agentId === "main") return;
+    const previous = agentIsAdded.value[agentId];
+    agentIsAdded.value[agentId] = !previous;
+    const addedAgentIds = AGENT_DEFS.filter((def) => agentIsAdded.value[def.id]).map(
+      (def) => def.id,
+    );
+    try {
+      await window.openclaw.settings.set("addedAgentIds", addedAgentIds);
+    } catch (error) {
+      agentIsAdded.value[agentId] = previous;
+      throw error;
     }
   }
 
@@ -201,11 +248,9 @@ export const useAgentStore = defineStore("agents", () => {
   async function fetchAgents() {
     try {
       const result = await window.openclaw.agents.list();
-      if (result.agents && result.agents.length > 0) {
-        remoteAgents.value = result.agents as Agent[];
-      }
-    } catch {
-      // Gateway may not support agents.list yet — keep defaults
+      remoteAgents.value = Array.isArray(result.agents) ? (result.agents as Agent[]) : [];
+    } catch (error) {
+      console.warn("[agents] Failed to refresh gateway agents:", error);
     }
   }
 
@@ -214,6 +259,7 @@ export const useAgentStore = defineStore("agents", () => {
     currentAgentId,
     addedAgents,
     marketAgents,
+    restoreAddedAgents,
     toggleAgent,
     selectAgent,
     fetchAgents,

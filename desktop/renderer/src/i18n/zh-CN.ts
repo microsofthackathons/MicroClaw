@@ -705,11 +705,24 @@ export default {
   "agentMarket.pageTitle": "热门 Agent",
   "agentMarket.add": "添加",
   "agentMarket.added": "已添加",
+  "agentMarket.persistenceFailed": "无法保存 Agent 选择，请重试。",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "快捷任务",
 
-  // ── Agents (mock data) ──
+  // ── Agents ──
+  "agent.masterArchive.name": "归藏大师",
+  "agent.masterArchive.desc": "本地文件整理、批量转换与文档摘要",
+  "agent.masterArchive.tag.1": "文件整理",
+  "agent.masterArchive.tag.2": "批量转换",
+  "agent.masterArchive.tag.3": "文档摘要",
+  "agent.masterArchive.task.1.title": "把这个文件夹里的 Word 批量转成 PDF",
+  "agent.masterArchive.task.1.desc": "保留原文件，并批量转换符合条件的文档。",
+  "agent.masterArchive.task.2.title": "整理这个文件夹，先给我看方案",
+  "agent.masterArchive.task.2.desc": "先盘点文件并预览安全的目录结构，确认后再移动。",
+  "agent.masterArchive.task.3.title": "汇总这些文档中的截止日期和待办",
+  "agent.masterArchive.task.3.desc": "整理负责人、截止日期和来源，生成清晰的任务清单。",
+
   "agent.coder.name": "程序猿",
   "agent.coder.desc": "代码开发、调试与代码审查",
   "agent.coder.tag.1": "代码开发",

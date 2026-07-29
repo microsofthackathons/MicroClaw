@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
 import * as net from "net";
+import * as os from "os";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { hardRestartGateway } from "./gateway-lifecycle";
@@ -76,6 +77,11 @@ import {
   ensureGitHubCopilotProviderPlugin,
   ensureSelectedModelProviderPlugins,
 } from "./model-provider-plugins";
+import {
+  AGENT_PERSONAS,
+  ensureAgentPersonasConfig,
+  seedAgentPersonaWorkspaces,
+} from "./agent-personas";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -157,6 +163,8 @@ const settingsStore = new Store<{
   sandboxGrantHistory: string[];
   /** Privacy protection level: basic, balanced, strict */
   privacyLevel: string;
+  /** Local specialist agents shown in the sidebar. */
+  addedAgentIds: string[];
 }>({
   name: "settings",
   defaults: {
@@ -180,6 +188,7 @@ const settingsStore = new Store<{
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
     privacyLevel: "balanced",
+    addedAgentIds: ["main", "coder"],
   },
 });
 
@@ -1209,68 +1218,27 @@ function ensurePluginsAllow(): void {
 }
 
 /**
- * Agent personas the MicroClaw UI can start a chat with. OpenClaw only accepts
- * an agent id that appears in `agents.list`; when that list is empty it knows
- * only the built-in "main" agent and rejects every other id with
- * `unknown agent id "<id>"`. Keep these ids in sync with the renderer's
- * AGENT_DEFS (desktop/renderer/src/stores/agents.ts) so every selectable
- * persona can actually be chatted with.
+ * Register every UI agent persona so OpenClaw accepts a chat request for it.
+ * OpenClaw 2026.7.1-1 uses `agents.list`; unsupported `agents.entries` data
+ * written by preview builds is migrated back before personas are added. Existing
+ * entries are preserved by id and the config is only rewritten when something
+ * changes. Keep AGENT_PERSONAS in sync with the renderer's AGENT_DEFS.
  */
-const AGENT_PERSONAS: readonly { id: string; name: string }[] = [
-  { id: "main", name: "Assistant" },
-  { id: "coder", name: "Coder" },
-  { id: "painter", name: "Painter" },
-  { id: "master", name: "Master" },
-  { id: "growth-hacker", name: "Growth Hacker" },
-  { id: "leopard", name: "Leopard" },
-  { id: "singer", name: "Singer" },
-];
-
-/**
- * Register every UI agent persona in `agents.list` so OpenClaw accepts a chat
- * request for it. Entries inherit the model from `agents.defaults`; "main" is
- * marked as the default agent so behavior is unchanged for it. Existing entries
- * are preserved by id (never overwritten), and the config is only rewritten
- * when something actually changed.
- */
-function ensureAgentsList(): void {
+function ensureAgentPersonas(stateDir: string): boolean {
   try {
     const config = readConfig();
-    if (!config) return;
-    if (!config.agents) config.agents = {};
-    const existing = Array.isArray(config.agents.list) ? config.agents.list : [];
-    const knownIds = new Set(
-      existing
-        .map((entry: { id?: unknown }) => (typeof entry?.id === "string" ? entry.id : ""))
-        .filter(Boolean)
-    );
-
-    const list = [...existing];
-    let changed = false;
-    for (const persona of AGENT_PERSONAS) {
-      if (knownIds.has(persona.id)) continue;
-      const entry: Record<string, unknown> = { id: persona.id, name: persona.name };
-      if (persona.id === "main") entry.default = true;
-      list.push(entry);
-      changed = true;
-    }
-
-    // Once the list is non-empty, exactly one entry must be the default agent.
-    if (list.length > 0 && !list.some((entry: { default?: unknown }) => entry?.default)) {
-      const main = list.find((entry: { id?: unknown }) => entry?.id === "main");
-      if (main) {
-        (main as Record<string, unknown>).default = true;
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      config.agents.list = list;
+    if (!config) return false;
+    const result = ensureAgentPersonasConfig(config, stateDir);
+    if (result.changed) {
       fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      console.log(`[config] Registered agent personas in agents.list: ${list.map((e: { id?: unknown }) => e?.id).join(", ")}`);
+      console.log(
+        `[config] Registered agent personas: ${AGENT_PERSONAS.map((persona) => persona.id).join(", ")}`,
+      );
     }
+    return result.changed;
   } catch (err) {
-    console.error("[config] Failed to update agents.list:", err);
+    console.error("[config] Failed to update agent personas:", err);
+    throw err;
   }
 }
 
@@ -1697,6 +1665,9 @@ async function startGatewayInner(): Promise<void> {
   gatewayToken = config?.gateway?.auth?.token || "";
   const configuredPort = config?.gateway?.port || DEFAULT_PORT;
   gatewayPort = configuredPort;
+  const stateDir = getOpenClawStateDir();
+  const nodePath = resolveNodePath();
+  const entryPath = resolveOpenClawEntry();
 
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
@@ -1704,13 +1675,31 @@ async function startGatewayInner(): Promise<void> {
 
   // Register the UI agent personas so OpenClaw will accept a chat request for
   // any of them (otherwise only the built-in "main" agent is recognized).
-  ensureAgentsList();
+  const agentRosterChanged = ensureAgentPersonas(stateDir);
+
+  try {
+    const finalConfig = readConfig();
+    if (!finalConfig) throw new Error("OpenClaw configuration is unavailable after agent setup");
+    const seededFiles = seedAgentPersonaWorkspaces(
+      finalConfig,
+      stateDir,
+      DECLARE_ACCESS_SECTION,
+      process.env,
+      os.homedir(),
+      path.dirname(entryPath),
+    );
+    if (seededFiles.length > 0) {
+      console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
+    }
+  } catch (err) {
+    console.warn("[seed] Failed to create specialist agent workspace files:", err);
+  }
 
   // If gateway is already healthy, just connect WS and return — no new process.
   // Callers that need replacement use restartManagedGateway(), which stops the
   // old process and waits for the port before invoking this function.
   const alreadyRunning = await checkExistingGateway(configuredPort);
-  if (alreadyRunning) {
+  if (alreadyRunning && !agentRosterChanged) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
     gatewaySpawnedByUs = false;
     gatewayStatus = "running";
@@ -1719,10 +1708,10 @@ async function startGatewayInner(): Promise<void> {
     startHealthMonitor();
     return;
   }
-
-  const stateDir = getOpenClawStateDir();
-  const nodePath = resolveNodePath();
-  const entryPath = resolveOpenClawEntry();
+  if (alreadyRunning) {
+    console.log("[gateway] Agent roster changed — restarting to load canonical configuration");
+    gwClient?.stop();
+  }
 
   // Kill any old gateway on this port
   stopGatewayProcess();
@@ -2993,13 +2982,8 @@ function registerIpcHandlers(): void {
 
   // --- Agents ---
   ipcMain.handle("agents:list", async () => {
-    if (!gwClient?.connected) return { agents: [] };
-    try {
-      return await gwClient.listAgents();
-    } catch (err) {
-      console.warn("[agents:list] failed:", err);
-      return { agents: [] };
-    }
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listAgents();
   });
 
   // --- Channels ---

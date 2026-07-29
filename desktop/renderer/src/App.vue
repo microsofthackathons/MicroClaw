@@ -342,6 +342,7 @@ onMounted(async () => {
     if (s.language) {
       setLocale(s.language as any);
     }
+    agentStore.restoreAddedAgents(s.addedAgentIds);
   } catch {}
 
   // Redirect away from /setup if still on it (e.g. after reload)
@@ -469,6 +470,7 @@ onMounted(async () => {
     }
     // Fetch scheduled tasks now that gateway is connected
     taskStore.fetchTasks();
+    agentStore.fetchAgents();
     // Refresh WeChat login status (important after gateway restart)
     gateway.refreshWeixinStatus();
   });
@@ -503,6 +505,7 @@ onMounted(async () => {
       sessionStore.reconcileEmptySessions(chatStore.sessionKey, "main");
       sessionStore.ensureSession(chatStore.sessionKey, "main");
       chatStore.loadHistory();
+      agentStore.fetchAgents();
     }
   });
 

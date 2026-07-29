@@ -23,6 +23,7 @@ interface AppSettings {
   themeMode: string;
   accentColor: string;
   privacyLevel: string;
+  addedAgentIds: string[];
 }
 
 type GitHubCopilotLoginEvent =
@@ -121,7 +122,7 @@ interface OpenClawAPI {
   };
   settings: {
     get(): Promise<AppSettings>;
-    set(key: string, value: any): Promise<void>;
+    set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>;
   };
   updates: {
     check(): Promise<UpdateCheckResult>;
