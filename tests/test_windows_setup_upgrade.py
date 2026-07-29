@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -8,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from deployer.openclaw_upgrade import UpgradePhase
+from deployer.openclaw_upgrade import UpgradeBackupMode, UpgradePhase
 from deployer.openclaw_version import OPENCLAW_TARGET_VERSION
 from deployer.windows_setup import (
     _OPENCLAW_RPC_TIMEOUT,
@@ -19,8 +20,10 @@ from deployer.windows_setup import (
     ActiveGateway,
     ActiveInstallation,
     NodeInstallBlocked,
+    WeixinPluginPolicy,
     WindowsSetup,
     _ProcessInfo,
+    _WindowsKillOnCloseJob,
 )
 
 
@@ -77,6 +80,13 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._git_bin = None
         self.ws._rollback_actions = []
         self.ws._openclaw_transaction = None
+        self.ws._openclaw_upgrade_required = True
+        self.ws._weixin_plugin_mutation_required = False
+        self.ws._weixin_policy_snapshot = None
+        self.ws._weixin_policy_restore_pending = False
+        self.ws._weixin_registration_verified = False
+        self.process_job = unittest.mock.Mock()
+        self.ws._create_process_lifetime_job = unittest.mock.Mock(return_value=self.process_job)
         self.ws.progress_callback = None
         self.ws.appcontainer_enabled = True
         self.ws.weixin_plugin_enabled = True
@@ -95,6 +105,53 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         (package / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
         return package
 
+    def _write_weixin_payload(self, root: Path, marker: str = "same") -> None:
+        files = {
+            "package.json": json.dumps(
+                {"name": "@tencent-weixin/openclaw-weixin", "version": "2.4.6"}
+            ),
+            "openclaw.plugin.json": json.dumps({"id": "openclaw-weixin", "version": "2.4.6"}),
+            "dist/index.js": marker,
+            "node_modules/zod/package.json": json.dumps({"version": "4.4.3"}),
+            "node_modules/qrcode-terminal/package.json": json.dumps({"version": "0.12.0"}),
+        }
+        for relative, content in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+
+    def _weixin_inspection(
+        self,
+        installed: Path,
+        *,
+        enabled: bool = True,
+        status: str = "loaded",
+        activated: bool = True,
+        tracked: bool = True,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "plugin": {
+                "id": "openclaw-weixin",
+                "version": "2.4.6",
+                "rootDir": str(installed),
+                "enabled": enabled,
+                "status": status,
+                "activated": activated,
+            }
+        }
+        if tracked:
+            payload["install"] = {
+                "installPath": str(installed),
+                "version": "2.4.6",
+            }
+        return payload
+
+    @staticmethod
+    def _plugin_process(output: str = "") -> unittest.mock.Mock:
+        process = unittest.mock.Mock(returncode=0)
+        process.communicate.return_value = (output, None)
+        return process
+
     def test_target_version_is_current(self):
         prefix = self.home / ".openclaw-node"
         self._write_package(prefix, OPENCLAW_TARGET_VERSION)
@@ -104,6 +161,20 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(installation.version, OPENCLAW_TARGET_VERSION)
         self.assertTrue(self.ws.check_openclaw_windows())
         self.assertEqual(self.ws.install_prefix, prefix)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object behavior")
+    def test_kill_on_close_job_terminates_assigned_process(self):
+        process = subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 30"],
+            creationflags=0x08000000 | 0x00000004,
+        )
+        job = _WindowsKillOnCloseJob.attach(process)
+
+        job.resume(process)
+        job.close()
+        process.wait(timeout=5)
+
+        self.assertIsNotNone(process.returncode)
 
     def test_other_version_requires_upgrade(self):
         self._write_package(self.home / ".openclaw-node", "2026.3.12")
@@ -289,21 +360,47 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.ws._run.assert_not_called()
 
-    def test_prepare_still_snapshots_a_stopped_exact_target_installation(self):
+    def test_prepare_uses_managed_state_transaction_for_unchanged_installation(self):
         prefix = self.home / ".openclaw-node"
         self._write_package(prefix, OPENCLAW_TARGET_VERSION)
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
         self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._same_version_weixin_requires_full_backup = unittest.mock.Mock(return_value=False)
         transaction = unittest.mock.Mock()
 
         with unittest.mock.patch(
             "deployer.windows_setup.OpenClawUpgradeTransaction.create",
             return_value=transaction,
-        ):
+        ) as create:
             self.assertTrue(self.ws.prepare_openclaw_upgrade())
 
+        create.assert_called_once()
+        self.assertEqual(
+            create.call_args.kwargs["backup_mode"],
+            UpgradeBackupMode.MANAGED_STATE,
+        )
         transaction.backup.assert_called_once()
+        self.assertEqual(self.ws.install_prefix, prefix)
+        self.assertFalse(self.ws._openclaw_upgrade_required)
         self.assertIs(self.ws._openclaw_transaction, transaction)
+
+    def test_prepare_uses_full_transaction_when_same_version_plugin_needs_repair(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._same_version_weixin_requires_full_backup = unittest.mock.Mock(return_value=True)
+        transaction = unittest.mock.Mock()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ) as create:
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        self.assertEqual(create.call_args.kwargs["backup_mode"], UpgradeBackupMode.FULL)
+        self.assertTrue(self.ws._weixin_plugin_mutation_required)
+        transaction.backup.assert_called_once()
 
     def test_prepare_backs_up_existing_installation_in_same_prefix(self):
         prefix = self.home / ".openclaw-node"
@@ -711,6 +808,61 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         transaction.mark_verifying.assert_called_once()
         self.ws._stop_validation_gateway.assert_called_once_with(process)
 
+    def test_same_version_fast_path_runs_health_without_deep_rpc_checks(self):
+        self.ws._openclaw_upgrade_required = False
+        transaction = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        process = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=True)
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=True)
+        self.ws._validate_gateway_rpc = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.verify_openclaw_upgrade())
+
+        self.ws._validate_installed_version.assert_called_once()
+        self.ws._start_validation_gateway.assert_called_once()
+        self.ws._validate_gateway_health.assert_called_once()
+        self.ws._validate_appcontainer_smoke.assert_called_once()
+        self.ws._validate_gateway_rpc.assert_not_called()
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+        transaction.mark_verifying.assert_called_once()
+        self.assertEqual(
+            [call.args for call in transaction.record_validation.call_args_list],
+            [
+                ("version", True),
+                ("health", True),
+                ("appcontainer", True),
+            ],
+        )
+
+    def test_same_version_plugin_repair_validates_plugin_before_commit(self):
+        self.ws._openclaw_upgrade_required = False
+        self.ws._weixin_plugin_mutation_required = True
+        transaction = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        process = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=True)
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._validate_weixin_plugin = unittest.mock.Mock(return_value=True)
+        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.verify_openclaw_upgrade())
+
+        self.assertEqual(
+            [call.args for call in transaction.record_validation.call_args_list],
+            [
+                ("version", True),
+                ("health", True),
+                ("weixin-plugin", True),
+                ("appcontainer", True),
+            ],
+        )
+
     def test_failed_validation_returns_false_without_rolling_back_inside_validator(self):
         transaction = unittest.mock.Mock()
         process = unittest.mock.Mock()
@@ -791,6 +943,501 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         # installs are not blocked by the retained lock.
         transaction.discard.assert_called_once()
         transaction.complete_rollback.assert_not_called()
+
+    def test_weixin_install_skips_matching_bundled_payload(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        peer = installed / "node_modules" / "openclaw" / "package.json"
+        peer.parent.mkdir(parents=True)
+        peer.write_text("{}", encoding="utf-8")
+        config = installed.parents[1] / "openclaw.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {
+                            "openclaw-weixin": {
+                                "enabled": False,
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed, enabled=False, status="disabled")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
+        popen.assert_not_called()
+
+    def test_weixin_missing_entry_stays_on_fast_path_when_official_registration_matches(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": [],
+                        "deny": [],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed)
+        )
+
+        self.assertFalse(self.ws._same_version_weixin_requires_full_backup())
+
+        self.assertFalse(self.ws._weixin_policy_snapshot.entry_present)
+        self.assertTrue(self.ws._weixin_registration_verified)
+
+    def test_weixin_matching_payload_repairs_missing_config_record(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["openclaw.cmd", "plugins", "install", "--force", str(bundled)],
+        )
+
+    def test_weixin_install_uses_force_without_deleting_existing_plugin(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        old_marker = installed / "old-only.txt"
+        old_marker.write_text("preserve until OpenClaw replaces it", encoding="utf-8")
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        command = popen.call_args.args[0]
+        self.assertEqual(
+            command,
+            ["openclaw.cmd", "plugins", "install", "--force", str(bundled)],
+        )
+        self.assertEqual(popen.call_args.kwargs["creationflags"], 0x08000000 | 0x00000004)
+        self.assertTrue(old_marker.exists())
+        process.communicate.assert_called_once_with(timeout=120)
+        self.ws._create_process_lifetime_job.assert_called_once_with(process)
+        self.process_job.resume.assert_called_once_with(process)
+        self.process_job.close.assert_called()
+        self.ws._run.assert_called_once()
+
+    def test_weixin_install_timeout_terminates_job_before_returning(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        process = unittest.mock.Mock(returncode=None, pid=4321)
+        process.communicate.side_effect = subprocess.TimeoutExpired("openclaw", 120)
+        process.poll.return_value = 1
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process):
+            self.assertFalse(self.ws.install_weixin_plugin())
+
+        self.process_job.close.assert_called()
+        process.wait.assert_called_once_with(timeout=15)
+
+    def test_weixin_force_install_restores_user_plugin_policy(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["other-plugin"],
+                        "deny": ["openclaw-weixin"],
+                        "entries": {
+                            "openclaw-weixin": {
+                                "enabled": False,
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={"TEST": "1"})
+        process = self._plugin_process()
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process):
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        restore = self.ws._run.call_args
+        self.assertEqual(
+            restore.args[0],
+            [
+                "openclaw.cmd",
+                "config",
+                "patch",
+                "--stdin",
+                "--replace-path",
+                "plugins.entries.openclaw-weixin",
+                "--replace-path",
+                "plugins.allow",
+                "--replace-path",
+                "plugins.deny",
+            ],
+        )
+        self.assertEqual(
+            json.loads(restore.kwargs["input"]),
+            {
+                "plugins": {
+                    "entries": {"openclaw-weixin": {"enabled": False}},
+                    "enabled": None,
+                    "allow": ["other-plugin"],
+                    "deny": ["openclaw-weixin"],
+                }
+            },
+        )
+        self.assertEqual(restore.kwargs["env"]["TEST"], "1")
+        self.assertEqual(
+            restore.kwargs["env"]["OPENCLAW_STATE_DIR"],
+            str(self.home / ".openclaw"),
+        )
+
+    def test_weixin_force_install_preserves_global_policy_without_existing_entry(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["other-plugin"],
+                        "deny": ["openclaw-weixin"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process):
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        patch = json.loads(self.ws._run.call_args.kwargs["input"])
+        self.assertEqual(
+            patch,
+            {
+                "plugins": {
+                    "entries": {"openclaw-weixin": None},
+                    "enabled": None,
+                    "allow": ["other-plugin"],
+                    "deny": ["openclaw-weixin"],
+                }
+            },
+        )
+        self.assertFalse(self.ws._weixin_policy_snapshot.expects_enabled)
+
+    def test_weixin_policy_treats_empty_allow_as_open_and_global_disable_as_closed(self):
+        state_dir = self.home / ".openclaw"
+        state_dir.mkdir()
+        config_path = state_dir / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": [],
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        policy = self.ws._read_weixin_plugin_policy(state_dir)
+
+        self.assertIsNotNone(policy)
+        self.assertTrue(policy.expects_enabled)
+
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "enabled": False,
+                        "allow": [],
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        policy = self.ws._read_weixin_plugin_policy(state_dir)
+
+        self.assertIsNotNone(policy)
+        self.assertFalse(policy.expects_enabled)
+
+    def test_weixin_policy_restore_retry_does_not_reinstall_or_reread_policy(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["other-plugin"],
+                        "deny": ["openclaw-weixin"],
+                        "entries": {"openclaw-weixin": {"enabled": False}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(returncode=1, stdout="", stderr="transient"),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertFalse(self.ws.install_weixin_plugin())
+            self.assertTrue(self.ws._weixin_policy_restore_pending)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "plugins": {
+                            "allow": ["openclaw-weixin"],
+                            "entries": {"openclaw-weixin": {"enabled": True}},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        popen.assert_called_once()
+        self.assertEqual(self.ws._run.call_count, 2)
+        first_patch = json.loads(self.ws._run.call_args_list[0].kwargs["input"])
+        second_patch = json.loads(self.ws._run.call_args_list[1].kwargs["input"])
+        self.assertEqual(first_patch, second_patch)
+        self.assertEqual(first_patch["plugins"]["allow"], ["other-plugin"])
+        self.assertEqual(first_patch["plugins"]["deny"], ["openclaw-weixin"])
+        self.assertFalse(self.ws._weixin_policy_restore_pending)
+
+    def test_weixin_matching_payload_with_missing_official_record_is_reinstalled(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed, tracked=False)
+        )
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        popen.assert_called_once()
+
+    def test_weixin_force_install_refuses_lightweight_transaction_after_state_changes(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        transaction = unittest.mock.Mock()
+        transaction.manifest.backup_mode = UpgradeBackupMode.MANAGED_STATE
+        self.ws._openclaw_transaction = transaction
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertFalse(self.ws.install_weixin_plugin())
+
+        popen.assert_not_called()
+
+    def test_weixin_install_rechecks_cached_registration_before_fast_path(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        transaction = unittest.mock.Mock()
+        transaction.manifest.backup_mode = UpgradeBackupMode.MANAGED_STATE
+        self.ws._openclaw_transaction = transaction
+        self.ws._weixin_registration_verified = True
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed, tracked=False)
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertFalse(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
+        popen.assert_not_called()
+
+    def test_weixin_validation_accepts_user_disabled_plugin(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(
+                installed,
+                enabled=False,
+                status="disabled",
+                activated=False,
+            )
+        )
+        self.ws._weixin_policy_snapshot = WeixinPluginPolicy(
+            plugins_enabled_present=False,
+            plugins_enabled=None,
+            entry_present=True,
+            entry={"enabled": False},
+            allow_present=True,
+            allow=["other-plugin"],
+            deny_present=True,
+            deny=["openclaw-weixin"],
+        )
+
+        self.assertTrue(self.ws._validate_weixin_plugin())
+
+    def test_write_config_preserves_existing_weixin_plugin_settings(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        plugins = {
+            "allow": ["openclaw-weixin"],
+            "entries": {
+                "openclaw-weixin": {
+                    "enabled": False,
+                    "config": {"userSetting": "preserved"},
+                }
+            },
+        }
+        config_path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["plugins"], plugins)
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"

@@ -12,6 +12,7 @@ from pathlib import Path
 from tkinter import filedialog
 
 from deployer.config import DeployerConfig
+from deployer.install_timing import InstallTiming
 from deployer.logger import DeployerLogger
 from deployer.windows_setup import (
     DEFAULT_DESKTOP_DIR,
@@ -362,6 +363,7 @@ class WebInstallerBridge:
             self._state["progress_detail"] = detail or ""
 
     def _install_thread(self):
+        timing = InstallTiming(self._logger)
         ws = WindowsSetup(self._config, self._logger)
         ws.progress_callback = self._set_progress_detail
 
@@ -402,16 +404,24 @@ class WebInstallerBridge:
                 rollback_ok = ws.rollback_openclaw_upgrade()
                 suffix = "" if rollback_ok else " Automatic rollback also failed."
                 self._finish_fail(f"Installation cancelled.{suffix}")
+                timing.finish("cancelled")
                 return
             self._set_progress(pct, label)
-            if not self._run_step_with_retry(pct, label, fn, retries):
-                if self.get_state()["status"] == "cancelled":
+            started_at = timing.start_step()
+            step_ok = self._run_step_with_retry(pct, label, fn, retries)
+            step_status = "success" if step_ok else self.get_state()["status"]
+            timing.record_step(label, started_at, step_status)
+            if not step_ok:
+                if step_status == "cancelled":
+                    timing.finish("cancelled")
                     return
                 if not ws.rollback_openclaw_upgrade():
                     with self._state_lock:
                         self._state["error"] += " Automatic rollback also failed."
+                timing.finish("failed")
                 return
 
+        timing.finish("success")
         self._finish_ok()
 
     def _run_step_with_retry(self, pct, label, fn, retries):
@@ -489,6 +499,8 @@ class WebInstallerBridge:
         process = f" (PID {', '.join(map(str, active.pids))})" if active.pids else ""
         strings = _STRINGS[self._lang]
         message = strings["runningAppsMessage"].format(process=process)
+        _ACTIVE_WINDOW.restore()
+        _ACTIVE_WINDOW.show()
         return bool(_ACTIVE_WINDOW.create_confirmation_dialog(strings["runningAppsTitle"], message))
 
     def _ensure_node(self, ws):

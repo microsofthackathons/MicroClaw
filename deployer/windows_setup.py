@@ -27,6 +27,7 @@ from deployer.openclaw_upgrade import (
     RECOVERABLE_PHASES,
     OpenClawInstallation,
     OpenClawUpgradeTransaction,
+    UpgradeBackupMode,
     UpgradeInProgressError,
     UpgradePhase,
     process_is_alive,
@@ -140,6 +141,7 @@ _VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 
 # Hide console windows spawned by subprocess on Windows
 _CREATE_NO_WINDOW = 0x08000000
+_CREATE_SUSPENDED = 0x00000004
 
 # Per-call timeout (seconds) for `openclaw gateway call ...` RPC probes run
 # during post-install validation. Each probe cold-starts the OpenClaw CLI, and
@@ -147,6 +149,168 @@ _CREATE_NO_WINDOW = 0x08000000
 # newly-written files) that start alone can take 30-60s, so this must be well
 # above the CLI boot time to avoid spurious validation failures.
 _OPENCLAW_RPC_TIMEOUT = 120
+
+
+class _WindowsKillOnCloseJob:
+    """Own a Windows Job Object that terminates its process tree when closed."""
+
+    def __init__(self, handle: object | None):
+        self._handle = handle
+
+    @classmethod
+    def attach(cls, process: subprocess.Popen) -> "_WindowsKillOnCloseJob":
+        if os.name != "nt":
+            return cls(None)
+
+        import ctypes
+        from ctypes import wintypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimitInformation),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            error = ctypes.get_last_error()
+            raise OSError(error, ctypes.FormatError(error))
+
+        information = _ExtendedLimitInformation()
+        information.BasicLimitInformation.LimitFlags = 0x00002000
+        if not kernel32.SetInformationJobObject(
+            handle,
+            9,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ) or not kernel32.AssignProcessToJobObject(handle, wintypes.HANDLE(int(process._handle))):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise OSError(error, ctypes.FormatError(error))
+        return cls(handle)
+
+    def close(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(handle)
+        self._handle = None
+
+    @staticmethod
+    def resume(process: subprocess.Popen) -> None:
+        if os.name != "nt":
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        class _ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_ThreadEntry32),
+        ]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_ThreadEntry32),
+        ]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+        if snapshot == ctypes.c_void_p(-1).value:
+            error = ctypes.get_last_error()
+            raise OSError(error, ctypes.FormatError(error))
+
+        resumed = 0
+        entry = _ThreadEntry32()
+        entry.dwSize = ctypes.sizeof(entry)
+        try:
+            has_entry = bool(kernel32.Thread32First(snapshot, ctypes.byref(entry)))
+            while has_entry:
+                if entry.th32OwnerProcessID == process.pid:
+                    thread = kernel32.OpenThread(0x0002, False, entry.th32ThreadID)
+                    if not thread:
+                        error = ctypes.get_last_error()
+                        raise OSError(error, ctypes.FormatError(error))
+                    try:
+                        if kernel32.ResumeThread(thread) == 0xFFFFFFFF:
+                            error = ctypes.get_last_error()
+                            raise OSError(error, ctypes.FormatError(error))
+                        resumed += 1
+                    finally:
+                        kernel32.CloseHandle(thread)
+                has_entry = bool(kernel32.Thread32Next(snapshot, ctypes.byref(entry)))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        if resumed == 0:
+            raise ProcessLookupError(f"no suspended thread found for process {process.pid}")
 
 
 @dataclass(frozen=True)
@@ -167,6 +331,28 @@ class ActiveGateway:
 class ActiveInstallation:
     pids: tuple[int, ...]
     gateway: ActiveGateway | None
+
+
+@dataclass(frozen=True)
+class WeixinPluginPolicy:
+    plugins_enabled_present: bool
+    plugins_enabled: bool | None
+    entry_present: bool
+    entry: dict[str, object] | None
+    allow_present: bool
+    allow: list[str] | None
+    deny_present: bool
+    deny: list[str] | None
+
+    @property
+    def expects_enabled(self) -> bool:
+        if self.plugins_enabled is False:
+            return False
+        if self.entry is not None and self.entry.get("enabled") is False:
+            return False
+        if self.deny is not None and "openclaw-weixin" in self.deny:
+            return False
+        return not self.allow or "openclaw-weixin" in self.allow
 
 
 @dataclass(frozen=True)
@@ -199,6 +385,11 @@ class WindowsSetup:
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
         self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
+        self._openclaw_upgrade_required = True
+        self._weixin_plugin_mutation_required = False
+        self._weixin_policy_snapshot: WeixinPluginPolicy | None = None
+        self._weixin_policy_restore_pending = False
+        self._weixin_registration_verified = False
         # Optional UI hook forwarded to upgrade transactions so long backup /
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
@@ -1651,6 +1842,11 @@ class WindowsSetup:
 
     def prepare_openclaw_upgrade(self) -> bool:
         """Block active gateways and snapshot the current package and state."""
+        self._openclaw_upgrade_required = True
+        self._weixin_plugin_mutation_required = False
+        self._weixin_policy_snapshot = None
+        self._weixin_policy_restore_pending = False
+        self._weixin_registration_verified = False
         if not self._gateway_is_stopped_for_upgrade():
             return False
         if not self.recover_interrupted_openclaw_upgrade():
@@ -1658,6 +1854,11 @@ class WindowsSetup:
         installation = self._detect_openclaw_installation()
         if not self._gateway_is_stopped_for_upgrade():
             return False
+        same_version = installation is not None and installation.version == OPENCLAW_TARGET_VERSION
+        if same_version:
+            self.install_prefix = installation.prefix
+            self._openclaw_upgrade_required = False
+            self._weixin_plugin_mutation_required = self._same_version_weixin_requires_full_backup()
         prefix = (
             installation.prefix if installation is not None else self._choose_npm_install_prefix()
         )
@@ -1672,11 +1873,17 @@ class WindowsSetup:
         )
         self.install_prefix = prefix
         try:
+            backup_mode = (
+                UpgradeBackupMode.FULL
+                if self._openclaw_upgrade_required or self._weixin_plugin_mutation_required
+                else UpgradeBackupMode.MANAGED_STATE
+            )
             transaction = OpenClawUpgradeTransaction.create(
                 microclaw_root=DEFAULT_DESKTOP_DIR,
                 state_dir=Path.home() / ".openclaw",
                 target_version=OPENCLAW_TARGET_VERSION,
                 installation=source,
+                backup_mode=backup_mode,
             )
             self._openclaw_transaction = transaction
             transaction.progress_callback = self.progress_callback
@@ -1684,6 +1891,16 @@ class WindowsSetup:
                 transaction.close()
                 self._openclaw_transaction = None
                 return False
+            if backup_mode == UpgradeBackupMode.MANAGED_STATE:
+                self.log.info(
+                    f"OpenClaw {OPENCLAW_TARGET_VERSION} is already installed; "
+                    "creating a lightweight managed-state rollback point."
+                )
+            elif same_version:
+                self.log.info(
+                    "The bundled WeChat plugin requires reconciliation; "
+                    "creating a full rollback point."
+                )
             transaction.backup()
             return True
         except Exception as error:
@@ -2094,9 +2311,82 @@ class WindowsSetup:
             return any(WindowsSetup._contains_enabled_weixin_plugin(child) for child in value)
         return False
 
+    @staticmethod
+    def _weixin_plugin_from_inspection(payload: object) -> dict[str, object] | None:
+        if not isinstance(payload, dict):
+            return None
+        plugin = payload.get("plugin")
+        if isinstance(plugin, dict) and plugin.get("id") == "openclaw-weixin":
+            return plugin
+        return None
+
+    @staticmethod
+    def _bundled_weixin_version(plugin_dir: Path) -> str | None:
+        try:
+            package = json.loads((plugin_dir / "package.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        version = package.get("version") if isinstance(package, dict) else None
+        return version if isinstance(version, str) and version else None
+
+    def _weixin_registration_matches(
+        self,
+        payload: object,
+        installed_dir: Path,
+        plugin_dir: Path,
+    ) -> bool:
+        plugin = self._weixin_plugin_from_inspection(payload)
+        if plugin is None or not isinstance(payload, dict):
+            return False
+        install = payload.get("install")
+        version = self._bundled_weixin_version(plugin_dir)
+        if not isinstance(install, dict) or version is None:
+            return False
+        try:
+            plugin_root = Path(str(plugin.get("rootDir", ""))).resolve(strict=False)
+            install_path = Path(str(install.get("installPath", ""))).resolve(strict=False)
+            expected_path = installed_dir.resolve(strict=False)
+        except (OSError, ValueError):
+            return False
+        return (
+            plugin_root == expected_path
+            and install_path == expected_path
+            and plugin.get("version") == version
+            and install.get("version") == version
+        )
+
+    def _inspect_weixin_plugin(self) -> object:
+        return self._run_openclaw_json(["plugins", "inspect", "openclaw-weixin", "--json"])
+
     def _validate_weixin_plugin(self) -> bool:
-        payload = self._run_openclaw_json(["plugins", "list", "--json"])
-        return self._contains_enabled_weixin_plugin(payload)
+        plugin_dir = self._find_bundled_weixin_plugin()
+        if plugin_dir is None:
+            return False
+        state_dir = Path.home() / ".openclaw"
+        payload = self._inspect_weixin_plugin()
+        if not self._weixin_registration_matches(
+            payload,
+            state_dir / "extensions" / "openclaw-weixin",
+            plugin_dir,
+        ):
+            return False
+        policy = getattr(self, "_weixin_policy_snapshot", None)
+        if policy is None:
+            policy = self._read_weixin_plugin_policy(state_dir)
+        if policy is None:
+            return False
+        if policy.expects_enabled:
+            return self._contains_enabled_weixin_plugin(payload)
+
+        plugin = self._weixin_plugin_from_inspection(payload)
+        if plugin is None:
+            return False
+        status = str(plugin.get("status", "")).lower()
+        return (
+            plugin.get("enabled") is False
+            or plugin.get("activated") is False
+            or status == "disabled"
+        )
 
     def _validate_appcontainer_smoke(self) -> bool:
         if not self.appcontainer_enabled:
@@ -2128,6 +2418,41 @@ class WindowsSetup:
         return result.returncode == 0 and "microclaw-sandbox-ok" in result.stdout
 
     def verify_openclaw_upgrade(self) -> bool:
+        if not self._openclaw_upgrade_required:
+            transaction = self._openclaw_transaction
+            if transaction is not None:
+                transaction.mark_verifying()
+
+            def record_fast_path(name: str, passed: bool) -> None:
+                if transaction is not None:
+                    transaction.record_validation(name, passed)
+
+            version_ok = self._validate_installed_version()
+            record_fast_path("version", version_ok)
+            if not version_ok:
+                self.log.error("OpenClaw validation failed: version")
+                return False
+
+            process = None
+            checks = [("health", self._validate_gateway_health)]
+            if getattr(self, "_weixin_plugin_mutation_required", False):
+                checks.append(("weixin-plugin", self._validate_weixin_plugin))
+            checks.append(("appcontainer", self._validate_appcontainer_smoke))
+            try:
+                process = self._start_validation_gateway()
+                for name, check in checks:
+                    passed = bool(check())
+                    record_fast_path(name, passed)
+                    if not passed:
+                        raise RuntimeError(f"OpenClaw validation failed: {name}")
+                self.log.info("OpenClaw version unchanged; skipping deep RPC upgrade validation.")
+                return True
+            except Exception as error:
+                self.log.error(str(error))
+                return False
+            finally:
+                self._stop_validation_gateway(process)
+
         transaction = self._openclaw_transaction
         if transaction is not None:
             transaction.mark_verifying()
@@ -2754,26 +3079,6 @@ class WindowsSetup:
         else:
             self.log.info("  Skill whitelist: disabled (skills.enable=false in deployer config)")
 
-        # ── Clean stale plugin references ──
-        # Previous installs (or the desktop app) may have added plugins.allow
-        # and plugins.entries for openclaw-weixin.  If the plugin files were
-        # removed during uninstall, these stale references cause
-        # `openclaw plugins install` to fail config validation.
-        # Strip them now; _enable_weixin_in_config() will re-add after install.
-        plugins_cfg = existing.get("plugins", {})
-        allow_list = plugins_cfg.get("allow", [])
-        if isinstance(allow_list, list) and "openclaw-weixin" in allow_list:
-            allow_list.remove("openclaw-weixin")
-            plugins_cfg["allow"] = allow_list
-            self.log.info("  Removed stale plugins.allow entry for openclaw-weixin")
-        p_entries = plugins_cfg.get("entries", {})
-        if "openclaw-weixin" in p_entries:
-            del p_entries["openclaw-weixin"]
-            plugins_cfg["entries"] = p_entries
-            self.log.info("  Removed stale plugins.entries for openclaw-weixin")
-        if plugins_cfg:
-            existing["plugins"] = plugins_cfg
-
         try:
             config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             self.log.success(f"Config written to {config_path}")
@@ -3047,43 +3352,217 @@ class WindowsSetup:
                 return p
         return None
 
-    def _enable_weixin_in_config(self):
-        """Enable openclaw-weixin plugin in openclaw.json after installation.
+    @staticmethod
+    def _plugin_payload_files(root: Path) -> set[Path]:
+        files: set[Path] = set()
+        for directory, dirnames, filenames in os.walk(root, followlinks=False):
+            relative_directory = Path(directory).relative_to(root)
+            if relative_directory == Path("node_modules"):
+                # OpenClaw may add this peer-dependency link after installation.
+                dirnames[:] = [name for name in dirnames if name != "openclaw"]
+            for filename in filenames:
+                files.add(relative_directory / filename)
+        return files
 
-        Also fixes the ``sourcePath`` recorded by ``openclaw plugins install``:
-        the original value points to a PyInstaller temp directory that is
-        deleted after the installer exits.  We rewrite it to match the
-        permanent ``installPath`` so the gateway can resolve the plugin on
-        any machine.
-        """
-        import json
+    @staticmethod
+    def _files_match(source: Path, installed: Path) -> bool:
+        if source.stat().st_size != installed.stat().st_size:
+            return False
+        source_hash = hashlib.sha256()
+        installed_hash = hashlib.sha256()
+        with source.open("rb") as source_file, installed.open("rb") as installed_file:
+            for chunk in iter(lambda: source_file.read(256 * 1024), b""):
+                source_hash.update(chunk)
+            for chunk in iter(lambda: installed_file.read(256 * 1024), b""):
+                installed_hash.update(chunk)
+        return source_hash.digest() == installed_hash.digest()
 
-        config_path = Path.home() / ".openclaw" / "openclaw.json"
+    def _weixin_payload_matches(self, bundled: Path, installed: Path) -> bool:
+        if not installed.is_dir():
+            return False
         try:
-            config = (
-                json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+            bundled_files = self._plugin_payload_files(bundled)
+            installed_files = self._plugin_payload_files(installed)
+            if not bundled_files or bundled_files != installed_files:
+                return False
+            return all(
+                self._files_match(bundled / relative, installed / relative)
+                for relative in bundled_files
             )
-            plugins = config.setdefault("plugins", {})
-            entries = plugins.setdefault("entries", {})
-            entries.setdefault("openclaw-weixin", {})["enabled"] = True
+        except OSError as error:
+            self.log.info(f"  插件完整性检查失败，将重新安装: {error}")
+            return False
 
-            # Fix sourcePath → installPath so it survives across machines
-            installs = plugins.get("installs", {})
-            wx_install = installs.get("openclaw-weixin")
-            if isinstance(wx_install, dict):
-                install_path = wx_install.get("installPath", "")
-                if install_path:
-                    wx_install["source"] = "path"
-                    wx_install["sourcePath"] = install_path
-                    self.log.info(f"  已将 sourcePath 修正为 {install_path}")
+    @staticmethod
+    def _read_weixin_plugin_policy(state_dir: Path) -> WeixinPluginPolicy | None:
+        config_path = state_dir / "openclaw.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return WeixinPluginPolicy(
+                False,
+                None,
+                False,
+                None,
+                False,
+                None,
+                False,
+                None,
+            )
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(config, dict):
+            return None
+        plugins = config.get("plugins")
+        if plugins is None:
+            return WeixinPluginPolicy(
+                False,
+                None,
+                False,
+                None,
+                False,
+                None,
+                False,
+                None,
+            )
+        if not isinstance(plugins, dict):
+            return None
+        plugins_enabled_present = "enabled" in plugins
+        plugins_enabled = plugins.get("enabled")
+        if plugins_enabled_present and not isinstance(plugins_enabled, bool):
+            return None
+        entries = plugins.get("entries")
+        if entries is not None and not isinstance(entries, dict):
+            return None
+        entry_present = isinstance(entries, dict) and "openclaw-weixin" in entries
+        entry = entries.get("openclaw-weixin") if isinstance(entries, dict) else None
+        if entry_present and not isinstance(entry, dict):
+            return None
 
-            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-            self.log.info("  已在配置中启用插件")
-        except Exception as e:
-            self.log.warn(f"  无法在配置中启用插件: {e}")
+        values: dict[str, list[str] | None] = {}
+        presence: dict[str, bool] = {}
+        for key in ("allow", "deny"):
+            presence[key] = key in plugins
+            value = plugins.get(key)
+            if presence[key] and (
+                not isinstance(value, list) or not all(isinstance(item, str) for item in value)
+            ):
+                return None
+            values[key] = list(value) if isinstance(value, list) else None
+        return WeixinPluginPolicy(
+            plugins_enabled_present=plugins_enabled_present,
+            plugins_enabled=plugins_enabled if isinstance(plugins_enabled, bool) else None,
+            entry_present=entry_present,
+            entry=dict(entry) if isinstance(entry, dict) else None,
+            allow_present=presence["allow"],
+            allow=values["allow"],
+            deny_present=presence["deny"],
+            deny=values["deny"],
+        )
+
+    def _restore_weixin_plugin_policy(
+        self,
+        openclaw_cmd: list[str],
+        env: dict[str, str],
+        policy: WeixinPluginPolicy,
+    ) -> bool:
+        replace_paths: list[str] = []
+        plugins_patch: dict[str, object] = {}
+        if policy.entry_present:
+            plugins_patch["entries"] = {"openclaw-weixin": policy.entry}
+            replace_paths.extend(["--replace-path", "plugins.entries.openclaw-weixin"])
+        else:
+            plugins_patch["entries"] = {"openclaw-weixin": None}
+        plugins_patch["enabled"] = (
+            policy.plugins_enabled if policy.plugins_enabled_present else None
+        )
+        for key, present, value in (
+            ("allow", policy.allow_present, policy.allow),
+            ("deny", policy.deny_present, policy.deny),
+        ):
+            plugins_patch[key] = value if present else None
+            if present:
+                replace_paths.extend(["--replace-path", f"plugins.{key}"])
+        patch = {"plugins": plugins_patch}
+
+        result = self._run(
+            openclaw_cmd + ["config", "patch", "--stdin", *replace_paths],
+            input=json.dumps(patch),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=env,
+        )
+        if result.returncode == 0:
+            return True
+        self.log.error(
+            f"插件已更新，但无法恢复用户的插件启用策略: {(result.stderr or result.stdout).strip()}"
+        )
+        return False
+
+    def _same_version_weixin_requires_full_backup(self) -> bool:
+        plugin_dir = self._find_bundled_weixin_plugin()
+        if plugin_dir is None:
+            return False
+        state_dir = Path.home() / ".openclaw"
+        existing = state_dir / "extensions" / "openclaw-weixin"
+        policy = self._read_weixin_plugin_policy(state_dir)
+        self._weixin_policy_snapshot = policy
+        if policy is None or not self._weixin_payload_matches(plugin_dir, existing):
+            return True
+        try:
+            payload = self._inspect_weixin_plugin()
+        except Exception as error:
+            self.log.info(f"  无法确认微信插件官方注册状态，将使用完整备份: {error}")
+            return True
+        self._weixin_registration_verified = self._weixin_registration_matches(
+            payload, existing, plugin_dir
+        )
+        return not self._weixin_registration_verified
+
+    def _weixin_cli_context(self, state_dir: Path) -> tuple[list[str], dict[str, str]] | None:
+        openclaw_cmd = self._find_openclaw_cmd()
+        if not openclaw_cmd:
+            self.log.error("未找到 openclaw 命令，无法安装插件")
+            return None
+        env = self._get_env()
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env["NODE_COMPILE_CACHE"] = str(cache_dir)
+        env["OPENCLAW_STATE_DIR"] = str(state_dir)
+        return openclaw_cmd, env
+
+    @staticmethod
+    def _create_process_lifetime_job(process: subprocess.Popen) -> _WindowsKillOnCloseJob:
+        return _WindowsKillOnCloseJob.attach(process)
+
+    def _terminate_process_tree(
+        self,
+        process: subprocess.Popen,
+        job: _WindowsKillOnCloseJob | None,
+    ) -> None:
+        if job is not None:
+            job.close()
+        if process.poll() is None:
+            if os.name == "nt":
+                self._run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            else:
+                process.kill()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
     def install_weixin_plugin(self) -> bool:
-        """Install the openclaw-weixin plugin via 'openclaw plugins install'."""
+        """Reconcile the bundled openclaw-weixin plugin through OpenClaw."""
         self.log.step("正在安装插件…")
 
         plugin_dir = self._find_bundled_weixin_plugin()
@@ -3091,29 +3570,62 @@ class WindowsSetup:
             self.log.error("未找到插件安装包")
             return False
 
-        openclaw_cmd = self._find_openclaw_cmd()
-        if not openclaw_cmd:
-            self.log.error("未找到 openclaw 命令，无法安装插件")
+        state_dir = Path.home() / ".openclaw"
+        existing = state_dir / "extensions" / "openclaw-weixin"
+        cli_context = self._weixin_cli_context(state_dir)
+        if cli_context is None:
+            return False
+        openclaw_cmd, env = cli_context
+        prior_policy = getattr(self, "_weixin_policy_snapshot", None)
+        if getattr(self, "_weixin_policy_restore_pending", False):
+            if prior_policy is None:
+                self.log.error("插件策略恢复状态丢失，无法安全重试")
+                return False
+            if not self._restore_weixin_plugin_policy(openclaw_cmd, env, prior_policy):
+                return False
+            self._weixin_policy_restore_pending = False
+            self._weixin_registration_verified = True
+            self.log.success("用户插件策略恢复成功")
+            return True
+
+        payload_matches = self._weixin_payload_matches(plugin_dir, existing)
+        if prior_policy is None:
+            prior_policy = self._read_weixin_plugin_policy(state_dir)
+            self._weixin_policy_snapshot = prior_policy
+        registration_matches = False
+        if payload_matches:
+            try:
+                registration_matches = self._weixin_registration_matches(
+                    self._inspect_weixin_plugin(),
+                    existing,
+                    plugin_dir,
+                )
+            except Exception as error:
+                self.log.info(f"  微信插件官方注册检查失败，将重新安装: {error}")
+        if payload_matches and registration_matches and prior_policy is not None:
+            self._weixin_registration_verified = True
+            self.log.info("  微信插件已是内置版本且官方注册完整，跳过重复安装")
+            return True
+        if payload_matches and prior_policy is not None and prior_policy.entry_present:
+            self.log.info("  微信插件官方注册记录缺失，将由 OpenClaw 修复")
+        elif payload_matches:
+            self.log.info("  微信插件配置记录缺失，将由 OpenClaw 修复")
+
+        if prior_policy is None:
+            self.log.error("无法读取现有插件策略，拒绝执行可能覆盖用户配置的插件安装")
+            return False
+        transaction = getattr(self, "_openclaw_transaction", None)
+        if transaction is not None and transaction.manifest.backup_mode != UpgradeBackupMode.FULL:
+            self.log.error(
+                "微信插件状态在安装期间发生变化；轻量事务不会执行强制覆盖，请重新运行安装器"
+            )
             return False
 
-        env = self._get_env()
-        # Enable V8 compile cache so the openclaw CLI cold-start is fast
-        state_dir = Path.home() / ".openclaw"
-        cache_dir = state_dir / "compile-cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        env["NODE_COMPILE_CACHE"] = str(cache_dir)
-        env["OPENCLAW_STATE_DIR"] = str(state_dir)
-
-        # Remove stale extension directory so 'openclaw plugins install' won't
-        # fail with "plugin already exists".
-        existing = state_dir / "extensions" / "openclaw-weixin"
-        if existing.exists():
-            self.log.info("  删除旧版插件目录…")
-            shutil.rmtree(existing, ignore_errors=True)
-
+        proc: subprocess.Popen | None = None
+        job: _WindowsKillOnCloseJob | None = None
         try:
             proc = subprocess.Popen(
-                openclaw_cmd + ["plugins", "install", str(plugin_dir)],
+                openclaw_cmd + ["plugins", "install", "--force", str(plugin_dir)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -3121,28 +3633,39 @@ class WindowsSetup:
                 errors="replace",
                 bufsize=1,
                 env=env,
-                creationflags=_CREATE_NO_WINDOW,
+                creationflags=_CREATE_NO_WINDOW | _CREATE_SUSPENDED,
             )
-            for line in proc.stdout:
+            job = self._create_process_lifetime_job(proc)
+            job.resume(proc)
+            output, _ = proc.communicate(timeout=120)
+            for line in output.splitlines():
                 stripped = line.rstrip()
                 if stripped:
                     self.log.info(f"  plugin: {stripped}")
-            proc.wait(timeout=120)
 
             if proc.returncode == 0:
+                self._weixin_policy_restore_pending = True
+                if not self._restore_weixin_plugin_policy(openclaw_cmd, env, prior_policy):
+                    return False
+                self._weixin_policy_restore_pending = False
+                self._weixin_registration_verified = True
                 self.log.success("插件安装成功")
-                # Enable the plugin in openclaw.json
-                self._enable_weixin_in_config()
                 return True
-            else:
-                self.log.error(f"插件安装失败 (exit {proc.returncode})")
-                return False
+            self.log.error(f"插件安装失败 (exit {proc.returncode})")
+            return False
         except subprocess.TimeoutExpired:
+            if proc is not None:
+                self._terminate_process_tree(proc, job)
             self.log.error("插件安装超时")
             return False
         except Exception as e:
+            if proc is not None and proc.poll() is None:
+                self._terminate_process_tree(proc, job)
             self.log.error(f"插件安装失败: {e}")
             return False
+        finally:
+            if job is not None:
+                job.close()
 
     def create_desktop_shortcut(self) -> bool:
         """Create a desktop shortcut for the MicroClawDesktop client."""

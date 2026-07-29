@@ -44,6 +44,18 @@ class WebInstallerBridgeTests(unittest.TestCase):
         setup.stop_active_installation_for_upgrade.assert_not_called()
         setup.prepare_openclaw_upgrade.assert_not_called()
 
+    def test_running_app_confirmation_brings_installer_to_front(self):
+        active = ActiveInstallation(pids=(1234,), gateway=None)
+        window = unittest.mock.Mock()
+        window.create_confirmation_dialog.return_value = True
+
+        with unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW", window):
+            self.assertTrue(self.bridge._confirm_close_running_apps(active))
+
+        window.restore.assert_called_once_with()
+        window.show.assert_called_once_with()
+        window.create_confirmation_dialog.assert_called_once()
+
     def test_cancelled_interactive_step_does_not_retry_or_fail(self):
         with self.bridge._state_lock:
             self.bridge._state["running"] = True
