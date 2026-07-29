@@ -67,6 +67,22 @@ export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
 /** Number of days of usage data to query from the gateway. */
 export const USAGE_QUERY_DAYS = 30;
 
+/**
+ * Free, no-API-key FX endpoint (ECB data via Frankfurter) used to convert the
+ * USD spend figures relayed from the OpenClaw gateway into CNY for display.
+ */
+export const EXCHANGE_RATE_API_URL = "https://api.frankfurter.app/latest?from=USD&to=CNY";
+
+/** How long a fetched USD→CNY rate stays cached in memory before we refetch. */
+export const EXCHANGE_RATE_CACHE_TTL_MS = 12 * 60 * 60 * 1_000;
+
+/**
+ * Fallback USD→CNY rate used when the FX endpoint is unreachable (offline / API
+ * down) so the usage UI never breaks. Approximate mid-market rate as of 2026 —
+ * this is only a safety net; the live rate is preferred whenever available.
+ */
+export const USD_TO_CNY_FALLBACK_RATE = 7.2;
+
 /** Public manifest used by the P0 manual update checker. */
 export const UPDATE_MANIFEST_URL = "https://microclaw.microsoftol.com/releases/latest.json";
 

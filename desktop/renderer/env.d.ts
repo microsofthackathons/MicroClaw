@@ -309,6 +309,17 @@ interface OpenClawAPI {
   };
   usage: {
     getStats(): Promise<any>;
+    getDetailedStats(params: {
+      startDate?: string;
+      endDate?: string;
+      filter?: string;
+    }): Promise<any>;
+    getExchangeRate(): Promise<{
+      rate: number;
+      currency: string;
+      isFallback: boolean;
+      fetchedAt: number;
+    }>;
   };
 }
 

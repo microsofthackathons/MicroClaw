@@ -85,15 +85,16 @@
           <div class="card-group">
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
-              <span class="row-value usage-spend">${{ usageData.totalSpend.toFixed(4) }}</span>
+              <span class="row-value usage-spend"
+                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(4) }}</span
+              >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
               <span class="row-label">{{ t("settings.budget") }}</span>
               <div class="budget-bar-wrapper">
                 <span class="row-value"
-                  >${{ usageData.totalSpend.toFixed(2) }} / ${{
-                    usageData.maxBudget.toFixed(2)
-                  }}</span
+                  >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }} /
+                  {{ t("settings.currencySymbol") }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
                 >
                 <div class="budget-bar">
                   <div
@@ -163,7 +164,9 @@
                     {{ m.completionTokens.toLocaleString() }} {{ t("settings.outputSuffix") }}</span
                   >
                 </div>
-                <span class="row-value usage-spend">${{ m.spend.toFixed(4) }}</span>
+                <span class="row-value usage-spend"
+                  >{{ t("settings.currencySymbol") }}{{ toCny(m.spend).toFixed(4) }}</span
+                >
               </div>
             </div>
           </template>
@@ -1482,10 +1485,23 @@ interface UsageStats {
   cacheWriteTokens?: number;
   sessionCount?: number;
   toolCalls?: number;
+  /** CNY per 1 USD, provided by the main process to convert relayed USD spend. */
+  exchangeRate?: number;
+  /** Display currency code for spend values (e.g. "CNY"). */
+  currency?: string;
 }
 const usageData = ref<UsageStats | null>(null);
 const usageLoading = ref(false);
 const usageError = ref("");
+
+// The gateway relays spend in USD; convert to CNY for display using the live rate
+// from the main process (defaults to the fallback rate until stats load).
+// Fallback mirrors USD_TO_CNY_FALLBACK_RATE in the main process (approx. 2026 rate).
+const USD_TO_CNY_FALLBACK_RATE = 7.2;
+function toCny(usd: number | null | undefined): number {
+  const rate = usageData.value?.exchangeRate ?? USD_TO_CNY_FALLBACK_RATE;
+  return (usd ?? 0) * rate;
+}
 
 const usageModelList = computed(() => {
   if (!usageData.value) return [];
