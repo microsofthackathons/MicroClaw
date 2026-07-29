@@ -182,8 +182,38 @@
         <div class="sub-label-row">
           <span class="sub-label">{{ t("settings.customModels") }}</span>
           <div v-if="customModels.length" class="sub-label-actions">
-            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :disabled="
+                Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
+              "
+              @click="showProviderSetup = true"
+            >
               {{ t("settings.setUpProvider") }}
+            </el-button>
+            <el-button
+              v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
+              size="small"
+              type="danger"
+              plain
+              :loading="removingModelRef === selectedModel"
+              :disabled="Boolean(switchingModelRef) || Boolean(removingModelRef)"
+              @click="removeCustomModel(selectedModelIndex)"
+            >
+              {{ t("settings.delete") }}
+            </el-button>
+            <el-button
+              v-else-if="selectedModelEntry?.providerKey === 'github-copilot'"
+              size="small"
+              type="danger"
+              plain
+              :loading="copilotDisconnecting"
+              :disabled="Boolean(switchingModelRef) || Boolean(removingModelRef)"
+              @click="disconnectGitHubCopilot"
+            >
+              {{ t("settings.disconnect") }}
             </el-button>
           </div>
         </div>
@@ -195,26 +225,40 @@
             </div>
             <div class="card-row no-border">
               <span class="row-label">{{ t("settings.currentModel") }}</span>
-              <el-select
-                :model-value="selectedModel"
-                :loading="Boolean(switchingModelRef)"
-                :disabled="Boolean(switchingModelRef)"
-                filterable
-                style="min-width: 240px; max-width: 340px"
-                @change="selectModel"
-              >
-                <el-option
-                  v-for="model in customModels"
-                  :key="getModelRef(model)"
-                  :label="model.name"
-                  :value="getModelRef(model)"
-                />
-              </el-select>
+              <div class="model-picker-actions">
+                <el-select
+                  class="model-picker-select"
+                  :model-value="selectedModel"
+                  :loading="
+                    Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
+                  "
+                  :disabled="
+                    Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
+                  "
+                  filterable
+                  @change="selectModel"
+                >
+                  <el-option
+                    v-for="model in customModels"
+                    :key="getModelRef(model)"
+                    :label="model.name"
+                    :value="getModelRef(model)"
+                  />
+                </el-select>
+              </div>
             </div>
           </template>
           <div v-else-if="!copilotModelsLoading" class="card-row no-border">
             <span class="placeholder-text">{{ t("settings.noProviderConfigured") }}</span>
-            <el-button size="small" type="primary" plain @click="showProviderSetup = true">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :disabled="
+                Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
+              "
+              @click="showProviderSetup = true"
+            >
               {{ t("settings.setUpModelProvider") }}
             </el-button>
           </div>
@@ -883,7 +927,6 @@
       <ModelSetupDialog
         v-model="showProviderSetup"
         single-provider
-        :current-provider="currentProviderPrefill"
         @configured="handleProviderConfigured"
       />
     </div>
@@ -904,17 +947,18 @@ import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import {
   normalizeModelInput,
+  removeModelProviderConfig,
   selectPrimaryModelConfig,
   retainOnlyProvider,
   type ModelApiFormat,
   type ModelInputCapability,
   type ModelReasoningEffort,
 } from "@/utils/model-provider";
-import { mergeGitHubCopilotModelEntries } from "@/utils/auth-managed-models";
 import {
-  getManagedModelProvider,
-  isManagedModelProviderId,
-} from "@/utils/managed-model-providers";
+  mergeGitHubCopilotModelEntries,
+  removeGitHubCopilotModelReferences,
+} from "@/utils/auth-managed-models";
+import { getManagedModelProvider } from "@/utils/managed-model-providers";
 
 const route = useRoute();
 const router = useRouter();
@@ -1277,33 +1321,18 @@ function getModelRef(model: Pick<ModelEntry, "providerKey" | "id">): string {
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const copilotModelsLoading = ref(false);
+const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
+const removingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const gatewayPort = ref("18789");
 const showProviderSetup = ref(false);
 const selectedModelEntry = computed(
   () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
 );
-// Pre-fill payload so "Set up provider" reopens the wizard on the configured provider, ready to
-// adjust. Null when nothing is configured yet.
-const currentProviderPrefill = computed(() => {
-  const entry = selectedModelEntry.value;
-  if (!entry) return null;
-  const familyId =
-    entry.providerKey === "github-copilot"
-      ? "github-copilot"
-      : isManagedModelProviderId(entry.providerKey)
-        ? entry.providerKey
-        : "custom";
-  return {
-    familyId,
-    providerKey: entry.providerKey,
-    modelName: entry.id,
-    baseUrl: entry.baseUrl ?? "",
-    apiKey: entry.apiKey ?? "",
-    apiFormat: entry.apiFormat ?? "openai-chat",
-  };
-});
+const selectedModelIndex = computed(() =>
+  customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
+);
 
 // Display name of the configured provider shown in the Model section.
 const currentProviderName = computed(() => {
@@ -1800,9 +1829,13 @@ async function handleProviderConfigured(): Promise<void> {
   ElMessage.success(t("settings.providerConfigured"));
 }
 
-async function restartGatewayAfterModelConfig(): Promise<void> {
+async function restartGatewayAfterModelConfig(
+  options: { waitForRendererReconnect?: boolean } = {},
+): Promise<void> {
   await window.openclaw.gateway.restart();
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  if (options.waitForRendererReconnect !== false) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 async function persistAndRestart(
@@ -1834,7 +1867,7 @@ async function persistAndRestart(
 }
 
 async function selectModel(modelRef: string) {
-  if (switchingModelRef.value) return;
+  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
   if (!customModels.value.some((model) => getModelRef(model) === modelRef)) {
     ElMessage.error(t("settings.configSaveFailed", { error: `Unknown model "${modelRef}"` }));
     return;
@@ -1852,6 +1885,101 @@ async function selectModel(modelRef: string) {
     );
   } finally {
     switchingModelRef.value = "";
+  }
+}
+
+async function removeCustomModel(idx: number) {
+  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
+  const removed = customModels.value[idx];
+  if (!removed || removed.source === "auth-managed") return;
+  const modelRef = getModelRef(removed);
+  const fallback = customModels.value.find(
+    (model, modelIndex) => modelIndex !== idx && model.source !== "auth-managed",
+  );
+  removingModelRef.value = modelRef;
+  try {
+    const existing = await window.openclaw.config.read();
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const nextConfig = removeModelProviderConfig(
+      existing,
+      removed.providerKey,
+      removed.id,
+      fallback ? getModelRef(fallback) : undefined,
+    );
+    await window.openclaw.config.write(nextConfig);
+    applyModelsConfig(nextConfig);
+    ElMessage.success(t("settings.customModelDeleted"));
+  } catch (err: any) {
+    ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
+    await refreshModelsConfig();
+    removingModelRef.value = "";
+    return;
+  }
+
+  try {
+    await restartGatewayAfterModelConfig({ waitForRendererReconnect: false });
+  } catch (err: any) {
+    ElMessage.warning(t("settings.restartFailed", { error: err.message || err }));
+  } finally {
+    await refreshModelsConfig();
+    removingModelRef.value = "";
+  }
+}
+
+async function disconnectGitHubCopilot() {
+  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
+  try {
+    await ElMessageBox.confirm(
+      t("settings.copilotDisconnectConfirm"),
+      t("settings.confirm"),
+      { type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  const fallbackModel = customModels.value.find(
+    (model) => model.providerKey !== "github-copilot" && model.source !== "auth-managed",
+  );
+  const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
+  copilotDisconnecting.value = true;
+  copilotModelsGeneration += 1;
+  copilotModelsLoading.value = false;
+
+  try {
+    const existingConfig = await window.openclaw.config.read();
+    if (!existingConfig || typeof existingConfig !== "object" || Array.isArray(existingConfig)) {
+      throw new Error(t("settings.copilotConfigUnavailable"));
+    }
+    const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
+    await window.openclaw.config.write(nextConfig);
+
+    await window.openclaw.model.disconnectGitHubCopilot();
+
+    try {
+      await restartGatewayAfterModelConfig();
+    } catch (error) {
+      await refreshModelsConfig();
+      ElMessage.warning(
+        t("settings.copilotDisconnectedRestartFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return;
+    }
+    await refreshModelsConfig();
+    ElMessage.success(t("settings.copilotDisconnected"));
+  } catch (error) {
+    await refreshModelsConfig();
+    ElMessage.error(
+      t("settings.copilotDisconnectFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  } finally {
+    copilotDisconnecting.value = false;
   }
 }
 
