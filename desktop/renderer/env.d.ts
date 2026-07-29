@@ -121,7 +121,7 @@ interface OpenClawAPI {
   };
   settings: {
     get(): Promise<AppSettings>;
-    set(key: string, value: any): Promise<void>;
+    set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>;
   };
   updates: {
     check(): Promise<UpdateCheckResult>;
@@ -167,6 +167,9 @@ interface OpenClawAPI {
   };
   agents: {
     list(): Promise<{ agents?: { id: string; name: string; description?: string }[] }>;
+    add(agentId: string): Promise<{
+      agents: { id: string; name: string; description?: string }[];
+    }>;
   };
   channels: {
     list(): Promise<{

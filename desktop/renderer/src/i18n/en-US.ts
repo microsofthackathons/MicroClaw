@@ -733,11 +733,27 @@ export default {
   "agentMarket.pageTitle": "Popular Agents",
   "agentMarket.add": "Add",
   "agentMarket.added": "Added",
+  "agentMarket.addFailed": "Couldn't add the agent to OpenClaw. Please try again.",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",
 
-  // ── Agents (mock data) ──
+  // ── Agents ──
+  "agent.masterArchive.name": "Master Archive",
+  "agent.masterArchive.desc": "Local file organization, batch conversion & document digests",
+  "agent.masterArchive.tag.1": "File Organization",
+  "agent.masterArchive.tag.2": "Batch Conversion",
+  "agent.masterArchive.tag.3": "Document Digests",
+  "agent.masterArchive.task.1.title": "Convert the Word files in this folder to PDF",
+  "agent.masterArchive.task.1.desc":
+    "Batch-convert matching documents while preserving the originals.",
+  "agent.masterArchive.task.2.title": "Organize this folder - show me the plan first",
+  "agent.masterArchive.task.2.desc":
+    "Inventory the files and preview a safe folder structure before moving anything.",
+  "agent.masterArchive.task.3.title": "Extract deadlines and action items from these documents",
+  "agent.masterArchive.task.3.desc":
+    "Consolidate owners, due dates, and source references into a clean checklist.",
+
   "agent.coder.name": "Coder",
   "agent.coder.desc": "Code development, debugging & code review",
   "agent.coder.tag.1": "Development",

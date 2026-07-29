@@ -151,6 +151,7 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Agents ---
   agents: {
     list: () => ipcRenderer.invoke("agents:list"),
+    add: (agentId: string) => ipcRenderer.invoke("agents:add", agentId),
   },
 
   // --- Channels ---

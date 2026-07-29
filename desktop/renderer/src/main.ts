@@ -36,8 +36,26 @@ if (isBrowserDev) {
       generateSnapshot: noopAsync,
     },
     settings: {
-      get: () => Promise.resolve(null),
+      get: () =>
+        Promise.resolve({
+          language: "en-US",
+          autoStart: false,
+          startMinimized: false,
+          themeMode: "light",
+          accentColor: "#1e1f25",
+          privacyLevel: "balanced",
+        }),
       set: noopAsync,
+    },
+    agents: {
+      list: () => Promise.resolve({ agents: [] }),
+      add: (agentId: string) =>
+        Promise.resolve({
+          agents: [
+            { id: "main", name: "Assistant" },
+            { id: agentId, name: agentId },
+          ],
+        }),
     },
     updates: {
       check: () =>

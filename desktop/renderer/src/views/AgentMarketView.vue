@@ -9,7 +9,7 @@
         v-for="agent in filteredAgents"
         :key="agent.id"
         :agent="agent"
-        @toggle="agentStore.toggleAgent"
+        @add="handleAdd"
       />
     </div>
   </div>
@@ -17,6 +17,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { ElMessage } from "element-plus";
 import { useAgentStore } from "@/stores/agents";
 import { useAgentList } from "@/composables/useAgentList";
 import AgentCard from "@/components/agent/AgentCard.vue";
@@ -24,6 +25,14 @@ import { t } from "@/i18n";
 
 const agentStore = useAgentStore();
 const { filteredAgents } = useAgentList(computed(() => agentStore.marketAgents));
+
+async function handleAdd(agentId: string) {
+  try {
+    await agentStore.addAgent(agentId);
+  } catch {
+    ElMessage.error(t("agentMarket.addFailed"));
+  }
+}
 </script>
 
 <style scoped>

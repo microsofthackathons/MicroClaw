@@ -8,6 +8,15 @@ export type GatewayRestartDependencies = {
   pollMs: number;
 };
 
+export function requiresExternalGatewayStop(
+  alreadyRunning: boolean,
+  rosterChanged: boolean,
+  spawnedByUs: boolean,
+  hasManagedProcess: boolean,
+): boolean {
+  return alreadyRunning && rosterChanged && !(spawnedByUs && hasManagedProcess);
+}
+
 export async function hardRestartGateway(dependencies: GatewayRestartDependencies): Promise<void> {
   if (dependencies.pollMs <= 0) {
     throw new Error("gateway restart poll interval must be positive");

@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { t, locale } from "../i18n";
+import { AGENT_CATALOG, type AgentCatalogEntry } from "../../../src/agent-catalog";
 
 export interface QuickTask {
   title: string;
@@ -18,16 +19,10 @@ export interface Agent {
   isAdded?: boolean;
 }
 
-/** Raw agent definition — stores i18n keys, not translated strings. */
-interface AgentDef {
+interface RuntimeAgent {
   id: string;
-  nameKey: string;
-  descKey: string;
-  avatar: string;
-  image: string;
-  tagKeys: string[];
-  taskKeys: { titleKey: string; descKey: string }[];
-  isAdded: boolean;
+  name: string;
+  description?: string;
 }
 
 // Static import of avatar assets
@@ -42,180 +37,112 @@ function getAvatarUrl(filename: string): string {
   return avatarModules[key] || "";
 }
 
-/** Resolve an AgentDef into an Agent with translated strings (reactive via computed). */
-function resolveAgent(def: AgentDef): Agent {
+/** Resolve a catalog entry into an Agent with translated strings. */
+function resolveCatalogAgent(def: AgentCatalogEntry, isAdded: boolean): Agent {
   return {
     id: def.id,
     name: t(def.nameKey),
     description: t(def.descKey),
-    avatar: def.avatar,
-    image: def.image,
+    avatar: getAvatarUrl(def.avatar),
+    image: getAvatarUrl(def.image),
     tags: def.tagKeys.map((k) => t(k)),
     quickTasks: def.taskKeys.map((tk) => ({
       title: t(tk.titleKey),
       desc: t(tk.descKey),
     })),
-    isAdded: def.isAdded,
+    isAdded,
   };
 }
 
-const AGENT_DEFS: AgentDef[] = [
-  {
-    id: "main",
-    nameKey: "store.defaultAgent",
-    descKey: "store.defaultAgentDesc",
-    avatar: getAvatarUrl("normal.png"),
-    image: getAvatarUrl("normal.png"),
-    tagKeys: [],
-    taskKeys: [
-      { titleKey: "agent.main.task.1.title", descKey: "agent.main.task.1.desc" },
-      { titleKey: "agent.main.task.2.title", descKey: "agent.main.task.2.desc" },
-      { titleKey: "agent.main.task.3.title", descKey: "agent.main.task.3.desc" },
-    ],
-    isAdded: true,
-  },
-  {
-    id: "coder",
-    nameKey: "agent.coder.name",
-    descKey: "agent.coder.desc",
-    avatar: getAvatarUrl("程序猿.png"),
-    image: getAvatarUrl("Coder.png"),
-    tagKeys: ["agent.coder.tag.1", "agent.coder.tag.2", "agent.coder.tag.3"],
-    taskKeys: [
-      { titleKey: "agent.coder.task.1.title", descKey: "agent.coder.task.1.desc" },
-      { titleKey: "agent.coder.task.2.title", descKey: "agent.coder.task.2.desc" },
-      { titleKey: "agent.coder.task.3.title", descKey: "agent.coder.task.3.desc" },
-    ],
-    isAdded: true,
-  },
-  {
-    id: "painter",
-    nameKey: "agent.painter.name",
-    descKey: "agent.painter.desc",
-    avatar: getAvatarUrl("梵高.png"),
-    image: getAvatarUrl("Painter.png"),
-    tagKeys: ["agent.painter.tag.1", "agent.painter.tag.2", "agent.painter.tag.3"],
-    taskKeys: [
-      { titleKey: "agent.painter.task.1.title", descKey: "agent.painter.task.1.desc" },
-      { titleKey: "agent.painter.task.2.title", descKey: "agent.painter.task.2.desc" },
-      { titleKey: "agent.painter.task.3.title", descKey: "agent.painter.task.3.desc" },
-    ],
-    isAdded: false,
-  },
-  {
-    id: "master",
-    nameKey: "agent.master.name",
-    descKey: "agent.master.desc",
-    avatar: getAvatarUrl("大师.png"),
-    image: getAvatarUrl("Diviner.png"),
-    tagKeys: ["agent.master.tag.1", "agent.master.tag.2", "agent.master.tag.3"],
-    taskKeys: [
-      { titleKey: "agent.master.task.1.title", descKey: "agent.master.task.1.desc" },
-      { titleKey: "agent.master.task.2.title", descKey: "agent.master.task.2.desc" },
-      { titleKey: "agent.master.task.3.title", descKey: "agent.master.task.3.desc" },
-    ],
-    isAdded: false,
-  },
-  {
-    id: "growth-hacker",
-    nameKey: "agent.growthHacker.name",
-    descKey: "agent.growthHacker.desc",
-    avatar: getAvatarUrl("增长黑客.png"),
-    image: getAvatarUrl("Scientist.png"),
-    tagKeys: ["agent.growthHacker.tag.1", "agent.growthHacker.tag.2", "agent.growthHacker.tag.3"],
-    taskKeys: [
-      { titleKey: "agent.growthHacker.task.1.title", descKey: "agent.growthHacker.task.1.desc" },
-      { titleKey: "agent.growthHacker.task.2.title", descKey: "agent.growthHacker.task.2.desc" },
-      { titleKey: "agent.growthHacker.task.3.title", descKey: "agent.growthHacker.task.3.desc" },
-    ],
-    isAdded: false,
-  },
-  {
-    id: "leopard",
-    nameKey: "agent.leopard.name",
-    descKey: "agent.leopard.desc",
-    avatar: getAvatarUrl("金钱豹.png"),
-    image: getAvatarUrl("stock.png"),
-    tagKeys: ["agent.leopard.tag.1", "agent.leopard.tag.2", "agent.leopard.tag.3"],
-    taskKeys: [
-      { titleKey: "agent.leopard.task.1.title", descKey: "agent.leopard.task.1.desc" },
-      { titleKey: "agent.leopard.task.2.title", descKey: "agent.leopard.task.2.desc" },
-      { titleKey: "agent.leopard.task.3.title", descKey: "agent.leopard.task.3.desc" },
-    ],
-    isAdded: false,
-  },
-  {
-    id: "singer",
-    nameKey: "agent.singer.name",
-    descKey: "agent.singer.desc",
-    avatar: getAvatarUrl("Singer.png"),
-    image: getAvatarUrl("Singer.png"),
-    tagKeys: ["agent.singer.tag.1", "agent.singer.tag.2", "agent.singer.tag.3"],
-    taskKeys: [
-      { titleKey: "agent.singer.task.1.title", descKey: "agent.singer.task.1.desc" },
-      { titleKey: "agent.singer.task.2.title", descKey: "agent.singer.task.2.desc" },
-      { titleKey: "agent.singer.task.3.title", descKey: "agent.singer.task.3.desc" },
-    ],
-    isAdded: false,
-  },
-];
+function normalizeRuntimeAgents(value: unknown): RuntimeAgent[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      typeof (candidate as { id?: unknown }).id !== "string"
+    ) {
+      return [];
+    }
+    const id = (candidate as { id: string }).id;
+    const nameValue = (candidate as { name?: unknown }).name;
+    const descriptionValue = (candidate as { description?: unknown }).description;
+    return [
+      {
+        id,
+        name: typeof nameValue === "string" && nameValue ? nameValue : id,
+        ...(typeof descriptionValue === "string"
+          ? { description: descriptionValue }
+          : {}),
+      },
+    ];
+  });
+}
 
 export const useAgentStore = defineStore("agents", () => {
-  const agentIsAdded = ref<Record<string, boolean>>(
-    Object.fromEntries(AGENT_DEFS.map((d) => [d.id, d.isAdded])),
-  );
-
-  const remoteAgents = ref<Agent[]>([]);
-
-  /** Reactively translated agent list — re-evaluates when locale changes. */
-  const agents = computed<Agent[]>(() => {
-    void locale.value; // explicit dependency on locale for reactivity
-    const localAgents = AGENT_DEFS.map((def) => ({
-      ...resolveAgent(def),
-      isAdded: agentIsAdded.value[def.id] ?? def.isAdded,
-    }));
-    if (remoteAgents.value.length === 0) return localAgents;
-    // The gateway's agents.list only carries id/name, not the rich local
-    // metadata (avatars, tags, quick tasks). Keep the local persona for any
-    // id we know about and only append genuinely custom remote agents.
-    const localIds = new Set(localAgents.map((a) => a.id));
-    const extraRemote = remoteAgents.value.filter((a) => !localIds.has(a.id));
-    return [...localAgents, ...extraRemote];
-  });
+  const remoteAgents = ref<RuntimeAgent[]>([{ id: "main", name: "Assistant" }]);
   const currentAgentId = ref("main");
+  const pendingAgentAdds = new Set<string>();
+  const installedAgentIds = computed(() => new Set(remoteAgents.value.map((agent) => agent.id)));
 
-  const addedAgents = computed(() => agents.value.filter((a) => a.isAdded));
+  const agents = computed<Agent[]>(() => {
+    void locale.value;
+    return remoteAgents.value.map((runtimeAgent) => {
+      const catalogAgent = AGENT_CATALOG.find((agent) => agent.id === runtimeAgent.id);
+      if (catalogAgent) {
+        return resolveCatalogAgent(catalogAgent, true);
+      }
+      return {
+        ...runtimeAgent,
+        avatar: getAvatarUrl("normal.png"),
+        image: getAvatarUrl("normal.png"),
+        isAdded: true,
+      };
+    });
+  });
 
-  const marketAgents = computed(() => agents.value.filter((a) => a.id !== "main"));
-
-  function toggleAgent(agentId: string) {
-    if (agentId in agentIsAdded.value) {
-      agentIsAdded.value[agentId] = !agentIsAdded.value[agentId];
-    }
-  }
+  const marketAgents = computed(() => {
+    void locale.value;
+    return AGENT_CATALOG.filter((agent) => agent.id !== "main").map((agent) =>
+      resolveCatalogAgent(agent, installedAgentIds.value.has(agent.id)),
+    );
+  });
 
   function selectAgent(agentId: string) {
     currentAgentId.value = agentId;
   }
 
+  async function addAgent(agentId: string) {
+    if (installedAgentIds.value.has(agentId) || pendingAgentAdds.has(agentId)) return;
+    pendingAgentAdds.add(agentId);
+    try {
+      const result = await window.openclaw.agents.add(agentId);
+      if (!Array.isArray(result.agents)) {
+        throw new Error("OpenClaw returned an invalid agent roster");
+      }
+      remoteAgents.value = normalizeRuntimeAgents(result.agents);
+    } finally {
+      pendingAgentAdds.delete(agentId);
+    }
+  }
+
   async function fetchAgents() {
     try {
       const result = await window.openclaw.agents.list();
-      if (result.agents && result.agents.length > 0) {
-        remoteAgents.value = result.agents as Agent[];
+      if (Array.isArray(result.agents)) {
+        remoteAgents.value = normalizeRuntimeAgents(result.agents);
       }
-    } catch {
-      // Gateway may not support agents.list yet — keep defaults
+    } catch (error) {
+      console.warn("[agents] Failed to refresh gateway agents:", error);
     }
   }
 
   return {
     agents,
     currentAgentId,
-    addedAgents,
     marketAgents,
-    toggleAgent,
     selectAgent,
+    addAgent,
     fetchAgents,
   };
 });

@@ -13,10 +13,8 @@
       <div v-if="agent.tags?.length" class="agent-card-tags">
         <span v-for="tag in agent.tags" :key="tag" class="agent-card-tag">{{ tag }}</span>
       </div>
-      <span v-if="agent.isAdded" class="agent-card-added-text" @click="$emit('toggle', agent.id)">{{
-        t("agentMarket.added")
-      }}</span>
-      <button v-else class="agent-card-action" @click="$emit('toggle', agent.id)">
+      <span v-if="agent.isAdded" class="agent-card-added-text">{{ t("agentMarket.added") }}</span>
+      <button v-else class="agent-card-action" @click="$emit('add', agent.id)">
         <IconPlus :size="14" />
         {{ t("agentMarket.add") }}
       </button>
@@ -35,7 +33,7 @@ defineProps<{
 }>();
 
 defineEmits<{
-  toggle: [agentId: string];
+  add: [agentId: string];
 }>();
 </script>
 
@@ -85,7 +83,6 @@ defineEmits<{
   font-size: 12px;
   font-weight: 600;
   color: var(--success);
-  cursor: pointer;
 }
 
 .agent-card-avatar {

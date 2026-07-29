@@ -1,5 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { hardRestartGateway } from "./gateway-lifecycle";
+import { hardRestartGateway, requiresExternalGatewayStop } from "./gateway-lifecycle";
+
+describe("requiresExternalGatewayStop", () => {
+  it("protects an unowned listener when the roster must be reloaded", () => {
+    expect(requiresExternalGatewayStop(true, true, false, false)).toBe(true);
+  });
+
+  it("allows a managed Gateway to restart for a roster change", () => {
+    expect(requiresExternalGatewayStop(true, true, true, true)).toBe(false);
+  });
+
+  it("allows an unchanged external Gateway to be reused", () => {
+    expect(requiresExternalGatewayStop(true, false, false, false)).toBe(false);
+  });
+});
 
 describe("hardRestartGateway", () => {
   it("stops the client and process, waits for the port, then starts", async () => {

@@ -53,6 +53,17 @@ export function loadStateDirEnv(stateDir?: string): Record<string, string> {
   return result;
 }
 
+export function loadGatewayEnvironment(
+  stateDir: string,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnvironment)) {
+    if (value !== undefined) environment[key] = value;
+  }
+  return { ...environment, ...loadStateDirEnv(stateDir) };
+}
+
 /**
  * Resolve the path to `node.exe`.
  *

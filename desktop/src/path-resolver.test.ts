@@ -28,6 +28,7 @@ vi.mock("fs", async () => {
 import * as path from "path";
 import {
   getOpenClawStateDir,
+  loadGatewayEnvironment,
   loadStateDirEnv,
   resolveNodePath,
   resolveOpenClawEntry,
@@ -113,6 +114,25 @@ describe("loadStateDirEnv", () => {
     mockReadFileSync.mockReturnValue("A=1\r\nB=2\r\n");
     const env = loadStateDirEnv("D:\\state");
     expect(env).toEqual({ A: "1", B: "2" });
+  });
+});
+
+describe("loadGatewayEnvironment", () => {
+  it("uses state-directory values over the desktop process environment", () => {
+    mockReadFileSync.mockReturnValue(
+      "OPENCLAW_HOME=D:\\state-home\nSTATE_ONLY=from-state\n",
+    );
+
+    expect(
+      loadGatewayEnvironment("D:\\state", {
+        OPENCLAW_HOME: "C:\\process-home",
+        PROCESS_ONLY: "from-process",
+      }),
+    ).toMatchObject({
+      OPENCLAW_HOME: "D:\\state-home",
+      PROCESS_ONLY: "from-process",
+      STATE_ONLY: "from-state",
+    });
   });
 });
 
