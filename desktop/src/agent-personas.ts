@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { AGENT_CATALOG } from "./agent-catalog";
 
 interface WorkspaceFiles {
   "AGENTS.md": string;
@@ -96,25 +97,24 @@ const MASTER_ARCHIVE_IDENTITY_MD = `# IDENTITY.md
 - Vibe: Meticulous, private, and dependable
 `;
 
-export const AGENT_PERSONAS: readonly AgentPersona[] = [
-  { id: "main", name: "Assistant" },
-  {
-    id: "master-archive",
-    name: "Master Archive",
-    workspaceDirName: "workspace-master-archive",
-    workspaceFiles: {
-      "AGENTS.md": MASTER_ARCHIVE_AGENTS_MD,
-      "IDENTITY.md": MASTER_ARCHIVE_IDENTITY_MD,
-      "SOUL.md": MASTER_ARCHIVE_SOUL_MD,
-    },
+type PersonaProfile = NonNullable<
+  (typeof AGENT_CATALOG)[number]["personaProfile"]
+>;
+
+const PERSONA_PROFILES: Record<PersonaProfile, WorkspaceFiles> = {
+  "master-archive": {
+    "AGENTS.md": MASTER_ARCHIVE_AGENTS_MD,
+    "IDENTITY.md": MASTER_ARCHIVE_IDENTITY_MD,
+    "SOUL.md": MASTER_ARCHIVE_SOUL_MD,
   },
-  { id: "coder", name: "Coder" },
-  { id: "painter", name: "Painter" },
-  { id: "master", name: "Master" },
-  { id: "growth-hacker", name: "Growth Hacker" },
-  { id: "leopard", name: "Leopard" },
-  { id: "singer", name: "Singer" },
-];
+};
+
+export const AGENT_PERSONAS: readonly AgentPersona[] = AGENT_CATALOG.map((agent) => ({
+  id: agent.id,
+  name: agent.name,
+  workspaceDirName: agent.workspaceDirName,
+  workspaceFiles: agent.personaProfile ? PERSONA_PROFILES[agent.personaProfile] : undefined,
+}));
 
 export function getAgentWorkspacePath(
   stateDir: string,

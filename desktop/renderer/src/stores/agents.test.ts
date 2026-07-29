@@ -56,4 +56,15 @@ describe("agent store", () => {
     await store.fetchAgents();
     expect(store.agents.some((agent) => agent.id === "custom")).toBe(false);
   });
+
+  it("falls back to main when the active agent is removed", async () => {
+    const store = useAgentStore();
+    store.restoreAddedAgents(["main", "master-archive"]);
+    store.selectAgent("master-archive");
+
+    await store.toggleAgent("master-archive");
+
+    expect(store.currentAgentId).toBe("main");
+    expect(store.addedAgents.map((agent) => agent.id)).toEqual(["main"]);
+  });
 });

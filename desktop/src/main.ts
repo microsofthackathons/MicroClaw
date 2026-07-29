@@ -6,7 +6,7 @@ import * as net from "net";
 import * as os from "os";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
-import { hardRestartGateway } from "./gateway-lifecycle";
+import { hardRestartGateway, requiresExternalGatewayStop } from "./gateway-lifecycle";
 import { createTray, destroyTray } from "./tray";
 import Store from "electron-store";
 import {
@@ -26,6 +26,7 @@ import {
 } from "./openclaw-upgrade-recovery";
 import {
   getOpenClawStateDir,
+  loadGatewayEnvironment,
   loadStateDirEnv,
   resolveBuiltinSkillsDir,
   resolveNodePath,
@@ -81,7 +82,9 @@ import {
   AGENT_PERSONAS,
   ensureAgentPersonasConfig,
   seedAgentPersonaWorkspaces,
+  type AgentRosterConfig,
 } from "./agent-personas";
+import { DEFAULT_ADDED_AGENT_IDS } from "./agent-catalog";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -188,7 +191,7 @@ const settingsStore = new Store<{
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
     privacyLevel: "balanced",
-    addedAgentIds: ["main", "coder"],
+    addedAgentIds: [...DEFAULT_ADDED_AGENT_IDS],
   },
 });
 
@@ -1222,23 +1225,54 @@ function ensurePluginsAllow(): void {
  * OpenClaw 2026.7.1-1 uses `agents.list`; unsupported `agents.entries` data
  * written by preview builds is migrated back before personas are added. Existing
  * entries are preserved by id and the config is only rewritten when something
- * changes. Keep AGENT_PERSONAS in sync with the renderer's AGENT_DEFS.
+ * changes. Both processes consume the shared agent catalog.
  */
-function ensureAgentPersonas(stateDir: string): boolean {
+function prepareAgentPersonas(
+  stateDir: string,
+): { config: AgentRosterConfig; changed: boolean } | null {
+  const config = readConfig();
+  if (!config) return null;
+  const result = ensureAgentPersonasConfig(config, stateDir);
+  return { config, changed: result.changed };
+}
+
+function persistAgentPersonas(config: AgentRosterConfig): void {
+  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  console.log(
+    `[config] Registered agent personas: ${AGENT_PERSONAS.map((persona) => persona.id).join(", ")}`,
+  );
+}
+
+function failForExternalGateway(port: number): never {
+  const message =
+    `Agent configuration changed, but Gateway port ${port} is owned by another process. ` +
+    "Stop that Gateway and retry so MicroClaw can apply the new roster safely.";
+  gatewayStatus = "failed";
+  mainWindow?.webContents.send("gateway:status", "failed");
+  mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
+  throw new Error(message);
+}
+
+function seedSpecialistAgentWorkspaces(
+  config: AgentRosterConfig,
+  stateDir: string,
+  entryPath: string,
+  gatewayEnvironment: Record<string, string>,
+): void {
   try {
-    const config = readConfig();
-    if (!config) return false;
-    const result = ensureAgentPersonasConfig(config, stateDir);
-    if (result.changed) {
-      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      console.log(
-        `[config] Registered agent personas: ${AGENT_PERSONAS.map((persona) => persona.id).join(", ")}`,
-      );
+    const seededFiles = seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      DECLARE_ACCESS_SECTION,
+      gatewayEnvironment,
+      os.homedir(),
+      path.dirname(entryPath),
+    );
+    if (seededFiles.length > 0) {
+      console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
     }
-    return result.changed;
   } catch (err) {
-    console.error("[config] Failed to update agent personas:", err);
-    throw err;
+    console.warn("[seed] Failed to create specialist agent workspace files:", err);
   }
 }
 
@@ -1668,37 +1702,40 @@ async function startGatewayInner(): Promise<void> {
   const stateDir = getOpenClawStateDir();
   const nodePath = resolveNodePath();
   const entryPath = resolveOpenClawEntry();
+  const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
 
-  // Register the UI agent personas so OpenClaw will accept a chat request for
-  // any of them (otherwise only the built-in "main" agent is recognized).
-  const agentRosterChanged = ensureAgentPersonas(stateDir);
-
-  try {
-    const finalConfig = readConfig();
-    if (!finalConfig) throw new Error("OpenClaw configuration is unavailable after agent setup");
-    const seededFiles = seedAgentPersonaWorkspaces(
-      finalConfig,
-      stateDir,
-      DECLARE_ACCESS_SECTION,
-      process.env,
-      os.homedir(),
-      path.dirname(entryPath),
-    );
-    if (seededFiles.length > 0) {
-      console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
-    }
-  } catch (err) {
-    console.warn("[seed] Failed to create specialist agent workspace files:", err);
-  }
+  const preparedPersonas = prepareAgentPersonas(stateDir);
+  const agentRosterChanged = preparedPersonas?.changed ?? false;
 
   // If gateway is already healthy, just connect WS and return — no new process.
   // Callers that need replacement use restartManagedGateway(), which stops the
   // old process and waits for the port before invoking this function.
   const alreadyRunning = await checkExistingGateway(configuredPort);
+  if (
+    requiresExternalGatewayStop(
+      alreadyRunning,
+      agentRosterChanged,
+      gatewaySpawnedByUs,
+      gatewayProcess !== null,
+    )
+  ) {
+    failForExternalGateway(configuredPort);
+  }
+  if (preparedPersonas?.changed) {
+    persistAgentPersonas(preparedPersonas.config);
+  }
+  if (preparedPersonas) {
+    seedSpecialistAgentWorkspaces(
+      preparedPersonas.config,
+      stateDir,
+      entryPath,
+      gatewayEnvironment,
+    );
+  }
   if (alreadyRunning && !agentRosterChanged) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
     gatewaySpawnedByUs = false;
@@ -1775,8 +1812,7 @@ async function startGatewayInner(): Promise<void> {
   // to the renderer via the gateway:log IPC channel (visible in Settings).
 
   const gwEnv: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...loadStateDirEnv(),
+    ...gatewayEnvironment,
     OPENCLAW_STATE_DIR: stateDir,
     NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
     NODE_ENV: "production",
