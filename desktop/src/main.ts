@@ -90,6 +90,7 @@ import {
   type AgentPersona,
   type AgentRosterConfig,
 } from "./agent-personas";
+import { sanitizeAgentSkillIds } from "./agent-catalog";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -3132,6 +3133,75 @@ function registerIpcHandlers(): void {
     generateAndSignSnapshot();
     pendingIntegrityResult = null;
   });
+
+  ipcMain.handle(
+    "skills:set-agent-skills",
+    async (
+      _event,
+      agentId: string,
+      skillIds: string[],
+    ): Promise<{ agentId: string; skills: string[] }> => {
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        throw new Error("A non-empty agentId is required");
+      }
+      const skills = sanitizeAgentSkillIds(skillIds ?? []);
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      const agents = config.agents;
+      if (!agents || !Array.isArray(agents.list)) {
+        throw new Error("No configured agents to update");
+      }
+      const entry = agents.list.find(
+        (candidate: unknown): candidate is Record<string, unknown> =>
+          typeof candidate === "object" &&
+          candidate !== null &&
+          (candidate as { id?: unknown }).id === agentId,
+      );
+      if (!entry) {
+        throw new Error(`Unknown agent "${agentId}"`);
+      }
+      entry.skills = skills;
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update agent skills while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Updating skills for agent ${agentId}`);
+        return { agentId, skills };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(
+              `Rolling back failed skills update for ${agentId}`,
+            );
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
 
   // --- Chat (WebSocket gateway protocol) ---
   ipcMain.handle(

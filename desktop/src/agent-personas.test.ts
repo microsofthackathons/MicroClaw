@@ -254,7 +254,7 @@ describe("agent personas", () => {
     expect(getAgentSkills("main")).not.toContain("mutated");
   });
 
-  it("overwrites a stale skills value for a catalog-known agent", () => {
+  it("preserves an existing skills value for a catalog-known agent", () => {
     const stateDir = createStateDir();
     const config = {
       agents: {
@@ -265,8 +265,8 @@ describe("agent personas", () => {
     const result = ensureAgentPersonasConfig(config, stateDir);
 
     const mainEntry = agentList(config).find((entry) => entry.id === "main");
-    expect(mainEntry?.skills).toEqual(getAgentSkills("main"));
-    expect(result.changed).toBe(true);
+    expect(mainEntry?.skills).toEqual(["stale-skill"]);
+    expect(result.changed).toBe(false);
   });
 
   it("leaves a custom non-catalog agent without an injected skills field", () => {

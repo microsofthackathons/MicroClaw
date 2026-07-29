@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_CATALOG, ALL_SKILL_IDS, getAgentSkills } from "./agent-catalog";
+import {
+  AGENT_CATALOG,
+  ALL_SKILL_IDS,
+  getAgentSkills,
+  isKnownSkillId,
+  sanitizeAgentSkillIds,
+} from "./agent-catalog";
 
 const EXPECTED_SKILL_IDS = [
   "1password",
@@ -70,5 +76,26 @@ describe("agent catalog skills binding", () => {
   it("resolves skills for a known agent and returns [] for an unknown one", () => {
     expect(getAgentSkills("coder")).toEqual(ALL_SKILL_IDS);
     expect(getAgentSkills("does-not-exist")).toEqual([]);
+  });
+
+  it("recognizes known skill ids and rejects unknown ones", () => {
+    expect(isKnownSkillId("canvas")).toBe(true);
+    expect(isKnownSkillId("not-a-skill")).toBe(false);
+  });
+
+  it("sanitizes requested skill ids into sorted, de-duplicated known ids", () => {
+    expect(sanitizeAgentSkillIds(["canvas", "1password", "canvas"])).toEqual([
+      "1password",
+      "canvas",
+    ]);
+    expect(sanitizeAgentSkillIds([])).toEqual([]);
+  });
+
+  it("throws when a requested skill id is unknown or malformed", () => {
+    expect(() => sanitizeAgentSkillIds(["canvas", "bogus"])).toThrow(/Unknown skill id/);
+    expect(() => sanitizeAgentSkillIds(["", "canvas"])).toThrow(/non-empty strings/);
+    expect(() => sanitizeAgentSkillIds("canvas" as unknown as string[])).toThrow(
+      /must be an array/,
+    );
   });
 });

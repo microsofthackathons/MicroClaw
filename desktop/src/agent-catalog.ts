@@ -215,3 +215,34 @@ export function getAgentSkills(agentId: string): readonly string[] {
   const agent = AGENT_CATALOG.find((entry) => entry.id === agentId);
   return agent ? agent.skills : [];
 }
+
+const ALL_SKILL_ID_SET: ReadonlySet<string> = new Set(ALL_SKILL_IDS);
+
+/**
+ * Returns true when the given id is one of the known catalog skill ids.
+ */
+export function isKnownSkillId(skillId: string): boolean {
+  return ALL_SKILL_ID_SET.has(skillId);
+}
+
+/**
+ * Validates and normalizes a requested list of skill ids into a sorted,
+ * de-duplicated array of known catalog skill ids. Throws when the input is not
+ * an array, contains non-string / empty entries, or references an unknown id.
+ */
+export function sanitizeAgentSkillIds(skillIds: readonly string[]): string[] {
+  if (!Array.isArray(skillIds)) {
+    throw new Error("skillIds must be an array");
+  }
+  const unique = new Set<string>();
+  for (const skillId of skillIds) {
+    if (typeof skillId !== "string" || skillId.length === 0) {
+      throw new Error("skillIds must contain only non-empty strings");
+    }
+    if (!ALL_SKILL_ID_SET.has(skillId)) {
+      throw new Error(`Unknown skill id: ${skillId}`);
+    }
+    unique.add(skillId);
+  }
+  return [...unique].sort();
+}

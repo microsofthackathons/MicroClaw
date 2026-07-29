@@ -699,6 +699,21 @@ export default {
   "usage.noSessions": "No sessions in this time range",
   "usage.footer": "Data sourced from OpenClaw Gateway. Requires the gateway to be running.",
 
+  // ── Skills (dev-only panel) ──
+  "skills.dev.tab": "Skills",
+  "skills.dev.title": "Agent Skills (Dev)",
+  "skills.dev.subtitle": "Toggle which skills each agent can use, then apply and reload the gateway. Development builds only.",
+  "skills.dev.agent": "Agent",
+  "skills.dev.selectAll": "Select all",
+  "skills.dev.clearAll": "Clear all",
+  "skills.dev.enabledCount": "{count} of {total} enabled",
+  "skills.dev.loading": "Loading agent skills…",
+  "skills.dev.loadFailed": "Failed to load skills: {error}",
+  "skills.dev.apply": "Apply & reload",
+  "skills.dev.applying": "Applying…",
+  "skills.dev.applied": "Applied. Gateway reloaded.",
+  "skills.dev.applyFailed": "Failed to apply: {error}",
+
   // ── Studio ──
   "studio.switchToStudio": "Studio",
   "studio.switchToChat": "Chat",
