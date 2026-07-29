@@ -79,12 +79,16 @@ import {
   ensureSelectedModelProviderPlugins,
 } from "./model-provider-plugins";
 import {
-  AGENT_PERSONAS,
+  DEFAULT_AGENT_PERSONAS,
   ensureAgentPersonasConfig,
+  getAgentPersona,
+  listConfiguredAgents,
+  resolveAgentPersonaWorkspace,
+  seedAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
+  type AgentPersona,
   type AgentRosterConfig,
 } from "./agent-personas";
-import { DEFAULT_ADDED_AGENT_IDS } from "./agent-catalog";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -166,8 +170,6 @@ const settingsStore = new Store<{
   sandboxGrantHistory: string[];
   /** Privacy protection level: basic, balanced, strict */
   privacyLevel: string;
-  /** Local specialist agents shown in the sidebar. */
-  addedAgentIds: string[];
 }>({
   name: "settings",
   defaults: {
@@ -191,7 +193,6 @@ const settingsStore = new Store<{
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
     privacyLevel: "balanced",
-    addedAgentIds: [...DEFAULT_ADDED_AGENT_IDS],
   },
 });
 
@@ -215,6 +216,7 @@ let gatewayRestartPromise: Promise<void> | null = null;
 let pendingSyncPermissionRequests = 0;
 /** True when we spawned the gateway ourselves (vs. connecting to an existing one). */
 let gatewaySpawnedByUs = false;
+let agentAdditionInProgress = false;
 /** Tracks whether the post-spawn channel kick has already fired. */
 let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
@@ -1221,7 +1223,7 @@ function ensurePluginsAllow(): void {
 }
 
 /**
- * Register every UI agent persona so OpenClaw accepts a chat request for it.
+ * Ensure the default MicroClaw persona exists in the OpenClaw roster.
  * OpenClaw 2026.7.1-1 uses `agents.list`; unsupported `agents.entries` data
  * written by preview builds is migrated back before personas are added. Existing
  * entries are preserved by id and the config is only rewritten when something
@@ -1237,10 +1239,23 @@ function prepareAgentPersonas(
 }
 
 function persistAgentPersonas(config: AgentRosterConfig): void {
-  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  writeConfigTextAtomically(JSON.stringify(config, null, 2));
   console.log(
-    `[config] Registered agent personas: ${AGENT_PERSONAS.map((persona) => persona.id).join(", ")}`,
+    `[config] Registered agent personas: ${listConfiguredAgents(config)
+      .map((agent) => agent.id)
+      .join(", ")}`,
   );
+}
+
+function writeConfigTextAtomically(contents: string): void {
+  const configPath = getConfigPath();
+  const temporaryPath = `${configPath}.microclaw-${process.pid}-${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, contents, "utf-8");
+  try {
+    fs.renameSync(temporaryPath, configPath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
 }
 
 function failForExternalGateway(port: number): never {
@@ -1273,6 +1288,150 @@ function seedSpecialistAgentWorkspaces(
     }
   } catch (err) {
     console.warn("[seed] Failed to create specialist agent workspace files:", err);
+  }
+}
+
+interface WorkspaceSnapshot {
+  directory: string;
+  directoryExisted: boolean;
+  files: Array<{ path: string; contents: string | null }>;
+}
+
+function captureAgentWorkspace(
+  config: AgentRosterConfig,
+  stateDir: string,
+  persona: AgentPersona,
+  gatewayEnvironment: Record<string, string>,
+  entryPath: string,
+): WorkspaceSnapshot | null {
+  if (!persona.workspaceFiles) return null;
+  const directory = resolveAgentPersonaWorkspace(
+    config,
+    stateDir,
+    persona,
+    gatewayEnvironment,
+    os.homedir(),
+    path.dirname(entryPath),
+  );
+  return {
+    directory,
+    directoryExisted: fs.existsSync(directory),
+    files: Object.keys(persona.workspaceFiles).map((filename) => {
+      const filePath = path.join(directory, filename);
+      return {
+        path: filePath,
+        contents: fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : null,
+      };
+    }),
+  };
+}
+
+function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
+  if (!snapshot) return;
+  for (const file of snapshot.files) {
+    if (file.contents === null) {
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } else {
+      fs.writeFileSync(file.path, file.contents, "utf-8");
+    }
+  }
+  if (
+    !snapshot.directoryExisted &&
+    fs.existsSync(snapshot.directory) &&
+    fs.readdirSync(snapshot.directory).length === 0
+  ) {
+    fs.rmdirSync(snapshot.directory);
+  }
+}
+
+async function addCatalogAgent(
+  agentId: string,
+): Promise<{ agents: Array<{ id: string; name: string }> }> {
+  const persona = getAgentPersona(agentId);
+  if (!persona || DEFAULT_AGENT_PERSONAS.some((candidate) => candidate.id === agentId)) {
+    throw new Error(`Unknown installable agent template "${agentId}"`);
+  }
+
+  const stateDir = getOpenClawStateDir();
+  const configPath = getConfigPath();
+  const originalConfigText = fs.readFileSync(configPath, "utf-8");
+  const config = readConfig();
+  if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+  const result = ensureAgentPersonasConfig(config, stateDir, [
+    ...DEFAULT_AGENT_PERSONAS,
+    persona,
+  ]);
+  if (!result.changed) {
+    return { agents: listConfiguredAgents(config) };
+  }
+
+  const alreadyRunning = await checkExistingGateway(gatewayPort);
+  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (
+    requiresExternalGatewayStop(
+      alreadyRunning,
+      true,
+      gatewaySpawnedByUs,
+      gatewayProcess !== null,
+    )
+  ) {
+    throw new Error(
+      "Cannot add an agent while MicroClaw is connected to an externally managed Gateway",
+    );
+  }
+
+  const entryPath = resolveOpenClawEntry();
+  const gatewayEnvironment = loadGatewayEnvironment(stateDir);
+  const workspaceSnapshot = captureAgentWorkspace(
+    config,
+    stateDir,
+    persona,
+    gatewayEnvironment,
+    entryPath,
+  );
+  let restartAttempted = false;
+
+  try {
+    persistAgentPersonas(config);
+    seedAgentPersonaWorkspace(
+      config,
+      stateDir,
+      persona,
+      DECLARE_ACCESS_SECTION,
+      gatewayEnvironment,
+      os.homedir(),
+      path.dirname(entryPath),
+    );
+    restartAttempted = true;
+    await restartManagedGateway(`Adding agent ${agentId}`);
+    return { agents: listConfiguredAgents(config) };
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    try {
+      writeConfigTextAtomically(originalConfigText);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      restoreAgentWorkspace(workspaceSnapshot);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (restartAttempted && managedGateway) {
+      try {
+        await restartManagedGateway(`Rolling back failed agent addition ${agentId}`);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `Failed to add agent "${agentId}" and fully restore the previous state`,
+      );
+    }
+    throw error;
   }
 }
 
@@ -3020,6 +3179,21 @@ function registerIpcHandlers(): void {
   ipcMain.handle("agents:list", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     return await gwClient.listAgents();
+  });
+  ipcMain.handle("agents:add", async (_event, agentId: string) => {
+    if (typeof agentId !== "string" || !agentId.trim()) {
+      throw new Error("Agent id is required");
+    }
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (agentAdditionInProgress) {
+      throw new Error("Another agent is already being added");
+    }
+    agentAdditionInProgress = true;
+    try {
+      return await addCatalogAgent(agentId);
+    } finally {
+      agentAdditionInProgress = false;
+    }
   });
 
   // --- Channels ---

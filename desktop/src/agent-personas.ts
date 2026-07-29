@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AGENT_CATALOG } from "./agent-catalog";
+import { AGENT_CATALOG, DEFAULT_AGENT_IDS } from "./agent-catalog";
 
 interface WorkspaceFiles {
   "AGENTS.md": string;
@@ -116,6 +116,14 @@ export const AGENT_PERSONAS: readonly AgentPersona[] = AGENT_CATALOG.map((agent)
   workspaceFiles: agent.personaProfile ? PERSONA_PROFILES[agent.personaProfile] : undefined,
 }));
 
+export const DEFAULT_AGENT_PERSONAS = AGENT_PERSONAS.filter((persona) =>
+  DEFAULT_AGENT_IDS.includes(persona.id),
+);
+
+export function getAgentPersona(agentId: string): AgentPersona | undefined {
+  return AGENT_PERSONAS.find((persona) => persona.id === agentId);
+}
+
 export function getAgentWorkspacePath(
   stateDir: string,
   persona: AgentPersona,
@@ -148,6 +156,7 @@ function createAgentEntry(persona: AgentPersona, stateDir: string): Record<strin
 export function ensureAgentPersonasConfig(
   config: AgentRosterConfig,
   stateDir: string,
+  personas: readonly AgentPersona[] = DEFAULT_AGENT_PERSONAS,
 ): AgentPersonasConfigResult {
   if (config.agents !== undefined && !isRecord(config.agents)) {
     throw new Error("Invalid agents configuration");
@@ -228,7 +237,7 @@ export function ensureAgentPersonasConfig(
     sourceEntries.find((entry) => entry.config.default === true) ?? sourceEntries[0];
   const defaultAgentId = sourceDefault ? normalizeAgentId(sourceDefault.id) : "main";
 
-  for (const persona of AGENT_PERSONAS) {
+  for (const persona of personas) {
     if (normalizedIds.has(persona.id)) continue;
     const entry = { id: persona.id, ...createAgentEntry(persona, stateDir) };
     entries.push(entry);
@@ -251,6 +260,25 @@ export function ensureAgentPersonasConfig(
   delete agents.entries;
   config.agents = agents;
   return { changed };
+}
+
+export function listConfiguredAgents(
+  config: AgentRosterConfig,
+): Array<{ id: string; name: string }> {
+  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) return [];
+  return config.agents.list.flatMap((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string") return [];
+    const id = normalizeAgentId(candidate.id);
+    return [
+      {
+        id,
+        name:
+          typeof candidate.name === "string" && candidate.name.trim()
+            ? candidate.name
+            : id,
+      },
+    ];
+  });
 }
 
 function normalizeHomeValue(value: string | undefined): string | undefined {
@@ -339,42 +367,69 @@ export function seedAgentPersonaWorkspaces(
   cwd = process.cwd(),
 ): string[] {
   const updatedFiles: string[] = [];
+  const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
 
   for (const persona of AGENT_PERSONAS) {
-    if (!persona.workspaceFiles) continue;
-    const workspaceDir = resolveAgentPersonaWorkspace(
-      config,
-      stateDir,
-      persona,
-      env,
-      homeDir,
-      cwd,
+    if (!persona.workspaceFiles || !configuredIds.has(persona.id)) continue;
+    updatedFiles.push(
+      ...seedAgentPersonaWorkspace(
+        config,
+        stateDir,
+        persona,
+        soulAppendix,
+        env,
+        homeDir,
+        cwd,
+      ),
     );
+  }
 
-    fs.mkdirSync(workspaceDir, { recursive: true });
-    for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
-      const filePath = path.join(workspaceDir, filename);
-      if (fs.existsSync(filePath)) {
-        if (filename === "SOUL.md" && soulAppendix) {
-          const existing = fs.readFileSync(filePath, "utf-8");
-          const appendixMarker =
-            soulAppendix.split(/\r?\n/).find((line) => line.startsWith("## ")) ??
-            soulAppendix.trim();
-          if (appendixMarker && !existing.includes(appendixMarker)) {
-            fs.appendFileSync(filePath, `\n${soulAppendix.trim()}\n`, "utf-8");
-            updatedFiles.push(filePath);
-          }
+  return updatedFiles;
+}
+
+export function seedAgentPersonaWorkspace(
+  config: AgentRosterConfig,
+  stateDir: string,
+  persona: AgentPersona,
+  soulAppendix = "",
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir = os.homedir(),
+  cwd = process.cwd(),
+): string[] {
+  if (!persona.workspaceFiles) return [];
+  const updatedFiles: string[] = [];
+  const workspaceDir = resolveAgentPersonaWorkspace(
+    config,
+    stateDir,
+    persona,
+    env,
+    homeDir,
+    cwd,
+  );
+
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
+    const filePath = path.join(workspaceDir, filename);
+    if (fs.existsSync(filePath)) {
+      if (filename === "SOUL.md" && soulAppendix) {
+        const existing = fs.readFileSync(filePath, "utf-8");
+        const appendixMarker =
+          soulAppendix.split(/\r?\n/).find((line) => line.startsWith("## ")) ??
+          soulAppendix.trim();
+        if (appendixMarker && !existing.includes(appendixMarker)) {
+          fs.appendFileSync(filePath, `\n${soulAppendix.trim()}\n`, "utf-8");
+          updatedFiles.push(filePath);
         }
-        continue;
       }
-
-      const content =
-        filename === "SOUL.md" && soulAppendix
-          ? `${source.trimEnd()}\n\n${soulAppendix.trim()}\n`
-          : `${source.trimEnd()}\n`;
-      fs.writeFileSync(filePath, content, "utf-8");
-      updatedFiles.push(filePath);
+      continue;
     }
+
+    const content =
+      filename === "SOUL.md" && soulAppendix
+        ? `${source.trimEnd()}\n\n${soulAppendix.trim()}\n`
+        : `${source.trimEnd()}\n`;
+    fs.writeFileSync(filePath, content, "utf-8");
+    updatedFiles.push(filePath);
   }
 
   return updatedFiles;

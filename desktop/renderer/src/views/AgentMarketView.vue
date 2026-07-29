@@ -9,7 +9,7 @@
         v-for="agent in filteredAgents"
         :key="agent.id"
         :agent="agent"
-        @toggle="handleToggle"
+        @add="handleAdd"
       />
     </div>
   </div>
@@ -26,11 +26,11 @@ import { t } from "@/i18n";
 const agentStore = useAgentStore();
 const { filteredAgents } = useAgentList(computed(() => agentStore.marketAgents));
 
-async function handleToggle(agentId: string) {
+async function handleAdd(agentId: string) {
   try {
-    await agentStore.toggleAgent(agentId);
+    await agentStore.addAgent(agentId);
   } catch {
-    ElMessage.error(t("agentMarket.persistenceFailed"));
+    ElMessage.error(t("agentMarket.addFailed"));
   }
 }
 </script>

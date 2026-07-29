@@ -705,7 +705,7 @@ export default {
   "agentMarket.pageTitle": "热门 Agent",
   "agentMarket.add": "添加",
   "agentMarket.added": "已添加",
-  "agentMarket.persistenceFailed": "无法保存 Agent 选择，请重试。",
+  "agentMarket.addFailed": "无法将 Agent 添加到 OpenClaw，请重试。",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "快捷任务",

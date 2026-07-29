@@ -342,7 +342,6 @@ onMounted(async () => {
     if (s.language) {
       setLocale(s.language as any);
     }
-    agentStore.restoreAddedAgents(s.addedAgentIds);
   } catch {}
 
   // Redirect away from /setup if still on it (e.g. after reload)

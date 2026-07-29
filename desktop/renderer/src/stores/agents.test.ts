@@ -4,67 +4,89 @@ import { setLocale } from "@/i18n";
 import { useAgentStore } from "./agents";
 
 describe("agent store", () => {
-  const settingsSet = vi.fn();
   const agentsList = vi.fn();
+  const agentsAdd = vi.fn();
 
   beforeEach(() => {
     setActivePinia(createPinia());
     setLocale("en-US");
-    settingsSet.mockReset().mockResolvedValue(undefined);
-    agentsList.mockReset().mockResolvedValue({ agents: [] });
+    agentsList
+      .mockReset()
+      .mockResolvedValue({ agents: [{ id: "main", name: "Assistant" }] });
+    agentsAdd.mockReset();
     window.openclaw = {
-      settings: { set: settingsSet },
-      agents: { list: agentsList },
+      agents: { list: agentsList, add: agentsAdd },
     } as unknown as typeof window.openclaw;
   });
 
-  it("offers and persists Master Archive as an addable specialist agent", async () => {
+  it("shows only the OpenClaw roster in the sidebar", async () => {
     const store = useAgentStore();
-    const agent = store.marketAgents.find((entry) => entry.id === "master-archive");
 
-    expect(agent).toMatchObject({
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
+
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "custom", name: "Custom Agent" },
+      ],
+    });
+    await store.fetchAgents();
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
+  });
+
+  it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
+    const store = useAgentStore();
+    const marketAgent = store.marketAgents.find(
+      (entry) => entry.id === "master-archive",
+    );
+
+    expect(marketAgent).toMatchObject({
       name: "Master Archive",
       isAdded: false,
       tags: ["File Organization", "Batch Conversion", "Document Digests"],
     });
-    expect(agent?.quickTasks).toHaveLength(3);
+    expect(marketAgent?.quickTasks).toHaveLength(3);
 
-    await store.toggleAgent("master-archive");
+    agentsAdd.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+    await store.addAgent("master-archive");
 
-    expect(store.addedAgents.some((entry) => entry.id === "master-archive")).toBe(true);
-    expect(settingsSet).toHaveBeenCalledWith(
-      "addedAgentIds",
-      expect.arrayContaining(["main", "coder", "master-archive"]),
-    );
+    expect(agentsAdd).toHaveBeenCalledWith("master-archive");
+    expect(store.agents.map((agent) => agent.id)).toEqual([
+      "main",
+      "master-archive",
+    ]);
+    expect(
+      store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
+    ).toBe(true);
   });
 
-  it("restores saved selections and clears stale remote agents", async () => {
+  it("keeps the roster unchanged when Add fails", async () => {
     const store = useAgentStore();
-    store.restoreAddedAgents(["main", "master-archive"]);
+    agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));
 
-    expect(store.addedAgents.map((agent) => agent.id)).toEqual(["main", "master-archive"]);
+    await expect(store.addAgent("master-archive")).rejects.toThrow(
+      "Gateway restart failed",
+    );
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
+    expect(
+      store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
+    ).toBe(false);
+  });
 
-    agentsList.mockResolvedValueOnce({ agents: [{ id: "custom", name: "Custom" }] });
+  it("preserves the last real roster when refresh fails", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [{ id: "custom", name: "Custom Agent" }],
+    });
     await store.fetchAgents();
-    expect(store.agents.some((agent) => agent.id === "custom")).toBe(true);
-
     agentsList.mockRejectedValueOnce(new Error("Gateway not connected"));
     await store.fetchAgents();
-    expect(store.agents.some((agent) => agent.id === "custom")).toBe(true);
 
-    agentsList.mockResolvedValueOnce({ agents: [] });
-    await store.fetchAgents();
-    expect(store.agents.some((agent) => agent.id === "custom")).toBe(false);
-  });
-
-  it("falls back to main when the active agent is removed", async () => {
-    const store = useAgentStore();
-    store.restoreAddedAgents(["main", "master-archive"]);
-    store.selectAgent("master-archive");
-
-    await store.toggleAgent("master-archive");
-
-    expect(store.currentAgentId).toBe("main");
-    expect(store.addedAgents.map((agent) => agent.id)).toEqual(["main"]);
+    expect(store.agents.map((agent) => agent.id)).toEqual(["custom"]);
   });
 });

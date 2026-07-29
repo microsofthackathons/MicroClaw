@@ -4,8 +4,11 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AGENT_PERSONAS,
+  DEFAULT_AGENT_PERSONAS,
   ensureAgentPersonasConfig,
+  getAgentPersona,
   getAgentWorkspacePath,
+  listConfiguredAgents,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
 } from "./agent-personas";
@@ -25,26 +28,14 @@ afterEach(() => {
 });
 
 describe("agent personas", () => {
-  it("registers personas in the runtime list roster", () => {
+  it("registers only main for a new installation", () => {
     const stateDir = createStateDir();
-    const config = {
-      agents: {
-        defaults: { model: "custom/model" },
-        list: [{ id: "main", default: true, name: "Existing Assistant" }],
-      },
-    };
+    const config = { agents: { defaults: { model: "custom/model" } } };
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
-    expect(config.agents.list).toContainEqual(
-      expect.objectContaining({ id: "main", name: "Existing Assistant" }),
-    );
-    expect(config.agents.list).toContainEqual(
-      expect.objectContaining({
-        id: "master-archive",
-        name: "Master Archive",
-        workspace: path.join(stateDir, "workspace-master-archive"),
-      }),
-    );
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+    ]);
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
@@ -61,15 +52,9 @@ describe("agent personas", () => {
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
     expect(agents).not.toHaveProperty("entries");
-    expect(agents.list).toEqual(
-      expect.arrayContaining([
-      expect.objectContaining({
-        id: "master-archive",
-        name: "Master Archive",
-        workspace: path.join(stateDir, "workspace-master-archive"),
-      }),
-      ]),
-    );
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Existing Assistant" },
+    ]);
   });
 
   it("preserves the effective legacy default and removes extra default markers", () => {
@@ -136,10 +121,17 @@ describe("agent personas", () => {
   it("seeds the Master Archive workspace with its operating context", () => {
     const stateDir = createStateDir();
     const config = { agents: {} };
-    ensureAgentPersonasConfig(config, stateDir);
-    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
-    const persona = AGENT_PERSONAS.find((entry) => entry.id === "master-archive");
+    const persona = getAgentPersona("master-archive");
     if (!persona) throw new Error("Master Archive persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [
+      ...DEFAULT_AGENT_PERSONAS,
+      persona,
+    ]);
+    expect(listConfiguredAgents(config).map((agent) => agent.id)).toEqual([
+      "main",
+      "master-archive",
+    ]);
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
     const workspace = getAgentWorkspacePath(stateDir, persona);
     if (!workspace) throw new Error("Master Archive workspace is not configured");
 
@@ -153,6 +145,17 @@ describe("agent personas", () => {
     );
     expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Master Archive",
+    );
+  });
+
+  it("does not seed a Popular Agent before it is installed", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, "workspace-master-archive"))).toBe(
+      false,
     );
   });
 

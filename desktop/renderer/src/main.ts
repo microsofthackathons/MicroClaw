@@ -5,7 +5,6 @@ import "element-plus/dist/index.css";
 import router from "./router";
 import App from "./App.vue";
 import "./styles/global.css";
-import { DEFAULT_ADDED_AGENT_IDS } from "../../src/agent-catalog";
 
 // Browser dev mode: mock window.openclaw so the app bypasses gateway/IPC checks
 const isBrowserDev = !window.openclaw;
@@ -45,12 +44,18 @@ if (isBrowserDev) {
           themeMode: "light",
           accentColor: "#1e1f25",
           privacyLevel: "balanced",
-          addedAgentIds: [...DEFAULT_ADDED_AGENT_IDS],
         }),
       set: noopAsync,
     },
     agents: {
       list: () => Promise.resolve({ agents: [] }),
+      add: (agentId: string) =>
+        Promise.resolve({
+          agents: [
+            { id: "main", name: "Assistant" },
+            { id: agentId, name: agentId },
+          ],
+        }),
     },
     updates: {
       check: () =>

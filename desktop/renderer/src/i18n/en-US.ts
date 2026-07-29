@@ -732,7 +732,7 @@ export default {
   "agentMarket.pageTitle": "Popular Agents",
   "agentMarket.add": "Add",
   "agentMarket.added": "Added",
-  "agentMarket.persistenceFailed": "Couldn't save the agent selection. Please try again.",
+  "agentMarket.addFailed": "Couldn't add the agent to OpenClaw. Please try again.",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",

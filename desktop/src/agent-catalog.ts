@@ -7,7 +7,7 @@ export interface AgentCatalogEntry {
   image: string;
   tagKeys: string[];
   taskKeys: Array<{ titleKey: string; descKey: string }>;
-  defaultAdded: boolean;
+  installedByDefault: boolean;
   workspaceDirName?: string;
   personaProfile?: "master-archive";
 }
@@ -26,7 +26,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.main.task.2.title", descKey: "agent.main.task.2.desc" },
       { titleKey: "agent.main.task.3.title", descKey: "agent.main.task.3.desc" },
     ],
-    defaultAdded: true,
+    installedByDefault: true,
   },
   {
     id: "master-archive",
@@ -54,7 +54,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
         descKey: "agent.masterArchive.task.3.desc",
       },
     ],
-    defaultAdded: false,
+    installedByDefault: false,
     workspaceDirName: "workspace-master-archive",
     personaProfile: "master-archive",
   },
@@ -71,7 +71,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.coder.task.2.title", descKey: "agent.coder.task.2.desc" },
       { titleKey: "agent.coder.task.3.title", descKey: "agent.coder.task.3.desc" },
     ],
-    defaultAdded: true,
+    installedByDefault: false,
   },
   {
     id: "painter",
@@ -86,7 +86,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.painter.task.2.title", descKey: "agent.painter.task.2.desc" },
       { titleKey: "agent.painter.task.3.title", descKey: "agent.painter.task.3.desc" },
     ],
-    defaultAdded: false,
+    installedByDefault: false,
   },
   {
     id: "master",
@@ -101,7 +101,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.master.task.2.title", descKey: "agent.master.task.2.desc" },
       { titleKey: "agent.master.task.3.title", descKey: "agent.master.task.3.desc" },
     ],
-    defaultAdded: false,
+    installedByDefault: false,
   },
   {
     id: "growth-hacker",
@@ -129,7 +129,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
         descKey: "agent.growthHacker.task.3.desc",
       },
     ],
-    defaultAdded: false,
+    installedByDefault: false,
   },
   {
     id: "leopard",
@@ -144,7 +144,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.leopard.task.2.title", descKey: "agent.leopard.task.2.desc" },
       { titleKey: "agent.leopard.task.3.title", descKey: "agent.leopard.task.3.desc" },
     ],
-    defaultAdded: false,
+    installedByDefault: false,
   },
   {
     id: "singer",
@@ -159,10 +159,10 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.singer.task.2.title", descKey: "agent.singer.task.2.desc" },
       { titleKey: "agent.singer.task.3.title", descKey: "agent.singer.task.3.desc" },
     ],
-    defaultAdded: false,
+    installedByDefault: false,
   },
 ];
 
-export const DEFAULT_ADDED_AGENT_IDS = AGENT_CATALOG.filter(
-  (agent) => agent.defaultAdded,
+export const DEFAULT_AGENT_IDS = AGENT_CATALOG.filter(
+  (agent) => agent.installedByDefault,
 ).map((agent) => agent.id);
