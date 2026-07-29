@@ -28,6 +28,28 @@ class UpgradePhase(StrEnum):
     ROLLBACK_FAILED = "rollback-failed"
 
 
+class UpgradeBackupMode(StrEnum):
+    FULL = "full"
+    MANAGED_STATE = "managed-state"
+
+
+_MANAGED_STATE_PATHS = (
+    Path(".env"),
+    Path("openclaw.json"),
+    Path("skill_catalog.json"),
+    Path("managed_skill_catalog.json"),
+    Path("skills"),
+    Path("skills_snapshot.json"),
+    Path("skills_snapshot.sig"),
+    Path("skills_signing_key.pub"),
+    Path("skills_signing_key.pem"),
+    Path("MicroClawInstaller.exe"),
+    Path("_internal"),
+    Path("microclaw.ico"),
+    Path("microclaw-uninstall.ico"),
+)
+
+
 ACTIVE_PHASES = {
     UpgradePhase.BACKING_UP,
     UpgradePhase.INSTALLING,
@@ -75,6 +97,8 @@ class UpgradeManifest:
     created_at: str
     updated_at: str
     validation_results: dict[str, bool] = field(default_factory=dict)
+    backup_mode: UpgradeBackupMode = UpgradeBackupMode.FULL
+    config_existed: bool = False
 
 
 def _now() -> str:
@@ -557,6 +581,7 @@ class OpenClawUpgradeTransaction:
         state_dir: Path,
         target_version: str,
         installation: OpenClawInstallation,
+        backup_mode: UpgradeBackupMode = UpgradeBackupMode.FULL,
     ) -> OpenClawUpgradeTransaction:
         root = microclaw_root.resolve(strict=False)
         transaction_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -584,6 +609,8 @@ class OpenClawUpgradeTransaction:
             phase=UpgradePhase.BACKING_UP,
             created_at=timestamp,
             updated_at=timestamp,
+            backup_mode=backup_mode,
+            config_existed=(state_dir / "openclaw.json").exists(),
         )
         try:
             transaction = cls(
@@ -605,6 +632,8 @@ class OpenClawUpgradeTransaction:
             if not isinstance(data, dict):
                 raise ValueError("manifest root must be an object")
             data["phase"] = UpgradePhase(data["phase"])
+            if "backup_mode" in data:
+                data["backup_mode"] = UpgradeBackupMode(data["backup_mode"])
             manifest = UpgradeManifest(**data)
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             raise ValueError("invalid OpenClaw upgrade manifest") from error
@@ -663,6 +692,11 @@ class OpenClawUpgradeTransaction:
     def _validate_manifest(self) -> None:
         if self.manifest.schema_version != 1:
             raise ValueError("unsupported OpenClaw upgrade manifest schema")
+        if self.manifest.backup_mode not in {
+            UpgradeBackupMode.FULL,
+            UpgradeBackupMode.MANAGED_STATE,
+        }:
+            raise ValueError("unsupported OpenClaw upgrade backup mode")
         transaction_id = self.manifest.transaction_id
         if not isinstance(transaction_id, str) or not _TRANSACTION_ID_PATTERN.fullmatch(
             transaction_id
@@ -769,8 +803,55 @@ class OpenClawUpgradeTransaction:
 
         return report
 
+    def _publish_backup(self, staging: Path) -> None:
+        metadata_files = {"transaction.json", "backup-files.json"}
+        io_staging = _native_io_path(staging)
+        inventory = {}
+        for path in io_staging.rglob("*"):
+            relative = path.relative_to(io_staging).as_posix()
+            if path.is_file() and relative not in metadata_files:
+                inventory[relative] = path.stat().st_size
+        _atomic_json_write(staging / "backup-files.json", inventory)
+        _atomic_json_write(staging / "transaction.json", self._payload())
+        _fsync_directory(staging)
+        _durable_rename(staging, self.backup_dir)
+        self.set_phase(UpgradePhase.INSTALLING)
+
+    def _backup_managed_state(self) -> None:
+        state_dir = Path(self.manifest.state_dir)
+        if self.manifest.state_existed and not state_dir.exists():
+            raise FileNotFoundError(f"OpenClaw state disappeared before backup: {state_dir}")
+        config_path = state_dir / "openclaw.json"
+        if self.manifest.config_existed and not config_path.exists():
+            raise FileNotFoundError(f"OpenClaw config disappeared before backup: {config_path}")
+        if not self.manifest.config_existed and config_path.exists():
+            raise RuntimeError(f"OpenClaw config appeared before backup: {config_path}")
+
+        _durable_mkdir(self.backup_root)
+        staging = self.backup_dir.with_name(
+            f".{self.manifest.transaction_id}.{uuid.uuid4().hex}.staging"
+        )
+        _durable_mkdir(staging / "state")
+        for relative in _MANAGED_STATE_PATHS:
+            source = state_dir / relative
+            destination = staging / "state" / relative
+            if source.is_dir() and not source.is_symlink():
+                shutil.copytree(_native_io_path(source), _native_io_path(destination))
+            elif source.exists() or source.is_symlink():
+                _durable_mkdir(destination.parent)
+                shutil.copy2(_native_io_path(source), _native_io_path(destination))
+        _fsync_payload_tree(
+            staging / "state",
+            self._payload_progress("Backing up MicroClaw-managed state"),
+        )
+        self._publish_backup(staging)
+
     def backup(self) -> None:
         self.set_phase(UpgradePhase.BACKING_UP)
+        if self.manifest.backup_mode == UpgradeBackupMode.MANAGED_STATE:
+            self._backup_managed_state()
+            return
+
         package_dir = Path(self.manifest.package_dir)
         if self.manifest.package_existed and not package_dir.exists():
             raise FileNotFoundError(f"OpenClaw package disappeared before backup: {package_dir}")
@@ -816,18 +897,7 @@ class OpenClawUpgradeTransaction:
         ):
             _fsync_payload_tree(payload_root, self._payload_progress("Backing up OpenClaw files"))
 
-        metadata_files = {"transaction.json", "backup-files.json"}
-        io_staging = _native_io_path(staging)
-        inventory = {}
-        for path in io_staging.rglob("*"):
-            relative = path.relative_to(io_staging).as_posix()
-            if path.is_file() and relative not in metadata_files:
-                inventory[relative] = path.stat().st_size
-        _atomic_json_write(staging / "backup-files.json", inventory)
-        _atomic_json_write(staging / "transaction.json", self._payload())
-        _fsync_directory(staging)
-        _durable_rename(staging, self.backup_dir)
-        self.set_phase(UpgradePhase.INSTALLING)
+        self._publish_backup(staging)
 
     def mark_verifying(self) -> None:
         self.set_phase(UpgradePhase.VERIFYING)
@@ -927,6 +997,26 @@ class OpenClawUpgradeTransaction:
             self.manifest.state_existed,
         )
 
+    def _restore_managed_state(self, failed_dir: Path) -> None:
+        state_dir = Path(self.manifest.state_dir)
+        for relative in _MANAGED_STATE_PATHS:
+            live = state_dir / relative
+            backup = self.backup_dir / "state" / relative
+            failed = failed_dir / "state" / relative
+            if backup.is_dir() and not backup.is_symlink():
+                self._restore_tree(backup, live, failed, True)
+                continue
+
+            staging = None
+            if backup.exists() or backup.is_symlink():
+                _durable_mkdir(live.parent)
+                staging = live.with_name(f".{live.name}.{uuid.uuid4().hex}.restore")
+                shutil.copy2(_native_io_path(backup), _native_io_path(staging))
+                _fsync_file(staging)
+            self._move_to_failed(live, failed)
+            if staging is not None:
+                _durable_replace(staging, live)
+
     def rollback(self) -> None:
         original_phase = self.manifest.phase
         if original_phase == UpgradePhase.ROLLED_BACK:
@@ -946,9 +1036,12 @@ class OpenClawUpgradeTransaction:
             if original_phase != UpgradePhase.BACKING_UP:
                 failed_dir = self.backup_dir / "failed"
                 _durable_mkdir(failed_dir)
-                self._restore_package(failed_dir)
-                self._restore_shims()
-                self._restore_state(failed_dir)
+                if self.manifest.backup_mode == UpgradeBackupMode.MANAGED_STATE:
+                    self._restore_managed_state(failed_dir)
+                else:
+                    self._restore_package(failed_dir)
+                    self._restore_shims()
+                    self._restore_state(failed_dir)
         except Exception as error:
             try:
                 self.mark_rollback_failed()

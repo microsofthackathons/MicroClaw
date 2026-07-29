@@ -18,6 +18,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 
 from deployer.config import DeployerConfig
+from deployer.install_timing import InstallTiming
 from deployer.logger import DeployerLogger
 from deployer.webview_bridge import InstallationCancelled, run_web_installer
 from deployer.windows_setup import (
@@ -888,6 +889,7 @@ class DeployerApp(tk.Tk):
 
     def _install_thread(self):
         log = self.logger
+        timing = InstallTiming(log)
         ws = WindowsSetup(self.config, log)
 
         steps = [
@@ -923,31 +925,41 @@ class DeployerApp(tk.Tk):
                 message = f"Installation cancelled.{suffix}"
                 self.after(0, lambda text=message: self._finish_fail(text))
                 self._running = False
+                timing.finish("cancelled")
                 return
 
             self._set_progress(pct, label)
+            started_at = timing.start_step()
             try:
                 result = fn()
                 if result is not None and not result:
+                    timing.record_step(label, started_at, "failed")
                     rollback_ok = ws.rollback_openclaw_upgrade()
                     suffix = "" if rollback_ok else " Automatic rollback also failed."
                     self._finish_fail(label.rstrip(".") + f" failed.{suffix}")
                     self._running = False
+                    timing.finish("failed")
                     return
             except InstallationCancelled:
+                timing.record_step(label, started_at, "cancelled")
                 self._running = False
                 self.after(0, self._return_to_welcome)
+                timing.finish("cancelled")
                 return
             except Exception as e:
+                timing.record_step(label, started_at, "failed")
                 log.error(f"{label} exception: {e}")
                 rollback_ok = ws.rollback_openclaw_upgrade()
                 suffix = "" if rollback_ok else " Automatic rollback also failed."
                 detail = str(e).strip() or label.rstrip(".") + " failed."
                 self._finish_fail(f"{detail}{suffix}")
                 self._running = False
+                timing.finish("failed")
                 return
+            timing.record_step(label, started_at, "success")
 
         self._running = False
+        timing.finish("success")
         self._finish_ok()
 
     def _prepare_upgrade(self, ws: WindowsSetup) -> bool:
