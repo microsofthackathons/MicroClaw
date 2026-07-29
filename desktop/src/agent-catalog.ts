@@ -1,3 +1,34 @@
+// The complete universe of skill IDs shipped by MicroClaw: the union of the
+// certified/bundled skills (SKILL_CATALOG) and the managed skills
+// (MANAGED_SKILL_CATALOG), alphabetically sorted. This MUST be kept in sync with
+// `deployer/skill_catalog.py` (SKILL_CATALOG + MANAGED_SKILL_CATALOG) — adding or
+// removing a skill there requires the same change here.
+export const ALL_SKILL_IDS: readonly string[] = [
+  "1password",
+  "blucli",
+  "canvas",
+  "coding-agent",
+  "desktop-organizer",
+  "excel-xlsx",
+  "healthcheck",
+  "mcporter",
+  "nano-pdf",
+  "obsidian",
+  "officecli",
+  "openai-whisper",
+  "openhue",
+  "oracle",
+  "powerpoint-pptx",
+  "security-practice",
+  "session-logs",
+  "sherpa-onnx-tts",
+  "skill-creator",
+  "songsee",
+  "sonoscli",
+  "video-frames",
+  "word-docx",
+];
+
 export interface AgentCatalogEntry {
   id: string;
   name: string;
@@ -8,6 +39,7 @@ export interface AgentCatalogEntry {
   tagKeys: string[];
   taskKeys: Array<{ titleKey: string; descKey: string }>;
   installedByDefault: boolean;
+  skills: readonly string[];
   workspaceDirName?: string;
   personaProfile?: "master-archive";
 }
@@ -27,6 +59,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.main.task.3.title", descKey: "agent.main.task.3.desc" },
     ],
     installedByDefault: true,
+    skills: [...ALL_SKILL_IDS],
   },
   {
     id: "master-archive",
@@ -55,6 +88,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
     workspaceDirName: "workspace-master-archive",
     personaProfile: "master-archive",
   },
@@ -72,6 +106,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.coder.task.3.title", descKey: "agent.coder.task.3.desc" },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
   },
   {
     id: "painter",
@@ -87,6 +122,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.painter.task.3.title", descKey: "agent.painter.task.3.desc" },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
   },
   {
     id: "master",
@@ -102,6 +138,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.master.task.3.title", descKey: "agent.master.task.3.desc" },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
   },
   {
     id: "growth-hacker",
@@ -130,6 +167,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
   },
   {
     id: "leopard",
@@ -145,6 +183,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.leopard.task.3.title", descKey: "agent.leopard.task.3.desc" },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
   },
   {
     id: "singer",
@@ -160,9 +199,19 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.singer.task.3.title", descKey: "agent.singer.task.3.desc" },
     ],
     installedByDefault: false,
+    skills: [...ALL_SKILL_IDS],
   },
 ];
 
 export const DEFAULT_AGENT_IDS = AGENT_CATALOG.filter(
   (agent) => agent.installedByDefault,
 ).map((agent) => agent.id);
+
+/**
+ * Returns the skill IDs bound to the given agent, or an empty array if the agent
+ * id is not present in AGENT_CATALOG.
+ */
+export function getAgentSkills(agentId: string): readonly string[] {
+  const agent = AGENT_CATALOG.find((entry) => entry.id === agentId);
+  return agent ? agent.skills : [];
+}
