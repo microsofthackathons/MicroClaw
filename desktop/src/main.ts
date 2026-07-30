@@ -90,6 +90,7 @@ import {
   type AgentPersona,
   type AgentRosterConfig,
 } from "./agent-personas";
+import { assertConfigWriteAllowed } from "./config-write-policy";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -2887,40 +2888,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:read", () => readConfig());
   ipcMain.handle("config:read-env", () => loadStateDirEnv());
   ipcMain.handle("config:write", async (_event, config: any) => {
-    if (typeof config !== "object" || config === null || Array.isArray(config)) {
-      throw new Error("config:write — invalid config: must be a plain object");
-    }
-    // Known top-level keys supported by OpenClaw's openclaw.json.
-    // Keep this as a permissive allow-list: any key OpenClaw may legitimately
-    // read/write should be passed through unchanged so Save doesn't drop or
-    // reject pre-existing config sections.
-    const ALLOWED_TOP_LEVEL_KEYS = new Set([
-      "$schema",
-      "meta",
-      "models",
-      "agents",
-      "tools",
-      "gateway",
-      "skills",
-      "plugins",
-      "browser",
-      "commands",
-      "permissions",
-      "hooks",
-      "mcp",
-      "channels",
-      "telemetry",
-      "memory",
-      "logging",
-      "sandbox",
-    ]);
-    const unknownKeys = Object.keys(config).filter((k) => !ALLOWED_TOP_LEVEL_KEYS.has(k));
-    if (unknownKeys.length > 0) {
-      throw new Error(`config:write — disallowed top-level keys: ${unknownKeys.join(", ")}`);
-    }
     const stateDir = getOpenClawStateDir();
     await fs.promises.mkdir(stateDir, { recursive: true });
-    await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    assertConfigWriteAllowed(config, readConfig());
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
   // --- Skills ---
