@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -40,6 +41,11 @@ from deployer.openclaw_version import (
     is_supported_node_version,
 )
 from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
+from deployer.uninstaller_bundle import (
+    UninstallerBundleError,
+    publish_uninstaller_bundle,
+    resolve_uninstaller_bundle,
+)
 
 # ── Mirror URLs ──
 # Mirror names — used as keys into MIRRORS and as the fallback when probing fails.
@@ -3666,6 +3672,46 @@ class WindowsSetup:
         finally:
             if job is not None:
                 job.close()
+
+    def install_uninstaller_bundle(self) -> bool:
+        """Persist a verified uninstaller before exposing Windows entry points."""
+        try:
+            app_dir = Path(__file__).resolve().parent.parent
+            source = resolve_uninstaller_bundle(
+                frozen=getattr(sys, "frozen", False),
+                executable=Path(sys.executable),
+                app_dir=app_dir,
+            )
+            destination = Path.home() / ".openclaw"
+            persisted = publish_uninstaller_bundle(
+                source,
+                destination,
+                self._check_persisted_uninstaller,
+            )
+            self.log.success(f"卸载程序已安装: {persisted}")
+            return True
+        except UninstallerBundleError as error:
+            self.log.error(f"安装卸载程序失败: {error}")
+            return False
+
+    def _check_persisted_uninstaller(self, executable: Path) -> None:
+        try:
+            result = self._run(
+                [str(executable), "--check-uninstaller"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise UninstallerBundleError("Persisted uninstaller startup check timed out") from error
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown runtime error").strip()
+            raise UninstallerBundleError(
+                f"Persisted uninstaller startup check failed ({result.returncode}): {detail}"
+            )
 
     def create_desktop_shortcut(self) -> bool:
         """Create a desktop shortcut for the MicroClawDesktop client."""

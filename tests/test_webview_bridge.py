@@ -2,7 +2,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from deploy import DeployerApp
+from deploy import DeployerApp, main
 from deployer.webview_bridge import InstallationCancelled, WebInstallerBridge
 from deployer.windows_setup import ActiveGateway, ActiveInstallation
 
@@ -97,6 +97,18 @@ class WebInstallerBridgeTests(unittest.TestCase):
 
         setup.stop_active_installation_for_upgrade.assert_not_called()
         setup.prepare_openclaw_upgrade.assert_not_called()
+
+    def test_uninstaller_check_exits_without_ui_or_elevation(self):
+        with (
+            unittest.mock.patch("deploy._setup_windows_taskbar") as taskbar,
+            unittest.mock.patch("deploy._ensure_admin") as elevate,
+            unittest.mock.patch("deploy._run_installer") as run_installer,
+        ):
+            self.assertEqual(main(["--check-uninstaller"]), 0)
+
+        taskbar.assert_not_called()
+        elevate.assert_not_called()
+        run_installer.assert_not_called()
 
 
 if __name__ == "__main__":

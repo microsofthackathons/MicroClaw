@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from deployer.openclaw_upgrade import UpgradeBackupMode, UpgradePhase
 from deployer.openclaw_version import OPENCLAW_TARGET_VERSION
+from deployer.uninstaller_bundle import UninstallerBundleError
 from deployer.windows_setup import (
     _OPENCLAW_RPC_TIMEOUT,
     MIRROR_HUAWEI,
@@ -1467,6 +1468,65 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             "new",
         )
         self.ws._run.assert_not_called()
+
+    def test_install_uninstaller_bundle_publishes_source_and_checks_persisted_exe(self):
+        source = self.root / "dist" / "MicroClawInstaller"
+        destination = self.home / ".openclaw"
+        persisted = destination / "MicroClawInstaller.exe"
+        self.ws._check_persisted_uninstaller = unittest.mock.Mock()
+
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.resolve_uninstaller_bundle",
+                return_value=source,
+            ) as resolve,
+            unittest.mock.patch(
+                "deployer.windows_setup.publish_uninstaller_bundle",
+                return_value=persisted,
+            ) as publish,
+        ):
+            self.assertTrue(self.ws.install_uninstaller_bundle())
+
+        resolve.assert_called_once()
+        publish.assert_called_once_with(
+            source,
+            destination,
+            self.ws._check_persisted_uninstaller,
+        )
+
+    def test_install_uninstaller_bundle_reports_failure(self):
+        with unittest.mock.patch(
+            "deployer.windows_setup.resolve_uninstaller_bundle",
+            side_effect=UninstallerBundleError("build installer first"),
+        ):
+            self.assertFalse(self.ws.install_uninstaller_bundle())
+
+    def test_persisted_uninstaller_check_rejects_nonzero_exit(self):
+        exe = self.root / "MicroClawInstaller.exe"
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=3, stdout="", stderr="runtime failed")
+        )
+
+        with self.assertRaisesRegex(UninstallerBundleError, "runtime failed"):
+            self.ws._check_persisted_uninstaller(exe)
+
+        self.ws._run.assert_called_once_with(
+            [str(exe), "--check-uninstaller"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+
+    def test_persisted_uninstaller_check_rejects_timeout(self):
+        exe = self.root / "MicroClawInstaller.exe"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=subprocess.TimeoutExpired([str(exe)], timeout=30)
+        )
+
+        with self.assertRaisesRegex(UninstallerBundleError, "timed out"):
+            self.ws._check_persisted_uninstaller(exe)
 
     def test_get_start_menu_path_uses_appdata(self):
         # Force the winreg lookup to fail so the APPDATA fallback is exercised.

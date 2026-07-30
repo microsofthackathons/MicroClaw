@@ -1406,10 +1406,23 @@ def _run_installer(auto_uninstall: bool, use_legacy_ui: bool):
     app.mainloop()
 
 
-if __name__ == "__main__":
+def _check_uninstaller_runtime() -> int:
+    return 0 if callable(getattr(DeployerApp, "_uninstall_thread", None)) else 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if "--check-uninstaller" in args:
+        return _check_uninstaller_runtime()
+
     _setup_windows_taskbar()
-    _auto_uninstall = "--uninstall" in sys.argv[1:]
-    _use_legacy_ui = "--legacy-ui" in sys.argv[1:] or os.environ.get("LEGACY_INSTALL_UI", "") == "1"
-    if _auto_uninstall:
+    auto_uninstall = "--uninstall" in args
+    use_legacy_ui = "--legacy-ui" in args or os.environ.get("LEGACY_INSTALL_UI", "") == "1"
+    if auto_uninstall:
         _ensure_admin()
-    _run_installer(auto_uninstall=_auto_uninstall, use_legacy_ui=_use_legacy_ui)
+    _run_installer(auto_uninstall=auto_uninstall, use_legacy_ui=use_legacy_ui)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
