@@ -676,6 +676,7 @@ export default {
   "skills.dev.modelVisibleSummary": "模型可见：{visible} / {total}",
   "skills.dev.statusFailed": "无法获取状态：{error}",
   "skills.dev.statusChecking": "正在检查技能状态…最长可能需要一分钟。",
+  "skills.dev.statusNotChecked": "尚未检查该智能体的技能状态——请点击“刷新状态”（最长需要约一分钟）。",
   "skills.dev.badge.visible": "模型可见",
   "skills.dev.badge.hidden": "未注入",
   "skills.dev.badge.unknown": "无状态",

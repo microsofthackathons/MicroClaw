@@ -703,6 +703,7 @@ export default {
   "skills.dev.modelVisibleSummary": "Model-visible: {visible} / {total}",
   "skills.dev.statusFailed": "Status unavailable: {error}",
   "skills.dev.statusChecking": "Checking skill status… this can take up to a minute.",
+  "skills.dev.statusNotChecked": "Status not checked for this agent — click “Refresh status” (takes up to a minute).",
   "skills.dev.badge.visible": "Model-visible",
   "skills.dev.badge.hidden": "Not injected",
   "skills.dev.badge.unknown": "No status",

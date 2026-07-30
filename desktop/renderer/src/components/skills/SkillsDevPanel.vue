@@ -52,6 +52,9 @@
             total: status.summary.total,
           }) }}
         </span>
+        <span v-else-if="!statusError" class="skills-dev-status-hint">
+          {{ t("skills.dev.statusNotChecked") }}
+        </span>
         <span v-if="statusError" class="skills-dev-status-error">
           {{ t("skills.dev.statusFailed", { error: statusError }) }}
         </span>
@@ -130,6 +133,10 @@ const feedbackKind = ref<"info" | "success" | "error">("info");
 const status = ref<SkillsStatus | null>(null);
 const statusLoading = ref(false);
 const statusError = ref("");
+// Per-agent status cache. The status check cold-starts the OpenClaw CLI (~60s), so
+// it's opt-in ("Refresh status") rather than auto-run; cached results let agent
+// switches show previously-checked badges instantly.
+const statusCache = ref<Map<string, SkillsStatus>>(new Map());
 // Deferred global master state: flipping a "Global" switch only stages a change here;
 // it's flushed on "Apply & reload" so the user waits for a single gateway restart.
 // baselineGlobal is the persisted state captured on each successful status load.
@@ -286,27 +293,34 @@ function clearAll(): void {
   pending.value = new Set();
 }
 
+// Point status.value at a status result (or null) and recompute the deferred-global
+// baseline + pending map from it. Only skills with a record can be globally gated.
+function applyStatusToState(next: SkillsStatus | null): void {
+  status.value = next;
+  const base = new Map<string, boolean>();
+  if (next) {
+    for (const slug of allSkillIds) {
+      if (statusFor(slug)) base.set(slug, globalOn(slug));
+    }
+  }
+  baselineGlobal.value = base;
+  pendingGlobal.value = new Map(base);
+}
+
 async function loadStatus(agentId: string): Promise<void> {
   statusLoading.value = true;
   statusError.value = "";
   try {
     const result = await window.openclaw.skills.getStatus(agentId);
     if (result.ok) {
-      status.value = result;
-      // Seed the global baseline (and reset any staged flips) from the freshly
-      // loaded status. Only skills with a record can be globally gated.
-      const base = new Map<string, boolean>();
-      for (const slug of allSkillIds) {
-        if (statusFor(slug)) base.set(slug, globalOn(slug));
-      }
-      baselineGlobal.value = base;
-      pendingGlobal.value = new Map(base);
+      statusCache.value.set(agentId, result);
+      applyStatusToState(result);
     } else {
-      status.value = null;
+      applyStatusToState(null);
       statusError.value = result.error ?? "unknown error";
     }
   } catch (error) {
-    status.value = null;
+    applyStatusToState(null);
     statusError.value = error instanceof Error ? error.message : String(error);
   } finally {
     statusLoading.value = false;
@@ -351,12 +365,14 @@ async function apply(): Promise<void> {
 
 watch(selectedAgentId, (agentId) => {
   void loadAgentSkills(agentId);
-  void loadStatus(agentId);
+  // Switching agents is instant: show cached status if we've checked this agent
+  // before, otherwise clear to the not-checked state. Do NOT auto-run the ~60s CLI.
+  statusError.value = "";
+  applyStatusToState(statusCache.value.get(agentId) ?? null);
 });
 
 onMounted(() => {
   void loadAgentSkills(selectedAgentId.value);
-  void loadStatus(selectedAgentId.value);
 });
 </script>
 
@@ -517,6 +533,11 @@ onMounted(() => {
 .skills-dev-status-checking {
   color: var(--ux-ctrl-brand-rest);
   font-weight: 500;
+}
+
+.skills-dev-status-hint {
+  color: var(--ux-text-muted);
+  font-style: italic;
 }
 
 .skills-dev-status-error {
