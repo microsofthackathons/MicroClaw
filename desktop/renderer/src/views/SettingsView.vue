@@ -86,7 +86,7 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(4) }}</span
+                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -165,7 +165,7 @@
                   >
                 </div>
                 <span class="row-value usage-spend"
-                  >{{ t("settings.currencySymbol") }}{{ toCny(m.spend).toFixed(4) }}</span
+                  >{{ t("settings.currencySymbol") }}{{ toCny(m.spend).toFixed(2) }}</span
                 >
               </div>
             </div>
