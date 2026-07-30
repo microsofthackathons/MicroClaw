@@ -62,6 +62,12 @@ contextBridge.exposeInMainWorld("openclaw", {
         agentId: string;
         skills: string[];
       }>,
+    getStatus: (agentId: string) => ipcRenderer.invoke("skills:get-status", agentId),
+    setGlobalEnabled: (skillKey: string, enabled: boolean) =>
+      ipcRenderer.invoke("skills:set-global-enabled", { skillKey, enabled }) as Promise<{
+        skillKey: string;
+        enabled: boolean;
+      }>,
     integrityCheck: () => ipcRenderer.invoke("skills:integrity-check"),
     pendingIntegrityResult: () => ipcRenderer.invoke("skills:pending-integrity-result"),
     acceptIntegrityChanges: () => ipcRenderer.invoke("skills:accept-integrity-changes"),

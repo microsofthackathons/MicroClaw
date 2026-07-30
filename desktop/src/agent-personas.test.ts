@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getAgentSkills } from "./agent-catalog";
+import { getAgentSkills, matchesSkill, resolveSkillFilterNames } from "./agent-catalog";
 import {
   AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
@@ -229,7 +229,33 @@ describe("agent personas", () => {
     ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
 
     for (const entry of agentList(config)) {
-      expect(entry.skills).toEqual(getAgentSkills(entry.id));
+      // Config stores OpenClaw match-names, not raw catalog slugs.
+      expect(entry.skills).toEqual(resolveSkillFilterNames(getAgentSkills(entry.id)));
+    }
+  });
+
+  it("writes OpenClaw match-names (not slugs) for remapped skills", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    const mainEntry = agentList(config).find((entry) => entry.id === "main");
+    const skills = (mainEntry?.skills ?? []) as string[];
+    // The five display-name exceptions must be stored by their frontmatter name.
+    expect(skills).toContain("Excel / XLSX");
+    expect(skills).toContain("Word / DOCX");
+    expect(skills).toContain("Powerpoint / PPTX");
+    expect(skills).toContain("Desktop Organizer");
+    expect(skills).toContain("Security Practice");
+    // Their raw slugs must NOT appear.
+    expect(skills).not.toContain("excel-xlsx");
+    expect(skills).not.toContain("word-docx");
+    // Non-exception slugs pass through unchanged.
+    expect(skills).toContain("1password");
+    // Every stored value round-trips back to a catalog slug via matchesSkill.
+    for (const slug of getAgentSkills("main")) {
+      expect(skills.some((value) => matchesSkill(value, slug))).toBe(true);
     }
   });
 
@@ -285,7 +311,7 @@ describe("agent personas", () => {
     const customEntry = agentList(config).find((entry) => entry.id === "custom-bot");
     expect(customEntry).not.toHaveProperty("skills");
     const mainEntry = agentList(config).find((entry) => entry.id === "main");
-    expect(mainEntry?.skills).toEqual(getAgentSkills("main"));
+    expect(mainEntry?.skills).toEqual(resolveSkillFilterNames(getAgentSkills("main")));
   });
 
   it("reports changed when skills are added to a config that lacked them", () => {

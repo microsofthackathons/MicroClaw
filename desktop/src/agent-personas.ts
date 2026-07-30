@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AGENT_CATALOG, DEFAULT_AGENT_IDS } from "./agent-catalog";
+import { AGENT_CATALOG, DEFAULT_AGENT_IDS, resolveSkillFilterNames } from "./agent-catalog";
 
 interface WorkspaceFiles {
   "AGENTS.md": string;
@@ -152,7 +152,9 @@ function createAgentEntry(persona: AgentPersona, stateDir: string): Record<strin
   const entry: Record<string, unknown> = { name: persona.name };
   const workspace = getAgentWorkspacePath(stateDir, persona);
   if (workspace) entry.workspace = workspace;
-  entry.skills = [...persona.skills];
+  // Write the OpenClaw match-names (not raw slugs) so the runtime's frontmatter-name
+  // based allowlist filter binds every eligible skill. See resolveSkillFilterNames.
+  entry.skills = resolveSkillFilterNames([...persona.skills]);
   return entry;
 }
 
@@ -264,7 +266,8 @@ export function ensureAgentPersonasConfig(
     // (fill-if-missing). Existing skills arrays — including dev-edited ones from
     // the runtime Skills panel — are preserved across gateway reloads.
     if (catalogSkills !== undefined && !Object.hasOwn(entry, "skills")) {
-      entry.skills = [...catalogSkills];
+      // Persist match-names (not raw slugs) — see resolveSkillFilterNames.
+      entry.skills = resolveSkillFilterNames([...catalogSkills]);
     }
   }
 
