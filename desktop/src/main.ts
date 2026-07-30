@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
@@ -1446,6 +1446,14 @@ const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
 );
+const LIGHT_WINDOW_BACKGROUND = "#ffffff";
+const DARK_WINDOW_BACKGROUND = "#18181b";
+
+function getWindowBackgroundColor(themeMode = settingsStore.get("themeMode")): string {
+  const useDarkBackground =
+    themeMode === "dark" || (themeMode === "system" && nativeTheme.shouldUseDarkColors);
+  return useDarkBackground ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND;
+}
 
 function _getRendererURL(): string {
   if (isDev) return VITE_DEV_URL;
@@ -1465,7 +1473,7 @@ function createMainWindow(): BrowserWindow {
     icon: APP_ICON_PATH,
     show: !settingsStore.get("startMinimized"),
     titleBarStyle: "hidden",
-    backgroundColor: "#ffffff",
+    backgroundColor: getWindowBackgroundColor(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -3871,11 +3879,7 @@ function registerIpcHandlers(): void {
       app.setLoginItemSettings({ openAtLogin: !!value });
     }
     if (key === "themeMode" && mainWindow) {
-      mainWindow.setTitleBarOverlay(
-        value === "dark"
-          ? { color: "#27272a", symbolColor: "#fafafa", height: 36 }
-          : { color: "#ffffff", symbolColor: "#1e1f25", height: 36 },
-      );
+      mainWindow.setBackgroundColor(getWindowBackgroundColor(String(value)));
     }
   });
 
