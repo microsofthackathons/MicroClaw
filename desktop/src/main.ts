@@ -91,7 +91,12 @@ import {
   type AgentPersona,
   type AgentRosterConfig,
 } from "./agent-personas";
-import { resolveSkillFilterNames, sanitizeAgentSkillIds } from "./agent-catalog";
+import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
+import {
+  applyAgentSkillsToConfig,
+  applyGlobalSkillChange,
+  type GlobalSkillChange,
+} from "./skill-config";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -3268,23 +3273,10 @@ function registerIpcHandlers(): void {
       const config = readConfig();
       if (!config) throw new Error("OpenClaw configuration is unavailable");
 
-      const agents = config.agents;
-      if (!agents || !Array.isArray(agents.list)) {
-        throw new Error("No configured agents to update");
-      }
-      const entry = agents.list.find(
-        (candidate: unknown): candidate is Record<string, unknown> =>
-          typeof candidate === "object" &&
-          candidate !== null &&
-          (candidate as { id?: unknown }).id === agentId,
-      );
-      if (!entry) {
-        throw new Error(`Unknown agent "${agentId}"`);
-      }
       // Persist match-names (not raw slugs) so OpenClaw's frontmatter-name based
       // allowlist filter binds every eligible skill. The IPC input and return value
       // stay slug-based; resolution happens only at the openclaw.json write.
-      entry.skills = resolveSkillFilterNames(skills);
+      applyAgentSkillsToConfig(config, agentId, skills);
 
       const alreadyRunning = await checkExistingGateway(gatewayPort);
       const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
@@ -3455,24 +3447,7 @@ function registerIpcHandlers(): void {
       const config = readConfig();
       if (!config) throw new Error("OpenClaw configuration is unavailable");
 
-      if (!config.skills) config.skills = {};
-      if (!config.skills.entries) config.skills.entries = {};
-      if (!config.skills.entries[skillKey]) config.skills.entries[skillKey] = {};
-
-      if (enabled) {
-        // Clear any global disable, and — for bundled skills gated by a non-empty
-        // allowlist — add the key so it isn't excluded. When allowBundled is absent
-        // or empty, bundled skills are already globally allowed, so leave it alone
-        // rather than creating a newly restrictive allowlist.
-        config.skills.entries[skillKey].enabled = true;
-        if (isBundled && Array.isArray(config.skills.allowBundled) && config.skills.allowBundled.length > 0) {
-          if (!config.skills.allowBundled.includes(skillKey)) {
-            config.skills.allowBundled.push(skillKey);
-          }
-        }
-      } else {
-        config.skills.entries[skillKey].enabled = false;
-      }
+      applyGlobalSkillChange(config, skillKey, enabled, isBundled);
 
       const alreadyRunning = await checkExistingGateway(gatewayPort);
       const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
@@ -3501,6 +3476,101 @@ function registerIpcHandlers(): void {
           if (restartAttempted && managedGateway) {
             await restartManagedGateway(
               `Rolling back failed global toggle for ${skillKey}`,
+            );
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Dev-only: batched apply of BOTH the per-agent allowlist and any number of global
+  // on/off changes in a SINGLE atomic config write + SINGLE gateway restart. The panel
+  // stages per-agent and global toggles locally and flushes them here on "Apply &
+  // reload", so the user waits for exactly one restart instead of one per flip. Mirrors
+  // the robustness of skills:set-agent-skills + skills:set-global-enabled (validation,
+  // atomic write, rollback-on-failure) using the shared skill-config helpers.
+  ipcMain.handle(
+    "skills:apply-agent-config",
+    async (
+      _event,
+      params: { agentId: string; skillIds: string[]; globalChanges: GlobalSkillChange[] },
+    ): Promise<{ agentId: string; skills: string[]; globalChanges: GlobalSkillChange[] }> => {
+      const agentId = params?.agentId;
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        throw new Error("A non-empty agentId is required");
+      }
+      if (!AGENT_CATALOG.some((agent) => agent.id === agentId)) {
+        throw new Error(`Unknown agent "${agentId}"`);
+      }
+      const skills = sanitizeAgentSkillIds(params?.skillIds ?? []);
+
+      // Validate every global change against actually-discovered skills and learn
+      // whether each is bundled (only bundled skills are gated by allowBundled).
+      const rawGlobalChanges = Array.isArray(params?.globalChanges) ? params.globalChanges : [];
+      const payload = buildSkillsPayload(false);
+      const discovered = [...payload.builtin, ...payload.custom, ...payload.managed];
+      const globalChanges: Array<GlobalSkillChange & { bundled: boolean }> = [];
+      for (const change of rawGlobalChanges) {
+        const skillKey = change?.skillKey;
+        const enabled = change?.enabled;
+        if (typeof skillKey !== "string" || skillKey.length === 0) {
+          throw new Error("Each global change requires a non-empty skillKey");
+        }
+        if (typeof enabled !== "boolean") {
+          throw new Error("Each global change requires a boolean enabled");
+        }
+        const match = discovered.find((s) => s.id === skillKey);
+        if (!match) {
+          throw new Error(`Unknown skill "${skillKey}"`);
+        }
+        globalChanges.push({ skillKey, enabled, bundled: match.source === "builtin" });
+      }
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      // Stage every change onto the single config object before writing once.
+      applyAgentSkillsToConfig(config, agentId, skills);
+      for (const change of globalChanges) {
+        applyGlobalSkillChange(config, change.skillKey, change.enabled, change.bundled);
+      }
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update skill state while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Applying skill config for agent ${agentId}`);
+        return {
+          agentId,
+          skills,
+          globalChanges: globalChanges.map(({ skillKey, enabled }) => ({ skillKey, enabled })),
+        };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(
+              `Rolling back failed skill config apply for ${agentId}`,
             );
           }
         } catch {

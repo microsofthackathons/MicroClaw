@@ -679,6 +679,7 @@ export default {
   "skills.dev.badge.visible": "模型可见",
   "skills.dev.badge.hidden": "未注入",
   "skills.dev.badge.unknown": "无状态",
+  "skills.dev.badge.notInstalled": "未安装",
   "skills.dev.reason.allowlist": "被全局允许列表拦截",
   "skills.dev.reason.agentFilter": "被智能体允许列表排除",
   "skills.dev.reason.disabled": "已禁用",
@@ -686,10 +687,7 @@ export default {
   "skills.dev.missing.bins": "命令：{list}",
   "skills.dev.missing.env": "环境变量：{list}",
   "skills.dev.missing.config": "配置项：{list}",
-  "skills.dev.missing.os": "系统：{list}",
-  "skills.dev.globalUpdating": "正在更新 {skill} 的全局状态…",
-  "skills.dev.globalUpdated": "已更新 {skill} 的全局状态，网关已重载。",
-  "skills.dev.globalFailed": "更新全局状态失败：{error}",
+  "skills.dev.missing.os": "系统: {list}",
 
   // ── Studio ──
   "studio.switchToStudio": "工作室",

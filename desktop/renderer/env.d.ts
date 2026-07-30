@@ -161,6 +161,15 @@ interface OpenClawAPI {
     setAgentSkills(agentId: string, skillIds: string[]): Promise<{ agentId: string; skills: string[] }>;
     getStatus(agentId: string): Promise<SkillsStatus>;
     setGlobalEnabled(skillKey: string, enabled: boolean): Promise<{ skillKey: string; enabled: boolean }>;
+    applyAgentConfig(
+      agentId: string,
+      skillIds: string[],
+      globalChanges: { skillKey: string; enabled: boolean }[],
+    ): Promise<{
+      agentId: string;
+      skills: string[];
+      globalChanges: { skillKey: string; enabled: boolean }[];
+    }>;
     integrityCheck(): Promise<IntegrityResult>;
     pendingIntegrityResult(): Promise<IntegrityResult | null>;
     acceptIntegrityChanges(): Promise<void>;
