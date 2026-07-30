@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AGENT_CATALOG, DEFAULT_AGENT_IDS } from "./agent-catalog";
+import { AGENT_CATALOG, DEFAULT_AGENT_IDS, resolveSkillFilterNames } from "./agent-catalog";
 
 interface WorkspaceFiles {
   "AGENTS.md": string;
@@ -12,6 +12,7 @@ interface WorkspaceFiles {
 export interface AgentPersona {
   id: string;
   name: string;
+  skills: readonly string[];
   workspaceDirName?: string;
   workspaceFiles?: WorkspaceFiles;
 }
@@ -112,6 +113,7 @@ const PERSONA_PROFILES: Record<PersonaProfile, WorkspaceFiles> = {
 export const AGENT_PERSONAS: readonly AgentPersona[] = AGENT_CATALOG.map((agent) => ({
   id: agent.id,
   name: agent.name,
+  skills: agent.skills,
   workspaceDirName: agent.workspaceDirName,
   workspaceFiles: agent.personaProfile ? PERSONA_PROFILES[agent.personaProfile] : undefined,
 }));
@@ -150,6 +152,9 @@ function createAgentEntry(persona: AgentPersona, stateDir: string): Record<strin
   const entry: Record<string, unknown> = { name: persona.name };
   const workspace = getAgentWorkspacePath(stateDir, persona);
   if (workspace) entry.workspace = workspace;
+  // Write the OpenClaw match-names (not raw slugs) so the runtime's frontmatter-name
+  // based allowlist filter binds every eligible skill. See resolveSkillFilterNames.
+  entry.skills = resolveSkillFilterNames([...persona.skills]);
   return entry;
 }
 
@@ -249,6 +254,20 @@ export function ensureAgentPersonasConfig(
       entry.default = true;
     } else if (entry.default === true) {
       delete entry.default;
+    }
+  }
+
+  const catalogSkillsById = new Map(
+    AGENT_PERSONAS.map((persona) => [persona.id, persona.skills]),
+  );
+  for (const entry of entries) {
+    const catalogSkills = catalogSkillsById.get(entry.id);
+    // Seed catalog skills ONLY when the entry has no skills key yet
+    // (fill-if-missing). Existing skills arrays — including dev-edited ones from
+    // the runtime Skills panel — are preserved across gateway reloads.
+    if (catalogSkills !== undefined && !Object.hasOwn(entry, "skills")) {
+      // Persist match-names (not raw slugs) — see resolveSkillFilterNames.
+      entry.skills = resolveSkillFilterNames([...catalogSkills]);
     }
   }
 

@@ -64,6 +64,11 @@ export const SANDBOX_PERMISSION_TIMEOUT_MS = 60_000;
 /** Timeout for the WeChat login flow (ms). */
 export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
 
+/** Timeout for each OpenClaw `skills` diagnostics CLI invocation (ms). The CLI is
+ *  spawned cold and can take ~60–90s to emit its JSON on slower machines, so this
+ *  is generous headroom to avoid killing the child before it produces output. */
+export const SKILLS_STATUS_TIMEOUT_MS = 120_000;
+
 /** Number of days of usage data to query from the gateway. */
 export const USAGE_QUERY_DAYS = 30;
 

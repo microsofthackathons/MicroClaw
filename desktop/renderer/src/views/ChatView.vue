@@ -16,6 +16,14 @@
       >
         {{ t("studio.switchToStudio") }}
       </button>
+      <button
+        v-if="isDev"
+        class="mode-toggle-btn"
+        :class="{ active: viewMode === 'skills' }"
+        @click="viewMode = 'skills'"
+      >
+        {{ t("skills.dev.tab") }}
+      </button>
     </div>
 
     <!-- Chat mode -->
@@ -199,6 +207,11 @@
       </div>
     </template>
 
+    <!-- Skills mode (dev-only) -->
+    <template v-if="isDev && viewMode === 'skills'">
+      <SkillsDevPanel />
+    </template>
+
     <ModelSetupDialog v-model="modelSetupVisible" @configured="handleModelConfigured" />
   </div>
 </template>
@@ -215,6 +228,7 @@ import StudioGame from "@/components/studio/StudioGame.vue";
 import StudioChatPanel from "@/components/studio/StudioChatPanel.vue";
 import StudioStatusPanel from "@/components/studio/StudioStatusPanel.vue";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import SkillsDevPanel from "@/components/skills/SkillsDevPanel.vue";
 import { useRoute } from "vue-router";
 
 const route = useRoute();
@@ -222,7 +236,8 @@ const chatStore = useChatStore();
 const agentStore = useAgentStore();
 const studioStore = useStudioStore();
 
-const viewMode = ref<"chat" | "studio">("chat");
+const viewMode = ref<"chat" | "studio" | "skills">("chat");
+const isDev = import.meta.env.DEV;
 const inputText = ref("");
 const inputRef = ref<HTMLTextAreaElement>();
 const threadRef = ref<HTMLDivElement>();
