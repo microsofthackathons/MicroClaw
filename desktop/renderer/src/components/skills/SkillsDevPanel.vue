@@ -29,18 +29,55 @@
         <button class="skills-dev-linkbtn" type="button" @click="clearAll">
           {{ t("skills.dev.clearAll") }}
         </button>
+        <button
+          class="skills-dev-linkbtn"
+          type="button"
+          :disabled="statusLoading"
+          @click="refreshStatus"
+        >
+          {{ statusLoading ? t("skills.dev.refreshing") : t("skills.dev.refresh") }}
+        </button>
         <span class="skills-dev-count">
           {{ t("skills.dev.enabledCount", { count: enabledCount, total: allSkillIds.length }) }}
+        </span>
+      </div>
+
+      <div class="skills-dev-summary">
+        <span v-if="status">
+          {{ t("skills.dev.modelVisibleSummary", {
+            visible: status.summary.modelVisible,
+            total: status.summary.total,
+          }) }}
+        </span>
+        <span v-if="statusError" class="skills-dev-status-error">
+          {{ t("skills.dev.statusFailed", { error: statusError }) }}
         </span>
       </div>
 
       <div v-if="loading" class="skills-dev-status">{{ t("skills.dev.loading") }}</div>
       <ul v-else class="skills-dev-list">
         <li v-for="id in allSkillIds" :key="id" class="skills-dev-item">
-          <label class="skills-dev-toggle">
-            <input type="checkbox" :checked="pending.has(id)" @change="toggleSkill(id)" />
-            <span class="skills-dev-skill-id">{{ id }}</span>
-          </label>
+          <div class="skills-dev-item-main">
+            <label class="skills-dev-toggle">
+              <input type="checkbox" :checked="pending.has(id)" @change="toggleSkill(id)" />
+              <span class="skills-dev-skill-id">{{ id }}</span>
+              <span class="skills-dev-toggle-hint">{{ t("skills.dev.thisAgent") }}</span>
+            </label>
+            <label class="skills-dev-global">
+              <input
+                type="checkbox"
+                :checked="globalOn(id)"
+                :disabled="!statusFor(id) || globalBusy.has(id)"
+                @change="toggleGlobal(id)"
+              />
+              <span class="skills-dev-global-label">{{ t("skills.dev.global") }}</span>
+            </label>
+          </div>
+          <div v-if="statusFor(id)" class="skills-dev-item-status">
+            <span class="skills-dev-badge" :class="badgeClass(id)">{{ badgeText(id) }}</span>
+            <span v-if="reasonText(id)" class="skills-dev-reason">{{ reasonText(id) }}</span>
+            <span v-if="missingText(id)" class="skills-dev-missing">{{ missingText(id) }}</span>
+          </div>
         </li>
       </ul>
     </div>
@@ -65,7 +102,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { useAgentStore } from "@/stores/agents";
-import { AGENT_CATALOG, ALL_SKILL_IDS } from "../../../../src/agent-catalog";
+import { AGENT_CATALOG, ALL_SKILL_IDS, matchesSkill } from "../../../../src/agent-catalog";
 
 const agentStore = useAgentStore();
 
@@ -80,6 +117,11 @@ const applying = ref(false);
 const feedback = ref("");
 const feedbackKind = ref<"info" | "success" | "error">("info");
 
+const status = ref<SkillsStatus | null>(null);
+const statusLoading = ref(false);
+const statusError = ref("");
+const globalBusy = ref<Set<string>>(new Set());
+
 function resolveDefaultAgentId(): string {
   const current = agentStore.currentAgentId;
   return agents.some((a) => a.id === current) ? current : "main";
@@ -87,6 +129,61 @@ function resolveDefaultAgentId(): string {
 
 const enabledCount = computed(() => pending.value.size);
 const dirty = computed(() => !setsEqual(pending.value, persisted.value));
+
+// Match a status record (keyed by the CLI's frontmatter name or slug) back to a
+// catalog slug, tolerating both the slug- and display-name forms.
+function statusFor(slug: string): SkillStatusRecord | undefined {
+  const records = status.value?.skills;
+  if (!records) return undefined;
+  return records.find(
+    (record) => matchesSkill(record.skillKey, slug) || matchesSkill(record.name, slug),
+  );
+}
+
+function globalOn(slug: string): boolean {
+  const record = statusFor(slug);
+  // Unknown skills default to "on" so the switch isn't misleadingly off.
+  if (!record) return true;
+  return !record.disabled && !record.blockedByAllowlist;
+}
+
+function badgeClass(slug: string): string {
+  const record = statusFor(slug);
+  if (!record) return "is-unknown";
+  if (record.modelVisible) return "is-visible";
+  return "is-hidden";
+}
+
+function badgeText(slug: string): string {
+  const record = statusFor(slug);
+  if (!record) return t("skills.dev.badge.unknown");
+  return record.modelVisible ? t("skills.dev.badge.visible") : t("skills.dev.badge.hidden");
+}
+
+function reasonText(slug: string): string {
+  const record = statusFor(slug);
+  if (!record || record.modelVisible) return "";
+  if (record.blockedByAllowlist) return t("skills.dev.reason.allowlist");
+  if (record.blockedByAgentFilter) return t("skills.dev.reason.agentFilter");
+  if (record.disabled) return t("skills.dev.reason.disabled");
+  if (!record.eligible) return t("skills.dev.reason.missing");
+  return "";
+}
+
+function missingText(slug: string): string {
+  const record = statusFor(slug);
+  if (!record || record.modelVisible || record.eligible) return "";
+  const parts: string[] = [];
+  const bins = [...record.missing.bins, ...record.missing.anyBins];
+  if (bins.length) parts.push(t("skills.dev.missing.bins", { list: bins.join(", ") }));
+  if (record.missing.env.length)
+    parts.push(t("skills.dev.missing.env", { list: record.missing.env.join(", ") }));
+  if (record.missing.config.length)
+    parts.push(t("skills.dev.missing.config", { list: record.missing.config.join(", ") }));
+  if (record.missing.os.length)
+    parts.push(t("skills.dev.missing.os", { list: record.missing.os.join(", ") }));
+  return parts.join(" · ");
+}
 
 function setsEqual(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
@@ -106,11 +203,14 @@ async function loadAgentSkills(agentId: string): Promise<void> {
         candidate !== null &&
         (candidate as { id?: unknown }).id === agentId,
     ) as { skills?: unknown } | undefined;
-    const skills = Array.isArray(entry?.skills)
-      ? entry.skills.filter(
-          (id: unknown): id is string => typeof id === "string" && allSkillIds.includes(id),
-        )
+    const stored = Array.isArray(entry?.skills)
+      ? entry.skills.filter((id: unknown): id is string => typeof id === "string")
       : [];
+    // A stored value counts as ON if it matches EITHER the slug or the mapped
+    // OpenClaw match-name, so both older slug-form and current name-form register.
+    const skills = allSkillIds.filter((slug) =>
+      stored.some((value) => matchesSkill(value, slug)),
+    );
     persisted.value = new Set(skills);
     pending.value = new Set(skills);
   } catch (error) {
@@ -144,6 +244,53 @@ function clearAll(): void {
   pending.value = new Set();
 }
 
+async function loadStatus(agentId: string): Promise<void> {
+  statusLoading.value = true;
+  statusError.value = "";
+  try {
+    const result = await window.openclaw.skills.getStatus(agentId);
+    if (result.ok) {
+      status.value = result;
+    } else {
+      status.value = null;
+      statusError.value = result.error ?? "unknown error";
+    }
+  } catch (error) {
+    status.value = null;
+    statusError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    statusLoading.value = false;
+  }
+}
+
+function refreshStatus(): void {
+  void loadStatus(selectedAgentId.value);
+}
+
+async function toggleGlobal(slug: string): Promise<void> {
+  const next = !globalOn(slug);
+  const busy = new Set(globalBusy.value);
+  busy.add(slug);
+  globalBusy.value = busy;
+  feedbackKind.value = "info";
+  feedback.value = t("skills.dev.globalUpdating", { skill: slug });
+  try {
+    await window.openclaw.skills.setGlobalEnabled(slug, next);
+    feedbackKind.value = "success";
+    feedback.value = t("skills.dev.globalUpdated", { skill: slug });
+    await loadStatus(selectedAgentId.value);
+  } catch (error) {
+    feedbackKind.value = "error";
+    feedback.value = t("skills.dev.globalFailed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    const done = new Set(globalBusy.value);
+    done.delete(slug);
+    globalBusy.value = done;
+  }
+}
+
 async function apply(): Promise<void> {
   applying.value = true;
   feedbackKind.value = "info";
@@ -155,6 +302,7 @@ async function apply(): Promise<void> {
     persisted.value = new Set(skillIds);
     feedbackKind.value = "success";
     feedback.value = t("skills.dev.applied");
+    await loadStatus(agentId);
   } catch (error) {
     feedbackKind.value = "error";
     feedback.value = t("skills.dev.applyFailed", {
@@ -167,10 +315,12 @@ async function apply(): Promise<void> {
 
 watch(selectedAgentId, (agentId) => {
   void loadAgentSkills(agentId);
+  void loadStatus(agentId);
 });
 
 onMounted(() => {
   void loadAgentSkills(selectedAgentId.value);
+  void loadStatus(selectedAgentId.value);
 });
 </script>
 
@@ -297,6 +447,85 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.skills-dev-summary {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--ux-text-muted);
+  margin-bottom: 8px;
+  min-height: 16px;
+}
+
+.skills-dev-status-error {
+  color: var(--ux-status-error, #c62828);
+}
+
+.skills-dev-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.skills-dev-toggle-hint {
+  font-size: 11px;
+  color: var(--ux-text-muted);
+}
+
+.skills-dev-global {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.skills-dev-global-label {
+  font-size: 11px;
+  color: var(--ux-text-muted);
+}
+
+.skills-dev-item-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 4px 8px;
+}
+
+.skills-dev-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.skills-dev-badge.is-visible {
+  background: var(--ux-status-success-bg, rgba(46, 125, 50, 0.14));
+  color: var(--ux-status-success, #2e7d32);
+}
+
+.skills-dev-badge.is-hidden {
+  background: var(--ux-status-warning-bg, rgba(198, 40, 40, 0.12));
+  color: var(--ux-status-error, #c62828);
+}
+
+.skills-dev-badge.is-unknown {
+  background: var(--ux-surface-hover);
+  color: var(--ux-text-muted);
+}
+
+.skills-dev-reason {
+  font-size: 11px;
+  color: var(--ux-text-primary);
+}
+
+.skills-dev-missing {
+  font-size: 11px;
+  color: var(--ux-text-muted);
 }
 
 .skills-dev-footer {

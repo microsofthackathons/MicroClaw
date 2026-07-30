@@ -64,6 +64,9 @@ export const SANDBOX_PERMISSION_TIMEOUT_MS = 60_000;
 /** Timeout for the WeChat login flow (ms). */
 export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
 
+/** Timeout for each OpenClaw `skills` diagnostics CLI invocation (ms). */
+export const SKILLS_STATUS_TIMEOUT_MS = 30_000;
+
 /** Number of days of usage data to query from the gateway. */
 export const USAGE_QUERY_DAYS = 30;
 
