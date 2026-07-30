@@ -33,7 +33,7 @@
           class="skills-dev-linkbtn"
           type="button"
           :disabled="statusLoading"
-          @click="refreshStatus"
+          @click="refreshAllStatuses"
         >
           {{ statusLoading ? t("skills.dev.refreshing") : t("skills.dev.refresh") }}
         </button>
@@ -44,7 +44,12 @@
 
       <div class="skills-dev-summary">
         <span v-if="statusLoading" class="skills-dev-status-checking">
-          {{ t("skills.dev.statusChecking") }}
+          {{ statusProgress
+            ? t("skills.dev.statusCheckingAll", {
+                current: statusProgress.current,
+                total: statusProgress.total,
+              })
+            : t("skills.dev.statusChecking") }}
         </span>
         <span v-else-if="status">
           {{ t("skills.dev.modelVisibleSummary", {
@@ -111,6 +116,14 @@
   </div>
 </template>
 
+<script lang="ts">
+// Module-level so cached status survives the Skills page unmounting/remounting
+// within a session (returning to the panel restores badges without a refetch).
+// Stores BOTH ok and error outcomes so a checked-but-errored agent is remembered
+// (shows its error, not "not checked").
+const statusResultCache = new Map<string, { status: SkillsStatus | null; error: string }>();
+</script>
+
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
@@ -133,10 +146,10 @@ const feedbackKind = ref<"info" | "success" | "error">("info");
 const status = ref<SkillsStatus | null>(null);
 const statusLoading = ref(false);
 const statusError = ref("");
-// Per-agent status cache. The status check cold-starts the OpenClaw CLI (~60s), so
-// it's opt-in ("Refresh status") rather than auto-run; cached results let agent
-// switches show previously-checked badges instantly.
-const statusCache = ref<Map<string, SkillsStatus>>(new Map());
+// Progress of a "Refresh all agents" run (null when idle). The status check cold-starts
+// the OpenClaw CLI (~60s per agent), so a refresh fetches every agent sequentially and
+// caches them all; afterwards, agent switches and page revisits are instant.
+const statusProgress = ref<{ current: number; total: number } | null>(null);
 // Deferred global master state: flipping a "Global" switch only stages a change here;
 // it's flushed on "Apply & reload" so the user waits for a single gateway restart.
 // baselineGlobal is the persisted state captured on each successful status load.
@@ -307,28 +320,58 @@ function applyStatusToState(next: SkillsStatus | null): void {
   pendingGlobal.value = new Map(base);
 }
 
-async function loadStatus(agentId: string): Promise<void> {
-  statusLoading.value = true;
-  statusError.value = "";
+// Fetch one agent's status and write it (ok OR error) into the module-level cache,
+// without touching the visible state.
+async function fetchStatusIntoCache(agentId: string): Promise<void> {
   try {
     const result = await window.openclaw.skills.getStatus(agentId);
-    if (result.ok) {
-      statusCache.value.set(agentId, result);
-      applyStatusToState(result);
-    } else {
-      applyStatusToState(null);
-      statusError.value = result.error ?? "unknown error";
-    }
+    if (result.ok) statusResultCache.set(agentId, { status: result, error: "" });
+    else statusResultCache.set(agentId, { status: null, error: result.error ?? "unknown error" });
   } catch (error) {
-    applyStatusToState(null);
-    statusError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    statusLoading.value = false;
+    statusResultCache.set(agentId, {
+      status: null,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
-function refreshStatus(): void {
-  void loadStatus(selectedAgentId.value);
+// Apply a cached entry (if any) to the visible state.
+function applyCachedStatus(agentId: string): void {
+  const cached = statusResultCache.get(agentId);
+  statusError.value = cached?.error ?? "";
+  applyStatusToState(cached?.status ?? null);
+}
+
+async function loadStatus(agentId: string): Promise<void> {
+  statusLoading.value = true;
+  statusError.value = "";
+  await fetchStatusIntoCache(agentId);
+  applyCachedStatus(agentId);
+  statusLoading.value = false;
+}
+
+// Refresh fetches status for EVERY agent (sequentially, current agent first) and
+// caches them all, so afterwards switching agents / revisiting the page is instant.
+// Sequential — parallel cold-starts would risk the per-call CLI timeout.
+async function refreshAllStatuses(): Promise<void> {
+  if (statusLoading.value) return;
+  statusLoading.value = true;
+  statusError.value = "";
+  const ids = agents.map((a) => a.id);
+  const current = selectedAgentId.value;
+  const ordered = [current, ...ids.filter((id) => id !== current)];
+  let done = 0;
+  for (const id of ordered) {
+    statusProgress.value = { current: done + 1, total: ordered.length };
+    await fetchStatusIntoCache(id);
+    done += 1;
+    // Reflect the currently-selected agent as soon as its result lands (the user
+    // may have switched the dropdown while the loop runs).
+    if (id === selectedAgentId.value) applyCachedStatus(id);
+  }
+  statusProgress.value = null;
+  applyCachedStatus(selectedAgentId.value);
+  statusLoading.value = false;
 }
 
 async function apply(): Promise<void> {
@@ -365,14 +408,15 @@ async function apply(): Promise<void> {
 
 watch(selectedAgentId, (agentId) => {
   void loadAgentSkills(agentId);
-  // Switching agents is instant: show cached status if we've checked this agent
-  // before, otherwise clear to the not-checked state. Do NOT auto-run the ~60s CLI.
-  statusError.value = "";
-  applyStatusToState(statusCache.value.get(agentId) ?? null);
+  // Switching agents is instant: show cached status if this agent was checked
+  // before, otherwise the not-checked state. Do NOT auto-run the ~60s CLI.
+  applyCachedStatus(agentId);
 });
 
 onMounted(() => {
   void loadAgentSkills(selectedAgentId.value);
+  // Restore cached badges when returning to the page (cache is module-level).
+  applyCachedStatus(selectedAgentId.value);
 });
 </script>
 
