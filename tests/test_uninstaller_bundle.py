@@ -139,6 +139,27 @@ class UninstallerBundleTests(unittest.TestCase):
         self.assertFalse((state / "MicroClawInstaller.exe").exists())
         self.assertFalse((state / "_internal").exists())
 
+    def test_cleanup_error_is_reported_without_failing_published_bundle(self):
+        source = self._write_bundle(self.root / "source")
+        state = self.root / "state"
+        cleanup_errors = []
+
+        with unittest.mock.patch(
+            "deployer.uninstaller_bundle.shutil.rmtree",
+            side_effect=PermissionError("scanner locked staging"),
+        ):
+            published = publish_uninstaller_bundle(
+                source,
+                state,
+                lambda _exe: None,
+                cleanup_error_handler=cleanup_errors.append,
+            )
+
+        self.assertEqual(published, state / "MicroClawInstaller.exe")
+        self.assertEqual(bundle_manifest(state), bundle_manifest(source))
+        self.assertEqual(len(cleanup_errors), 1)
+        self.assertIn("scanner locked staging", cleanup_errors[0])
+
     def test_backup_failure_restores_already_moved_files(self):
         source = self._write_bundle(self.root / "source", "new")
         state = self._write_bundle(self.root / "state", "old")
@@ -155,6 +176,35 @@ class UninstallerBundleTests(unittest.TestCase):
                 side_effect=fail_internal_backup,
             ),
             self.assertRaisesRegex(UninstallerBundleError, "cannot move old runtime"),
+        ):
+            publish_uninstaller_bundle(source, state, lambda _exe: None)
+
+        self.assertEqual(
+            (state / "MicroClawInstaller.exe").read_text(encoding="utf-8"),
+            "old",
+        )
+        self.assertEqual(
+            (state / "_internal" / "python.dll").read_text(encoding="utf-8"),
+            "old-runtime",
+        )
+
+    def test_partial_publication_restores_executable_and_internal_runtime(self):
+        source = self._write_bundle(self.root / "source", "new")
+        state = self._write_bundle(self.root / "state", "old")
+        real_replace = os.replace
+
+        def fail_staged_internal_publish(src, dst):
+            source_path = Path(src)
+            if source_path.parent.name == "staged" and source_path.name == "_internal":
+                raise OSError("cannot publish new runtime")
+            return real_replace(src, dst)
+
+        with (
+            unittest.mock.patch(
+                "deployer.uninstaller_bundle.os.replace",
+                side_effect=fail_staged_internal_publish,
+            ),
+            self.assertRaisesRegex(UninstallerBundleError, "cannot publish new runtime"),
         ):
             publish_uninstaller_bundle(source, state, lambda _exe: None)
 

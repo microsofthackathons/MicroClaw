@@ -1474,6 +1474,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         destination = self.home / ".openclaw"
         persisted = destination / "MicroClawInstaller.exe"
         self.ws._check_persisted_uninstaller = unittest.mock.Mock()
+        self.ws.log.warn = unittest.mock.Mock()
 
         with (
             unittest.mock.patch(
@@ -1492,6 +1493,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             source,
             destination,
             self.ws._check_persisted_uninstaller,
+            cleanup_error_handler=self.ws.log.warn,
         )
 
     def test_install_uninstaller_bundle_reports_failure(self):
@@ -1526,6 +1528,15 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(UninstallerBundleError, "timed out"):
+            self.ws._check_persisted_uninstaller(exe)
+
+    def test_persisted_uninstaller_check_rejects_launch_error(self):
+        exe = self.root / "MicroClawInstaller.exe"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=FileNotFoundError(2, "No such file or directory")
+        )
+
+        with self.assertRaisesRegex(UninstallerBundleError, "could not launch"):
             self.ws._check_persisted_uninstaller(exe)
 
     def _write_persisted_uninstaller(self):

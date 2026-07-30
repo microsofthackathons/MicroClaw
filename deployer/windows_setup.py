@@ -3688,6 +3688,7 @@ class WindowsSetup:
                 source,
                 destination,
                 self._check_persisted_uninstaller,
+                cleanup_error_handler=self.log.warn,
             )
             self.log.success(f"卸载程序已安装: {persisted}")
             return True
@@ -3707,6 +3708,10 @@ class WindowsSetup:
             )
         except subprocess.TimeoutExpired as error:
             raise UninstallerBundleError("Persisted uninstaller startup check timed out") from error
+        except OSError as error:
+            raise UninstallerBundleError(
+                f"Persisted uninstaller startup check could not launch: {error}"
+            ) from error
 
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "unknown runtime error").strip()

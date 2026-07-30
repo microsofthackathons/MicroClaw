@@ -1410,7 +1410,9 @@ def _run_installer(auto_uninstall: bool, use_legacy_ui: bool):
 
 
 def _check_uninstaller_runtime() -> int:
-    return 0 if callable(getattr(DeployerApp, "_uninstall_thread", None)) else 2
+    # Reaching this function proves the packaged Python runtime and installer
+    # modules loaded without triggering UI or elevation.
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

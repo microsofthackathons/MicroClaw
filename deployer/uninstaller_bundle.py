@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -97,6 +98,8 @@ def publish_uninstaller_bundle(
     source: Path,
     destination: Path,
     startup_check: Callable[[Path], None],
+    *,
+    cleanup_error_handler: Callable[[str], None] | None = None,
 ) -> Path:
     source = source.resolve()
     destination = destination.resolve()
@@ -173,4 +176,11 @@ def publish_uninstaller_bundle(
         raise UninstallerBundleError(f"Could not publish uninstaller bundle: {error}") from error
     finally:
         if not preserve_work and work.exists():
-            shutil.rmtree(work)
+            try:
+                shutil.rmtree(work)
+            except OSError as error:
+                message = f"Could not clean temporary uninstaller files at {work}: {error}"
+                if cleanup_error_handler is not None:
+                    cleanup_error_handler(message)
+                else:
+                    warnings.warn(message, RuntimeWarning, stacklevel=2)
