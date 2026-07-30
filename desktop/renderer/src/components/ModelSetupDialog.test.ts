@@ -352,4 +352,32 @@ describe("ModelSetupDialog", () => {
     expect(write).not.toHaveBeenCalled();
     expect(restart).not.toHaveBeenCalled();
   });
+
+  it("cannot close after configuration is written until the Gateway restart finishes", async () => {
+    const restartPending = deferred<void>();
+    restart.mockReturnValueOnce(restartPending.promise);
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+    const inputs = wrapper.findAll("input");
+
+    await inputs[0].setValue("ollama");
+    await inputs[1].setValue("llama3.2");
+    await inputs[2].setValue("http://localhost:11434");
+    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await flushPromises();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(restart).toHaveBeenCalledOnce();
+    expect(wrapper.find(".model-setup-close").attributes("disabled")).toBeDefined();
+    await wrapper.find(".model-setup-close").trigger("click");
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+
+    restartPending.resolve();
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(wrapper.emitted("update:modelValue")).toEqual([[false]]);
+    expect(wrapper.emitted("configured")).toHaveLength(1);
+  });
 });

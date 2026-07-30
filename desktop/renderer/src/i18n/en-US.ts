@@ -360,8 +360,6 @@ export default {
   "settings.copilotDisconnectFailed": "Could not disconnect GitHub Copilot: {error}",
   "settings.copilotDisconnectedRestartFailed":
     "GitHub Copilot was disconnected, but the Gateway could not restart: {error}",
-  "settings.copilotDisconnectRollbackFailed":
-    "Disconnect failed ({error}) and the previous model configuration could not be restored ({rollbackError})",
   "settings.copilotConfigUnavailable": "The current model configuration could not be read",
   "settings.searchSettingsSaved": "Web search settings saved",
   "settings.searchConfigured": "Configured",

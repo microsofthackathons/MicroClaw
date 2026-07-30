@@ -4,6 +4,7 @@
       <button
         class="model-setup-close"
         type="button"
+        :disabled="configMutationInProgress"
         :aria-label="t('common.close')"
         @click="close"
       >
@@ -260,6 +261,7 @@
           <button
             class="text-action text-action--back"
             type="button"
+            :disabled="configMutationInProgress"
             @mousedown.prevent.stop="goToSelectStep"
           >
             {{ t("modelSetup.back") }}
@@ -387,6 +389,7 @@ const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
+const configMutationInProgress = ref(false);
 let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
@@ -484,6 +487,7 @@ function cancelPendingSubmission() {
 }
 
 function close() {
+  if (configMutationInProgress.value) return;
   cancelPendingSubmission();
   void resetGitHubCopilotState();
   emit("update:modelValue", false);
@@ -529,6 +533,7 @@ function handleGetApiKey() {
 }
 
 function goToSelectStep() {
+  if (configMutationInProgress.value) return;
   cancelPendingSubmission();
   void resetGitHubCopilotState();
   isKeyStep.value = false;
@@ -557,9 +562,11 @@ async function saveGitHubCopilotModel(): Promise<void> {
     const nextConfig = selectPrimaryModelConfig(base, selectedGitHubModel.value, {
       ensureAllowed: true,
     });
+    configMutationInProgress.value = true;
     await window.openclaw.config.write(nextConfig);
     await restartGatewayAfterModelSetup();
     if (generation !== submissionGeneration || !props.modelValue) return;
+    configMutationInProgress.value = false;
     emit("update:modelValue", false);
     emit("configured");
   } catch (error) {
@@ -567,7 +574,10 @@ async function saveGitHubCopilotModel(): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
   } finally {
-    if (generation === submissionGeneration) saving.value = false;
+    if (generation === submissionGeneration) {
+      saving.value = false;
+      configMutationInProgress.value = false;
+    }
   }
 }
 
@@ -642,9 +652,11 @@ async function saveAndStart() {
     if (generation !== submissionGeneration || !props.modelValue) return;
     const base = props.singleProvider ? clearModelProviders(existing) : existing;
     const nextConfig = mergeModelProviderConfig(base, verifiedInput);
+    configMutationInProgress.value = true;
     await window.openclaw.config.write(nextConfig);
     await restartGatewayAfterModelSetup();
     if (generation !== submissionGeneration || !props.modelValue) return;
+    configMutationInProgress.value = false;
     emit("update:modelValue", false);
     emit("configured");
   } catch (err: unknown) {
@@ -653,6 +665,7 @@ async function saveAndStart() {
   } finally {
     if (generation === submissionGeneration) {
       saving.value = false;
+      configMutationInProgress.value = false;
     }
   }
 }

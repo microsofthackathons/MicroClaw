@@ -342,8 +342,6 @@ export default {
   "settings.copilotDisconnectFailed": "无法断开 GitHub Copilot：{error}",
   "settings.copilotDisconnectedRestartFailed":
     "GitHub Copilot 已断开，但 Gateway 重启失败：{error}",
-  "settings.copilotDisconnectRollbackFailed":
-    "断开失败（{error}），且无法恢复之前的模型配置（{rollbackError}）",
   "settings.copilotConfigUnavailable": "无法读取当前模型配置",
   "settings.searchSettingsSaved": "联网搜索设置已保存",
   "settings.searchConfigured": "已配置",
