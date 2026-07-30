@@ -148,21 +148,6 @@
         </div>
       </section>
 
-      <!-- Skills -->
-      <section class="panel-section">
-        <div class="section-head">
-          <span class="section-title">{{ t("usage.skillsTitle") }}</span>
-          <button class="section-add" :title="t('usage.openSkills')" @click="goSkillSettings">
-            +
-          </button>
-        </div>
-
-        <div v-if="skillChips.length" class="skill-grid">
-          <span v-for="s in skillChips" :key="s" class="skill-chip">{{ s }}</span>
-        </div>
-        <div v-else class="skill-empty">{{ t("usage.noSkills") }}</div>
-      </section>
-
       <!-- Gateway-offline sticky banner -->
       <div v-if="gatewayOffline" class="gateway-banner">
         <span class="gateway-banner-text">{{ t("usage.gatewayOffline") }}</span>
@@ -171,9 +156,6 @@
         </button>
       </div>
     </div>
-    <button v-if="hasMoreSkills" class="view-more-btn" @click="goSkillSettings">
-      {{ t("usage.viewMoreSkills") }}
-    </button>
   </aside>
 </template>
 
@@ -197,11 +179,9 @@ const { isOpen, close } = useUsagePanel();
 
 // --- State ---
 const data = ref<any>(null);
-const skills = ref<Array<{ name?: string; id?: string; enabled?: boolean }>>([]);
 const loading = ref(false);
 const modelErrored = ref(false);
 
-const MAX_SKILL_CHIPS = 9;
 const agentName = computed(() => t("app.name"));
 
 // --- Derived ---
@@ -265,19 +245,6 @@ const counts = computed(() => {
   };
 });
 
-const skillChips = computed(() =>
-  skills.value
-    .filter((s) => s.enabled !== false)
-    .map((s) => s.name || s.id || "")
-    .filter(Boolean)
-    .slice(0, MAX_SKILL_CHIPS),
-);
-
-const hasMoreSkills = computed(() => {
-  const enabledCount = skills.value.filter((s) => s.enabled !== false).length;
-  return enabledCount > MAX_SKILL_CHIPS;
-});
-
 // --- Helpers ---
 function formatTokens(n: number): string {
   if (!n && n !== 0) return "—";
@@ -301,24 +268,6 @@ async function loadData() {
   }
 }
 
-async function loadSkills() {
-  try {
-    const res = await (window as any).openclaw.skills.list();
-    const all: any[] = [];
-    if (Array.isArray(res?.builtin)) all.push(...res.builtin);
-    if (Array.isArray(res?.custom)) all.push(...res.custom);
-    if (Array.isArray(res?.managed)) all.push(...res.managed);
-    skills.value = all;
-  } catch {
-    skills.value = [];
-  }
-}
-
-function goSkillSettings() {
-  close();
-  router.push("/settings/skills");
-}
-
 function goSettings() {
   close();
   router.push("/settings");
@@ -329,7 +278,6 @@ watch(isOpen, (open) => {
   if (open) {
     // Delay data loading until slide-in animation completes
     setTimeout(() => {
-      loadSkills();
       if (!gatewayOffline.value) loadData();
     }, 300);
   }
@@ -340,7 +288,6 @@ const stopGatewayWatch = watch(
   (online, wasOnline) => {
     if (isOpen.value && online && !wasOnline) {
       loadData();
-      loadSkills();
     }
   },
 );
@@ -736,54 +683,6 @@ html.dark .usage-backdrop {
   color: var(--text-secondary);
 }
 
-/* ── Skill grid ── */
-.skill-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.skill-chip {
-  padding: 6px 12px;
-  background: #f3f3f5;
-  border: 1px solid #d8d8d8;
-  border-radius: 999px;
-  font-size: 12px;
-  color: #1d1d1f;
-  transition: background 0.15s;
-}
-
-.skill-chip:hover {
-  background: var(--bg-tertiary);
-}
-
-.skill-empty {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 8px 0;
-}
-
-.view-more-btn {
-  margin: 0 var(--usage-drawer-padding) var(--usage-drawer-padding);
-  padding: 10px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  font-size: 13px;
-  color: #555;
-  flex-shrink: 0;
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-  font-family: inherit;
-}
-
-.view-more-btn:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
 /* ── Skeleton loading ── */
 .skeleton {
   display: inline-block;
@@ -901,19 +800,6 @@ html.dark .stat-card-wide {
 html.dark .chip {
   background: var(--bg-tertiary);
   border-color: var(--border);
-  color: var(--text-secondary);
-}
-
-html.dark .skill-chip {
-  background: var(--bg-tertiary);
-  border-color: var(--border);
-  color: var(--text-primary);
-}
-html.dark .skill-chip:hover {
-  background: var(--bg-hover, var(--bg-tertiary));
-}
-
-html.dark .view-more-btn {
   color: var(--text-secondary);
 }
 
