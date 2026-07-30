@@ -12,6 +12,7 @@ interface WorkspaceFiles {
 export interface AgentPersona {
   id: string;
   name: string;
+  skills: readonly string[];
   workspaceDirName?: string;
   workspaceFiles?: WorkspaceFiles;
 }
@@ -112,6 +113,7 @@ const PERSONA_PROFILES: Record<PersonaProfile, WorkspaceFiles> = {
 export const AGENT_PERSONAS: readonly AgentPersona[] = AGENT_CATALOG.map((agent) => ({
   id: agent.id,
   name: agent.name,
+  skills: agent.skills,
   workspaceDirName: agent.workspaceDirName,
   workspaceFiles: agent.personaProfile ? PERSONA_PROFILES[agent.personaProfile] : undefined,
 }));
@@ -150,6 +152,7 @@ function createAgentEntry(persona: AgentPersona, stateDir: string): Record<strin
   const entry: Record<string, unknown> = { name: persona.name };
   const workspace = getAgentWorkspacePath(stateDir, persona);
   if (workspace) entry.workspace = workspace;
+  entry.skills = [...persona.skills];
   return entry;
 }
 
@@ -249,6 +252,16 @@ export function ensureAgentPersonasConfig(
       entry.default = true;
     } else if (entry.default === true) {
       delete entry.default;
+    }
+  }
+
+  const catalogSkillsById = new Map(
+    AGENT_PERSONAS.map((persona) => [persona.id, persona.skills]),
+  );
+  for (const entry of entries) {
+    const catalogSkills = catalogSkillsById.get(entry.id);
+    if (catalogSkills !== undefined) {
+      entry.skills = [...catalogSkills];
     }
   }
 
