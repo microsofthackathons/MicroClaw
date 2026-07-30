@@ -1464,9 +1464,8 @@ function createMainWindow(): BrowserWindow {
     title: "MicroClaw",
     icon: APP_ICON_PATH,
     show: !settingsStore.get("startMinimized"),
-    frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
+    titleBarStyle: "hidden",
+    backgroundColor: "#ffffff",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -1474,8 +1473,8 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  // Enforce minimum window size — Electron's minWidth/minHeight is broken
-  // for frame:false + transparent:true on Windows. Use will-resize event instead.
+  // Defer minimum-size enforcement because the loading window intentionally
+  // starts smaller than the main app's minimum dimensions.
   win.on("will-resize", (event, newBounds) => {
     const currentBounds = win.getBounds();
     if (
