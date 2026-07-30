@@ -1562,38 +1562,42 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.ws._run.assert_not_called()
 
-    def test_create_desktop_shortcut_propagates_uninstall_shortcut_failure(self):
+    def _configure_entry_point_mocks(self):
         desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
         self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
         self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
         self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=False)
-        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
-
-        self.assertFalse(self.ws.create_desktop_shortcut())
-
-    def test_create_desktop_shortcut_propagates_start_menu_failure(self):
-        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
-        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
-        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
-        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=False)
         self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
-        self.assertFalse(self.ws.create_desktop_shortcut())
+    def test_create_desktop_shortcut_treats_shortcut_failures_as_nonfatal(self):
+        for helper_name in (
+            "_create_lnk_shortcut",
+            "_create_start_menu_shortcut",
+            "_create_uninstall_shortcut",
+        ):
+            with self.subTest(helper=helper_name):
+                self._configure_entry_point_mocks()
+                getattr(self.ws, helper_name).return_value = False
+
+                self.assertTrue(self.ws.create_desktop_shortcut())
+
+                self.ws._create_lnk_shortcut.assert_called_once()
+                self.ws._create_start_menu_shortcut.assert_called_once()
+                self.ws._create_uninstall_shortcut.assert_called_once()
+                self.ws._register_installed_app.assert_called_once()
 
     def test_create_desktop_shortcut_propagates_registry_failure(self):
-        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
-        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
-        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
-        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
+        self._configure_entry_point_mocks()
         self.ws._register_installed_app = unittest.mock.Mock(return_value=False)
 
         self.assertFalse(self.ws.create_desktop_shortcut())
+
+        self.ws._create_lnk_shortcut.assert_called_once()
+        self.ws._create_start_menu_shortcut.assert_called_once()
+        self.ws._create_uninstall_shortcut.assert_called_once()
+        self.ws._register_installed_app.assert_called_once()
 
     def test_url_shortcut_reports_write_failure(self):
         self.ws._resolve_icon = unittest.mock.Mock(return_value=None)

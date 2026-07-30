@@ -3720,23 +3720,21 @@ class WindowsSetup:
             )
 
     def create_desktop_shortcut(self) -> bool:
-        """Create application and uninstall entry points."""
+        """Create best-effort shortcuts and required uninstall registration."""
         self.log.step("Creating desktop shortcut…")
 
         desktop = self._get_desktop_path()
         desktop_exe = self._find_desktop_exe()
 
         if desktop_exe:
-            desktop_ok = self._create_lnk_shortcut(desktop, desktop_exe)
-            start_menu_ok = self._create_start_menu_shortcut(desktop_exe)
+            self._create_lnk_shortcut(desktop, desktop_exe)
+            self._create_start_menu_shortcut(desktop_exe)
         else:
             self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
-            desktop_ok = self._create_url_shortcut(desktop)
-            start_menu_ok = True
+            self._create_url_shortcut(desktop)
 
-        uninstall_ok = self._create_uninstall_shortcut(desktop)
-        registry_ok = self._register_installed_app(desktop_exe)
-        return desktop_ok and start_menu_ok and uninstall_ok and registry_ok
+        self._create_uninstall_shortcut(desktop)
+        return self._register_installed_app(desktop_exe)
 
     def _create_uninstall_shortcut(self, desktop: Path) -> bool:
         """Create an uninstall shortcut for the persisted installer."""
