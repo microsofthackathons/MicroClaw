@@ -79,7 +79,7 @@ const defaultCards = computed(() => {
       desc: t("home.card.news.desc"),
       prompt: t("home.card.news.prompt"),
       style:
-        "--rot: 12deg; --dx: clamp(35px, 6vw, 75px); --hover-dx: clamp(22px, 2.8vw, 38px); --hover-dy: -24px; --stack-order: 3",
+        "--rot: 12deg; --dx: clamp(35px, 6vw, 75px); --hover-dx: clamp(22px, 2.8vw, 38px); --hover-dy: -24px; z-index: 3",
     },
     {
       id: "desktop",
@@ -87,7 +87,7 @@ const defaultCards = computed(() => {
       title: t("home.card.desktop.title"),
       desc: t("home.card.desktop.desc"),
       prompt: t("home.card.desktop.prompt"),
-      style: "--rot: 0deg; --hover-dx: 0px; --hover-dy: -36px; --stack-order: 2",
+      style: "--rot: 0deg; --hover-dx: 0px; --hover-dy: -36px; z-index: 2",
     },
     {
       id: "travel",
@@ -96,7 +96,7 @@ const defaultCards = computed(() => {
       desc: t("home.card.travel.desc"),
       prompt: t("home.card.travel.prompt"),
       style:
-        "--rot: -12deg; --dx: clamp(-75px, -6vw, -35px); --hover-dx: clamp(-38px, -2.8vw, -22px); --hover-dy: -24px; --stack-order: 1",
+        "--rot: -12deg; --dx: clamp(-75px, -6vw, -35px); --hover-dx: clamp(-38px, -2.8vw, -22px); --hover-dy: -24px; z-index: 1",
     },
   ];
 });
@@ -186,7 +186,6 @@ function onSuggestionsScroll() {
 
 .fan-card {
   position: absolute;
-  z-index: var(--stack-order);
   left: 50%;
   bottom: clamp(16px, 3vh, 40px);
   width: clamp(180px, 22vw, 340px);
@@ -212,7 +211,7 @@ function onSuggestionsScroll() {
     rotate(var(--rot))
     translateY(var(--hover-dy, -36px))
     translateZ(0);
-  z-index: 4;
+  z-index: 10 !important;
   box-shadow: var(--card-shadow-hover);
 }
 
