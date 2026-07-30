@@ -1528,6 +1528,67 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         with self.assertRaisesRegex(UninstallerBundleError, "timed out"):
             self.ws._check_persisted_uninstaller(exe)
 
+    def _write_persisted_uninstaller(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "MicroClawInstaller.exe").write_text("exe", encoding="utf-8")
+        (state / "_internal").mkdir(exist_ok=True)
+        (state / "_internal" / "runtime.dll").write_text("runtime", encoding="utf-8")
+        return state / "MicroClawInstaller.exe"
+
+    def test_register_installed_app_refuses_missing_uninstaller(self):
+        fake_winreg = unittest.mock.MagicMock()
+        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+            self.assertFalse(self.ws._register_installed_app(None))
+        fake_winreg.CreateKeyEx.assert_not_called()
+
+    def test_uninstall_shortcut_refuses_missing_uninstaller(self):
+        desktop = self.root / "Desktop"
+        desktop.mkdir()
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertFalse(self.ws._create_uninstall_shortcut(desktop))
+
+        self.ws._run.assert_not_called()
+
+    def test_create_desktop_shortcut_propagates_uninstall_shortcut_failure(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
+        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=False)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
+
+        self.assertFalse(self.ws.create_desktop_shortcut())
+
+    def test_create_desktop_shortcut_propagates_start_menu_failure(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
+        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=False)
+        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
+
+        self.assertFalse(self.ws.create_desktop_shortcut())
+
+    def test_create_desktop_shortcut_propagates_registry_failure(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
+        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=False)
+
+        self.assertFalse(self.ws.create_desktop_shortcut())
+
+    def test_url_shortcut_reports_write_failure(self):
+        self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
+
+        self.assertFalse(self.ws._create_url_shortcut(self.root / "missing-desktop"))
+
     def test_get_start_menu_path_uses_appdata(self):
         # Force the winreg lookup to fail so the APPDATA fallback is exercised.
         fake_winreg = unittest.mock.MagicMock()
@@ -1564,6 +1625,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_register_installed_app_writes_hkcu_uninstall_key(self):
         target_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        persisted = self._write_persisted_uninstaller()
         self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
 
         fake_winreg = unittest.mock.MagicMock()
@@ -1585,7 +1647,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         values = {call.args[1]: call.args[4] for call in fake_winreg.SetValueEx.call_args_list}
         self.assertEqual(values["DisplayName"], "MicroClaw")
         self.assertEqual(values["DisplayVersion"], OPENCLAW_TARGET_VERSION)
-        self.assertIn("--uninstall", values["UninstallString"])
+        self.assertEqual(values["UninstallString"], f'"{persisted}" --uninstall')
         self.assertEqual(values["NoModify"], 1)
         self.assertEqual(len(self.ws._rollback_actions), 1)
 
