@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
+import { getAgentSkills, matchesSkill, resolveSkillFilterNames } from "./agent-catalog";
 import {
   AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
@@ -26,6 +27,13 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+type AgentListEntry = { id: string; skills?: readonly string[] } & Record<string, unknown>;
+
+function agentList(config: { agents?: unknown }): AgentListEntry[] {
+  const agents = (config.agents ?? {}) as { list?: unknown };
+  return (Array.isArray(agents.list) ? agents.list : []) as AgentListEntry[];
+}
 
 describe("agent personas", () => {
   it("registers only main for a new installation", () => {
@@ -210,5 +218,111 @@ describe("agent personas", () => {
         gatewayCwd,
       ),
     ).toBe(path.join(openClawHome, "archive"));
+  });
+
+  it("writes each generated agent's catalog skills into agents.list", () => {
+    const stateDir = createStateDir();
+    const persona = getAgentPersona("master-archive");
+    if (!persona) throw new Error("Master Archive persona is not registered");
+    const config = { agents: {} };
+
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+
+    for (const entry of agentList(config)) {
+      // Config stores OpenClaw match-names, not raw catalog slugs.
+      expect(entry.skills).toEqual(resolveSkillFilterNames(getAgentSkills(entry.id)));
+    }
+  });
+
+  it("writes OpenClaw match-names (not slugs) for remapped skills", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    const mainEntry = agentList(config).find((entry) => entry.id === "main");
+    const skills = (mainEntry?.skills ?? []) as string[];
+    // The five display-name exceptions must be stored by their frontmatter name.
+    expect(skills).toContain("Excel / XLSX");
+    expect(skills).toContain("Word / DOCX");
+    expect(skills).toContain("Powerpoint / PPTX");
+    expect(skills).toContain("Desktop Organizer");
+    expect(skills).toContain("Security Practice");
+    // Their raw slugs must NOT appear.
+    expect(skills).not.toContain("excel-xlsx");
+    expect(skills).not.toContain("word-docx");
+    // Non-exception slugs pass through unchanged.
+    expect(skills).toContain("1password");
+    // Every stored value round-trips back to a catalog slug via matchesSkill.
+    for (const slug of getAgentSkills("main")) {
+      expect(skills.some((value) => matchesSkill(value, slug))).toBe(true);
+    }
+  });
+
+  it("gives each agent a distinct skills array instance", () => {
+    const stateDir = createStateDir();
+    const persona = getAgentPersona("master-archive");
+    if (!persona) throw new Error("Master Archive persona is not registered");
+    const config = { agents: {} };
+
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+
+    const mainEntry = agentList(config).find((entry) => entry.id === "main");
+    const archiveEntry = agentList(config).find(
+      (entry) => entry.id === "master-archive",
+    );
+    if (!mainEntry || !archiveEntry) throw new Error("expected both agents");
+
+    expect(mainEntry.skills).not.toBe(archiveEntry.skills);
+    (mainEntry.skills as string[]).push("mutated");
+    expect(archiveEntry.skills).not.toContain("mutated");
+    expect(getAgentSkills("master-archive")).not.toContain("mutated");
+    expect(getAgentSkills("main")).not.toContain("mutated");
+  });
+
+  it("preserves an existing skills value for a catalog-known agent", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [{ id: "main", name: "Assistant", default: true, skills: ["stale-skill"] }],
+      },
+    };
+
+    const result = ensureAgentPersonasConfig(config, stateDir);
+
+    const mainEntry = agentList(config).find((entry) => entry.id === "main");
+    expect(mainEntry?.skills).toEqual(["stale-skill"]);
+    expect(result.changed).toBe(false);
+  });
+
+  it("leaves a custom non-catalog agent without an injected skills field", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "custom-bot", name: "Custom Bot" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    const customEntry = agentList(config).find((entry) => entry.id === "custom-bot");
+    expect(customEntry).not.toHaveProperty("skills");
+    const mainEntry = agentList(config).find((entry) => entry.id === "main");
+    expect(mainEntry?.skills).toEqual(resolveSkillFilterNames(getAgentSkills("main")));
+  });
+
+  it("reports changed when skills are added to a config that lacked them", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [{ id: "main", name: "Assistant", default: true }],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 });

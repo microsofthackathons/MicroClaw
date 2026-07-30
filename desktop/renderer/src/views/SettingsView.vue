@@ -86,7 +86,7 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(4) }}</span
+                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -165,7 +165,7 @@
                   >
                 </div>
                 <span class="row-value usage-spend"
-                  >{{ t("settings.currencySymbol") }}{{ toCny(m.spend).toFixed(4) }}</span
+                  >{{ t("settings.currencySymbol") }}{{ toCny(m.spend).toFixed(2) }}</span
                 >
               </div>
             </div>
@@ -304,106 +304,6 @@
           </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
-      </div>
-
-      <!-- Skills -->
-      <div v-if="activeSection === 'skills'" class="section">
-        <div class="section-label">{{ t("settings.skillManagement") }}</div>
-
-        <!-- ══ Built-in Skills ══ -->
-        <div class="sub-label-row">
-          <span class="sub-label"
-            >{{ t("settings.builtinSkills") }} ({{ builtinSkills.length }})</span
-          >
-          <span class="skill-count-label"
-            >{{ enabledCount }}/{{ builtinSkills.length }} {{ t("settings.enabledCount") }}</span
-          >
-        </div>
-
-        <div v-if="builtinSkills.length" class="card-group">
-          <div
-            v-for="(skill, idx) in builtinSkills"
-            :key="skill.id"
-            class="card-row"
-            :class="{ 'no-border': idx === builtinSkills.length - 1 }"
-          >
-            <div class="skill-info">
-              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-                <span class="row-label">{{ skill.name }}</span>
-                <el-tooltip v-if="!skill.eligible" :content="missingTooltip(skill)" placement="top">
-                  <span class="status-indicator status-indicator--warn"
-                    ><span class="status-dot"></span>{{ t("settings.skillUnavailable") }}</span
-                  >
-                </el-tooltip>
-              </div>
-              <span class="skill-desc">{{ skill.description }}</span>
-            </div>
-            <el-button
-              v-if="!skill.eligible"
-              class="ask-agent-btn"
-              size="small"
-              @click="askAgentAboutSkill(skill)"
-            >
-              {{ t("settings.askAgent") }}
-            </el-button>
-            <el-switch
-              v-else
-              :model-value="skill.enabled && skill.eligible"
-              @change="(val: boolean) => toggleBuiltinSkill(skill, val)"
-            />
-          </div>
-        </div>
-
-        <div v-else class="card-group">
-          <div class="card-row no-border placeholder-row">
-            <span class="placeholder-text">{{ t("settings.noBuiltinSkills") }}</span>
-          </div>
-        </div>
-
-        <!-- ══ Custom Skills ══ -->
-        <div class="sub-label">{{ t("settings.customSkills") }} ({{ customSkills.length }})</div>
-        <div class="card-group">
-          <template v-if="customSkills.length">
-            <div
-              v-for="(skill, idx) in customSkills"
-              :key="skill.id"
-              class="card-row"
-              :class="{ 'no-border': idx === customSkills.length - 1 }"
-            >
-              <div class="skill-info">
-                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-                  <span class="row-label">{{ skill.name }}</span>
-                  <el-tooltip
-                    v-if="!skill.eligible"
-                    :content="missingTooltip(skill)"
-                    placement="top"
-                  >
-                    <span class="status-indicator status-indicator--warn"
-                      ><span class="status-dot"></span>{{ t("settings.skillUnavailable") }}</span
-                    >
-                  </el-tooltip>
-                </div>
-                <span class="skill-desc">{{ skill.description }}</span>
-              </div>
-              <el-button
-                v-if="!skill.eligible"
-                class="ask-agent-btn"
-                size="small"
-                @click="askAgentAboutSkill(skill)"
-              >
-                {{ t("settings.askAgent") }}
-              </el-button>
-              <el-switch
-                v-else
-                :model-value="skill.enabled && skill.eligible"
-                @change="(val: boolean) => toggleCustomSkill(skill.id, val)"
-              />
-            </div>
-          </template>
-          <div v-else class="card-row no-border placeholder-row">
-            <span class="placeholder-text">{{ t("settings.noCustomSkills") }}</span>
-          </div>
-        </div>
       </div>
 
       <!-- Gateway -->
@@ -935,10 +835,9 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
-import { useAgentStore } from "@/stores/agents";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
@@ -961,10 +860,8 @@ import {
 import { getManagedModelProvider } from "@/utils/managed-model-providers";
 
 const route = useRoute();
-const router = useRouter();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
-const agentStore = useAgentStore();
 
 const logBoxRef = ref<HTMLElement | null>(null);
 
@@ -1012,7 +909,6 @@ const VALID_SECTIONS = [
   "general",
   "usage",
   "models",
-  "skills",
   "gateway",
   "channels",
   "security",
@@ -1342,129 +1238,6 @@ const currentProviderName = computed(() => {
   return getManagedModelProvider(entry.providerKey)?.label ?? entry.providerKey;
 });
 
-const builtinSkills = ref<SkillEntry[]>([]);
-const customSkills = ref<SkillEntry[]>([]);
-const skillsRefreshing = ref(false);
-
-const enabledCount = computed(
-  () => builtinSkills.value.filter((s) => s.enabled && s.eligible).length,
-);
-
-function missingTooltip(skill: SkillEntry): string {
-  const reasons: string[] = [];
-  if (skill.missingBins?.length) {
-    reasons.push(t("settings.skillMissingBins", { bins: skill.missingBins.join(", ") }));
-  }
-  if (skill.missingAnyBins?.length) {
-    reasons.push(t("settings.skillMissingAnyBins", { bins: skill.missingAnyBins.join(", ") }));
-  }
-  if (skill.missingEnv?.length) {
-    reasons.push(t("settings.skillMissingEnv", { env: skill.missingEnv.join(", ") }));
-  }
-  if (skill.missingConfig?.length) {
-    reasons.push(t("settings.skillMissingConfig", { config: skill.missingConfig.join(", ") }));
-  }
-  if (skill.osMismatch) {
-    reasons.push(t("settings.skillOsMismatch", { os: (skill.osRequired ?? []).join(", ") }));
-  }
-  if (reasons.length === 0) return t("settings.skillUnavailable");
-  return `${t("settings.skillUnavailablePrefix")} ${reasons.join("; ")}`;
-}
-
-// Start a fresh MicroClaw (main agent) chat pre-filled with a prompt asking the
-// agent how to make an unavailable skill work. The prompt carries just the skill
-// name and the same "unavailable" reason shown in the hover tooltip.
-async function askAgentAboutSkill(skill: SkillEntry) {
-  const prompt = t("settings.askAgentPrompt", {
-    name: skill.name,
-    reason: missingTooltip(skill),
-  });
-  agentStore.selectAgent("main");
-  chatStore.newSession("main");
-  await router.push("/chat/main");
-  chatStore.pendingPrompt = prompt;
-}
-
-async function loadSkills(refresh = false): Promise<void> {
-  const skills = refresh
-    ? await window.openclaw.skills.refresh()
-    : await window.openclaw.skills.list();
-  // Built-in and managed workspace skills are presented together as a single
-  // "Built-in Skills" list (we are Windows-only, so no platform grouping). Each
-  // entry keeps its `source` so toggles route to the correct backend handler.
-  builtinSkills.value = [...skills.builtin, ...(skills.managed ?? [])].sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
-  customSkills.value = skills.custom;
-}
-
-async function autoRefreshSkills(): Promise<void> {
-  if (skillsRefreshing.value) return;
-  skillsRefreshing.value = true;
-  try {
-    await loadSkills(true);
-  } catch {
-    // Skills refresh not available; keep the last loaded list.
-  } finally {
-    skillsRefreshing.value = false;
-  }
-}
-
-async function toggleBuiltinSkill(skill: SkillEntry, enabled: boolean) {
-  // Managed workspace skills persist via skills.entries; bundled skills via the
-  // allowBundled allowlist. Route to the correct handler based on the skill source.
-  if (skill.source === "managed") {
-    await toggleManagedSkill(skill.id, enabled);
-  } else {
-    await toggleSkill(skill.id, enabled);
-  }
-}
-
-async function toggleSkill(skillId: string, enabled: boolean) {
-  const skill = builtinSkills.value.find((s) => s.id === skillId);
-  if (skill) skill.enabled = enabled;
-
-  // allowBundled must only list bundled built-in skills, never managed ones.
-  const allowBundled = builtinSkills.value
-    .filter((s) => s.source === "builtin" && s.enabled)
-    .map((s) => s.id);
-
-  try {
-    await window.openclaw.skills.updateAllowlist(allowBundled);
-    ElMessage.success(t("settings.skillConfigUpdated"));
-  } catch (err: any) {
-    if (skill) skill.enabled = !enabled;
-    ElMessage.error(t("settings.skillConfigFailed", { error: err.message || err }));
-  }
-}
-
-async function toggleManagedSkill(skillId: string, enabled: boolean) {
-  const skill = builtinSkills.value.find((s) => s.id === skillId);
-  if (skill) skill.enabled = enabled;
-
-  try {
-    await window.openclaw.skills.updateManagedEntries({ [skillId]: { enabled } });
-    ElMessage.success(t("settings.managedSkillConfigUpdated"));
-  } catch (err: any) {
-    if (skill) skill.enabled = !enabled;
-    ElMessage.error(t("settings.managedSkillConfigFailed", { error: err.message || err }));
-  }
-}
-
-async function toggleCustomSkill(skillId: string, enabled: boolean) {
-  const skill = customSkills.value.find((s) => s.id === skillId);
-  if (skill) skill.enabled = enabled;
-
-  // Custom skills persist their on/off state via the same per-skill entries map.
-  try {
-    await window.openclaw.skills.updateManagedEntries({ [skillId]: { enabled } });
-    ElMessage.success(t("settings.skillConfigUpdated"));
-  } catch (err: any) {
-    if (skill) skill.enabled = !enabled;
-    ElMessage.error(t("settings.skillConfigFailed", { error: err.message || err }));
-  }
-}
-
 // --- Web search providers ---
 type SearchProviderId = "brave" | "tavily";
 const searchProviders: {
@@ -1570,7 +1343,6 @@ const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h3M10 5h7M3 10h7M14 10h3M3 15h2M9 15h8"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>`,
   usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
   models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
-  skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5a2 2 0 0 1 2.83 2.83l-9.9 9.9-3.54.71.71-3.54 9.9-9.9z"/></svg>`,
   gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
   channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
@@ -1582,7 +1354,6 @@ const menuItems = computed(() => [
   { id: "general", label: t("settings.menu.general"), color: "#636366", svg: svg.general },
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
-  { id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills },
   { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
   { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
@@ -1664,9 +1435,6 @@ watch(activeSection, (v) => {
   }
   if (v === "security") {
     loadSandboxStatus();
-  }
-  if (v === "skills") {
-    autoRefreshSkills();
   }
 });
 
@@ -1809,12 +1577,6 @@ onMounted(async () => {
   // Load web search provider configuration
   loadSearchConfig(config);
 
-  // Load skills from disk
-  try {
-    await loadSkills(false);
-  } catch {
-    // Skills listing not available
-  }
 });
 
 onUnmounted(() => {
@@ -2649,37 +2411,9 @@ async function clearChatHistory() {
   color: #ff3b30;
 }
 
-.skill-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  flex: 1;
-}
-
-.skill-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .switch-wrap {
   display: inline-flex;
   align-items: center;
-}
-
-.ask-agent-btn {
-  flex-shrink: 0;
-  --el-button-hover-text-color: var(--accent);
-  --el-button-hover-border-color: var(--accent-light);
-  --el-button-hover-bg-color: var(--accent-subtle);
-}
-
-.skill-count-label {
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 /* Usage section */

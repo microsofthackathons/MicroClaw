@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
@@ -54,6 +54,7 @@ import {
   MIN_WINDOW_HEIGHT,
   POST_SPAWN_RESTART_DELAY_MS,
   WEIXIN_LOGIN_TIMEOUT_MS,
+  SKILLS_STATUS_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
   UPDATE_MANIFEST_URL,
 } from "./constants";
@@ -91,6 +92,12 @@ import {
   type AgentRosterConfig,
 } from "./agent-personas";
 import { assertConfigWriteAllowed } from "./config-write-policy";
+import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
+import {
+  applyAgentSkillsToConfig,
+  applyGlobalSkillChange,
+  type GlobalSkillChange,
+} from "./skill-config";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -1360,10 +1367,7 @@ async function addCatalogAgent(
   const config = readConfig();
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
-  const result = ensureAgentPersonasConfig(config, stateDir, [
-    ...DEFAULT_AGENT_PERSONAS,
-    persona,
-  ]);
+  const result = ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
   if (!result.changed) {
     return { agents: listConfiguredAgents(config) };
   }
@@ -1371,12 +1375,7 @@ async function addCatalogAgent(
   const alreadyRunning = await checkExistingGateway(gatewayPort);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
   if (
-    requiresExternalGatewayStop(
-      alreadyRunning,
-      true,
-      gatewaySpawnedByUs,
-      gatewayProcess !== null,
-    )
+    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
   ) {
     throw new Error(
       "Cannot add an agent while MicroClaw is connected to an externally managed Gateway",
@@ -1447,6 +1446,14 @@ const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
 );
+const LIGHT_WINDOW_BACKGROUND = "#ffffff";
+const DARK_WINDOW_BACKGROUND = "#18181b";
+
+function getWindowBackgroundColor(themeMode = settingsStore.get("themeMode")): string {
+  const useDarkBackground =
+    themeMode === "dark" || (themeMode === "system" && nativeTheme.shouldUseDarkColors);
+  return useDarkBackground ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND;
+}
 
 function _getRendererURL(): string {
   if (isDev) return VITE_DEV_URL;
@@ -1465,9 +1472,8 @@ function createMainWindow(): BrowserWindow {
     title: "MicroClaw",
     icon: APP_ICON_PATH,
     show: !settingsStore.get("startMinimized"),
-    frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
+    titleBarStyle: "hidden",
+    backgroundColor: getWindowBackgroundColor(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -1475,8 +1481,8 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  // Enforce minimum window size — Electron's minWidth/minHeight is broken
-  // for frame:false + transparent:true on Windows. Use will-resize event instead.
+  // Defer minimum-size enforcement because the loading window intentionally
+  // starts smaller than the main app's minimum dimensions.
   win.on("will-resize", (event, newBounds) => {
     const currentBounds = win.getBounds();
     if (
@@ -1840,8 +1846,120 @@ function notifyRemotePermissionNeeded(): void {
   sendWeixinNotification(cachedRemoteSource, mainT(lang, "perm.remoteNotify"));
 }
 
+/** One skill's diagnostic status merged from `skills check` + `skills list --json`. */
+interface SkillStatusRecord {
+  skillKey: string;
+  name: string;
+  source: string;
+  bundled: boolean;
+  eligible: boolean;
+  disabled: boolean;
+  modelVisible: boolean;
+  commandVisible: boolean;
+  blockedByAllowlist: boolean;
+  blockedByAgentFilter: boolean;
+  missing: {
+    bins: string[];
+    anyBins: string[];
+    env: string[];
+    config: string[];
+    os: string[];
+  };
+}
+
+interface SkillsStatusResult {
+  ok: boolean;
+  error?: string;
+  summary: {
+    total: number;
+    modelVisible: number;
+  };
+  skills: SkillStatusRecord[];
+}
+
+/**
+ * OpenClaw's CLI prints a config-warning banner before its JSON payload. Strip
+ * everything before the first top-level `{` so the remainder parses cleanly.
+ */
+function stripJsonBanner(raw: string): string {
+  const start = raw.indexOf("{");
+  return start >= 0 ? raw.slice(start) : raw;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+/**
+ * Merge the outputs of `skills list --agent <id> --json` (per-skill booleans +
+ * `missing`) and `skills check --agent <id> --json` (aggregate buckets +
+ * detailed `missingRequirements`) into one per-skill record list. `list` is the
+ * primary source; `check` supplies `missingRequirements` detail and the model-visible
+ * bucket. Either input may be null when its CLI call failed.
+ */
+function normalizeSkillsStatus(
+  listJson: Record<string, unknown> | null,
+  checkJson: Record<string, unknown> | null,
+): SkillStatusRecord[] {
+  // Detailed missing-requirement info keyed by skill name from `check`.
+  const missingByName = new Map<
+    string,
+    { bins: string[]; anyBins: string[]; env: string[]; config: string[]; os: string[] }
+  >();
+  const missingReqs = Array.isArray(checkJson?.missingRequirements)
+    ? (checkJson!.missingRequirements as unknown[])
+    : [];
+  for (const req of missingReqs) {
+    if (typeof req !== "object" || req === null) continue;
+    const r = req as Record<string, unknown>;
+    const name = typeof r.name === "string" ? r.name : undefined;
+    if (!name) continue;
+    const m = (r.missing ?? {}) as Record<string, unknown>;
+    missingByName.set(name, {
+      bins: asStringArray(m.bins),
+      anyBins: asStringArray(m.anyBins),
+      env: asStringArray(m.env),
+      config: asStringArray(m.config),
+      os: asStringArray(m.os),
+    });
+  }
+
+  const rawSkills = Array.isArray(listJson?.skills) ? (listJson!.skills as unknown[]) : [];
+  const records: SkillStatusRecord[] = [];
+  for (const raw of rawSkills) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const s = raw as Record<string, unknown>;
+    const name = typeof s.name === "string" ? s.name : "";
+    // `skills list` keys skills by their frontmatter `name`; treat it as the skillKey
+    // the UI needs for global gating only when a distinct key isn't provided.
+    const skillKey =
+      typeof s.skillKey === "string" ? s.skillKey : typeof s.key === "string" ? s.key : name;
+    const detail = missingByName.get(name);
+    const perSkillMissing = (s.missing ?? {}) as Record<string, unknown>;
+    records.push({
+      skillKey,
+      name,
+      source: typeof s.source === "string" ? s.source : "",
+      bundled: Boolean(s.bundled),
+      eligible: Boolean(s.eligible),
+      disabled: Boolean(s.disabled),
+      modelVisible: Boolean(s.modelVisible),
+      commandVisible: Boolean(s.commandVisible),
+      blockedByAllowlist: Boolean(s.blockedByAllowlist),
+      blockedByAgentFilter: Boolean(s.blockedByAgentFilter),
+      missing: detail ?? {
+        bins: asStringArray(perSkillMissing.bins),
+        anyBins: asStringArray(perSkillMissing.anyBins),
+        env: asStringArray(perSkillMissing.env),
+        config: asStringArray(perSkillMissing.config),
+        os: asStringArray(perSkillMissing.os),
+      },
+    });
+  }
+  return records;
+}
+
 async function startGateway(): Promise<void> {
-  // Prevent concurrent calls — only one startGateway at a time
   if (gatewayStartInProgress) {
     console.log("[gateway] startGateway() already in progress, skipping");
     return;
@@ -1890,12 +2008,7 @@ async function startGatewayInner(): Promise<void> {
     persistAgentPersonas(preparedPersonas.config);
   }
   if (preparedPersonas) {
-    seedSpecialistAgentWorkspaces(
-      preparedPersonas.config,
-      stateDir,
-      entryPath,
-      gatewayEnvironment,
-    );
+    seedSpecialistAgentWorkspaces(preparedPersonas.config, stateDir, entryPath, gatewayEnvironment);
   }
   if (alreadyRunning && !agentRosterChanged) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
@@ -3104,6 +3217,330 @@ function registerIpcHandlers(): void {
     pendingIntegrityResult = null;
   });
 
+  ipcMain.handle(
+    "skills:set-agent-skills",
+    async (
+      _event,
+      agentId: string,
+      skillIds: string[],
+    ): Promise<{ agentId: string; skills: string[] }> => {
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        throw new Error("A non-empty agentId is required");
+      }
+      const skills = sanitizeAgentSkillIds(skillIds ?? []);
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      // Persist match-names (not raw slugs) so OpenClaw's frontmatter-name based
+      // allowlist filter binds every eligible skill. The IPC input and return value
+      // stay slug-based; resolution happens only at the openclaw.json write.
+      applyAgentSkillsToConfig(config, agentId, skills);
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update agent skills while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Updating skills for agent ${agentId}`);
+        return { agentId, skills };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(`Rolling back failed skills update for ${agentId}`);
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Dev-only diagnostics: run the OpenClaw CLI directly (reads config from disk;
+  // does NOT require the gateway to be up) to surface each skill's gating status
+  // for the given agent. Merges `skills list` (per-skill booleans + missing) with
+  // `skills check` (aggregate buckets + detailed missingRequirements).
+  ipcMain.handle(
+    "skills:get-status",
+    async (_event, agentId: string): Promise<SkillsStatusResult> => {
+      const emptySummary = { total: 0, modelVisible: 0 };
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        return {
+          ok: false,
+          error: "A non-empty agentId is required",
+          summary: emptySummary,
+          skills: [],
+        };
+      }
+
+      const nodePath = resolveNodePath();
+      const entryPath = resolveOpenClawEntry();
+      if (!fs.existsSync(nodePath) || !fs.existsSync(entryPath)) {
+        return { ok: false, error: "OpenClaw CLI not found", summary: emptySummary, skills: [] };
+      }
+
+      const stateDir = getOpenClawStateDir();
+      const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+
+      const runCli = (subArgs: string[]): Promise<Record<string, unknown> | null> =>
+        new Promise((resolve) => {
+          const spawnOpts: Record<string, unknown> = {
+            cwd: path.dirname(entryPath),
+            env: {
+              ...process.env,
+              OPENCLAW_STATE_DIR: stateDir,
+              NODE_COMPILE_CACHE: compileCacheDir,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+          };
+          if (process.platform === "win32") {
+            spawnOpts.creationFlags = CREATE_NO_WINDOW;
+          }
+          let stdout = "";
+          let stderr = "";
+          let settled = false;
+          const child = spawn(nodePath, [entryPath, ...subArgs], spawnOpts);
+          child.stdout?.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf-8")));
+          child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf-8")));
+          const finish = (value: Record<string, unknown> | null) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+          child.on("error", () => finish(null));
+          child.on("close", () => {
+            try {
+              const parsed = JSON.parse(stripJsonBanner(stdout));
+              finish(typeof parsed === "object" && parsed !== null ? parsed : null);
+            } catch {
+              if (stderr.trim()) console.error(`[skills:get-status] CLI stderr: ${stderr.trim()}`);
+              finish(null);
+            }
+          });
+          setTimeout(() => {
+            if (!settled) {
+              child.kill();
+              finish(null);
+            }
+          }, SKILLS_STATUS_TIMEOUT_MS);
+        });
+
+      try {
+        // `skills list --json` already carries every per-skill boolean and the
+        // per-skill `missing` requirements the panel renders, so we only spawn one
+        // CLI process (the cold CLI can take ~60–90s). normalizeSkillsStatus stays
+        // tolerant of a null `check` payload.
+        const listJson = await runCli(["skills", "list", "--agent", agentId, "--json"]);
+        if (!listJson) {
+          return {
+            ok: false,
+            error: "OpenClaw skills CLI produced no parseable output",
+            summary: emptySummary,
+            skills: [],
+          };
+        }
+        const skills = normalizeSkillsStatus(listJson, null);
+        return {
+          ok: true,
+          summary: {
+            total: skills.length,
+            modelVisible: skills.filter((s) => s.modelVisible).length,
+          },
+          skills,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          summary: emptySummary,
+          skills: [],
+        };
+      }
+    },
+  );
+
+  // Dev-only: global master toggle for a single skill. Controls OpenClaw's global
+  // gating (both layers): the per-skill `skills.entries[key].enabled` flag and, for
+  // bundled skills, membership in `skills.allowBundled`. Operates on skillKey (slug).
+  ipcMain.handle(
+    "skills:set-global-enabled",
+    async (
+      _event,
+      params: { skillKey: string; enabled: boolean },
+    ): Promise<{ skillKey: string; enabled: boolean }> => {
+      const skillKey = params?.skillKey;
+      const enabled = params?.enabled;
+      if (typeof skillKey !== "string" || skillKey.length === 0) {
+        throw new Error("A non-empty skillKey is required");
+      }
+      if (typeof enabled !== "boolean") {
+        throw new Error("enabled must be a boolean");
+      }
+
+      // Validate against actually-discovered skills and learn whether it's bundled.
+      const payload = buildSkillsPayload(false);
+      const discovered = [...payload.builtin, ...payload.custom, ...payload.managed].find(
+        (s) => s.id === skillKey,
+      );
+      if (!discovered) {
+        throw new Error(`Unknown skill "${skillKey}"`);
+      }
+      const isBundled = discovered.source === "builtin";
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      applyGlobalSkillChange(config, skillKey, enabled, isBundled);
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update skill state while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Toggling global state for skill ${skillKey}`);
+        return { skillKey, enabled };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(`Rolling back failed global toggle for ${skillKey}`);
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Dev-only: batched apply of BOTH the per-agent allowlist and any number of global
+  // on/off changes in a SINGLE atomic config write + SINGLE gateway restart. The panel
+  // stages per-agent and global toggles locally and flushes them here on "Apply &
+  // reload", so the user waits for exactly one restart instead of one per flip. Mirrors
+  // the robustness of skills:set-agent-skills + skills:set-global-enabled (validation,
+  // atomic write, rollback-on-failure) using the shared skill-config helpers.
+  ipcMain.handle(
+    "skills:apply-agent-config",
+    async (
+      _event,
+      params: { agentId: string; skillIds: string[]; globalChanges: GlobalSkillChange[] },
+    ): Promise<{ agentId: string; skills: string[]; globalChanges: GlobalSkillChange[] }> => {
+      const agentId = params?.agentId;
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        throw new Error("A non-empty agentId is required");
+      }
+      if (!AGENT_CATALOG.some((agent) => agent.id === agentId)) {
+        throw new Error(`Unknown agent "${agentId}"`);
+      }
+      const skills = sanitizeAgentSkillIds(params?.skillIds ?? []);
+
+      // Validate every global change against actually-discovered skills and learn
+      // whether each is bundled (only bundled skills are gated by allowBundled).
+      const rawGlobalChanges = Array.isArray(params?.globalChanges) ? params.globalChanges : [];
+      const payload = buildSkillsPayload(false);
+      const discovered = [...payload.builtin, ...payload.custom, ...payload.managed];
+      const globalChanges: Array<GlobalSkillChange & { bundled: boolean }> = [];
+      for (const change of rawGlobalChanges) {
+        const skillKey = change?.skillKey;
+        const enabled = change?.enabled;
+        if (typeof skillKey !== "string" || skillKey.length === 0) {
+          throw new Error("Each global change requires a non-empty skillKey");
+        }
+        if (typeof enabled !== "boolean") {
+          throw new Error("Each global change requires a boolean enabled");
+        }
+        const match = discovered.find((s) => s.id === skillKey);
+        if (!match) {
+          throw new Error(`Unknown skill "${skillKey}"`);
+        }
+        globalChanges.push({ skillKey, enabled, bundled: match.source === "builtin" });
+      }
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      // Stage every change onto the single config object before writing once.
+      applyAgentSkillsToConfig(config, agentId, skills);
+      for (const change of globalChanges) {
+        applyGlobalSkillChange(config, change.skillKey, change.enabled, change.bundled);
+      }
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update skill state while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Applying skill config for agent ${agentId}`);
+        return {
+          agentId,
+          skills,
+          globalChanges: globalChanges.map(({ skillKey, enabled }) => ({ skillKey, enabled })),
+        };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(`Rolling back failed skill config apply for ${agentId}`);
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
   // --- Chat (WebSocket gateway protocol) ---
   ipcMain.handle(
     "chat:send-message",
@@ -3843,11 +4280,7 @@ function registerIpcHandlers(): void {
       app.setLoginItemSettings({ openAtLogin: !!value });
     }
     if (key === "themeMode" && mainWindow) {
-      mainWindow.setTitleBarOverlay(
-        value === "dark"
-          ? { color: "#27272a", symbolColor: "#fafafa", height: 36 }
-          : { color: "#ffffff", symbolColor: "#1e1f25", height: 36 },
-      );
+      mainWindow.setBackgroundColor(getWindowBackgroundColor(String(value)));
     }
   });
 

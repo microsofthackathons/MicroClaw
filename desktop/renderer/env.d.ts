@@ -63,6 +63,33 @@ interface SkillEntry {
   eligible: boolean;
 }
 
+interface SkillStatusRecord {
+  skillKey: string;
+  name: string;
+  source: string;
+  bundled: boolean;
+  eligible: boolean;
+  disabled: boolean;
+  modelVisible: boolean;
+  commandVisible: boolean;
+  blockedByAllowlist: boolean;
+  blockedByAgentFilter: boolean;
+  missing: {
+    bins: string[];
+    anyBins: string[];
+    env: string[];
+    config: string[];
+    os: string[];
+  };
+}
+
+interface SkillsStatus {
+  ok: boolean;
+  error?: string;
+  summary: { total: number; modelVisible: number };
+  skills: SkillStatusRecord[];
+}
+
 interface IntegrityChange {
   skill: string;
   source: string;
@@ -131,6 +158,18 @@ interface OpenClawAPI {
     refresh(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
+    setAgentSkills(agentId: string, skillIds: string[]): Promise<{ agentId: string; skills: string[] }>;
+    getStatus(agentId: string): Promise<SkillsStatus>;
+    setGlobalEnabled(skillKey: string, enabled: boolean): Promise<{ skillKey: string; enabled: boolean }>;
+    applyAgentConfig(
+      agentId: string,
+      skillIds: string[],
+      globalChanges: { skillKey: string; enabled: boolean }[],
+    ): Promise<{
+      agentId: string;
+      skills: string[];
+      globalChanges: { skillKey: string; enabled: boolean }[];
+    }>;
     integrityCheck(): Promise<IntegrityResult>;
     pendingIntegrityResult(): Promise<IntegrityResult | null>;
     acceptIntegrityChanges(): Promise<void>;

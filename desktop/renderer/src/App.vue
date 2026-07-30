@@ -12,7 +12,7 @@
   />
 
   <!-- Main app (shown after first successful WS connection) -->
-  <div v-else class="app-layout">
+  <div v-else class="app-layout" :class="{ 'app-layout--maximized': isMaximized }">
     <SidePanel />
     <main class="main-content">
       <div class="app-header">
@@ -82,7 +82,6 @@
       </div>
       <router-view />
     </main>
-    <UsagePanel />
   </div>
 
   <!-- Integrity Alert Dialog (shown immediately on launch or mid-session) -->
@@ -151,7 +150,6 @@ import { ElMessage } from "element-plus";
 import SidePanel from "@/components/SidePanel.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
 import PermissionDialog from "@/components/PermissionDialog.vue";
-import UsagePanel from "@/components/UsagePanel.vue";
 import { useAgentStore } from "@/stores/agents";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -573,6 +571,11 @@ onUnmounted(() => {
   background: var(--ux-surface-primary);
   position: relative;
   will-change: contents;
+}
+
+.app-layout--maximized {
+  border: none;
+  border-radius: 0;
 }
 
 .main-content {
