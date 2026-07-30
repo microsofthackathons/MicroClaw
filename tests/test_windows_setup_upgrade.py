@@ -1599,6 +1599,25 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._create_uninstall_shortcut.assert_called_once()
         self.ws._register_installed_app.assert_called_once()
 
+    def test_browser_fallback_failure_defers_to_registry_result(self):
+        for registry_result in (True, False):
+            with self.subTest(registry_result=registry_result):
+                self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+                self.ws._find_desktop_exe = unittest.mock.Mock(return_value=None)
+                self.ws._create_lnk_shortcut = unittest.mock.Mock()
+                self.ws._create_start_menu_shortcut = unittest.mock.Mock()
+                self.ws._create_url_shortcut = unittest.mock.Mock(return_value=False)
+                self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
+                self.ws._register_installed_app = unittest.mock.Mock(return_value=registry_result)
+
+                self.assertEqual(self.ws.create_desktop_shortcut(), registry_result)
+
+                self.ws._create_lnk_shortcut.assert_not_called()
+                self.ws._create_start_menu_shortcut.assert_not_called()
+                self.ws._create_url_shortcut.assert_called_once()
+                self.ws._create_uninstall_shortcut.assert_called_once()
+                self.ws._register_installed_app.assert_called_once_with(None)
+
     def test_url_shortcut_reports_write_failure(self):
         self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
 
