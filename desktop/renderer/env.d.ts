@@ -131,6 +131,7 @@ interface OpenClawAPI {
     refresh(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
+    setAgentSkills(agentId: string, skillIds: string[]): Promise<{ agentId: string; skills: string[] }>;
     integrityCheck(): Promise<IntegrityResult>;
     pendingIntegrityResult(): Promise<IntegrityResult | null>;
     acceptIntegrityChanges(): Promise<void>;

@@ -260,7 +260,10 @@ export function ensureAgentPersonasConfig(
   );
   for (const entry of entries) {
     const catalogSkills = catalogSkillsById.get(entry.id);
-    if (catalogSkills !== undefined) {
+    // Seed catalog skills ONLY when the entry has no skills key yet
+    // (fill-if-missing). Existing skills arrays — including dev-edited ones from
+    // the runtime Skills panel — are preserved across gateway reloads.
+    if (catalogSkills !== undefined && !Object.hasOwn(entry, "skills")) {
       entry.skills = [...catalogSkills];
     }
   }

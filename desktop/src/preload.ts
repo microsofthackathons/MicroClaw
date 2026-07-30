@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.invoke("skills:update-allowlist", allowBundled),
     updateManagedEntries: (entries: Record<string, { enabled: boolean }>) =>
       ipcRenderer.invoke("skills:update-managed-entries", entries),
+    setAgentSkills: (agentId: string, skillIds: string[]) =>
+      ipcRenderer.invoke("skills:set-agent-skills", agentId, skillIds) as Promise<{
+        agentId: string;
+        skills: string[];
+      }>,
     integrityCheck: () => ipcRenderer.invoke("skills:integrity-check"),
     pendingIntegrityResult: () => ipcRenderer.invoke("skills:pending-integrity-result"),
     acceptIntegrityChanges: () => ipcRenderer.invoke("skills:accept-integrity-changes"),

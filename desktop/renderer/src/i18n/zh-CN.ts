@@ -672,6 +672,21 @@ export default {
   "usage.noSessions": "此时间范围内暂无会话",
   "usage.footer": "数据来源于 OpenClaw Gateway，需要 Gateway 运行中。",
 
+  // ── Skills (dev-only panel) ──
+  "skills.dev.tab": "技能",
+  "skills.dev.title": "智能体技能（开发）",
+  "skills.dev.subtitle": "切换每个智能体可使用的技能，然后应用并重载网关。仅限开发版本。",
+  "skills.dev.agent": "智能体",
+  "skills.dev.selectAll": "全选",
+  "skills.dev.clearAll": "清空",
+  "skills.dev.enabledCount": "已启用 {count} / {total}",
+  "skills.dev.loading": "正在加载智能体技能……",
+  "skills.dev.loadFailed": "加载技能失败：{error}",
+  "skills.dev.apply": "应用并重载",
+  "skills.dev.applying": "正在应用……",
+  "skills.dev.applied": "已应用，网关已重载。",
+  "skills.dev.applyFailed": "应用失败：{error}",
+
   // ── Studio ──
   "studio.switchToStudio": "工作室",
   "studio.switchToChat": "对话",
