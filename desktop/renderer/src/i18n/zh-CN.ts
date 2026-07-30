@@ -692,6 +692,7 @@ export default {
   "skills.dev.global": "全局",
   "skills.dev.modelVisibleSummary": "模型可见：{visible} / {total}",
   "skills.dev.statusFailed": "无法获取状态：{error}",
+  "skills.dev.statusChecking": "正在检查技能状态…最长可能需要一分钟。",
   "skills.dev.badge.visible": "模型可见",
   "skills.dev.badge.hidden": "未注入",
   "skills.dev.badge.unknown": "无状态",

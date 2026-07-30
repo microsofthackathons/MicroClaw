@@ -3389,11 +3389,12 @@ function registerIpcHandlers(): void {
         });
 
       try {
-        const [listJson, checkJson] = await Promise.all([
-          runCli(["skills", "list", "--agent", agentId, "--json"]),
-          runCli(["skills", "check", "--agent", agentId, "--json"]),
-        ]);
-        if (!listJson && !checkJson) {
+        // `skills list --json` already carries every per-skill boolean and the
+        // per-skill `missing` requirements the panel renders, so we only spawn one
+        // CLI process (the cold CLI can take ~60–90s). normalizeSkillsStatus stays
+        // tolerant of a null `check` payload.
+        const listJson = await runCli(["skills", "list", "--agent", agentId, "--json"]);
+        if (!listJson) {
           return {
             ok: false,
             error: "OpenClaw skills CLI produced no parseable output",
@@ -3401,7 +3402,7 @@ function registerIpcHandlers(): void {
             skills: [],
           };
         }
-        const skills = normalizeSkillsStatus(listJson, checkJson);
+        const skills = normalizeSkillsStatus(listJson, null);
         return {
           ok: true,
           summary: {

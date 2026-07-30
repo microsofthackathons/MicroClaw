@@ -43,7 +43,10 @@
       </div>
 
       <div class="skills-dev-summary">
-        <span v-if="status">
+        <span v-if="statusLoading" class="skills-dev-status-checking">
+          {{ t("skills.dev.statusChecking") }}
+        </span>
+        <span v-else-if="status">
           {{ t("skills.dev.modelVisibleSummary", {
             visible: status.summary.modelVisible,
             total: status.summary.total,
@@ -57,10 +60,17 @@
       <div v-if="loading" class="skills-dev-status">{{ t("skills.dev.loading") }}</div>
       <ul v-else class="skills-dev-list">
         <li v-for="id in allSkillIds" :key="id" class="skills-dev-item">
-          <div class="skills-dev-item-main">
+          <div class="skills-dev-item-left">
+            <span class="skills-dev-skill-id">{{ id }}</span>
+            <div v-if="statusFor(id)" class="skills-dev-item-status">
+              <span class="skills-dev-badge" :class="badgeClass(id)">{{ badgeText(id) }}</span>
+              <span v-if="reasonText(id)" class="skills-dev-reason">{{ reasonText(id) }}</span>
+              <span v-if="missingText(id)" class="skills-dev-missing">{{ missingText(id) }}</span>
+            </div>
+          </div>
+          <div class="skills-dev-item-controls">
             <label class="skills-dev-toggle">
               <input type="checkbox" :checked="pending.has(id)" @change="toggleSkill(id)" />
-              <span class="skills-dev-skill-id">{{ id }}</span>
               <span class="skills-dev-toggle-hint">{{ t("skills.dev.thisAgent") }}</span>
             </label>
             <label class="skills-dev-global">
@@ -72,11 +82,6 @@
               />
               <span class="skills-dev-global-label">{{ t("skills.dev.global") }}</span>
             </label>
-          </div>
-          <div v-if="statusFor(id)" class="skills-dev-item-status">
-            <span class="skills-dev-badge" :class="badgeClass(id)">{{ badgeText(id) }}</span>
-            <span v-if="reasonText(id)" class="skills-dev-reason">{{ reasonText(id) }}</span>
-            <span v-if="missingText(id)" class="skills-dev-missing">{{ missingText(id) }}</span>
           </div>
         </li>
       </ul>
@@ -419,34 +424,54 @@ onMounted(() => {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 6px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .skills-dev-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--ux-border);
+  border-radius: 8px;
+}
+
+.skills-dev-item-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.skills-dev-item-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
 }
 
 .skills-dev-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 6px;
   border-radius: 8px;
   cursor: pointer;
-}
-
-.skills-dev-toggle:hover {
-  background: var(--ux-surface-hover);
+  white-space: nowrap;
 }
 
 .skills-dev-skill-id {
   font-size: 13px;
+  font-weight: 500;
   color: var(--ux-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .skills-dev-summary {
@@ -458,15 +483,13 @@ onMounted(() => {
   min-height: 16px;
 }
 
-.skills-dev-status-error {
-  color: var(--ux-status-error, #c62828);
+.skills-dev-status-checking {
+  color: var(--ux-ctrl-brand-rest);
+  font-weight: 500;
 }
 
-.skills-dev-item-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: space-between;
+.skills-dev-status-error {
+  color: var(--ux-status-error, #c62828);
 }
 
 .skills-dev-toggle-hint {
@@ -480,6 +503,7 @@ onMounted(() => {
   gap: 4px;
   cursor: pointer;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .skills-dev-global-label {
@@ -492,7 +516,6 @@ onMounted(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px 4px 8px;
 }
 
 .skills-dev-badge {
