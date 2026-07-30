@@ -362,12 +362,8 @@ class WebInstallerBridge:
         with self._state_lock:
             self._state["progress_detail"] = detail or ""
 
-    def _install_thread(self):
-        timing = InstallTiming(self._logger)
-        ws = WindowsSetup(self._config, self._logger)
-        ws.progress_callback = self._set_progress_detail
-
-        steps = [
+    def _build_install_steps(self, ws):
+        return [
             (
                 3,
                 "Configuring PowerShell execution policy...",
@@ -395,9 +391,16 @@ class WebInstallerBridge:
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer, LOCAL_RETRIES),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin, NETWORK_RETRIES),
             (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade, LOCAL_RETRIES),
-            (96, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
+            (95, "Installing uninstaller...", ws.install_uninstaller_bundle, LOCAL_RETRIES),
+            (97, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
             (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade, LOCAL_RETRIES),
         ]
+
+    def _install_thread(self):
+        timing = InstallTiming(self._logger)
+        ws = WindowsSetup(self._config, self._logger)
+        ws.progress_callback = self._set_progress_detail
+        steps = self._build_install_steps(ws)
 
         for pct, label, fn, retries in steps:
             if not self.get_state()["running"]:

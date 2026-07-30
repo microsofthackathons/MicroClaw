@@ -887,12 +887,8 @@ class DeployerApp(tk.Tk):
         # In Fluent mode, logs go to the logger file; status_label shows current step
         pass
 
-    def _install_thread(self):
-        log = self.logger
-        timing = InstallTiming(log)
-        ws = WindowsSetup(self.config, log)
-
-        steps = [
+    def _build_install_steps(self, ws):
+        return [
             # ── Third-party dependencies (previously done by setup.bat) ──
             (3, "Configuring PowerShell execution policy...", ws.ensure_execution_policy),
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
@@ -911,9 +907,16 @@ class DeployerApp(tk.Tk):
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin),
             (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade),
-            (96, "Creating desktop shortcut...", ws.create_desktop_shortcut),
+            (95, "Installing uninstaller...", ws.install_uninstaller_bundle),
+            (97, "Creating desktop shortcut...", ws.create_desktop_shortcut),
             (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade),
         ]
+
+    def _install_thread(self):
+        log = self.logger
+        timing = InstallTiming(log)
+        ws = WindowsSetup(self.config, log)
+        steps = self._build_install_steps(ws)
 
         for pct, label, fn in steps:
             if not self._running:

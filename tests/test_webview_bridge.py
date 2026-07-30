@@ -16,6 +16,10 @@ class WebInstallerBridgeTests(unittest.TestCase):
     def setUp(self):
         self.bridge = WebInstallerBridge(logger=_Log())
 
+    @staticmethod
+    def _step_labels(steps):
+        return [step[1] for step in steps]
+
     def test_prepare_upgrade_prompts_then_closes_running_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=Path("gateway.lock"))
         active = ActiveInstallation(pids=(1234,), gateway=gateway)
@@ -109,6 +113,43 @@ class WebInstallerBridgeTests(unittest.TestCase):
         taskbar.assert_not_called()
         elevate.assert_not_called()
         run_installer.assert_not_called()
+
+    def test_legacy_pipeline_installs_uninstaller_before_shortcuts(self):
+        app = object.__new__(DeployerApp)
+        app._prepare_upgrade = unittest.mock.Mock()
+        app._ensure_node = unittest.mock.Mock()
+        app._ensure_openclaw = unittest.mock.Mock()
+        app._copy_bundled_assets = unittest.mock.Mock()
+        app._write_env_file = unittest.mock.Mock()
+        setup = unittest.mock.Mock()
+
+        steps = app._build_install_steps(setup)
+        labels = self._step_labels(steps)
+        uninstaller_index = labels.index("Installing uninstaller...")
+
+        self.assertLess(
+            uninstaller_index,
+            labels.index("Creating desktop shortcut..."),
+        )
+        self.assertEqual(
+            steps[uninstaller_index][2],
+            setup.install_uninstaller_bundle,
+        )
+
+    def test_web_pipeline_installs_uninstaller_before_shortcuts(self):
+        setup = unittest.mock.Mock()
+
+        steps = self.bridge._build_install_steps(setup)
+        labels = self._step_labels(steps)
+        uninstaller_index = labels.index("Installing uninstaller...")
+        uninstaller_step = steps[uninstaller_index]
+
+        self.assertLess(
+            uninstaller_index,
+            labels.index("Creating desktop shortcut..."),
+        )
+        self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
+        self.assertEqual(uninstaller_step[3], 1)
 
 
 if __name__ == "__main__":
