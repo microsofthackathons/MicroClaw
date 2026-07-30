@@ -51,7 +51,7 @@ body,
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: transparent;
+  background: var(--bg-primary);
   color: var(--text-primary);
   font-family:
     "DM Sans",

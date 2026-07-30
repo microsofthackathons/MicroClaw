@@ -12,7 +12,7 @@
   />
 
   <!-- Main app (shown after first successful WS connection) -->
-  <div v-else class="app-layout">
+  <div v-else class="app-layout" :class="{ 'app-layout--maximized': isMaximized }">
     <SidePanel />
     <main class="main-content">
       <div class="app-header">
@@ -571,6 +571,11 @@ onUnmounted(() => {
   background: var(--ux-surface-primary);
   position: relative;
   will-change: contents;
+}
+
+.app-layout--maximized {
+  border: none;
+  border-radius: 0;
 }
 
 .main-content {
