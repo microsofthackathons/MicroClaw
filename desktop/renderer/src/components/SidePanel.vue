@@ -134,25 +134,6 @@
         </div>
       </div>
 
-      <!-- Usage -->
-      <button class="sp-menu-item" :class="{ active: route.path === '/usage' }" @click="openUsage">
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="3" y="12" width="3" height="8" rx="1" />
-          <rect x="8.5" y="8" width="3" height="12" rx="1" />
-          <rect x="14" y="4" width="3" height="16" rx="1" />
-        </svg>
-        <span>{{ t("sidebar.usage") }}</span>
-      </button>
-
       <!-- Settings -->
       <button
         class="sp-menu-item"
@@ -177,6 +158,58 @@
         <span>{{ t("sidebar.settings") }}</span>
       </button>
     </nav>
+
+    <section class="sp-usage-snapshot" aria-live="polite">
+      <div class="sp-usage-head">
+        <span class="sp-usage-title">{{ t("sidebar.usageSnapshotTitle") }}</span>
+        <button
+          class="sp-usage-toggle"
+          :title="usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')"
+          :aria-label="
+            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
+          "
+          @click="toggleUsageCollapsed"
+        >
+          <svg
+            class="sp-usage-toggle-icon"
+            :class="{ collapsed: usageCollapsed }"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+      </div>
+
+      <template v-if="!usageCollapsed">
+        <div v-if="usageLoading" class="sp-usage-state">{{ t("settings.usageLoading") }}</div>
+        <div v-else-if="usageSnapshot" class="sp-usage-grid">
+          <div class="sp-usage-card">
+            <span class="sp-usage-label">{{ t("sidebar.usageSnapshotSpend") }}</span>
+            <span class="sp-usage-value">{{ formatCny(usageSnapshot.totalSpend) }}</span>
+          </div>
+          <div class="sp-usage-card">
+            <span class="sp-usage-label">{{ t("sidebar.usageSnapshotTokens") }}</span>
+            <span class="sp-usage-value">{{ formatCompact(usageSnapshot.totalTokens) }}</span>
+          </div>
+        </div>
+        <div v-else-if="!gatewayOnline" class="sp-usage-state">{{ t("sidebar.usageSnapshotOffline") }}</div>
+        <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
+
+        <div class="sp-usage-foot">
+          <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
+          <span v-if="lastUpdatedLabel">{{ t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel }) }}</span>
+        </div>
+      </template>
+    </section>
+
   </aside>
 </template>
 
@@ -189,7 +222,6 @@ import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/sessions";
 import { useAgentStore } from "@/stores/agents";
 import { t } from "@/i18n";
-import { useUsagePanel } from "@/composables/useUsagePanel";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
@@ -201,7 +233,20 @@ const chatStore = useChatStore();
 const sessionStore = useSessionStore();
 const agentStore = useAgentStore();
 
-const { open: openUsage } = useUsagePanel();
+interface UsageSnapshot {
+  totalSpend: number;
+  totalTokens: number;
+  exchangeRate: number | null;
+}
+
+// Fallback mirrors USD_TO_CNY_FALLBACK_RATE in SettingsView.vue / the main process.
+const USD_TO_CNY_FALLBACK_RATE = 7.2;
+
+const usageSnapshot = ref<UsageSnapshot | null>(null);
+const usageLoading = ref(false);
+const usageLastUpdated = ref<Date | null>(null);
+const usageCollapsed = ref(false);
+let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 const chatExpanded = ref(true);
 const isAgentFlyoutOpen = ref(false);
@@ -216,6 +261,12 @@ const flyoutStyle = computed(() => ({
   top: `${flyoutTop.value}px`,
   left: `${flyoutLeft.value}px`,
 }));
+
+const gatewayOnline = computed(() => gateway.ready && gateway.status === "running");
+const lastUpdatedLabel = computed(() => {
+  if (!usageLastUpdated.value) return "";
+  return usageLastUpdated.value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+});
 
 const filteredAgents = computed(() => {
   const q = agentQuery.value.trim().toLowerCase();
@@ -235,10 +286,17 @@ const currentAgent = computed(() => {
 
 onMounted(() => {
   gateway.refreshWeixinStatus();
+  try {
+    usageCollapsed.value = localStorage.getItem("microclaw:usageSnapshotCollapsed") === "1";
+  } catch {}
   document.addEventListener("mousedown", handleDocumentPointerDown);
   document.addEventListener("keydown", handleDocumentKeyDown);
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("scroll", handleWindowScroll, true);
+  void loadUsageSnapshot();
+  usageRefreshTimer = setInterval(() => {
+    void loadUsageSnapshot();
+  }, 60_000);
 });
 
 onUnmounted(() => {
@@ -246,7 +304,71 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleDocumentKeyDown);
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("scroll", handleWindowScroll, true);
+  if (usageRefreshTimer) {
+    clearInterval(usageRefreshTimer);
+    usageRefreshTimer = null;
+  }
 });
+
+async function loadUsageSnapshot() {
+  if (usageLoading.value) return;
+  usageLoading.value = true;
+  try {
+    const usageApi = window.openclaw?.usage?.getStats;
+    if (!gatewayOnline.value || typeof usageApi !== "function") {
+      if (import.meta.env.DEV) {
+        applyMockSnapshot();
+      } else {
+        usageSnapshot.value = null;
+      }
+      return;
+    }
+
+    const stats = await usageApi();
+    usageSnapshot.value = {
+      totalSpend: Number(stats?.totalSpend || 0),
+      totalTokens: Number(stats?.totalTokens || 0),
+      exchangeRate: Number(stats?.exchangeRate) || null,
+    };
+    usageLastUpdated.value = new Date();
+  } catch {
+    if (import.meta.env.DEV) {
+      applyMockSnapshot();
+    } else {
+      usageSnapshot.value = null;
+    }
+  } finally {
+    usageLoading.value = false;
+  }
+}
+
+function applyMockSnapshot() {
+  usageSnapshot.value = {
+    totalSpend: 42.35,
+    totalTokens: 128400,
+    exchangeRate: null,
+  };
+  usageLastUpdated.value = new Date();
+}
+
+function toggleUsageCollapsed() {
+  usageCollapsed.value = !usageCollapsed.value;
+  try {
+    localStorage.setItem("microclaw:usageSnapshotCollapsed", usageCollapsed.value ? "1" : "0");
+  } catch {}
+}
+
+function formatCompact(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value || 0);
+}
+
+function formatCny(value: number) {
+  const rate = usageSnapshot.value?.exchangeRate ?? USD_TO_CNY_FALLBACK_RATE;
+  return `${t("settings.currencySymbol")}${((value || 0) * rate).toFixed(2)}`;
+}
 
 /**
  * Ensure the active chat is a fresh session bound to the currently-selected agent.
@@ -686,6 +808,109 @@ html.dark .sp-create-btn:hover {
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
+}
+
+.sp-usage-snapshot {
+  padding: 10px clamp(8px, 1.5vw, 16px) 12px;
+  background: #fbfbf9;
+}
+
+html.dark .sp-usage-snapshot {
+  background: var(--bg-secondary);
+}
+
+.sp-usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sp-usage-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.sp-usage-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.sp-usage-toggle-icon {
+  transition: transform 0.2s ease;
+}
+
+.sp-usage-toggle-icon.collapsed {
+  transform: rotate(-90deg);
+}
+
+.sp-usage-toggle:hover {
+  background: #f0ece7;
+  color: var(--text-primary);
+}
+
+html.dark .sp-usage-toggle:hover {
+  background: var(--bg-tertiary);
+}
+
+.sp-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sp-usage-card {
+  border: 1px solid #ece7e2;
+  border-radius: 8px;
+  padding: 6px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+html.dark .sp-usage-card {
+  border-color: var(--border);
+  background: var(--bg-primary);
+}
+
+.sp-usage-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.sp-usage-value {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.sp-usage-state {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.sp-usage-foot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 /* ── Chat section ── */

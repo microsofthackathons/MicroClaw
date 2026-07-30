@@ -82,7 +82,6 @@
       </div>
       <router-view />
     </main>
-    <UsagePanel />
   </div>
 
   <!-- Integrity Alert Dialog (shown immediately on launch or mid-session) -->
@@ -151,7 +150,6 @@ import { ElMessage } from "element-plus";
 import SidePanel from "@/components/SidePanel.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
 import PermissionDialog from "@/components/PermissionDialog.vue";
-import UsagePanel from "@/components/UsagePanel.vue";
 import { useAgentStore } from "@/stores/agents";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
