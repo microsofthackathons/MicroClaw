@@ -91,6 +91,7 @@ import {
   type AgentPersona,
   type AgentRosterConfig,
 } from "./agent-personas";
+import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
 import {
   applyAgentSkillsToConfig,
@@ -1366,10 +1367,7 @@ async function addCatalogAgent(
   const config = readConfig();
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
-  const result = ensureAgentPersonasConfig(config, stateDir, [
-    ...DEFAULT_AGENT_PERSONAS,
-    persona,
-  ]);
+  const result = ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
   if (!result.changed) {
     return { agents: listConfiguredAgents(config) };
   }
@@ -1377,12 +1375,7 @@ async function addCatalogAgent(
   const alreadyRunning = await checkExistingGateway(gatewayPort);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
   if (
-    requiresExternalGatewayStop(
-      alreadyRunning,
-      true,
-      gatewaySpawnedByUs,
-      gatewayProcess !== null,
-    )
+    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
   ) {
     throw new Error(
       "Cannot add an agent while MicroClaw is connected to an externally managed Gateway",
@@ -1940,11 +1933,7 @@ function normalizeSkillsStatus(
     // `skills list` keys skills by their frontmatter `name`; treat it as the skillKey
     // the UI needs for global gating only when a distinct key isn't provided.
     const skillKey =
-      typeof s.skillKey === "string"
-        ? s.skillKey
-        : typeof s.key === "string"
-          ? s.key
-          : name;
+      typeof s.skillKey === "string" ? s.skillKey : typeof s.key === "string" ? s.key : name;
     const detail = missingByName.get(name);
     const perSkillMissing = (s.missing ?? {}) as Record<string, unknown>;
     records.push({
@@ -2019,12 +2008,7 @@ async function startGatewayInner(): Promise<void> {
     persistAgentPersonas(preparedPersonas.config);
   }
   if (preparedPersonas) {
-    seedSpecialistAgentWorkspaces(
-      preparedPersonas.config,
-      stateDir,
-      entryPath,
-      gatewayEnvironment,
-    );
+    seedSpecialistAgentWorkspaces(preparedPersonas.config, stateDir, entryPath, gatewayEnvironment);
   }
   if (alreadyRunning && !agentRosterChanged) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
@@ -3017,40 +3001,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:read", () => readConfig());
   ipcMain.handle("config:read-env", () => loadStateDirEnv());
   ipcMain.handle("config:write", async (_event, config: any) => {
-    if (typeof config !== "object" || config === null || Array.isArray(config)) {
-      throw new Error("config:write — invalid config: must be a plain object");
-    }
-    // Known top-level keys supported by OpenClaw's openclaw.json.
-    // Keep this as a permissive allow-list: any key OpenClaw may legitimately
-    // read/write should be passed through unchanged so Save doesn't drop or
-    // reject pre-existing config sections.
-    const ALLOWED_TOP_LEVEL_KEYS = new Set([
-      "$schema",
-      "meta",
-      "models",
-      "agents",
-      "tools",
-      "gateway",
-      "skills",
-      "plugins",
-      "browser",
-      "commands",
-      "permissions",
-      "hooks",
-      "mcp",
-      "channels",
-      "telemetry",
-      "memory",
-      "logging",
-      "sandbox",
-    ]);
-    const unknownKeys = Object.keys(config).filter((k) => !ALLOWED_TOP_LEVEL_KEYS.has(k));
-    if (unknownKeys.length > 0) {
-      throw new Error(`config:write — disallowed top-level keys: ${unknownKeys.join(", ")}`);
-    }
     const stateDir = getOpenClawStateDir();
     await fs.promises.mkdir(stateDir, { recursive: true });
-    await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    assertConfigWriteAllowed(config, readConfig());
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
   // --- Skills ---
@@ -3310,9 +3264,7 @@ function registerIpcHandlers(): void {
         try {
           writeConfigTextAtomically(originalConfigText);
           if (restartAttempted && managedGateway) {
-            await restartManagedGateway(
-              `Rolling back failed skills update for ${agentId}`,
-            );
+            await restartManagedGateway(`Rolling back failed skills update for ${agentId}`);
           }
         } catch {
           // Preserve the original failure; rollback is best-effort.
@@ -3331,7 +3283,12 @@ function registerIpcHandlers(): void {
     async (_event, agentId: string): Promise<SkillsStatusResult> => {
       const emptySummary = { total: 0, modelVisible: 0 };
       if (typeof agentId !== "string" || agentId.length === 0) {
-        return { ok: false, error: "A non-empty agentId is required", summary: emptySummary, skills: [] };
+        return {
+          ok: false,
+          error: "A non-empty agentId is required",
+          summary: emptySummary,
+          skills: [],
+        };
       }
 
       const nodePath = resolveNodePath();
@@ -3481,9 +3438,7 @@ function registerIpcHandlers(): void {
         try {
           writeConfigTextAtomically(originalConfigText);
           if (restartAttempted && managedGateway) {
-            await restartManagedGateway(
-              `Rolling back failed global toggle for ${skillKey}`,
-            );
+            await restartManagedGateway(`Rolling back failed global toggle for ${skillKey}`);
           }
         } catch {
           // Preserve the original failure; rollback is best-effort.
@@ -3576,9 +3531,7 @@ function registerIpcHandlers(): void {
         try {
           writeConfigTextAtomically(originalConfigText);
           if (restartAttempted && managedGateway) {
-            await restartManagedGateway(
-              `Rolling back failed skill config apply for ${agentId}`,
-            );
+            await restartManagedGateway(`Rolling back failed skill config apply for ${agentId}`);
           }
         } catch {
           // Preserve the original failure; rollback is best-effort.

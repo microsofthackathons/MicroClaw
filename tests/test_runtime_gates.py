@@ -69,6 +69,12 @@ class RuntimeGateTests(unittest.TestCase):
         self.assertIn("Get-FileHash", build_script)
         self.assertIn("--offline", build_script)
 
+    def test_nsis_build_declares_utf8_input_charset(self):
+        build_script = (ROOT / "build.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('"/INPUTCHARSET"', build_script)
+        self.assertIn('"UTF8"', build_script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -40,6 +41,12 @@ from deployer.openclaw_version import (
     is_supported_node_version,
 )
 from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
+from deployer.uninstaller_bundle import (
+    UninstallerBundleError,
+    publish_uninstaller_bundle,
+    resolve_uninstaller_bundle,
+    validate_uninstaller_bundle,
+)
 
 # ── Mirror URLs ──
 # Mirror names — used as keys into MIRRORS and as the fallback when probing fails.
@@ -3667,61 +3674,79 @@ class WindowsSetup:
             if job is not None:
                 job.close()
 
+    def install_uninstaller_bundle(self) -> bool:
+        """Persist a verified uninstaller before exposing Windows entry points."""
+        try:
+            app_dir = Path(__file__).resolve().parent.parent
+            source = resolve_uninstaller_bundle(
+                frozen=getattr(sys, "frozen", False),
+                executable=Path(sys.executable),
+                app_dir=app_dir,
+            )
+            destination = Path.home() / ".openclaw"
+            persisted = publish_uninstaller_bundle(
+                source,
+                destination,
+                self._check_persisted_uninstaller,
+                cleanup_error_handler=self.log.warn,
+            )
+            self.log.success(f"卸载程序已安装: {persisted}")
+            return True
+        except UninstallerBundleError as error:
+            self.log.error(f"安装卸载程序失败: {error}")
+            return False
+
+    def _check_persisted_uninstaller(self, executable: Path) -> None:
+        try:
+            result = self._run(
+                [str(executable), "--check-uninstaller"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise UninstallerBundleError("Persisted uninstaller startup check timed out") from error
+        except OSError as error:
+            raise UninstallerBundleError(
+                f"Persisted uninstaller startup check could not launch: {error}"
+            ) from error
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown runtime error").strip()
+            raise UninstallerBundleError(
+                f"Persisted uninstaller startup check failed ({result.returncode}): {detail}"
+            )
+
     def create_desktop_shortcut(self) -> bool:
-        """Create a desktop shortcut for the MicroClawDesktop client."""
+        """Create best-effort shortcuts and required uninstall registration."""
         self.log.step("Creating desktop shortcut…")
 
         desktop = self._get_desktop_path()
         desktop_exe = self._find_desktop_exe()
 
         if desktop_exe:
-            ok = self._create_lnk_shortcut(desktop, desktop_exe)
+            self._create_lnk_shortcut(desktop, desktop_exe)
+            self._create_start_menu_shortcut(desktop_exe)
         else:
             self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
-            ok = self._create_url_shortcut(desktop)
+            self._create_url_shortcut(desktop)
 
-        # Start Menu shortcut so MicroClaw is discoverable via Windows Search
-        if desktop_exe:
-            self._create_start_menu_shortcut(desktop_exe)
-
-        # Register in Add/Remove Programs (Settings > Installed apps)
-        self._register_installed_app(desktop_exe)
-
-        # Also create uninstall shortcut
         self._create_uninstall_shortcut(desktop)
-        return ok
+        return self._register_installed_app(desktop_exe)
 
     def _create_uninstall_shortcut(self, desktop: Path) -> bool:
-        """Copy installer to ~/.openclaw/ and create an uninstall shortcut on desktop."""
-        import sys
-
+        """Create an uninstall shortcut for the persisted installer."""
         shortcut_path = desktop / "Uninstall MicroClaw.lnk"
-
-        # Copy installer exe to a persistent location
         openclaw_dir = Path.home() / ".openclaw"
-        openclaw_dir.mkdir(parents=True, exist_ok=True)
         installer_dest = openclaw_dir / "MicroClawInstaller.exe"
 
-        if getattr(sys, "frozen", False):
-            src = Path(sys.executable)
-            if src.exists() and src != installer_dest:
-                try:
-                    shutil.copy2(src, installer_dest)
-                    # In onedir mode, PyInstaller places dependencies in _internal/
-                    # next to the exe. Copy it so the uninstall exe can actually run.
-                    src_internal = src.parent / "_internal"
-                    if src_internal.is_dir():
-                        dest_internal = openclaw_dir / "_internal"
-                        if dest_internal.exists():
-                            shutil.rmtree(dest_internal)
-                        shutil.copytree(src_internal, dest_internal)
-                    self.log.info(f"安装程序已复制到 {installer_dest}")
-                except Exception as e:
-                    self.log.warn(f"无法复制安装程序: {e}")
-                    return False
-        elif not installer_dest.exists():
-            self.log.info("非打包模式，跳过卸载快捷方式创建")
-            return True
+        try:
+            validate_uninstaller_bundle(openclaw_dir)
+        except UninstallerBundleError as error:
+            self.log.error(f"无法创建卸载快捷方式: {error}")
+            return False
 
         try:
             ico_path = self._resolve_uninstall_icon()
@@ -3879,7 +3904,7 @@ class WindowsSetup:
             return True
         except Exception as e:
             self.log.warn(f"Could not create desktop shortcut: {e}")
-            return True  # Non-fatal
+            return False
 
     def _get_start_menu_path(self) -> Path:
         """Resolve the user's Start Menu > Programs folder.
@@ -3968,14 +3993,14 @@ class WindowsSetup:
         Uninstall registry keys.  Writing one here also lets the user uninstall
         from the standard Windows UI.
         """
-        import sys
-
         openclaw_dir = Path.home() / ".openclaw"
         installer_dest = openclaw_dir / "MicroClawInstaller.exe"
-        # Fall back to the running installer if the persistent copy isn't there yet.
+        try:
+            validate_uninstaller_bundle(openclaw_dir)
+        except UninstallerBundleError as error:
+            self.log.error(f"无法注册“已安装的应用”: {error}")
+            return False
         uninstall_exe = installer_dest
-        if not uninstall_exe.exists() and getattr(sys, "frozen", False):
-            uninstall_exe = Path(sys.executable)
 
         install_location = DEFAULT_DESKTOP_DIR
         ico_path = self._resolve_icon()

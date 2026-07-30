@@ -455,6 +455,8 @@ if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
 $prev = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 & $makensis `
+    "/INPUTCHARSET" `
+    "UTF8" `
     "/DPAYLOAD_DIR=$installerDir" `
     "/DOUT_FILE=$setupExe" `
     "/DICON=$setupIcon" `
