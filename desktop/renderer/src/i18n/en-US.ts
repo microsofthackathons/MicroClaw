@@ -723,6 +723,7 @@ export default {
   "skills.dev.badge.visible": "Model-visible",
   "skills.dev.badge.hidden": "Not injected",
   "skills.dev.badge.unknown": "No status",
+  "skills.dev.badge.notInstalled": "Not installed",
   "skills.dev.reason.allowlist": "Blocked by global allowlist",
   "skills.dev.reason.agentFilter": "Excluded by agent allowlist",
   "skills.dev.reason.disabled": "Disabled",
@@ -731,9 +732,6 @@ export default {
   "skills.dev.missing.env": "env: {list}",
   "skills.dev.missing.config": "config: {list}",
   "skills.dev.missing.os": "os: {list}",
-  "skills.dev.globalUpdating": "Updating global state for {skill}…",
-  "skills.dev.globalUpdated": "Updated global state for {skill}. Gateway reloaded.",
-  "skills.dev.globalFailed": "Failed to update global state: {error}",
 
   // ── Studio ──
   "studio.switchToStudio": "Studio",

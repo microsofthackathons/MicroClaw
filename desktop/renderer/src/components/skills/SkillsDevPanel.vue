@@ -67,6 +67,11 @@
               <span v-if="reasonText(id)" class="skills-dev-reason">{{ reasonText(id) }}</span>
               <span v-if="missingText(id)" class="skills-dev-missing">{{ missingText(id) }}</span>
             </div>
+            <div v-else-if="showNotInstalled" class="skills-dev-item-status">
+              <span class="skills-dev-badge is-notinstalled">
+                {{ t("skills.dev.badge.notInstalled") }}
+              </span>
+            </div>
           </div>
           <div class="skills-dev-item-controls">
             <label class="skills-dev-toggle">
@@ -76,9 +81,9 @@
             <label class="skills-dev-global">
               <input
                 type="checkbox"
-                :checked="globalOn(id)"
-                :disabled="!statusFor(id) || globalBusy.has(id)"
-                @change="toggleGlobal(id)"
+                :checked="pendingGlobalOn(id)"
+                :disabled="!statusFor(id) || applying || statusLoading"
+                @change="toggleGlobalPending(id)"
               />
               <span class="skills-dev-global-label">{{ t("skills.dev.global") }}</span>
             </label>
@@ -125,7 +130,11 @@ const feedbackKind = ref<"info" | "success" | "error">("info");
 const status = ref<SkillsStatus | null>(null);
 const statusLoading = ref(false);
 const statusError = ref("");
-const globalBusy = ref<Set<string>>(new Set());
+// Deferred global master state: flipping a "Global" switch only stages a change here;
+// it's flushed on "Apply & reload" so the user waits for a single gateway restart.
+// baselineGlobal is the persisted state captured on each successful status load.
+const pendingGlobal = ref<Map<string, boolean>>(new Map());
+const baselineGlobal = ref<Map<string, boolean>>(new Map());
 
 function resolveDefaultAgentId(): string {
   const current = agentStore.currentAgentId;
@@ -133,7 +142,19 @@ function resolveDefaultAgentId(): string {
 }
 
 const enabledCount = computed(() => pending.value.size);
-const dirty = computed(() => !setsEqual(pending.value, persisted.value));
+// A staged global change exists when any pending value differs from its baseline.
+const globalDirty = computed(() => {
+  for (const [slug, value] of pendingGlobal.value) {
+    if (baselineGlobal.value.get(slug) !== value) return true;
+  }
+  return false;
+});
+const dirty = computed(
+  () => !setsEqual(pending.value, persisted.value) || globalDirty.value,
+);
+// The status fetch succeeded (non-null) and isn't in flight — used to show the
+// "Not installed" badge for catalog slugs that returned no record (e.g. `canvas`).
+const showNotInstalled = computed(() => !statusLoading.value && status.value !== null);
 
 // Match a status record (keyed by the CLI's frontmatter name or slug) back to a
 // catalog slug, tolerating both the slug- and display-name forms.
@@ -150,6 +171,22 @@ function globalOn(slug: string): boolean {
   // Unknown skills default to "on" so the switch isn't misleadingly off.
   if (!record) return true;
   return !record.disabled && !record.blockedByAllowlist;
+}
+
+// The staged (possibly-unsaved) global state for a skill, falling back to its
+// persisted baseline when nothing is staged.
+function pendingGlobalOn(slug: string): boolean {
+  const staged = pendingGlobal.value.get(slug);
+  if (staged !== undefined) return staged;
+  return globalOn(slug);
+}
+
+// Stage a global on/off flip locally (no IPC / restart / refetch until Apply).
+function toggleGlobalPending(slug: string): void {
+  if (!statusFor(slug)) return;
+  const next = new Map(pendingGlobal.value);
+  next.set(slug, !pendingGlobalOn(slug));
+  pendingGlobal.value = next;
 }
 
 function badgeClass(slug: string): string {
@@ -256,6 +293,14 @@ async function loadStatus(agentId: string): Promise<void> {
     const result = await window.openclaw.skills.getStatus(agentId);
     if (result.ok) {
       status.value = result;
+      // Seed the global baseline (and reset any staged flips) from the freshly
+      // loaded status. Only skills with a record can be globally gated.
+      const base = new Map<string, boolean>();
+      for (const slug of allSkillIds) {
+        if (statusFor(slug)) base.set(slug, globalOn(slug));
+      }
+      baselineGlobal.value = base;
+      pendingGlobal.value = new Map(base);
     } else {
       status.value = null;
       statusError.value = result.error ?? "unknown error";
@@ -272,39 +317,25 @@ function refreshStatus(): void {
   void loadStatus(selectedAgentId.value);
 }
 
-async function toggleGlobal(slug: string): Promise<void> {
-  const next = !globalOn(slug);
-  const busy = new Set(globalBusy.value);
-  busy.add(slug);
-  globalBusy.value = busy;
-  feedbackKind.value = "info";
-  feedback.value = t("skills.dev.globalUpdating", { skill: slug });
-  try {
-    await window.openclaw.skills.setGlobalEnabled(slug, next);
-    feedbackKind.value = "success";
-    feedback.value = t("skills.dev.globalUpdated", { skill: slug });
-    await loadStatus(selectedAgentId.value);
-  } catch (error) {
-    feedbackKind.value = "error";
-    feedback.value = t("skills.dev.globalFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    const done = new Set(globalBusy.value);
-    done.delete(slug);
-    globalBusy.value = done;
-  }
-}
-
 async function apply(): Promise<void> {
   applying.value = true;
   feedbackKind.value = "info";
   feedback.value = t("skills.dev.applying");
   const agentId = selectedAgentId.value;
   const skillIds = allSkillIds.filter((id) => pending.value.has(id));
+  // Global changes: only skills that HAVE a status record and whose staged value
+  // differs from the persisted baseline. Keyed by the catalog slug (== the CLI's
+  // discovered skill id used for global gating).
+  const globalChanges: { skillKey: string; enabled: boolean }[] = [];
+  for (const [slug, value] of pendingGlobal.value) {
+    if (baselineGlobal.value.get(slug) === value) continue;
+    if (!statusFor(slug)) continue;
+    globalChanges.push({ skillKey: slug, enabled: value });
+  }
   try {
-    await window.openclaw.skills.setAgentSkills(agentId, skillIds);
+    await window.openclaw.skills.applyAgentConfig(agentId, skillIds, globalChanges);
     persisted.value = new Set(skillIds);
+    baselineGlobal.value = new Map(pendingGlobal.value);
     feedbackKind.value = "success";
     feedback.value = t("skills.dev.applied");
     await loadStatus(agentId);
@@ -537,6 +568,11 @@ onMounted(() => {
 }
 
 .skills-dev-badge.is-unknown {
+  background: var(--ux-surface-hover);
+  color: var(--ux-text-muted);
+}
+
+.skills-dev-badge.is-notinstalled {
   background: var(--ux-surface-hover);
   color: var(--ux-text-muted);
 }
