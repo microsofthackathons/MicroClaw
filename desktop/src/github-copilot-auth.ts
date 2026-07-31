@@ -11,6 +11,8 @@ const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
 const MAX_GATEWAY_MODELS = 5_000;
+// OpenClaw uses agents/main/agent as the inherited auth root, independent of the routed default.
+export const GITHUB_COPILOT_AUTH_AGENT_ID = "main";
 
 let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | null = null;
 let authStatusInFlight: Promise<{ authenticated: boolean }> | null = null;
@@ -177,8 +179,44 @@ export function parseGitHubCopilotWorkerLine(line: string): WorkerMessage | unde
 }
 
 export function parseGitHubCopilotAuthStatus(output: string): boolean {
-  const parsed = JSON.parse(output) as { profiles?: unknown };
-  return Array.isArray(parsed.profiles) && parsed.profiles.length > 0;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(output);
+  } catch {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+
+  const parsed = payload as {
+    auth?: { oauth?: { providers?: unknown } };
+  };
+  const providers = parsed.auth?.oauth?.providers;
+  if (!Array.isArray(providers)) {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+
+  const provider = providers.find(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      (entry as { provider?: unknown }).provider === "github-copilot",
+  ) as { status?: unknown; profiles?: unknown } | undefined;
+  if (!provider) return false;
+
+  const isUsableStatus = (status: unknown) =>
+    status === "ok" || status === "static" || status === "expiring";
+  if (Array.isArray(provider.profiles)) {
+    const hasUsableProfile = provider.profiles.some(
+      (profile) =>
+        profile &&
+        typeof profile === "object" &&
+        isUsableStatus((profile as { status?: unknown }).status),
+    );
+    if (hasUsableProfile) return true;
+  }
+  return isUsableStatus(provider.status);
 }
 
 export function parseGitHubCopilotDisconnectResult(
@@ -191,12 +229,10 @@ export function parseGitHubCopilotDisconnectResult(
     throw new Error("Invalid GitHub Copilot disconnect response");
   }
 
-  return parseGitHubCopilotGatewayDisconnectResult(payload);
+  return parseGitHubCopilotDisconnectPayload(payload);
 }
 
-export function parseGitHubCopilotGatewayDisconnectResult(
-  payload: unknown,
-): GitHubCopilotDisconnectResult {
+function parseGitHubCopilotDisconnectPayload(payload: unknown): GitHubCopilotDisconnectResult {
   if (!payload || typeof payload !== "object") {
     throw new Error("Invalid GitHub Copilot disconnect response");
   }
@@ -216,33 +252,6 @@ export function parseGitHubCopilotGatewayDisconnectResult(
   }
 
   return { disconnected: true, removedProfiles: result.removedProfiles.length };
-}
-
-export function parseGitHubCopilotGatewayAuthStatus(payload: unknown): boolean {
-  if (!payload || typeof payload !== "object") {
-    throw new Error("Invalid Gateway model authentication status");
-  }
-  const providers = (payload as { providers?: unknown }).providers;
-  if (!Array.isArray(providers)) {
-    throw new Error("Invalid Gateway model authentication status");
-  }
-  const provider = providers.find(
-    (entry) =>
-      entry &&
-      typeof entry === "object" &&
-      (entry as { provider?: unknown }).provider === "github-copilot",
-  ) as { status?: unknown; profiles?: unknown } | undefined;
-  if (!provider) return false;
-
-  if (Array.isArray(provider.profiles)) {
-    const hasUsableProfile = provider.profiles.some((profile) => {
-      if (!profile || typeof profile !== "object") return false;
-      const status = (profile as { status?: unknown }).status;
-      return status === "ok" || status === "static" || status === "expiring";
-    });
-    if (hasUsableProfile) return true;
-  }
-  return provider.status === "ok" || provider.status === "static" || provider.status === "expiring";
 }
 
 export function parseGitHubCopilotGatewayModels(payload: unknown): GitHubCopilotModel[] {
@@ -277,6 +286,30 @@ export function parseGitHubCopilotGatewayModels(payload: unknown): GitHubCopilot
 export function invalidateGitHubCopilotAuthStatusCache(): void {
   authStatusCache = null;
   modelCatalogCache = null;
+}
+
+export function buildGitHubCopilotAuthStatusArgs(): string[] {
+  return [
+    "models",
+    "status",
+    "--agent",
+    GITHUB_COPILOT_AUTH_AGENT_ID,
+    "--json",
+  ];
+}
+
+export function buildGitHubCopilotLogoutArgs(): string[] {
+  return [
+    "infer",
+    "model",
+    "auth",
+    "logout",
+    "--provider",
+    "github-copilot",
+    "--agent",
+    GITHUB_COPILOT_AUTH_AGENT_ID,
+    "--json",
+  ];
 }
 
 async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]): Promise<string> {
@@ -325,14 +358,7 @@ export async function getGitHubCopilotAuthStatus(
   if (authStatusCache && authStatusCache.expiresAt > Date.now()) return authStatusCache.value;
   if (authStatusInFlight) return authStatusInFlight;
 
-  authStatusInFlight = runOpenClawJson(runtime, [
-    "models",
-    "auth",
-    "list",
-    "--provider",
-    "github-copilot",
-    "--json",
-  ])
+  authStatusInFlight = runOpenClawJson(runtime, buildGitHubCopilotAuthStatusArgs())
     .then((output) => {
       const value = { authenticated: parseGitHubCopilotAuthStatus(output) };
       authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };
@@ -347,30 +373,9 @@ export async function getGitHubCopilotAuthStatus(
 export async function disconnectGitHubCopilot(
   runtime: GitHubCopilotAuthRuntime,
 ): Promise<GitHubCopilotDisconnectResult> {
-  let removedProfiles = 0;
-  const errors: Error[] = [];
   try {
-    for (const agentId of [undefined, "main"]) {
-      try {
-        const output = await runOpenClawJson(runtime, [
-          "infer",
-          "model",
-          "auth",
-          "logout",
-          "--provider",
-          "github-copilot",
-          ...(agentId ? ["--agent", agentId] : []),
-          "--json",
-        ]);
-        removedProfiles += parseGitHubCopilotDisconnectResult(output).removedProfiles;
-      } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, "Failed to remove all GitHub Copilot credentials");
-    }
-    return { disconnected: true, removedProfiles };
+    const output = await runOpenClawJson(runtime, buildGitHubCopilotLogoutArgs());
+    return parseGitHubCopilotDisconnectResult(output);
   } finally {
     invalidateGitHubCopilotAuthStatusCache();
   }

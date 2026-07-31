@@ -141,7 +141,10 @@ export default {
     "Base URL 可能填写错误或路径不正确。请在「模型设置」中检查 Base URL（对于 OpenAI 兼容接口，通常需要以 /v1 结尾）。",
   "chat.error.copilot_auth.title": "GitHub Copilot 登录已失效",
   "chat.error.copilot_auth.hint":
-    "OpenClaw 无法将已保存的 GitHub 登录换取 Copilot Token。请在「模型设置」中断开并重新连接 GitHub Copilot，同时确认该 GitHub 账号拥有有效的 Copilot 权限。",
+    "GitHub Copilot 认证缺失或已失效。请重新登录，并确认该 GitHub 账号拥有有效的 Copilot 权限。",
+  "chat.error.missing_provider_auth.title": "请选择模型提供方",
+  "chat.error.missing_provider_auth.hint":
+    "当前模型提供方没有可用凭据。请选择并配置一个模型提供方后继续。",
   "chat.error.unauthorized.title": "身份验证失败",
   "chat.error.unauthorized.hint":
     "API Key 被模型提供方拒绝。请在「模型设置」中确认 API Key 是否正确、是否已过期或被吊销。",

@@ -3,6 +3,8 @@ import * as path from "node:path";
 
 const MESSAGE_PREFIX = "MICROCLAW_COPILOT_AUTH:";
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
+// This worker is packaged as a standalone extraResource, so it cannot import app.asar modules.
+export const GITHUB_COPILOT_AUTH_AGENT_ID = "main";
 
 interface AuthRuntimeModule {
   runModelsAuthLoginFlow(options: Record<string, unknown>): Promise<{
@@ -92,6 +94,24 @@ function safeErrorMessage(error: unknown): string {
     .slice(0, 500);
 }
 
+export function buildGitHubCopilotLoginOptions(params: {
+  config: Record<string, unknown>;
+  prompter: Record<string, unknown>;
+  openUrl: (url: string) => Promise<void>;
+  runtime: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    config: params.config,
+    agent: GITHUB_COPILOT_AUTH_AGENT_ID,
+    provider: "github-copilot",
+    method: "device",
+    setDefault: false,
+    prompter: params.prompter,
+    openUrl: params.openUrl,
+    runtime: params.runtime,
+  };
+}
+
 async function main(): Promise<void> {
   const runtimePath = process.argv[2];
   const operation = process.argv[3] ?? "login";
@@ -146,9 +166,13 @@ async function main(): Promise<void> {
   }
 
   if (operation === "list-models") {
-    const catalog = await modelsProviderRuntime.buildModelsProviderData(config, undefined, {
-      view: "all",
-    });
+    const catalog = await modelsProviderRuntime.buildModelsProviderData(
+      config,
+      GITHUB_COPILOT_AUTH_AGENT_ID,
+      {
+        view: "all",
+      },
+    );
     const modelIds = [...(catalog.byProvider.get("github-copilot") ?? [])];
     send({
       type: "models",
@@ -183,21 +207,20 @@ async function main(): Promise<void> {
     }),
   };
 
-  const result = await authRuntime.runModelsAuthLoginFlow({
-    config,
-    provider: "github-copilot",
-    method: "device",
-    setDefault: false,
-    prompter,
-    openUrl: async (url: string) => send({ type: "open-url", url }),
-    runtime: {
-      log: () => {},
-      error: (message: string) => process.stderr.write(`${message}\n`),
-      exit: (code: number): never => {
-        throw new Error(`OpenClaw authentication exited unexpectedly (${code})`);
+  const result = await authRuntime.runModelsAuthLoginFlow(
+    buildGitHubCopilotLoginOptions({
+      config,
+      prompter,
+      openUrl: async (url: string) => send({ type: "open-url", url }),
+      runtime: {
+        log: () => {},
+        error: (message: string) => process.stderr.write(`${message}\n`),
+        exit: (code: number): never => {
+          throw new Error(`OpenClaw authentication exited unexpectedly (${code})`);
+        },
       },
-    },
-  });
+    }),
+  );
 
   const profileCount = Array.isArray(result.profiles) ? result.profiles.length : 0;
   if (profileCount === 0 && emptyProfileOutcome === "cancelled") {
@@ -214,8 +237,10 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((error) => {
-  process.stderr.write(`[github-copilot-auth] ${safeErrorMessage(error)}\n`);
-  send({ type: "failure", message: safeErrorMessage(error) });
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  void main().catch((error) => {
+    process.stderr.write(`[github-copilot-auth] ${safeErrorMessage(error)}\n`);
+    send({ type: "failure", message: safeErrorMessage(error) });
+    process.exitCode = 1;
+  });
+}

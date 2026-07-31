@@ -339,6 +339,7 @@ const props = defineProps<{
   modelValue: boolean;
   singleProvider?: boolean;
   currentProvider?: ModelProviderPrefill | null;
+  initialFamily?: ModelFamilyId;
 }>();
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
@@ -462,6 +463,14 @@ watch(
       isKeyStep.value = selectedFamilyId.value !== "github-copilot";
       if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
       errorMsg.value = "";
+      return;
+    }
+    if (props.initialFamily) {
+      selectFamily(props.initialFamily);
+      isKeyStep.value = true;
+      apiKey.value = "";
+      errorMsg.value = "";
+      if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
       return;
     }
     selectFamily("qwen");

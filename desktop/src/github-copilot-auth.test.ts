@@ -1,12 +1,55 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGitHubCopilotAuthStatusArgs,
+  buildGitHubCopilotLogoutArgs,
+  GITHUB_COPILOT_AUTH_AGENT_ID,
   parseGitHubCopilotAuthStatus,
   parseGitHubCopilotDisconnectResult,
-  parseGitHubCopilotGatewayAuthStatus,
-  parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
   parseGitHubCopilotWorkerLine,
 } from "./github-copilot-auth";
+import {
+  buildGitHubCopilotLoginOptions,
+  GITHUB_COPILOT_AUTH_AGENT_ID as WORKER_AUTH_AGENT_ID,
+} from "./github-copilot-auth-worker";
+
+describe("GitHub Copilot auth scope", () => {
+  it("uses OpenClaw's fixed main agent as the shared credential owner", () => {
+    expect(GITHUB_COPILOT_AUTH_AGENT_ID).toBe("main");
+    expect(WORKER_AUTH_AGENT_ID).toBe("main");
+    expect(buildGitHubCopilotAuthStatusArgs()).toEqual([
+      "models",
+      "status",
+      "--agent",
+      "main",
+      "--json",
+    ]);
+    expect(buildGitHubCopilotLogoutArgs()).toEqual([
+      "infer",
+      "model",
+      "auth",
+      "logout",
+      "--provider",
+      "github-copilot",
+      "--agent",
+      "main",
+      "--json",
+    ]);
+    expect(
+      buildGitHubCopilotLoginOptions({
+        config: {},
+        prompter: {},
+        openUrl: async () => {},
+        runtime: {},
+      }),
+    ).toMatchObject({
+      agent: "main",
+      provider: "github-copilot",
+      method: "device",
+      setDefault: false,
+    });
+  });
+});
 
 describe("parseGitHubCopilotWorkerLine", () => {
   it("accepts the fixed GitHub verification URL and a valid device code", () => {
@@ -60,13 +103,51 @@ describe("parseGitHubCopilotWorkerLine", () => {
 });
 
 describe("GitHub Copilot CLI output parsing", () => {
-  it("detects an existing auth profile without exposing profile contents", () => {
+  it("accepts only usable GitHub Copilot authentication health", () => {
     expect(
       parseGitHubCopilotAuthStatus(
-        JSON.stringify({ provider: "github-copilot", profiles: [{ id: "private" }] }),
+        JSON.stringify({
+          auth: {
+            oauth: {
+              providers: [
+                {
+                  provider: "github-copilot",
+                  status: "ok",
+                  profiles: [{ status: "static" }],
+                },
+              ],
+            },
+          },
+        }),
       ),
     ).toBe(true);
-    expect(parseGitHubCopilotAuthStatus(JSON.stringify({ profiles: [] }))).toBe(false);
+    expect(
+      parseGitHubCopilotAuthStatus(
+        JSON.stringify({
+          auth: {
+            oauth: {
+              providers: [
+                {
+                  provider: "github-copilot",
+                  status: "expired",
+                  profiles: [{ status: "expired" }],
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      parseGitHubCopilotAuthStatus(
+        JSON.stringify({
+          auth: { oauth: { providers: [{ provider: "openai", status: "ok" }] } },
+        }),
+      ),
+    ).toBe(false);
+    expect(() => parseGitHubCopilotAuthStatus(JSON.stringify({ profiles: [] }))).toThrow(
+      "Invalid GitHub Copilot authentication status",
+    );
   });
 
   it("accepts only a GitHub Copilot provider logout result", () => {
@@ -83,31 +164,6 @@ describe("GitHub Copilot CLI output parsing", () => {
         JSON.stringify({ provider: "openai", removedProfiles: [] }),
       ),
     ).toThrow("Invalid GitHub Copilot disconnect response");
-  });
-
-  it("accepts the Gateway logout response used to clear inherited profiles", () => {
-    expect(
-      parseGitHubCopilotGatewayDisconnectResult({
-        provider: "github-copilot",
-        removedProfiles: ["github-copilot:github"],
-        abortedRunIds: [],
-      }),
-    ).toEqual({ disconnected: true, removedProfiles: 1 });
-  });
-
-  it("reads GitHub Copilot authentication from the connected Gateway", () => {
-    expect(
-      parseGitHubCopilotGatewayAuthStatus({
-        providers: [
-          {
-            provider: "github-copilot",
-            status: "static",
-            profiles: [{ type: "token", status: "static" }],
-          },
-        ],
-      }),
-    ).toBe(true);
-    expect(parseGitHubCopilotGatewayAuthStatus({ providers: [] })).toBe(false);
   });
 
   it("normalizes GitHub Copilot models returned by the Gateway", () => {
