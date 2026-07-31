@@ -193,12 +193,10 @@ export function parseGitHubCopilotDisconnectResult(
     throw new Error("Invalid GitHub Copilot disconnect response");
   }
 
-  return parseGitHubCopilotGatewayDisconnectResult(payload);
+  return parseGitHubCopilotDisconnectPayload(payload);
 }
 
-export function parseGitHubCopilotGatewayDisconnectResult(
-  payload: unknown,
-): GitHubCopilotDisconnectResult {
+function parseGitHubCopilotDisconnectPayload(payload: unknown): GitHubCopilotDisconnectResult {
   if (!payload || typeof payload !== "object") {
     throw new Error("Invalid GitHub Copilot disconnect response");
   }
@@ -267,7 +265,7 @@ export function buildGitHubCopilotAuthListArgs(): string[] {
   ];
 }
 
-export function buildGitHubCopilotLogoutArgs(agentId?: string): string[] {
+export function buildGitHubCopilotLogoutArgs(): string[] {
   return [
     "infer",
     "model",
@@ -275,7 +273,8 @@ export function buildGitHubCopilotLogoutArgs(agentId?: string): string[] {
     "logout",
     "--provider",
     "github-copilot",
-    ...(agentId ? ["--agent", agentId] : []),
+    "--agent",
+    GITHUB_COPILOT_AUTH_AGENT_ID,
     "--json",
   ];
 }
@@ -341,21 +340,9 @@ export async function getGitHubCopilotAuthStatus(
 export async function disconnectGitHubCopilot(
   runtime: GitHubCopilotAuthRuntime,
 ): Promise<GitHubCopilotDisconnectResult> {
-  let removedProfiles = 0;
-  const errors: Error[] = [];
   try {
-    for (const agentId of [undefined, GITHUB_COPILOT_AUTH_AGENT_ID]) {
-      try {
-        const output = await runOpenClawJson(runtime, buildGitHubCopilotLogoutArgs(agentId));
-        removedProfiles += parseGitHubCopilotDisconnectResult(output).removedProfiles;
-      } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, "Failed to remove all GitHub Copilot credentials");
-    }
-    return { disconnected: true, removedProfiles };
+    const output = await runOpenClawJson(runtime, buildGitHubCopilotLogoutArgs());
+    return parseGitHubCopilotDisconnectResult(output);
   } finally {
     invalidateGitHubCopilotAuthStatusCache();
   }

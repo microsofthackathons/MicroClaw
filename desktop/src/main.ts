@@ -72,7 +72,6 @@ import {
   type GitHubCopilotAuthRuntime,
   invalidateGitHubCopilotAuthStatusCache,
   listGitHubCopilotModels,
-  parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
 } from "./github-copilot-auth";
 import {
@@ -3958,20 +3957,6 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:disconnect", async () => {
     githubCopilotAuthManager.stop();
-    let gatewayRemovedProfiles = 0;
-    if (gwClient?.connected) {
-      try {
-        const payload = await gwClient.request("models.authLogout", {
-          provider: "github-copilot",
-        });
-        const result = parseGitHubCopilotGatewayDisconnectResult(payload);
-        gatewayRemovedProfiles = result.removedProfiles;
-        invalidateGitHubCopilotAuthStatusCache();
-      } catch (error) {
-        console.warn("[github-copilot-auth] Gateway logout unavailable:", error);
-      }
-    }
-
     const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
     if (gwClient?.connected) {
       try {
@@ -3980,10 +3965,7 @@ function registerIpcHandlers(): void {
         console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
       }
     }
-    return {
-      disconnected: true,
-      removedProfiles: gatewayRemovedProfiles + result.removedProfiles,
-    };
+    return result;
   });
 
   ipcMain.handle("model:github-copilot:status", () =>

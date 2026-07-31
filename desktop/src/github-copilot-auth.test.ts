@@ -5,7 +5,6 @@ import {
   GITHUB_COPILOT_AUTH_AGENT_ID,
   parseGitHubCopilotAuthStatus,
   parseGitHubCopilotDisconnectResult,
-  parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
   parseGitHubCopilotWorkerLine,
 } from "./github-copilot-auth";
@@ -19,7 +18,17 @@ describe("GitHub Copilot auth scope", () => {
     expect(GITHUB_COPILOT_AUTH_AGENT_ID).toBe("main");
     expect(WORKER_AUTH_AGENT_ID).toBe("main");
     expect(buildGitHubCopilotAuthListArgs()).toContain("main");
-    expect(buildGitHubCopilotLogoutArgs("main")).toContain("main");
+    expect(buildGitHubCopilotLogoutArgs()).toEqual([
+      "infer",
+      "model",
+      "auth",
+      "logout",
+      "--provider",
+      "github-copilot",
+      "--agent",
+      "main",
+      "--json",
+    ]);
     expect(
       buildGitHubCopilotLoginOptions({
         config: {},
@@ -111,16 +120,6 @@ describe("GitHub Copilot CLI output parsing", () => {
         JSON.stringify({ provider: "openai", removedProfiles: [] }),
       ),
     ).toThrow("Invalid GitHub Copilot disconnect response");
-  });
-
-  it("accepts the Gateway logout response used to clear inherited profiles", () => {
-    expect(
-      parseGitHubCopilotGatewayDisconnectResult({
-        provider: "github-copilot",
-        removedProfiles: ["github-copilot:github"],
-        abortedRunIds: [],
-      }),
-    ).toEqual({ disconnected: true, removedProfiles: 1 });
   });
 
   it("normalizes GitHub Copilot models returned by the Gateway", () => {
