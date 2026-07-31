@@ -72,7 +72,6 @@ import {
   type GitHubCopilotAuthRuntime,
   invalidateGitHubCopilotAuthStatusCache,
   listGitHubCopilotModels,
-  parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
 } from "./github-copilot-auth";
@@ -211,7 +210,6 @@ let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
 let gatewayModelCatalogRequest: Promise<unknown> | null = null;
-let gatewayGitHubCopilotStatusRequest: Promise<{ authenticated: boolean }> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
@@ -2611,7 +2609,6 @@ let wsAuthRestartInProgress = false;
 function connectGatewayWs(): void {
   gwClient?.stop();
   gatewayModelCatalogRequest = null;
-  gatewayGitHubCopilotStatusRequest = null;
 
   gwClient = new GatewayClient({
     port: gatewayPort,
@@ -2725,30 +2722,6 @@ function requestGatewayModelCatalog(): Promise<unknown> {
     },
     () => {
       if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
-    },
-  );
-  return request;
-}
-
-function requestGitHubCopilotGatewayStatus(): Promise<{ authenticated: boolean }> {
-  if (gatewayGitHubCopilotStatusRequest) return gatewayGitHubCopilotStatusRequest;
-  const client = gwClient;
-  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
-
-  const request = client
-    .request("models.authStatus", {})
-    .then((status) => ({ authenticated: parseGitHubCopilotGatewayAuthStatus(status) }));
-  gatewayGitHubCopilotStatusRequest = request;
-  void request.then(
-    () => {
-      if (gatewayGitHubCopilotStatusRequest === request) {
-        gatewayGitHubCopilotStatusRequest = null;
-      }
-    },
-    () => {
-      if (gatewayGitHubCopilotStatusRequest === request) {
-        gatewayGitHubCopilotStatusRequest = null;
-      }
     },
   );
   return request;
@@ -3985,15 +3958,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:disconnect", async () => {
     githubCopilotAuthManager.stop();
+    let gatewayRemovedProfiles = 0;
     if (gwClient?.connected) {
       try {
         const payload = await gwClient.request("models.authLogout", {
           provider: "github-copilot",
         });
         const result = parseGitHubCopilotGatewayDisconnectResult(payload);
+        gatewayRemovedProfiles = result.removedProfiles;
         invalidateGitHubCopilotAuthStatusCache();
-        gatewayGitHubCopilotStatusRequest = null;
-        return result;
       } catch (error) {
         console.warn("[github-copilot-auth] Gateway logout unavailable:", error);
       }
@@ -4007,19 +3980,15 @@ function registerIpcHandlers(): void {
         console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
       }
     }
-    return result;
+    return {
+      disconnected: true,
+      removedProfiles: gatewayRemovedProfiles + result.removedProfiles,
+    };
   });
 
-  ipcMain.handle("model:github-copilot:status", async () => {
-    if (gwClient?.connected) {
-      try {
-        return await requestGitHubCopilotGatewayStatus();
-      } catch (error) {
-        console.warn("[github-copilot-auth] Gateway auth status unavailable:", error);
-      }
-    }
-    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime());
-  });
+  ipcMain.handle("model:github-copilot:status", () =>
+    getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime()),
+  );
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
     if (gwClient?.connected) {

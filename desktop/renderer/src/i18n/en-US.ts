@@ -145,7 +145,10 @@ export default {
     "The Base URL appears to be incorrect or the path is wrong. Check the Base URL in Model Settings (e.g. it should usually end with /v1 for OpenAI-compatible providers).",
   "chat.error.copilot_auth.title": "GitHub Copilot sign-in is no longer usable",
   "chat.error.copilot_auth.hint":
-    "OpenClaw could not exchange the saved GitHub login for a Copilot token. Disconnect and reconnect GitHub Copilot in Model Settings, and verify that the GitHub account has active Copilot access.",
+    "GitHub Copilot authentication is missing or no longer usable. Sign in again and verify that the GitHub account has active Copilot access.",
+  "chat.error.missing_provider_auth.title": "Choose a model provider",
+  "chat.error.missing_provider_auth.hint":
+    "The current model provider has no usable credentials. Choose and configure a model provider to continue.",
   "chat.error.unauthorized.title": "Authentication failed",
   "chat.error.unauthorized.hint":
     "The API key was rejected by the model provider. Verify the API key in Model Settings and make sure it has not expired or been revoked.",

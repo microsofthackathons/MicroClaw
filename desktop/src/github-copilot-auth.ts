@@ -11,6 +11,7 @@ const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
 const MAX_GATEWAY_MODELS = 5_000;
+export const GITHUB_COPILOT_AUTH_AGENT_ID = "main";
 
 let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | null = null;
 let authStatusInFlight: Promise<{ authenticated: boolean }> | null = null;
@@ -279,6 +280,32 @@ export function invalidateGitHubCopilotAuthStatusCache(): void {
   modelCatalogCache = null;
 }
 
+export function buildGitHubCopilotAuthListArgs(): string[] {
+  return [
+    "models",
+    "auth",
+    "list",
+    "--agent",
+    GITHUB_COPILOT_AUTH_AGENT_ID,
+    "--provider",
+    "github-copilot",
+    "--json",
+  ];
+}
+
+export function buildGitHubCopilotLogoutArgs(agentId?: string): string[] {
+  return [
+    "infer",
+    "model",
+    "auth",
+    "logout",
+    "--provider",
+    "github-copilot",
+    ...(agentId ? ["--agent", agentId] : []),
+    "--json",
+  ];
+}
+
 async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]): Promise<string> {
   if (!isSafeNodePath(runtime.nodePath) || !fs.existsSync(runtime.entryPath)) {
     throw new Error("OpenClaw CLI was not found");
@@ -325,14 +352,7 @@ export async function getGitHubCopilotAuthStatus(
   if (authStatusCache && authStatusCache.expiresAt > Date.now()) return authStatusCache.value;
   if (authStatusInFlight) return authStatusInFlight;
 
-  authStatusInFlight = runOpenClawJson(runtime, [
-    "models",
-    "auth",
-    "list",
-    "--provider",
-    "github-copilot",
-    "--json",
-  ])
+  authStatusInFlight = runOpenClawJson(runtime, buildGitHubCopilotAuthListArgs())
     .then((output) => {
       const value = { authenticated: parseGitHubCopilotAuthStatus(output) };
       authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };
@@ -350,18 +370,9 @@ export async function disconnectGitHubCopilot(
   let removedProfiles = 0;
   const errors: Error[] = [];
   try {
-    for (const agentId of [undefined, "main"]) {
+    for (const agentId of [undefined, GITHUB_COPILOT_AUTH_AGENT_ID]) {
       try {
-        const output = await runOpenClawJson(runtime, [
-          "infer",
-          "model",
-          "auth",
-          "logout",
-          "--provider",
-          "github-copilot",
-          ...(agentId ? ["--agent", agentId] : []),
-          "--json",
-        ]);
+        const output = await runOpenClawJson(runtime, buildGitHubCopilotLogoutArgs(agentId));
         removedProfiles += parseGitHubCopilotDisconnectResult(output).removedProfiles;
       } catch (error) {
         errors.push(error instanceof Error ? error : new Error(String(error)));

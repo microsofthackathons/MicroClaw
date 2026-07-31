@@ -37,9 +37,9 @@ const componentStubs = {
   "el-option-group": { template: "<optgroup><slot /></optgroup>" },
 };
 
-function mountDialog() {
+function mountDialog(props: { initialFamily?: "github-copilot" } = {}) {
   return mount(ModelSetupDialog, {
-    props: { modelValue: true },
+    props: { modelValue: true, ...props },
     global: { stubs: componentStubs },
   });
 }
@@ -132,6 +132,15 @@ describe("ModelSetupDialog", () => {
       "Other model",
     ]);
     expect(wrapper.text()).not.toContain("OpenClaw catalog");
+  });
+
+  it("opens directly on the requested GitHub Copilot recovery form", async () => {
+    const wrapper = mountDialog({ initialFamily: "github-copilot" });
+    await flushPromises();
+
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
+    expect(wrapper.text()).toContain("GitHub Copilot");
+    expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
   });
 
   it("opens the selected provider signup flow", async () => {

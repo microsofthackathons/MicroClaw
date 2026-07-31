@@ -212,13 +212,21 @@
       <SkillsDevPanel />
     </template>
 
-    <ModelSetupDialog v-model="modelSetupVisible" @configured="handleModelConfigured" />
+    <ModelSetupDialog
+      v-model="modelSetupVisible"
+      :initial-family="modelSetupInitialFamily"
+      @configured="handleModelConfigured"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
-import { useChatStore } from "@/stores/chat";
+import {
+  modelAuthRecoveryInitialFamily,
+  requiresModelAuthRecovery,
+  useChatStore,
+} from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
 import { useStudioStore } from "@/stores/studio";
 import { t } from "@/i18n";
@@ -244,6 +252,7 @@ const threadRef = ref<HTMLDivElement>();
 const showNewMessages = ref(false);
 const isCompact = ref(window.innerHeight < 700);
 const modelSetupVisible = ref(false);
+const modelSetupInitialFamily = ref<"github-copilot" | undefined>();
 const pendingModelSetupMessage = ref("");
 let isUserScrolledUp = false;
 
@@ -370,6 +379,16 @@ watch(
   },
 );
 
+watch(
+  () => chatStore.lastError,
+  (error) => {
+    if (!requiresModelAuthRecovery(error)) return;
+    pendingModelSetupMessage.value = "";
+    modelSetupInitialFamily.value = modelAuthRecoveryInitialFamily(error);
+    modelSetupVisible.value = true;
+  },
+);
+
 function handleScroll() {
   const el = threadRef.value;
   if (!el) return;
@@ -422,6 +441,7 @@ async function handleSend() {
   if (!text || !chatStore.wsConnected) return;
   if (await needsModelSetupBeforeSend()) {
     pendingModelSetupMessage.value = text;
+    modelSetupInitialFamily.value = undefined;
     modelSetupVisible.value = true;
     return;
   }
@@ -443,7 +463,7 @@ async function needsModelSetupBeforeSend(): Promise<boolean> {
 }
 
 async function handleModelConfigured() {
-  const text = pendingModelSetupMessage.value || inputText.value.trim();
+  const text = pendingModelSetupMessage.value;
   pendingModelSetupMessage.value = "";
   if (!text || !chatStore.wsConnected) return;
   await sendText(text);

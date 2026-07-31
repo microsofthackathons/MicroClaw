@@ -63,7 +63,13 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
-import { applyChatDelta, classifyChatError, useChatStore } from "./chat";
+import {
+  applyChatDelta,
+  classifyChatError,
+  modelAuthRecoveryInitialFamily,
+  requiresModelAuthRecovery,
+  useChatStore,
+} from "./chat";
 import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
@@ -81,6 +87,22 @@ describe("classifyChatError", () => {
       code: "not_found",
       status: 404,
     });
+  });
+
+  it("opens provider selection for a missing per-agent model credential", () => {
+    const error = classifyChatError(
+      'No API key found for provider "github-copilot". | missing-provider-auth',
+    );
+
+    expect(error).toMatchObject({ code: "missing_provider_auth" });
+    expect(requiresModelAuthRecovery(error)).toBe(true);
+    expect(modelAuthRecoveryInitialFamily(error)).toBeUndefined();
+  });
+
+  it("opens Copilot directly only for an explicit Copilot token failure", () => {
+    const error = classifyChatError("Copilot token exchange failed: HTTP 403");
+
+    expect(modelAuthRecoveryInitialFamily(error)).toBe("github-copilot");
   });
 });
 

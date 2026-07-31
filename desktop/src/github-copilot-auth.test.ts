@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGitHubCopilotAuthListArgs,
+  buildGitHubCopilotLogoutArgs,
+  GITHUB_COPILOT_AUTH_AGENT_ID,
   parseGitHubCopilotAuthStatus,
   parseGitHubCopilotDisconnectResult,
   parseGitHubCopilotGatewayAuthStatus,
@@ -7,6 +10,32 @@ import {
   parseGitHubCopilotGatewayModels,
   parseGitHubCopilotWorkerLine,
 } from "./github-copilot-auth";
+import {
+  buildGitHubCopilotLoginOptions,
+  GITHUB_COPILOT_AUTH_AGENT_ID as WORKER_AUTH_AGENT_ID,
+} from "./github-copilot-auth-worker";
+
+describe("GitHub Copilot auth scope", () => {
+  it("uses OpenClaw's fixed main agent as the shared credential owner", () => {
+    expect(GITHUB_COPILOT_AUTH_AGENT_ID).toBe("main");
+    expect(WORKER_AUTH_AGENT_ID).toBe("main");
+    expect(buildGitHubCopilotAuthListArgs()).toContain("main");
+    expect(buildGitHubCopilotLogoutArgs("main")).toContain("main");
+    expect(
+      buildGitHubCopilotLoginOptions({
+        config: {},
+        prompter: {},
+        openUrl: async () => {},
+        runtime: {},
+      }),
+    ).toMatchObject({
+      agent: "main",
+      provider: "github-copilot",
+      method: "device",
+      setDefault: false,
+    });
+  });
+});
 
 describe("parseGitHubCopilotWorkerLine", () => {
   it("accepts the fixed GitHub verification URL and a valid device code", () => {
