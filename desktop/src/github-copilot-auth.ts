@@ -179,8 +179,44 @@ export function parseGitHubCopilotWorkerLine(line: string): WorkerMessage | unde
 }
 
 export function parseGitHubCopilotAuthStatus(output: string): boolean {
-  const parsed = JSON.parse(output) as { profiles?: unknown };
-  return Array.isArray(parsed.profiles) && parsed.profiles.length > 0;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(output);
+  } catch {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+
+  const parsed = payload as {
+    auth?: { oauth?: { providers?: unknown } };
+  };
+  const providers = parsed.auth?.oauth?.providers;
+  if (!Array.isArray(providers)) {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+
+  const provider = providers.find(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      (entry as { provider?: unknown }).provider === "github-copilot",
+  ) as { status?: unknown; profiles?: unknown } | undefined;
+  if (!provider) return false;
+
+  const isUsableStatus = (status: unknown) =>
+    status === "ok" || status === "static" || status === "expiring";
+  if (Array.isArray(provider.profiles)) {
+    const hasUsableProfile = provider.profiles.some(
+      (profile) =>
+        profile &&
+        typeof profile === "object" &&
+        isUsableStatus((profile as { status?: unknown }).status),
+    );
+    if (hasUsableProfile) return true;
+  }
+  return isUsableStatus(provider.status);
 }
 
 export function parseGitHubCopilotDisconnectResult(
@@ -252,15 +288,12 @@ export function invalidateGitHubCopilotAuthStatusCache(): void {
   modelCatalogCache = null;
 }
 
-export function buildGitHubCopilotAuthListArgs(): string[] {
+export function buildGitHubCopilotAuthStatusArgs(): string[] {
   return [
     "models",
-    "auth",
-    "list",
+    "status",
     "--agent",
     GITHUB_COPILOT_AUTH_AGENT_ID,
-    "--provider",
-    "github-copilot",
     "--json",
   ];
 }
@@ -325,7 +358,7 @@ export async function getGitHubCopilotAuthStatus(
   if (authStatusCache && authStatusCache.expiresAt > Date.now()) return authStatusCache.value;
   if (authStatusInFlight) return authStatusInFlight;
 
-  authStatusInFlight = runOpenClawJson(runtime, buildGitHubCopilotAuthListArgs())
+  authStatusInFlight = runOpenClawJson(runtime, buildGitHubCopilotAuthStatusArgs())
     .then((output) => {
       const value = { authenticated: parseGitHubCopilotAuthStatus(output) };
       authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };

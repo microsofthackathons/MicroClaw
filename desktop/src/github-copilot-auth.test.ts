@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildGitHubCopilotAuthListArgs,
+  buildGitHubCopilotAuthStatusArgs,
   buildGitHubCopilotLogoutArgs,
   GITHUB_COPILOT_AUTH_AGENT_ID,
   parseGitHubCopilotAuthStatus,
@@ -17,7 +17,13 @@ describe("GitHub Copilot auth scope", () => {
   it("uses OpenClaw's fixed main agent as the shared credential owner", () => {
     expect(GITHUB_COPILOT_AUTH_AGENT_ID).toBe("main");
     expect(WORKER_AUTH_AGENT_ID).toBe("main");
-    expect(buildGitHubCopilotAuthListArgs()).toContain("main");
+    expect(buildGitHubCopilotAuthStatusArgs()).toEqual([
+      "models",
+      "status",
+      "--agent",
+      "main",
+      "--json",
+    ]);
     expect(buildGitHubCopilotLogoutArgs()).toEqual([
       "infer",
       "model",
@@ -97,13 +103,51 @@ describe("parseGitHubCopilotWorkerLine", () => {
 });
 
 describe("GitHub Copilot CLI output parsing", () => {
-  it("detects an existing auth profile without exposing profile contents", () => {
+  it("accepts only usable GitHub Copilot authentication health", () => {
     expect(
       parseGitHubCopilotAuthStatus(
-        JSON.stringify({ provider: "github-copilot", profiles: [{ id: "private" }] }),
+        JSON.stringify({
+          auth: {
+            oauth: {
+              providers: [
+                {
+                  provider: "github-copilot",
+                  status: "ok",
+                  profiles: [{ status: "static" }],
+                },
+              ],
+            },
+          },
+        }),
       ),
     ).toBe(true);
-    expect(parseGitHubCopilotAuthStatus(JSON.stringify({ profiles: [] }))).toBe(false);
+    expect(
+      parseGitHubCopilotAuthStatus(
+        JSON.stringify({
+          auth: {
+            oauth: {
+              providers: [
+                {
+                  provider: "github-copilot",
+                  status: "expired",
+                  profiles: [{ status: "expired" }],
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      parseGitHubCopilotAuthStatus(
+        JSON.stringify({
+          auth: { oauth: { providers: [{ provider: "openai", status: "ok" }] } },
+        }),
+      ),
+    ).toBe(false);
+    expect(() => parseGitHubCopilotAuthStatus(JSON.stringify({ profiles: [] }))).toThrow(
+      "Invalid GitHub Copilot authentication status",
+    );
   });
 
   it("accepts only a GitHub Copilot provider logout result", () => {
