@@ -5,7 +5,6 @@ import {
   GITHUB_COPILOT_AUTH_AGENT_ID,
   parseGitHubCopilotAuthStatus,
   parseGitHubCopilotDisconnectResult,
-  parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayDisconnectResult,
   parseGitHubCopilotGatewayModels,
   parseGitHubCopilotWorkerLine,
@@ -122,21 +121,6 @@ describe("GitHub Copilot CLI output parsing", () => {
         abortedRunIds: [],
       }),
     ).toEqual({ disconnected: true, removedProfiles: 1 });
-  });
-
-  it("reads GitHub Copilot authentication from the connected Gateway", () => {
-    expect(
-      parseGitHubCopilotGatewayAuthStatus({
-        providers: [
-          {
-            provider: "github-copilot",
-            status: "static",
-            profiles: [{ type: "token", status: "static" }],
-          },
-        ],
-      }),
-    ).toBe(true);
-    expect(parseGitHubCopilotGatewayAuthStatus({ providers: [] })).toBe(false);
   });
 
   it("normalizes GitHub Copilot models returned by the Gateway", () => {

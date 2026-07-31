@@ -11,6 +11,7 @@ const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
 const MAX_GATEWAY_MODELS = 5_000;
+// OpenClaw uses agents/main/agent as the inherited auth root, independent of the routed default.
 export const GITHUB_COPILOT_AUTH_AGENT_ID = "main";
 
 let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | null = null;
@@ -217,33 +218,6 @@ export function parseGitHubCopilotGatewayDisconnectResult(
   }
 
   return { disconnected: true, removedProfiles: result.removedProfiles.length };
-}
-
-export function parseGitHubCopilotGatewayAuthStatus(payload: unknown): boolean {
-  if (!payload || typeof payload !== "object") {
-    throw new Error("Invalid Gateway model authentication status");
-  }
-  const providers = (payload as { providers?: unknown }).providers;
-  if (!Array.isArray(providers)) {
-    throw new Error("Invalid Gateway model authentication status");
-  }
-  const provider = providers.find(
-    (entry) =>
-      entry &&
-      typeof entry === "object" &&
-      (entry as { provider?: unknown }).provider === "github-copilot",
-  ) as { status?: unknown; profiles?: unknown } | undefined;
-  if (!provider) return false;
-
-  if (Array.isArray(provider.profiles)) {
-    const hasUsableProfile = provider.profiles.some((profile) => {
-      if (!profile || typeof profile !== "object") return false;
-      const status = (profile as { status?: unknown }).status;
-      return status === "ok" || status === "static" || status === "expiring";
-    });
-    if (hasUsableProfile) return true;
-  }
-  return provider.status === "ok" || provider.status === "static" || provider.status === "expiring";
 }
 
 export function parseGitHubCopilotGatewayModels(payload: unknown): GitHubCopilotModel[] {

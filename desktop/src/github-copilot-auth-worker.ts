@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 const MESSAGE_PREFIX = "MICROCLAW_COPILOT_AUTH:";
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
+// This worker is packaged as a standalone extraResource, so it cannot import app.asar modules.
 export const GITHUB_COPILOT_AUTH_AGENT_ID = "main";
 
 interface AuthRuntimeModule {
