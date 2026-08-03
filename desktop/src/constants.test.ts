@@ -5,6 +5,7 @@ import {
   COMPILE_CACHE_SUBDIR,
   HEALTH_CHECK_INTERVAL_MS,
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
+  HEALTH_CHECK_BUSY_GRACE_MS,
   GATEWAY_READY_TIMEOUT_MS,
   PORT_WAIT_TIMEOUT_MS,
   MODEL_CONNECTION_TEST_TIMEOUT_MS,
@@ -41,6 +42,11 @@ describe("constants", () => {
 
     it("HTTP timeout < health check interval", () => {
       expect(HEALTH_CHECK_HTTP_TIMEOUT_MS).toBeLessThan(HEALTH_CHECK_INTERVAL_MS);
+    });
+
+    it("busy gateway grace >= health check interval", () => {
+      expect(HEALTH_CHECK_BUSY_GRACE_MS).toBe(240_000);
+      expect(HEALTH_CHECK_BUSY_GRACE_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_INTERVAL_MS);
     });
 
     it("gateway ready timeout > port wait timeout", () => {

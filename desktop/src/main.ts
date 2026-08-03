@@ -45,6 +45,7 @@ import {
   HEALTH_CHECK_INTERVAL_MS,
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
   HEALTH_CHECK_FAILURE_THRESHOLD,
+  HEALTH_CHECK_BUSY_GRACE_MS,
   LOADING_WINDOW_WIDTH,
   LOADING_WINDOW_HEIGHT,
   MODEL_CONNECTION_TEST_TIMEOUT_MS,
@@ -1708,26 +1709,66 @@ async function restartManagedGateway(reason: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Health monitor — auto-restart gateway if it goes down
 // ---------------------------------------------------------------------------
+function isManagedGatewayProcessAlive(): boolean {
+  return gatewayProcess !== null && !gatewayProcess.killed;
+}
+
 function startHealthMonitor(): void {
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   let consecutiveFailures = 0;
+  let unresponsiveSince: number | null = null;
   healthCheckInterval = setInterval(async () => {
     // Skip during startup / intentional restart
-    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) return;
+    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
     if (!gatewayPort) return;
     // Skip while gateway is blocked on a sync permission dialog (Atomics.wait)
     if (pendingSyncPermissionRequests > 0) {
       consecutiveFailures = 0;
+      unresponsiveSince = null;
       return;
     }
 
     const alive = await checkExistingGateway(gatewayPort);
     if (alive) {
       consecutiveFailures = 0;
+      unresponsiveSince = null;
       return;
     }
-    if (gatewayStatus !== "running") return;
+    if (gatewayStatus !== "running") {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
 
+    if (isManagedGatewayProcessAlive()) {
+      consecutiveFailures = 0;
+      unresponsiveSince ??= Date.now();
+      const elapsedMs = Date.now() - unresponsiveSince;
+      const msg =
+        `[health-monitor] gateway unresponsive but process alive ` +
+        `(${Math.floor(elapsedMs / 1_000)}s/${HEALTH_CHECK_BUSY_GRACE_MS / 1_000}s) - likely busy`;
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("gateway:log", msg);
+      }
+      if (elapsedMs < HEALTH_CHECK_BUSY_GRACE_MS) return;
+      unresponsiveSince = null;
+
+      try {
+        await restartManagedGateway(
+          "Gateway process remained unresponsive beyond the busy grace period",
+        );
+      } catch (error) {
+        console.error("[health-monitor] Gateway restart failed:", error);
+      }
+      return;
+    }
+
+    unresponsiveSince = null;
     consecutiveFailures += 1;
     const msg = `[health-monitor] /health failed (${consecutiveFailures}/${HEALTH_CHECK_FAILURE_THRESHOLD})`;
     console.log(msg);
@@ -1760,6 +1801,10 @@ async function ensureGatewayConnected(): Promise<void> {
       }
       connectGatewayWs();
     }
+  } else if (isManagedGatewayProcessAlive()) {
+    console.log(
+      "[ensure-gateway] Gateway not reachable but process is alive; health monitor will retry",
+    );
   } else {
     console.log("[ensure-gateway] Gateway not reachable — restarting...");
     await restartManagedGateway("Gateway was unreachable when the window became active");

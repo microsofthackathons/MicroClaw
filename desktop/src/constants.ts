@@ -44,6 +44,11 @@ export const HEALTH_CHECK_HTTP_TIMEOUT_MS = 10_000;
  *  the gateway event loop can stall for several seconds during plugin work. */
 export const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
 
+/** Grace period before restarting an unresponsive but still-running gateway.
+ *  Long synchronous agent turns can block the event loop on loaded machines
+ *  even though the gateway process is alive and making progress. */
+export const HEALTH_CHECK_BUSY_GRACE_MS = 240_000;
+
 /** Max time to wait for the gateway to become ready after spawn (ms). */
 export const GATEWAY_READY_TIMEOUT_MS = 120_000;
 
