@@ -209,6 +209,9 @@ interface OpenClawAPI {
     add(agentId: string): Promise<{
       agents: { id: string; name: string; description?: string }[];
     }>;
+    remove(agentId: string): Promise<{
+      agents: { id: string; name: string; description?: string }[];
+    }>;
   };
   channels: {
     list(): Promise<{

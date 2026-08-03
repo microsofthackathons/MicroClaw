@@ -13,7 +13,14 @@
       <div v-if="agent.tags?.length" class="agent-card-tags">
         <span v-for="tag in agent.tags" :key="tag" class="agent-card-tag">{{ tag }}</span>
       </div>
-      <span v-if="agent.isAdded" class="agent-card-added-text">{{ t("agentMarket.added") }}</span>
+      <button
+        v-if="agent.isAdded"
+        class="agent-card-action agent-card-action-danger"
+        @click="$emit('remove', agent.id)"
+      >
+        <IconClose :size="14" />
+        {{ t("agentMarket.remove") }}
+      </button>
       <button v-else class="agent-card-action" @click="$emit('add', agent.id)">
         <IconPlus :size="14" />
         {{ t("agentMarket.add") }}
@@ -27,6 +34,7 @@ import type { Agent } from "@/stores/agents";
 import { t } from "@/i18n";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconCheck from "@/components/icons/IconCheck.vue";
+import IconClose from "@/components/icons/IconClose.vue";
 
 defineProps<{
   agent: Agent;
@@ -34,6 +42,7 @@ defineProps<{
 
 defineEmits<{
   add: [agentId: string];
+  remove: [agentId: string];
 }>();
 </script>
 
@@ -59,7 +68,6 @@ defineEmits<{
 }
 
 .agent-card.is-added {
-  opacity: 0.6;
   cursor: default;
 }
 
@@ -74,14 +82,6 @@ defineEmits<{
   right: 12px;
   z-index: 1;
   line-height: 0;
-  color: var(--success);
-}
-
-.agent-card-added-text {
-  align-self: flex-start;
-  margin-top: 10px;
-  font-size: 12px;
-  font-weight: 600;
   color: var(--success);
 }
 
@@ -167,5 +167,14 @@ defineEmits<{
 .agent-card-action:hover {
   background: var(--accent);
   color: var(--bg-primary);
+}
+
+.agent-card-action-danger {
+  color: var(--danger, #c0392b);
+}
+
+.agent-card-action-danger:hover {
+  background: var(--danger, #c0392b);
+  color: #fff;
 }
 </style>

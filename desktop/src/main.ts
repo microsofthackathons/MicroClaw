@@ -83,6 +83,7 @@ import {
   ensureAgentPersonasConfig,
   getAgentPersona,
   listConfiguredAgents,
+  removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
@@ -222,7 +223,7 @@ let gatewayRestartPromise: Promise<void> | null = null;
 let pendingSyncPermissionRequests = 0;
 /** True when we spawned the gateway ourselves (vs. connecting to an existing one). */
 let gatewaySpawnedByUs = false;
-let agentAdditionInProgress = false;
+let agentRosterChangeInProgress = false;
 /** Tracks whether the post-spawn channel kick has already fired. */
 let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
@@ -1402,7 +1403,7 @@ async function addCatalogAgent(
       path.dirname(entryPath),
     );
     restartAttempted = true;
-    await restartManagedGateway(`Adding agent ${agentId}`);
+    await restartManagedGatewayAndRequireReady(`Adding agent ${agentId}`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1418,7 +1419,9 @@ async function addCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGateway(`Rolling back failed agent addition ${agentId}`);
+        await restartManagedGatewayAndRequireReady(
+          `Rolling back failed agent addition ${agentId}`,
+        );
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -1427,6 +1430,68 @@ async function addCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to add agent "${agentId}" and fully restore the previous state`,
+      );
+    }
+    throw error;
+  }
+}
+
+async function removeCatalogAgent(
+  agentId: string,
+): Promise<{ agents: Array<{ id: string; name: string }> }> {
+  const persona = getAgentPersona(agentId);
+  if (!persona || DEFAULT_AGENT_PERSONAS.some((candidate) => candidate.id === agentId)) {
+    throw new Error(`Unknown removable agent "${agentId}"`);
+  }
+
+  const stateDir = getOpenClawStateDir();
+  const configPath = getConfigPath();
+  const originalConfigText = fs.readFileSync(configPath, "utf-8");
+  const config = readConfig();
+  if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+  ensureAgentPersonasConfig(config, stateDir);
+  const result = removeConfiguredAgent(config, agentId);
+  if (!result.changed) {
+    return { agents: listConfiguredAgents(config) };
+  }
+
+  const alreadyRunning = await checkExistingGateway(gatewayPort);
+  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (
+    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
+  ) {
+    throw new Error(
+      "Cannot remove an agent while MicroClaw is connected to an externally managed Gateway",
+    );
+  }
+
+  let restartAttempted = false;
+  try {
+    persistAgentPersonas(config);
+    restartAttempted = true;
+    await restartManagedGatewayAndRequireReady(`Removing agent ${agentId}`);
+    return { agents: listConfiguredAgents(config) };
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    try {
+      writeConfigTextAtomically(originalConfigText);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (restartAttempted && managedGateway) {
+      try {
+        await restartManagedGatewayAndRequireReady(
+          `Rolling back failed agent removal ${agentId}`,
+        );
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `Failed to remove agent "${agentId}" and fully restore the previous state`,
       );
     }
     throw error;
@@ -1702,6 +1767,13 @@ async function restartManagedGateway(reason: string): Promise<void> {
     await restart;
   } finally {
     if (gatewayRestartPromise === restart) gatewayRestartPromise = null;
+  }
+}
+
+async function restartManagedGatewayAndRequireReady(reason: string): Promise<void> {
+  await restartManagedGateway(reason);
+  if (gatewayStatus !== "running") {
+    throw new Error(`Gateway did not become ready after restart (status: ${gatewayStatus})`);
   }
 }
 
@@ -3566,14 +3638,29 @@ function registerIpcHandlers(): void {
       throw new Error("Agent id is required");
     }
     if (!gwClient?.connected) throw new Error("Gateway not connected");
-    if (agentAdditionInProgress) {
-      throw new Error("Another agent is already being added");
+    if (agentRosterChangeInProgress) {
+      throw new Error("Another agent roster change is already in progress");
     }
-    agentAdditionInProgress = true;
+    agentRosterChangeInProgress = true;
     try {
       return await addCatalogAgent(agentId);
     } finally {
-      agentAdditionInProgress = false;
+      agentRosterChangeInProgress = false;
+    }
+  });
+  ipcMain.handle("agents:remove", async (_event, agentId: string) => {
+    if (typeof agentId !== "string" || !agentId.trim()) {
+      throw new Error("Agent id is required");
+    }
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (agentRosterChangeInProgress) {
+      throw new Error("Another agent roster change is already in progress");
+    }
+    agentRosterChangeInProgress = true;
+    try {
+      return await removeCatalogAgent(agentId);
+    } finally {
+      agentRosterChangeInProgress = false;
     }
   });
 

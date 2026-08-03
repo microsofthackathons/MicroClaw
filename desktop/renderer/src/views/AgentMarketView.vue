@@ -10,6 +10,7 @@
         :key="agent.id"
         :agent="agent"
         @add="handleAdd"
+        @remove="handleRemove"
       />
     </div>
   </div>
@@ -17,7 +18,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { useAgentStore } from "@/stores/agents";
 import { useAgentList } from "@/composables/useAgentList";
 import AgentCard from "@/components/agent/AgentCard.vue";
@@ -31,6 +32,31 @@ async function handleAdd(agentId: string) {
     await agentStore.addAgent(agentId);
   } catch {
     ElMessage.error(t("agentMarket.addFailed"));
+  }
+}
+
+async function handleRemove(agentId: string) {
+  const agent = agentStore.marketAgents.find((candidate) => candidate.id === agentId);
+  if (!agent) return;
+  try {
+    await ElMessageBox.confirm(
+      t("agentMarket.removeConfirm", { name: agent.name }),
+      t("agentMarket.removeTitle"),
+      {
+        confirmButtonText: t("agentMarket.remove"),
+        cancelButtonText: t("agentMarket.cancel"),
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  try {
+    await agentStore.removeAgent(agentId);
+    ElMessage.success(t("agentMarket.removeSuccess", { name: agent.name }));
+  } catch {
+    ElMessage.error(t("agentMarket.removeFailed"));
   }
 }
 </script>

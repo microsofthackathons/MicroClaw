@@ -6,6 +6,7 @@ import { useAgentStore } from "./agents";
 describe("agent store", () => {
   const agentsList = vi.fn();
   const agentsAdd = vi.fn();
+  const agentsRemove = vi.fn();
 
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -14,8 +15,9 @@ describe("agent store", () => {
       .mockReset()
       .mockResolvedValue({ agents: [{ id: "main", name: "Assistant" }] });
     agentsAdd.mockReset();
+    agentsRemove.mockReset();
     window.openclaw = {
-      agents: { list: agentsList, add: agentsAdd },
+      agents: { list: agentsList, add: agentsAdd, remove: agentsRemove },
     } as unknown as typeof window.openclaw;
   });
 
@@ -76,6 +78,50 @@ describe("agent store", () => {
     expect(
       store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
     ).toBe(false);
+  });
+
+  it("removes an agent and selects main when the removed agent was active", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+    await store.fetchAgents();
+    store.selectAgent("master-archive");
+    agentsRemove.mockResolvedValueOnce({
+      agents: [{ id: "main", name: "Assistant" }],
+    });
+
+    await store.removeAgent("master-archive");
+
+    expect(agentsRemove).toHaveBeenCalledWith("master-archive");
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
+    expect(store.currentAgentId).toBe("main");
+    expect(
+      store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
+    ).toBe(false);
+  });
+
+  it("keeps the installed agent when Remove fails", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+    await store.fetchAgents();
+    agentsRemove.mockRejectedValueOnce(new Error("Gateway restart failed"));
+
+    await expect(store.removeAgent("master-archive")).rejects.toThrow(
+      "Gateway restart failed",
+    );
+    expect(store.agents.map((agent) => agent.id)).toEqual([
+      "main",
+      "master-archive",
+    ]);
   });
 
   it("preserves the last real roster when refresh fails", async () => {
