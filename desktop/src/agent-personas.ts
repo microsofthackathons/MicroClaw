@@ -3,11 +3,8 @@ import * as os from "os";
 import * as path from "path";
 import { AGENT_CATALOG, DEFAULT_AGENT_IDS, resolveSkillFilterNames } from "./agent-catalog";
 
-interface WorkspaceFiles {
-  "AGENTS.md": string;
-  "IDENTITY.md": string;
-  "SOUL.md": string;
-}
+type WorkspaceFileName = "AGENTS.md" | "IDENTITY.md" | "SOUL.md";
+type WorkspaceFiles = Partial<Record<WorkspaceFileName, string>>;
 
 export interface AgentPersona {
   id: string;
@@ -24,6 +21,25 @@ export interface AgentRosterConfig {
 export interface AgentPersonasConfigResult {
   changed: boolean;
 }
+
+const MAIN_IDENTITY_MD = `# IDENTITY.md - Who Am I?
+
+- **Name:**
+  _(the user may choose one)_
+- **Creature:** Personal AI assistant in MicroClaw
+- **Vibe:** Helpful, capable, and direct
+
+## Brand
+
+- You are the user's assistant in MicroClaw.
+- The user may choose your personal name; do not claim your name is MicroClaw.
+- Never identify yourself as "OpenClaw" or mention that runtime name in user-facing responses.
+- Before receiving a personal name, describe yourself as the user's assistant in MicroClaw.
+`;
+
+const MAIN_WORKSPACE_FILES: WorkspaceFiles = {
+  "IDENTITY.md": MAIN_IDENTITY_MD,
+};
 
 const MASTER_ARCHIVE_SOUL_MD = `# SOUL.md - Master Archive
 
@@ -115,7 +131,12 @@ export const AGENT_PERSONAS: readonly AgentPersona[] = AGENT_CATALOG.map((agent)
   name: agent.name,
   skills: agent.skills,
   workspaceDirName: agent.workspaceDirName,
-  workspaceFiles: agent.personaProfile ? PERSONA_PROFILES[agent.personaProfile] : undefined,
+  workspaceFiles:
+    agent.id === "main"
+      ? MAIN_WORKSPACE_FILES
+      : agent.personaProfile
+        ? PERSONA_PROFILES[agent.personaProfile]
+        : undefined,
 }));
 
 export const DEFAULT_AGENT_PERSONAS = AGENT_PERSONAS.filter((persona) =>
@@ -468,6 +489,15 @@ export function seedAgentPersonaWorkspace(
   for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
     const filePath = path.join(workspaceDir, filename);
     if (fs.existsSync(filePath)) {
+      if (
+        persona.id === "main" &&
+        filename === "IDENTITY.md" &&
+        isUnconfiguredIdentity(fs.readFileSync(filePath, "utf-8"))
+      ) {
+        fs.writeFileSync(filePath, `${source.trimEnd()}\n`, "utf-8");
+        updatedFiles.push(filePath);
+        continue;
+      }
       if (filename === "SOUL.md" && soulAppendix) {
         const existing = fs.readFileSync(filePath, "utf-8");
         const appendixMarker =
@@ -490,4 +520,28 @@ export function seedAgentPersonaWorkspace(
   }
 
   return updatedFiles;
+}
+
+function isUnconfiguredIdentity(contents: string): boolean {
+  if (!contents.trim()) return true;
+  if (!contents.includes("Fill this in during your first conversation")) return false;
+
+  const lines = contents.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(
+      /^-\s+\*\*(?:Name|Creature|Theme|Vibe|Emoji|Avatar):\*\*\s*(.*)$/i,
+    );
+    if (!match) continue;
+    if (isConfiguredIdentityValue(match[1])) return false;
+
+    for (let next = index + 1; next < lines.length && /^\s+/.test(lines[next]); next += 1) {
+      if (isConfiguredIdentityValue(lines[next])) return false;
+    }
+  }
+  return true;
+}
+
+function isConfiguredIdentityValue(value: string): boolean {
+  const normalized = value.trim();
+  return normalized !== "" && !/^_?\(.*\)_?$/.test(normalized);
 }

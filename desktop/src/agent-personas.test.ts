@@ -145,7 +145,7 @@ describe("agent personas", () => {
     if (!workspace) throw new Error("Master Archive workspace is not configured");
 
     expect(workspace).toBe(path.join(stateDir, "workspace-master-archive"));
-    expect(created).toHaveLength(3);
+    expect(created).toHaveLength(4);
     expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
       "## Shared safety rule",
     );
@@ -162,10 +162,70 @@ describe("agent personas", () => {
     const config = { agents: {} };
     ensureAgentPersonasConfig(config, stateDir);
 
-    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([
+      path.join(stateDir, "workspace", "IDENTITY.md"),
+    ]);
     expect(fs.existsSync(path.join(stateDir, "workspace-master-archive"))).toBe(
       false,
     );
+  });
+
+  it("seeds a user-nameable MicroClaw identity for main", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([
+      path.join(stateDir, "workspace", "IDENTITY.md"),
+    ]);
+    const identity = fs.readFileSync(
+      path.join(stateDir, "workspace", "IDENTITY.md"),
+      "utf-8",
+    );
+    expect(identity).toContain("the user may choose one");
+    expect(identity).toContain("assistant in MicroClaw");
+    expect(identity).toContain('Never identify yourself as "OpenClaw"');
+  });
+
+  it("replaces the unconfigured identity template but preserves a chosen name", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    ensureAgentPersonasConfig(config, stateDir);
+    const workspace = path.join(stateDir, "workspace");
+    const identityPath = path.join(workspace, "IDENTITY.md");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.writeFileSync(
+      identityPath,
+      `# IDENTITY.md - Who Am I?
+
+_Fill this in during your first conversation. Make it yours._
+
+- **Name:**
+  _(pick something you like)_
+- **Creature:**
+  _(AI? robot? familiar?)_
+`,
+      "utf-8",
+    );
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([identityPath]);
+    expect(fs.readFileSync(identityPath, "utf-8")).toContain("assistant in MicroClaw");
+
+    fs.writeFileSync(
+      identityPath,
+      `# IDENTITY.md - Who Am I?
+
+_Fill this in during your first conversation. Make it yours._
+
+- **Name:** Nova
+- **Creature:**
+  _(AI? robot? familiar?)_
+`,
+      "utf-8",
+    );
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
+    expect(fs.readFileSync(identityPath, "utf-8")).toContain("**Name:** Nova");
   });
 
   it("removes a configured optional agent without changing its workspace data", () => {
