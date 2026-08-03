@@ -56,7 +56,7 @@ export type ChatEventPayload = {
 };
 
 export type AgentWarmupResult = {
-  outcome: "delta" | "terminal" | "timeout" | "error" | "disconnected";
+  outcome: "skipped" | "delta" | "terminal" | "timeout" | "error" | "disconnected";
   transcriptDeleted: boolean;
 };
 

@@ -3546,6 +3546,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("gateway:warm-up-agent", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (needsSetup()) {
+      console.log("[gateway-ws] agent warm-up skipped: no model is configured");
+      return { outcome: "skipped", transcriptDeleted: true };
+    }
     return await gwClient.warmUpAgent();
   });
 

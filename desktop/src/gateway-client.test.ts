@@ -219,6 +219,22 @@ describe("GatewayClient.deleteSession", () => {
       expect(second).toBe(first);
     });
 
+    it("returns immediately when chat.send rejects", async () => {
+      const { client, request } = createClient();
+      request.mockImplementation((method) => {
+        if (method === "chat.send") return Promise.reject(new Error("provider unauthorized"));
+        return Promise.resolve(undefined);
+      });
+
+      await expect(client.warmUpAgent(30_000)).resolves.toEqual({
+        outcome: "error",
+        transcriptDeleted: false,
+      });
+      expect(request).toHaveBeenCalledWith("chat.abort", {
+        sessionKey: AGENT_WARMUP_SESSION_KEY,
+      });
+    });
+
     it("fails open at the timeout and starts cleanup", async () => {
       vi.useFakeTimers();
       const { client, request } = createClient();
