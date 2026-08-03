@@ -7,6 +7,7 @@
     v-else-if="!gatewayReady"
     :status="gateway.status"
     :connected="chatStore.wsConnected"
+    :warming="gateway.warming"
     :errorMessage="gateway.lastError"
     @retry="handleRetry"
   />
@@ -195,6 +196,18 @@ function markConnected() {
   setTimeout(() => {
     gateway.markReady();
   }, 600);
+}
+
+async function warmThenMarkConnected() {
+  if (!gateway.beginWarming()) return;
+  try {
+    await window.openclaw.gateway.warmUpAgent();
+  } catch (error) {
+    console.warn("[renderer] agent warm-up unavailable:", error);
+  } finally {
+    gateway.finishWarming();
+    markConnected();
+  }
 }
 
 function handleRetry() {
@@ -452,7 +465,7 @@ onMounted(async () => {
   unsubWsConnected = window.openclaw.gateway.onWsConnected((mainSessionKey) => {
     const wasStreaming = chatStore.streaming;
     chatStore.wsConnected = true;
-    markConnected();
+    void warmThenMarkConnected();
     if (mainSessionKey) {
       chatStore.setMainSessionKey(mainSessionKey);
     }
@@ -498,7 +511,7 @@ onMounted(async () => {
   window.openclaw.chat.isConnected().then((c) => {
     if (c && !chatStore.wsConnected) {
       chatStore.wsConnected = c;
-      markConnected();
+      void warmThenMarkConnected();
       sessionStore.reconcileEmptySessions(chatStore.sessionKey, "main");
       sessionStore.ensureSession(chatStore.sessionKey, "main");
       chatStore.loadHistory();

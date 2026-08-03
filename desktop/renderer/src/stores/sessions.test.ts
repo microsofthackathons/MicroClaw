@@ -20,6 +20,7 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 import { useSessionStore } from "./sessions";
+import { AGENT_WARMUP_SESSION_KEY } from "../../../src/constants";
 
 describe("useSessionStore", () => {
   beforeEach(() => {
@@ -47,6 +48,16 @@ describe("useSessionStore", () => {
     store.ensureSession("test-1");
     store.ensureSession("test-1");
     expect(store.sessions).toHaveLength(1);
+  });
+
+  it("never creates or selects the reserved warm-up session", () => {
+    const store = useSessionStore();
+
+    store.ensureSession(AGENT_WARMUP_SESSION_KEY);
+    store.reconcileEmptySessions(AGENT_WARMUP_SESSION_KEY, "main");
+
+    expect(store.sessions).toEqual([]);
+    expect(store.currentKey).toBeNull();
   });
 
   it("reconciles stale empty sessions with the canonical main session", () => {
@@ -195,6 +206,24 @@ describe("useSessionStore", () => {
     const store = useSessionStore();
     expect(store.sessions).toHaveLength(1);
     expect(store.sessions[0].key).toBe("loaded");
+  });
+
+  it("removes a persisted reserved warm-up session on load", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: AGENT_WARMUP_SESSION_KEY,
+        title: "Hidden warm-up",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "ping",
+      },
+      { key: "visible", title: "Visible", createdAt: 1, updatedAt: 1, preview: "" },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions.map((session) => session.key)).toEqual(["visible"]);
   });
 
   it("handles corrupted localStorage gracefully", () => {

@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { t } from "../i18n";
+import { AGENT_WARMUP_SESSION_KEY } from "../../../src/constants";
 
 export interface Session {
   key: string;
@@ -16,7 +17,8 @@ const STORAGE_KEY = "openclaw-sessions";
 function loadFromStorage(): Session[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const stored = raw ? (JSON.parse(raw) as Session[]) : [];
+    return stored.filter((session) => session.key !== AGENT_WARMUP_SESSION_KEY);
   } catch {
     return [];
   }
@@ -36,6 +38,7 @@ export const useSessionStore = defineStore("sessions", () => {
 
   /** Ensure a session entry exists for the given key. */
   function ensureSession(key: string, agentId?: string) {
+    if (key === AGENT_WARMUP_SESSION_KEY) return;
     const existing = sessions.value.find((s) => s.key === key);
     if (!existing) {
       sessions.value.push({
@@ -60,6 +63,7 @@ export const useSessionStore = defineStore("sessions", () => {
    * under generated keys across app restarts.
    */
   function reconcileEmptySessions(key: string, agentId?: string) {
+    if (key === AGENT_WARMUP_SESSION_KEY) return;
     const emptySessions = sessions.value.filter((session) => !session.preview.trim());
     if (emptySessions.length === 0) return;
 
@@ -99,6 +103,12 @@ export const useSessionStore = defineStore("sessions", () => {
 
   /** Replace a local alias with its canonical Gateway key and merge duplicates. */
   function canonicalizeSession(aliasKey: string, canonicalKey: string) {
+    if (
+      aliasKey === AGENT_WARMUP_SESSION_KEY ||
+      canonicalKey === AGENT_WARMUP_SESSION_KEY
+    ) {
+      return;
+    }
     if (!aliasKey || aliasKey === canonicalKey) return;
 
     const alias = sessions.value.find((s) => s.key === aliasKey);

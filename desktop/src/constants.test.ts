@@ -17,6 +17,9 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
   SANDBOX_PERMISSION_TIMEOUT_MS,
+  AGENT_WARMUP_PROMPT,
+  AGENT_WARMUP_SESSION_KEY,
+  AGENT_WARMUP_TIMEOUT_MS,
 } from "./constants";
 import type { GatewayStatus } from "./constants";
 
@@ -85,6 +88,10 @@ describe("constants", () => {
       expect(WS_REQUEST_TIMEOUT_MS).toBeGreaterThan(WS_RECONNECT_INITIAL_MS);
     });
 
+    it("agent warm-up has a finite 30-second safety cap", () => {
+      expect(AGENT_WARMUP_TIMEOUT_MS).toBe(30_000);
+    });
+
     it("backoff reaches max within reasonable retries", () => {
       let delay = WS_RECONNECT_INITIAL_MS;
       let retries = 0;
@@ -93,6 +100,14 @@ describe("constants", () => {
         retries++;
       }
       expect(retries).toBeLessThan(50);
+    });
+
+    describe("agent warm-up", () => {
+      it("uses a reserved non-main session and minimal prompt", () => {
+        expect(AGENT_WARMUP_SESSION_KEY).toBe("agent:main:__microclaw_warmup__");
+        expect(AGENT_WARMUP_SESSION_KEY).not.toBe("agent:main:main");
+        expect(AGENT_WARMUP_PROMPT).toBe("ping");
+      });
     });
   });
 

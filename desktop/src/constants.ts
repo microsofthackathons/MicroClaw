@@ -110,6 +110,15 @@ export const WS_RECONNECT_MULTIPLIER = 1.7;
 /** Per-request timeout for gateway WS RPC calls (ms). */
 export const WS_REQUEST_TIMEOUT_MS = 30_000;
 
+/** Reserved throwaway session used to pre-warm the main agent. */
+export const AGENT_WARMUP_SESSION_KEY = "agent:main:__microclaw_warmup__";
+
+/** Minimal prompt for the throwaway warm-up turn. */
+export const AGENT_WARMUP_PROMPT = "ping";
+
+/** Hard cap for startup agent warm-up before the app fails open (ms). */
+export const AGENT_WARMUP_TIMEOUT_MS = 30_000;
+
 // ── Studio backend ──────────────────────────────────────────────────────
 
 /** Default port for the Studio Node backend. */

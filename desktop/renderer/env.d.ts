@@ -133,6 +133,10 @@ interface OpenClawAPI {
     getPort(): Promise<number>;
     getStatus(): Promise<string>;
     restart(): Promise<void>;
+    warmUpAgent(): Promise<{
+      outcome: "delta" | "terminal" | "timeout" | "error" | "disconnected";
+      transcriptDeleted: boolean;
+    }>;
     onStatus(callback: (status: string) => void): () => void;
     onLog(callback: (msg: string) => void): () => void;
     onWsConnected(callback: (mainSessionKey: string | null) => void): () => void;
