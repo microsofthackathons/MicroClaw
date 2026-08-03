@@ -18,6 +18,9 @@ import {
   type DeviceIdentity,
 } from "./device-identity.js";
 import {
+  AGENT_WARMUP_PROMPT,
+  AGENT_WARMUP_SESSION_KEY,
+  AGENT_WARMUP_TIMEOUT_MS,
   WS_RECONNECT_INITIAL_MS,
   WS_RECONNECT_MAX_MS,
   WS_RECONNECT_MULTIPLIER,
@@ -51,6 +54,18 @@ export type ChatEventPayload = {
   replace?: boolean;
   errorMessage?: string;
 };
+
+export type AgentWarmupResult = {
+  outcome: "delta" | "terminal" | "timeout" | "error" | "disconnected";
+  transcriptDeleted: boolean;
+};
+
+type AgentWarmupSignal = "delta" | "terminal" | "disconnected";
+
+export function isAgentWarmupEvent(evt: GatewayEventFrame): boolean {
+  if (!evt.payload || typeof evt.payload !== "object" || Array.isArray(evt.payload)) return false;
+  return (evt.payload as Record<string, unknown>).sessionKey === AGENT_WARMUP_SESSION_KEY;
+}
 
 export type ListedGatewayChannel = {
   id: string;
@@ -143,6 +158,10 @@ export class GatewayClient {
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private deviceIdentity: DeviceIdentity;
   private _mainSessionKey: string | null = null;
+  private agentWarmupPromise: Promise<AgentWarmupResult> | null = null;
+  private agentWarmupWaiter: ((signal: AgentWarmupSignal) => void) | null = null;
+  private agentWarmupCleanupPromise: Promise<boolean> | null = null;
+  private agentWarmupCleanupPending = false;
 
   constructor(private opts: GatewayClientOptions) {
     this.deviceIdentity = loadOrCreateDeviceIdentity();
@@ -170,6 +189,7 @@ export class GatewayClient {
     }
     this.ws?.close();
     this.ws = null;
+    this.agentWarmupWaiter?.("disconnected");
     this.flushPending("client stopped");
   }
 
@@ -212,6 +232,23 @@ export class GatewayClient {
     });
   }
 
+  /**
+   * Warm the main agent on an internal throwaway session.
+   *
+   * All events for the reserved session are consumed in handleMessage(), so
+   * neither the main process nor renderer can add them to visible chat state.
+   */
+  warmUpAgent(timeoutMs = AGENT_WARMUP_TIMEOUT_MS): Promise<AgentWarmupResult> {
+    if (this.agentWarmupPromise) return this.agentWarmupPromise;
+
+    const operation = this.runAgentWarmup(timeoutMs);
+    this.agentWarmupPromise = operation;
+    void operation.finally(() => {
+      if (this.agentWarmupPromise === operation) this.agentWarmupPromise = null;
+    });
+    return operation;
+  }
+
   /** Load chat history for a session. */
   loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }> {
     return this.request("chat.history", { sessionKey, limit: 200 });
@@ -235,6 +272,91 @@ export class GatewayClient {
       return;
     }
     await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
+  }
+
+  private async runAgentWarmup(timeoutMs: number): Promise<AgentWarmupResult> {
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+
+    try {
+      if (this.agentWarmupCleanupPending) {
+        const staleCleanup = this.cleanupAgentWarmup().then(() => "cleaned" as const);
+        if ((await Promise.race([staleCleanup, timeout])) === "timeout") {
+          return { outcome: "timeout", transcriptDeleted: false };
+        }
+      }
+
+      const signal = new Promise<AgentWarmupSignal>((resolve) => {
+        this.agentWarmupWaiter = resolve;
+      });
+      this.agentWarmupCleanupPending = true;
+
+      const sent = this.sendChat(AGENT_WARMUP_SESSION_KEY, AGENT_WARMUP_PROMPT).then(
+        () => "sent" as const,
+      );
+      const sendOutcome = await Promise.race([sent, timeout]);
+      if (sendOutcome === "timeout") {
+        void this.cleanupAgentWarmup();
+        return { outcome: "timeout", transcriptDeleted: false };
+      }
+
+      const outcome = await Promise.race([signal, timeout]);
+      if (outcome === "timeout") {
+        void this.cleanupAgentWarmup();
+        return { outcome, transcriptDeleted: false };
+      }
+
+      if (outcome === "disconnected") {
+        void this.cleanupAgentWarmup();
+        return { outcome, transcriptDeleted: false };
+      }
+
+      const cleanup = this.cleanupAgentWarmup().then((transcriptDeleted) => ({
+        outcome,
+        transcriptDeleted,
+      }));
+      const result = await Promise.race([cleanup, timeout]);
+      if (result === "timeout") {
+        return { outcome: "timeout", transcriptDeleted: false };
+      }
+      return result;
+    } catch (error) {
+      console.warn("[gateway-client] agent warm-up failed:", error);
+      void this.cleanupAgentWarmup();
+      return { outcome: "error", transcriptDeleted: false };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      this.agentWarmupWaiter = null;
+    }
+  }
+
+  private cleanupAgentWarmup(): Promise<boolean> {
+    if (this.agentWarmupCleanupPromise) return this.agentWarmupCleanupPromise;
+
+    const cleanup = (async () => {
+      try {
+        await this.abortChat(AGENT_WARMUP_SESSION_KEY);
+      } catch (error) {
+        console.warn("[gateway-client] could not abort agent warm-up:", error);
+      }
+
+      try {
+        await this.deleteSession(AGENT_WARMUP_SESSION_KEY);
+        this.agentWarmupCleanupPending = false;
+        return true;
+      } catch (error) {
+        console.warn("[gateway-client] could not delete agent warm-up transcript:", error);
+        return false;
+      }
+    })();
+
+    this.agentWarmupCleanupPromise = cleanup;
+    void cleanup.finally(() => {
+      if (this.agentWarmupCleanupPromise === cleanup) this.agentWarmupCleanupPromise = null;
+    });
+    return cleanup;
   }
 
   /**
@@ -330,6 +452,7 @@ export class GatewayClient {
     this.ws.on("close", (_code, reason) => {
       this._connected = false;
       this.ws = null;
+      this.agentWarmupWaiter?.("disconnected");
       this.flushPending("disconnected");
       this.opts.onDisconnected?.(String(reason || "closed"));
       this.scheduleReconnect();
@@ -394,6 +517,7 @@ export class GatewayClient {
         this._connected = true;
         this.backoffMs = WS_RECONNECT_INITIAL_MS;
         this._mainSessionKey = extractMainSessionKey(hello);
+        if (this.agentWarmupCleanupPending) void this.cleanupAgentWarmup();
         this.opts.onConnected?.(hello ?? {});
       })
       .catch((err) => {
@@ -443,6 +567,21 @@ export class GatewayClient {
           // Challenge arrived — reset sent flag and send immediately
           this.connectSent = false;
           this.sendConnect();
+        }
+        return;
+      }
+      if (isAgentWarmupEvent(evt)) {
+        if (evt.event === "chat") {
+          const payload = evt.payload as Partial<ChatEventPayload>;
+          if (payload.state === "delta") {
+            this.agentWarmupWaiter?.("delta");
+          } else if (
+            payload.state === "final" ||
+            payload.state === "aborted" ||
+            payload.state === "error"
+          ) {
+            this.agentWarmupWaiter?.("terminal");
+          }
         }
         return;
       }

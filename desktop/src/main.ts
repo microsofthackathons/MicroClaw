@@ -3544,6 +3544,11 @@ function registerIpcHandlers(): void {
     return await gwClient.clearAllHistory();
   });
 
+  ipcMain.handle("gateway:warm-up-agent", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.warmUpAgent();
+  });
+
   // Report as "not connected" while the post-spawn restart is pending.
   // Without this, the renderer's isConnected() poll on mount bypasses the
   // ws-connected gate and lets the user send messages before the gateway's
