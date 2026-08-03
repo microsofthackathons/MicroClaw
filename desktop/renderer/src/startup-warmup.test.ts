@@ -45,6 +45,15 @@ describe("runStartupWarmup", () => {
     expect(options.markConnected).toHaveBeenCalledOnce();
   });
 
+  it("does not issue a second warm-up while one is already active", async () => {
+    const options = createOptions();
+    options.beginWarming.mockReturnValue(false);
+
+    await expect(runStartupWarmup(options)).resolves.toBe("deduplicated");
+    expect(options.warmUpAgent).not.toHaveBeenCalled();
+    expect(options.markConnected).not.toHaveBeenCalled();
+  });
+
   it("skips safely when model eligibility cannot be checked", async () => {
     const options = createOptions();
     options.needsSetup.mockRejectedValue(new Error("config unavailable"));

@@ -152,8 +152,7 @@ describe("GatewayClient.deleteSession", () => {
         _mainSessionKey: "agent:main:main",
         agentWarmupPromise: null,
         agentWarmupWaiter: null,
-        agentWarmupCleanupPromise: null,
-        agentWarmupCleanupPending: false,
+        agentWarmupAbortPromise: null,
       });
       const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
       const handleMessage = (client as unknown as PrivateMessageHandler).handleMessage.bind(client);
@@ -178,7 +177,7 @@ describe("GatewayClient.deleteSession", () => {
       );
     }
 
-    it("aborts on the first delta, deletes the transcript, and suppresses the event", async () => {
+    it("aborts on the first delta without calling sessions.delete", async () => {
       const { client, request, handleMessage, onEvent } = createClient();
 
       const warming = client.warmUpAgent(1_000);
@@ -190,14 +189,11 @@ describe("GatewayClient.deleteSession", () => {
       });
       emitWarmupChat(handleMessage, "delta");
 
-      await expect(warming).resolves.toEqual({ outcome: "delta", transcriptDeleted: true });
+      await expect(warming).resolves.toEqual({ outcome: "delta", transcriptDeleted: false });
       expect(request).toHaveBeenCalledWith("chat.abort", {
         sessionKey: AGENT_WARMUP_SESSION_KEY,
       });
-      expect(request).toHaveBeenCalledWith("sessions.delete", {
-        key: AGENT_WARMUP_SESSION_KEY,
-        deleteTranscript: true,
-      });
+      expect(request).not.toHaveBeenCalledWith("sessions.delete", expect.anything());
       expect(onEvent).not.toHaveBeenCalled();
     });
 
@@ -207,16 +203,19 @@ describe("GatewayClient.deleteSession", () => {
       const warming = client.warmUpAgent(1_000);
       emitWarmupChat(handleMessage, "final");
 
-      await expect(warming).resolves.toEqual({ outcome: "terminal", transcriptDeleted: true });
+      await expect(warming).resolves.toEqual({ outcome: "terminal", transcriptDeleted: false });
     });
 
-    it("returns one single-flight promise for concurrent callers", () => {
-      const { client } = createClient();
+    it("sends only one warm-up turn for concurrent callers", async () => {
+      const { client, request, handleMessage } = createClient();
 
       const first = client.warmUpAgent(1_000);
       const second = client.warmUpAgent(1_000);
+      emitWarmupChat(handleMessage, "final");
 
       expect(second).toBe(first);
+      await expect(first).resolves.toEqual({ outcome: "terminal", transcriptDeleted: false });
+      expect(request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
     });
 
     it("returns immediately when chat.send rejects", async () => {
@@ -249,18 +248,23 @@ describe("GatewayClient.deleteSession", () => {
       vi.useRealTimers();
     });
 
-    it("includes stale cleanup in the same hard timeout", async () => {
-      vi.useFakeTimers();
+    it("does not wait for chat.send acknowledgement or the abort RPC", async () => {
       const { client, request } = createClient();
-      Object.assign(client, { agentWarmupCleanupPending: true });
-      request.mockImplementation(() => new Promise(() => undefined));
+      request.mockImplementation((method) => {
+        if (method === "chat.send" || method === "chat.abort") {
+          return new Promise(() => undefined);
+        }
+        return Promise.resolve(undefined);
+      });
 
-      const warming = client.warmUpAgent(25);
-      await vi.advanceTimersByTimeAsync(25);
+      const warming = client.warmUpAgent(30_000);
+      emitWarmupChat(
+        (client as unknown as PrivateMessageHandler).handleMessage.bind(client),
+        "delta",
+      );
 
-      await expect(warming).resolves.toEqual({ outcome: "timeout", transcriptDeleted: false });
-      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
-      vi.useRealTimers();
+      await expect(warming).resolves.toEqual({ outcome: "delta", transcriptDeleted: false });
+      expect(request).not.toHaveBeenCalledWith("sessions.delete", expect.anything());
     });
   });
 

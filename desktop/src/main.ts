@@ -92,6 +92,7 @@ import {
 } from "./agent-personas";
 import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
+import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import {
   applyAgentSkillsToConfig,
   applyGlobalSkillChange,
@@ -1631,6 +1632,8 @@ function stopGatewayProcess(): void {
   const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
   const pids = new Set<number>();
+  let listenerScanSucceeded = gatewayPort === 0;
+  let allGatewayProcessesStopped = process.platform === "win32";
   if (knownPid) pids.add(knownPid);
   if (gatewayPort && process.platform === "win32") {
     try {
@@ -1639,6 +1642,7 @@ function stopGatewayProcess(): void {
         encoding: "utf-8",
         timeout: 5_000,
       });
+      listenerScanSucceeded = true;
       for (const line of result.split(/\r?\n/)) {
         const columns = line.trim().split(/\s+/);
         if (
@@ -1664,11 +1668,28 @@ function stopGatewayProcess(): void {
           timeout: 10_000,
           stdio: "ignore",
         });
-      } catch {}
+      } catch {
+        allGatewayProcessesStopped = false;
+      }
     } else {
+      allGatewayProcessesStopped = false;
       try {
         process.kill(pid, "SIGTERM");
       } catch {}
+    }
+  }
+  const stoppedGatewayConfirmed =
+    allGatewayProcessesStopped && (pids.size > 0 || listenerScanSucceeded);
+  if (stoppedGatewayConfirmed) {
+    try {
+      const result = cleanupStoppedGatewayWarmupSession(getOpenClawStateDir());
+      if (result.indexEntryRemoved) {
+        console.log(
+          `[gateway] removed deferred warm-up session and ${result.artifactsRemoved.length} artifact(s)`,
+        );
+      }
+    } catch (error) {
+      console.warn("[gateway] deferred warm-up session cleanup failed:", error);
     }
   }
 }
