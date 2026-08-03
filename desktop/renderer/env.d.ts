@@ -134,7 +134,7 @@ interface OpenClawAPI {
     getStatus(): Promise<string>;
     restart(): Promise<void>;
     warmUpAgent(): Promise<{
-      outcome: "delta" | "terminal" | "timeout" | "error" | "disconnected";
+      outcome: "skipped" | "delta" | "terminal" | "timeout" | "error" | "disconnected";
       transcriptDeleted: boolean;
     }>;
     onStatus(callback: (status: string) => void): () => void;

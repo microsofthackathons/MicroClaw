@@ -157,6 +157,7 @@ import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/sessions";
 import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
+import { runStartupWarmup } from "@/startup-warmup";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -168,6 +169,7 @@ const agentStore = useAgentStore();
 
 // ── Setup wizard gate ──
 const showSetup = ref(false);
+const setupActive = computed(() => showSetup.value || route.path === "/setup");
 
 // ── Gateway loading gate ──
 // Once the first WS connection succeeds and the progress bar finishes,
@@ -199,15 +201,15 @@ function markConnected() {
 }
 
 async function warmThenMarkConnected() {
-  if (!gateway.beginWarming()) return;
-  try {
-    await window.openclaw.gateway.warmUpAgent();
-  } catch (error) {
-    console.warn("[renderer] agent warm-up unavailable:", error);
-  } finally {
-    gateway.finishWarming();
-    markConnected();
-  }
+  await runStartupWarmup({
+    showSetup: setupActive.value,
+    needsSetup: () => window.openclaw.config.needsSetup(),
+    beginWarming: gateway.beginWarming,
+    warmUpAgent: () => window.openclaw.gateway.warmUpAgent(),
+    finishWarming: gateway.finishWarming,
+    markConnected,
+    onError: (error) => console.warn("[renderer] agent warm-up unavailable:", error),
+  });
 }
 
 function handleRetry() {
