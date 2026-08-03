@@ -321,6 +321,44 @@ export function listConfiguredAgents(
   });
 }
 
+export function removeConfiguredAgent(
+  config: AgentRosterConfig,
+  agentId: string,
+): AgentPersonasConfigResult {
+  const normalizedId = normalizeAgentId(agentId);
+  if (DEFAULT_AGENT_IDS.includes(normalizedId)) {
+    throw new Error(`Default agent "${normalizedId}" cannot be removed`);
+  }
+  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) {
+    throw new Error("Invalid agents.list configuration");
+  }
+
+  let removed = false;
+  let removedDefault = false;
+  const remaining = config.agents.list.filter((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.id !== "string" || !candidate.id.trim()) {
+      throw new Error("Invalid agent entry in agents.list");
+    }
+    if (normalizeAgentId(candidate.id) !== normalizedId) return true;
+    removed = true;
+    removedDefault ||= candidate.default === true;
+    return false;
+  });
+
+  if (!removed) return { changed: false };
+  if (removedDefault) {
+    const mainAgent = remaining.find(
+      (candidate) => isRecord(candidate) && candidate.id === "main",
+    );
+    if (!isRecord(mainAgent)) {
+      throw new Error("Cannot reassign the default agent because main is missing");
+    }
+    mainAgent.default = true;
+  }
+  config.agents.list = remaining;
+  return { changed: true };
+}
+
 function normalizeHomeValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return !trimmed || trimmed === "undefined" || trimmed === "null" ? undefined : trimmed;

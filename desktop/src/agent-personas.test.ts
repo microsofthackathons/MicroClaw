@@ -10,6 +10,7 @@ import {
   getAgentPersona,
   getAgentWorkspacePath,
   listConfiguredAgents,
+  removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
 } from "./agent-personas";
@@ -225,6 +226,61 @@ _Fill this in during your first conversation. Make it yours._
 
     expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
     expect(fs.readFileSync(identityPath, "utf-8")).toContain("**Name:** Nova");
+  });
+
+  it("removes a configured optional agent without changing its workspace data", () => {
+    const stateDir = createStateDir();
+    const workspace = path.join(stateDir, "workspace-master-archive");
+    fs.mkdirSync(workspace);
+    const soulPath = path.join(workspace, "SOUL.md");
+    fs.writeFileSync(soulPath, "custom persona\n", "utf-8");
+    const config = {
+      agents: {
+        defaults: { model: "custom/model" },
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "master-archive", name: "Master Archive", workspace },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "master-archive").changed).toBe(true);
+    expect(config.agents.defaults).toEqual({ model: "custom/model" });
+    expect(config.agents.list).toEqual([
+      { id: "main", name: "Assistant", default: true },
+    ]);
+    expect(fs.readFileSync(soulPath, "utf-8")).toBe("custom persona\n");
+    expect(removeConfiguredAgent(config, "master-archive").changed).toBe(false);
+  });
+
+  it("does not allow the built-in default agent to be removed", () => {
+    const config = {
+      agents: {
+        list: [{ id: "main", name: "Assistant", default: true }],
+      },
+    };
+
+    expect(() => removeConfiguredAgent(config, "MAIN")).toThrow(
+      'Default agent "main" cannot be removed',
+    );
+    expect(config.agents.list).toHaveLength(1);
+  });
+
+  it("makes main the default when removing a legacy default agent", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "coder", name: "Coder", default: true },
+          { id: "main", name: "Assistant" },
+        ],
+      },
+    };
+
+    removeConfiguredAgent(config, "coder");
+
+    expect(config.agents.list).toEqual([
+      { id: "main", name: "Assistant", default: true },
+    ]);
   });
 
   it("does not overwrite user-customized workspace files", () => {
