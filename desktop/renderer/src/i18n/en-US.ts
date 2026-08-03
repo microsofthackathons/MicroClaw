@@ -754,6 +754,13 @@ export default {
   "agentMarket.add": "Add",
   "agentMarket.added": "Added",
   "agentMarket.addFailed": "Couldn't add the agent to OpenClaw. Please try again.",
+  "agentMarket.remove": "Remove",
+  "agentMarket.cancel": "Cancel",
+  "agentMarket.removeTitle": "Remove agent",
+  "agentMarket.removeConfirm":
+    "Remove {name} from MicroClaw? Existing conversations and workspace files will be kept.",
+  "agentMarket.removeSuccess": "{name} was removed.",
+  "agentMarket.removeFailed": "Couldn't remove the agent from OpenClaw. Please try again.",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",

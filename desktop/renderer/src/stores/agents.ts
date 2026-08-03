@@ -82,7 +82,7 @@ function normalizeRuntimeAgents(value: unknown): RuntimeAgent[] {
 export const useAgentStore = defineStore("agents", () => {
   const remoteAgents = ref<RuntimeAgent[]>([{ id: "main", name: "Assistant" }]);
   const currentAgentId = ref("main");
-  const pendingAgentAdds = new Set<string>();
+  const pendingAgentChanges = new Set<string>();
   const installedAgentIds = computed(() => new Set(remoteAgents.value.map((agent) => agent.id)));
 
   const agents = computed<Agent[]>(() => {
@@ -113,8 +113,8 @@ export const useAgentStore = defineStore("agents", () => {
   }
 
   async function addAgent(agentId: string) {
-    if (installedAgentIds.value.has(agentId) || pendingAgentAdds.has(agentId)) return;
-    pendingAgentAdds.add(agentId);
+    if (installedAgentIds.value.has(agentId) || pendingAgentChanges.has(agentId)) return;
+    pendingAgentChanges.add(agentId);
     try {
       const result = await window.openclaw.agents.add(agentId);
       if (!Array.isArray(result.agents)) {
@@ -122,7 +122,24 @@ export const useAgentStore = defineStore("agents", () => {
       }
       remoteAgents.value = normalizeRuntimeAgents(result.agents);
     } finally {
-      pendingAgentAdds.delete(agentId);
+      pendingAgentChanges.delete(agentId);
+    }
+  }
+
+  async function removeAgent(agentId: string) {
+    if (!installedAgentIds.value.has(agentId) || pendingAgentChanges.has(agentId)) return;
+    pendingAgentChanges.add(agentId);
+    try {
+      const result = await window.openclaw.agents.remove(agentId);
+      if (!Array.isArray(result.agents)) {
+        throw new Error("OpenClaw returned an invalid agent roster");
+      }
+      remoteAgents.value = normalizeRuntimeAgents(result.agents);
+      if (currentAgentId.value === agentId) {
+        currentAgentId.value = "main";
+      }
+    } finally {
+      pendingAgentChanges.delete(agentId);
     }
   }
 
@@ -143,6 +160,7 @@ export const useAgentStore = defineStore("agents", () => {
     marketAgents,
     selectAgent,
     addAgent,
+    removeAgent,
     fetchAgents,
   };
 });

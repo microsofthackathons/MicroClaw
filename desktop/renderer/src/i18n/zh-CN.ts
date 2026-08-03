@@ -727,6 +727,12 @@ export default {
   "agentMarket.add": "添加",
   "agentMarket.added": "已添加",
   "agentMarket.addFailed": "无法将 Agent 添加到 OpenClaw，请重试。",
+  "agentMarket.remove": "移除",
+  "agentMarket.cancel": "取消",
+  "agentMarket.removeTitle": "移除 Agent",
+  "agentMarket.removeConfirm": "从 MicroClaw 中移除 {name}？现有对话和工作区文件将会保留。",
+  "agentMarket.removeSuccess": "已移除 {name}。",
+  "agentMarket.removeFailed": "无法从 OpenClaw 移除 Agent，请重试。",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "快捷任务",

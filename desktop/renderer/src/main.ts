@@ -56,6 +56,10 @@ if (isBrowserDev) {
             { id: agentId, name: agentId },
           ],
         }),
+      remove: () =>
+        Promise.resolve({
+          agents: [{ id: "main", name: "Assistant" }],
+        }),
     },
     updates: {
       check: () =>
