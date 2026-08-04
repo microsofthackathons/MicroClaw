@@ -94,6 +94,7 @@ import {
 } from "./agent-personas";
 import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
+import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import {
   applyAgentSkillsToConfig,
@@ -125,12 +126,9 @@ function isSubdirectoryOf(parentDir: string, childDir: string): boolean {
   return normalChild.startsWith(parentWithSep);
 }
 
-// Disable GPU on RDP sessions / headless VMs where GPU DLLs are missing.
-// On machines with a real GPU, hardware acceleration is used normally.
-const isRemoteSession =
-  /^rdp-/i.test(process.env.SESSIONNAME || "") ||
-  (process.env.SESSIONNAME === "Console" && !process.env.DISPLAY);
-if (isRemoteSession || process.env.ELECTRON_DISABLE_GPU === "1") {
+// Chromium selects an appropriate rendering backend, including on RDP. Force software rendering
+// only for environments where GPU startup is known to be incompatible.
+if (shouldDisableHardwareAcceleration(process.env)) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("no-sandbox");
   app.commandLine.appendSwitch("disable-gpu");
