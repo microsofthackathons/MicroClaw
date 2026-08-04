@@ -13,7 +13,11 @@
       />
       <span v-else class="chat-attachment__icon" aria-hidden="true">&#x1F4CE;</span>
       <span class="chat-attachment__details">
-        <span class="chat-attachment__name">{{ attachment.fileName || t("chat.attachment") }}</span>
+        <span class="chat-attachment__name">
+          {{
+            attachment.fileName || t(attachment.type === "image" ? "chat.image" : "chat.attachment")
+          }}
+        </span>
         <span v-if="attachment.size" class="chat-attachment__size">
           {{ formatFileSize(attachment.size) }}
         </span>

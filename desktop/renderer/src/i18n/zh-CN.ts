@@ -116,6 +116,7 @@ export default {
   "chat.stopTask": "停止任务",
   "chat.addAttachment": "添加附件",
   "chat.attachment": "附件",
+  "chat.image": "图片",
   "chat.removeAttachment": "移除 {file}",
   "chat.attachment.fileTooLarge": "{file} 超过了单个附件 {limit} 的大小限制。",
   "chat.attachment.totalTooLarge": "{file} 会导致本条消息的附件总大小超过 {limit}。",
@@ -402,7 +403,8 @@ export default {
   "settings.editCustomModel": "编辑自定义模型",
   "settings.connected": "已连接",
   "settings.port": "端口",
-  "settings.portDesc": "更改端口后网关将自动重启。如果所选端口被占用，MicroClaw 将尝试使用相邻端口。",
+  "settings.portDesc":
+    "更改端口后网关将自动重启。如果所选端口被占用，MicroClaw 将尝试使用相邻端口。",
   "settings.webSearch": "联网搜索",
   "settings.reasoningOffDesc": "推理关闭",
   "settings.reasoningDesc": "推理 {level}",
@@ -685,7 +687,8 @@ export default {
   "skills.dev.statusFailed": "无法获取状态：{error}",
   "skills.dev.statusChecking": "正在检查技能状态…最长可能需要一分钟。",
   "skills.dev.statusCheckingAll": "正在检查所有 agent（{current}/{total}）……可能需要几分钟。",
-  "skills.dev.statusNotChecked": "尚未检查该智能体的技能状态——请点击“刷新所有 agent 状态”（可能需要几分钟）。",
+  "skills.dev.statusNotChecked":
+    "尚未检查该智能体的技能状态——请点击“刷新所有 agent 状态”（可能需要几分钟）。",
   "skills.dev.badge.visible": "模型可见",
   "skills.dev.badge.hidden": "未注入",
   "skills.dev.badge.unknown": "无状态",

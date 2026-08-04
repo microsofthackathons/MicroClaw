@@ -19,6 +19,7 @@ export interface ChatMessage {
   timestamp?: number;
   text?: string;
   attachments?: ChatAttachment[];
+  originalText?: string;
 }
 
 /**
@@ -380,10 +381,61 @@ export const useChatStore = defineStore("chat", () => {
     return text;
   }
 
+  function sanitizeUserAttachmentText(text: string): string {
+    return text
+      .replace(/^(?:\[media attached:[^\r\n]*\]\r?\n?)+/i, "")
+      .replace(/<file\b[^>]*>[\s\S]*?<\/file>/gi, "")
+      .trim();
+  }
+
+  function hasAttachmentEvidence(message: unknown): boolean {
+    const m = message as Record<string, unknown>;
+    if (
+      (Array.isArray(m.attachments) && m.attachments.length > 0) ||
+      (Array.isArray(m.MediaPaths) && m.MediaPaths.length > 0) ||
+      typeof m.MediaPath === "string"
+    ) {
+      return true;
+    }
+    if (
+      Array.isArray(m.content) &&
+      m.content.some((candidate) => {
+        if (!candidate || typeof candidate !== "object") return false;
+        const block = candidate as Record<string, unknown>;
+        return block.type === "image" || block.type === "file";
+      })
+    ) {
+      return true;
+    }
+    const rawText =
+      typeof m.content === "string"
+        ? m.content
+        : typeof m.text === "string"
+          ? m.text
+          : Array.isArray(m.content)
+            ? m.content
+                .filter(
+                  (block): block is Record<string, unknown> => !!block && typeof block === "object",
+                )
+                .map((block) =>
+                  block.type === "text" && typeof block.text === "string" ? block.text : "",
+                )
+                .join("\n")
+            : "";
+    return /^\[media attached:[^\r\n]*\]/i.test(rawText);
+  }
+
   function extractText(message: unknown): string | null {
     const m = message as Record<string, unknown>;
-    if (typeof m.content === "string") return m.content;
-    if (typeof m.text === "string") return m.text;
+    const isUserMessage = typeof m.role === "string" && m.role.toLowerCase() === "user";
+    const shouldSanitize = isUserMessage && hasAttachmentEvidence(message);
+    if (isUserMessage && typeof m.originalText === "string") return m.originalText;
+    if (typeof m.content === "string") {
+      return shouldSanitize ? sanitizeUserAttachmentText(m.content) : m.content;
+    }
+    if (typeof m.text === "string") {
+      return shouldSanitize ? sanitizeUserAttachmentText(m.text) : m.text;
+    }
     if (Array.isArray(m.content)) {
       const parts: string[] = [];
       for (const block of m.content as Array<Record<string, unknown>>) {
@@ -413,7 +465,9 @@ export const useChatStore = defineStore("chat", () => {
           }
         }
       }
-      return parts.length > 0 ? parts.join("\n\n") : null;
+      if (parts.length === 0) return null;
+      const text = parts.join("\n\n");
+      return shouldSanitize ? sanitizeUserAttachmentText(text) : text;
     }
     return null;
   }
@@ -428,25 +482,39 @@ export const useChatStore = defineStore("chat", () => {
       ...(Array.isArray(m.MediaTypes) ? m.MediaTypes : []),
       ...(typeof m.MediaType === "string" ? [m.MediaType] : []),
     ];
-    const candidates = [
-      ...(Array.isArray(m.attachments) ? m.attachments : []),
-      ...(Array.isArray(m.content) ? m.content : []),
-      ...mediaPaths.map((mediaPath, index) => ({
-        type:
-          typeof mediaTypes[index] === "string" &&
-          (mediaTypes[index] as string).startsWith("image/")
-            ? "image"
-            : "file",
-        mimeType:
-          typeof mediaTypes[index] === "string"
-            ? (mediaTypes[index] as string)
-            : "application/octet-stream",
-        fileName:
-          typeof mediaPath === "string" ? mediaPath.split(/[\\/]/).at(-1) || "" : "",
-        size: 0,
-        content: "",
-      })),
-    ];
+    const optimisticAttachments = Array.isArray(m.attachments) ? m.attachments : [];
+    const candidates =
+      optimisticAttachments.length > 0
+        ? optimisticAttachments
+        : mediaPaths.length > 0
+          ? mediaPaths.map((mediaPath, index) => {
+              const mimeType =
+                typeof mediaTypes[index] === "string"
+                  ? (mediaTypes[index] as string)
+                  : "application/octet-stream";
+              const rawName =
+                typeof mediaPath === "string"
+                  ? mediaPath
+                      .replace(/^media:\/\/inbound\//i, "")
+                      .split(/[\\/]/)
+                      .at(-1) || ""
+                  : "";
+              const isBareUuid =
+                mimeType.startsWith("image/") &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+                  rawName,
+                );
+              return {
+                type: mimeType.startsWith("image/") ? "image" : "file",
+                mimeType,
+                fileName: isBareUuid ? "" : rawName,
+                size: 0,
+                content: "",
+              };
+            })
+          : Array.isArray(m.content)
+            ? m.content
+            : [];
     const attachments: ChatAttachment[] = [];
 
     for (const candidate of candidates) {
@@ -489,6 +557,52 @@ export const useChatStore = defineStore("chat", () => {
             item.content === attachment.content,
         ) === index,
     );
+  }
+
+  function preserveOptimisticAttachmentMetadata(
+    currentMessages: ChatMessage[],
+    historyMessages: ChatMessage[],
+  ): ChatMessage[] {
+    const currentAttachmentMessages = currentMessages.filter(
+      (message) =>
+        message.role.toLowerCase() === "user" && getMessageAttachments(message).length > 0,
+    );
+    const optimisticMessages = currentAttachmentMessages
+      .map((message, attachmentOrdinal) => ({ message, attachmentOrdinal }))
+      .filter(
+        (
+          item,
+        ): item is {
+          message: ChatMessage & { originalText: string; attachments: ChatAttachment[] };
+          attachmentOrdinal: number;
+        } => typeof item.message.originalText === "string" && !!item.message.attachments?.length,
+      );
+    if (optimisticMessages.length === 0) return historyMessages;
+
+    const reconciled = [...historyMessages];
+    const historyAttachmentIndexes = reconciled
+      .map((message, index) => ({ message, index }))
+      .filter(
+        ({ message }) =>
+          message.role.toLowerCase() === "user" && getMessageAttachments(message).length > 0,
+      )
+      .map(({ index }) => index);
+    const unmatchedOptimistic: ChatMessage[] = [];
+    for (const { message: optimisticMessage, attachmentOrdinal } of optimisticMessages) {
+      const historyIndex = historyAttachmentIndexes[attachmentOrdinal];
+      const historyMessage = historyIndex === undefined ? undefined : reconciled[historyIndex];
+      if (historyMessage && extractText(historyMessage) === optimisticMessage.originalText) {
+        reconciled[historyIndex] = {
+          ...historyMessage,
+          originalText: optimisticMessage.originalText,
+          attachments: optimisticMessage.attachments,
+        };
+      } else {
+        unmatchedOptimistic.push(optimisticMessage);
+      }
+    }
+    reconciled.push(...unmatchedOptimistic);
+    return reconciled;
   }
 
   /**
@@ -676,11 +790,12 @@ export const useChatStore = defineStore("chat", () => {
       const filtered = raw
         .map((m) => stripSystemLines(m))
         .filter((m): m is ChatMessage => m != null && !isGatewaySystemMessage(m));
+      const reconciled = preserveOptimisticAttachmentMetadata(messages.value, filtered);
       // Only replace messages if content actually changed — avoids
       // unnecessary Vue reactivity triggers and DOM re-renders.
-      const changed = !_messagesEqual(messages.value, filtered);
+      const changed = !_messagesEqual(messages.value, reconciled);
       if (changed) {
-        messages.value = filtered;
+        messages.value = reconciled;
         // Update last message preview only when content changed
         _updateLastPreview();
       }
@@ -731,6 +846,7 @@ export const useChatStore = defineStore("chat", () => {
         content: finalMsg ? [{ type: "text", text: finalMsg }] : [],
         timestamp: optimisticTimestamp,
         attachments: attachments.map((attachment) => ({ ...attachment })),
+        originalText: finalMsg,
       };
       messages.value = [...messages.value, optimisticMessage];
       _updateLastPreview();
@@ -960,8 +1076,7 @@ export const useChatStore = defineStore("chat", () => {
 
     const { phase, name, toolCallId, meta } = payload.data;
     const args = (payload.data as Record<string, unknown>).args as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     if (phase === "start") {
       // Build a descriptive display name combining tool name + primary argument
       let displayName = name;
@@ -1385,8 +1500,7 @@ export const useChatStore = defineStore("chat", () => {
         // Without a canonical key, keep the generated draft in memory until
         // its first message instead of persisting an empty sidebar entry.
         const newKey =
-          mainSessionKey.value ??
-          `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          mainSessionKey.value ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         pendingSessionAgentId.value = mainSessionKey.value ? "main" : undefined;
         sessionKey.value = newKey;
         resolvedSessionKey.value = mainSessionKey.value ? newKey : null;

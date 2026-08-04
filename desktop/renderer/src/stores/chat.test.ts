@@ -504,9 +504,7 @@ describe("useChatStore — session key learning", () => {
 
     expect(store.sessionKey).toBe("agent:main:session-abc");
     expect(store.resolvedSessionKey).toBe("agent:main:session-abc");
-    expect(sessionStore.sessions.map((session) => session.key)).toEqual([
-      "agent:main:session-abc",
-    ]);
+    expect(sessionStore.sessions.map((session) => session.key)).toEqual(["agent:main:session-abc"]);
   });
 
   it("drops events from unrelated sessions", () => {
@@ -620,11 +618,9 @@ describe("useChatStore — attachments", () => {
 
     await expect(store.sendMessage("describe this", [attachment])).resolves.toBe(true);
 
-    expect(mockSendMessage).toHaveBeenCalledWith(
-      "session-attachments",
-      "describe this",
-      [attachment],
-    );
+    expect(mockSendMessage).toHaveBeenCalledWith("session-attachments", "describe this", [
+      attachment,
+    ]);
     expect(store.messages.at(-1)).toMatchObject({
       role: "user",
       attachments: [attachment],
@@ -712,6 +708,162 @@ describe("useChatStore — attachments", () => {
         content: "",
       },
     ]);
+  });
+
+  it("sanitizes an attachment gateway echo and uses only MediaPaths for its chips", async () => {
+    const store = useChatStore();
+    const question = "What is shown in the image and text file?";
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "[media attached: media://inbound/permission_test---abc123.txt (text/plain)]\n" +
+                `${question}\n\n` +
+                '<file name="permission_test---abc123.txt" mime="text/plain">\n\n' +
+                '<<<EXTERNAL_UNTRUSTED_CONTENT id="external-1">>>\n' +
+                "Source: External\n---\nsecret file contents\n" +
+                '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="external-1">>>\n' +
+                "</file>",
+            },
+            { type: "image", data: "/9j/..." },
+          ],
+          MediaPaths: [
+            "media://inbound/permission_test---abc123.txt",
+            "media://inbound/8f6cbb00-1234-4abc-8def-1234567890ab",
+          ],
+          MediaTypes: ["text/plain", "image/jpeg"],
+        },
+      ],
+    });
+
+    await store.loadHistory();
+
+    expect(store.extractText(store.messages[0])).toBe(question);
+    expect(store.getMessageAttachments(store.messages[0])).toEqual([
+      {
+        type: "file",
+        mimeType: "text/plain",
+        fileName: "permission_test---abc123.txt",
+        size: 0,
+        content: "",
+      },
+      {
+        type: "image",
+        mimeType: "image/jpeg",
+        fileName: "",
+        size: 0,
+        content: "",
+      },
+    ]);
+  });
+
+  it("preserves optimistic text and original filenames across the gateway echo", async () => {
+    const store = useChatStore();
+    const question = "What is shown in both files?";
+    const attachments: ChatAttachment[] = [
+      attachment,
+      {
+        type: "file",
+        mimeType: "text/plain",
+        fileName: "permission_test.txt",
+        size: 5,
+        content: "aGVsbG8=",
+      },
+    ];
+
+    await store.sendMessage(question, attachments);
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "[media attached: media://inbound/permission_test---abc123.txt (text/plain)]\n" +
+                `${question}\n\n<file name="permission_test---abc123.txt" mime="text/plain">` +
+                '<<<EXTERNAL_UNTRUSTED_CONTENT id="external-1">>>file contents' +
+                '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="external-1">>></file>',
+            },
+            { type: "image", data: "/9j/..." },
+          ],
+          MediaPaths: [
+            "media://inbound/permission_test---abc123.txt",
+            "media://inbound/8f6cbb00-1234-4abc-8def-1234567890ab",
+          ],
+          MediaTypes: ["text/plain", "image/jpeg"],
+        },
+      ],
+    });
+
+    await store.loadHistory();
+
+    expect(store.extractText(store.messages[0])).toBe(question);
+    expect(store.getMessageAttachments(store.messages[0])).toEqual(attachments);
+  });
+
+  it("does not sanitize user text without attachment evidence", () => {
+    const store = useChatStore();
+    const text = "  Please explain <file>this literal example</file>.  ";
+
+    expect(store.extractText({ role: "user", content: text })).toBe(text);
+  });
+
+  it("does not apply optimistic metadata to a different attachment message", async () => {
+    const store = useChatStore();
+    await store.sendMessage("My local question", [attachment]);
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "[media attached: media://inbound/other.txt (text/plain)]\nA remote question",
+            },
+          ],
+          MediaPaths: ["media://inbound/other.txt"],
+          MediaTypes: ["text/plain"],
+        },
+      ],
+    });
+
+    await store.loadHistory();
+
+    expect(store.extractText(store.messages[0])).toBe("A remote question");
+    expect(store.getMessageAttachments(store.messages[0])[0].fileName).toBe("other.txt");
+    expect(store.extractText(store.messages[1])).toBe("My local question");
+    expect(store.getMessageAttachments(store.messages[1])[0].fileName).toBe("pixel.png");
+  });
+
+  it("does not reconcile a repeated prompt to an older history turn", async () => {
+    const store = useChatStore();
+    const repeatedQuestion = "Describe this attachment";
+    const oldGatewayMessage = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `[media attached: media://inbound/old.txt (text/plain)]\n${repeatedQuestion}`,
+        },
+      ],
+      MediaPaths: ["media://inbound/old.txt"],
+      MediaTypes: ["text/plain"],
+    };
+    mockLoadHistory.mockResolvedValueOnce({ messages: [oldGatewayMessage] });
+    await store.loadHistory();
+
+    await store.sendMessage(repeatedQuestion, [attachment]);
+    mockLoadHistory.mockResolvedValueOnce({ messages: [oldGatewayMessage] });
+    await store.loadHistory();
+
+    expect(store.messages).toHaveLength(2);
+    expect(store.getMessageAttachments(store.messages[0])[0].fileName).toBe("old.txt");
+    expect(store.getMessageAttachments(store.messages[1])[0].fileName).toBe("pixel.png");
   });
 });
 
