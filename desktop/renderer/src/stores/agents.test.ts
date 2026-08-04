@@ -67,6 +67,18 @@ describe("agent store", () => {
     ).toBe(true);
   });
 
+  it("presents Code Geek through the compatible coder runtime id", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "coder")).toMatchObject({
+      name: "Code Geek",
+      description:
+        "Expert engineering for app prototypes, code audits, and build failures",
+      tags: ["App Prototyping", "Code Audits", "Build Diagnostics"],
+      isAdded: false,
+    });
+  });
+
   it("keeps the roster unchanged when Add fails", async () => {
     const store = useAgentStore();
     agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));

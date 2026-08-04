@@ -41,7 +41,7 @@ export interface AgentCatalogEntry {
   installedByDefault: boolean;
   skills: readonly string[];
   workspaceDirName?: string;
-  personaProfile?: "master-archive";
+  personaProfile?: "master-archive" | "code-geek";
 }
 
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
@@ -94,7 +94,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
   },
   {
     id: "coder",
-    name: "Coder",
+    name: "Code Geek",
     nameKey: "agent.coder.name",
     descKey: "agent.coder.desc",
     avatar: "程序猿.png",
@@ -107,6 +107,8 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     ],
     installedByDefault: false,
     skills: [...ALL_SKILL_IDS],
+    workspaceDirName: "workspace-coder",
+    personaProfile: "code-geek",
   },
   {
     id: "painter",
