@@ -22,7 +22,7 @@ interface AppSettings {
   startMinimized: boolean;
   themeMode: string;
   accentColor: string;
-  privacyLevel: string;
+  privacyLevel: "basic" | "strict";
 }
 
 interface ChatAttachment {

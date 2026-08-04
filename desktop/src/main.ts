@@ -179,8 +179,8 @@ const settingsStore = new Store<{
   sandboxUserDirsRO: string[];
   /** All directories we've ever granted AC ACL to. Used to detect stale ACLs on startup. */
   sandboxGrantHistory: string[];
-  /** Privacy protection level: basic, balanced, strict */
-  privacyLevel: string;
+  /** Privacy protection level. */
+  privacyLevel: "basic" | "strict";
 }>({
   name: "settings",
   defaults: {
@@ -203,7 +203,7 @@ const settingsStore = new Store<{
     sandboxUserDirsRW: [],
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
-    privacyLevel: "balanced",
+    privacyLevel: "basic",
   },
 });
 
@@ -1427,9 +1427,7 @@ async function addCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent addition ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent addition ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -1489,9 +1487,7 @@ async function removeCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent removal ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -3674,24 +3670,15 @@ function registerIpcHandlers(): void {
     });
     if (result.canceled) return { attachments: [], rejections: [] };
     const currentTotalBytes =
-      typeof params?.currentTotalBytes === "number" &&
-      Number.isFinite(params.currentTotalBytes)
+      typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
         ? Math.max(0, params.currentTotalBytes)
         : 0;
-    return prepareChatAttachments(
-      result.filePaths,
-      undefined,
-      undefined,
-      currentTotalBytes,
-    );
+    return prepareChatAttachments(result.filePaths, undefined, undefined, currentTotalBytes);
   });
 
   ipcMain.handle(
     "chat:send-message",
-    async (
-      _event,
-      params: { sessionKey: string; message: string; attachments?: unknown },
-    ) => {
+    async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
@@ -4167,9 +4154,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:status", () => {
     const client = gwClient;
-    const queryGateway = client?.connected
-      ? () => client.request("models.authStatus")
-      : undefined;
+    const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 

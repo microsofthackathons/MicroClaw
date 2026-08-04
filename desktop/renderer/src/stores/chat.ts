@@ -838,17 +838,12 @@ export const useChatStore = defineStore("chat", () => {
     lastError.value = null;
     let optimisticTimestamp: number | undefined;
     try {
-      // Privacy protection: scan for PII based on privacy level
+      // Strict privacy mode redacts PII before sending.
       let finalMsg = msg;
       const privacySettings = await window.openclaw.settings.get();
-      const privacyLevel = privacySettings?.privacyLevel ?? "balanced";
-      if (privacyLevel !== "basic") {
-        const piiMatches = scanPii(msg);
-        if (privacyLevel === "strict" && piiMatches.length > 0) {
-          // Auto-redact in strict mode
-          finalMsg = redactPii(msg);
-        }
-        // In balanced mode, piiMatches are available for UI warning (future)
+      const privacyLevel = privacySettings?.privacyLevel ?? "basic";
+      if (privacyLevel === "strict" && scanPii(msg).length > 0) {
+        finalMsg = redactPii(msg);
       }
 
       // Optimistic: add user message locally
@@ -1088,7 +1083,8 @@ export const useChatStore = defineStore("chat", () => {
 
     const { phase, name, toolCallId, meta } = payload.data;
     const args = (payload.data as Record<string, unknown>).args as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
     if (phase === "start") {
       // Build a descriptive display name combining tool name + primary argument
       let displayName = name;

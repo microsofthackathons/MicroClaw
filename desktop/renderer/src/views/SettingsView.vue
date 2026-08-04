@@ -86,7 +86,8 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
+                >{{ t("settings.currencySymbol")
+                }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -94,7 +95,8 @@
               <div class="budget-bar-wrapper">
                 <span class="row-value"
                   >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }} /
-                  {{ t("settings.currencySymbol") }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
+                  {{ t("settings.currencySymbol")
+                  }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
                 >
                 <div class="budget-bar">
                   <div
@@ -170,7 +172,6 @@
               </div>
             </div>
           </template>
-
         </template>
 
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
@@ -316,9 +317,7 @@
               <span
                 class="status-indicator"
                 :class="
-                  gateway.status === 'running'
-                    ? 'status-indicator--ok'
-                    : 'status-indicator--error'
+                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
                 "
               >
                 <span class="status-dot"></span>
@@ -337,11 +336,7 @@
             <span class="row-label">{{ t("settings.port") }}</span>
             <div class="port-input-group">
               <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
+              <el-input v-model="gatewayPort" style="width: 80px" @change="saveGatewayPort" />
             </div>
           </div>
         </div>
@@ -668,23 +663,6 @@
             <ul class="privacy-card-list">
               <li>{{ t("settings.privacyBasicDesc1") }}</li>
               <li>{{ t("settings.privacyBasicDesc2") }}</li>
-              <li>{{ t("settings.privacyBasicDesc3") }}</li>
-            </ul>
-          </div>
-          <div
-            class="privacy-card"
-            :class="{ active: settings.privacyLevel === 'balanced' }"
-            @click="setPrivacyLevel('balanced')"
-          >
-            <div class="privacy-card-header">
-              <span class="privacy-card-icon">⚖️</span>
-              <span class="privacy-card-title">{{ t("settings.privacyBalanced") }}</span>
-              <span class="privacy-badge-recommended">{{ t("settings.privacyRecommended") }}</span>
-            </div>
-            <ul class="privacy-card-list">
-              <li>{{ t("settings.privacyBalancedDesc1") }}</li>
-              <li>{{ t("settings.privacyBalancedDesc2") }}</li>
-              <li>{{ t("settings.privacyBalancedDesc3") }}</li>
             </ul>
           </div>
           <div
@@ -699,7 +677,6 @@
             <ul class="privacy-card-list">
               <li>{{ t("settings.privacyStrictDesc1") }}</li>
               <li>{{ t("settings.privacyStrictDesc2") }}</li>
-              <li>{{ t("settings.privacyStrictDesc3") }}</li>
             </ul>
           </div>
         </div>
@@ -1157,16 +1134,16 @@ const settings = reactive({
   autoStart: false,
   startMinimized: false,
   themeMode: "light",
-  privacyLevel: "balanced" as "basic" | "balanced" | "strict",
-  fileAccessAudit: true,
+  privacyLevel: "basic" as "basic" | "strict",
+  fileAccessAudit: false,
 });
 
 const piiToggles = reactive({
-  phone: true,
-  idCard: true,
-  bankCard: true,
-  email: true,
-  apiKey: true,
+  phone: false,
+  idCard: false,
+  bankCard: false,
+  email: false,
+  apiKey: false,
 });
 
 // --- Models & API state ---
@@ -1397,7 +1374,7 @@ watch(
   },
 );
 
-function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
+function setPrivacyLevel(level: "basic" | "strict") {
   settings.privacyLevel = level;
   window.openclaw.settings.set("privacyLevel", level);
   // Auto-configure PII toggles based on level
@@ -1408,13 +1385,6 @@ function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
     piiToggles.email = false;
     piiToggles.apiKey = false;
     settings.fileAccessAudit = false;
-  } else if (level === "balanced") {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
   } else {
     piiToggles.phone = true;
     piiToggles.idCard = true;
@@ -1552,7 +1522,11 @@ onMounted(async () => {
     settings.autoStart = saved.autoStart ?? false;
     settings.startMinimized = saved.startMinimized ?? false;
     settings.themeMode = saved.themeMode ?? "light";
-    settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
+    const savedPrivacyLevel: string | undefined = saved.privacyLevel;
+    settings.privacyLevel = savedPrivacyLevel === "strict" ? "strict" : "basic";
+    if (savedPrivacyLevel === "balanced") {
+      await window.openclaw.settings.set("privacyLevel", "basic");
+    }
     // Init PII toggles based on loaded privacy level
     if (settings.privacyLevel === "basic") {
       piiToggles.phone = false;
@@ -1576,7 +1550,6 @@ onMounted(async () => {
 
   // Load web search provider configuration
   loadSearchConfig(config);
-
 });
 
 onUnmounted(() => {
@@ -1693,11 +1666,9 @@ async function removeCustomModel(idx: number) {
 async function disconnectGitHubCopilot() {
   if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
   try {
-    await ElMessageBox.confirm(
-      t("settings.copilotDisconnectConfirm"),
-      t("settings.confirm"),
-      { type: "warning" },
-    );
+    await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
+      type: "warning",
+    });
   } catch {
     return;
   }
@@ -2638,7 +2609,7 @@ async function clearChatHistory() {
 /* ── Privacy Protection ── */
 .privacy-levels {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
 }
 
@@ -2677,16 +2648,6 @@ async function clearChatHistory() {
   font-size: 13px;
   font-weight: 400;
   color: var(--text-primary);
-}
-
-.privacy-badge-recommended {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(212, 168, 67, 0.15);
-  color: var(--accent-selected);
-  margin-left: auto;
 }
 
 .privacy-card-list {

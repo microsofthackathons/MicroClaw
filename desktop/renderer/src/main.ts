@@ -43,7 +43,7 @@ if (isBrowserDev) {
           startMinimized: false,
           themeMode: "light",
           accentColor: "#1e1f25",
-          privacyLevel: "balanced",
+          privacyLevel: "basic",
         }),
       set: noopAsync,
     },
