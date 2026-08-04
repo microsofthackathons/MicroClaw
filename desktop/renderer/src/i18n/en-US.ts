@@ -120,6 +120,15 @@ export default {
   "chat.stopGeneration": "Stop Generating",
   "chat.stopTask": "Stop task",
   "chat.addAttachment": "Add attachment",
+  "chat.attachment": "Attachment",
+  "chat.image": "Image",
+  "chat.removeAttachment": "Remove {file}",
+  "chat.attachment.fileTooLarge": "{file} exceeds the {limit} per-file attachment limit.",
+  "chat.attachment.totalTooLarge":
+    "{file} would exceed the {limit} total attachment limit for this message.",
+  "chat.attachment.readFailed": "MicroClaw could not read {file}.",
+  "chat.attachment.pickerFailed": "Could not add attachments: {error}",
+  "chat.attachment.openFailed": "Couldn't open attachment: {error}",
   "chat.send": "Send",
   "chat.editHint": "Double-click to edit and resend",
   "chat.editConfirm": "Send",
@@ -243,7 +252,8 @@ export default {
   "settings.toolCalls": "Tool Calls",
   "settings.modelBreakdown": "Model Usage Breakdown",
   "settings.refresh": "Refresh",
-  "settings.usageFooter": "Data comes from the MicroClaw gateway and is available only while the gateway is running.",
+  "settings.usageFooter":
+    "Data comes from the MicroClaw gateway and is available only while the gateway is running.",
   "settings.callsSuffix": "calls",
   "settings.inputSuffix": "input",
   "settings.outputSuffix": "output",
@@ -687,7 +697,8 @@ export default {
   // ── Skills (dev-only panel) ──
   "skills.dev.tab": "Skills",
   "skills.dev.title": "Agent Skills (Dev)",
-  "skills.dev.subtitle": "Toggle which skills each agent can use, then apply and reload the gateway. Development builds only.",
+  "skills.dev.subtitle":
+    "Toggle which skills each agent can use, then apply and reload the gateway. Development builds only.",
   "skills.dev.agent": "Agent",
   "skills.dev.selectAll": "Select all",
   "skills.dev.clearAll": "Clear all",
@@ -705,8 +716,10 @@ export default {
   "skills.dev.modelVisibleSummary": "Model-visible: {visible} / {total}",
   "skills.dev.statusFailed": "Status unavailable: {error}",
   "skills.dev.statusChecking": "Checking skill status… this can take up to a minute.",
-  "skills.dev.statusCheckingAll": "Checking all agents ({current}/{total})… this can take a few minutes.",
-  "skills.dev.statusNotChecked": "Status not checked for this agent — click “Refresh all agents” (takes a few minutes).",
+  "skills.dev.statusCheckingAll":
+    "Checking all agents ({current}/{total})… this can take a few minutes.",
+  "skills.dev.statusNotChecked":
+    "Status not checked for this agent — click “Refresh all agents” (takes a few minutes).",
   "skills.dev.badge.visible": "Model-visible",
   "skills.dev.badge.hidden": "Not injected",
   "skills.dev.badge.unknown": "No status",

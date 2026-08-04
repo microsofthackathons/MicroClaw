@@ -59,6 +59,12 @@
       <!-- Input area -->
       <div class="home-input-area">
         <div class="home-input-box">
+          <ChatAttachments
+            class="home-input-attachments"
+            :attachments="pendingAttachments"
+            :removable="!submittingMessage"
+            @remove="removeAttachment"
+          />
           <textarea
             ref="inputRef"
             v-model="inputText"
@@ -66,10 +72,15 @@
             :rows="isCompact ? 1 : 2"
             @keydown="handleKeydown"
             @input="autoResize"
-            :disabled="!chatStore.wsConnected"
+            :disabled="!chatStore.wsConnected || submittingMessage"
           ></textarea>
           <div class="home-input-bottom">
-            <button class="home-input-plus" :title="t('chat.addAttachment')">
+            <button
+              class="home-input-plus"
+              :title="t('chat.addAttachment')"
+              :disabled="!chatStore.wsConnected || pickingFiles || submittingMessage"
+              @click="handleAddAttachments"
+            >
               <svg
                 width="20"
                 height="20"
@@ -96,7 +107,7 @@
               <button
                 v-else
                 class="home-input-send"
-                :disabled="!inputText.trim() || !chatStore.wsConnected"
+                :disabled="!canSend"
                 @click="handleSend"
               >
                 <svg
@@ -144,6 +155,12 @@
       <!-- Input area (same position as chat mode) -->
       <div class="home-input-area">
         <div class="home-input-box">
+          <ChatAttachments
+            class="home-input-attachments"
+            :attachments="pendingAttachments"
+            :removable="!submittingMessage"
+            @remove="removeAttachment"
+          />
           <textarea
             ref="inputRef"
             v-model="inputText"
@@ -151,10 +168,15 @@
             :rows="isCompact ? 1 : 2"
             @keydown="handleKeydown"
             @input="autoResize"
-            :disabled="!chatStore.wsConnected"
+            :disabled="!chatStore.wsConnected || submittingMessage"
           ></textarea>
           <div class="home-input-bottom">
-            <button class="home-input-plus" :title="t('chat.addAttachment')">
+            <button
+              class="home-input-plus"
+              :title="t('chat.addAttachment')"
+              :disabled="!chatStore.wsConnected || pickingFiles || submittingMessage"
+              @click="handleAddAttachments"
+            >
               <svg
                 width="20"
                 height="20"
@@ -181,7 +203,7 @@
               <button
                 v-else
                 class="home-input-send"
-                :disabled="!inputText.trim() || !chatStore.wsConnected"
+                :disabled="!canSend"
                 @click="handleSend"
               >
                 <svg
@@ -222,6 +244,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
+import { ElMessage } from "element-plus";
 import {
   modelAuthRecoveryInitialFamily,
   requiresModelAuthRecovery,
@@ -231,6 +254,7 @@ import { useAgentStore } from "@/stores/agents";
 import { useStudioStore } from "@/stores/studio";
 import { t } from "@/i18n";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
+import ChatAttachments from "@/components/chat/ChatAttachments.vue";
 import ChatWelcome from "@/components/ChatWelcome.vue";
 import StudioGame from "@/components/studio/StudioGame.vue";
 import StudioChatPanel from "@/components/studio/StudioChatPanel.vue";
@@ -254,6 +278,10 @@ const isCompact = ref(window.innerHeight < 700);
 const modelSetupVisible = ref(false);
 const modelSetupInitialFamily = ref<"github-copilot" | undefined>();
 const pendingModelSetupMessage = ref("");
+const pendingModelSetupAttachments = ref<ChatAttachment[]>([]);
+const pendingAttachments = ref<ChatAttachment[]>([]);
+const pickingFiles = ref(false);
+const submittingMessage = ref(false);
 let isUserScrolledUp = false;
 
 function onWindowResize() {
@@ -268,8 +296,9 @@ function handleCardSelect(prompt: string) {
 }
 
 function clearComposeInput() {
-  if (!inputText.value && !chatStore.pendingPrompt) return;
+  if (!inputText.value && !chatStore.pendingPrompt && pendingAttachments.value.length === 0) return;
   inputText.value = "";
+  pendingAttachments.value = [];
   chatStore.pendingPrompt = null;
   nextTick(() => autoResize());
 }
@@ -328,6 +357,12 @@ watch(
 
 const composePlaceholder = computed(() =>
   chatStore.wsConnected ? t("chat.inputPlaceholder") : t("chat.waitingGateway"),
+);
+const canSend = computed(
+  () =>
+    chatStore.wsConnected &&
+    !submittingMessage.value &&
+    (inputText.value.trim().length > 0 || pendingAttachments.value.length > 0),
 );
 
 // Auto-scroll
@@ -438,20 +473,36 @@ function handleKeydown(e: KeyboardEvent) {
 
 async function handleSend() {
   const text = inputText.value.trim();
-  if (!text || !chatStore.wsConnected) return;
-  if (await needsModelSetupBeforeSend()) {
-    pendingModelSetupMessage.value = text;
-    modelSetupInitialFamily.value = undefined;
-    modelSetupVisible.value = true;
+  if (
+    (!text && pendingAttachments.value.length === 0) ||
+    !chatStore.wsConnected ||
+    submittingMessage.value
+  ) {
     return;
   }
-  await sendText(text);
+  const attachments = pendingAttachments.value.map((attachment) => ({ ...attachment }));
+  submittingMessage.value = true;
+  try {
+    if (await needsModelSetupBeforeSend()) {
+      pendingModelSetupMessage.value = text;
+      pendingModelSetupAttachments.value = attachments;
+      modelSetupInitialFamily.value = undefined;
+      modelSetupVisible.value = true;
+      return;
+    }
+    await sendText(text, attachments);
+  } finally {
+    submittingMessage.value = false;
+  }
 }
 
-async function sendText(text: string) {
+async function sendText(text: string, attachments: ChatAttachment[]): Promise<boolean> {
+  const sent = await chatStore.sendMessage(text, attachments);
+  if (!sent) return false;
   inputText.value = "";
+  pendingAttachments.value = [];
   autoResize();
-  await chatStore.sendMessage(text);
+  return true;
 }
 
 async function needsModelSetupBeforeSend(): Promise<boolean> {
@@ -464,9 +515,66 @@ async function needsModelSetupBeforeSend(): Promise<boolean> {
 
 async function handleModelConfigured() {
   const text = pendingModelSetupMessage.value;
-  pendingModelSetupMessage.value = "";
-  if (!text || !chatStore.wsConnected) return;
-  await sendText(text);
+  const attachments = pendingModelSetupAttachments.value;
+  if (
+    (!text && attachments.length === 0) ||
+    !chatStore.wsConnected ||
+    submittingMessage.value
+  ) {
+    return;
+  }
+  submittingMessage.value = true;
+  try {
+    if (!(await sendText(text, attachments))) return;
+    pendingModelSetupMessage.value = "";
+    pendingModelSetupAttachments.value = [];
+  } finally {
+    submittingMessage.value = false;
+  }
+}
+
+async function handleAddAttachments() {
+  if (!chatStore.wsConnected || pickingFiles.value || submittingMessage.value) return;
+  pickingFiles.value = true;
+  try {
+    const currentTotalBytes = pendingAttachments.value.reduce(
+      (total, attachment) => total + attachment.size,
+      0,
+    );
+    const result = await window.openclaw.dialog.openFiles(currentTotalBytes);
+    pendingAttachments.value.push(...result.attachments);
+    for (const rejection of result.rejections) {
+      if (rejection.reason === "file_too_large") {
+        ElMessage.error(
+          t("chat.attachment.fileTooLarge", {
+            file: rejection.fileName,
+            limit: formatLimit(rejection.limit),
+          }),
+        );
+      } else if (rejection.reason === "total_too_large") {
+        ElMessage.error(
+          t("chat.attachment.totalTooLarge", {
+            file: rejection.fileName,
+            limit: formatLimit(rejection.limit),
+          }),
+        );
+      } else {
+        ElMessage.error(t("chat.attachment.readFailed", { file: rejection.fileName }));
+      }
+    }
+  } catch (error) {
+    ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+  } finally {
+    pickingFiles.value = false;
+  }
+}
+
+function removeAttachment(index: number) {
+  pendingAttachments.value.splice(index, 1);
+}
+
+function formatLimit(bytes?: number): string {
+  return `${Math.round((bytes ?? 0) / (1024 * 1024))} MB`;
 }
 
 async function handleAbort() {
@@ -700,6 +808,10 @@ function handleThreadClick(e: MouseEvent) {
   line-height: 1.5;
 }
 
+.home-input-attachments {
+  padding: 12px 16px 0;
+}
+
 .home-input-box textarea::placeholder {
   color: var(--ux-text-muted);
 }
@@ -737,6 +849,11 @@ function handleThreadClick(e: MouseEvent) {
 
 .home-input-plus:hover {
   background: var(--ux-surface-hover);
+}
+
+.home-input-plus:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .home-input-send {

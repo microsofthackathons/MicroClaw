@@ -91,6 +91,54 @@ describe("isAgentWarmupEvent", () => {
   });
 });
 
+describe("GatewayClient.sendChat", () => {
+  function createClient() {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    return { client, request };
+  }
+
+  it("preserves the existing payload when no attachments are provided", async () => {
+    const { client, request } = createClient();
+
+    await client.sendChat("session-123", "hello");
+
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.not.objectContaining({ attachments: expect.anything() }),
+    );
+  });
+
+  it("adds gateway-compatible attachment objects when provided", async () => {
+    const { client, request } = createClient();
+    await client.sendChat("session-123", "", [
+      {
+        type: "image",
+        mimeType: "image/png",
+        fileName: "pixel.png",
+        size: 3,
+        content: "AQID",
+      },
+    ]);
+
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({
+        sessionKey: "session-123",
+        message: "",
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "pixel.png",
+            content: "AQID",
+          },
+        ],
+      }),
+    );
+  });
+});
+
 describe("GatewayClient.deleteSession", () => {
   function createClient(mainSessionKey: string | null = "agent:main:main") {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;

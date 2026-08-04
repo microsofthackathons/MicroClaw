@@ -119,6 +119,14 @@ export const AGENT_WARMUP_PROMPT = "ping";
 /** Hard cap for startup agent warm-up before the app fails open (ms). */
 export const AGENT_WARMUP_TIMEOUT_MS = 30_000;
 
+// ── Chat attachments ────────────────────────────────────────────────────
+
+/** Maximum decoded size of one chat attachment (20 MiB, matching the gateway). */
+export const CHAT_ATTACHMENT_MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+/** Maximum decoded size of all attachments selected for one message (50 MiB). */
+export const CHAT_ATTACHMENT_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+
 // ── Studio backend ──────────────────────────────────────────────────────
 
 /** Default port for the Studio Node backend. */

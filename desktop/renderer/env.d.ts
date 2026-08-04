@@ -25,6 +25,29 @@ interface AppSettings {
   privacyLevel: string;
 }
 
+interface ChatAttachment {
+  type: "image" | "file";
+  mimeType: string;
+  fileName: string;
+  size: number;
+  content: string;
+  mediaPath?: string;
+}
+
+type AttachmentRejectionReason = "file_too_large" | "total_too_large" | "read_failed";
+
+interface AttachmentRejection {
+  fileName: string;
+  reason: AttachmentRejectionReason;
+  size?: number;
+  limit?: number;
+}
+
+interface OpenFilesResult {
+  attachments: ChatAttachment[];
+  rejections: AttachmentRejection[];
+}
+
 type GitHubCopilotLoginEvent =
   | {
       sessionId: string;
@@ -182,7 +205,11 @@ interface OpenClawAPI {
   };
   chat: {
     isConnected(): Promise<boolean>;
-    sendMessage(sessionKey: string, message: string): Promise<void>;
+    sendMessage(
+      sessionKey: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     abort(sessionKey: string): Promise<void>;
     deleteSession(sessionKey: string): Promise<void>;
@@ -286,6 +313,12 @@ interface OpenClawAPI {
   };
   shell: {
     openExternal(url: string): Promise<void>;
+  };
+  attachment: {
+    open(attachment: ChatAttachment): Promise<{ ok: boolean; error?: string }>;
+  };
+  dialog: {
+    openFiles(currentTotalBytes?: number): Promise<OpenFilesResult>;
   };
   sandbox: {
     getStatus(): Promise<{
