@@ -229,7 +229,10 @@ let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
 const githubCopilotAuthManager = new GitHubCopilotAuthManager(
-  (event) => mainWindow?.webContents.send("model:github-copilot:login-event", event),
+  (event) => {
+    mainWindow?.webContents.send("model:github-copilot:login-event", event);
+    if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
+  },
   (url) => shell.openExternal(url),
 );
 /** Per-session random key for HMAC-signing the external apps whitelist file. */
@@ -2798,6 +2801,16 @@ function requestGatewayModelCatalog(): Promise<unknown> {
   return request;
 }
 
+async function refreshGatewayGitHubCopilotAuthStatus(): Promise<void> {
+  const client = gwClient;
+  if (!client?.connected) return;
+  try {
+    await client.request("models.authStatus", { refresh: true });
+  } catch (error) {
+    console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // IPC Handlers
 // ---------------------------------------------------------------------------
@@ -4045,19 +4058,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle("model:github-copilot:disconnect", async () => {
     githubCopilotAuthManager.stop();
     const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
-    if (gwClient?.connected) {
-      try {
-        await gwClient.request("models.authStatus", { refresh: true });
-      } catch (error) {
-        console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
-      }
-    }
+    await refreshGatewayGitHubCopilotAuthStatus();
     return result;
   });
 
-  ipcMain.handle("model:github-copilot:status", () =>
-    getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime()),
-  );
+  ipcMain.handle("model:github-copilot:status", () => {
+    const client = gwClient;
+    const queryGateway = client?.connected
+      ? () => client.request("models.authStatus")
+      : undefined;
+    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
+  });
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
     if (gwClient?.connected) {
