@@ -736,7 +736,6 @@ async function saveAndStart() {
   display: grid;
   place-items: center;
   background: var(--ux-overlay);
-  backdrop-filter: blur(10px);
 }
 
 .model-setup-panel {
@@ -808,15 +807,15 @@ h2 {
   align-items: center;
   gap: 10px;
   padding: 8px 6px 12px;
-  border: 1px solid transparent;
+  border: 2px solid transparent;
   border-radius: 12px;
   background: transparent;
   color: var(--ux-panel-text);
   cursor: pointer;
   transition:
-    border-color 0.15s,
-    background 0.15s,
-    transform 0.15s;
+    border-color 70ms ease-out,
+    background 70ms ease-out,
+    transform 70ms ease-out;
 }
 
 .model-family-card:hover,
@@ -832,7 +831,6 @@ h2 {
 .model-family-card.active {
   background: var(--ux-card-selected-bg);
   border-color: var(--ux-card-selected-border);
-  border-width: 2px;
 }
 
 .family-icon {
