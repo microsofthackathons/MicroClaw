@@ -21,9 +21,16 @@
         <IconClose :size="14" />
         {{ t("agentMarket.remove") }}
       </button>
-      <button v-else class="agent-card-action" @click="$emit('add', agent.id)">
-        <IconPlus :size="14" />
-        {{ t("agentMarket.add") }}
+      <button
+        v-else
+        class="agent-card-action"
+        :disabled="adding"
+        :aria-busy="adding"
+        @click="$emit('add', agent.id)"
+      >
+        <span v-if="adding" class="agent-card-spinner" aria-hidden="true"></span>
+        <IconPlus v-else :size="14" />
+        {{ t(adding ? "agentMarket.adding" : "agentMarket.add") }}
       </button>
     </div>
   </div>
@@ -38,6 +45,7 @@ import IconClose from "@/components/icons/IconClose.vue";
 
 defineProps<{
   agent: Agent;
+  adding?: boolean;
 }>();
 
 defineEmits<{
@@ -167,6 +175,31 @@ defineEmits<{
 .agent-card-action:hover {
   background: var(--accent);
   color: var(--bg-primary);
+}
+
+.agent-card-action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.agent-card-action:disabled:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.agent-card-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: agent-card-spin 0.7s linear infinite;
+}
+
+@keyframes agent-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .agent-card-action-danger {
