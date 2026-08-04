@@ -493,7 +493,7 @@ export default {
   "modelSetup.copilotEnterCode": "请在 GitHub 输入此一次性代码",
   "modelSetup.copilotCodeExpires": "此代码约 {minutes} 分钟后过期。",
   "modelSetup.copilotOpenGitHub": "打开 GitHub 授权页面",
-  "modelSetup.copilotTokenPrivacy": "凭据由 OpenClaw 安全保存，不会发送到此表单。",
+  "modelSetup.copilotTokenPrivacy": "凭据由 MicroClaw 安全保存，不会发送到此表单。",
   "modelSetup.copilotConnected": "GitHub Copilot 已连接",
   "modelSetup.copilotUseAnotherAccount": "使用其他账号登录",
   "modelSetup.copilotModelPlaceholder": "选择 GitHub Copilot 模型",

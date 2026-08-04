@@ -516,7 +516,7 @@ export default {
   "modelSetup.copilotCodeExpires": "This code expires in about {minutes} minutes.",
   "modelSetup.copilotOpenGitHub": "Open GitHub authorization",
   "modelSetup.copilotTokenPrivacy":
-    "OpenClaw stores the credential securely; it is never sent to this form.",
+    "MicroClaw stores the credential securely; it is never sent to this form.",
   "modelSetup.copilotConnected": "GitHub Copilot connected",
   "modelSetup.copilotUseAnotherAccount": "Sign in with another account",
   "modelSetup.copilotModelPlaceholder": "Choose a GitHub Copilot model",
