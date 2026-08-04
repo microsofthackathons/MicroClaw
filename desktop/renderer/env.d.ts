@@ -31,6 +31,7 @@ interface ChatAttachment {
   fileName: string;
   size: number;
   content: string;
+  mediaPath?: string;
 }
 
 type AttachmentRejectionReason = "file_too_large" | "total_too_large" | "read_failed";
@@ -312,6 +313,9 @@ interface OpenClawAPI {
   };
   shell: {
     openExternal(url: string): Promise<void>;
+  };
+  attachment: {
+    open(attachment: ChatAttachment): Promise<{ ok: boolean; error?: string }>;
   };
   dialog: {
     openFiles(currentTotalBytes?: number): Promise<OpenFilesResult>;

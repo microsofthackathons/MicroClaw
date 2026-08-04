@@ -22,6 +22,7 @@ import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
 import { prepareChatAttachments, validateChatAttachments } from "./chat-attachments";
+import { prepareAttachmentForOpen } from "./attachment-open";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
@@ -4503,6 +4504,20 @@ function registerIpcHandlers(): void {
   ipcMain.handle("shell:open-external", (_event, url: string) => {
     if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
       shell.openExternal(url);
+    }
+  });
+
+  ipcMain.handle("attachment:open", async (_event, request: unknown) => {
+    try {
+      const targetPath = await prepareAttachmentForOpen(
+        request,
+        app.getPath("temp"),
+        getOpenClawStateDir(),
+      );
+      const error = await shell.openPath(targetPath);
+      return error ? { ok: false, error } : { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
 

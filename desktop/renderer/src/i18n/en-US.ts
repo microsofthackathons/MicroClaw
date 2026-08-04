@@ -128,6 +128,7 @@ export default {
     "{file} would exceed the {limit} total attachment limit for this message.",
   "chat.attachment.readFailed": "MicroClaw could not read {file}.",
   "chat.attachment.pickerFailed": "Could not add attachments: {error}",
+  "chat.attachment.openFailed": "Couldn't open attachment: {error}",
   "chat.send": "Send",
   "chat.editHint": "Double-click to edit and resend",
   "chat.editConfirm": "Send",

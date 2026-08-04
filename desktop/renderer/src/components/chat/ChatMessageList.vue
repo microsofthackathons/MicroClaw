@@ -990,6 +990,10 @@ function handleEditKeydown(e: KeyboardEvent) {
   cursor: default;
 }
 
+.chat-bubble.user .chat-message-attachments {
+  margin-bottom: 8px;
+}
+
 .chat-bubble.user.editable {
   cursor: pointer;
 }

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { ChatAttachment, PrepareChatAttachmentsResult } from "./chat-attachments";
+import type { OpenAttachmentRequest } from "./attachment-open";
 
 contextBridge.exposeInMainWorld("openclaw", {
   // --- Gateway lifecycle ---
@@ -275,6 +276,14 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Shell ---
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
+  },
+
+  attachment: {
+    open: (attachment: OpenAttachmentRequest) =>
+      ipcRenderer.invoke("attachment:open", attachment) as Promise<{
+        ok: boolean;
+        error?: string;
+      }>,
   },
 
   // --- Native dialogs ---

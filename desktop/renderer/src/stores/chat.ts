@@ -510,6 +510,7 @@ export const useChatStore = defineStore("chat", () => {
                 fileName: isBareUuid ? "" : rawName,
                 size: 0,
                 content: "",
+                mediaPath: typeof mediaPath === "string" ? mediaPath : undefined,
               };
             })
           : Array.isArray(m.content)
@@ -545,6 +546,7 @@ export const useChatStore = defineStore("chat", () => {
           "",
         size: typeof block.size === "number" ? block.size : 0,
         content,
+        mediaPath: typeof block.mediaPath === "string" ? block.mediaPath : undefined,
       });
     }
 
@@ -554,7 +556,8 @@ export const useChatStore = defineStore("chat", () => {
           (item) =>
             item.fileName === attachment.fileName &&
             item.mimeType === attachment.mimeType &&
-            item.content === attachment.content,
+            item.content === attachment.content &&
+            item.mediaPath === attachment.mediaPath,
         ) === index,
     );
   }

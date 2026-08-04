@@ -706,7 +706,27 @@ describe("useChatStore — attachments", () => {
         fileName: "report.pdf",
         size: 0,
         content: "",
+        mediaPath: "C:\\openclaw\\media\\report.pdf",
       },
+    ]);
+  });
+
+  it("keeps distinct extensionless media paths as separate attachments", () => {
+    const store = useChatStore();
+    const attachments = store.getMessageAttachments({
+      role: "user",
+      content: "two images",
+      MediaPaths: [
+        "media://inbound/8f6cbb00-1234-4abc-8def-1234567890ab",
+        "media://inbound/9f6cbb00-1234-4abc-8def-1234567890ab",
+      ],
+      MediaTypes: ["image/jpeg", "image/jpeg"],
+    });
+
+    expect(attachments).toHaveLength(2);
+    expect(attachments.map((attachment) => attachment.mediaPath)).toEqual([
+      "media://inbound/8f6cbb00-1234-4abc-8def-1234567890ab",
+      "media://inbound/9f6cbb00-1234-4abc-8def-1234567890ab",
     ]);
   });
 
@@ -750,6 +770,7 @@ describe("useChatStore — attachments", () => {
         fileName: "permission_test---abc123.txt",
         size: 0,
         content: "",
+        mediaPath: "media://inbound/permission_test---abc123.txt",
       },
       {
         type: "image",
@@ -757,6 +778,7 @@ describe("useChatStore — attachments", () => {
         fileName: "",
         size: 0,
         content: "",
+        mediaPath: "media://inbound/8f6cbb00-1234-4abc-8def-1234567890ab",
       },
     ]);
   });

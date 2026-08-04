@@ -122,6 +122,7 @@ export default {
   "chat.attachment.totalTooLarge": "{file} 会导致本条消息的附件总大小超过 {limit}。",
   "chat.attachment.readFailed": "MicroClaw 无法读取 {file}。",
   "chat.attachment.pickerFailed": "无法添加附件：{error}",
+  "chat.attachment.openFailed": "无法打开附件：{error}",
   "chat.send": "发送",
   "chat.editHint": "双击编辑并重新发送",
   "chat.editConfirm": "发送",
