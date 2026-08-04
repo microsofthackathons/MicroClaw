@@ -66,4 +66,19 @@ describe("ChatAttachments", () => {
     expect(wrapper.get(".chat-attachment").attributes("role")).toBeUndefined();
     expect(wrapper.get(".chat-attachment").classes()).not.toContain("chat-attachment--openable");
   });
+
+  it("opens a history attachment with an absolute inbound media path", async () => {
+    const historyAttachment = {
+      ...attachment,
+      content: "",
+      mediaPath: "C:\\Users\\sunt\\.openclaw\\media\\inbound\\notes.txt",
+    };
+    const wrapper = mount(ChatAttachments, {
+      props: { attachments: [historyAttachment] },
+    });
+
+    await wrapper.get(".chat-attachment").trigger("click");
+
+    expect(openAttachment).toHaveBeenCalledWith(historyAttachment);
+  });
 });

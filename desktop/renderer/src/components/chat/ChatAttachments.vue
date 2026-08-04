@@ -73,7 +73,8 @@ function isOpenable(attachment: ChatAttachment): boolean {
   return (
     attachment.content.length > 0 ||
     (typeof attachment.mediaPath === "string" &&
-      /^media:\/\/inbound\/[^/?#]+$/i.test(attachment.mediaPath))
+      (/^media:\/\/inbound\/[^/?#]+$/i.test(attachment.mediaPath) ||
+        /^[a-z]:\\.*\\media\\inbound\\[^\\]+$/i.test(attachment.mediaPath)))
   );
 }
 

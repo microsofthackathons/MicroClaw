@@ -499,15 +499,24 @@ export const useChatStore = defineStore("chat", () => {
                       .split(/[\\/]/)
                       .at(-1) || ""
                   : "";
+              const extensionIndex = rawName.lastIndexOf(".");
+              const nameWithoutExtension =
+                extensionIndex > 0 ? rawName.slice(0, extensionIndex) : rawName;
               const isBareUuid =
                 mimeType.startsWith("image/") &&
                 /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-                  rawName,
+                  nameWithoutExtension,
                 );
+              const displayName = mimeType.startsWith("image/")
+                ? rawName
+                : rawName.replace(
+                    /---[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?=\.[^.]+$)/i,
+                    "",
+                  );
               return {
                 type: mimeType.startsWith("image/") ? "image" : "file",
                 mimeType,
-                fileName: isBareUuid ? "" : rawName,
+                fileName: isBareUuid ? "" : displayName,
                 size: 0,
                 content: "",
                 mediaPath: typeof mediaPath === "string" ? mediaPath : undefined,

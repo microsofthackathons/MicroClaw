@@ -35,15 +35,28 @@ export function sanitizeAttachmentFileName(fileName: string, mimeType: string): 
 }
 
 export function resolveInboundMediaPath(stateDir: string, mediaPath: string): string {
-  const match = /^media:\/\/inbound\/([^/?#]+)$/i.exec(mediaPath);
-  if (!match) throw new Error("Invalid inbound media reference");
-  const fileName = decodeURIComponent(match[1]);
-  if (!fileName || path.basename(fileName) !== fileName) {
-    throw new Error("Invalid inbound media filename");
-  }
   const inboundDir = path.resolve(stateDir, "media", "inbound");
-  const candidate = path.resolve(inboundDir, fileName);
-  if (!candidate.startsWith(`${inboundDir}${path.sep}`)) {
+  const uriMatch = /^media:\/\/inbound\/([^/?#]+)$/i.exec(mediaPath);
+  let candidate: string;
+  if (uriMatch) {
+    const fileName = decodeURIComponent(uriMatch[1]);
+    if (!fileName || path.basename(fileName) !== fileName) {
+      throw new Error("Invalid inbound media filename");
+    }
+    candidate = path.resolve(inboundDir, fileName);
+  } else if (path.isAbsolute(mediaPath)) {
+    candidate = path.resolve(mediaPath);
+  } else {
+    throw new Error("Invalid inbound media reference");
+  }
+
+  const relativePath = path.relative(inboundDir, candidate);
+  if (
+    !relativePath ||
+    path.isAbsolute(relativePath) ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.basename(relativePath) !== relativePath
+  ) {
     throw new Error("Inbound media path escaped its root");
   }
   return candidate;

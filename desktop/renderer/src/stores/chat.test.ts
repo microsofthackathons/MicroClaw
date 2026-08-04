@@ -730,6 +730,35 @@ describe("useChatStore — attachments", () => {
     ]);
   });
 
+  it("uses a generic image name for an absolute UUID image path", () => {
+    const store = useChatStore();
+    const [attachment] = store.getMessageAttachments({
+      role: "user",
+      content: "image",
+      MediaPaths: [
+        "C:\\Users\\sunt\\.openclaw\\media\\inbound\\1be4ae56-6c48-4787-8fef-04c0cb29e130.png",
+      ],
+      MediaTypes: ["image/png"],
+    });
+
+    expect(attachment.fileName).toBe("");
+    expect(attachment.mediaPath).toContain("\\media\\inbound\\");
+  });
+
+  it("removes the gateway UUID suffix from a non-image inbound filename", () => {
+    const store = useChatStore();
+    const [attachment] = store.getMessageAttachments({
+      role: "user",
+      content: "text",
+      MediaPaths: [
+        "C:\\Users\\sunt\\.openclaw\\media\\inbound\\permission_test---499c16ac-1817-41d7-87e3-045e7aed4fa2.txt",
+      ],
+      MediaTypes: ["text/plain"],
+    });
+
+    expect(attachment.fileName).toBe("permission_test.txt");
+  });
+
   it("sanitizes an attachment gateway echo and uses only MediaPaths for its chips", async () => {
     const store = useChatStore();
     const question = "What is shown in the image and text file?";

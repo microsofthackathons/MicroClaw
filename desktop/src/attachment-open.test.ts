@@ -55,6 +55,7 @@ describe("attachment opening", () => {
     await writeFile(mediaFile, "history");
 
     expect(resolveInboundMediaPath(stateDir, "media://inbound/report.txt")).toBe(mediaFile);
+    expect(resolveInboundMediaPath(stateDir, mediaFile)).toBe(mediaFile);
     await expect(
       prepareAttachmentForOpen(
         {
@@ -64,8 +65,17 @@ describe("attachment opening", () => {
         stateDir,
       ),
     ).resolves.toBe(mediaFile);
-    expect(() => resolveInboundMediaPath(stateDir, "C:\\outside.txt")).toThrow(
-      "Invalid inbound media reference",
+    await expect(
+      prepareAttachmentForOpen(
+        {
+          mediaPath: mediaFile,
+        },
+        stateDir,
+        stateDir,
+      ),
+    ).resolves.toBe(mediaFile);
+    expect(() => resolveInboundMediaPath(stateDir, path.join(stateDir, "outside.txt"))).toThrow(
+      "escaped its root",
     );
     expect(() => resolveInboundMediaPath(stateDir, "media://inbound/..%5Coutside.txt")).toThrow(
       "Invalid inbound media filename",
