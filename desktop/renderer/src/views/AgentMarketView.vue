@@ -9,6 +9,7 @@
         v-for="agent in filteredAgents"
         :key="agent.id"
         :agent="agent"
+        :adding="addingAgentIds.has(agent.id)"
         @add="handleAdd"
         @remove="handleRemove"
       />
@@ -17,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAgentStore } from "@/stores/agents";
 import { useAgentList } from "@/composables/useAgentList";
@@ -26,12 +27,20 @@ import { t } from "@/i18n";
 
 const agentStore = useAgentStore();
 const { filteredAgents } = useAgentList(computed(() => agentStore.marketAgents));
+const addingAgentIds = ref(new Set<string>());
 
 async function handleAdd(agentId: string) {
+  const agent = agentStore.marketAgents.find((candidate) => candidate.id === agentId);
+  if (!agent || agent.isAdded || addingAgentIds.value.has(agentId)) return;
+
+  addingAgentIds.value.add(agentId);
   try {
     await agentStore.addAgent(agentId);
+    ElMessage.success(t("agentMarket.addSuccess", { name: agent.name }));
   } catch {
     ElMessage.error(t("agentMarket.addFailed"));
+  } finally {
+    addingAgentIds.value.delete(agentId);
   }
 }
 
