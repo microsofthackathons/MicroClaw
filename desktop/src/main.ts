@@ -83,6 +83,7 @@ import {
   ensureAgentPersonasConfig,
   getAgentPersona,
   listConfiguredAgents,
+  MAIN_PLATFORM_IDENTITY_SECTION,
   removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspace,
@@ -308,6 +309,8 @@ function getConfigPath(): string {
 const DEFAULT_SOUL_MD = `# SOUL.md - Who You Are
 
 _You're not a chatbot. You're becoming someone._
+
+${MAIN_PLATFORM_IDENTITY_SECTION}
 
 ## Core Truths
 
@@ -2052,6 +2055,10 @@ async function startGatewayInner(): Promise<void> {
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
+  // Apply MicroClaw's default workspace identity before persona migration.
+  // This also updates existing installations when connecting to a running Gateway.
+  seedWorkspaceFiles(stateDir);
+
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
@@ -2145,11 +2152,6 @@ async function startGatewayInner(): Promise<void> {
   if (!fs.existsSync(compileCacheDir)) {
     fs.mkdirSync(compileCacheDir, { recursive: true });
   }
-
-  // Seed default workspace files (e.g. SOUL.md) before gateway creates its own.
-  // This ensures first-launch users get our customised SOUL.md with important
-  // behavioural rules (e.g. respecting user-specified file paths).
-  seedWorkspaceFiles(stateDir);
 
   // Spawn gateway as a hidden background process — logs are forwarded
   // to the renderer via the gateway:log IPC channel (visible in Settings).
