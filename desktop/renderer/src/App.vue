@@ -7,6 +7,7 @@
     v-else-if="!gatewayReady"
     :status="gateway.status"
     :connected="chatStore.wsConnected"
+    :warming="gateway.warming"
     :errorMessage="gateway.lastError"
     @retry="handleRetry"
   />
@@ -156,6 +157,7 @@ import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/sessions";
 import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
+import { runStartupWarmup } from "@/startup-warmup";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -167,6 +169,7 @@ const agentStore = useAgentStore();
 
 // ── Setup wizard gate ──
 const showSetup = ref(false);
+const setupActive = computed(() => showSetup.value || route.path === "/setup");
 
 // ── Gateway loading gate ──
 // Once the first WS connection succeeds and the progress bar finishes,
@@ -195,6 +198,18 @@ function markConnected() {
   setTimeout(() => {
     gateway.markReady();
   }, 600);
+}
+
+async function warmThenMarkConnected() {
+  await runStartupWarmup({
+    showSetup: setupActive.value,
+    needsSetup: () => window.openclaw.config.needsSetup(),
+    beginWarming: gateway.beginWarming,
+    warmUpAgent: () => window.openclaw.gateway.warmUpAgent(),
+    finishWarming: gateway.finishWarming,
+    markConnected,
+    onError: (error) => console.warn("[renderer] agent warm-up unavailable:", error),
+  });
 }
 
 function handleRetry() {
@@ -452,7 +467,7 @@ onMounted(async () => {
   unsubWsConnected = window.openclaw.gateway.onWsConnected((mainSessionKey) => {
     const wasStreaming = chatStore.streaming;
     chatStore.wsConnected = true;
-    markConnected();
+    void warmThenMarkConnected();
     if (mainSessionKey) {
       chatStore.setMainSessionKey(mainSessionKey);
     }
@@ -498,7 +513,7 @@ onMounted(async () => {
   window.openclaw.chat.isConnected().then((c) => {
     if (c && !chatStore.wsConnected) {
       chatStore.wsConnected = c;
-      markConnected();
+      void warmThenMarkConnected();
       sessionStore.reconcileEmptySessions(chatStore.sessionKey, "main");
       sessionStore.ensureSession(chatStore.sessionKey, "main");
       chatStore.loadHistory();

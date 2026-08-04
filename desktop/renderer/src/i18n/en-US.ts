@@ -435,6 +435,7 @@ export default {
   "gateway.ready": "Ready",
   "gateway.starting": "Starting services…",
   "gateway.connecting": "Connecting…",
+  "gateway.warming": "Preparing your workspace…",
   "gateway.timeout": "Service startup timed out. Please retry.",
   "gateway.failed": "Service startup failed. Please retry.",
   "gateway.preparing": "Preparing…",

@@ -415,6 +415,7 @@ export default {
   "gateway.ready": "准备就绪",
   "gateway.starting": "正在启动服务…",
   "gateway.connecting": "正在连接…",
+  "gateway.warming": "正在准备您的工作区…",
   "gateway.timeout": "服务启动超时，请重试",
   "gateway.failed": "服务启动失败，请重试",
   "gateway.preparing": "正在准备…",
