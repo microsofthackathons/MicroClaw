@@ -69,6 +69,7 @@ describe("useGatewayStore", () => {
     expect(store.port).toBe(0);
     expect(store.logs).toEqual([]);
     expect(store.ready).toBe(false);
+    expect(store.warming).toBe(false);
     expect(store.weixinLoggedIn).toBe(false);
   });
 
@@ -108,11 +109,24 @@ describe("useGatewayStore", () => {
     expect(store.ready).toBe(true);
   });
 
+  it("deduplicates warming and clears it when ready", () => {
+    const store = useGatewayStore();
+    expect(store.beginWarming()).toBe(true);
+    expect(store.beginWarming()).toBe(false);
+    expect(store.warming).toBe(true);
+
+    store.markReady();
+
+    expect(store.warming).toBe(false);
+    expect(store.ready).toBe(true);
+  });
+
   it("resetReady sets ready back to false", () => {
     const store = useGatewayStore();
     store.markReady();
     store.resetReady();
     expect(store.ready).toBe(false);
+    expect(store.warming).toBe(false);
   });
 
   it("markReady is idempotent", () => {

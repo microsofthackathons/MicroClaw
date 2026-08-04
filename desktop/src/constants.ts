@@ -44,6 +44,11 @@ export const HEALTH_CHECK_HTTP_TIMEOUT_MS = 10_000;
  *  the gateway event loop can stall for several seconds during plugin work. */
 export const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
 
+/** Grace period before restarting an unresponsive but still-running gateway.
+ *  Long synchronous agent turns can block the event loop on loaded machines
+ *  even though the gateway process is alive and making progress. */
+export const HEALTH_CHECK_BUSY_GRACE_MS = 240_000;
+
 /** Max time to wait for the gateway to become ready after spawn (ms). */
 export const GATEWAY_READY_TIMEOUT_MS = 120_000;
 
@@ -104,6 +109,15 @@ export const WS_RECONNECT_MULTIPLIER = 1.7;
 
 /** Per-request timeout for gateway WS RPC calls (ms). */
 export const WS_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Reserved throwaway session used to pre-warm the main agent. */
+export const AGENT_WARMUP_SESSION_KEY = "agent:main:__microclaw_warmup__";
+
+/** Minimal prompt for the throwaway warm-up turn. */
+export const AGENT_WARMUP_PROMPT = "ping";
+
+/** Hard cap for startup agent warm-up before the app fails open (ms). */
+export const AGENT_WARMUP_TIMEOUT_MS = 30_000;
 
 // ── Studio backend ──────────────────────────────────────────────────────
 

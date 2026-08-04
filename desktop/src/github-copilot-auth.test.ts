@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildGitHubCopilotAuthStatusArgs,
   buildGitHubCopilotLogoutArgs,
+  getGitHubCopilotAuthStatus,
   GITHUB_COPILOT_AUTH_AGENT_ID,
+  invalidateGitHubCopilotAuthStatusCache,
   parseGitHubCopilotAuthStatus,
   parseGitHubCopilotDisconnectResult,
+  parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
   parseGitHubCopilotWorkerLine,
 } from "./github-copilot-auth";
@@ -12,6 +15,19 @@ import {
   buildGitHubCopilotLoginOptions,
   GITHUB_COPILOT_AUTH_AGENT_ID as WORKER_AUTH_AGENT_ID,
 } from "./github-copilot-auth-worker";
+
+const missingRuntime = {
+  nodePath: "node",
+  entryPath: "missing-openclaw-entry.mjs",
+  workerPath: "missing-auth-worker.js",
+  openClawPackageDir: ".",
+  stateDir: ".",
+  compileCacheDir: ".",
+};
+
+beforeEach(() => {
+  invalidateGitHubCopilotAuthStatusCache();
+});
 
 describe("GitHub Copilot auth scope", () => {
   it("uses OpenClaw's fixed main agent as the shared credential owner", () => {
@@ -164,6 +180,64 @@ describe("GitHub Copilot CLI output parsing", () => {
         JSON.stringify({ provider: "openai", removedProfiles: [] }),
       ),
     ).toThrow("Invalid GitHub Copilot disconnect response");
+  });
+
+  it("reads GitHub Copilot authentication health from the Gateway", () => {
+    expect(
+      parseGitHubCopilotGatewayAuthStatus({
+        ts: Date.now(),
+        providers: [
+          {
+            provider: "github-copilot",
+            status: "ok",
+            profiles: [{ status: "ok" }],
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      parseGitHubCopilotGatewayAuthStatus({
+        providers: [
+          {
+            provider: "github-copilot",
+            status: "expired",
+            profiles: [{ status: "expired" }],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(() => parseGitHubCopilotGatewayAuthStatus({ auth: {} })).toThrow(
+      "Invalid GitHub Copilot authentication status",
+    );
+  });
+
+  it("prefers Gateway authentication health without starting the CLI", async () => {
+    const queryGateway = vi.fn().mockResolvedValue({
+      providers: [
+        {
+          provider: "github-copilot",
+          status: "ok",
+          profiles: [{ status: "ok" }],
+        },
+      ],
+    });
+
+    await expect(getGitHubCopilotAuthStatus(missingRuntime, queryGateway)).resolves.toEqual({
+      authenticated: true,
+    });
+    expect(queryGateway).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the CLI when the Gateway response is unusable", async () => {
+    const queryGateway = vi.fn().mockResolvedValue({ providers: "invalid" });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(getGitHubCopilotAuthStatus(missingRuntime, queryGateway)).rejects.toThrow(
+      "OpenClaw CLI was not found",
+    );
+    expect(queryGateway).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledOnce();
+    warning.mockRestore();
   });
 
   it("normalizes GitHub Copilot models returned by the Gateway", () => {

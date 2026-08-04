@@ -192,7 +192,10 @@ export function parseGitHubCopilotAuthStatus(output: string): boolean {
   const parsed = payload as {
     auth?: { oauth?: { providers?: unknown } };
   };
-  const providers = parsed.auth?.oauth?.providers;
+  return parseGitHubCopilotProviderHealth(parsed.auth?.oauth?.providers);
+}
+
+function parseGitHubCopilotProviderHealth(providers: unknown): boolean {
   if (!Array.isArray(providers)) {
     throw new Error("Invalid GitHub Copilot authentication status");
   }
@@ -217,6 +220,13 @@ export function parseGitHubCopilotAuthStatus(output: string): boolean {
     if (hasUsableProfile) return true;
   }
   return isUsableStatus(provider.status);
+}
+
+export function parseGitHubCopilotGatewayAuthStatus(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid GitHub Copilot authentication status");
+  }
+  return parseGitHubCopilotProviderHealth((payload as { providers?: unknown }).providers);
 }
 
 export function parseGitHubCopilotDisconnectResult(
@@ -354,16 +364,30 @@ async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]
 
 export async function getGitHubCopilotAuthStatus(
   runtime: GitHubCopilotAuthRuntime,
+  queryGateway?: () => Promise<unknown>,
 ): Promise<{ authenticated: boolean }> {
   if (authStatusCache && authStatusCache.expiresAt > Date.now()) return authStatusCache.value;
   if (authStatusInFlight) return authStatusInFlight;
 
-  authStatusInFlight = runOpenClawJson(runtime, buildGitHubCopilotAuthStatusArgs())
-    .then((output) => {
-      const value = { authenticated: parseGitHubCopilotAuthStatus(output) };
-      authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };
-      return value;
-    })
+  authStatusInFlight = (async () => {
+    if (queryGateway) {
+      try {
+        const value = {
+          authenticated: parseGitHubCopilotGatewayAuthStatus(await queryGateway()),
+        };
+        authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };
+        return value;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway auth status unavailable:", error);
+        // The CLI remains the compatibility fallback for unavailable or older Gateways.
+      }
+    }
+
+    const output = await runOpenClawJson(runtime, buildGitHubCopilotAuthStatusArgs());
+    const value = { authenticated: parseGitHubCopilotAuthStatus(output) };
+    authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };
+    return value;
+  })()
     .finally(() => {
       authStatusInFlight = null;
     });

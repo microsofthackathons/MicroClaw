@@ -143,7 +143,12 @@ const CAROUSEL_KEYS = [
   { title: "gateway.carousel.3.title", desc: "gateway.carousel.3.desc" },
 ];
 
-const props = defineProps<{ status: string; connected: boolean; errorMessage?: string }>();
+const props = defineProps<{
+  status: string;
+  connected: boolean;
+  warming: boolean;
+  errorMessage?: string;
+}>();
 defineEmits<{ retry: [] }>();
 
 const isFailed = computed(() => props.status === "timeout" || props.status === "failed");
@@ -168,6 +173,7 @@ function closeWindow() {
 // ── Progress (preserved from original) ──
 
 const targetProgress = computed(() => {
+  if (props.warming) return 98;
   if (props.connected) return 100;
   if (isFailed.value) return displayProgress.value; // freeze
   switch (props.status) {
@@ -213,6 +219,7 @@ watch(
 );
 
 const statusText = computed(() => {
+  if (props.warming) return t("gateway.warming");
   if (props.connected) return t("gateway.ready");
   switch (props.status) {
     case "stopped":

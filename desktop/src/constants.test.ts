@@ -5,6 +5,7 @@ import {
   COMPILE_CACHE_SUBDIR,
   HEALTH_CHECK_INTERVAL_MS,
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
+  HEALTH_CHECK_BUSY_GRACE_MS,
   GATEWAY_READY_TIMEOUT_MS,
   PORT_WAIT_TIMEOUT_MS,
   MODEL_CONNECTION_TEST_TIMEOUT_MS,
@@ -16,6 +17,9 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
   SANDBOX_PERMISSION_TIMEOUT_MS,
+  AGENT_WARMUP_PROMPT,
+  AGENT_WARMUP_SESSION_KEY,
+  AGENT_WARMUP_TIMEOUT_MS,
 } from "./constants";
 import type { GatewayStatus } from "./constants";
 
@@ -41,6 +45,11 @@ describe("constants", () => {
 
     it("HTTP timeout < health check interval", () => {
       expect(HEALTH_CHECK_HTTP_TIMEOUT_MS).toBeLessThan(HEALTH_CHECK_INTERVAL_MS);
+    });
+
+    it("busy gateway grace >= health check interval", () => {
+      expect(HEALTH_CHECK_BUSY_GRACE_MS).toBe(240_000);
+      expect(HEALTH_CHECK_BUSY_GRACE_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_INTERVAL_MS);
     });
 
     it("gateway ready timeout > port wait timeout", () => {
@@ -79,6 +88,10 @@ describe("constants", () => {
       expect(WS_REQUEST_TIMEOUT_MS).toBeGreaterThan(WS_RECONNECT_INITIAL_MS);
     });
 
+    it("agent warm-up has a finite 30-second safety cap", () => {
+      expect(AGENT_WARMUP_TIMEOUT_MS).toBe(30_000);
+    });
+
     it("backoff reaches max within reasonable retries", () => {
       let delay = WS_RECONNECT_INITIAL_MS;
       let retries = 0;
@@ -87,6 +100,14 @@ describe("constants", () => {
         retries++;
       }
       expect(retries).toBeLessThan(50);
+    });
+
+    describe("agent warm-up", () => {
+      it("uses a reserved non-main session and minimal prompt", () => {
+        expect(AGENT_WARMUP_SESSION_KEY).toBe("agent:main:__microclaw_warmup__");
+        expect(AGENT_WARMUP_SESSION_KEY).not.toBe("agent:main:main");
+        expect(AGENT_WARMUP_PROMPT).toBe("ping");
+      });
     });
   });
 

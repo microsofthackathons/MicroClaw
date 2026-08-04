@@ -145,7 +145,7 @@ describe("agent personas", () => {
     if (!workspace) throw new Error("Master Archive workspace is not configured");
 
     expect(workspace).toBe(path.join(stateDir, "workspace-master-archive"));
-    expect(created).toHaveLength(4);
+    expect(created).toHaveLength(5);
     expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
       "## Shared safety rule",
     );
@@ -164,6 +164,7 @@ describe("agent personas", () => {
 
     expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([
       path.join(stateDir, "workspace", "IDENTITY.md"),
+      path.join(stateDir, "workspace", "SOUL.md"),
     ]);
     expect(fs.existsSync(path.join(stateDir, "workspace-master-archive"))).toBe(
       false,
@@ -177,6 +178,7 @@ describe("agent personas", () => {
 
     expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([
       path.join(stateDir, "workspace", "IDENTITY.md"),
+      path.join(stateDir, "workspace", "SOUL.md"),
     ]);
     const identity = fs.readFileSync(
       path.join(stateDir, "workspace", "IDENTITY.md"),
@@ -185,6 +187,10 @@ describe("agent personas", () => {
     expect(identity).toContain("the user may choose one");
     expect(identity).toContain("assistant in MicroClaw");
     expect(identity).toContain('Never identify yourself as "OpenClaw"');
+    const soul = fs.readFileSync(path.join(stateDir, "workspace", "SOUL.md"), "utf-8");
+    expect(soul).toContain("## Platform Identity");
+    expect(soul).toContain("OpenClaw is only the underlying agent runtime");
+    expect(soul).toContain('Never introduce yourself as OpenClaw or as an assistant "in OpenClaw"');
   });
 
   it("replaces the unconfigured identity template but preserves a chosen name", () => {
@@ -208,7 +214,10 @@ _Fill this in during your first conversation. Make it yours._
       "utf-8",
     );
 
-    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([identityPath]);
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([
+      identityPath,
+      path.join(workspace, "SOUL.md"),
+    ]);
     expect(fs.readFileSync(identityPath, "utf-8")).toContain("assistant in MicroClaw");
 
     fs.writeFileSync(
@@ -226,6 +235,24 @@ _Fill this in during your first conversation. Make it yours._
 
     expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
     expect(fs.readFileSync(identityPath, "utf-8")).toContain("**Name:** Nova");
+  });
+
+  it("adds the MicroClaw platform identity without replacing a customized main soul", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    ensureAgentPersonasConfig(config, stateDir);
+    const workspace = path.join(stateDir, "workspace");
+    const identityPath = path.join(workspace, "IDENTITY.md");
+    const soulPath = path.join(workspace, "SOUL.md");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.writeFileSync(soulPath, "# Custom Soul\n\nKeep this personality.\n", "utf-8");
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([identityPath, soulPath]);
+    const migrated = fs.readFileSync(soulPath, "utf-8");
+    expect(migrated).toContain("Keep this personality.");
+    expect(migrated).toContain("## Platform Identity");
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
+    expect(fs.readFileSync(soulPath, "utf-8").match(/## Platform Identity/g)).toHaveLength(1);
   });
 
   it("removes a configured optional agent without changing its workspace data", () => {
@@ -295,7 +322,7 @@ _Fill this in during your first conversation. Make it yours._
       },
     };
     ensureAgentPersonasConfig(config, stateDir);
-    seedAgentPersonaWorkspaces(config, stateDir);
+    seedAgentPersonaWorkspaces(config, stateDir, "## Required appendix");
     const soulPath = path.join(customWorkspace, "SOUL.md");
     fs.writeFileSync(soulPath, "custom persona\n", "utf-8");
 

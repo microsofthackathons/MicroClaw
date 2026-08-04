@@ -45,6 +45,7 @@ import {
   HEALTH_CHECK_INTERVAL_MS,
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
   HEALTH_CHECK_FAILURE_THRESHOLD,
+  HEALTH_CHECK_BUSY_GRACE_MS,
   LOADING_WINDOW_WIDTH,
   LOADING_WINDOW_HEIGHT,
   MODEL_CONNECTION_TEST_TIMEOUT_MS,
@@ -83,6 +84,7 @@ import {
   ensureAgentPersonasConfig,
   getAgentPersona,
   listConfiguredAgents,
+  MAIN_PLATFORM_IDENTITY_SECTION,
   removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspace,
@@ -93,6 +95,7 @@ import {
 import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
+import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import {
   applyAgentSkillsToConfig,
   applyGlobalSkillChange,
@@ -227,7 +230,10 @@ let postSpawnRestartDone = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
 const githubCopilotAuthManager = new GitHubCopilotAuthManager(
-  (event) => mainWindow?.webContents.send("model:github-copilot:login-event", event),
+  (event) => {
+    mainWindow?.webContents.send("model:github-copilot:login-event", event);
+    if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
+  },
   (url) => shell.openExternal(url),
 );
 /** Per-session random key for HMAC-signing the external apps whitelist file. */
@@ -306,6 +312,8 @@ function getConfigPath(): string {
 const DEFAULT_SOUL_MD = `# SOUL.md - Who You Are
 
 _You're not a chatbot. You're becoming someone._
+
+${MAIN_PLATFORM_IDENTITY_SECTION}
 
 ## Core Truths
 
@@ -1693,6 +1701,8 @@ function stopGatewayProcess(): void {
   const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
   const pids = new Set<number>();
+  let listenerScanSucceeded = gatewayPort === 0;
+  let allGatewayProcessesStopped = process.platform === "win32";
   if (knownPid) pids.add(knownPid);
   if (gatewayPort && process.platform === "win32") {
     try {
@@ -1701,6 +1711,7 @@ function stopGatewayProcess(): void {
         encoding: "utf-8",
         timeout: 5_000,
       });
+      listenerScanSucceeded = true;
       for (const line of result.split(/\r?\n/)) {
         const columns = line.trim().split(/\s+/);
         if (
@@ -1726,11 +1737,28 @@ function stopGatewayProcess(): void {
           timeout: 10_000,
           stdio: "ignore",
         });
-      } catch {}
+      } catch {
+        allGatewayProcessesStopped = false;
+      }
     } else {
+      allGatewayProcessesStopped = false;
       try {
         process.kill(pid, "SIGTERM");
       } catch {}
+    }
+  }
+  const stoppedGatewayConfirmed =
+    allGatewayProcessesStopped && (pids.size > 0 || listenerScanSucceeded);
+  if (stoppedGatewayConfirmed) {
+    try {
+      const result = cleanupStoppedGatewayWarmupSession(getOpenClawStateDir());
+      if (result.indexEntryRemoved) {
+        console.log(
+          `[gateway] removed deferred warm-up session and ${result.artifactsRemoved.length} artifact(s)`,
+        );
+      }
+    } catch (error) {
+      console.warn("[gateway] deferred warm-up session cleanup failed:", error);
     }
   }
 }
@@ -1778,26 +1806,66 @@ async function restartManagedGatewayAndRequireReady(reason: string): Promise<voi
 // ---------------------------------------------------------------------------
 // Health monitor — auto-restart gateway if it goes down
 // ---------------------------------------------------------------------------
+function isManagedGatewayProcessAlive(): boolean {
+  return gatewayProcess !== null && !gatewayProcess.killed;
+}
+
 function startHealthMonitor(): void {
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   let consecutiveFailures = 0;
+  let unresponsiveSince: number | null = null;
   healthCheckInterval = setInterval(async () => {
     // Skip during startup / intentional restart
-    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) return;
+    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
     if (!gatewayPort) return;
     // Skip while gateway is blocked on a sync permission dialog (Atomics.wait)
     if (pendingSyncPermissionRequests > 0) {
       consecutiveFailures = 0;
+      unresponsiveSince = null;
       return;
     }
 
     const alive = await checkExistingGateway(gatewayPort);
     if (alive) {
       consecutiveFailures = 0;
+      unresponsiveSince = null;
       return;
     }
-    if (gatewayStatus !== "running") return;
+    if (gatewayStatus !== "running") {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
 
+    if (isManagedGatewayProcessAlive()) {
+      consecutiveFailures = 0;
+      unresponsiveSince ??= Date.now();
+      const elapsedMs = Date.now() - unresponsiveSince;
+      const msg =
+        `[health-monitor] gateway unresponsive but process alive ` +
+        `(${Math.floor(elapsedMs / 1_000)}s/${HEALTH_CHECK_BUSY_GRACE_MS / 1_000}s) - likely busy`;
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("gateway:log", msg);
+      }
+      if (elapsedMs < HEALTH_CHECK_BUSY_GRACE_MS) return;
+      unresponsiveSince = null;
+
+      try {
+        await restartManagedGateway(
+          "Gateway process remained unresponsive beyond the busy grace period",
+        );
+      } catch (error) {
+        console.error("[health-monitor] Gateway restart failed:", error);
+      }
+      return;
+    }
+
+    unresponsiveSince = null;
     consecutiveFailures += 1;
     const msg = `[health-monitor] /health failed (${consecutiveFailures}/${HEALTH_CHECK_FAILURE_THRESHOLD})`;
     console.log(msg);
@@ -1830,6 +1898,10 @@ async function ensureGatewayConnected(): Promise<void> {
       }
       connectGatewayWs();
     }
+  } else if (isManagedGatewayProcessAlive()) {
+    console.log(
+      "[ensure-gateway] Gateway not reachable but process is alive; health monitor will retry",
+    );
   } else {
     console.log("[ensure-gateway] Gateway not reachable — restarting...");
     await restartManagedGateway("Gateway was unreachable when the window became active");
@@ -2050,6 +2122,10 @@ async function startGatewayInner(): Promise<void> {
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
+  // Apply MicroClaw's default workspace identity before persona migration.
+  // This also updates existing installations when connecting to a running Gateway.
+  seedWorkspaceFiles(stateDir);
+
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
@@ -2143,11 +2219,6 @@ async function startGatewayInner(): Promise<void> {
   if (!fs.existsSync(compileCacheDir)) {
     fs.mkdirSync(compileCacheDir, { recursive: true });
   }
-
-  // Seed default workspace files (e.g. SOUL.md) before gateway creates its own.
-  // This ensures first-launch users get our customised SOUL.md with important
-  // behavioural rules (e.g. respecting user-specified file paths).
-  seedWorkspaceFiles(stateDir);
 
   // Spawn gateway as a hidden background process — logs are forwarded
   // to the renderer via the gateway:log IPC channel (visible in Settings).
@@ -2794,6 +2865,16 @@ function requestGatewayModelCatalog(): Promise<unknown> {
     },
   );
   return request;
+}
+
+async function refreshGatewayGitHubCopilotAuthStatus(): Promise<void> {
+  const client = gwClient;
+  if (!client?.connected) return;
+  try {
+    await client.request("models.authStatus", { refresh: true });
+  } catch (error) {
+    console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3614,6 +3695,15 @@ function registerIpcHandlers(): void {
     return await gwClient.clearAllHistory();
   });
 
+  ipcMain.handle("gateway:warm-up-agent", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (needsSetup()) {
+      console.log("[gateway-ws] agent warm-up skipped: no model is configured");
+      return { outcome: "skipped", transcriptDeleted: true };
+    }
+    return await gwClient.warmUpAgent();
+  });
+
   // Report as "not connected" while the post-spawn restart is pending.
   // Without this, the renderer's isConnected() poll on mount bypasses the
   // ws-connected gate and lets the user send messages before the gateway's
@@ -4043,19 +4133,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle("model:github-copilot:disconnect", async () => {
     githubCopilotAuthManager.stop();
     const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
-    if (gwClient?.connected) {
-      try {
-        await gwClient.request("models.authStatus", { refresh: true });
-      } catch (error) {
-        console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
-      }
-    }
+    await refreshGatewayGitHubCopilotAuthStatus();
     return result;
   });
 
-  ipcMain.handle("model:github-copilot:status", () =>
-    getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime()),
-  );
+  ipcMain.handle("model:github-copilot:status", () => {
+    const client = gwClient;
+    const queryGateway = client?.connected
+      ? () => client.request("models.authStatus")
+      : undefined;
+    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
+  });
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
     if (gwClient?.connected) {
