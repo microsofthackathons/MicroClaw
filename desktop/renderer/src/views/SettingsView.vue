@@ -26,11 +26,18 @@
         <div class="section-label">{{ t("settings.application") }}</div>
         <div class="card-group">
           <div class="card-row">
-            <span class="row-label">{{ t("settings.language") }}</span>
-            <el-select v-model="settings.language" style="width: 140px">
-              <el-option label="简体中文" value="zh-CN" />
-              <el-option label="English" value="en-US" />
-            </el-select>
+            <label class="row-label" for="settings-language-select">
+              {{ t("settings.language") }}
+            </label>
+            <select
+              id="settings-language-select"
+              v-model="settings.language"
+              class="language-select"
+              :aria-label="t('settings.language')"
+            >
+              <option value="zh-CN">简体中文</option>
+              <option value="en-US">English</option>
+            </select>
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.autoStart") }}</span>
@@ -2058,6 +2065,29 @@ async function clearChatHistory() {
   color: var(--text-primary);
   flex-shrink: 1;
   min-width: 0;
+}
+
+.language-select {
+  width: 140px;
+  height: 32px;
+  flex-shrink: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.language-select:hover {
+  border-color: var(--text-muted);
+}
+
+.language-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .row-value {
