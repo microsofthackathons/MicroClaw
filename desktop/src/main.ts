@@ -21,6 +21,7 @@ import { StudioBackendManager } from "./studio-backend-manager";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
+import { prepareChatAttachments, validateChatAttachments } from "./chat-attachments";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
@@ -3667,13 +3668,39 @@ function registerIpcHandlers(): void {
   );
 
   // --- Chat (WebSocket gateway protocol) ---
+  ipcMain.handle("dialog:open-files", async (_event, params?: { currentTotalBytes?: number }) => {
+    if (!mainWindow) throw new Error("Main window is not available");
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ["openFile", "multiSelections"],
+    });
+    if (result.canceled) return { attachments: [], rejections: [] };
+    const currentTotalBytes =
+      typeof params?.currentTotalBytes === "number" &&
+      Number.isFinite(params.currentTotalBytes)
+        ? Math.max(0, params.currentTotalBytes)
+        : 0;
+    return prepareChatAttachments(
+      result.filePaths,
+      undefined,
+      undefined,
+      currentTotalBytes,
+    );
+  });
+
   ipcMain.handle(
     "chat:send-message",
-    async (_event, params: { sessionKey: string; message: string }) => {
+    async (
+      _event,
+      params: { sessionKey: string; message: string; attachments?: unknown },
+    ) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
-      await gwClient.sendChat(params.sessionKey, params.message);
+      await gwClient.sendChat(
+        params.sessionKey,
+        params.message,
+        validateChatAttachments(params.attachments),
+      );
     },
   );
 

@@ -286,9 +286,16 @@
                   </button>
                 </div>
               </div>
-              <div v-else class="chat-text chat-text--user">
-                {{ getMessageText(msg) }}
-              </div>
+              <template v-else>
+                <ChatAttachments
+                  v-if="chatStore.getMessageAttachments(msg).length"
+                  class="chat-message-attachments"
+                  :attachments="chatStore.getMessageAttachments(msg)"
+                />
+                <div v-if="getMessageText(msg)" class="chat-text chat-text--user">
+                  {{ getMessageText(msg) }}
+                </div>
+              </template>
             </template>
           </div>
         </div>
@@ -482,6 +489,7 @@ import {
   stripPlanMarkers,
 } from "@/composables/usePlanProgress";
 import PlanProgressPanel from "./PlanProgress.vue";
+import ChatAttachments from "./ChatAttachments.vue";
 import searchGif from "@/assets/openclaw_search_preview_transparent.gif";
 import bookGif from "@/assets/book.gif";
 import binocularsGif from "@/assets/binoculars.gif";
@@ -911,7 +919,7 @@ function cancelEdit() {
 
 async function confirmEdit() {
   const text = editText.value.trim();
-  if (!text || !chatStore.wsConnected) return;
+  if (!text || !chatStore.wsConnected || chatStore.sending || chatStore.streaming) return;
   cancelEdit();
   await chatStore.sendMessage(text);
 }

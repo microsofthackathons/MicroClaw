@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { ChatAttachment, PrepareChatAttachmentsResult } from "./chat-attachments";
 
 contextBridge.exposeInMainWorld("openclaw", {
   // --- Gateway lifecycle ---
@@ -100,8 +101,8 @@ contextBridge.exposeInMainWorld("openclaw", {
     isConnected: () => ipcRenderer.invoke("chat:is-connected"),
 
     /** Send a message to a session. Server maintains history. */
-    sendMessage: (sessionKey: string, message: string) =>
-      ipcRenderer.invoke("chat:send-message", { sessionKey, message }),
+    sendMessage: (sessionKey: string, message: string, attachments?: ChatAttachment[]) =>
+      ipcRenderer.invoke("chat:send-message", { sessionKey, message, attachments }),
 
     /** Load chat history for a session. */
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
@@ -274,6 +275,14 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Shell ---
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
+  },
+
+  // --- Native dialogs ---
+  dialog: {
+    openFiles: (currentTotalBytes = 0) =>
+      ipcRenderer.invoke("dialog:open-files", {
+        currentTotalBytes,
+      }) as Promise<PrepareChatAttachmentsResult>,
   },
 
   // --- Tool Sandbox ---

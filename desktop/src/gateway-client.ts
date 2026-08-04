@@ -27,6 +27,7 @@ import {
   WS_REQUEST_TIMEOUT_MS,
 } from "./constants";
 import { buildGatewayConnectParams } from "./gateway-protocol";
+import type { ChatAttachment } from "./chat-attachments";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -222,12 +223,26 @@ export class GatewayClient {
   }
 
   /** Send a chat message (server maintains history). */
-  sendChat(sessionKey: string, message: string): Promise<unknown> {
+  sendChat(
+    sessionKey: string,
+    message: string,
+    attachments?: ChatAttachment[],
+  ): Promise<unknown> {
     return this.request("chat.send", {
       sessionKey,
       message,
       deliver: false,
       idempotencyKey: randomUUID(),
+      ...(attachments?.length
+        ? {
+            attachments: attachments.map(({ type, mimeType, fileName, content }) => ({
+              type,
+              mimeType,
+              fileName,
+              content,
+            })),
+          }
+        : {}),
     });
   }
 

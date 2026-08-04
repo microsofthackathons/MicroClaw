@@ -18,6 +18,7 @@ export interface ChatMessage {
   content: unknown; // string or content-block array
   timestamp?: number;
   text?: string;
+  attachments?: ChatAttachment[];
 }
 
 /**
@@ -417,6 +418,79 @@ export const useChatStore = defineStore("chat", () => {
     return null;
   }
 
+  function getMessageAttachments(message: unknown): ChatAttachment[] {
+    const m = message as Record<string, unknown>;
+    const mediaPaths = [
+      ...(Array.isArray(m.MediaPaths) ? m.MediaPaths : []),
+      ...(typeof m.MediaPath === "string" ? [m.MediaPath] : []),
+    ];
+    const mediaTypes = [
+      ...(Array.isArray(m.MediaTypes) ? m.MediaTypes : []),
+      ...(typeof m.MediaType === "string" ? [m.MediaType] : []),
+    ];
+    const candidates = [
+      ...(Array.isArray(m.attachments) ? m.attachments : []),
+      ...(Array.isArray(m.content) ? m.content : []),
+      ...mediaPaths.map((mediaPath, index) => ({
+        type:
+          typeof mediaTypes[index] === "string" &&
+          (mediaTypes[index] as string).startsWith("image/")
+            ? "image"
+            : "file",
+        mimeType:
+          typeof mediaTypes[index] === "string"
+            ? (mediaTypes[index] as string)
+            : "application/octet-stream",
+        fileName:
+          typeof mediaPath === "string" ? mediaPath.split(/[\\/]/).at(-1) || "" : "",
+        size: 0,
+        content: "",
+      })),
+    ];
+    const attachments: ChatAttachment[] = [];
+
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const block = candidate as Record<string, unknown>;
+      const source =
+        block.source && typeof block.source === "object"
+          ? (block.source as Record<string, unknown>)
+          : undefined;
+      const mimeType =
+        (typeof block.mimeType === "string" && block.mimeType) ||
+        (typeof block.media_type === "string" && block.media_type) ||
+        (typeof source?.media_type === "string" && source.media_type) ||
+        "";
+      const blockType = typeof block.type === "string" ? block.type : "";
+      if (!mimeType && blockType !== "image" && blockType !== "file") continue;
+      const content =
+        (typeof block.content === "string" && block.content) ||
+        (typeof block.data === "string" && block.data) ||
+        (typeof source?.data === "string" && source.data) ||
+        "";
+      attachments.push({
+        type: mimeType.startsWith("image/") || blockType === "image" ? "image" : "file",
+        mimeType: mimeType || "application/octet-stream",
+        fileName:
+          (typeof block.fileName === "string" && block.fileName) ||
+          (typeof block.name === "string" && block.name) ||
+          "",
+        size: typeof block.size === "number" ? block.size : 0,
+        content,
+      });
+    }
+
+    return attachments.filter(
+      (attachment, index) =>
+        attachments.findIndex(
+          (item) =>
+            item.fileName === attachment.fileName &&
+            item.mimeType === attachment.mimeType &&
+            item.content === attachment.content,
+        ) === index,
+    );
+  }
+
   /**
    * Extract only the text content from a message, excluding tool_use,
    * tool_result, and thinking blocks.  Used for rendering the main chat bubble.
@@ -524,7 +598,7 @@ export const useChatStore = defineStore("chat", () => {
 
   // ── Actions ──
 
-  /** Fast shallow comparison: same length, same role, same text content. */
+  /** Fast shallow comparison: same length, role, text, and attachment identity. */
   function _messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -532,6 +606,13 @@ export const useChatStore = defineStore("chat", () => {
       const ta = extractText(a[i]);
       const tb = extractText(b[i]);
       if (ta !== tb) return false;
+      const aa = getMessageAttachments(a[i])
+        .map((attachment) => `${attachment.fileName}:${attachment.mimeType}:${attachment.size}`)
+        .join("|");
+      const ab = getMessageAttachments(b[i])
+        .map((attachment) => `${attachment.fileName}:${attachment.mimeType}:${attachment.size}`)
+        .join("|");
+      if (aa !== ab) return false;
     }
     return true;
   }
@@ -622,54 +703,68 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** Send a message to the current session. */
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, attachments: ChatAttachment[] = []): Promise<boolean> {
     const msg = text.trim();
-    if (!msg) return;
-
-    // Privacy protection: scan for PII based on privacy level
-    let finalMsg = msg;
-    const privacySettings = await window.openclaw.settings.get();
-    const privacyLevel = privacySettings?.privacyLevel ?? "balanced";
-    if (privacyLevel !== "basic") {
-      const piiMatches = scanPii(msg);
-      if (privacyLevel === "strict" && piiMatches.length > 0) {
-        // Auto-redact in strict mode
-        finalMsg = redactPii(msg);
-      }
-      // In balanced mode, piiMatches are available for UI warning (future)
-    }
-
-    // Optimistic: add user message locally
-    messages.value = [
-      ...messages.value,
-      { role: "user", content: [{ type: "text", text: finalMsg }], timestamp: Date.now() },
-    ];
-    _updateLastPreview();
+    if ((!msg && attachments.length === 0) || sending.value || streaming.value) return false;
 
     sending.value = true;
     lastError.value = null;
-    streamText.value = "";
-    streamTextOffset.value = 0;
-    _toolPhaseActive.value = false;
-    streamToolCalls.value = [];
-    streamStartedAt.value = Date.now();
-    lastStreamEventAt.value = Date.now();
-    streaming.value = true;
-
+    let optimisticTimestamp: number | undefined;
     try {
+      // Privacy protection: scan for PII based on privacy level
+      let finalMsg = msg;
+      const privacySettings = await window.openclaw.settings.get();
+      const privacyLevel = privacySettings?.privacyLevel ?? "balanced";
+      if (privacyLevel !== "basic") {
+        const piiMatches = scanPii(msg);
+        if (privacyLevel === "strict" && piiMatches.length > 0) {
+          // Auto-redact in strict mode
+          finalMsg = redactPii(msg);
+        }
+        // In balanced mode, piiMatches are available for UI warning (future)
+      }
+
+      // Optimistic: add user message locally
+      optimisticTimestamp = Date.now();
+      const optimisticMessage: ChatMessage = {
+        role: "user",
+        content: finalMsg ? [{ type: "text", text: finalMsg }] : [],
+        timestamp: optimisticTimestamp,
+        attachments: attachments.map((attachment) => ({ ...attachment })),
+      };
+      messages.value = [...messages.value, optimisticMessage];
+      _updateLastPreview();
+
+      streamText.value = "";
+      streamTextOffset.value = 0;
+      _toolPhaseActive.value = false;
+      streamToolCalls.value = [];
+      streamStartedAt.value = Date.now();
+      lastStreamEventAt.value = Date.now();
+      streaming.value = true;
+
       await window.openclaw.chat.sendMessage(
         resolvedSessionKey.value || sessionKey.value,
         finalMsg,
+        attachments.length ? attachments : undefined,
       );
+      return true;
     } catch (err) {
       const error = String(err);
       lastError.value = classifyChatError(error);
       streaming.value = false;
-      sending.value = false;
+      streamStartedAt.value = null;
       lastStreamEventAt.value = null;
-      return;
+      if (optimisticTimestamp !== undefined) {
+        messages.value = messages.value.filter(
+          (message) => message.role !== "user" || message.timestamp !== optimisticTimestamp,
+        );
+        _updateLastPreview();
+      }
+      return false;
+    } finally {
+      sending.value = false;
     }
-    sending.value = false;
   }
 
   /** Handle an incoming chat event from the gateway. */
@@ -1367,6 +1462,7 @@ export const useChatStore = defineStore("chat", () => {
     pendingPrompt,
     extractText,
     extractTextOnly,
+    getMessageAttachments,
     extractThinking,
     extractToolUseBlocks,
     switchSession,

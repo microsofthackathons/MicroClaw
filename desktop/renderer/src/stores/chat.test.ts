@@ -598,6 +598,123 @@ describe("useChatStore — draft sessions", () => {
   });
 });
 
+describe("useChatStore — attachments", () => {
+  const attachment: ChatAttachment = {
+    type: "image",
+    mimeType: "image/png",
+    fileName: "pixel.png",
+    size: 3,
+    content: "AQID",
+  };
+
+  beforeEach(() => {
+    Object.keys(storage).forEach((k) => delete storage[k]);
+    setActivePinia(createPinia());
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+    mockLoadHistory.mockResolvedValue({ messages: [] });
+  });
+
+  it("forwards attachments and adds them to the optimistic user message", async () => {
+    const store = useChatStore();
+    store.sessionKey = "session-attachments";
+
+    await expect(store.sendMessage("describe this", [attachment])).resolves.toBe(true);
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      "session-attachments",
+      "describe this",
+      [attachment],
+    );
+    expect(store.messages.at(-1)).toMatchObject({
+      role: "user",
+      attachments: [attachment],
+    });
+  });
+
+  it("supports an attachment-only message", async () => {
+    const store = useChatStore();
+
+    await expect(store.sendMessage("", [attachment])).resolves.toBe(true);
+
+    expect(mockSendMessage).toHaveBeenCalledWith("main", "", [attachment]);
+    expect(store.messages.at(-1)?.content).toEqual([]);
+  });
+
+  it("removes the optimistic message and reports failure when IPC rejects", async () => {
+    const store = useChatStore();
+    mockSendMessage.mockRejectedValueOnce(new Error("Gateway not connected"));
+
+    await expect(store.sendMessage("retry me", [attachment])).resolves.toBe(false);
+
+    expect(store.messages).toEqual([]);
+    expect(store.lastError?.raw).toContain("Gateway not connected");
+  });
+
+  it("rejects a concurrent send while the first message is in flight", async () => {
+    const store = useChatStore();
+    let resolveSend: (() => void) | undefined;
+    mockSendMessage.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+
+    const firstSend = store.sendMessage("first", [attachment]);
+    await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+
+    await expect(store.sendMessage("second", [attachment])).resolves.toBe(false);
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+
+    resolveSend?.();
+    await expect(firstSend).resolves.toBe(true);
+  });
+
+  it("normalizes gateway-style base64 attachment blocks", () => {
+    const store = useChatStore();
+
+    expect(
+      store.getMessageAttachments({
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "AQID" },
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        type: "image",
+        mimeType: "image/png",
+        fileName: "",
+        size: 0,
+        content: "AQID",
+      },
+    ]);
+  });
+
+  it("normalizes persisted gateway media metadata", () => {
+    const store = useChatStore();
+
+    expect(
+      store.getMessageAttachments({
+        role: "user",
+        content: "see attached",
+        MediaPaths: ["C:\\openclaw\\media\\report.pdf"],
+        MediaTypes: ["application/pdf"],
+      }),
+    ).toEqual([
+      {
+        type: "file",
+        mimeType: "application/pdf",
+        fileName: "report.pdf",
+        size: 0,
+        content: "",
+      },
+    ]);
+  });
+});
+
 describe("useChatStore — session deletion", () => {
   beforeEach(() => {
     Object.keys(storage).forEach((k) => delete storage[k]);

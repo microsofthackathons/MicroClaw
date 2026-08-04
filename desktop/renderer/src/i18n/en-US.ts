@@ -120,6 +120,13 @@ export default {
   "chat.stopGeneration": "Stop Generating",
   "chat.stopTask": "Stop task",
   "chat.addAttachment": "Add attachment",
+  "chat.attachment": "Attachment",
+  "chat.removeAttachment": "Remove {file}",
+  "chat.attachment.fileTooLarge": "{file} exceeds the {limit} per-file attachment limit.",
+  "chat.attachment.totalTooLarge":
+    "{file} would exceed the {limit} total attachment limit for this message.",
+  "chat.attachment.readFailed": "MicroClaw could not read {file}.",
+  "chat.attachment.pickerFailed": "Could not add attachments: {error}",
   "chat.send": "Send",
   "chat.editHint": "Double-click to edit and resend",
   "chat.editConfirm": "Send",
