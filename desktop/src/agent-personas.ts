@@ -33,12 +33,24 @@ const MAIN_IDENTITY_MD = `# IDENTITY.md - Who Am I?
 
 - You are the user's assistant in MicroClaw.
 - The user may choose your personal name; do not claim your name is MicroClaw.
-- Never identify yourself as "OpenClaw" or mention that runtime name in user-facing responses.
+- OpenClaw is an implementation detail of your runtime, not your identity or product name.
+- Never identify yourself as "OpenClaw" or introduce yourself as an OpenClaw assistant.
 - Before receiving a personal name, describe yourself as the user's assistant in MicroClaw.
+`;
+
+export const MAIN_PLATFORM_IDENTITY_SECTION = `## Platform Identity
+
+- You are the user's personal AI assistant in MicroClaw.
+- MicroClaw is the product the user is interacting with.
+- OpenClaw is only the underlying agent runtime. It is not your name, identity, or user-facing product.
+- If asked who or what you are, say you are the user's assistant in MicroClaw.
+- Never introduce yourself as OpenClaw or as an assistant "in OpenClaw".
+- You may use a personal name chosen by the user, but do not claim that your personal name is MicroClaw.
 `;
 
 const MAIN_WORKSPACE_FILES: WorkspaceFiles = {
   "IDENTITY.md": MAIN_IDENTITY_MD,
+  "SOUL.md": MAIN_PLATFORM_IDENTITY_SECTION,
 };
 
 const MASTER_ARCHIVE_SOUL_MD = `# SOUL.md - Master Archive
@@ -489,37 +501,56 @@ export function seedAgentPersonaWorkspace(
   for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
     const filePath = path.join(workspaceDir, filename);
     if (fs.existsSync(filePath)) {
+      let existing = fs.readFileSync(filePath, "utf-8");
       if (
         persona.id === "main" &&
         filename === "IDENTITY.md" &&
-        isUnconfiguredIdentity(fs.readFileSync(filePath, "utf-8"))
+        isUnconfiguredIdentity(existing)
       ) {
         fs.writeFileSync(filePath, `${source.trimEnd()}\n`, "utf-8");
         updatedFiles.push(filePath);
         continue;
       }
-      if (filename === "SOUL.md" && soulAppendix) {
-        const existing = fs.readFileSync(filePath, "utf-8");
-        const appendixMarker =
-          soulAppendix.split(/\r?\n/).find((line) => line.startsWith("## ")) ??
-          soulAppendix.trim();
-        if (appendixMarker && !existing.includes(appendixMarker)) {
-          fs.appendFileSync(filePath, `\n${soulAppendix.trim()}\n`, "utf-8");
+
+      if (filename === "SOUL.md") {
+        const sections: string[] = [];
+        if (
+          persona.id === "main" &&
+          !existing.includes(markdownSectionMarker(MAIN_PLATFORM_IDENTITY_SECTION))
+        ) {
+          sections.push(source.trim());
+          existing += `\n${source.trim()}\n`;
+        }
+        const appendixMarker = markdownSectionMarker(soulAppendix);
+        if (soulAppendix.trim() && appendixMarker && !existing.includes(appendixMarker)) {
+          sections.push(soulAppendix.trim());
+        }
+        if (sections.length > 0) {
+          fs.appendFileSync(filePath, `\n${sections.join("\n\n")}\n`, "utf-8");
           updatedFiles.push(filePath);
         }
       }
       continue;
     }
 
-    const content =
-      filename === "SOUL.md" && soulAppendix
-        ? `${source.trimEnd()}\n\n${soulAppendix.trim()}\n`
-        : `${source.trimEnd()}\n`;
+    const appendixMarker = markdownSectionMarker(soulAppendix);
+    const shouldAppendSoulSection =
+      filename === "SOUL.md" &&
+      soulAppendix.trim() &&
+      appendixMarker &&
+      !source.includes(appendixMarker);
+    const content = shouldAppendSoulSection
+      ? `${source.trimEnd()}\n\n${soulAppendix.trim()}\n`
+      : `${source.trimEnd()}\n`;
     fs.writeFileSync(filePath, content, "utf-8");
     updatedFiles.push(filePath);
   }
 
   return updatedFiles;
+}
+
+function markdownSectionMarker(contents: string): string {
+  return contents.split(/\r?\n/).find((line) => line.startsWith("## ")) ?? contents.trim();
 }
 
 function isUnconfiguredIdentity(contents: string): boolean {
