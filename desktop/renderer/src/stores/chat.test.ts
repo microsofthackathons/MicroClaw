@@ -942,6 +942,42 @@ describe("useChatStore — privacy", () => {
 
     expect(mockSendMessage).toHaveBeenCalledWith("main", "phone 138****5678", undefined);
   });
+
+  it("honors disabled Strict categories while redacting enabled ones", async () => {
+    mockGetSettings.mockResolvedValueOnce({
+      privacyLevel: "strict",
+      privacyControls: {
+        phone: false,
+        idCard: true,
+        bankCard: true,
+        email: true,
+        apiKey: true,
+        fileAccessAudit: false,
+      },
+    });
+    const store = useChatStore();
+
+    await store.sendMessage("phone 13812345678 email alice@example.com");
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      "main",
+      "phone 13812345678 email al***@example.com",
+      undefined,
+    );
+  });
+
+  it("defaults missing legacy Strict controls to enabled", async () => {
+    mockGetSettings.mockResolvedValueOnce({ privacyLevel: "strict", privacyControls: {} });
+    const store = useChatStore();
+
+    await store.sendMessage("phone 13812345678 email alice@example.com");
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      "main",
+      "phone 138****5678 email al***@example.com",
+      undefined,
+    );
+  });
 });
 
 describe("useChatStore — session deletion", () => {

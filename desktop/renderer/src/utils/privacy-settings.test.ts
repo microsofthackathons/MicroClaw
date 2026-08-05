@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hydratePrivacyControls } from "./privacy-settings";
+import { hydratePrivacyControls, privacyControlsToScanOptions } from "./privacy-settings";
 
 describe("hydratePrivacyControls", () => {
   it("defaults every control off for Basic", () => {
@@ -43,5 +43,24 @@ describe("hydratePrivacyControls", () => {
 
   it("forces controls off when hydrating Basic", () => {
     expect(hydratePrivacyControls("basic", { phone: true })).toMatchObject({ phone: false });
+  });
+
+  it("maps every PII control to typed scanner options", () => {
+    expect(
+      privacyControlsToScanOptions({
+        phone: false,
+        idCard: true,
+        bankCard: false,
+        email: true,
+        apiKey: false,
+        fileAccessAudit: true,
+      }),
+    ).toEqual({
+      phone: false,
+      idCard: true,
+      bankCard: false,
+      email: true,
+      apiKey: false,
+    });
   });
 });

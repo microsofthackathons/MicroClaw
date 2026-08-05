@@ -1,7 +1,8 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { useSessionStore } from "./sessions";
-import { scanPii, redactPii } from "@/utils/pii-scanner";
+import { redactPii } from "@/utils/pii-scanner";
+import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -842,8 +843,9 @@ export const useChatStore = defineStore("chat", () => {
       let finalMsg = msg;
       const privacySettings = await window.openclaw.settings.get();
       const privacyLevel = privacySettings?.privacyLevel ?? "basic";
-      if (privacyLevel === "strict" && scanPii(msg).length > 0) {
-        finalMsg = redactPii(msg);
+      if (privacyLevel === "strict") {
+        const controls = hydratePrivacyControls("strict", privacySettings.privacyControls);
+        finalMsg = redactPii(msg, privacyControlsToScanOptions(controls));
       }
 
       // Optimistic: add user message locally

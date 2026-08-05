@@ -24,3 +24,14 @@ export function hydratePrivacyControls(
     fileAccessAudit: persisted?.fileAccessAudit ?? defaultEnabled,
   };
 }
+
+export function privacyControlsToScanOptions(controls: PrivacyControls): ScanOptions {
+  return {
+    phone: controls.phone,
+    idCard: controls.idCard,
+    bankCard: controls.bankCard,
+    email: controls.email,
+    apiKey: controls.apiKey,
+  };
+}
+import type { ScanOptions } from "./pii-scanner";
