@@ -1374,25 +1374,20 @@ watch(
   },
 );
 
+function applyPrivacyLevelState(level: "basic" | "strict") {
+  const enabled = level === "strict";
+  piiToggles.phone = enabled;
+  piiToggles.idCard = enabled;
+  piiToggles.bankCard = enabled;
+  piiToggles.email = enabled;
+  piiToggles.apiKey = enabled;
+  settings.fileAccessAudit = enabled;
+}
+
 function setPrivacyLevel(level: "basic" | "strict") {
   settings.privacyLevel = level;
-  window.openclaw.settings.set("privacyLevel", level);
-  // Auto-configure PII toggles based on level
-  if (level === "basic") {
-    piiToggles.phone = false;
-    piiToggles.idCard = false;
-    piiToggles.bankCard = false;
-    piiToggles.email = false;
-    piiToggles.apiKey = false;
-    settings.fileAccessAudit = false;
-  } else {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  }
+  applyPrivacyLevelState(level);
+  void window.openclaw.settings.set("privacyLevel", level);
 }
 
 // --- Auto-load data when tab is selected ---
@@ -1524,17 +1519,9 @@ onMounted(async () => {
     settings.themeMode = saved.themeMode ?? "light";
     const savedPrivacyLevel: string | undefined = saved.privacyLevel;
     settings.privacyLevel = savedPrivacyLevel === "strict" ? "strict" : "basic";
+    applyPrivacyLevelState(settings.privacyLevel);
     if (savedPrivacyLevel === "balanced") {
       await window.openclaw.settings.set("privacyLevel", "basic");
-    }
-    // Init PII toggles based on loaded privacy level
-    if (settings.privacyLevel === "basic") {
-      piiToggles.phone = false;
-      piiToggles.idCard = false;
-      piiToggles.bankCard = false;
-      piiToggles.email = false;
-      piiToggles.apiKey = false;
-      settings.fileAccessAudit = false;
     }
   }
 
