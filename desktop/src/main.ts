@@ -181,6 +181,15 @@ const settingsStore = new Store<{
   sandboxGrantHistory: string[];
   /** Privacy protection level. */
   privacyLevel: "basic" | "strict";
+  /** Per-control privacy preferences. Missing fields use mode-specific defaults. */
+  privacyControls?: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+    fileAccessAudit: boolean;
+  };
 }>({
   name: "settings",
   defaults: {

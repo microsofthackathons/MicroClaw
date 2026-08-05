@@ -23,6 +23,14 @@ interface AppSettings {
   themeMode: string;
   accentColor: string;
   privacyLevel: "basic" | "strict";
+  privacyControls?: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+    fileAccessAudit: boolean;
+  };
 }
 
 interface ChatAttachment {

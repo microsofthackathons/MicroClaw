@@ -687,26 +687,43 @@
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
-            <el-switch v-model="piiToggles.phone" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.phone"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiIdCard") }}</span>
-            <el-switch v-model="piiToggles.idCard" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.idCard"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiBankCard") }}</span>
             <el-switch
               v-model="piiToggles.bankCard"
               :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
             />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiEmail") }}</span>
-            <el-switch v-model="piiToggles.email" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.email"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.piiApiKey") }}</span>
-            <el-switch v-model="piiToggles.apiKey" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.apiKey"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
         </div>
         <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
@@ -739,6 +756,7 @@
             <el-switch
               v-model="settings.fileAccessAudit"
               :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
             />
           </div>
         </div>
@@ -835,6 +853,11 @@ import {
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
 import { getManagedModelProvider } from "@/utils/managed-model-providers";
+import {
+  hydratePrivacyControls,
+  type PrivacyControls,
+  type PrivacyLevel,
+} from "@/utils/privacy-settings";
 
 const route = useRoute();
 const gateway = useGatewayStore();
@@ -1134,7 +1157,7 @@ const settings = reactive({
   autoStart: false,
   startMinimized: false,
   themeMode: "light",
-  privacyLevel: "basic" as "basic" | "strict",
+  privacyLevel: "basic" as PrivacyLevel,
   fileAccessAudit: false,
 });
 
@@ -1374,20 +1397,30 @@ watch(
   },
 );
 
-function applyPrivacyLevelState(level: "basic" | "strict") {
-  const enabled = level === "strict";
-  piiToggles.phone = enabled;
-  piiToggles.idCard = enabled;
-  piiToggles.bankCard = enabled;
-  piiToggles.email = enabled;
-  piiToggles.apiKey = enabled;
-  settings.fileAccessAudit = enabled;
+function currentPrivacyControls(): PrivacyControls {
+  return {
+    ...piiToggles,
+    fileAccessAudit: settings.fileAccessAudit,
+  };
 }
 
-function setPrivacyLevel(level: "basic" | "strict") {
+function applyPrivacyControls(controls: PrivacyControls) {
+  piiToggles.phone = controls.phone;
+  piiToggles.idCard = controls.idCard;
+  piiToggles.bankCard = controls.bankCard;
+  piiToggles.email = controls.email;
+  piiToggles.apiKey = controls.apiKey;
+  settings.fileAccessAudit = controls.fileAccessAudit;
+}
+
+function persistPrivacyControls() {
+  return window.openclaw.settings.set("privacyControls", currentPrivacyControls());
+}
+
+function setPrivacyLevel(level: PrivacyLevel) {
   settings.privacyLevel = level;
-  applyPrivacyLevelState(level);
-  void window.openclaw.settings.set("privacyLevel", level);
+  applyPrivacyControls(hydratePrivacyControls(level));
+  void Promise.all([window.openclaw.settings.set("privacyLevel", level), persistPrivacyControls()]);
 }
 
 // --- Auto-load data when tab is selected ---
@@ -1519,7 +1552,8 @@ onMounted(async () => {
     settings.themeMode = saved.themeMode ?? "light";
     const savedPrivacyLevel: string | undefined = saved.privacyLevel;
     settings.privacyLevel = savedPrivacyLevel === "strict" ? "strict" : "basic";
-    applyPrivacyLevelState(settings.privacyLevel);
+    applyPrivacyControls(hydratePrivacyControls(settings.privacyLevel, saved.privacyControls));
+    await persistPrivacyControls();
     if (savedPrivacyLevel === "balanced") {
       await window.openclaw.settings.set("privacyLevel", "basic");
     }
