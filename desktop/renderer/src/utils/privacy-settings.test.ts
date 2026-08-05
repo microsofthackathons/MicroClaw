@@ -9,7 +9,6 @@ describe("hydratePrivacyControls", () => {
       bankCard: false,
       email: false,
       apiKey: false,
-      fileAccessAudit: false,
     });
   });
 
@@ -20,7 +19,6 @@ describe("hydratePrivacyControls", () => {
       bankCard: true,
       email: true,
       apiKey: true,
-      fileAccessAudit: true,
     });
   });
 
@@ -29,7 +27,6 @@ describe("hydratePrivacyControls", () => {
       hydratePrivacyControls("strict", {
         phone: false,
         email: false,
-        fileAccessAudit: false,
       }),
     ).toEqual({
       phone: false,
@@ -37,7 +34,6 @@ describe("hydratePrivacyControls", () => {
       bankCard: true,
       email: false,
       apiKey: true,
-      fileAccessAudit: false,
     });
   });
 
@@ -53,7 +49,6 @@ describe("hydratePrivacyControls", () => {
         bankCard: false,
         email: true,
         apiKey: false,
-        fileAccessAudit: true,
       }),
     ).toEqual({
       phone: false,

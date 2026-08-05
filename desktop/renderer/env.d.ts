@@ -29,7 +29,6 @@ interface AppSettings {
     bankCard: boolean;
     email: boolean;
     apiKey: boolean;
-    fileAccessAudit: boolean;
   };
 }
 

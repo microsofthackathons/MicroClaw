@@ -952,7 +952,6 @@ describe("useChatStore — privacy", () => {
         bankCard: true,
         email: true,
         apiKey: true,
-        fileAccessAudit: false,
       },
     });
     const store = useChatStore();

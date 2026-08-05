@@ -748,20 +748,6 @@
         </div>
         <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
 
-        <!-- File Access Audit -->
-        <div class="sub-label">{{ t("settings.fileAccessAudit") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
-            <el-switch
-              v-model="settings.fileAccessAudit"
-              :disabled="settings.privacyLevel === 'basic'"
-              @change="persistPrivacyControls"
-            />
-          </div>
-        </div>
-        <div class="section-footer">{{ t("settings.fileAccessAuditDesc") }}</div>
-
         <!-- Chat History (existing) -->
         <div class="sub-label">{{ t("settings.chatHistory") }}</div>
         <div class="card-group">
@@ -1158,7 +1144,6 @@ const settings = reactive({
   startMinimized: false,
   themeMode: "light",
   privacyLevel: "basic" as PrivacyLevel,
-  fileAccessAudit: false,
 });
 
 const piiToggles = reactive({
@@ -1398,10 +1383,7 @@ watch(
 );
 
 function currentPrivacyControls(): PrivacyControls {
-  return {
-    ...piiToggles,
-    fileAccessAudit: settings.fileAccessAudit,
-  };
+  return { ...piiToggles };
 }
 
 function applyPrivacyControls(controls: PrivacyControls) {
@@ -1410,7 +1392,6 @@ function applyPrivacyControls(controls: PrivacyControls) {
   piiToggles.bankCard = controls.bankCard;
   piiToggles.email = controls.email;
   piiToggles.apiKey = controls.apiKey;
-  settings.fileAccessAudit = controls.fileAccessAudit;
 }
 
 function persistPrivacyControls() {

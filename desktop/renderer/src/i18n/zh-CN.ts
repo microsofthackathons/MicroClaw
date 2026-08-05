@@ -267,9 +267,6 @@ export default {
   "settings.sensitiveFiles": "敏感文件守卫",
   "settings.sensitiveFilesDesc": "Agent 读取匹配以下模式的文件前，需要用户确认。",
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
-  "settings.fileAccessAudit": "文件访问审计",
-  "settings.fileAccessAuditDesc":
-    "记录 Agent 在对话中读取的所有文件。审计日志保存在工作区数据目录中。",
   "settings.security": "安全沙箱",
   "settings.sandboxEnabled": "启用工具沙箱 (AppContainer)",
   "settings.externalApps": "免沙箱应用白名单",

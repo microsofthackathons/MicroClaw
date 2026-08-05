@@ -6,7 +6,6 @@ export interface PrivacyControls {
   bankCard: boolean;
   email: boolean;
   apiKey: boolean;
-  fileAccessAudit: boolean;
 }
 
 export function hydratePrivacyControls(
@@ -21,7 +20,6 @@ export function hydratePrivacyControls(
     bankCard: persisted?.bankCard ?? defaultEnabled,
     email: persisted?.email ?? defaultEnabled,
     apiKey: persisted?.apiKey ?? defaultEnabled,
-    fileAccessAudit: persisted?.fileAccessAudit ?? defaultEnabled,
   };
 }
 

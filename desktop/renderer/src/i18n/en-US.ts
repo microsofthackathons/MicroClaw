@@ -284,9 +284,6 @@ export default {
   "settings.sensitiveFilesDesc":
     "Ask for confirmation before the agent reads files that match these patterns.",
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
-  "settings.fileAccessAudit": "File Access Audit",
-  "settings.fileAccessAuditDesc":
-    "Log every file the agent reads during conversations. Audit logs are saved in the workspace data directory.",
   "settings.security": "Security Sandbox",
   "settings.sandboxEnabled": "Enable tool sandbox (AppContainer)",
   "settings.externalApps": "Sandbox bypass whitelist",

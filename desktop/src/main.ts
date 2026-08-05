@@ -188,7 +188,6 @@ const settingsStore = new Store<{
     bankCard: boolean;
     email: boolean;
     apiKey: boolean;
-    fileAccessAudit: boolean;
   };
 }>({
   name: "settings",
