@@ -349,24 +349,12 @@
           </template>
         </el-dialog>
 
-        <!-- Gateway URL -->
-        <div class="sub-label-row" style="margin-top: 40px">
-          <div style="display: flex; align-items: center; gap: 8px">
-            <span class="sub-label" style="margin-top: 0; margin-bottom: 0">{{
-              t("settings.gatewayUrl")
-            }}</span>
-            <span class="badge" :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'">
-              {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-            </span>
-          </div>
-          <div style="display: flex; gap: 8px">
-            <el-button size="small" @click="reconnectGateway">{{
-              t("settings.reconnect")
-            }}</el-button>
-            <el-button size="small" type="danger" @click="resetConnection">{{
-              t("settings.resetConnection")
-            }}</el-button>
-          </div>
+        <!-- Gateway -->
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 40px">
+          <span class="sub-label" style="margin-top: 0; margin-bottom: 0">{{ t("settings.gateway") }}</span>
+          <span class="badge" :class="gatewayStatusIsRunning ? 'badge-green' : 'badge-red'">
+            {{ gatewayStatusText }}
+          </span>
         </div>
 
         <!-- Port -->
@@ -386,6 +374,17 @@
               />
             </div>
           </div>
+        </div>
+
+        <!-- Gateway Actions -->
+        <div style="display: flex; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; margin-top: 12px">
+          <el-button size="small" @click="downloadGatewayLogs">{{
+            t("settings.downloadGatewayLogs")
+          }}</el-button>
+          <el-button size="small" @click="reconnectGateway">{{ t("settings.reconnect") }}</el-button>
+          <el-button size="small" type="danger" @click="resetConnection">{{
+            t("settings.resetConnection")
+          }}</el-button>
         </div>
 
         <!-- Web Search (Brave) -->
@@ -423,22 +422,6 @@
                 :loading="braveApiKeySaving"
                 >{{ t("settings.save") }}</el-button
               >
-            </div>
-          </div>
-        </div>
-
-        <!-- Gateway Logs -->
-        <div class="sub-label-row" style="margin-top: 24px">
-          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.gatewayLog") }}</span>
-          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
-        </div>
-        <div class="gateway-log-box">
-          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
-            {{ t("settings.noLogs") }}
-          </div>
-          <div v-else class="gateway-log-content" ref="logBoxRef">
-            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
-              {{ line }}
             </div>
           </div>
         </div>
@@ -1055,6 +1038,22 @@ import type { Locale } from "@/i18n";
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const hasGatewayBridge = computed(
+  () => typeof (window as any).openclaw?.gateway?.restart === "function",
+);
+const useGatewayMockPreview = computed(() => {
+  if (!import.meta.env.DEV) return false;
+  if (!hasGatewayBridge.value) return true;
+  return gateway.status === "stopped" && gateway.logs.length === 0 && gateway.port === 0;
+});
+
+const gatewayMockLogs = [
+  "[info] 2026-08-05 09:15:02 Gateway starting on ws://127.0.0.1:18789",
+  "[info] 2026-08-05 09:15:03 Loaded provider: github-copilot",
+  "[warn] 2026-08-05 09:15:04 Web search key missing (Brave). Search tool disabled.",
+  "[info] 2026-08-05 09:15:05 WebSocket server ready, waiting for renderer",
+  "[info] 2026-08-05 09:15:06 Renderer connected (session: main)",
+];
 
 const logBoxRef = ref<HTMLElement | null>(null);
 
@@ -1067,6 +1066,18 @@ watch(
       }
     });
   },
+);
+
+const gatewayLogLines = computed(() =>
+  gateway.logs.length > 0 ? gateway.logs : useGatewayMockPreview.value ? gatewayMockLogs : [],
+);
+
+const gatewayStatusIsRunning = computed(() =>
+  useGatewayMockPreview.value ? true : gateway.status === "running",
+);
+
+const gatewayStatusText = computed(() =>
+  gatewayStatusIsRunning.value ? t("settings.connected") : gateway.status,
 );
 
 const activeSection = ref("general");
@@ -1775,6 +1786,9 @@ watch(activeSection, (v) => {
 });
 
 onMounted(async () => {
+  if (useGatewayMockPreview.value) {
+    gatewayPort.value = "18789";
+  }
   stateDir.value = await window.openclaw.config.getStateDir();
 
   // Load persisted app settings
@@ -2212,6 +2226,32 @@ async function saveGatewayPort() {
   } catch (err: any) {
     ElMessage.error(t("settings.portUpdateFailed", { error: err.message }));
   }
+}
+
+function downloadGatewayLogs() {
+  const now = new Date();
+  const timestamp = now.toISOString();
+  const lines = gatewayLogLines.value;
+  const header = [
+    `MicroClaw Gateway Diagnostics`,
+    `Generated: ${timestamp}`,
+    `Status: ${gatewayStatusText.value}`,
+    `Port: ${gatewayPort.value}`,
+    `LogLines: ${lines.length}`,
+    "",
+    "--- Gateway Logs ---",
+  ];
+  const content = [...header, ...lines].join("\n");
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `microclaw-gateway-logs-${timestamp.replace(/[:.]/g, "-")}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  ElMessage.success(t("settings.gatewayLogsDownloaded"));
 }
 
 async function clearChatHistory() {
