@@ -14,6 +14,22 @@ describe("compareVersions", () => {
 });
 
 describe("checkForUpdates", () => {
+  it("defers updates to Microsoft Store for packaged Store installs", async () => {
+    let fetched = false;
+    const result = await checkForUpdates({
+      currentVersion: "1.0.0",
+      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      storeManaged: true,
+      fetchJson: async () => {
+        fetched = true;
+        throw new Error("must not fetch");
+      },
+    });
+
+    expect(result).toEqual({ status: "managed-by-store", currentVersion: "1.0.0" });
+    expect(fetched).toBe(false);
+  });
+
   it("returns update-available when the manifest version is newer", async () => {
     const result = await checkForUpdates({
       currentVersion: "1.0.0",

@@ -168,6 +168,9 @@ jobs:
       - name: Run build.ps1
         run: .\build.ps1
 
+      - name: Build unsigned MSIX
+        run: npm run dist:msix --prefix desktop
+
       - name: Verify build artifacts
         run: |
           $expected = @(
@@ -176,8 +179,16 @@ jobs:
             'dist\MicroClawInstaller'
           )
           $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if (-not (Get-ChildItem 'desktop\release\MicroClawDesktop-*-x64.msix')) {
+            $missing += 'desktop\release\MicroClawDesktop-<version>-x64.msix'
+          }
           if ($missing) {
             Write-Host "::error::Missing expected artifacts: $($missing -join ', ')"
             exit 1
           }
           Get-ChildItem dist | Format-Table Name, Length, LastWriteTime
+
+      - name: Validate MSIX contents
+        run: |
+          Get-ChildItem desktop\release\MicroClawDesktop-*-x64.msix |
+            ForEach-Object { .\scripts\windows\validate-msix.ps1 -Path $_.FullName }

@@ -8,6 +8,7 @@
 import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
+import { resolveBundledOpenClawDir } from "./bundled-runtime";
 
 /**
  * Resolve the OpenClaw state directory.
@@ -100,9 +101,9 @@ export function resolveNodePath(): string {
  *  5. Per-user Node at `%LocalAppData%/Programs/nodejs`
  */
 export function resolveOpenClawEntry(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
-    if (fs.existsSync(bundled)) return bundled;
+  const bundledRoot = resolveBundledOpenClawDir();
+  if (bundledRoot) {
+    return path.join(bundledRoot, "node_modules", "openclaw", "openclaw.mjs");
   }
   const home = process.env.USERPROFILE || "";
   const appData = process.env.APPDATA || "";
@@ -167,9 +168,9 @@ export function resolveOpenClawPackageDir(entryPath: string): string {
  * (legacy deployer layout) so callers can still surface a useful path.
  */
 export function resolveBuiltinSkillsDir(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "openclaw", "skills");
-    if (fs.existsSync(bundled)) return bundled;
+  const bundledRoot = resolveBundledOpenClawDir();
+  if (bundledRoot) {
+    return path.join(bundledRoot, "node_modules", "openclaw", "skills");
   }
   const home = process.env.USERPROFILE || "";
   const appData = process.env.APPDATA || "";

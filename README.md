@@ -274,6 +274,38 @@ This script sequentially:
 2. Creates portable zip package (`dist/microclaw-portable.zip`)
 3. Packages the installer exe (PyInstaller → `dist/MicroClawInstaller.exe`)
 
+### MSIX package
+
+The CI and release workflows also build `desktop/release/MicroClawDesktop-<version>-x64.msix`
+with Electron Builder. The package includes the Electron app, the pinned OpenClaw
+runtime, Node.js, and the AppContainer launcher resources. On first launch, the
+read-only bundled runtime archive is expanded under Electron's per-user
+`userData` directory; configuration and other writable state remain in per-user
+application data.
+
+Build and validate it locally on Windows:
+
+```powershell
+npm ci --prefix desktop
+npm run dist:msix --prefix desktop
+$msix = Get-ChildItem .\desktop\release\MicroClawDesktop-*-x64.msix | Select-Object -First 1
+.\scripts\windows\validate-msix.ps1 -Path $msix.FullName
+```
+
+Without configuration, the build uses a non-production `MicroClaw.Test` identity
+for CI validation. Before Partner Center submission, configure
+`MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER`, `MSIX_PUBLISHER_DISPLAY_NAME`, and
+`MSIX_APPLICATION_ID` from the reserved app identity. The publisher must exactly
+match Partner Center (and the subject of any sideloading certificate). Store
+submissions may remain unsigned because Microsoft signs accepted packages;
+sideloaded packages must be signed with a trusted certificate after packaging.
+The Partner Center identity values should be stored as GitHub Actions secrets,
+not committed. Tagged workflows derive the MSIX version from the `vX.Y.Z` tag
+and only attach the MSIX to the GitHub Release when all four production identity
+secrets are configured; validation-identity packages remain Actions artifacts.
+Store/MSIX installs use package-managed updates rather than the EXE
+download-update path.
+
 ### Prerequisites
 
 - Node.js 22+

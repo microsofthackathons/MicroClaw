@@ -324,6 +324,8 @@ export default {
   "settings.updateAvailableToast": "发现新的 MicroClaw 版本。",
   "settings.updateUpToDate": "MicroClaw 已是最新版本",
   "settings.updateUpToDateDetail": "你当前正在使用版本 {version}。",
+  "settings.updateManagedByStore": "更新由 Microsoft Store 管理",
+  "settings.updateManagedByStoreDetail": "Microsoft Store 将下载并安装此版本的 MicroClaw 更新。",
   "settings.updateCheckFailed": "无法检查更新",
   "settings.downloadUpdate": "下载更新",
   "settings.gatewayLog": "网关日志",

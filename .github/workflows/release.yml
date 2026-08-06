@@ -66,6 +66,7 @@ jobs:
       AZURE_TENANT_ID: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_TENANT_ID || '' }}
       AZURE_CLIENT_ID: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_CLIENT_ID || '' }}
       AZURE_CLIENT_SECRET: ${{ (github.event_name != 'workflow_dispatch' || inputs.sign) && secrets.AZURE_CLIENT_SECRET || '' }}
+      MSIX_PRODUCTION_IDENTITY_CONFIGURED: ${{ secrets.MSIX_IDENTITY_NAME != '' && secrets.MSIX_PUBLISHER != '' && secrets.MSIX_PUBLISHER_DISPLAY_NAME != '' && secrets.MSIX_APPLICATION_ID != '' }}
 
     steps:
       - name: Checkout repository
@@ -125,6 +126,15 @@ jobs:
       - name: Run build.ps1 (builds + signs MicroClawSetup.exe)
         run: .\build.ps1
 
+      - name: Build unsigned MSIX
+        env:
+          MSIX_IDENTITY_NAME: ${{ secrets.MSIX_IDENTITY_NAME || 'MicroClaw.Test' }}
+          MSIX_PUBLISHER: ${{ secrets.MSIX_PUBLISHER || 'CN=MicroClaw Test' }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.MSIX_PUBLISHER_DISPLAY_NAME || 'MicroClaw' }}
+          MSIX_APPLICATION_ID: ${{ secrets.MSIX_APPLICATION_ID || 'MicroClaw' }}
+          MSIX_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '1.0.0' }}
+        run: npm run dist:msix --prefix desktop
+
       - name: Verify build artifacts
         run: |
           $ErrorActionPreference = 'Stop'
@@ -134,11 +144,19 @@ jobs:
             'dist\MicroClawSetup.exe'
           )
           $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if (-not (Get-ChildItem 'desktop\release\MicroClawDesktop-*-x64.msix')) {
+            $missing += 'desktop\release\MicroClawDesktop-<version>-x64.msix'
+          }
           if ($missing) {
             Write-Host "::error::Missing expected artifacts: $($missing -join ', ')"
             exit 1
           }
           Get-ChildItem dist | Format-Table Name, Length, LastWriteTime
+
+      - name: Validate MSIX contents
+        run: |
+          Get-ChildItem desktop\release\MicroClawDesktop-*-x64.msix |
+            ForEach-Object { .\scripts\windows\validate-msix.ps1 -Path $_.FullName }
 
       # Confirm the single-exe installer is Authenticode-signed. When signing
       # secrets are configured this must be Valid; otherwise we surface a clear
@@ -169,6 +187,13 @@ jobs:
           path: dist\MicroClawSetup.exe
           if-no-files-found: error
 
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MicroClawDesktop-MSIX
+          path: desktop\release\MicroClawDesktop-*-x64.msix
+          if-no-files-found: error
+
       # Publish a GitHub Release with the signed exe when built from a tag.
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -177,3 +202,10 @@ jobs:
           files: dist\MicroClawSetup.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      - name: Publish production-identity MSIX
+        if: startsWith(github.ref, 'refs/tags/v') && env.MSIX_PRODUCTION_IDENTITY_CONFIGURED == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop\release\MicroClawDesktop-*-x64.msix
+          fail_on_unmatched_files: true
