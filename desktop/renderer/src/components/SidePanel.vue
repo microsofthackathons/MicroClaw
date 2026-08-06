@@ -120,7 +120,7 @@
             v-for="s in allSessions"
             :key="s.key"
             class="sp-chat-item"
-            :class="{ selected: chatStore.sessionKey === s.key }"
+            :class="{ selected: route.name === 'chat' && chatStore.sessionKey === s.key }"
             @click="selectSession(s.key)"
           >
             <span class="sp-chat-item-title">{{ s.title }}</span>
