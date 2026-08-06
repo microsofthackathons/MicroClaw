@@ -904,6 +904,7 @@ class DeployerApp(tk.Tk):
             (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(ws)),
             (65, "Writing API keys...", lambda: self._write_env_file()),
             (70, "Writing OpenClaw configuration...", ws.write_config),
+            (80, "Installing web search provider...", ws.install_search_provider_plugin),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin),
             (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade),

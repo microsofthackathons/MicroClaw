@@ -322,6 +322,7 @@ export default {
   "settings.noLogs": "暂无日志",
   "settings.clear": "清空",
   "settings.webSearchDesc": "MicroClaw 使用已配置的提供商进行联网搜索。保存后网关将自动重启生效。",
+  "settings.noApiKeyRequired": "无需 API 密钥",
   "settings.getApiKey": "获取 API 密钥",
   "settings.save": "保存",
   "settings.configSaveFailed": "配置保存失败: {error}",

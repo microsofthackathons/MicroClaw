@@ -151,6 +151,22 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
         self.assertEqual(uninstaller_step[3], 1)
 
+    def test_both_installers_install_web_search_provider_after_configuration(self):
+        setup = unittest.mock.Mock()
+        app = object.__new__(DeployerApp)
+        app._prepare_upgrade = unittest.mock.Mock()
+        app._ensure_node = unittest.mock.Mock()
+        app._ensure_openclaw = unittest.mock.Mock()
+        app._copy_bundled_assets = unittest.mock.Mock()
+        app._write_env_file = unittest.mock.Mock()
+
+        for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
+            labels = self._step_labels(steps)
+            search_index = labels.index("Installing web search provider...")
+            self.assertGreater(search_index, labels.index("Writing OpenClaw configuration..."))
+            self.assertLess(search_index, labels.index("Validating OpenClaw upgrade..."))
+            self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
+
 
 if __name__ == "__main__":
     unittest.main()

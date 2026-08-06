@@ -286,7 +286,7 @@
               <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
           </div>
-          <div class="card-row no-border api-key-row">
+          <div v-if="activeSearchProvider.requiresKey" class="card-row no-border api-key-row">
             <span class="row-label">{{ t("settings.apiKey") }}</span>
             <a
               href="#"
@@ -301,6 +301,10 @@
               :placeholder="activeSearchProvider.placeholder"
               class="provider-key-input"
             />
+          </div>
+          <div v-else class="card-row no-border">
+            <span class="row-label">{{ t("settings.apiKey") }}</span>
+            <span class="placeholder-text">{{ t("settings.noApiKeyRequired") }}</span>
           </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
@@ -1239,26 +1243,54 @@ const currentProviderName = computed(() => {
 });
 
 // --- Web search providers ---
-type SearchProviderId = "brave" | "tavily";
+type SearchProviderId = "parallel-free" | "brave" | "tavily";
 const searchProviders: {
   id: SearchProviderId;
   name: string;
   placeholder: string;
   link: string;
+  requiresKey: boolean;
 }[] = [
-  { id: "brave", name: "Brave", placeholder: "BSA...", link: "https://brave.com/search/api/" },
-  { id: "tavily", name: "Tavily", placeholder: "tvly-...", link: "https://tavily.com/" },
+  {
+    id: "parallel-free",
+    name: "Parallel",
+    placeholder: "",
+    link: "https://parallel.ai/",
+    requiresKey: false,
+  },
+  {
+    id: "brave",
+    name: "Brave",
+    placeholder: "BSA...",
+    link: "https://brave.com/search/api/",
+    requiresKey: true,
+  },
+  {
+    id: "tavily",
+    name: "Tavily",
+    placeholder: "tvly-...",
+    link: "https://tavily.com/",
+    requiresKey: true,
+  },
 ];
-const searchProvider = ref<SearchProviderId>("brave");
-const searchKeys = reactive<Record<SearchProviderId, string>>({ brave: "", tavily: "" });
+const searchProvider = ref<SearchProviderId>("parallel-free");
+const searchKeys = reactive<Record<SearchProviderId, string>>({
+  "parallel-free": "",
+  brave: "",
+  tavily: "",
+});
 // The provider metadata (placeholder, docs link) for the currently selected provider.
 const activeSearchProvider = computed(
   () => searchProviders.find((p) => p.id === searchProvider.value) ?? searchProviders[0],
 );
 // Snapshot of the last persisted state, used to drive the "Configured" status and the
 // enabled/disabled state of the single Save button.
-const savedSearchProvider = ref<SearchProviderId>("brave");
-const savedSearchKeys = reactive<Record<SearchProviderId, string>>({ brave: "", tavily: "" });
+const savedSearchProvider = ref<SearchProviderId>("parallel-free");
+const savedSearchKeys = reactive<Record<SearchProviderId, string>>({
+  "parallel-free": "",
+  brave: "",
+  tavily: "",
+});
 const searchSavingAll = ref(false);
 const searchDirty = computed(() => {
   if (searchProvider.value !== savedSearchProvider.value) return true;
@@ -1747,7 +1779,7 @@ async function disconnectGitHubCopilot() {
 
 function loadSearchConfig(config: any): void {
   const active = config?.tools?.web?.search;
-  if (active?.provider === "brave" || active?.provider === "tavily") {
+  if (searchProviders.some((provider) => provider.id === active?.provider)) {
     const provider: SearchProviderId = active.provider;
     searchProvider.value = provider;
     if (typeof active.apiKey === "string" && active.apiKey) {
@@ -1773,7 +1805,9 @@ async function persistSearchConfig(): Promise<void> {
   config.tools.web = config.tools.web || {};
   delete config.tools.web.searchProviders;
   const activeKey = searchKeys[searchProvider.value].trim();
-  if (activeKey) {
+  if (!activeSearchProvider.value.requiresKey) {
+    config.tools.web.search = { provider: searchProvider.value };
+  } else if (activeKey) {
     config.tools.web.search = { provider: searchProvider.value, apiKey: activeKey };
   } else {
     delete config.tools.web.search;

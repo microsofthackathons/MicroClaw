@@ -241,6 +241,10 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 
 普通用户在**桌面应用 设置**里完成所有配置即可：模型、Brave API Key、技能白名单等。运行时配置存于 `~/.openclaw/openclaw.json`，如有需要可手动编辑。
 
+全新安装会预装官方 Parallel 联网搜索插件，并默认选择无需 API 密钥的 `parallel-free`
+提供商，因此安装后即可直接使用联网搜索。升级时会保留可用的联网搜索提供商；未配置 API 密钥
+的 Brave 或 Tavily 会自动回退到 Parallel。之后也可在**设置**中修改。
+
 开发者/批量部署可通过 `.env` 预置凭据（`MODEL_BASE_URL` / `MODEL_API_KEY` / `MODEL_NAME` / `MODEL_API_FORMAT` / `MODEL_REASONING_EFFORT` / `BRAVE_API_KEY`），详见 [.env.example](.env.example)。运行 `python deploy.py` 时读仓库根目录的 `.env`；运行打包后的 `MicroClawInstaller.exe` 时读与 exe 同目录的 `.env`。
 
 ## 系统要求

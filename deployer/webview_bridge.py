@@ -388,6 +388,12 @@ class WebInstallerBridge:
             (65, "Writing API keys...", lambda: self._write_env_file(), LOCAL_RETRIES),
             (70, "Writing OpenClaw configuration...", ws.write_config, LOCAL_RETRIES),
             (75, "Warming up V8 compile cache...", ws.warmup_compile_cache, LOCAL_RETRIES),
+            (
+                80,
+                "Installing web search provider...",
+                ws.install_search_provider_plugin,
+                NETWORK_RETRIES,
+            ),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer, LOCAL_RETRIES),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin, NETWORK_RETRIES),
             (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade, LOCAL_RETRIES),
