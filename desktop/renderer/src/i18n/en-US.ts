@@ -353,6 +353,7 @@ export default {
   "settings.clear": "Clear",
   "settings.webSearchDesc":
     "MicroClaw uses the configured provider for web search. The gateway restarts automatically after you save.",
+  "settings.noApiKeyRequired": "No API key required",
   "settings.getApiKey": "Get API key",
   "settings.save": "Save",
   "settings.configSaveFailed": "Failed to save configuration: {error}",

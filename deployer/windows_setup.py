@@ -56,6 +56,10 @@ MIRROR_TENCENT = "tencent"
 MIRROR_HUAWEI = "huawei"
 MIRROR_FALLBACK = MIRROR_NPMMIRROR
 NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
+_PARALLEL_PLUGIN_ID = "parallel"
+_PARALLEL_PLUGIN_PACKAGE = "@openclaw/parallel-plugin"
+_PARALLEL_FREE_PROVIDER = "parallel-free"
+_SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
 
 MIRRORS = {
     MIRROR_OFFICIAL: {
@@ -3034,9 +3038,19 @@ class WindowsSetup:
             if invalid and not providers:
                 existing.pop("models", None)
 
-        # ── Brave Search API ──
+        # ── Web search ──
         brave_api_key = self.cfg.get("brave.api_key", "")
-        if brave_api_key:
+        existing_search = existing.get("tools", {}).get("web", {}).get("search", {})
+        existing_provider = existing_search.get("provider")
+        existing_api_key = existing_search.get("apiKey")
+        existing_search_usable = bool(existing_provider) and (
+            existing_provider not in _SEARCH_PROVIDERS_REQUIRING_KEY
+            or isinstance(existing_api_key, str)
+            and bool(existing_api_key.strip())
+        )
+        if existing_search_usable:
+            self.log.info(f"  Preserving web search provider: {existing_search['provider']}")
+        elif brave_api_key:
             tools = existing.setdefault("tools", {})
             web = tools.setdefault("web", {})
             web["search"] = {
@@ -3044,6 +3058,18 @@ class WindowsSetup:
                 "apiKey": "${BRAVE_API_KEY}",
             }
             self.log.info("  Brave Search API configured")
+        else:
+            if existing_provider:
+                self.log.info(f"  Replacing unusable {existing_provider} web search configuration")
+            tools = existing.setdefault("tools", {})
+            web = tools.setdefault("web", {})
+            web["search"] = {"provider": _PARALLEL_FREE_PROVIDER}
+            plugins = existing.setdefault("plugins", {})
+            entries = plugins.setdefault("entries", {})
+            entries[_PARALLEL_PLUGIN_ID] = {"enabled": True}
+            if isinstance(plugins.get("allow"), list):
+                plugins["allow"] = list(dict.fromkeys([*plugins["allow"], _PARALLEL_PLUGIN_ID]))
+            self.log.info("  Web search: Parallel free tier (no API key required)")
 
         # ── Skill whitelist ──
         # Only applied when skills.enable is true in deployer config.
@@ -3567,6 +3593,57 @@ class WindowsSetup:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+
+    def install_search_provider_plugin(self) -> bool:
+        """Install the keyless Parallel provider selected by a fresh install."""
+        state_dir = Path.home() / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            self.log.error(f"Could not read web search configuration: {error}")
+            return False
+        provider = config.get("tools", {}).get("web", {}).get("search", {}).get("provider")
+        if provider != _PARALLEL_FREE_PROVIDER:
+            self.log.info(
+                f"  Web search provider is {provider or 'not configured'}; no plugin needed"
+            )
+            return True
+
+        cli_context = self._weixin_cli_context(state_dir)
+        if cli_context is None:
+            return False
+        openclaw_cmd, env = cli_context
+        try:
+            inspection = self._run_openclaw_json(
+                ["plugins", "inspect", _PARALLEL_PLUGIN_ID, "--json"]
+            )
+            if isinstance(inspection, dict):
+                self.log.info("  Parallel web search plugin is already installed")
+                return True
+        except RuntimeError:
+            pass
+
+        self.log.step("Installing Parallel web search plugin…")
+        try:
+            result = self._run(
+                openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_PACKAGE],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.log.error(f"Parallel web search plugin install failed: {error}")
+            return False
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            self.log.error(f"Parallel web search plugin install failed: {detail}")
+            return False
+        self.log.success("Parallel-free web search is ready")
+        return True
 
     def install_weixin_plugin(self) -> bool:
         """Reconcile the bundled openclaw-weixin plugin through OpenClaw."""

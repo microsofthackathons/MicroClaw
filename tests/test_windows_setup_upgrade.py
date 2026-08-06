@@ -1438,7 +1438,122 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.write_config())
 
         written = json.loads(config_path.read_text(encoding="utf-8"))
-        self.assertEqual(written["plugins"], plugins)
+        self.assertEqual(
+            written["plugins"]["entries"]["openclaw-weixin"], plugins["entries"]["openclaw-weixin"]
+        )
+        self.assertIn("openclaw-weixin", written["plugins"]["allow"])
+
+    def test_write_config_defaults_fresh_install_to_parallel_free_search(self):
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["tools"]["web"]["search"], {"provider": "parallel-free"})
+        self.assertEqual(written["plugins"]["entries"]["parallel"], {"enabled": True})
+
+    def test_write_config_preserves_existing_web_search_provider(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "tavily", "apiKey": "key"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            written["tools"]["web"]["search"],
+            {"provider": "tavily", "apiKey": "key"},
+        )
+
+    def test_write_config_existing_provider_wins_over_installer_brave_key(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "tavily", "apiKey": "key"}}}}),
+            encoding="utf-8",
+        )
+        self.ws.cfg = _Config({"brave.api_key": "installer-brave-key"})
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            written["tools"]["web"]["search"],
+            {"provider": "tavily", "apiKey": "key"},
+        )
+
+    def test_write_config_replaces_keyless_paid_provider_with_parallel_free(self):
+        for provider in ("brave", "tavily"):
+            with self.subTest(provider=provider):
+                config_path = self.home / ".openclaw" / "openclaw.json"
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(
+                    json.dumps({"tools": {"web": {"search": {"provider": provider}}}}),
+                    encoding="utf-8",
+                )
+                self.ws._deploy_managed_skills = unittest.mock.Mock()
+                self.ws._install_officecli = unittest.mock.Mock()
+                self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+                self.assertTrue(self.ws.write_config())
+
+                written = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    written["tools"]["web"]["search"],
+                    {"provider": "parallel-free"},
+                )
+                self.assertEqual(
+                    written["plugins"]["entries"]["parallel"],
+                    {"enabled": True},
+                )
+
+    def test_install_search_provider_plugin_installs_parallel_package(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "parallel-free"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock(
+            return_value=(["openclaw.cmd"], {"OPENCLAW_STATE_DIR": str(config_path.parent)})
+        )
+        self.ws._run_openclaw_json = unittest.mock.Mock(side_effect=RuntimeError("not installed"))
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="installed", stderr="")
+        )
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._run.assert_called_once()
+        self.assertEqual(
+            self.ws._run.call_args.args[0],
+            ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin"],
+        )
+
+    def test_install_search_provider_plugin_preserves_other_provider(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "tavily", "apiKey": "key"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._weixin_cli_context.assert_not_called()
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"

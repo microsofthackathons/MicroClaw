@@ -357,6 +357,11 @@ See [docs/architecture/repository-layout.md](docs/architecture/repository-layout
 
 Most users can do everything from **Settings** inside the desktop app — models, Brave API key, skill allowlist, etc. Runtime settings live in `~/.openclaw/openclaw.json`; you can hand-edit it if needed.
 
+Fresh installs include the official Parallel web-search plugin and select its keyless
+`parallel-free` provider, so web search works without additional setup. Usable existing web-search
+provider choices are preserved during upgrades; Brave or Tavily without an API key falls back to
+Parallel. The provider can be changed later in **Settings**.
+
 For developers / unattended installs, the installer also accepts a `.env` file (`MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_API_FORMAT`, `MODEL_REASONING_EFFORT`, `BRAVE_API_KEY`) — see [.env.example](.env.example). `python deploy.py` reads `.env` from the repo root; the packaged `MicroClawInstaller.exe` reads `.env` from next to the exe.
 
 ## System Requirements
