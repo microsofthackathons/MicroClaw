@@ -125,12 +125,19 @@ describe("ModelSetupDialog", () => {
 
   it("shows only MicroClaw-managed providers, Copilot, and custom setup", () => {
     const wrapper = mountDialog();
-    expect(wrapper.findAll(".model-family-card").map((card) => card.text())).toEqual([
+    const cards = wrapper.findAll(".model-family-card");
+    expect(cards.map((card) => card.text())).toEqual([
       "千问",
       "MiniMax",
       "GitHub Copilot",
       "Other model",
     ]);
+    expect(cards[2].findAll(".family-icon img")).toHaveLength(1);
+    const copilotLogo = decodeURIComponent(
+      cards[2].find(".family-icon img").attributes("src") ?? "",
+    );
+    expect(copilotLogo).toContain("viewBox='0 0 128 128'");
+    expect(copilotLogo).toContain("fill='black'");
     expect(wrapper.text()).not.toContain("OpenClaw catalog");
   });
 

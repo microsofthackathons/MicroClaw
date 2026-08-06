@@ -307,6 +307,7 @@ import {
   type ManagedModelPreset,
 } from "@/utils/managed-model-providers";
 import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
+import githubCopilotBlack from "@/assets/github-copilot-black.svg";
 
 type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom";
 
@@ -360,6 +361,7 @@ const modelFamilies: ModelFamilyPreset[] = [
     models: [],
     defaultModel: "",
     apiKeyPlaceholder: "sk-...",
+    logo: githubCopilotBlack,
   },
   {
     id: "custom",
