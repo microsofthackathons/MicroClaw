@@ -356,7 +356,11 @@ async function needsModelSetupBeforeSend(): Promise<boolean> {
 async function handleModelConfigured() {
   const text = pendingModelSetupMessage.value;
   const attachments = pendingModelSetupAttachments.value;
-  if ((!text && attachments.length === 0) || !chatStore.wsConnected || submittingMessage.value) {
+  if (
+    (!text && attachments.length === 0) ||
+    !chatStore.wsConnected ||
+    submittingMessage.value
+  ) {
     return;
   }
   submittingMessage.value = true;
