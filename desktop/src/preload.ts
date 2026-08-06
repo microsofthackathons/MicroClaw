@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ChatAttachment, PrepareChatAttachmentsResult } from "./chat-attachments";
+import type {
+  ChatAttachment,
+  ClipboardImageInput,
+  PrepareChatAttachmentsResult,
+} from "./chat-attachments";
 import type { OpenAttachmentRequest } from "./attachment-open";
 
 contextBridge.exposeInMainWorld("openclaw", {
@@ -271,6 +275,11 @@ contextBridge.exposeInMainWorld("openclaw", {
         ok: boolean;
         error?: string;
       }>,
+    importClipboardImages: (images: ClipboardImageInput[], currentTotalBytes = 0) =>
+      ipcRenderer.invoke("attachment:import-clipboard-images", {
+        images,
+        currentTotalBytes,
+      }) as Promise<PrepareChatAttachmentsResult>,
   },
 
   // --- Native dialogs ---

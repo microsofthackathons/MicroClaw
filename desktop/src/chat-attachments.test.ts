@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile } from "fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import {
   inferAttachmentMimeType,
   prepareChatAttachments,
+  prepareClipboardImageAttachments,
   validateChatAttachments,
 } from "./chat-attachments";
 
@@ -56,6 +57,140 @@ describe("prepareChatAttachments", () => {
         content: "aGVsbG8=",
       },
     ]);
+  });
+
+  describe("prepareClipboardImageAttachments", () => {
+    it("uses the managed temp pipeline, preserves MIME extensions, and cleans the batch", async () => {
+      const tempDir = await makeTempDir();
+      const result = await prepareClipboardImageAttachments(
+        [
+          {
+            mimeType: "image/png",
+            fileName: "..\\Screenshot 2026-08-06 142530.jpg",
+            data: Uint8Array.from([1, 2, 3]),
+          },
+        ],
+        tempDir,
+        0,
+        20,
+        20,
+      );
+
+      expect(result).toEqual({
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "Screenshot 2026-08-06 142530.png",
+            size: 3,
+            content: "AQID",
+          },
+        ],
+        rejections: [],
+      });
+      await expect(
+        readdir(path.join(tempDir, "MicroClaw", "attachments", "clipboard")),
+      ).resolves.toEqual([]);
+    });
+
+    it("deduplicates clipboard items and partially rejects files at both limits", async () => {
+      const tempDir = await makeTempDir();
+      const duplicate = {
+        mimeType: "image/png",
+        fileName: "Screenshot.png",
+        data: Uint8Array.from([1, 2, 3]),
+      };
+      const result = await prepareClipboardImageAttachments(
+        [
+          duplicate,
+          { ...duplicate, fileName: "Screenshot copy.png" },
+          {
+            mimeType: "image/jpeg",
+            fileName: "Too large.jpg",
+            data: Uint8Array.from([1, 2, 3, 4, 5, 6]),
+          },
+          {
+            mimeType: "image/gif",
+            fileName: "No room.gif",
+            data: Uint8Array.from([4, 5, 6]),
+          },
+        ],
+        tempDir,
+        5,
+        5,
+        7,
+      );
+
+      expect(result.attachments).toEqual([]);
+      expect(result.rejections).toEqual([
+        { fileName: "Too large.jpg", reason: "file_too_large", size: 6, limit: 5 },
+        { fileName: "Screenshot.png", reason: "total_too_large", size: 3, limit: 7 },
+        { fileName: "No room.gif", reason: "total_too_large", size: 3, limit: 7 },
+      ]);
+    });
+
+    it("uniquifies different clipboard images that have the same display name", async () => {
+      const tempDir = await makeTempDir();
+      const result = await prepareClipboardImageAttachments(
+        [
+          {
+            mimeType: "image/png",
+            fileName: "Screenshot.png",
+            data: Uint8Array.from([1]),
+          },
+          {
+            mimeType: "image/png",
+            fileName: "Screenshot.png",
+            data: Uint8Array.from([2]),
+          },
+        ],
+        tempDir,
+        0,
+        10,
+        10,
+      );
+
+      expect(result.attachments.map((attachment) => attachment.fileName)).toEqual([
+        "Screenshot.png",
+        "Screenshot (2).png",
+      ]);
+    });
+
+    it("applies previously pasted image bytes to a repeated paste aggregate check", async () => {
+      const tempDir = await makeTempDir();
+      const first = await prepareClipboardImageAttachments(
+        [
+          {
+            mimeType: "image/png",
+            fileName: "First.png",
+            data: Uint8Array.from([1, 2, 3]),
+          },
+        ],
+        tempDir,
+        0,
+        5,
+        5,
+      );
+      const second = await prepareClipboardImageAttachments(
+        [
+          {
+            mimeType: "image/png",
+            fileName: "Second.png",
+            data: Uint8Array.from([4, 5, 6]),
+          },
+        ],
+        tempDir,
+        first.attachments[0].size,
+        5,
+        5,
+      );
+
+      expect(first.attachments).toHaveLength(1);
+      expect(second.attachments).toEqual([]);
+      expect(second.rejections).toEqual([
+        { fileName: "Second.png", reason: "total_too_large", size: 3, limit: 5 },
+      ]);
+    });
   });
 
   describe("validateChatAttachments", () => {
@@ -137,11 +272,7 @@ describe("prepareChatAttachments", () => {
     await writeFile(rejectedPath, "12345");
     await writeFile(lastPath, "1234");
 
-    const result = await prepareChatAttachments(
-      [firstPath, rejectedPath, lastPath],
-      10,
-      10,
-    );
+    const result = await prepareChatAttachments([firstPath, rejectedPath, lastPath], 10, 10);
 
     expect(result.attachments.map((item) => item.fileName)).toEqual(["first.txt", "last.txt"]);
     expect(result.rejections).toEqual([

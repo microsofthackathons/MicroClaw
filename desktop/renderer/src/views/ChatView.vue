@@ -39,6 +39,7 @@
           :placeholder="composePlaceholder"
           :rows="isCompact ? 1 : 2"
           @keydown="handleKeydown"
+          @paste="handlePaste"
           @input="autoResize"
           :disabled="!chatStore.wsConnected || submittingMessage"
         ></textarea>
@@ -113,6 +114,12 @@ import {
 } from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
 import { t } from "@/i18n";
+import {
+  clipboardTextToInsert,
+  collectClipboardImageFiles,
+  insertTextAtSelection,
+  serializeClipboardImages,
+} from "@/utils/chat-clipboard";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ChatAttachments from "@/components/chat/ChatAttachments.vue";
 import ChatWelcome from "@/components/ChatWelcome.vue";
@@ -134,8 +141,10 @@ const pendingModelSetupMessage = ref("");
 const pendingModelSetupAttachments = ref<ChatAttachment[]>([]);
 const pendingAttachments = ref<ChatAttachment[]>([]);
 const pickingFiles = ref(false);
+const importingClipboardImages = ref(0);
 const submittingMessage = ref(false);
 let isUserScrolledUp = false;
+let attachmentImportQueue: Promise<void> = Promise.resolve();
 
 function onWindowResize() {
   isCompact.value = window.innerHeight < 700;
@@ -202,6 +211,8 @@ const canSend = computed(
   () =>
     chatStore.wsConnected &&
     !submittingMessage.value &&
+    !pickingFiles.value &&
+    importingClipboardImages.value === 0 &&
     (inputText.value.trim().length > 0 || pendingAttachments.value.length > 0),
 );
 
@@ -316,7 +327,9 @@ async function handleSend() {
   if (
     (!text && pendingAttachments.value.length === 0) ||
     !chatStore.wsConnected ||
-    submittingMessage.value
+    submittingMessage.value ||
+    pickingFiles.value ||
+    importingClipboardImages.value > 0
   ) {
     return;
   }
@@ -356,11 +369,7 @@ async function needsModelSetupBeforeSend(): Promise<boolean> {
 async function handleModelConfigured() {
   const text = pendingModelSetupMessage.value;
   const attachments = pendingModelSetupAttachments.value;
-  if (
-    (!text && attachments.length === 0) ||
-    !chatStore.wsConnected ||
-    submittingMessage.value
-  ) {
+  if ((!text && attachments.length === 0) || !chatStore.wsConnected || submittingMessage.value) {
     return;
   }
   submittingMessage.value = true;
@@ -377,35 +386,90 @@ async function handleAddAttachments() {
   if (!chatStore.wsConnected || pickingFiles.value || submittingMessage.value) return;
   pickingFiles.value = true;
   try {
-    const currentTotalBytes = pendingAttachments.value.reduce(
-      (total, attachment) => total + attachment.size,
-      0,
-    );
-    const result = await window.openclaw.dialog.openFiles(currentTotalBytes);
-    pendingAttachments.value.push(...result.attachments);
-    for (const rejection of result.rejections) {
-      if (rejection.reason === "file_too_large") {
-        ElMessage.error(
-          t("chat.attachment.fileTooLarge", {
-            file: rejection.fileName,
-            limit: formatLimit(rejection.limit),
-          }),
-        );
-      } else if (rejection.reason === "total_too_large") {
-        ElMessage.error(
-          t("chat.attachment.totalTooLarge", {
-            file: rejection.fileName,
-            limit: formatLimit(rejection.limit),
-          }),
-        );
-      } else {
-        ElMessage.error(t("chat.attachment.readFailed", { file: rejection.fileName }));
-      }
-    }
+    await enqueueAttachmentImport(async () => {
+      const result = await window.openclaw.dialog.openFiles(currentAttachmentBytes());
+      applyAttachmentResult(result);
+    });
   } catch (error) {
     ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
   } finally {
     pickingFiles.value = false;
+  }
+}
+
+function handlePaste(event: ClipboardEvent) {
+  const clipboardData = event.clipboardData;
+  if (!clipboardData || !chatStore.wsConnected || submittingMessage.value) return;
+  const files = collectClipboardImageFiles(clipboardData);
+  if (files.length === 0) return;
+
+  event.preventDefault();
+  const pastedText = clipboardTextToInsert(clipboardData);
+  if (pastedText) {
+    const textarea = inputRef.value;
+    const insertion = insertTextAtSelection(
+      inputText.value,
+      textarea?.selectionStart ?? inputText.value.length,
+      textarea?.selectionEnd ?? inputText.value.length,
+      pastedText,
+    );
+    inputText.value = insertion.text;
+    nextTick(() => {
+      inputRef.value?.setSelectionRange(insertion.caret, insertion.caret);
+      autoResize();
+    });
+  }
+
+  importingClipboardImages.value += 1;
+  void enqueueAttachmentImport(async () => {
+    try {
+      const images = await serializeClipboardImages(files);
+      const result = await window.openclaw.attachment.importClipboardImages(
+        images,
+        currentAttachmentBytes(),
+      );
+      applyAttachmentResult(result);
+    } catch (error) {
+      ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+    } finally {
+      importingClipboardImages.value -= 1;
+    }
+  });
+}
+
+function enqueueAttachmentImport<T>(task: () => Promise<T>): Promise<T> {
+  const result = attachmentImportQueue.then(task, task);
+  attachmentImportQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function currentAttachmentBytes(): number {
+  return pendingAttachments.value.reduce((total, attachment) => total + attachment.size, 0);
+}
+
+function applyAttachmentResult(result: OpenFilesResult) {
+  pendingAttachments.value.push(...result.attachments);
+  for (const rejection of result.rejections) {
+    if (rejection.reason === "file_too_large") {
+      ElMessage.error(
+        t("chat.attachment.fileTooLarge", {
+          file: rejection.fileName,
+          limit: formatLimit(rejection.limit),
+        }),
+      );
+    } else if (rejection.reason === "total_too_large") {
+      ElMessage.error(
+        t("chat.attachment.totalTooLarge", {
+          file: rejection.fileName,
+          limit: formatLimit(rejection.limit),
+        }),
+      );
+    } else {
+      ElMessage.error(t("chat.attachment.readFailed", { file: rejection.fileName }));
+    }
   }
 }
 

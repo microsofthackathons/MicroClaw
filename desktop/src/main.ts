@@ -20,7 +20,11 @@ import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
-import { prepareChatAttachments, validateChatAttachments } from "./chat-attachments";
+import {
+  prepareChatAttachments,
+  prepareClipboardImageAttachments,
+  validateChatAttachments,
+} from "./chat-attachments";
 import { prepareAttachmentForOpen } from "./attachment-open";
 import {
   recoverInterruptedOpenClawUpgrade,
@@ -1063,13 +1067,7 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "adaptive";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -1423,9 +1421,7 @@ async function addCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent addition ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent addition ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -1485,9 +1481,7 @@ async function removeCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent removal ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -3670,24 +3664,30 @@ function registerIpcHandlers(): void {
     });
     if (result.canceled) return { attachments: [], rejections: [] };
     const currentTotalBytes =
-      typeof params?.currentTotalBytes === "number" &&
-      Number.isFinite(params.currentTotalBytes)
+      typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
         ? Math.max(0, params.currentTotalBytes)
         : 0;
-    return prepareChatAttachments(
-      result.filePaths,
-      undefined,
-      undefined,
-      currentTotalBytes,
-    );
+    return prepareChatAttachments(result.filePaths, undefined, undefined, currentTotalBytes);
   });
 
   ipcMain.handle(
+    "attachment:import-clipboard-images",
+    async (_event, params?: { images?: unknown; currentTotalBytes?: number }) => {
+      const currentTotalBytes =
+        typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
+          ? Math.max(0, params.currentTotalBytes)
+          : 0;
+      return prepareClipboardImageAttachments(
+        params?.images,
+        app.getPath("temp"),
+        currentTotalBytes,
+      );
+    },
+  );
+
+  ipcMain.handle(
     "chat:send-message",
-    async (
-      _event,
-      params: { sessionKey: string; message: string; attachments?: unknown },
-    ) => {
+    async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
@@ -4163,9 +4163,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:status", () => {
     const client = gwClient;
-    const queryGateway = client?.connected
-      ? () => client.request("models.authStatus")
-      : undefined;
+    const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
@@ -4461,8 +4459,7 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      | { width?: number; height?: number; x?: number; y?: number }
-      | undefined;
+      { width?: number; height?: number; x?: number; y?: number } | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);
