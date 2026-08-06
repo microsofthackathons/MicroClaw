@@ -39,6 +39,6 @@
     "@electron/asar": "^3.4.1",
     "electron-store": "^8.2.0",
     "node-addon-api": "^8.7.0",
-    "ws": "^8.19.0"
+    "ws": "^8.21.0"
   }
 }
