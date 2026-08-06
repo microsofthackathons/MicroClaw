@@ -1261,6 +1261,12 @@ function readVueTemplate(relativePath: string): string {
 }
 
 describe("template structure guards", () => {
+  it("ChatView wires clipboard paste through the image attachment handler", () => {
+    const content = readVueTemplate("views/ChatView.vue");
+    expect(content).toContain('@paste="handlePaste"');
+    expect(content).toContain("window.openclaw.attachment.importClipboardImages");
+  });
+
   // Guard against the thinking panel v-else-if regression:
   // hasThinking must NOT appear in a v-else-if directive, because that makes
   // the thinking panel mutually exclusive with the text content rendering.

@@ -1,37 +1,16 @@
 import { copyFile, mkdir, realpath, stat, writeFile } from "fs/promises";
 import { randomUUID } from "crypto";
 import * as path from "path";
-import { validateChatAttachments, type ChatAttachment } from "./chat-attachments";
+import {
+  sanitizeAttachmentFileName,
+  validateChatAttachments,
+  type ChatAttachment,
+} from "./chat-attachments";
+
+export { sanitizeAttachmentFileName } from "./chat-attachments";
 
 export interface OpenAttachmentRequest extends ChatAttachment {
   mediaPath?: string;
-}
-
-const MIME_EXTENSIONS: Record<string, string> = {
-  "application/json": ".json",
-  "application/pdf": ".pdf",
-  "image/gif": ".gif",
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/webp": ".webp",
-  "text/csv": ".csv",
-  "text/markdown": ".md",
-  "text/plain": ".txt",
-};
-
-export function sanitizeAttachmentFileName(fileName: string, mimeType: string): string {
-  const baseName = path
-    .basename(fileName)
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-    .trim();
-  const usableBaseName =
-    baseName && baseName !== "." && baseName !== ".." ? baseName : "attachment";
-  const detectedExtension = path.extname(usableBaseName);
-  const extension = (detectedExtension || MIME_EXTENSIONS[mimeType] || ".bin").slice(0, 20);
-  const stem = detectedExtension
-    ? usableBaseName.slice(0, -detectedExtension.length)
-    : usableBaseName;
-  return `${stem.slice(0, Math.max(1, 180 - extension.length))}${extension}`;
 }
 
 export function resolveInboundMediaPath(stateDir: string, mediaPath: string): string {

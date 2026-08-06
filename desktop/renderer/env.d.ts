@@ -48,6 +48,12 @@ interface OpenFilesResult {
   rejections: AttachmentRejection[];
 }
 
+interface ClipboardImageInput {
+  mimeType: string;
+  fileName: string;
+  data: ArrayBuffer;
+}
+
 type GitHubCopilotLoginEvent =
   | {
       sessionId: string;
@@ -313,6 +319,10 @@ interface OpenClawAPI {
   };
   attachment: {
     open(attachment: ChatAttachment): Promise<{ ok: boolean; error?: string }>;
+    importClipboardImages(
+      images: ClipboardImageInput[],
+      currentTotalBytes?: number,
+    ): Promise<OpenFilesResult>;
   };
   dialog: {
     openFiles(currentTotalBytes?: number): Promise<OpenFilesResult>;
