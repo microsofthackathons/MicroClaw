@@ -12,6 +12,14 @@ const router = createRouter({
       redirect: "/chat",
     },
     {
+      path: "/studio",
+      redirect: "/chat",
+    },
+    {
+      path: "/skills",
+      redirect: "/settings/skills",
+    },
+    {
       path: "/chat/market",
       name: "agent-market",
       component: () => import("@/views/AgentMarketView.vue"),

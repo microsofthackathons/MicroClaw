@@ -43,8 +43,6 @@ extraResources:
     to: openclaw/
   - from: resources/openclaw.asar
     to: openclaw.asar
-  - from: studio-backend/
-    to: studio-backend/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js

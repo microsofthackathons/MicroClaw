@@ -335,8 +335,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── plugins/openclaw-weixin/     # WeChat channel plugin
 ├── scripts/
 │   ├── windows/                 # Canonical Windows helper scripts
-│   ├── generate-skill-snapshot.js
-│   └── sync-studio-assets.js
+│   └── generate-skill-snapshot.js
 ├── docs/
 │   ├── architecture/            # Repo structure and architectural decisions
 │   ├── plans/                   # Planning docs

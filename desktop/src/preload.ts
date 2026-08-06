@@ -245,19 +245,6 @@ contextBridge.exposeInMainWorld("openclaw", {
     getExchangeRate: () => ipcRenderer.invoke("usage:get-exchange-rate"),
   },
 
-  // --- Studio Backend ---
-  studio: {
-    start: () => ipcRenderer.invoke("studio:start"),
-    stop: () => ipcRenderer.invoke("studio:stop"),
-    getStatus: () => ipcRenderer.invoke("studio:get-status"),
-    getPort: () => ipcRenderer.invoke("studio:get-port"),
-    onStatus: (callback: (status: string) => void) => {
-      const handler = (_event: any, status: string) => callback(status);
-      ipcRenderer.on("studio:status", handler);
-      return () => ipcRenderer.removeListener("studio:status", handler);
-    },
-  },
-
   // --- Window ---
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),

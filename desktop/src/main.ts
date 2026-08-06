@@ -17,7 +17,6 @@ import {
 } from "./skill-integrity";
 import { ToolSandbox } from "./tool-sandbox";
 import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
-import { StudioBackendManager } from "./studio-backend-manager";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
@@ -242,9 +241,6 @@ const githubCopilotAuthManager = new GitHubCopilotAuthManager(
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
 let activeChatSession = "";
-/** Studio Node backend manager. */
-let studioBackendManager: StudioBackendManager | null = null;
-let studioBackendStatus: string = "stopped";
 /** Pending in-app permission requests (renderer UI replaces native dialogs). */
 const pendingPermissionRequests = new Map<
   string,
@@ -4445,31 +4441,6 @@ function registerIpcHandlers(): void {
     });
   });
 
-  // --- Studio Backend ---
-  ipcMain.handle("studio:start", async () => {
-    if (!studioBackendManager) {
-      const stateDir = getOpenClawStateDir();
-      studioBackendManager = new StudioBackendManager(stateDir);
-      studioBackendManager.on("status", (status: string) => {
-        studioBackendStatus = status;
-        mainWindow?.webContents.send("studio:status", status);
-      });
-    }
-    if (studioBackendManager.isRunning()) return studioBackendManager.getPort();
-    return studioBackendManager.start();
-  });
-  ipcMain.handle("studio:stop", () => {
-    if (studioBackendManager) {
-      studioBackendManager.stop();
-      studioBackendManager.removeAllListeners("status");
-      studioBackendManager = null;
-    }
-    studioBackendStatus = "stopped";
-    mainWindow?.webContents.send("studio:status", "stopped");
-  });
-  ipcMain.handle("studio:get-status", () => studioBackendStatus);
-  ipcMain.handle("studio:get-port", () => studioBackendManager?.getPort() ?? 0);
-
   // --- Window ---
   ipcMain.handle("window:minimize", () => mainWindow?.minimize());
   ipcMain.handle("window:maximize", () => {
@@ -5619,7 +5590,6 @@ app.on("before-quit", () => {
   destroyTray();
   githubCopilotAuthManager.stop();
   gwClient?.stop();
-  studioBackendManager?.stop();
   stopGatewayProcess();
 });
 

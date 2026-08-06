@@ -361,6 +361,7 @@ export default {
   "settings.menu.models": "模型",
   "settings.menu.gateway": "网关",
   "settings.menu.channels": "频道",
+  "settings.menu.skills": "技能",
   "settings.menu.privacy": "隐私",
   "settings.menu.security": "安全",
   "settings.menu.about": "关于",
@@ -669,7 +670,6 @@ export default {
   "usage.footer": "数据来源于 OpenClaw Gateway，需要 Gateway 运行中。",
 
   // ── Skills (dev-only panel) ──
-  "skills.dev.tab": "技能",
   "skills.dev.title": "智能体技能（开发）",
   "skills.dev.subtitle": "切换每个智能体可使用的技能，然后应用并重载网关。仅限开发版本。",
   "skills.dev.agent": "智能体",
@@ -704,31 +704,6 @@ export default {
   "skills.dev.missing.env": "环境变量：{list}",
   "skills.dev.missing.config": "配置项：{list}",
   "skills.dev.missing.os": "系统: {list}",
-
-  // ── Studio ──
-  "studio.switchToStudio": "工作室",
-  "studio.switchToChat": "对话",
-  "studio.toggleLabel": "切换对话与工作室视图",
-  "studio.status.idle": "待命中",
-  "studio.status.writing": "写作中",
-  "studio.status.researching": "研究中",
-  "studio.status.executing": "执行中",
-  "studio.status.syncing": "同步中",
-  "studio.status.error": "出错了",
-  "studio.agents.title": "在线 Agent",
-  "studio.agents.empty": "暂无其他 Agent",
-  "studio.manual.label": "手动覆盖",
-  "studio.manual.active": "手动",
-  "studio.manual.clear": "恢复自动",
-  "studio.manual.placeholder": "输入状态描述...",
-  "studio.manual.set": "设置",
-  "studio.entering": "正在进入工作室...",
-  "studio.backend.starting": "正在启动工作室...",
-  "studio.backend.failed": "工作室启动失败",
-  "studio.backend.retry": "重试",
-  "studio.chatPanel.wide": "展开",
-  "studio.chatPanel.narrow": "收起",
-  "studio.chatPanel.close": "关闭",
 
   // ── Sidebar Agent ──
   "sidebar.searchAgents": "搜索 Agent",

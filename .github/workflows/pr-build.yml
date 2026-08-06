@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend') {
+          foreach ($d in '.', 'desktop', 'desktop/renderer') {
             Write-Host "── npm ci in $d ──"
             Push-Location $d
             try {
