@@ -218,8 +218,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ├── plugins/openclaw-weixin/     # 微信频道插件
 ├── scripts/
 │   ├── windows/                 # Windows 侧规范脚本目录
-│   ├── generate-skill-snapshot.js
-│   └── sync-studio-assets.js
+│   └── generate-skill-snapshot.js
 ├── docs/
 │   ├── architecture/            # 仓库结构与架构决策
 │   ├── plans/                   # 规划文档

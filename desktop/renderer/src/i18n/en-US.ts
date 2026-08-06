@@ -383,6 +383,7 @@ export default {
   "settings.menu.models": "Models",
   "settings.menu.gateway": "Gateway",
   "settings.menu.channels": "Channels",
+  "settings.menu.skills": "Skills",
   "settings.menu.privacy": "Privacy",
   "settings.menu.security": "Security",
   "settings.menu.about": "About",
@@ -698,7 +699,6 @@ export default {
   "usage.footer": "Data sourced from OpenClaw Gateway. Requires the gateway to be running.",
 
   // ── Skills (dev-only panel) ──
-  "skills.dev.tab": "Skills",
   "skills.dev.title": "Agent Skills (Dev)",
   "skills.dev.subtitle":
     "Toggle which skills each agent can use, then apply and reload the gateway. Development builds only.",
@@ -735,31 +735,6 @@ export default {
   "skills.dev.missing.env": "env: {list}",
   "skills.dev.missing.config": "config: {list}",
   "skills.dev.missing.os": "os: {list}",
-
-  // ── Studio ──
-  "studio.switchToStudio": "Studio",
-  "studio.switchToChat": "Chat",
-  "studio.toggleLabel": "Switch between chat and studio views",
-  "studio.status.idle": "Idle",
-  "studio.status.writing": "Writing",
-  "studio.status.researching": "Researching",
-  "studio.status.executing": "Executing",
-  "studio.status.syncing": "Syncing",
-  "studio.status.error": "Error",
-  "studio.agents.title": "Online Agents",
-  "studio.agents.empty": "No other agents",
-  "studio.manual.label": "Manual Override",
-  "studio.manual.active": "Manual",
-  "studio.manual.clear": "Back to Auto",
-  "studio.manual.placeholder": "Enter status detail...",
-  "studio.manual.set": "Set",
-  "studio.entering": "Opening Studio...",
-  "studio.backend.starting": "Starting Studio...",
-  "studio.backend.failed": "Studio failed to start",
-  "studio.backend.retry": "Retry",
-  "studio.chatPanel.wide": "Expand",
-  "studio.chatPanel.narrow": "Collapse",
-  "studio.chatPanel.close": "Close",
 
   // ── Sidebar Agent ──
   "sidebar.searchAgents": "Search Agents",

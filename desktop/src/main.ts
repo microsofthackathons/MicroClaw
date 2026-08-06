@@ -17,7 +17,6 @@ import {
 } from "./skill-integrity";
 import { ToolSandbox } from "./tool-sandbox";
 import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
-import { StudioBackendManager } from "./studio-backend-manager";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
@@ -242,9 +241,6 @@ const githubCopilotAuthManager = new GitHubCopilotAuthManager(
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
 let activeChatSession = "";
-/** Studio Node backend manager. */
-let studioBackendManager: StudioBackendManager | null = null;
-let studioBackendStatus: string = "stopped";
 /** Pending in-app permission requests (renderer UI replaces native dialogs). */
 const pendingPermissionRequests = new Map<
   string,
@@ -1427,9 +1423,7 @@ async function addCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent addition ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent addition ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -1489,9 +1483,7 @@ async function removeCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent removal ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -3674,24 +3666,15 @@ function registerIpcHandlers(): void {
     });
     if (result.canceled) return { attachments: [], rejections: [] };
     const currentTotalBytes =
-      typeof params?.currentTotalBytes === "number" &&
-      Number.isFinite(params.currentTotalBytes)
+      typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
         ? Math.max(0, params.currentTotalBytes)
         : 0;
-    return prepareChatAttachments(
-      result.filePaths,
-      undefined,
-      undefined,
-      currentTotalBytes,
-    );
+    return prepareChatAttachments(result.filePaths, undefined, undefined, currentTotalBytes);
   });
 
   ipcMain.handle(
     "chat:send-message",
-    async (
-      _event,
-      params: { sessionKey: string; message: string; attachments?: unknown },
-    ) => {
+    async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
@@ -4167,9 +4150,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:status", () => {
     const client = gwClient;
-    const queryGateway = client?.connected
-      ? () => client.request("models.authStatus")
-      : undefined;
+    const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
@@ -4444,31 +4425,6 @@ function registerIpcHandlers(): void {
       storeManaged: process.windowsStore,
     });
   });
-
-  // --- Studio Backend ---
-  ipcMain.handle("studio:start", async () => {
-    if (!studioBackendManager) {
-      const stateDir = getOpenClawStateDir();
-      studioBackendManager = new StudioBackendManager(stateDir);
-      studioBackendManager.on("status", (status: string) => {
-        studioBackendStatus = status;
-        mainWindow?.webContents.send("studio:status", status);
-      });
-    }
-    if (studioBackendManager.isRunning()) return studioBackendManager.getPort();
-    return studioBackendManager.start();
-  });
-  ipcMain.handle("studio:stop", () => {
-    if (studioBackendManager) {
-      studioBackendManager.stop();
-      studioBackendManager.removeAllListeners("status");
-      studioBackendManager = null;
-    }
-    studioBackendStatus = "stopped";
-    mainWindow?.webContents.send("studio:status", "stopped");
-  });
-  ipcMain.handle("studio:get-status", () => studioBackendStatus);
-  ipcMain.handle("studio:get-port", () => studioBackendManager?.getPort() ?? 0);
 
   // --- Window ---
   ipcMain.handle("window:minimize", () => mainWindow?.minimize());
@@ -5619,7 +5575,6 @@ app.on("before-quit", () => {
   destroyTray();
   githubCopilotAuthManager.stop();
   gwClient?.stop();
-  studioBackendManager?.stop();
   stopGatewayProcess();
 });
 

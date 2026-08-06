@@ -17,13 +17,6 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          phaser: ["phaser"],
-        },
-      },
-    },
   },
   test: {
     include: ["src/**/*.test.ts"],

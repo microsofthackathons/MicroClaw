@@ -299,13 +299,6 @@ interface OpenClawAPI {
       callback: (event: GitHubCopilotLoginEvent) => void,
     ): () => void;
   };
-  studio: {
-    start(): Promise<number>;
-    stop(): Promise<void>;
-    getStatus(): Promise<string>;
-    getPort(): Promise<number>;
-    onStatus(callback: (status: string) => void): () => void;
-  };
   window: {
     minimize(): Promise<void>;
     maximize(): Promise<void>;

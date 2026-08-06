@@ -20,7 +20,10 @@
     </div>
 
     <!-- Right content: grouped card rows -->
-    <div class="settings-content">
+    <div
+      class="settings-content"
+      :class="{ 'settings-content--skills': isDev && activeSection === 'skills' }"
+    >
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
         <div class="section-label">{{ t("settings.application") }}</div>
@@ -93,7 +96,8 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
+                >{{ t("settings.currencySymbol")
+                }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -101,7 +105,8 @@
               <div class="budget-bar-wrapper">
                 <span class="row-value"
                   >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }} /
-                  {{ t("settings.currencySymbol") }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
+                  {{ t("settings.currencySymbol")
+                  }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
                 >
                 <div class="budget-bar">
                   <div
@@ -177,7 +182,6 @@
               </div>
             </div>
           </template>
-
         </template>
 
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
@@ -323,9 +327,7 @@
               <span
                 class="status-indicator"
                 :class="
-                  gateway.status === 'running'
-                    ? 'status-indicator--ok'
-                    : 'status-indicator--error'
+                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
                 "
               >
                 <span class="status-dot"></span>
@@ -344,11 +346,7 @@
             <span class="row-label">{{ t("settings.port") }}</span>
             <div class="port-input-group">
               <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
+              <el-input v-model="gatewayPort" style="width: 80px" @change="saveGatewayPort" />
             </div>
           </div>
         </div>
@@ -372,6 +370,9 @@
 
       <!-- Channels -->
       <ChannelsView v-if="activeSection === 'channels'" embedded />
+
+      <!-- Skills (development builds only) -->
+      <SkillsDevPanel v-if="isDev && activeSection === 'skills'" />
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
@@ -847,6 +848,7 @@ import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
+import SkillsDevPanel from "@/components/skills/SkillsDevPanel.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -869,6 +871,7 @@ import { getManagedModelProvider } from "@/utils/managed-model-providers";
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const isDev = import.meta.env.DEV;
 
 const logBoxRef = ref<HTMLElement | null>(null);
 
@@ -924,6 +927,7 @@ const VALID_SECTIONS = [
   "models",
   "gateway",
   "channels",
+  ...(isDev ? ["skills"] : []),
   "security",
   "privacy",
   "about",
@@ -1358,6 +1362,7 @@ const svg = {
   models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
   gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
   channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
+  skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3.5a2.5 2.5 0 0 1 5 0v2h2a2.5 2.5 0 1 1 0 5h-2v2a2.5 2.5 0 1 1-5 0v-2h-2a2.5 2.5 0 1 1 0-5h2v-2z"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
   privacy: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="9" width="12" height="9" rx="2"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/><circle cx="10" cy="14" r="1" fill="currentColor" stroke="none"/></svg>`,
   about: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.75" fill="currentColor" stroke="none"/></svg>`,
@@ -1369,6 +1374,9 @@ const menuItems = computed(() => [
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
   { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
   { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
+  ...(isDev
+    ? [{ id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills }]
+    : []),
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
   { id: "privacy", label: t("settings.menu.privacy"), color: "#636366", svg: svg.privacy },
   { id: "about", label: t("settings.menu.about"), color: "#636366", svg: svg.about },
@@ -1589,7 +1597,6 @@ onMounted(async () => {
 
   // Load web search provider configuration
   loadSearchConfig(config);
-
 });
 
 onUnmounted(() => {
@@ -1706,11 +1713,9 @@ async function removeCustomModel(idx: number) {
 async function disconnectGitHubCopilot() {
   if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
   try {
-    await ElMessageBox.confirm(
-      t("settings.copilotDisconnectConfirm"),
-      t("settings.confirm"),
-      { type: "warning" },
-    );
+    await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
+      type: "warning",
+    });
   } catch {
     return;
   }
@@ -1980,6 +1985,12 @@ async function clearChatHistory() {
   overflow-y: auto;
   padding: 28px clamp(16px, 3vw, 32px);
   container-type: inline-size;
+}
+
+.settings-content--skills {
+  display: flex;
+  overflow: hidden;
+  padding: 0;
 }
 
 .section-label,
