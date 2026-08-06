@@ -26,6 +26,8 @@ export default {
   "sidebar.active": "Active (ACTIVE)",
   "sidebar.stopped": "Stopped (STOPPED)",
   "sidebar.delete": "Delete",
+  "sidebar.pin": "Pin",
+  "sidebar.unpin": "Unpin",
   "sidebar.emptyHint": "Click the button above to create your first task",
   "sidebar.skills": "Channels",
   "sidebar.explore": "Explore",

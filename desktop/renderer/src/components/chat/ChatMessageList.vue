@@ -188,23 +188,6 @@
                 <!-- Thinking/reasoning content — skip per-message rendering; merged at group level below -->
                 <!-- Normal text content -->
                 <div class="chat-content-wrapper">
-                  <button class="chat-copy-btn" @click="copyMessage(getMessageText(msg))">
-                    {{ justCopied ? "&#x2713;" : ""
-                    }}<svg
-                      v-if="!justCopied"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
-                  </button>
                   <template
                     v-for="(seg, si) in getMessageSegments(msg, group.key + '-' + idx)"
                     :key="si"
@@ -295,6 +278,34 @@
                 </div>
               </template>
             </template>
+            <button
+              v-if="!isToolMessage(msg) && !isEditingMessage(group, idx)"
+              class="chat-copy-btn"
+              :title="
+                copiedMessageKey === group.key + '-' + idx ? t('chat.copied') : t('chat.copy')
+              "
+              :aria-label="
+                copiedMessageKey === group.key + '-' + idx ? t('chat.copied') : t('chat.copy')
+              "
+              @click.stop="copyMessage(getMessageText(msg), group.key + '-' + idx)"
+              @dblclick.stop
+            >
+              <span v-if="copiedMessageKey === group.key + '-' + idx">&#x2713;</span>
+              <svg
+                v-else
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -423,6 +434,28 @@
         <!-- Text output (hidden entirely when plan progress panel is visible during streaming) -->
         <div v-if="displayStreamText && !streamHasPlan" class="chat-bubble assistant streaming">
           <div class="chat-text" v-html="renderMarkdown(displayStreamText)"></div>
+          <button
+            class="chat-copy-btn"
+            :title="copiedMessageKey === 'streaming' ? t('chat.copied') : t('chat.copy')"
+            :aria-label="copiedMessageKey === 'streaming' ? t('chat.copied') : t('chat.copy')"
+            @click.stop="copyMessage(displayStreamText, 'streaming')"
+          >
+            <span v-if="copiedMessageKey === 'streaming'">&#x2713;</span>
+            <svg
+              v-else
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -511,7 +544,7 @@ function openModelSettings() {
 
 const execPanelOpen = ref(true);
 const openHistoryPanels = ref(new Set<string>());
-const justCopied = ref(false);
+const copiedMessageKey = ref<string | null>(null);
 
 // ── Edit-message state ──
 const editingGroupKey = ref<string | null>(null);
@@ -872,11 +905,13 @@ function getGroupThinkingBlocks(group: MessageGroup): string[] {
   return parts;
 }
 
-async function copyMessage(content: string) {
+async function copyMessage(content: string, messageKey: string) {
   try {
     await navigator.clipboard.writeText(content);
-    justCopied.value = true;
-    setTimeout(() => (justCopied.value = false), 1500);
+    copiedMessageKey.value = messageKey;
+    setTimeout(() => {
+      if (copiedMessageKey.value === messageKey) copiedMessageKey.value = null;
+    }, 1500);
   } catch {
     /* Clipboard not available */
   }
@@ -967,6 +1002,7 @@ function handleEditKeydown(e: KeyboardEvent) {
   position: relative;
   display: inline-block;
   max-width: 100%;
+  margin-bottom: 18px;
   word-wrap: break-word;
   transition: border-color 0.15s;
 }
@@ -1098,8 +1134,7 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 .chat-copy-btn {
   position: absolute;
-  top: auto;
-  bottom: 0;
+  bottom: -18px;
   right: 0;
   border: none;
   background: transparent;
@@ -1114,7 +1149,8 @@ function handleEditKeydown(e: KeyboardEvent) {
   transition: opacity 0.12s;
 }
 
-.chat-content-wrapper:hover .chat-copy-btn {
+.chat-bubble:hover > .chat-copy-btn,
+.chat-copy-btn:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }

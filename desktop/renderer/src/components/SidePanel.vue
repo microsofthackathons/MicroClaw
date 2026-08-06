@@ -124,7 +124,19 @@
             @click="selectSession(s.key)"
           >
             <span class="sp-chat-item-title">{{ s.title }}</span>
-            <span class="sp-chat-item-delete" @click.stop="deleteSession(s.key)"
+            <span
+              class="sp-chat-item-action sp-chat-item-pin"
+              :class="{ pinned: s.pinned }"
+              :title="s.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
+              :aria-label="s.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
+              @click.stop="sessionStore.togglePinned(s.key)"
+              ><IconPin :size="12"
+            /></span>
+            <span
+              class="sp-chat-item-action sp-chat-item-delete"
+              :title="t('sidebar.delete')"
+              :aria-label="t('sidebar.delete')"
+              @click.stop="deleteSession(s.key)"
               ><IconClose :size="12" :stroke-width="2.5"
             /></span>
           </button>
@@ -225,6 +237,7 @@ import { t } from "@/i18n";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
+import IconPin from "@/components/icons/IconPin.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -454,7 +467,9 @@ function handleDocumentKeyDown(event: KeyboardEvent) {
 }
 
 const allSessions = computed(() =>
-  [...sessionStore.sessions].sort((a, b) => b.createdAt - a.createdAt),
+  [...sessionStore.sessions].sort(
+    (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.createdAt - a.createdAt,
+  ),
 );
 
 function selectSession(key: string) {
@@ -1008,22 +1023,31 @@ html.dark .sp-chat-item.selected {
   white-space: nowrap;
 }
 
-.sp-chat-item-delete {
+.sp-chat-item-action {
   display: none;
   padding: 0 4px;
   color: var(--text-muted);
-  font-size: 15px;
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
   flex-shrink: 0;
 }
 
+.sp-chat-item-pin.pinned {
+  display: block;
+  color: var(--text-secondary);
+}
+
+.sp-chat-item-pin:hover,
+.sp-chat-item-pin.pinned:hover {
+  color: var(--text-primary);
+}
+
 .sp-chat-item-delete:hover {
   color: var(--danger);
 }
 
-.sp-chat-item:hover .sp-chat-item-delete {
+.sp-chat-item:hover .sp-chat-item-action {
   display: block;
 }
 

@@ -10,6 +10,7 @@ export interface Session {
   updatedAt: number;
   preview: string; // last message snippet
   agentId?: string;
+  pinned?: boolean;
 }
 
 const STORAGE_KEY = "openclaw-sessions";
@@ -101,6 +102,15 @@ export const useSessionStore = defineStore("sessions", () => {
     saveToStorage(sessions.value);
   }
 
+  /** Toggle whether a session stays at the top of the sidebar. */
+  function togglePinned(key: string) {
+    const session = sessions.value.find((session) => session.key === key);
+    if (!session) return;
+
+    session.pinned = !session.pinned;
+    saveToStorage(sessions.value);
+  }
+
   /** Replace a local alias with its canonical Gateway key and merge duplicates. */
   function canonicalizeSession(aliasKey: string, canonicalKey: string) {
     if (
@@ -123,6 +133,7 @@ export const useSessionStore = defineStore("sessions", () => {
         title: newer.title !== defaultTitle ? newer.title : older.title,
         preview: newer.preview || older.preview,
         agentId: newer.agentId || older.agentId,
+        pinned: alias.pinned || canonical.pinned,
         createdAt: Math.min(alias.createdAt, canonical.createdAt),
         updatedAt: Math.max(alias.updatedAt, canonical.updatedAt),
       };
@@ -163,6 +174,7 @@ export const useSessionStore = defineStore("sessions", () => {
     reconcileEmptySessions,
     updateSession,
     removeSession,
+    togglePinned,
     canonicalizeSession,
     clearAll,
     autoTitle,
