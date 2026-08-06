@@ -895,6 +895,9 @@ const updateStatusTitle = computed(() => {
   if (updateResult.value.status === "up-to-date") {
     return t("settings.updateUpToDate");
   }
+  if (updateResult.value.status === "managed-by-store") {
+    return t("settings.updateManagedByStore");
+  }
   return t("settings.updateCheckFailed");
 });
 
@@ -908,6 +911,9 @@ const updateStatusDetail = computed(() => {
   }
   if (updateResult.value.status === "up-to-date") {
     return t("settings.updateUpToDateDetail", { version: updateResult.value.currentVersion });
+  }
+  if (updateResult.value.status === "managed-by-store") {
+    return t("settings.updateManagedByStoreDetail");
   }
   return updateResult.value.message;
 });
@@ -1815,6 +1821,8 @@ async function checkForUpdates() {
       ElMessage.success(t("settings.updateAvailableToast"));
     } else if (updateResult.value.status === "up-to-date") {
       ElMessage.success(t("settings.updateUpToDate"));
+    } else if (updateResult.value.status === "managed-by-store") {
+      ElMessage.success(t("settings.updateManagedByStore"));
     } else {
       ElMessage.error(t("settings.updateCheckFailed"));
     }

@@ -9,6 +9,10 @@ export interface UpdateManifest {
 
 export type UpdateCheckResult =
   | {
+      status: "managed-by-store";
+      currentVersion: string;
+    }
+  | {
       status: "update-available";
       currentVersion: string;
       latestVersion: string;
@@ -32,6 +36,7 @@ export type UpdateCheckResult =
 export interface CheckForUpdatesOptions {
   currentVersion: string;
   manifestUrl: string;
+  storeManaged?: boolean;
   fetchJson?: (url: string) => Promise<unknown>;
 }
 
@@ -98,8 +103,12 @@ async function fetchManifestJson(url: string): Promise<unknown> {
 export async function checkForUpdates({
   currentVersion,
   manifestUrl,
+  storeManaged = false,
   fetchJson = fetchManifestJson,
 }: CheckForUpdatesOptions): Promise<UpdateCheckResult> {
+  if (storeManaged) {
+    return { status: "managed-by-store", currentVersion };
+  }
   try {
     const manifest = assertManifest(await fetchJson(manifestUrl));
     if (compareVersions(manifest.version, currentVersion) <= 0) {

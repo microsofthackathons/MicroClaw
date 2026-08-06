@@ -131,6 +131,10 @@ interface IntegrityResult {
 
 type UpdateCheckResult =
   | {
+      status: "managed-by-store";
+      currentVersion: string;
+    }
+  | {
       status: "update-available";
       currentVersion: string;
       latestVersion: string;

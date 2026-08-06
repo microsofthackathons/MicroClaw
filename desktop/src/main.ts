@@ -4441,6 +4441,7 @@ function registerIpcHandlers(): void {
     return checkForUpdates({
       currentVersion: app.getVersion(),
       manifestUrl: UPDATE_MANIFEST_URL,
+      storeManaged: process.windowsStore,
     });
   });
 

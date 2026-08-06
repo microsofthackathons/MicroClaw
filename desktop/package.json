@@ -11,6 +11,7 @@
     "build": "tsc && cd renderer && npm run build",
     "pack": "npm run build && electron-builder --win --x64 --dir",
     "dist": "npm run build && electron-builder --win",
+    "dist:msix": "npm run prepare-resources && npm run build && node scripts/build-msix.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -35,6 +36,7 @@
     "vitest": "^4.1.1"
   },
   "dependencies": {
+    "@electron/asar": "^3.4.1",
     "electron-store": "^8.2.0",
     "node-addon-api": "^8.7.0",
     "ws": "^8.19.0"

@@ -343,6 +343,9 @@ export default {
   "settings.updateAvailableToast": "A new MicroClaw version is available.",
   "settings.updateUpToDate": "MicroClaw is up to date",
   "settings.updateUpToDateDetail": "You are running version {version}.",
+  "settings.updateManagedByStore": "Updates are managed by Microsoft Store",
+  "settings.updateManagedByStoreDetail":
+    "Microsoft Store will download and install updates for this version of MicroClaw.",
   "settings.updateCheckFailed": "Could not check for updates",
   "settings.downloadUpdate": "Download update",
   "settings.gatewayLog": "Gateway Logs",

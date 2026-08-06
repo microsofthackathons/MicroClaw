@@ -12,6 +12,21 @@ win:
         - x64
   icon: assets/microclaw.ico
 
+appx:
+  artifactName: MicroClawDesktop-${version}-${arch}.msix
+  identityName: MicroClaw.Test
+  publisher: CN=MicroClaw Test
+  publisherDisplayName: MicroClaw
+  applicationId: MicroClaw
+  displayName: MicroClaw
+  languages:
+    - en-US
+    - zh-CN
+  minVersion: 10.0.19041.0
+  maxVersionTested: 10.0.26100.0
+  capabilities:
+    - runFullTrust
+
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -26,6 +41,8 @@ extraResources:
     to: node.exe
   - from: resources/openclaw/
     to: openclaw/
+  - from: resources/openclaw.asar
+    to: openclaw.asar
   - from: studio-backend/
     to: studio-backend/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
