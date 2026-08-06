@@ -24,6 +24,8 @@ export default {
   "sidebar.active": "执行中 (ACTIVE)",
   "sidebar.stopped": "已结束 (STOPPED)",
   "sidebar.delete": "删除",
+  "sidebar.pin": "置顶",
+  "sidebar.unpin": "取消置顶",
   "sidebar.emptyHint": "点击上方按钮创建第一个任务",
   "sidebar.skills": "通道",
   "sidebar.explore": "探索",

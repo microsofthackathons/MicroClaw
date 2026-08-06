@@ -326,3 +326,24 @@ describe("GatewayClient.deleteSession", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("GatewayClient.listSessionTitles", () => {
+  it("uses OpenClaw's built-in derived titles and returns requested sessions only", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({
+      sessions: [
+        { key: "session-0", derivedTitle: "First title" },
+        { key: "other", derivedTitle: "Not requested" },
+      ],
+    });
+    const keys = Array.from({ length: 70 }, (_, index) => `session-${index}`);
+
+    const result = await client.listSessionTitles(keys);
+
+    expect(request).toHaveBeenCalledWith("sessions.list", {
+      includeDerivedTitles: true,
+      limit: 200,
+    });
+    expect(result).toEqual({ titles: { "session-0": "First title" } });
+  });
+});

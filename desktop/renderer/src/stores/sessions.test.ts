@@ -118,6 +118,19 @@ describe("useSessionStore", () => {
     expect(store.sessions[0].key).toBe("test-2");
   });
 
+  it("toggles and persists a pinned session", () => {
+    const store = useSessionStore();
+    store.ensureSession("test-1");
+
+    store.togglePinned("test-1");
+
+    expect(store.sessions[0].pinned).toBe(true);
+    expect(JSON.parse(storage["openclaw-sessions"])[0].pinned).toBe(true);
+
+    store.togglePinned("test-1");
+    expect(store.sessions[0].pinned).toBe(false);
+  });
+
   it("canonicalizeSession replaces a local alias", () => {
     const store = useSessionStore();
     store.ensureSession("main");

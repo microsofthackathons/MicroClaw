@@ -3704,6 +3704,11 @@ function registerIpcHandlers(): void {
     return await gwClient.loadHistory(params.sessionKey);
   });
 
+  ipcMain.handle("chat:list-session-titles", async (_event, params: { keys: string[] }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listSessionTitles(params.keys);
+  });
+
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     await gwClient.abortChat(params.sessionKey);

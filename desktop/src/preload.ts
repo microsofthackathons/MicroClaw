@@ -112,6 +112,10 @@ contextBridge.exposeInMainWorld("openclaw", {
     /** Load chat history for a session. */
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
 
+    /** Load titles derived by OpenClaw from session transcripts. */
+    listSessionTitles: (keys: string[]) =>
+      ipcRenderer.invoke("chat:list-session-titles", { keys }),
+
     /** Abort the current run on a session. */
     abort: (sessionKey: string) => ipcRenderer.invoke("chat:abort", { sessionKey }),
 
