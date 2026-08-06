@@ -123,7 +123,9 @@
             :class="{ selected: route.name === 'chat' && chatStore.sessionKey === s.key }"
             @click="selectSession(s.key)"
           >
-            <span class="sp-chat-item-title">{{ s.title }}</span>
+            <span class="sp-chat-item-title" :title="sessionTitle(s)">
+              {{ sessionTitle(s) }}
+            </span>
             <span
               class="sp-chat-item-action sp-chat-item-pin"
               :class="{ pinned: s.pinned }"
@@ -226,7 +228,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { useGatewayStore } from "@/stores/gateway";
@@ -259,7 +261,9 @@ const usageSnapshot = ref<UsageSnapshot | null>(null);
 const usageLoading = ref(false);
 const usageLastUpdated = ref<Date | null>(null);
 const usageCollapsed = ref(false);
+const openClawTitles = ref<Record<string, string>>({});
 let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let titleRequestGeneration = 0;
 
 const chatExpanded = ref(true);
 const isAgentFlyoutOpen = ref(false);
@@ -471,6 +475,36 @@ const allSessions = computed(() =>
     (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.createdAt - a.createdAt,
   ),
 );
+
+watch(
+  [
+    gatewayOnline,
+    () => allSessions.value.map((session) => `${session.key}\0${session.title}`).join("\n"),
+  ],
+  () => void loadSessionTitles(),
+  { immediate: true },
+);
+
+async function loadSessionTitles() {
+  const generation = ++titleRequestGeneration;
+  const keys = allSessions.value.map((session) => session.key).slice(0, 64);
+  if (!gatewayOnline.value || keys.length === 0) {
+    openClawTitles.value = {};
+    return;
+  }
+  openClawTitles.value = {};
+  try {
+    const response = await window.openclaw.chat.listSessionTitles(keys);
+    if (generation !== titleRequestGeneration) return;
+    openClawTitles.value = response.titles ?? {};
+  } catch {
+    if (generation === titleRequestGeneration) openClawTitles.value = {};
+  }
+}
+
+function sessionTitle(session: { key: string; title: string }) {
+  return openClawTitles.value[session.key] || session.title;
+}
 
 function selectSession(key: string) {
   chatStore.switchSession(key);
@@ -1018,6 +1052,7 @@ html.dark .sp-chat-item.selected {
 
 .sp-chat-item-title {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

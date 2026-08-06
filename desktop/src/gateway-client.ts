@@ -273,6 +273,29 @@ export class GatewayClient {
     return this.request("chat.abort", { sessionKey });
   }
 
+  /** Read titles derived by OpenClaw from each session transcript. */
+  async listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }> {
+    const wanted = new Set(keys.slice(0, 64));
+    const response = await this.request<{
+      sessions?: Array<{ key?: string; derivedTitle?: string }>;
+    }>("sessions.list", {
+      includeDerivedTitles: true,
+      limit: 200,
+    });
+    const titles: Record<string, string> = {};
+    for (const session of response.sessions ?? []) {
+      if (
+        typeof session.key === "string" &&
+        wanted.has(session.key) &&
+        typeof session.derivedTitle === "string" &&
+        session.derivedTitle.trim()
+      ) {
+        titles[session.key] = session.derivedTitle.trim();
+      }
+    }
+    return { titles };
+  }
+
   /**
    * Delete one persisted session and its transcript.
    *

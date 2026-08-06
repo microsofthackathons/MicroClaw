@@ -221,6 +221,7 @@ interface OpenClawAPI {
       attachments?: ChatAttachment[],
     ): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
+    listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     abort(sessionKey: string): Promise<void>;
     deleteSession(sessionKey: string): Promise<void>;
     clearHistory(): Promise<{ cleared: number }>;
