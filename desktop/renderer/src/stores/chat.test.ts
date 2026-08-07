@@ -309,12 +309,13 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.lastStreamEventAt).toBeLessThanOrEqual(Date.now());
   });
 
-  it("handleChatEvent clears lastStreamEventAt on final", () => {
+  it("handleChatEvent clears stream state and requests a title refresh on final", () => {
     const store = useChatStore();
     store.streaming = true;
     store.sessionKey = "main";
     store.resolvedSessionKey = "agent:main:main";
     (store as any).lastStreamEventAt = Date.now();
+    const initialTitleRefreshRevision = store.sessionTitleRefreshRevision;
 
     store.handleChatEvent({
       runId: "r1",
@@ -325,6 +326,7 @@ describe("useChatStore — stale stream recovery", () => {
 
     expect(store.streaming).toBe(false);
     expect(store.lastStreamEventAt).toBeNull();
+    expect(store.sessionTitleRefreshRevision).toBe(initialTitleRefreshRevision + 1);
   });
 
   it("handleChatEvent clears lastStreamEventAt on aborted", () => {
