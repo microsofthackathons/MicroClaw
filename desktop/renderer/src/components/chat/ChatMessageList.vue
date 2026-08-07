@@ -1002,9 +1002,18 @@ function handleEditKeydown(e: KeyboardEvent) {
   position: relative;
   display: inline-block;
   max-width: 100%;
-  margin-bottom: 18px;
+  margin-bottom: 24px;
   word-wrap: break-word;
   transition: border-color 0.15s;
+}
+
+.chat-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: 24px;
 }
 
 /* User bubble: dark rounded pill */
@@ -1134,8 +1143,9 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 .chat-copy-btn {
   position: absolute;
-  bottom: -18px;
+  bottom: -24px;
   right: 0;
+  z-index: 1;
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -1145,14 +1155,14 @@ function handleEditKeydown(e: KeyboardEvent) {
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
   transition: opacity 0.12s;
 }
 
 .chat-bubble:hover > .chat-copy-btn,
+.chat-copy-btn:hover,
 .chat-copy-btn:focus-visible {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .chat-copy-btn:hover {

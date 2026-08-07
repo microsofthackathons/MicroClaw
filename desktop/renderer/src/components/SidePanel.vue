@@ -117,7 +117,7 @@
 
         <div v-show="chatExpanded" class="sp-section-body">
           <button
-            v-for="s in allSessions"
+            v-for="s in visibleSessions"
             :key="s.key"
             class="sp-chat-item"
             :class="{ selected: route.name === 'chat' && chatStore.sessionKey === s.key }"
@@ -142,7 +142,7 @@
               ><IconClose :size="12" :stroke-width="2.5"
             /></span>
           </button>
-          <div v-if="allSessions.length === 0" class="sp-empty-hint">
+          <div v-if="visibleSessions.length === 0" class="sp-empty-hint">
             {{ t("sidebar.noChats") }}
           </div>
         </div>
@@ -470,16 +470,19 @@ function handleDocumentKeyDown(event: KeyboardEvent) {
   }
 }
 
-const allSessions = computed(() =>
-  [...sessionStore.sessions].sort(
-    (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.createdAt - a.createdAt,
-  ),
+const visibleSessions = computed(() =>
+  sessionStore.sessions
+    .filter((session) => (session.agentId || "main") === agentStore.currentAgentId)
+    .sort(
+      (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.createdAt - a.createdAt,
+    ),
 );
 
 watch(
   [
     gatewayOnline,
-    () => allSessions.value.map((session) => `${session.key}\0${session.title}`).join("\n"),
+    () => visibleSessions.value.map((session) => `${session.key}\0${session.title}`).join("\n"),
+    () => chatStore.sessionTitleRefreshRevision,
   ],
   () => void loadSessionTitles(),
   { immediate: true },
@@ -487,7 +490,7 @@ watch(
 
 async function loadSessionTitles() {
   const generation = ++titleRequestGeneration;
-  const keys = allSessions.value.map((session) => session.key).slice(0, 64);
+  const keys = visibleSessions.value.map((session) => session.key).slice(0, 64);
   if (!gatewayOnline.value || keys.length === 0) {
     openClawTitles.value = {};
     return;
