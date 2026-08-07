@@ -77,7 +77,7 @@ describe("agent catalog skills binding", () => {
   });
 
   it("resolves skills for a known agent and returns [] for an unknown one", () => {
-    expect(getAgentSkills("coder")).toEqual(ALL_SKILL_IDS);
+    expect(getAgentSkills("code-geek")).toEqual(ALL_SKILL_IDS);
     expect(getAgentSkills("does-not-exist")).toEqual([]);
   });
 

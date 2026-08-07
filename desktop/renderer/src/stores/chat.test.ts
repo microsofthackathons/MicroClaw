@@ -569,7 +569,7 @@ describe("useChatStore — draft sessions", () => {
 
   it("persists a draft session when the first message is sent", async () => {
     const store = useChatStore();
-    store.newSession("coder");
+    store.newSession("code-geek");
     const key = store.sessionKey;
 
     await store.sendMessage("hello draft");
@@ -578,16 +578,16 @@ describe("useChatStore — draft sessions", () => {
     expect(
       persisted.some(
         (s: { key: string; title: string; agentId?: string }) =>
-          s.key === key && s.title === "hello draft" && s.agentId === "coder",
+          s.key === key && s.title === "hello draft" && s.agentId === "code-geek",
       ),
     ).toBe(true);
   });
 
   it("encodes a non-default agent into the session key so the gateway routes to it", () => {
     const store = useChatStore();
-    store.newSession("coder");
-    expect(store.sessionKey).toMatch(/^agent:coder:session-/);
-    expect(store.currentSessionAgentId).toBe("coder");
+    store.newSession("code-geek");
+    expect(store.sessionKey).toMatch(/^agent:code-geek:session-/);
+    expect(store.currentSessionAgentId).toBe("code-geek");
   });
 
   it("keeps a bare session key for the default (main) agent", () => {

@@ -775,18 +775,18 @@ export default {
   "agent.masterArchive.task.3.desc":
     "Consolidate owners, due dates, and source references into a clean checklist.",
 
-  "agent.coder.name": "Coder",
-  "agent.coder.desc": "Code development, debugging & code review",
-  "agent.coder.tag.1": "Development",
-  "agent.coder.tag.2": "Debugging",
-  "agent.coder.tag.3": "Code Review",
-  "agent.coder.task.1.title": "Write a Python script for me",
-  "agent.coder.task.1.desc": "Quickly generate runnable Python code based on your requirements.",
-  "agent.coder.task.2.title": "Review this code",
-  "agent.coder.task.2.desc":
+  "agent.codeGeek.name": "Code Geek",
+  "agent.codeGeek.desc": "Code development, debugging & code review",
+  "agent.codeGeek.tag.1": "Development",
+  "agent.codeGeek.tag.2": "Debugging",
+  "agent.codeGeek.tag.3": "Code Review",
+  "agent.codeGeek.task.1.title": "Write a Python script for me",
+  "agent.codeGeek.task.1.desc": "Quickly generate runnable Python code based on your requirements.",
+  "agent.codeGeek.task.2.title": "Review this code",
+  "agent.codeGeek.task.2.desc":
     "Review code logic line by line, identifying potential issues and improvements.",
-  "agent.coder.task.3.title": "Explain this algorithm",
-  "agent.coder.task.3.desc": "Break down algorithm principles and complexity in plain language.",
+  "agent.codeGeek.task.3.title": "Explain this algorithm",
+  "agent.codeGeek.task.3.desc": "Break down algorithm principles and complexity in plain language.",
 
   "agent.painter.name": "Van Gogh",
   "agent.painter.desc": "Pixel-style illustration & scene creation",
