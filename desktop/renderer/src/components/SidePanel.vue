@@ -29,9 +29,7 @@
         @click.stop
       >
         <div class="sp-agent-flyout-header">
-          <button class="sp-agent-flyout-search-btn" @click="focusAgentSearch">
-            {{ t("sidebar.agents") }}
-          </button>
+          <span class="sp-agent-flyout-title">{{ t("sidebar.agents") }}</span>
           <button
             class="sp-agent-flyout-add-btn"
             :title="t('sidebar.newAgent')"
@@ -42,44 +40,26 @@
           </button>
         </div>
 
-        <input
-          ref="flyoutSearchInputRef"
-          v-model="agentQuery"
-          class="sp-agent-flyout-input"
-          :placeholder="t('sidebar.searchAgents')"
-          type="text"
-        />
-
         <div class="sp-agent-avatar-list">
           <button
-            v-for="agent in filteredAgents"
+            v-for="agent in agentStore.agents"
             :key="agent.id"
             class="sp-agent-avatar-item"
             :class="{ active: agentStore.currentAgentId === agent.id }"
             :title="agent.name"
             @click="handleAgentSelect(agent.id)"
           >
-            <img class="sp-agent-avatar-img" :src="agent.avatar" :alt="agent.name" />
+            <span class="sp-agent-avatar-frame">
+              <img
+                class="sp-agent-avatar-img"
+                :src="agent.avatar"
+                :alt="agent.name"
+                @load="normalizeAgentAvatar"
+              />
+            </span>
             <span class="sp-agent-avatar-name">{{ agent.name }}</span>
           </button>
         </div>
-
-        <button class="sp-agent-flyout-footer" @click="handleExploreAgents">
-          <span>{{ t("sidebar.explorePopularAgents") }}</span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m9 18 6-6-6-6" />
-          </svg>
-        </button>
       </div>
     </Teleport>
 
@@ -262,15 +242,14 @@ const usageLoading = ref(false);
 const usageLastUpdated = ref<Date | null>(null);
 const usageCollapsed = ref(false);
 const openClawTitles = ref<Record<string, string>>({});
+const avatarContentScales = new Map<string, number>();
 let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let titleRequestGeneration = 0;
 
 const chatExpanded = ref(true);
 const isAgentFlyoutOpen = ref(false);
-const agentQuery = ref("");
 const flyoutRef = ref<HTMLElement | null>(null);
 const brandTriggerRef = ref<HTMLElement | null>(null);
-const flyoutSearchInputRef = ref<HTMLInputElement | null>(null);
 const flyoutTop = ref(0);
 const flyoutLeft = ref(0);
 
@@ -283,16 +262,6 @@ const gatewayOnline = computed(() => gateway.ready && gateway.status === "runnin
 const lastUpdatedLabel = computed(() => {
   if (!usageLastUpdated.value) return "";
   return usageLastUpdated.value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-});
-
-const filteredAgents = computed(() => {
-  const q = agentQuery.value.trim().toLowerCase();
-  if (!q) return agentStore.agents;
-  return agentStore.agents.filter((agent) => {
-    const name = agent.name.toLowerCase();
-    const desc = (agent.description || "").toLowerCase();
-    return name.includes(q) || desc.includes(q);
-  });
 });
 
 const currentAgent = computed(() => {
@@ -387,6 +356,46 @@ function formatCny(value: number) {
   return `${t("settings.currencySymbol")}${((value || 0) * rate).toFixed(2)}`;
 }
 
+function normalizeAgentAvatar(event: Event) {
+  const image = event.currentTarget as HTMLImageElement;
+  const cachedScale = avatarContentScales.get(image.currentSrc);
+  if (cachedScale !== undefined) {
+    image.style.setProperty("--sp-agent-avatar-scale", String(cachedScale));
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context || canvas.width === 0 || canvas.height === 0) return;
+
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let minX = canvas.width;
+  let minY = canvas.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      if (pixels[(y * canvas.width + x) * 4 + 3] <= 8) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  const contentWidth = maxX - minX + 1;
+  const contentHeight = maxY - minY + 1;
+  const scale = contentWidth > 0 && contentHeight > 0
+    ? Math.min(canvas.width / contentWidth, canvas.height / contentHeight, 2)
+    : 1;
+  avatarContentScales.set(image.currentSrc, scale);
+  image.style.setProperty("--sp-agent-avatar-scale", String(scale));
+}
+
 /**
  * Ensure the active chat is a fresh session bound to the currently-selected agent.
  * Starts a new session when the current chat already has messages, OR when it
@@ -409,25 +418,12 @@ function ensureEmptySession() {
 function toggleAgentFlyout() {
   isAgentFlyoutOpen.value = !isAgentFlyoutOpen.value;
   if (isAgentFlyoutOpen.value) {
-    nextTick(() => {
-      updateFlyoutPosition();
-      flyoutSearchInputRef.value?.focus();
-    });
+    nextTick(updateFlyoutPosition);
   }
 }
 
 function closeAgentFlyout() {
   isAgentFlyoutOpen.value = false;
-}
-
-function focusAgentSearch() {
-  if (!isAgentFlyoutOpen.value) {
-    isAgentFlyoutOpen.value = true;
-  }
-  nextTick(() => {
-    updateFlyoutPosition();
-    flyoutSearchInputRef.value?.focus();
-  });
 }
 
 function updateFlyoutPosition() {
@@ -552,10 +548,6 @@ function handleCreateAgent() {
   router.push("/chat/market");
 }
 
-function handleExploreAgents() {
-  closeAgentFlyout();
-  router.push("/chat/market");
-}
 </script>
 
 <style scoped>
@@ -680,19 +672,11 @@ html.dark .sp-agent-flyout {
   justify-content: space-between;
 }
 
-.sp-agent-flyout-search-btn {
-  border: none;
-  background: transparent;
+.sp-agent-flyout-title {
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 600;
-  cursor: pointer;
   padding: 4px 2px;
-  font-family: inherit;
-}
-
-.sp-agent-flyout-search-btn:hover {
-  color: var(--text-primary);
 }
 
 .sp-agent-flyout-add-btn {
@@ -718,26 +702,6 @@ html.dark .sp-agent-flyout-add-btn {
 
 html.dark .sp-agent-flyout-add-btn:hover {
   background: var(--border);
-}
-
-.sp-agent-flyout-input {
-  width: 100%;
-  border: 1px solid #e3ddd7;
-  border-radius: 10px;
-  background: #fff;
-  color: var(--text-primary);
-  font-size: 13px;
-  padding: 8px 10px;
-  outline: none;
-}
-
-.sp-agent-flyout-input:focus {
-  border-color: #c9beb3;
-}
-
-html.dark .sp-agent-flyout-input {
-  background: var(--bg-primary);
-  border-color: var(--border);
 }
 
 .sp-agent-avatar-list {
@@ -778,12 +742,19 @@ html.dark .sp-agent-avatar-item.active {
   background: var(--bg-tertiary);
 }
 
-.sp-agent-avatar-img {
+.sp-agent-avatar-frame {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  object-fit: cover;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.sp-agent-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(var(--sp-agent-avatar-scale, 1));
 }
 
 .sp-agent-avatar-name {
@@ -794,31 +765,6 @@ html.dark .sp-agent-avatar-item.active {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.25;
-}
-
-.sp-agent-flyout-footer {
-  margin-top: 2px;
-  border: none;
-  border-top: 1px solid #ece7e2;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 10px 4px 2px;
-  text-align: right;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.sp-agent-flyout-footer:hover {
-  color: var(--text-primary);
-}
-
-html.dark .sp-agent-flyout-footer {
-  border-top-color: var(--border);
 }
 
 /* ── Create chat button ── */

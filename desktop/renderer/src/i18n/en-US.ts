@@ -46,7 +46,6 @@ export default {
   "sidebar.chats": "Chats",
   "sidebar.noChats": "No chats yet",
   "sidebar.agents": "Agents",
-  "sidebar.explorePopularAgents": "Explore more popular agents",
   "sidebar.chatDeleteFailed": "Failed to delete chat: {error}",
   "sidebar.phone": "Phone",
   "sidebar.tagline": "Weave the future through conversation",
@@ -740,12 +739,10 @@ export default {
   "skills.dev.missing.os": "os: {list}",
 
   // ── Sidebar Agent ──
-  "sidebar.searchAgents": "Search Agents",
   "sidebar.newAgent": "New Agent",
 
   // ── AgentMarketView ──
-  "agentMarket.title": "New Agent",
-  "agentMarket.pageTitle": "Popular Agents",
+  "agentMarket.title": "Agent Team",
   "agentMarket.add": "Add",
   "agentMarket.adding": "Adding...",
   "agentMarket.added": "Added",

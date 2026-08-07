@@ -44,7 +44,6 @@ export default {
   "sidebar.chats": "对话",
   "sidebar.noChats": "暂无对话",
   "sidebar.agents": "Agent 列表",
-  "sidebar.explorePopularAgents": "探索更多热门 Agent",
   "sidebar.chatDeleteFailed": "删除对话失败：{error}",
   "sidebar.phone": "手机",
   "sidebar.tagline": "透过对话，编织万物未来",
@@ -709,12 +708,10 @@ export default {
   "skills.dev.missing.os": "系统: {list}",
 
   // ── Sidebar Agent ──
-  "sidebar.searchAgents": "搜索 Agent",
   "sidebar.newAgent": "新建 Agent",
 
   // ── AgentMarketView ──
-  "agentMarket.title": "新建 Agent",
-  "agentMarket.pageTitle": "热门 Agent",
+  "agentMarket.title": "Agent 团队",
   "agentMarket.add": "添加",
   "agentMarket.adding": "添加中...",
   "agentMarket.added": "已添加",
