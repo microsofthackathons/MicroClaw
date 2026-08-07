@@ -36,6 +36,29 @@ describe("agent store", () => {
     expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
   });
 
+  it("uses the catalog name for known agents instead of the runtime roster name", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "code-geek", name: "Coder" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+
+    await store.fetchAgents();
+
+    expect(store.agents.map((agent) => [agent.id, agent.name])).toEqual([
+      ["code-geek", "Code Geek"],
+      ["master-archive", "Master Archive"],
+    ]);
+
+    setLocale("zh-CN");
+    expect(store.agents.map((agent) => [agent.id, agent.name])).toEqual([
+      ["code-geek", "灵码极客"],
+      ["master-archive", "归藏大师"],
+    ]);
+  });
+
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
     const store = useAgentStore();
     const marketAgent = store.marketAgents.find(

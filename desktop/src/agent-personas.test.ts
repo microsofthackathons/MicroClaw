@@ -71,7 +71,7 @@ describe("agent personas", () => {
     const config = {
       agents: {
         list: [
-          { id: "Coder", name: "Coder", default: true },
+          { id: "Code-Geek", name: "Code Geek", default: true },
           { id: "MAIN", name: "Assistant", default: true },
         ],
       },
@@ -79,7 +79,7 @@ describe("agent personas", () => {
 
     ensureAgentPersonasConfig(config, stateDir);
 
-    expect(config.agents.list.find((entry) => entry.id === "coder")).toMatchObject({
+    expect(config.agents.list.find((entry) => entry.id === "code-geek")).toMatchObject({
       default: true,
     });
     expect(config.agents.list.find((entry) => entry.id === "main")).not.toHaveProperty(
@@ -297,13 +297,13 @@ _Fill this in during your first conversation. Make it yours._
     const config = {
       agents: {
         list: [
-          { id: "coder", name: "Coder", default: true },
+          { id: "code-geek", name: "Code Geek", default: true },
           { id: "main", name: "Assistant" },
         ],
       },
     };
 
-    removeConfiguredAgent(config, "coder");
+    removeConfiguredAgent(config, "code-geek");
 
     expect(config.agents.list).toEqual([
       { id: "main", name: "Assistant", default: true },

@@ -1,9 +1,5 @@
 <template>
   <div class="agent-market">
-    <div class="agent-market-header">
-      <h1 class="agent-market-title">{{ t("agentMarket.pageTitle") }}</h1>
-    </div>
-
     <div class="agent-market-grid">
       <AgentCard
         v-for="agent in filteredAgents"
@@ -80,23 +76,6 @@ async function handleRemove(agentId: string) {
   background: var(--bg-primary);
   border-radius: 12px;
   align-items: center;
-}
-
-.agent-market-header {
-  margin-bottom: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  max-width: 1080px;
-}
-
-.agent-market-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-  letter-spacing: -0.02em;
 }
 
 .agent-market-grid {
