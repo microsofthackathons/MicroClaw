@@ -135,6 +135,7 @@ export const useChatStore = defineStore("chat", () => {
   const loading = ref(false);
   const sending = ref(false);
   const streaming = ref(false);
+  const sessionTitleRefreshRevision = ref(0);
   const streamText = ref("");
   const streamToolCalls = ref<
     {
@@ -1019,6 +1020,7 @@ export const useChatStore = defineStore("chat", () => {
       streamTextOffset.value = 0;
       _toolPhaseActive.value = false;
       streaming.value = false;
+      sessionTitleRefreshRevision.value++;
       chatRunId.value = null;
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
@@ -1432,6 +1434,7 @@ export const useChatStore = defineStore("chat", () => {
         ];
       }
       cached.streaming = false;
+      sessionTitleRefreshRevision.value++;
       cached.streamText = "";
       cached.chatRunId = null;
       cached.streamStartedAt = null;
@@ -1574,6 +1577,7 @@ export const useChatStore = defineStore("chat", () => {
     loading,
     sending,
     streaming,
+    sessionTitleRefreshRevision,
     streamText,
     streamTextOffset,
     streamToolCalls,
