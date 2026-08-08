@@ -97,6 +97,9 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertIn('id="language"', template)
         self.assertIn("api.set_language", template)
         self.assertNotIn("<br><a", template)
+        self.assertIn('id="progressPercent"', template)
+        self.assertIn('role="progressbar"', template)
+        self.assertIn('els.progressPercent.textContent = progress + "%";', template)
 
     def test_installer_uses_existing_app_font_stack(self):
         root = Path(__file__).parents[1]

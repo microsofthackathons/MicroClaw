@@ -197,10 +197,15 @@
         color: var(--text-primary);
       }
 
-      .install-progress-wrap {
+      .install-progress-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 12px;
+      }
+      .install-progress-track {
         width: 200px;
         height: 6px;
-        margin: 0 0 12px;
         border-radius: 99px;
         background: #e5e5e5;
         overflow: hidden;
@@ -211,6 +216,13 @@
         background: var(--text-primary);
         border-radius: 99px;
         transition: width 0.18s linear;
+      }
+      .install-progress-percent {
+        width: 36px;
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
       }
       .install-progress-status {
         margin: 0 0 12px;
@@ -426,8 +438,18 @@
         <div class="welcome-bottom">
           <p id="legal" class="welcome-notice"></p>
           <p id="desc" class="welcome-notice welcome-notice--desc hidden"></p>
-          <div id="progressWrap" class="install-progress-wrap hidden">
-            <div id="progressBar" class="install-progress-bar"></div>
+          <div id="progressWrap" class="install-progress-row hidden">
+            <div
+              id="progressTrack"
+              class="install-progress-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div id="progressBar" class="install-progress-bar"></div>
+            </div>
+            <span id="progressPercent" class="install-progress-percent">0%</span>
           </div>
           <p id="progressStatus" class="install-progress-status hidden"></p>
           <button id="quick" class="btn-primary"></button>
@@ -497,7 +519,9 @@
         legal: $("legal"),
         desc: $("desc"),
         progressWrap: $("progressWrap"),
+        progressTrack: $("progressTrack"),
         progressBar: $("progressBar"),
+        progressPercent: $("progressPercent"),
         progressStatus: $("progressStatus"),
         quick: $("quick"),
         custom: $("custom"),
@@ -542,6 +566,8 @@
         els.progressWrap.classList.toggle("hidden", !on);
         if (!on) {
           els.progressBar.style.width = "0%";
+          els.progressTrack.setAttribute("aria-valuenow", "0");
+          els.progressPercent.textContent = "0%";
           els.progressStatus.classList.add("hidden");
           els.progressStatus.textContent = "";
         }
@@ -711,7 +737,10 @@
               startImageCycle();
               startTextCycle();
             }
-            els.progressBar.style.width = snap.progress + "%";
+            const progress = Math.round(Math.min(100, Math.max(0, Number(snap.progress) || 0)));
+            els.progressBar.style.width = progress + "%";
+            els.progressTrack.setAttribute("aria-valuenow", String(progress));
+            els.progressPercent.textContent = progress + "%";
             const step = snap.progress_text || "";
             const detail = snap.progress_detail || "";
             const statusText = detail ? step + " — " + detail : step;
@@ -722,6 +751,8 @@
             stopImageCycle();
             stopTextCycle();
             els.progressBar.style.width = "100%";
+            els.progressTrack.setAttribute("aria-valuenow", "100");
+            els.progressPercent.textContent = "100%";
             els.progressStatus.classList.add("hidden");
             if (!state.closeTimer) {
               state.closeTimer = setTimeout(() => window.pywebview.api.close_window(), 2000);
