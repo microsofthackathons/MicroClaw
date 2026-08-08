@@ -122,10 +122,7 @@ export const useSessionStore = defineStore("sessions", () => {
 
   /** Replace a local alias with its canonical Gateway key and merge duplicates. */
   function canonicalizeSession(aliasKey: string, canonicalKey: string) {
-    if (
-      aliasKey === AGENT_WARMUP_SESSION_KEY ||
-      canonicalKey === AGENT_WARMUP_SESSION_KEY
-    ) {
+    if (aliasKey === AGENT_WARMUP_SESSION_KEY || canonicalKey === AGENT_WARMUP_SESSION_KEY) {
       return;
     }
     if (!aliasKey || aliasKey === canonicalKey) return;

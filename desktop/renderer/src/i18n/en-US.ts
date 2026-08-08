@@ -787,14 +787,12 @@ export default {
   "agent.codeGeek.tag.2": "Debugging",
   "agent.codeGeek.tag.3": "Code Review",
   "agent.codeGeek.task.1.title": "Write a Python script for me",
-  "agent.codeGeek.task.1.desc":
-    "Quickly generate runnable Python code based on your requirements.",
+  "agent.codeGeek.task.1.desc": "Quickly generate runnable Python code based on your requirements.",
   "agent.codeGeek.task.2.title": "Review this code",
   "agent.codeGeek.task.2.desc":
     "Review code logic line by line, identifying potential issues and improvements.",
   "agent.codeGeek.task.3.title": "Explain this algorithm",
-  "agent.codeGeek.task.3.desc":
-    "Break down algorithm principles and complexity in plain language.",
+  "agent.codeGeek.task.3.desc": "Break down algorithm principles and complexity in plain language.",
 
   "agent.painter.name": "Van Gogh",
   "agent.painter.desc": "Pixel-style illustration & scene creation",

@@ -1480,6 +1480,7 @@ async function addCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to add agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
       );
     }
     throw error;
@@ -1548,6 +1549,7 @@ async function removeCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to remove agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
       );
     }
     throw error;
