@@ -4,13 +4,25 @@ from pathlib import Path
 
 
 class InstallerStubTests(unittest.TestCase):
-    def test_window_name_does_not_duplicate_setup_suffix(self):
-        script = (
+    @classmethod
+    def setUpClass(cls):
+        cls.script = (
             Path(__file__).parents[1] / "installer" / "microclaw-setup.nsi"
         ).read_text(encoding="utf-8")
 
-        self.assertRegex(script, re.compile(r'^Name "MicroClaw"$', re.MULTILINE))
-        self.assertIn('VIAddVersionKey "ProductName"    "MicroClaw Setup"', script)
+    def test_window_name_does_not_duplicate_setup_suffix(self):
+        self.assertRegex(self.script, re.compile(r'^Name "MicroClaw"$', re.MULTILINE))
+        self.assertIn('VIAddVersionKey "ProductName"    "MicroClaw Setup"', self.script)
+
+    def test_bootstrapper_extracts_silently_before_launching_installer(self):
+        self.assertRegex(
+            self.script,
+            re.compile(r"^SilentInstall silent$", re.MULTILINE),
+        )
+        self.assertNotRegex(self.script, re.compile(r"^Page instfiles$", re.MULTILINE))
+        self.assertNotIn("ShowInstDetails show", self.script)
+        self.assertIn("File /r \"${PAYLOAD_DIR}\\*\"", self.script)
+        self.assertIn("Exec '\"$INSTDIR\\MicroClawInstaller.exe\"'", self.script)
 
 
 if __name__ == "__main__":
