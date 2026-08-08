@@ -9,7 +9,6 @@
         <img class="sp-brand-avatar" :src="currentAgent.avatar" :alt="currentAgent.name" />
         <div>
           <div class="sp-brand-name">{{ currentAgent.name }}</div>
-          <div class="sp-brand-tagline">{{ t("sidebar.tagline") }}</div>
         </div>
         <span
           class="sp-conn-dot"
@@ -593,12 +592,6 @@ html.dark .sp-conn-dot {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.sp-brand-tagline {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
 }
 
 .sp-agent-flyout {
