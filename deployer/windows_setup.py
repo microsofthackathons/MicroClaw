@@ -2281,19 +2281,36 @@ class WindowsSetup:
         # cache and allow a generous, cold-start-tolerant timeout instead of the
         # old 30s ceiling that spuriously failed post-install validation.
         env.setdefault("NODE_COMPILE_CACHE", str(cache_dir))
-        result = self._run(
-            command + args,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_OPENCLAW_RPC_TIMEOUT,
-            env=env,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        process: subprocess.Popen | None = None
+        job: _WindowsKillOnCloseJob | None = None
         try:
-            return json.loads(result.stdout)
+            process = subprocess.Popen(
+                command + args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                creationflags=_CREATE_NO_WINDOW | _CREATE_SUSPENDED,
+            )
+            job = self._create_process_lifetime_job(process)
+            job.resume(process)
+            stdout, stderr = process.communicate(timeout=_OPENCLAW_RPC_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            if process is not None:
+                self._terminate_process_tree(process, job)
+                job = None
+            raise RuntimeError(
+                f"OpenClaw command timed out after {_OPENCLAW_RPC_TIMEOUT}s"
+            ) from error
+        finally:
+            if job is not None:
+                job.close()
+        if process.returncode != 0:
+            raise RuntimeError(stderr.strip() or stdout.strip())
+        try:
+            return json.loads(stdout)
         except json.JSONDecodeError as error:
             raise RuntimeError(f"OpenClaw returned invalid JSON for {' '.join(args)}") from error
 

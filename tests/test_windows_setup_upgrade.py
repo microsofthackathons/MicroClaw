@@ -762,20 +762,40 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._find_openclaw_cmd = lambda: ["openclaw.cmd"]
         self.ws._get_env = lambda: {}
         self.ws._load_openclaw_state_env = lambda _state: {}
-        captured = {}
+        process = unittest.mock.Mock(returncode=0)
+        process.communicate.return_value = ('{"ok": true}', "")
 
-        def fake_run(_cmd, **kwargs):
-            captured["timeout"] = kwargs.get("timeout")
-            captured["env"] = kwargs.get("env")
-            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
-
-        self.ws._run = fake_run
-        result = self.ws._run_openclaw_json(["gateway", "call", "config.get", "--json"])
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            result = self.ws._run_openclaw_json(
+                ["gateway", "call", "config.get", "--json"]
+            )
 
         self.assertEqual(result, {"ok": True})
-        self.assertEqual(captured["timeout"], _OPENCLAW_RPC_TIMEOUT)
+        process.communicate.assert_called_once_with(timeout=_OPENCLAW_RPC_TIMEOUT)
         self.assertGreaterEqual(_OPENCLAW_RPC_TIMEOUT, 60)
-        self.assertIn("NODE_COMPILE_CACHE", captured["env"])
+        self.assertIn("NODE_COMPILE_CACHE", popen.call_args.kwargs["env"])
+        self.ws._create_process_lifetime_job.assert_called_once_with(process)
+        self.process_job.resume.assert_called_once_with(process)
+        self.process_job.close.assert_called_once()
+
+    def test_run_openclaw_json_timeout_terminates_process_tree(self):
+        self.ws._find_openclaw_cmd = lambda: ["openclaw.cmd"]
+        self.ws._get_env = lambda: {}
+        self.ws._load_openclaw_state_env = lambda _state: {}
+        self.ws._terminate_process_tree = unittest.mock.Mock()
+        process = unittest.mock.Mock(returncode=None)
+        process.communicate.side_effect = subprocess.TimeoutExpired(
+            "openclaw", _OPENCLAW_RPC_TIMEOUT
+        )
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ), self.assertRaisesRegex(RuntimeError, "timed out"):
+            self.ws._run_openclaw_json(["plugins", "inspect", "openclaw-weixin", "--json"])
+
+        self.ws._terminate_process_tree.assert_called_once_with(process, self.process_job)
 
     def test_validation_records_every_required_check_and_stops_gateway(self):
         transaction = unittest.mock.Mock()

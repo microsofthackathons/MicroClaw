@@ -208,6 +208,25 @@ class DurabilityHelperTests(unittest.TestCase):
             # Final callback reports completion of all six files.
             self.assertEqual(observed[-1], (6, 6))
 
+    def test_fsync_payload_tree_reports_finalizing_before_directory_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "payload.bin").write_bytes(b"payload")
+            events: list[str] = []
+
+            with unittest.mock.patch.object(
+                upgrade,
+                "_fsync_directory",
+                side_effect=lambda _path: events.append("directory"),
+            ):
+                upgrade._fsync_payload_tree(
+                    root,
+                    on_progress=lambda _done, _total: events.append("files"),
+                    on_finalizing=lambda: events.append("finalizing"),
+                )
+
+            self.assertEqual(events, ["files", "finalizing", "directory"])
+
     def test_atomic_json_fsyncs_file_before_durable_replace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
@@ -1007,9 +1026,9 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         real_atomic_write = upgrade._atomic_json_write
         real_rename = upgrade._durable_rename
 
-        def flush_tree(path: Path, on_progress=None) -> None:
+        def flush_tree(path: Path, on_progress=None, on_finalizing=None) -> None:
             events.append(("payload-flush", path, None))
-            real_flush_tree(path)
+            real_flush_tree(path, on_progress, on_finalizing)
 
         def write_json(path: Path, payload: dict[str, object]) -> None:
             if path.name == "backup-files.json":
@@ -1288,9 +1307,9 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         real_replace = upgrade._durable_replace
         real_set_phase = tx.set_phase
 
-        def flush_tree(path: Path, on_progress=None) -> None:
+        def flush_tree(path: Path, on_progress=None, on_finalizing=None) -> None:
             events.append(("tree-flush", path, None))
-            real_flush_tree(path)
+            real_flush_tree(path, on_progress, on_finalizing)
 
         def fsync_file(path: Path) -> None:
             if path.parent == self.shim.parent and path.name.endswith(".restore"):

@@ -894,23 +894,23 @@ class DeployerApp(tk.Tk):
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
             (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions),
             (10, "Installing Git...", ws.ensure_git),
-            (18, "Preparing OpenClaw upgrade...", lambda: self._prepare_upgrade(ws)),
+            (18, "Preparing MicroClaw update...", lambda: self._prepare_upgrade(ws)),
             (25, "Installing Node.js...", lambda: self._ensure_node(ws)),
             (35, "Configuring npm registry...", ws.setup_npm_mirror),
-            (50, "Installing OpenClaw gateway...", lambda: self._ensure_openclaw(ws)),
+            (50, "Installing MicroClaw background service...", lambda: self._ensure_openclaw(ws)),
             (55, "Updating PATH...", ws.add_to_path),
             # ── MicroClaw components ──
             (60, "Installing desktop client...", ws.install_desktop_client),
             (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(ws)),
             (65, "Writing API keys...", lambda: self._write_env_file()),
-            (70, "Writing OpenClaw configuration...", ws.write_config),
+            (70, "Writing MicroClaw configuration...", ws.write_config),
             (80, "Installing web search provider...", ws.install_search_provider_plugin),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (90, "Installing WeChat plugin...", ws.install_weixin_plugin),
-            (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade),
+            (94, "Validating MicroClaw update...", ws.verify_openclaw_upgrade),
             (95, "Installing uninstaller...", ws.install_uninstaller_bundle),
             (97, "Creating desktop shortcut...", ws.create_desktop_shortcut),
-            (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade),
+            (98, "Finalizing MicroClaw update...", ws.commit_openclaw_upgrade),
         ]
 
     def _install_thread(self):

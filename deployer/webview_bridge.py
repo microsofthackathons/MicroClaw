@@ -1,6 +1,7 @@
 import json
 import locale
 import os
+import re
 import shutil
 import sys
 import threading
@@ -113,13 +114,38 @@ def _center_native_window(hwnd, logger=None):
     user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004)
 
 
-def _detect_lang():
-    """Detect UI language from env or system locale. Returns 'zh' or 'en'."""
-    lang = os.environ.get("MICROCLAW_LANG", "").lower()
-    if lang in ("zh", "cn", "zh-cn", "zh_cn"):
+def _normalize_lang(lang):
+    normalized = str(lang or "").strip().lower().replace("_", "-")
+    if normalized in ("zh", "cn") or normalized.startswith("zh-"):
         return "zh"
-    if lang in ("en", "en-us", "en_us"):
+    if normalized == "en" or normalized.startswith("en-"):
         return "en"
+    return None
+
+
+def _app_settings_path():
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(appdata) / "microclaw" / "settings.json"
+
+
+def _read_saved_lang(settings_path):
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if isinstance(settings, dict):
+            return _normalize_lang(settings.get("language"))
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _detect_lang(settings_path=None):
+    """Detect installer language from override, existing app setting, then OS locale."""
+    override = _normalize_lang(os.environ.get("MICROCLAW_LANG"))
+    if override:
+        return override
+    saved = _read_saved_lang(Path(settings_path or _app_settings_path()))
+    if saved:
+        return saved
     # On Windows, query the user's UI language directly. locale.getlocale()
     # returns (None, None) on Python 3.11+ without an explicit setlocale call.
     if sys.platform == "win32":
@@ -156,8 +182,9 @@ def _assets_dir():
 
 _STRINGS = {
     "zh": {
+        "language": "语言",
         "welcomeTitle": "欢迎来到 MicroClaw",
-        "legalLine": '点击"快速安装"，即表示你同意 MicroClaw',
+        "legalLine": "点击“快速安装”，即表示你同意 MicroClaw",
         "serviceAgreement": "服务协议",
         "and": "和",
         "privacyStatement": "隐私声明",
@@ -165,24 +192,51 @@ _STRINGS = {
         "customInstall": "自定义安装",
         "customTitle": "自定义安装",
         "customSubtitle": "选择安装位置",
+        "installPath": "安装路径",
+        "selectInstallLocation": "选择安装位置",
         "allowRead": "允许 MicroClaw 读取安装目录中的所有文件",
         "startInstall": "开始安装",
         "back": "← 返回",
         "viewLog": "查看日志",
         "close": "关闭",
+        "installerError": "安装器错误",
         "runningAppsTitle": "需要关闭 MicroClaw",
-        "runningAppsMessage": "检测到 MicroClaw 或 OpenClaw 正在运行{process}。继续安装会关闭应用并中断正在执行的任务。\n\n是否关闭并继续？",
-        "runningAppsCloseFailed": "无法自动关闭 MicroClaw/OpenClaw。请从系统托盘退出后重试。",
+        "runningAppsMessage": "检测到 MicroClaw 正在运行{process}。继续安装会关闭应用并中断正在执行的任务。\n\n是否关闭并继续？",
+        "runningAppsCloseFailed": "无法自动关闭 MicroClaw。请从系统托盘退出后重试。",
         "installCancelled": "安装已取消，正在运行的应用未被关闭",
         "installFailTitle": "安装失败",
         "installFailMsg": "请检查日志后重试。",
+        "retrying": "{step} 正在重试（{attempt}/{attempts}）…",
+        "steps": {
+            "executionPolicy": "正在配置 PowerShell 执行策略…",
+            "defenderExclusions": "正在添加 Windows 安全防护排除项…",
+            "git": "正在安装 Git…",
+            "prepareUpgrade": "正在准备 MicroClaw 更新…",
+            "node": "正在安装 Node.js…",
+            "npmRegistry": "正在配置软件下载源…",
+            "openclaw": "正在安装 MicroClaw 后台服务…",
+            "path": "正在更新系统路径…",
+            "desktop": "正在安装桌面客户端…",
+            "assets": "正在复制内置资源…",
+            "apiKeys": "正在配置模型服务…",
+            "config": "正在写入 MicroClaw 配置…",
+            "compileCache": "正在预热启动缓存…",
+            "searchProvider": "正在安装网络搜索插件…",
+            "sandbox": "正在配置 AppContainer 沙箱…",
+            "weixin": "正在安装微信插件…",
+            "verifyUpgrade": "正在验证 MicroClaw 更新…",
+            "uninstaller": "正在安装卸载程序…",
+            "shortcut": "正在创建桌面快捷方式…",
+            "commitUpgrade": "正在完成 MicroClaw 更新…",
+        },
         "carousel": [
-            ["顺手", "不用再学 prompt"],
+            ["顺手", "不用再学提示词"],
             ["可信", "能拦、能改、能撤回"],
             ["懂你", "符合你的工作模式"],
         ],
     },
     "en": {
+        "language": "Language",
         "welcomeTitle": "Welcome to MicroClaw",
         "legalLine": 'By clicking "Quick Install", you agree to the MicroClaw',
         "serviceAgreement": "Service Agreement",
@@ -192,17 +246,43 @@ _STRINGS = {
         "customInstall": "Custom Install",
         "customTitle": "Custom Install",
         "customSubtitle": "Choose install location",
+        "installPath": "Install Path",
+        "selectInstallLocation": "Select install location",
         "allowRead": "Allow MicroClaw to read all files in its installation folder",
         "startInstall": "Start Install",
         "back": "← Back",
         "viewLog": "View Log",
         "close": "Close",
+        "installerError": "Installer error",
         "runningAppsTitle": "MicroClaw must be closed",
-        "runningAppsMessage": "MicroClaw or OpenClaw is currently running{process}. Continuing will close the app and interrupt active tasks.\n\nClose it and continue?",
-        "runningAppsCloseFailed": "MicroClaw/OpenClaw could not be closed automatically. Exit it from the system tray and retry.",
+        "runningAppsMessage": "MicroClaw is currently running{process}. Continuing will close the app and interrupt active tasks.\n\nClose it and continue?",
+        "runningAppsCloseFailed": "MicroClaw could not be closed automatically. Exit it from the system tray and retry.",
         "installCancelled": "Installation cancelled; the running app was not closed",
         "installFailTitle": "Installation Failed",
         "installFailMsg": "Please check the logs and retry.",
+        "retrying": "{step} retrying ({attempt}/{attempts})…",
+        "steps": {
+            "executionPolicy": "Configuring PowerShell execution policy...",
+            "defenderExclusions": "Adding Defender exclusions...",
+            "git": "Installing Git...",
+            "prepareUpgrade": "Preparing MicroClaw update...",
+            "node": "Installing Node.js...",
+            "npmRegistry": "Configuring npm registry...",
+            "openclaw": "Installing MicroClaw background service...",
+            "path": "Updating PATH...",
+            "desktop": "Installing desktop client...",
+            "assets": "Copying bundled assets...",
+            "apiKeys": "Writing API keys...",
+            "config": "Writing MicroClaw configuration...",
+            "compileCache": "Warming up V8 compile cache...",
+            "searchProvider": "Installing web search provider...",
+            "sandbox": "Provisioning AppContainer sandbox...",
+            "weixin": "Installing WeChat plugin...",
+            "verifyUpgrade": "Validating MicroClaw update...",
+            "uninstaller": "Installing uninstaller...",
+            "shortcut": "Creating desktop shortcut...",
+            "commitUpgrade": "Finalizing MicroClaw update...",
+        },
         "carousel": [
             ["Intuitive", "No prompt engineering needed"],
             ["Trustworthy", "Block, edit, or undo anytime"],
@@ -213,10 +293,11 @@ _STRINGS = {
 
 
 class WebInstallerBridge:
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, lang=None, settings_path=None):
         self._config = DeployerConfig()
         self._logger = logger or DeployerLogger()
-        self._lang = _detect_lang()
+        self._settings_path = Path(settings_path or _app_settings_path())
+        self._lang = _normalize_lang(lang) or _detect_lang(self._settings_path)
         self._state_lock = threading.Lock()
         self._default_install_dir = str(DEFAULT_DESKTOP_DIR)
         self._default_allow_read = True
@@ -225,6 +306,7 @@ class WebInstallerBridge:
             "allow_read": self._default_allow_read,
             "progress": 0,
             "progress_text": "",
+            "progress_key": "",
             "progress_detail": "",
             "status": "idle",
             "running": False,
@@ -251,6 +333,7 @@ class WebInstallerBridge:
             install_dir = self._state["install_dir"]
             allow_read = self._state["allow_read"]
         return {
+            "lang": self._lang,
             "strings": _STRINGS[self._lang],
             "assets": {
                 "fold": "welcome-fold.png",
@@ -261,6 +344,42 @@ class WebInstallerBridge:
             "install_dir": install_dir,
             "allow_read": allow_read,
         }
+
+    def set_language(self, lang):
+        normalized = _normalize_lang(lang)
+        if normalized is None:
+            raise ValueError(f"Unsupported installer language: {lang}")
+        with self._state_lock:
+            self._lang = normalized
+            progress_key = self._state.get("progress_key")
+            if progress_key:
+                self._state["progress_text"] = _STRINGS[normalized]["steps"][progress_key]
+        return {"lang": normalized, "strings": _STRINGS[normalized]}
+
+    def _persist_language_setting(self):
+        settings = {}
+        if self._settings_path.exists():
+            try:
+                loaded = json.loads(self._settings_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("settings root is not an object")
+                settings = loaded
+            except (OSError, ValueError, TypeError) as exc:
+                raise RuntimeError(f"Could not read existing MicroClaw settings: {exc}") from exc
+
+        settings["language"] = "zh-CN" if self._lang == "zh" else "en-US"
+        self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self._settings_path.with_name(
+            f".{self._settings_path.name}.{os.getpid()}.tmp"
+        )
+        try:
+            temp_path.write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temp_path, self._settings_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def write_html_file(self):
         """Read the HTML template from assets dir, inject bootstrap JSON, write alongside it."""
@@ -283,7 +402,7 @@ class WebInstallerBridge:
         root.attributes("-topmost", True)
         try:
             selected = filedialog.askdirectory(
-                title="Select install location",
+                title=_STRINGS[self._lang]["selectInstallLocation"],
                 initialdir=self.get_state()["install_dir"],
                 parent=root,
             )
@@ -344,10 +463,11 @@ class WebInstallerBridge:
             )
         threading.Thread(target=self._install_thread, daemon=True).start()
 
-    def _set_progress(self, pct, text):
+    def _set_progress(self, pct, text, progress_key=""):
         with self._state_lock:
             self._state["progress"] = pct
             self._state["progress_text"] = text
+            self._state["progress_key"] = progress_key
             # A new step supersedes any sub-status detail from the previous one.
             self._state["progress_detail"] = ""
             self._state["status"] = "running"
@@ -356,50 +476,67 @@ class WebInstallerBridge:
     def _set_progress_detail(self, detail):
         """Sub-status line fed by long-running file operations (backup/restore).
 
-        Keeps the installer from looking frozen during the multi-minute
-        per-file fsync of a large OpenClaw package.
+        Keeps the installer from looking frozen during long file operations.
         """
         with self._state_lock:
-            self._state["progress_detail"] = detail or ""
+            self._state["progress_detail"] = self._present_user_text(detail)
+
+    def _present_user_text(self, text):
+        presented = str(text or "").replace("OpenClaw", "MicroClaw")
+        if self._lang != "zh":
+            return presented
+
+        file_progress = re.fullmatch(
+            r"(Backing up|Restoring) MicroClaw files \(([\d,]+)/([\d,]+) files\)",
+            presented,
+        )
+        if file_progress:
+            action = "正在备份" if file_progress.group(1) == "Backing up" else "正在恢复"
+            return f"{action} MicroClaw 文件（{file_progress.group(2)}/{file_progress.group(3)} 个文件）"
+        return {
+            "Finalizing MicroClaw backup…": "正在完成 MicroClaw 备份…",
+            "Finalizing MicroClaw file restore…": "正在完成 MicroClaw 文件恢复…",
+        }.get(presented, presented)
 
     def _build_install_steps(self, ws):
+        steps = _STRINGS[self._lang]["steps"]
         return [
             (
                 3,
-                "Configuring PowerShell execution policy...",
+                steps["executionPolicy"],
                 ws.ensure_execution_policy,
                 LOCAL_RETRIES,
             ),
             # Apply Defender exclusions early so later IO-heavy steps aren't AV-scanned.
-            (6, "Adding Defender exclusions...", ws.ensure_defender_exclusions, LOCAL_RETRIES),
-            (10, "Installing Git...", ws.ensure_git, NETWORK_RETRIES),
-            (18, "Preparing OpenClaw upgrade...", lambda: self._prepare_upgrade(ws), 0),
-            (25, "Installing Node.js...", lambda: self._ensure_node(ws), NETWORK_RETRIES),
-            (35, "Configuring npm registry...", ws.setup_npm_mirror, NETWORK_RETRIES),
+            (6, steps["defenderExclusions"], ws.ensure_defender_exclusions, LOCAL_RETRIES),
+            (10, steps["git"], ws.ensure_git, NETWORK_RETRIES),
+            (18, steps["prepareUpgrade"], lambda: self._prepare_upgrade(ws), 0),
+            (25, steps["node"], lambda: self._ensure_node(ws), NETWORK_RETRIES),
+            (35, steps["npmRegistry"], ws.setup_npm_mirror, NETWORK_RETRIES),
             (
                 50,
-                "Installing OpenClaw gateway...",
+                steps["openclaw"],
                 lambda: self._ensure_openclaw(ws),
                 NETWORK_RETRIES,
             ),
-            (55, "Updating PATH...", ws.add_to_path, LOCAL_RETRIES),
-            (60, "Installing desktop client...", ws.install_desktop_client, NETWORK_RETRIES),
-            (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
-            (65, "Writing API keys...", lambda: self._write_env_file(), LOCAL_RETRIES),
-            (70, "Writing OpenClaw configuration...", ws.write_config, LOCAL_RETRIES),
-            (75, "Warming up V8 compile cache...", ws.warmup_compile_cache, LOCAL_RETRIES),
+            (55, steps["path"], ws.add_to_path, LOCAL_RETRIES),
+            (60, steps["desktop"], ws.install_desktop_client, NETWORK_RETRIES),
+            (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
+            (65, steps["apiKeys"], lambda: self._write_env_file(), LOCAL_RETRIES),
+            (70, steps["config"], ws.write_config, LOCAL_RETRIES),
+            (75, steps["compileCache"], ws.warmup_compile_cache, LOCAL_RETRIES),
             (
                 80,
-                "Installing web search provider...",
+                steps["searchProvider"],
                 ws.install_search_provider_plugin,
                 NETWORK_RETRIES,
             ),
-            (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer, LOCAL_RETRIES),
-            (90, "Installing WeChat plugin...", ws.install_weixin_plugin, NETWORK_RETRIES),
-            (94, "Validating OpenClaw upgrade...", ws.verify_openclaw_upgrade, LOCAL_RETRIES),
-            (95, "Installing uninstaller...", ws.install_uninstaller_bundle, LOCAL_RETRIES),
-            (97, "Creating desktop shortcut...", ws.create_desktop_shortcut, LOCAL_RETRIES),
-            (98, "Committing OpenClaw upgrade...", ws.commit_openclaw_upgrade, LOCAL_RETRIES),
+            (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
+            (90, steps["weixin"], ws.install_weixin_plugin, NETWORK_RETRIES),
+            (94, steps["verifyUpgrade"], ws.verify_openclaw_upgrade, LOCAL_RETRIES),
+            (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
+            (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
+            (98, steps["commitUpgrade"], ws.commit_openclaw_upgrade, LOCAL_RETRIES),
         ]
 
     def _install_thread(self):
@@ -415,9 +552,20 @@ class WebInstallerBridge:
                 self._finish_fail(f"Installation cancelled.{suffix}")
                 timing.finish("cancelled")
                 return
-            self._set_progress(pct, label)
+            progress_key = next(
+                (
+                    key
+                    for strings in _STRINGS.values()
+                    for key, value in strings["steps"].items()
+                    if value == label
+                ),
+                "",
+            )
+            if progress_key:
+                label = _STRINGS[self._lang]["steps"][progress_key]
+            self._set_progress(pct, label, progress_key)
             started_at = timing.start_step()
-            step_ok = self._run_step_with_retry(pct, label, fn, retries)
+            step_ok = self._run_step_with_retry(pct, label, fn, retries, progress_key)
             step_status = "success" if step_ok else self.get_state()["status"]
             timing.record_step(label, started_at, step_status)
             if not step_ok:
@@ -433,7 +581,7 @@ class WebInstallerBridge:
         timing.finish("success")
         self._finish_ok()
 
-    def _run_step_with_retry(self, pct, label, fn, retries):
+    def _run_step_with_retry(self, pct, label, fn, retries, progress_key=""):
         """Execute one install step, retrying transient failures.
 
         A step is considered failed if it raises or returns an explicit
@@ -482,7 +630,12 @@ class WebInstallerBridge:
                     f"{clean_label} failed ({detail}); retrying in {delay}s "
                     f"(attempt {attempt + 1}/{attempts})…"
                 )
-                self._set_progress(pct, f"{label} retrying ({attempt + 1}/{attempts})…")
+                retrying = _STRINGS[self._lang]["retrying"].format(
+                    step=label.rstrip(".。…"),
+                    attempt=attempt + 1,
+                    attempts=attempts,
+                )
+                self._set_progress(pct, retrying, progress_key)
                 # Cancellation-aware wait so a user can abort during backoff.
                 for _ in range(delay):
                     if not self.get_state()["running"]:
@@ -609,6 +762,10 @@ class WebInstallerBridge:
         return True
 
     def _finish_ok(self):
+        try:
+            self._persist_language_setting()
+        except Exception as exc:
+            self._logger.warn(f"Could not save MicroClaw language preference: {exc}")
         with self._state_lock:
             self._state.update(
                 {
@@ -629,7 +786,7 @@ class WebInstallerBridge:
                 {
                     "status": "failed",
                     "running": False,
-                    "error": msg,
+                    "error": self._present_user_text(msg),
                 }
             )
 
