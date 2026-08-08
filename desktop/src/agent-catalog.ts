@@ -50,8 +50,8 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Assistant",
     nameKey: "store.defaultAgent",
     descKey: "store.defaultAgentDesc",
-    avatar: "normal.png",
-    image: "normal.png",
+    avatar: "main-avatar.png",
+    image: "main-avatar.png",
     tagKeys: [],
     taskKeys: [
       { titleKey: "agent.main.task.1.title", descKey: "agent.main.task.1.desc" },
@@ -66,7 +66,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Master Archive",
     nameKey: "agent.masterArchive.name",
     descKey: "agent.masterArchive.desc",
-    avatar: "Archaeologist.png",
+    avatar: "master-archive-avatar.png",
     image: "Archaeologist.png",
     tagKeys: [
       "agent.masterArchive.tag.1",
@@ -97,7 +97,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Code Geek",
     nameKey: "agent.codeGeek.name",
     descKey: "agent.codeGeek.desc",
-    avatar: "程序猿.png",
+    avatar: "code-geek-avatar.png",
     image: "Coder.png",
     tagKeys: ["agent.codeGeek.tag.1", "agent.codeGeek.tag.2", "agent.codeGeek.tag.3"],
     taskKeys: [
@@ -113,7 +113,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Painter",
     nameKey: "agent.painter.name",
     descKey: "agent.painter.desc",
-    avatar: "梵高.png",
+    avatar: "painter-avatar.png",
     image: "Painter.png",
     tagKeys: ["agent.painter.tag.1", "agent.painter.tag.2", "agent.painter.tag.3"],
     taskKeys: [
@@ -129,7 +129,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Master",
     nameKey: "agent.master.name",
     descKey: "agent.master.desc",
-    avatar: "大师.png",
+    avatar: "master-avatar.png",
     image: "Diviner.png",
     tagKeys: ["agent.master.tag.1", "agent.master.tag.2", "agent.master.tag.3"],
     taskKeys: [
@@ -145,13 +145,9 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Growth Hacker",
     nameKey: "agent.growthHacker.name",
     descKey: "agent.growthHacker.desc",
-    avatar: "增长黑客.png",
+    avatar: "growth-hacker-avatar.png",
     image: "Scientist.png",
-    tagKeys: [
-      "agent.growthHacker.tag.1",
-      "agent.growthHacker.tag.2",
-      "agent.growthHacker.tag.3",
-    ],
+    tagKeys: ["agent.growthHacker.tag.1", "agent.growthHacker.tag.2", "agent.growthHacker.tag.3"],
     taskKeys: [
       {
         titleKey: "agent.growthHacker.task.1.title",
@@ -174,7 +170,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Leopard",
     nameKey: "agent.leopard.name",
     descKey: "agent.leopard.desc",
-    avatar: "金钱豹.png",
+    avatar: "leopard-avatar.png",
     image: "stock.png",
     tagKeys: ["agent.leopard.tag.1", "agent.leopard.tag.2", "agent.leopard.tag.3"],
     taskKeys: [
@@ -190,7 +186,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     name: "Singer",
     nameKey: "agent.singer.name",
     descKey: "agent.singer.desc",
-    avatar: "Singer.png",
+    avatar: "singer-avatar.png",
     image: "Singer.png",
     tagKeys: ["agent.singer.tag.1", "agent.singer.tag.2", "agent.singer.tag.3"],
     taskKeys: [
@@ -203,9 +199,9 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
   },
 ];
 
-export const DEFAULT_AGENT_IDS = AGENT_CATALOG.filter(
-  (agent) => agent.installedByDefault,
-).map((agent) => agent.id);
+export const DEFAULT_AGENT_IDS = AGENT_CATALOG.filter((agent) => agent.installedByDefault).map(
+  (agent) => agent.id,
+);
 
 // OpenClaw's runtime filters the per-agent allowlist (config.agents.list[*].skills)
 // against each skill's FRONTMATTER `name:` field — NOT its directory slug/skillKey

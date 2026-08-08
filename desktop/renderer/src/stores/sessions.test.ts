@@ -188,6 +188,21 @@ describe("useSessionStore", () => {
     expect(store.sessions[0].title).toBe("Custom Title");
   });
 
+  it("uses the Gateway title for display and falls back to the local title", () => {
+    const store = useSessionStore();
+    store.ensureSession("test-1");
+    store.updateSession("test-1", { title: "Local title" });
+    const session = store.sessions[0];
+
+    expect(store.getDisplayTitle(session)).toBe("Local title");
+
+    store.setGatewayTitles({ "test-1": "Gateway title" });
+    expect(store.getDisplayTitle(session)).toBe("Gateway title");
+
+    store.setGatewayTitles({});
+    expect(store.getDisplayTitle(session)).toBe("Local title");
+  });
+
   it("sortedSessions returns sessions sorted by updatedAt descending", () => {
     const store = useSessionStore();
     store.ensureSession("old");

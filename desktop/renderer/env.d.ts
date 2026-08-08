@@ -222,6 +222,7 @@ interface OpenClawAPI {
     ): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
+    generateSessionTitle(sessionKey: string): Promise<string | null>;
     abort(sessionKey: string): Promise<void>;
     deleteSession(sessionKey: string): Promise<void>;
     clearHistory(): Promise<{ cleared: number }>;

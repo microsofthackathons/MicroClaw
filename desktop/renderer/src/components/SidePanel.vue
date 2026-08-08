@@ -9,7 +9,6 @@
         <img class="sp-brand-avatar" :src="currentAgent.avatar" :alt="currentAgent.name" />
         <div>
           <div class="sp-brand-name">{{ currentAgent.name }}</div>
-          <div class="sp-brand-tagline">{{ t("sidebar.tagline") }}</div>
         </div>
         <span
           class="sp-conn-dot"
@@ -49,14 +48,7 @@
             :title="agent.name"
             @click="handleAgentSelect(agent.id)"
           >
-            <span class="sp-agent-avatar-frame">
-              <img
-                class="sp-agent-avatar-img"
-                :src="agent.avatar"
-                :alt="agent.name"
-                @load="normalizeAgentAvatar"
-              />
-            </span>
+            <img class="sp-agent-avatar-img" :src="agent.avatar" :alt="agent.name" />
             <span class="sp-agent-avatar-name">{{ agent.name }}</span>
           </button>
         </div>
@@ -158,7 +150,9 @@
         <span class="sp-usage-title">{{ t("sidebar.usageSnapshotTitle") }}</span>
         <button
           class="sp-usage-toggle"
-          :title="usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')"
+          :title="
+            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
+          "
           :aria-label="
             usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
           "
@@ -194,16 +188,19 @@
             <span class="sp-usage-value">{{ formatCompact(usageSnapshot.totalTokens) }}</span>
           </div>
         </div>
-        <div v-else-if="!gatewayOnline" class="sp-usage-state">{{ t("sidebar.usageSnapshotOffline") }}</div>
+        <div v-else-if="!gatewayOnline" class="sp-usage-state">
+          {{ t("sidebar.usageSnapshotOffline") }}
+        </div>
         <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
 
         <div class="sp-usage-foot">
           <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
-          <span v-if="lastUpdatedLabel">{{ t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel }) }}</span>
+          <span v-if="lastUpdatedLabel">{{
+            t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel })
+          }}</span>
         </div>
       </template>
     </section>
-
   </aside>
 </template>
 
@@ -241,8 +238,6 @@ const usageSnapshot = ref<UsageSnapshot | null>(null);
 const usageLoading = ref(false);
 const usageLastUpdated = ref<Date | null>(null);
 const usageCollapsed = ref(false);
-const openClawTitles = ref<Record<string, string>>({});
-const avatarContentScales = new Map<string, number>();
 let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let titleRequestGeneration = 0;
 
@@ -265,9 +260,10 @@ const lastUpdatedLabel = computed(() => {
 });
 
 const currentAgent = computed(() => {
-  const session = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
-  const agentId = session?.agentId || agentStore.currentAgentId;
-  return agentStore.agents.find((a) => a.id === agentId) || agentStore.agents[0];
+  return (
+    agentStore.agents.find((agent) => agent.id === agentStore.currentAgentId) ||
+    agentStore.agents[0]
+  );
 });
 
 onMounted(() => {
@@ -354,46 +350,6 @@ function formatCompact(value: number) {
 function formatCny(value: number) {
   const rate = usageSnapshot.value?.exchangeRate ?? USD_TO_CNY_FALLBACK_RATE;
   return `${t("settings.currencySymbol")}${((value || 0) * rate).toFixed(2)}`;
-}
-
-function normalizeAgentAvatar(event: Event) {
-  const image = event.currentTarget as HTMLImageElement;
-  const cachedScale = avatarContentScales.get(image.currentSrc);
-  if (cachedScale !== undefined) {
-    image.style.setProperty("--sp-agent-avatar-scale", String(cachedScale));
-    return;
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context || canvas.width === 0 || canvas.height === 0) return;
-
-  context.drawImage(image, 0, 0);
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  let minX = canvas.width;
-  let minY = canvas.height;
-  let maxX = -1;
-  let maxY = -1;
-
-  for (let y = 0; y < canvas.height; y++) {
-    for (let x = 0; x < canvas.width; x++) {
-      if (pixels[(y * canvas.width + x) * 4 + 3] <= 8) continue;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-    }
-  }
-
-  const contentWidth = maxX - minX + 1;
-  const contentHeight = maxY - minY + 1;
-  const scale = contentWidth > 0 && contentHeight > 0
-    ? Math.min(canvas.width / contentWidth, canvas.height / contentHeight, 2)
-    : 1;
-  avatarContentScales.set(image.currentSrc, scale);
-  image.style.setProperty("--sp-agent-avatar-scale", String(scale));
 }
 
 /**
@@ -488,21 +444,21 @@ async function loadSessionTitles() {
   const generation = ++titleRequestGeneration;
   const keys = visibleSessions.value.map((session) => session.key).slice(0, 64);
   if (!gatewayOnline.value || keys.length === 0) {
-    openClawTitles.value = {};
+    sessionStore.setGatewayTitles({});
     return;
   }
-  openClawTitles.value = {};
+  sessionStore.setGatewayTitles({});
   try {
     const response = await window.openclaw.chat.listSessionTitles(keys);
     if (generation !== titleRequestGeneration) return;
-    openClawTitles.value = response.titles ?? {};
+    sessionStore.setGatewayTitles(response.titles ?? {});
   } catch {
-    if (generation === titleRequestGeneration) openClawTitles.value = {};
+    if (generation === titleRequestGeneration) sessionStore.setGatewayTitles({});
   }
 }
 
 function sessionTitle(session: { key: string; title: string }) {
-  return openClawTitles.value[session.key] || session.title;
+  return sessionStore.getDisplayTitle(session);
 }
 
 function selectSession(key: string) {
@@ -545,9 +501,8 @@ function handleAgentSelect(agentId: string) {
 
 function handleCreateAgent() {
   closeAgentFlyout();
-  router.push("/chat/market");
+  router.push("/chat/catalog");
 }
-
 </script>
 
 <style scoped>
@@ -637,12 +592,6 @@ html.dark .sp-conn-dot {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.sp-brand-tagline {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
 }
 
 .sp-agent-flyout {
@@ -742,19 +691,12 @@ html.dark .sp-agent-avatar-item.active {
   background: var(--bg-tertiary);
 }
 
-.sp-agent-avatar-frame {
+.sp-agent-avatar-img {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.sp-agent-avatar-img {
-  width: 100%;
-  height: 100%;
   object-fit: cover;
-  transform: scale(var(--sp-agent-avatar-scale, 1));
+  flex-shrink: 0;
 }
 
 .sp-agent-avatar-name {
@@ -1097,5 +1039,4 @@ html.dark .sp-menu-item.active {
   flex-direction: column;
   gap: 4px;
 }
-
 </style>

@@ -525,7 +525,7 @@ import searchGif from "@/assets/openclaw_search_preview_transparent.gif";
 import bookGif from "@/assets/book.gif";
 import binocularsGif from "@/assets/binoculars.gif";
 import mapGif from "@/assets/map.gif";
-import defaultAvatar from "@/assets/normal.png";
+import defaultAvatar from "@/assets/main-avatar.png";
 
 const chatStore = useChatStore();
 const agentStore = useAgentStore();

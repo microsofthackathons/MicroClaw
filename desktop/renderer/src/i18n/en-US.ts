@@ -45,7 +45,7 @@ export default {
   "sidebar.createChat": "Create New Chat",
   "sidebar.chats": "Chats",
   "sidebar.noChats": "No chats yet",
-  "sidebar.agents": "Agents",
+  "sidebar.agents": "Agent Team",
   "sidebar.chatDeleteFailed": "Failed to delete chat: {error}",
   "sidebar.phone": "Phone",
   "sidebar.tagline": "Weave the future through conversation",
@@ -739,10 +739,11 @@ export default {
   "skills.dev.missing.os": "os: {list}",
 
   // ── Sidebar Agent ──
-  "sidebar.newAgent": "New Agent",
+  "sidebar.newAgent": "Open Agent Catalog",
 
   // ── AgentMarketView ──
-  "agentMarket.title": "Agent Team",
+  "agentMarket.title": "New Agent",
+  "agentMarket.pageTitle": "Popular Agents",
   "agentMarket.add": "Add",
   "agentMarket.adding": "Adding...",
   "agentMarket.added": "Added",
@@ -755,6 +756,11 @@ export default {
     "Remove {name} from MicroClaw? Existing conversations and workspace files will be kept.",
   "agentMarket.removeSuccess": "{name} was removed.",
   "agentMarket.removeFailed": "Couldn't remove the agent from OpenClaw. Please try again.",
+  "agentCatalog.pageTitle": "Agent Catalog",
+  "agentCatalog.marketplace": "Agent Marketplace",
+  "agentCatalog.customAgents": "Custom Agents",
+  "agentCatalog.noCustomAgents": "No custom agents yet",
+  "agentCatalog.noCustomAgentsHint": "Custom agent creation will be available in a future update.",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",

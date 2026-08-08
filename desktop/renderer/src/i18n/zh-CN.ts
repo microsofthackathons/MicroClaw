@@ -43,7 +43,7 @@ export default {
   "sidebar.createChat": "创建新对话",
   "sidebar.chats": "对话",
   "sidebar.noChats": "暂无对话",
-  "sidebar.agents": "Agent 列表",
+  "sidebar.agents": "Agent Team",
   "sidebar.chatDeleteFailed": "删除对话失败：{error}",
   "sidebar.phone": "手机",
   "sidebar.tagline": "透过对话，编织万物未来",
@@ -708,10 +708,11 @@ export default {
   "skills.dev.missing.os": "系统: {list}",
 
   // ── Sidebar Agent ──
-  "sidebar.newAgent": "新建 Agent",
+  "sidebar.newAgent": "打开 Agent Catalog",
 
   // ── AgentMarketView ──
-  "agentMarket.title": "Agent 团队",
+  "agentMarket.title": "新建 Agent",
+  "agentMarket.pageTitle": "热门 Agent",
   "agentMarket.add": "添加",
   "agentMarket.adding": "添加中...",
   "agentMarket.added": "已添加",
@@ -723,6 +724,11 @@ export default {
   "agentMarket.removeConfirm": "从 MicroClaw 中移除 {name}？现有对话和工作区文件将会保留。",
   "agentMarket.removeSuccess": "已移除 {name}。",
   "agentMarket.removeFailed": "无法从 OpenClaw 移除 Agent，请重试。",
+  "agentCatalog.pageTitle": "Agent Catalog",
+  "agentCatalog.marketplace": "Agent Marketplace",
+  "agentCatalog.customAgents": "Custom Agents",
+  "agentCatalog.noCustomAgents": "暂时还没有自定义 Agent",
+  "agentCatalog.noCustomAgentsHint": "自定义 Agent 功能将在后续版本中提供。",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "快捷任务",

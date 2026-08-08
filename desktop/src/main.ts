@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
@@ -6,7 +6,11 @@ import * as net from "net";
 import * as os from "os";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
-import { hardRestartGateway, requiresExternalGatewayStop } from "./gateway-lifecycle";
+import {
+  applyAgentRosterReload,
+  hardRestartGateway,
+  requiresExternalGatewayStop,
+} from "./gateway-lifecycle";
 import { createTray, destroyTray } from "./tray";
 import Store from "electron-store";
 import {
@@ -1067,7 +1071,13 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -1353,6 +1363,38 @@ function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
   }
 }
 
+async function applyGatewayAgentRoster(
+  agentId: string,
+  shouldExist: boolean,
+  restartGateway?: () => Promise<void>,
+) {
+  if (!gwClient?.connected) throw new Error("Gateway not connected");
+  return await applyAgentRosterReload({
+    listAgentIds: async () => {
+      const result = await gwClient!.listAgents();
+      if (!Array.isArray(result.agents))
+        throw new Error("OpenClaw returned an invalid agent roster");
+      return new Set(
+        result.agents.flatMap((candidate) => {
+          if (
+            typeof candidate !== "object" ||
+            candidate === null ||
+            typeof (candidate as { id?: unknown }).id !== "string"
+          ) {
+            return [];
+          }
+          return [(candidate as { id: string }).id];
+        }),
+      );
+    },
+    isApplied: (agentIds) => agentIds.has(agentId) === shouldExist,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    timeoutMs: 45_000,
+    pollMs: 100,
+    restartGateway,
+  });
+}
+
 async function addCatalogAgent(
   agentId: string,
 ): Promise<{ agents: Array<{ id: string; name: string }> }> {
@@ -1372,15 +1414,7 @@ async function addCatalogAgent(
     return { agents: listConfiguredAgents(config) };
   }
 
-  const alreadyRunning = await checkExistingGateway(gatewayPort);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
-  if (
-    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
-  ) {
-    throw new Error(
-      "Cannot add an agent while MicroClaw is connected to an externally managed Gateway",
-    );
-  }
 
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
@@ -1394,7 +1428,6 @@ async function addCatalogAgent(
   let restartAttempted = false;
 
   try {
-    persistAgentPersonas(config);
     seedAgentPersonaWorkspace(
       config,
       stateDir,
@@ -1404,8 +1437,25 @@ async function addCatalogAgent(
       os.homedir(),
       path.dirname(entryPath),
     );
-    restartAttempted = true;
-    await restartManagedGatewayAndRequireReady(`Adding agent ${agentId}`);
+    persistAgentPersonas(config);
+    const applyResult = await applyGatewayAgentRoster(
+      agentId,
+      true,
+      managedGateway
+        ? async () => {
+            restartAttempted = true;
+            await restartManagedGatewayAndRequireReady(
+              `Adding agent ${agentId} after hot-reload timeout`,
+            );
+          }
+        : undefined,
+    );
+    if (applyResult === "timed-out") {
+      throw new Error(
+        `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
+      );
+    }
+    console.log(`[agents] Added ${agentId} via ${applyResult}`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1430,6 +1480,7 @@ async function addCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to add agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
       );
     }
     throw error;
@@ -1456,21 +1507,29 @@ async function removeCatalogAgent(
     return { agents: listConfiguredAgents(config) };
   }
 
-  const alreadyRunning = await checkExistingGateway(gatewayPort);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
-  if (
-    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
-  ) {
-    throw new Error(
-      "Cannot remove an agent while MicroClaw is connected to an externally managed Gateway",
-    );
-  }
 
   let restartAttempted = false;
   try {
     persistAgentPersonas(config);
-    restartAttempted = true;
-    await restartManagedGatewayAndRequireReady(`Removing agent ${agentId}`);
+    const applyResult = await applyGatewayAgentRoster(
+      agentId,
+      false,
+      managedGateway
+        ? async () => {
+            restartAttempted = true;
+            await restartManagedGatewayAndRequireReady(
+              `Removing agent ${agentId} after hot-reload timeout`,
+            );
+          }
+        : undefined,
+    );
+    if (applyResult === "timed-out") {
+      throw new Error(
+        `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
+      );
+    }
+    console.log(`[agents] Removed ${agentId} via ${applyResult}`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1490,6 +1549,7 @@ async function removeCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to remove agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
       );
     }
     throw error;
@@ -1506,14 +1566,7 @@ const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
 );
-const LIGHT_WINDOW_BACKGROUND = "#ffffff";
-const DARK_WINDOW_BACKGROUND = "#18181b";
-
-function getWindowBackgroundColor(themeMode = settingsStore.get("themeMode")): string {
-  const useDarkBackground =
-    themeMode === "dark" || (themeMode === "system" && nativeTheme.shouldUseDarkColors);
-  return useDarkBackground ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND;
-}
+const TRANSPARENT_WINDOW_BACKGROUND = "#00000000";
 
 function _getRendererURL(): string {
   if (isDev) return VITE_DEV_URL;
@@ -1533,7 +1586,8 @@ function createMainWindow(): BrowserWindow {
     icon: APP_ICON_PATH,
     show: !settingsStore.get("startMinimized"),
     titleBarStyle: "hidden",
-    backgroundColor: getWindowBackgroundColor(),
+    transparent: true,
+    backgroundColor: TRANSPARENT_WINDOW_BACKGROUND,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -3709,6 +3763,11 @@ function registerIpcHandlers(): void {
     return await gwClient.listSessionTitles(params.keys);
   });
 
+  ipcMain.handle("chat:generate-session-title", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.generateSessionTitle(params.sessionKey);
+  });
+
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     await gwClient.abortChat(params.sessionKey);
@@ -4430,9 +4489,6 @@ function registerIpcHandlers(): void {
     if (key === "autoStart") {
       app.setLoginItemSettings({ openAtLogin: !!value });
     }
-    if (key === "themeMode" && mainWindow) {
-      mainWindow.setBackgroundColor(getWindowBackgroundColor(String(value)));
-    }
   });
 
   // --- Updates ---
@@ -4464,7 +4520,8 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      { width?: number; height?: number; x?: number; y?: number } | undefined;
+      | { width?: number; height?: number; x?: number; y?: number }
+      | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);

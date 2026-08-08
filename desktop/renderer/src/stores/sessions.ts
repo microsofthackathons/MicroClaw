@@ -32,6 +32,7 @@ function saveToStorage(sessions: Session[]) {
 export const useSessionStore = defineStore("sessions", () => {
   const sessions = ref<Session[]>(loadFromStorage());
   const currentKey = ref<string | null>(null);
+  const gatewayTitles = ref<Record<string, string>>({});
 
   const sortedSessions = computed(() =>
     [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -95,6 +96,14 @@ export const useSessionStore = defineStore("sessions", () => {
     }
   }
 
+  function setGatewayTitles(titles: Readonly<Record<string, string>>) {
+    gatewayTitles.value = { ...titles };
+  }
+
+  function getDisplayTitle(session: Pick<Session, "key" | "title">) {
+    return gatewayTitles.value[session.key] || session.title;
+  }
+
   /** Remove a session. */
   function removeSession(key: string) {
     sessions.value = sessions.value.filter((s) => s.key !== key);
@@ -113,10 +122,7 @@ export const useSessionStore = defineStore("sessions", () => {
 
   /** Replace a local alias with its canonical Gateway key and merge duplicates. */
   function canonicalizeSession(aliasKey: string, canonicalKey: string) {
-    if (
-      aliasKey === AGENT_WARMUP_SESSION_KEY ||
-      canonicalKey === AGENT_WARMUP_SESSION_KEY
-    ) {
+    if (aliasKey === AGENT_WARMUP_SESSION_KEY || canonicalKey === AGENT_WARMUP_SESSION_KEY) {
       return;
     }
     if (!aliasKey || aliasKey === canonicalKey) return;
@@ -169,10 +175,13 @@ export const useSessionStore = defineStore("sessions", () => {
   return {
     sessions,
     currentKey,
+    gatewayTitles,
     sortedSessions,
     ensureSession,
     reconcileEmptySessions,
     updateSession,
+    setGatewayTitles,
+    getDisplayTitle,
     removeSession,
     togglePinned,
     canonicalizeSession,

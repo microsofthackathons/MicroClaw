@@ -113,8 +113,11 @@ contextBridge.exposeInMainWorld("openclaw", {
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
 
     /** Load titles derived by OpenClaw from session transcripts. */
-    listSessionTitles: (keys: string[]) =>
-      ipcRenderer.invoke("chat:list-session-titles", { keys }),
+    listSessionTitles: (keys: string[]) => ipcRenderer.invoke("chat:list-session-titles", { keys }),
+
+    /** Generate a summary title and persist it on the Gateway session. */
+    generateSessionTitle: (sessionKey: string) =>
+      ipcRenderer.invoke("chat:generate-session-title", { sessionKey }),
 
     /** Abort the current run on a session. */
     abort: (sessionKey: string) => ipcRenderer.invoke("chat:abort", { sessionKey }),

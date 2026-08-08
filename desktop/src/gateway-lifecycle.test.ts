@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { hardRestartGateway, requiresExternalGatewayStop } from "./gateway-lifecycle";
+import {
+  applyAgentRosterReload,
+  hardRestartGateway,
+  requiresExternalGatewayStop,
+  waitForAgentRosterReload,
+} from "./gateway-lifecycle";
 
 describe("requiresExternalGatewayStop", () => {
   it("protects an unowned listener when the roster must be reloaded", () => {
@@ -70,5 +75,111 @@ describe("hardRestartGateway", () => {
 
     expect(isPortOccupied).toHaveBeenCalledOnce();
     expect(startGateway).toHaveBeenCalledOnce();
+  });
+});
+
+describe("waitForAgentRosterReload", () => {
+  it("returns immediately when the roster condition is already applied", async () => {
+    const listAgentIds = vi.fn().mockResolvedValue(new Set(["main", "code-geek"]));
+    const sleep = vi.fn();
+
+    await expect(
+      waitForAgentRosterReload({
+        listAgentIds,
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep,
+        timeoutMs: 3_000,
+        pollMs: 100,
+      }),
+    ).resolves.toBe(true);
+
+    expect(listAgentIds).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("retries transient reads until the roster condition is applied", async () => {
+    const listAgentIds = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("reload in progress"))
+      .mockResolvedValueOnce(new Set(["main"]))
+      .mockResolvedValueOnce(new Set(["main", "code-geek"]));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      waitForAgentRosterReload({
+        listAgentIds,
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep,
+        timeoutMs: 300,
+        pollMs: 100,
+      }),
+    ).resolves.toBe(true);
+
+    expect(listAgentIds).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns false when the roster condition is not applied before timeout", async () => {
+    const listAgentIds = vi.fn().mockResolvedValue(new Set(["main"]));
+
+    await expect(
+      waitForAgentRosterReload({
+        listAgentIds,
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep: vi.fn().mockResolvedValue(undefined),
+        timeoutMs: 300,
+        pollMs: 100,
+      }),
+    ).resolves.toBe(false);
+
+    expect(listAgentIds).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("applyAgentRosterReload", () => {
+  it("does not restart when OpenClaw hot-applies the roster", async () => {
+    const restartGateway = vi.fn();
+
+    await expect(
+      applyAgentRosterReload({
+        listAgentIds: async () => new Set(["main", "code-geek"]),
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep: vi.fn(),
+        timeoutMs: 300,
+        pollMs: 100,
+        restartGateway,
+      }),
+    ).resolves.toBe("hot-reloaded");
+
+    expect(restartGateway).not.toHaveBeenCalled();
+  });
+
+  it("restarts a managed Gateway only after the hot-reload timeout", async () => {
+    const restartGateway = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      applyAgentRosterReload({
+        listAgentIds: async () => new Set(["main"]),
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep: vi.fn().mockResolvedValue(undefined),
+        timeoutMs: 300,
+        pollMs: 100,
+        restartGateway,
+      }),
+    ).resolves.toBe("restarted");
+
+    expect(restartGateway).toHaveBeenCalledOnce();
+  });
+
+  it("reports timeout without restarting an externally managed Gateway", async () => {
+    await expect(
+      applyAgentRosterReload({
+        listAgentIds: async () => new Set(["main"]),
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep: vi.fn().mockResolvedValue(undefined),
+        timeoutMs: 300,
+        pollMs: 100,
+      }),
+    ).resolves.toBe("timed-out");
   });
 });

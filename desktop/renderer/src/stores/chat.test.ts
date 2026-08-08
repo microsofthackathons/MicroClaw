@@ -6,6 +6,7 @@ const mockLoadHistory = vi.fn().mockResolvedValue({ messages: [] });
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockAbort = vi.fn().mockResolvedValue(undefined);
 const mockDeleteSession = vi.fn().mockResolvedValue(undefined);
+const mockGenerateSessionTitle = vi.fn().mockResolvedValue("Summary title");
 const mockIsConnected = vi.fn().mockResolvedValue(false);
 
 Object.defineProperty(globalThis, "window", {
@@ -17,6 +18,7 @@ Object.defineProperty(globalThis, "window", {
         sendMessage: mockSendMessage,
         abort: mockAbort,
         deleteSession: mockDeleteSession,
+        generateSessionTitle: mockGenerateSessionTitle,
         isConnected: mockIsConnected,
         onEvent: vi.fn(),
         onToolEvent: vi.fn(),
@@ -309,7 +311,7 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.lastStreamEventAt).toBeLessThanOrEqual(Date.now());
   });
 
-  it("handleChatEvent clears stream state and requests a title refresh on final", () => {
+  it("handleChatEvent clears stream state and generates a summary title on final", async () => {
     const store = useChatStore();
     store.streaming = true;
     store.sessionKey = "main";
@@ -327,6 +329,10 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.streaming).toBe(false);
     expect(store.lastStreamEventAt).toBeNull();
     expect(store.sessionTitleRefreshRevision).toBe(initialTitleRefreshRevision + 1);
+    expect(mockGenerateSessionTitle).toHaveBeenCalledWith("agent:main:main");
+    await vi.waitFor(() => {
+      expect(store.sessionTitleRefreshRevision).toBe(initialTitleRefreshRevision + 2);
+    });
   });
 
   it("handleChatEvent clears lastStreamEventAt on aborted", () => {
@@ -569,7 +575,7 @@ describe("useChatStore — draft sessions", () => {
 
   it("persists a draft session when the first message is sent", async () => {
     const store = useChatStore();
-    store.newSession("code-geek");
+    store.newSession("coder");
     const key = store.sessionKey;
 
     await store.sendMessage("hello draft");
@@ -578,16 +584,16 @@ describe("useChatStore — draft sessions", () => {
     expect(
       persisted.some(
         (s: { key: string; title: string; agentId?: string }) =>
-          s.key === key && s.title === "hello draft" && s.agentId === "code-geek",
+          s.key === key && s.title === "hello draft" && s.agentId === "coder",
       ),
     ).toBe(true);
   });
 
   it("encodes a non-default agent into the session key so the gateway routes to it", () => {
     const store = useChatStore();
-    store.newSession("code-geek");
-    expect(store.sessionKey).toMatch(/^agent:code-geek:session-/);
-    expect(store.currentSessionAgentId).toBe("code-geek");
+    store.newSession("coder");
+    expect(store.sessionKey).toMatch(/^agent:coder:session-/);
+    expect(store.currentSessionAgentId).toBe("coder");
   });
 
   it("keeps a bare session key for the default (main) agent", () => {

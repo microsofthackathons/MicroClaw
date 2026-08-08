@@ -49,4 +49,12 @@ describe("i18n", () => {
     expect(t("store.defaultAgent")).toBe("阿虾");
     setLocale("en-US"); // restore
   });
+
+  it("Code Geek catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.codeGeek.name")).toBe("Code Geek");
+    setLocale("zh-CN");
+    expect(t("agent.codeGeek.name")).toBe("灵码极客");
+    setLocale("en-US"); // restore
+  });
 });
