@@ -71,9 +71,7 @@ function normalizeRuntimeAgents(value: unknown): RuntimeAgent[] {
       {
         id,
         name: typeof nameValue === "string" && nameValue ? nameValue : id,
-        ...(typeof descriptionValue === "string"
-          ? { description: descriptionValue }
-          : {}),
+        ...(typeof descriptionValue === "string" ? { description: descriptionValue } : {}),
       },
     ];
   });

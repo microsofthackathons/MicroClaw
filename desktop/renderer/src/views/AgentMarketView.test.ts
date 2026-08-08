@@ -29,17 +29,19 @@ function deferred<T>() {
 
 describe("AgentMarketView", () => {
   const agentsAdd = vi.fn();
+  const agentsRemove = vi.fn();
 
   beforeEach(() => {
     setLocale("en-US");
     successMessage.mockReset();
     errorMessage.mockReset();
     agentsAdd.mockReset();
+    agentsRemove.mockReset();
     window.openclaw = {
       agents: {
         list: vi.fn(),
         add: agentsAdd,
-        remove: vi.fn(),
+        remove: agentsRemove,
       },
     } as unknown as typeof window.openclaw;
   });
@@ -71,5 +73,21 @@ describe("AgentMarketView", () => {
     expect(agentsAdd).toHaveBeenCalledWith("master-archive");
     expect(successMessage).toHaveBeenCalledWith("Master Archive was added.");
     expect(wrapper.find(".agent-card-action").text()).toBe("Remove");
+  });
+
+  it("shows a coming-soon empty state on the Custom Agents tab", async () => {
+    const wrapper = mount(AgentMarketView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    const tabs = wrapper.findAll(".agent-catalog-tab");
+    expect(tabs.map((tab) => tab.text())).toEqual(["Agent Marketplace", "Custom Agents"]);
+    await tabs[1].trigger("click");
+
+    expect(wrapper.find(".custom-agent-empty").text()).toContain("No custom agents yet");
+    expect(wrapper.find(".custom-agent-empty").text()).toContain(
+      "Custom agent creation will be available in a future update.",
+    );
+    expect(wrapper.find("form").exists()).toBe(false);
   });
 });

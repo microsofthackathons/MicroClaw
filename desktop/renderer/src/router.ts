@@ -21,7 +21,11 @@ const router = createRouter({
     },
     {
       path: "/chat/market",
-      name: "agent-market",
+      redirect: "/chat/catalog",
+    },
+    {
+      path: "/chat/catalog",
+      name: "agent-catalog",
       component: () => import("@/views/AgentMarketView.vue"),
     },
     {

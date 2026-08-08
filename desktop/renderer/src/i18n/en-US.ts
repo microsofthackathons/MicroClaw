@@ -45,7 +45,7 @@ export default {
   "sidebar.createChat": "Create New Chat",
   "sidebar.chats": "Chats",
   "sidebar.noChats": "No chats yet",
-  "sidebar.agents": "Agents",
+  "sidebar.agents": "Agent Team",
   "sidebar.chatDeleteFailed": "Failed to delete chat: {error}",
   "sidebar.phone": "Phone",
   "sidebar.tagline": "Weave the future through conversation",
@@ -739,10 +739,11 @@ export default {
   "skills.dev.missing.os": "os: {list}",
 
   // ── Sidebar Agent ──
-  "sidebar.newAgent": "New Agent",
+  "sidebar.newAgent": "Open Agent Catalog",
 
   // ── AgentMarketView ──
-  "agentMarket.title": "Agent Team",
+  "agentMarket.title": "New Agent",
+  "agentMarket.pageTitle": "Popular Agents",
   "agentMarket.add": "Add",
   "agentMarket.adding": "Adding...",
   "agentMarket.added": "Added",
@@ -755,6 +756,12 @@ export default {
     "Remove {name} from MicroClaw? Existing conversations and workspace files will be kept.",
   "agentMarket.removeSuccess": "{name} was removed.",
   "agentMarket.removeFailed": "Couldn't remove the agent from OpenClaw. Please try again.",
+  "agentCatalog.pageTitle": "Agent Catalog",
+  "agentCatalog.subtitle": "Build your Agent Team from the marketplace.",
+  "agentCatalog.marketplace": "Agent Marketplace",
+  "agentCatalog.customAgents": "Custom Agents",
+  "agentCatalog.noCustomAgents": "No custom agents yet",
+  "agentCatalog.noCustomAgentsHint": "Custom agent creation will be available in a future update.",
 
   // ── Agent: quick tasks expand ──
   "agent.quickTasks": "Quick Tasks",
@@ -775,18 +782,18 @@ export default {
   "agent.masterArchive.task.3.desc":
     "Consolidate owners, due dates, and source references into a clean checklist.",
 
-  "agent.codeGeek.name": "Code Geek",
-  "agent.codeGeek.desc": "Code development, debugging & code review",
-  "agent.codeGeek.tag.1": "Development",
-  "agent.codeGeek.tag.2": "Debugging",
-  "agent.codeGeek.tag.3": "Code Review",
-  "agent.codeGeek.task.1.title": "Write a Python script for me",
-  "agent.codeGeek.task.1.desc": "Quickly generate runnable Python code based on your requirements.",
-  "agent.codeGeek.task.2.title": "Review this code",
-  "agent.codeGeek.task.2.desc":
+  "agent.coder.name": "Coder",
+  "agent.coder.desc": "Code development, debugging & code review",
+  "agent.coder.tag.1": "Development",
+  "agent.coder.tag.2": "Debugging",
+  "agent.coder.tag.3": "Code Review",
+  "agent.coder.task.1.title": "Write a Python script for me",
+  "agent.coder.task.1.desc": "Quickly generate runnable Python code based on your requirements.",
+  "agent.coder.task.2.title": "Review this code",
+  "agent.coder.task.2.desc":
     "Review code logic line by line, identifying potential issues and improvements.",
-  "agent.codeGeek.task.3.title": "Explain this algorithm",
-  "agent.codeGeek.task.3.desc": "Break down algorithm principles and complexity in plain language.",
+  "agent.coder.task.3.title": "Explain this algorithm",
+  "agent.coder.task.3.desc": "Break down algorithm principles and complexity in plain language.",
 
   "agent.painter.name": "Van Gogh",
   "agent.painter.desc": "Pixel-style illustration & scene creation",
