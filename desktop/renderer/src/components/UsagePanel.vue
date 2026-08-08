@@ -168,7 +168,7 @@ import { useChatStore } from "@/stores/chat";
 import { t } from "@/i18n";
 import mascotHero from "@/assets/book.gif";
 import mascotCrash from "@/assets/crash.gif";
-import mascotAvatar from "@/assets/normal.png";
+import mascotAvatar from "@/assets/main-avatar.png";
 
 const mascotSmall = mascotAvatar; // small avatar in header (still shot)
 

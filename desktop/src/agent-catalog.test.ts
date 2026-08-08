@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_CATALOG,
@@ -35,6 +37,43 @@ const EXPECTED_SKILL_IDS = [
   "video-frames",
   "word-docx",
 ];
+
+describe("agent catalog artwork", () => {
+  const assetDirectory = path.resolve(__dirname, "../renderer/src/assets");
+
+  function readPngDimensions(filename: string): { width: number; height: number } {
+    const data = fs.readFileSync(path.join(assetDirectory, filename));
+    expect(data.subarray(1, 4).toString("ascii")).toBe("PNG");
+    return {
+      width: data.readUInt32BE(16),
+      height: data.readUInt32BE(20),
+    };
+  }
+
+  it("uses one existing square compact-avatar asset per agent", () => {
+    const avatars = new Set<string>();
+    for (const agent of AGENT_CATALOG) {
+      const expectedFilename = `${agent.id}-avatar.png`;
+      expect(agent.avatar).toBe(expectedFilename);
+      expect(fs.existsSync(path.join(assetDirectory, agent.avatar))).toBe(true);
+      expect(avatars.has(agent.avatar)).toBe(false);
+      avatars.add(agent.avatar);
+
+      const { width, height } = readPngDimensions(agent.avatar);
+      expect(width).toBe(height);
+      expect(width).toBeLessThanOrEqual(512);
+    }
+  });
+
+  it("keeps compact avatars separate from non-main Marketplace artwork", () => {
+    for (const agent of AGENT_CATALOG) {
+      expect(fs.existsSync(path.join(assetDirectory, agent.image))).toBe(true);
+      if (agent.id !== "main") {
+        expect(agent.avatar).not.toBe(agent.image);
+      }
+    }
+  });
+});
 
 describe("agent catalog skills binding", () => {
   it("exposes exactly the 23 expected skill IDs", () => {

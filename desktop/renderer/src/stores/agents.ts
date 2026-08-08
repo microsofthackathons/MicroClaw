@@ -25,16 +25,15 @@ interface RuntimeAgent {
   description?: string;
 }
 
-// Static import of avatar assets
-const avatarModules = import.meta.glob("../assets/*.png", {
+const agentAssetModules = import.meta.glob("../assets/*.png", {
   eager: true,
   query: "?url",
   import: "default",
 }) as Record<string, string>;
 
-function getAvatarUrl(filename: string): string {
+function getAgentAssetUrl(filename: string): string {
   const key = `../assets/${filename}`;
-  return avatarModules[key] || "";
+  return agentAssetModules[key] || "";
 }
 
 /** Resolve a catalog entry into an Agent with translated strings. */
@@ -43,8 +42,8 @@ function resolveCatalogAgent(def: AgentCatalogEntry, isAdded: boolean): Agent {
     id: def.id,
     name: t(def.nameKey),
     description: t(def.descKey),
-    avatar: getAvatarUrl(def.avatar),
-    image: getAvatarUrl(def.image),
+    avatar: getAgentAssetUrl(def.avatar),
+    image: getAgentAssetUrl(def.image),
     tags: def.tagKeys.map((k) => t(k)),
     quickTasks: def.taskKeys.map((tk) => ({
       title: t(tk.titleKey),
@@ -92,8 +91,8 @@ export const useAgentStore = defineStore("agents", () => {
       }
       return {
         ...runtimeAgent,
-        avatar: getAvatarUrl("normal.png"),
-        image: getAvatarUrl("normal.png"),
+        avatar: getAgentAssetUrl("main-avatar.png"),
+        image: getAgentAssetUrl("main-avatar.png"),
         isAdded: true,
       };
     });
