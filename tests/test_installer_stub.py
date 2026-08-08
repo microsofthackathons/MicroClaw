@@ -21,8 +21,15 @@ class InstallerStubTests(unittest.TestCase):
         )
         self.assertNotRegex(self.script, re.compile(r"^Page instfiles$", re.MULTILINE))
         self.assertNotIn("ShowInstDetails show", self.script)
+        self.assertIn('Banner::show /NOUNLOAD "$(PreparingText)"', self.script)
+        self.assertIn("Banner::destroy", self.script)
+        self.assertIn('LangString PreparingText ${LANG_ENGLISH}', self.script)
+        self.assertIn('LangString PreparingText ${LANG_SIMPCHINESE}', self.script)
         self.assertIn("File /r \"${PAYLOAD_DIR}\\*\"", self.script)
         self.assertIn("Exec '\"$INSTDIR\\MicroClawInstaller.exe\"'", self.script)
+        self.assertLess(self.script.index("Banner::show"), self.script.index("File /r"))
+        self.assertLess(self.script.index("File /r"), self.script.index("Banner::destroy"))
+        self.assertLess(self.script.index("Banner::destroy"), self.script.index("Exec '"))
 
 
 if __name__ == "__main__":

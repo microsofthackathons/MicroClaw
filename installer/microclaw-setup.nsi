@@ -22,6 +22,8 @@
 ; ---------------------------------------------------------------------------
 
 Unicode true
+LoadLanguageFile "${NSISDIR}\Contrib\Language files\English.nlf"
+LoadLanguageFile "${NSISDIR}\Contrib\Language files\SimpChinese.nlf"
 
 !ifndef PAYLOAD_DIR
   !error "PAYLOAD_DIR is required (path to the onedir installer)."
@@ -57,7 +59,12 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "CompanyName"    "MicroClaw"
 VIAddVersionKey "LegalCopyright" "Copyright (C) 2026 MicroClaw"
 
+LangString PreparingText ${LANG_ENGLISH} "Preparing MicroClaw..."
+LangString PreparingText ${LANG_SIMPCHINESE} "正在准备 MicroClaw..."
+
 Section "Install"
+  Banner::show /NOUNLOAD "$(PreparingText)"
+
   ; Bound disk usage to a single copy: wipe any leftover staging first.
   RMDir /r "$INSTDIR"
   SetOutPath "$INSTDIR"
@@ -65,6 +72,7 @@ Section "Install"
 
   DetailPrint "Extracting MicroClaw installer..."
   File /r "${PAYLOAD_DIR}\*"
+  Banner::destroy
 
   IfFileExists "$INSTDIR\MicroClawInstaller.exe" +3 0
     MessageBox MB_ICONSTOP "Setup payload is incomplete: MicroClawInstaller.exe was not found."

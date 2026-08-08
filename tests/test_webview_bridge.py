@@ -1,9 +1,11 @@
+import json
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
 
 from deploy import DeployerApp, main
-from deployer.webview_bridge import InstallationCancelled, WebInstallerBridge
+from deployer.webview_bridge import InstallationCancelled, WebInstallerBridge, _detect_lang
 from deployer.windows_setup import ActiveGateway, ActiveInstallation
 
 
@@ -14,7 +16,16 @@ class _Log:
 
 class WebInstallerBridgeTests(unittest.TestCase):
     def setUp(self):
-        self.bridge = WebInstallerBridge(logger=_Log())
+        self.temp = tempfile.TemporaryDirectory()
+        self.settings_path = Path(self.temp.name) / "microclaw" / "settings.json"
+        self.bridge = WebInstallerBridge(
+            logger=_Log(),
+            lang="en",
+            settings_path=self.settings_path,
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
 
     @staticmethod
     def _step_labels(steps):
@@ -34,6 +45,57 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.bridge._confirm_close_running_apps.assert_called_once_with(active)
         setup.stop_active_installation_for_upgrade.assert_called_once_with(active)
         setup.prepare_openclaw_upgrade.assert_called_once_with()
+
+    def test_detect_language_uses_existing_app_preference(self):
+        self.settings_path.parent.mkdir(parents=True)
+        self.settings_path.write_text('{"language":"zh-CN"}', encoding="utf-8")
+
+        with unittest.mock.patch.dict("os.environ", {"MICROCLAW_LANG": ""}):
+            self.assertEqual(_detect_lang(self.settings_path), "zh")
+
+    def test_language_switch_updates_current_progress_text(self):
+        self.bridge._set_progress(10, "Installing Git...", "git")
+
+        localized = self.bridge.set_language("zh-CN")
+
+        self.assertEqual(localized["lang"], "zh")
+        self.assertEqual(self.bridge.get_state()["progress_text"], "正在安装 Git…")
+
+    def test_success_persists_language_without_replacing_other_settings(self):
+        self.settings_path.parent.mkdir(parents=True)
+        self.settings_path.write_text('{"themeMode":"dark"}', encoding="utf-8")
+        self.bridge.set_language("zh")
+        self.bridge._launch_desktop = unittest.mock.Mock()
+
+        self.bridge._finish_ok()
+
+        settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(settings, {"themeMode": "dark", "language": "zh-CN"})
+
+    def test_failed_install_does_not_persist_language(self):
+        self.bridge.set_language("zh")
+
+        self.bridge._finish_fail("failed")
+
+        self.assertFalse(self.settings_path.exists())
+
+    def test_success_does_not_replace_malformed_existing_settings(self):
+        self.settings_path.parent.mkdir(parents=True)
+        self.settings_path.write_text("not json", encoding="utf-8")
+        self.bridge.set_language("zh")
+        self.bridge._launch_desktop = unittest.mock.Mock()
+
+        self.bridge._finish_ok()
+
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), "not json")
+
+    def test_installer_template_exposes_language_selector(self):
+        template = (
+            Path(__file__).parents[1] / "deployer" / "assets" / "installer_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="language"', template)
+        self.assertIn("api.set_language", template)
 
     def test_prepare_upgrade_cancels_without_stopping_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=None)
