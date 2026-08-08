@@ -757,7 +757,6 @@ export default {
   "agentMarket.removeSuccess": "{name} was removed.",
   "agentMarket.removeFailed": "Couldn't remove the agent from OpenClaw. Please try again.",
   "agentCatalog.pageTitle": "Agent Catalog",
-  "agentCatalog.subtitle": "Build your Agent Team from the marketplace.",
   "agentCatalog.marketplace": "Agent Marketplace",
   "agentCatalog.customAgents": "Custom Agents",
   "agentCatalog.noCustomAgents": "No custom agents yet",

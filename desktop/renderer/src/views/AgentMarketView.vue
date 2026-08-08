@@ -1,10 +1,6 @@
 <template>
   <div class="agent-catalog">
-    <div class="agent-catalog-header">
-      <div>
-        <h1 class="agent-catalog-title">{{ t("agentCatalog.pageTitle") }}</h1>
-        <p class="agent-catalog-subtitle">{{ t("agentCatalog.subtitle") }}</p>
-      </div>
+    <div class="agent-catalog-toolbar">
       <div class="agent-catalog-tabs" role="tablist" :aria-label="t('agentCatalog.pageTitle')">
         <button
           class="agent-catalog-tab"
@@ -101,6 +97,10 @@ async function handleRemove(agentId: string) {
 
 <style scoped>
 .agent-catalog {
+  --ux-ctrl-brand-rest: var(--smtc-background-ctrl-brand-rest, #211d1a);
+  --ux-ctrl-on-brand: var(--smtc-foreground-ctrl-on-brand-rest, #fff);
+  --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, var(--text-muted));
+
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -110,53 +110,41 @@ async function handleRemove(agentId: string) {
   align-items: center;
 }
 
-.agent-catalog-header {
+.agent-catalog-toolbar {
   margin-bottom: 24px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
   width: 100%;
   max-width: 1080px;
 }
 
-.agent-catalog-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-  letter-spacing: 0;
-}
-
-.agent-catalog-subtitle {
-  margin: 6px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
 .agent-catalog-tabs {
   display: flex;
-  padding: 3px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--bg-chat-hover);
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .agent-catalog-tab {
-  min-height: 32px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 6px;
+  padding: 4px 14px;
+  border: 1px solid var(--ux-border);
+  border-radius: 999px;
   background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
+  color: var(--ux-text-muted);
   font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
+  transition: all 0.15s;
 }
 
 .agent-catalog-tab.active {
-  background: var(--bg-chat);
-  color: var(--text-primary);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
+  background: var(--ux-ctrl-brand-rest);
+  color: var(--ux-ctrl-on-brand);
+  border-color: var(--ux-ctrl-brand-rest);
+}
+
+.agent-catalog-tab:not(.active):hover {
+  background: var(--ux-surface-hover);
+  color: var(--ux-text-primary);
 }
 
 .agent-catalog-grid {
@@ -181,17 +169,5 @@ async function handleRemove(agentId: string) {
 .custom-agent-empty strong {
   color: var(--text-primary);
   font-size: 15px;
-}
-
-@media (max-width: 760px) {
-  .agent-catalog-header {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .agent-catalog-tabs {
-    align-self: flex-start;
-  }
 }
 </style>

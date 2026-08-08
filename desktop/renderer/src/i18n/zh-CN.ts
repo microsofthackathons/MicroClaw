@@ -725,7 +725,6 @@ export default {
   "agentMarket.removeSuccess": "已移除 {name}。",
   "agentMarket.removeFailed": "无法从 OpenClaw 移除 Agent，请重试。",
   "agentCatalog.pageTitle": "Agent Catalog",
-  "agentCatalog.subtitle": "从 Marketplace 中组建你的 Agent Team。",
   "agentCatalog.marketplace": "Agent Marketplace",
   "agentCatalog.customAgents": "Custom Agents",
   "agentCatalog.noCustomAgents": "暂时还没有自定义 Agent",
