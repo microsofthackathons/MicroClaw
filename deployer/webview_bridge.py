@@ -1,6 +1,7 @@
 import json
 import locale
 import os
+import re
 import shutil
 import sys
 import threading
@@ -183,7 +184,7 @@ _STRINGS = {
     "zh": {
         "language": "语言",
         "welcomeTitle": "欢迎来到 MicroClaw",
-        "legalLine": '点击"快速安装"，即表示你同意 MicroClaw',
+        "legalLine": "点击“快速安装”，即表示你同意 MicroClaw",
         "serviceAgreement": "服务协议",
         "and": "和",
         "privacyStatement": "隐私声明",
@@ -191,43 +192,45 @@ _STRINGS = {
         "customInstall": "自定义安装",
         "customTitle": "自定义安装",
         "customSubtitle": "选择安装位置",
+        "installPath": "安装路径",
         "selectInstallLocation": "选择安装位置",
         "allowRead": "允许 MicroClaw 读取安装目录中的所有文件",
         "startInstall": "开始安装",
         "back": "← 返回",
         "viewLog": "查看日志",
         "close": "关闭",
+        "installerError": "安装器错误",
         "runningAppsTitle": "需要关闭 MicroClaw",
-        "runningAppsMessage": "检测到 MicroClaw 或 OpenClaw 正在运行{process}。继续安装会关闭应用并中断正在执行的任务。\n\n是否关闭并继续？",
-        "runningAppsCloseFailed": "无法自动关闭 MicroClaw/OpenClaw。请从系统托盘退出后重试。",
+        "runningAppsMessage": "检测到 MicroClaw 正在运行{process}。继续安装会关闭应用并中断正在执行的任务。\n\n是否关闭并继续？",
+        "runningAppsCloseFailed": "无法自动关闭 MicroClaw。请从系统托盘退出后重试。",
         "installCancelled": "安装已取消，正在运行的应用未被关闭",
         "installFailTitle": "安装失败",
         "installFailMsg": "请检查日志后重试。",
         "retrying": "{step} 正在重试（{attempt}/{attempts}）…",
         "steps": {
             "executionPolicy": "正在配置 PowerShell 执行策略…",
-            "defenderExclusions": "正在添加 Defender 排除项…",
+            "defenderExclusions": "正在添加 Windows 安全防护排除项…",
             "git": "正在安装 Git…",
-            "prepareUpgrade": "正在准备 OpenClaw 升级…",
+            "prepareUpgrade": "正在准备 MicroClaw 更新…",
             "node": "正在安装 Node.js…",
-            "npmRegistry": "正在配置 npm 镜像…",
-            "openclaw": "正在安装 OpenClaw Gateway…",
-            "path": "正在更新 PATH…",
+            "npmRegistry": "正在配置软件下载源…",
+            "openclaw": "正在安装 MicroClaw 后台服务…",
+            "path": "正在更新系统路径…",
             "desktop": "正在安装桌面客户端…",
             "assets": "正在复制内置资源…",
-            "apiKeys": "正在写入 API 密钥…",
-            "config": "正在写入 OpenClaw 配置…",
-            "compileCache": "正在预热 V8 编译缓存…",
-            "searchProvider": "正在安装 Web 搜索插件…",
+            "apiKeys": "正在配置模型服务…",
+            "config": "正在写入 MicroClaw 配置…",
+            "compileCache": "正在预热启动缓存…",
+            "searchProvider": "正在安装网络搜索插件…",
             "sandbox": "正在配置 AppContainer 沙箱…",
             "weixin": "正在安装微信插件…",
-            "verifyUpgrade": "正在验证 OpenClaw 升级…",
+            "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
             "shortcut": "正在创建桌面快捷方式…",
-            "commitUpgrade": "正在完成 OpenClaw 升级…",
+            "commitUpgrade": "正在完成 MicroClaw 更新…",
         },
         "carousel": [
-            ["顺手", "不用再学 prompt"],
+            ["顺手", "不用再学提示词"],
             ["可信", "能拦、能改、能撤回"],
             ["懂你", "符合你的工作模式"],
         ],
@@ -243,15 +246,17 @@ _STRINGS = {
         "customInstall": "Custom Install",
         "customTitle": "Custom Install",
         "customSubtitle": "Choose install location",
+        "installPath": "Install Path",
         "selectInstallLocation": "Select install location",
         "allowRead": "Allow MicroClaw to read all files in its installation folder",
         "startInstall": "Start Install",
         "back": "← Back",
         "viewLog": "View Log",
         "close": "Close",
+        "installerError": "Installer error",
         "runningAppsTitle": "MicroClaw must be closed",
-        "runningAppsMessage": "MicroClaw or OpenClaw is currently running{process}. Continuing will close the app and interrupt active tasks.\n\nClose it and continue?",
-        "runningAppsCloseFailed": "MicroClaw/OpenClaw could not be closed automatically. Exit it from the system tray and retry.",
+        "runningAppsMessage": "MicroClaw is currently running{process}. Continuing will close the app and interrupt active tasks.\n\nClose it and continue?",
+        "runningAppsCloseFailed": "MicroClaw could not be closed automatically. Exit it from the system tray and retry.",
         "installCancelled": "Installation cancelled; the running app was not closed",
         "installFailTitle": "Installation Failed",
         "installFailMsg": "Please check the logs and retry.",
@@ -260,23 +265,23 @@ _STRINGS = {
             "executionPolicy": "Configuring PowerShell execution policy...",
             "defenderExclusions": "Adding Defender exclusions...",
             "git": "Installing Git...",
-            "prepareUpgrade": "Preparing OpenClaw upgrade...",
+            "prepareUpgrade": "Preparing MicroClaw update...",
             "node": "Installing Node.js...",
             "npmRegistry": "Configuring npm registry...",
-            "openclaw": "Installing OpenClaw gateway...",
+            "openclaw": "Installing MicroClaw background service...",
             "path": "Updating PATH...",
             "desktop": "Installing desktop client...",
             "assets": "Copying bundled assets...",
             "apiKeys": "Writing API keys...",
-            "config": "Writing OpenClaw configuration...",
+            "config": "Writing MicroClaw configuration...",
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
             "sandbox": "Provisioning AppContainer sandbox...",
             "weixin": "Installing WeChat plugin...",
-            "verifyUpgrade": "Validating OpenClaw upgrade...",
+            "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
             "shortcut": "Creating desktop shortcut...",
-            "commitUpgrade": "Committing OpenClaw upgrade...",
+            "commitUpgrade": "Finalizing MicroClaw update...",
         },
         "carousel": [
             ["Intuitive", "No prompt engineering needed"],
@@ -471,11 +476,27 @@ class WebInstallerBridge:
     def _set_progress_detail(self, detail):
         """Sub-status line fed by long-running file operations (backup/restore).
 
-        Keeps the installer from looking frozen during the multi-minute
-        per-file fsync of a large OpenClaw package.
+        Keeps the installer from looking frozen during long file operations.
         """
         with self._state_lock:
-            self._state["progress_detail"] = detail or ""
+            self._state["progress_detail"] = self._present_user_text(detail)
+
+    def _present_user_text(self, text):
+        presented = str(text or "").replace("OpenClaw", "MicroClaw")
+        if self._lang != "zh":
+            return presented
+
+        file_progress = re.fullmatch(
+            r"(Backing up|Restoring) MicroClaw files \(([\d,]+)/([\d,]+) files\)",
+            presented,
+        )
+        if file_progress:
+            action = "正在备份" if file_progress.group(1) == "Backing up" else "正在恢复"
+            return f"{action} MicroClaw 文件（{file_progress.group(2)}/{file_progress.group(3)} 个文件）"
+        return {
+            "Finalizing MicroClaw backup…": "正在完成 MicroClaw 备份…",
+            "Finalizing MicroClaw file restore…": "正在完成 MicroClaw 文件恢复…",
+        }.get(presented, presented)
 
     def _build_install_steps(self, ws):
         steps = _STRINGS[self._lang]["steps"]
@@ -765,7 +786,7 @@ class WebInstallerBridge:
                 {
                     "status": "failed",
                     "running": False,
-                    "error": msg,
+                    "error": self._present_user_text(msg),
                 }
             )
 

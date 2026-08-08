@@ -5,7 +5,12 @@ import unittest.mock
 from pathlib import Path
 
 from deploy import DeployerApp, main
-from deployer.webview_bridge import InstallationCancelled, WebInstallerBridge, _detect_lang
+from deployer.webview_bridge import (
+    _STRINGS,
+    InstallationCancelled,
+    WebInstallerBridge,
+    _detect_lang,
+)
 from deployer.windows_setup import ActiveGateway, ActiveInstallation
 
 
@@ -61,6 +66,40 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(localized["lang"], "zh")
         self.assertEqual(self.bridge.get_state()["progress_text"], "正在安装 Git…")
 
+    def test_visible_strings_use_microclaw_product_name(self):
+        def string_values(value):
+            if isinstance(value, dict):
+                for child in value.values():
+                    yield from string_values(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from string_values(child)
+            elif isinstance(value, str):
+                yield value
+
+        for language in _STRINGS.values():
+            self.assertNotIn("OpenClaw", "\n".join(string_values(language)))
+
+    def test_chinese_dynamic_file_progress_is_fully_localized(self):
+        self.bridge.set_language("zh")
+
+        self.bridge._set_progress_detail("Restoring MicroClaw files (2,007/2,007 files)")
+        self.assertEqual(
+            self.bridge.get_state()["progress_detail"],
+            "正在恢复 MicroClaw 文件（2,007/2,007 个文件）",
+        )
+
+        self.bridge._set_progress_detail("Finalizing MicroClaw file restore…")
+        self.assertEqual(
+            self.bridge.get_state()["progress_detail"],
+            "正在完成 MicroClaw 文件恢复…",
+        )
+
+    def test_dynamic_errors_replace_internal_product_name(self):
+        self.bridge._finish_fail("OpenClaw service failed")
+
+        self.assertEqual(self.bridge.get_state()["error"], "MicroClaw service failed")
+
     def test_success_persists_language_without_replacing_other_settings(self):
         self.settings_path.parent.mkdir(parents=True)
         self.settings_path.write_text('{"themeMode":"dark"}', encoding="utf-8")
@@ -100,6 +139,8 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertIn('id="progressPercent"', template)
         self.assertIn('role="progressbar"', template)
         self.assertIn('els.progressPercent.textContent = progress + "%";', template)
+        self.assertNotIn('id="pathLabel">Install Path', template)
+        self.assertNotIn('"Debug: "', template)
 
     def test_installer_uses_existing_app_font_stack(self):
         root = Path(__file__).parents[1]
@@ -245,8 +286,8 @@ class WebInstallerBridgeTests(unittest.TestCase):
         for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
             labels = self._step_labels(steps)
             search_index = labels.index("Installing web search provider...")
-            self.assertGreater(search_index, labels.index("Writing OpenClaw configuration..."))
-            self.assertLess(search_index, labels.index("Validating OpenClaw upgrade..."))
+            self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
+            self.assertLess(search_index, labels.index("Validating MicroClaw update..."))
             self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
 
 

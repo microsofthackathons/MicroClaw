@@ -464,7 +464,7 @@
           <h2 id="setupTitle" class="setup-title"></h2>
           <p id="setupSubtitle" class="setup-desc"></p>
           <div class="form-item">
-            <label id="pathLabel">Install Path</label>
+            <label id="pathLabel"></label>
             <div class="path-row">
               <input id="pathInput" type="text" />
               <button id="browse" class="browse-btn">&#128194;</button>
@@ -530,6 +530,7 @@
         back: $("back"),
         setupTitle: $("setupTitle"),
         setupSubtitle: $("setupSubtitle"),
+        pathLabel: $("pathLabel"),
         pathInput: $("pathInput"),
         browse: $("browse"),
         allowRow: $("allowRow"),
@@ -574,7 +575,8 @@
       }
 
       function showError(msg) {
-        els.errorBanner.textContent = "Debug: " + msg;
+        const label = state.bootstrap?.strings?.installerError || "Installer error";
+        els.errorBanner.textContent = label + ": " + msg.replaceAll("OpenClaw", "MicroClaw");
         els.errorBanner.style.display = "block";
       }
 
@@ -598,6 +600,7 @@
         els.back.textContent = s.back;
         els.setupTitle.textContent = s.customTitle;
         els.setupSubtitle.textContent = s.customSubtitle;
+        els.pathLabel.textContent = s.installPath;
         els.allowLabel.textContent = s.allowRead;
         els.start.textContent = s.startInstall;
         els.viewLog.textContent = s.viewLog;
