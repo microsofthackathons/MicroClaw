@@ -33,7 +33,7 @@ Unicode true
   !define VERSION "0.0.0.0"
 !endif
 
-Name "MicroClaw Setup"
+Name "MicroClaw"
 OutFile "${OUT_FILE}"
 !ifdef ICON
   Icon "${ICON}"
