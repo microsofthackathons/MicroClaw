@@ -14,6 +14,9 @@
         --text-secondary: #666666;
         --text-muted: #999999;
         --danger: #c42b1c;
+        --font-sans:
+          "DM Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "SF Pro Display", sans-serif;
       }
       * {
         box-sizing: border-box;
@@ -25,14 +28,15 @@
         margin: 0;
         overflow: hidden;
         background: transparent;
-        font-family: "Segoe UI", sans-serif;
+        font-family: var(--font-sans);
         color: var(--text-primary);
       }
       body {
         user-select: none;
       }
       button,
-      input {
+      input,
+      select {
         font: inherit;
       }
 
@@ -76,6 +80,27 @@
       .close-btn:hover {
         background: var(--bg-tertiary);
         color: var(--text-primary);
+      }
+      .language-select {
+        position: absolute;
+        top: 14px;
+        right: 52px;
+        height: 28px;
+        padding: 0 26px 0 10px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.86);
+        color: var(--text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+        -webkit-app-region: no-drag;
+        z-index: 20;
+      }
+      .language-select:hover,
+      .language-select:focus-visible {
+        border-color: #b8b8b8;
+        color: var(--text-primary);
+        outline: none;
       }
 
       .confetti {
@@ -172,10 +197,15 @@
         color: var(--text-primary);
       }
 
-      .install-progress-wrap {
+      .install-progress-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 12px;
+      }
+      .install-progress-track {
         width: 200px;
         height: 6px;
-        margin: 0 0 12px;
         border-radius: 99px;
         background: #e5e5e5;
         overflow: hidden;
@@ -186,6 +216,13 @@
         background: var(--text-primary);
         border-radius: 99px;
         transition: width 0.18s linear;
+      }
+      .install-progress-percent {
+        width: 36px;
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
       }
       .install-progress-status {
         margin: 0 0 12px;
@@ -373,6 +410,10 @@
     <div class="app">
       <canvas id="confetti" class="confetti"></canvas>
       <div class="drag-region"></div>
+      <select id="language" class="language-select">
+        <option value="zh">简体中文</option>
+        <option value="en">English</option>
+      </select>
       <button id="close" class="close-btn">
         <svg
           width="12"
@@ -397,8 +438,18 @@
         <div class="welcome-bottom">
           <p id="legal" class="welcome-notice"></p>
           <p id="desc" class="welcome-notice welcome-notice--desc hidden"></p>
-          <div id="progressWrap" class="install-progress-wrap hidden">
-            <div id="progressBar" class="install-progress-bar"></div>
+          <div id="progressWrap" class="install-progress-row hidden">
+            <div
+              id="progressTrack"
+              class="install-progress-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div id="progressBar" class="install-progress-bar"></div>
+            </div>
+            <span id="progressPercent" class="install-progress-percent">0%</span>
           </div>
           <p id="progressStatus" class="install-progress-status hidden"></p>
           <button id="quick" class="btn-primary"></button>
@@ -413,7 +464,7 @@
           <h2 id="setupTitle" class="setup-title"></h2>
           <p id="setupSubtitle" class="setup-desc"></p>
           <div class="form-item">
-            <label id="pathLabel">Install Path</label>
+            <label id="pathLabel"></label>
             <div class="path-row">
               <input id="pathInput" type="text" />
               <button id="browse" class="browse-btn">&#128194;</button>
@@ -468,14 +519,18 @@
         legal: $("legal"),
         desc: $("desc"),
         progressWrap: $("progressWrap"),
+        progressTrack: $("progressTrack"),
         progressBar: $("progressBar"),
+        progressPercent: $("progressPercent"),
         progressStatus: $("progressStatus"),
         quick: $("quick"),
         custom: $("custom"),
+        language: $("language"),
         close: $("close"),
         back: $("back"),
         setupTitle: $("setupTitle"),
         setupSubtitle: $("setupSubtitle"),
+        pathLabel: $("pathLabel"),
         pathInput: $("pathInput"),
         browse: $("browse"),
         allowRow: $("allowRow"),
@@ -512,14 +567,47 @@
         els.progressWrap.classList.toggle("hidden", !on);
         if (!on) {
           els.progressBar.style.width = "0%";
+          els.progressTrack.setAttribute("aria-valuenow", "0");
+          els.progressPercent.textContent = "0%";
           els.progressStatus.classList.add("hidden");
           els.progressStatus.textContent = "";
         }
       }
 
       function showError(msg) {
-        els.errorBanner.textContent = "Debug: " + msg;
+        const label = state.bootstrap?.strings?.installerError || "Installer error";
+        els.errorBanner.textContent = label + ": " + msg.replaceAll("OpenClaw", "MicroClaw");
         els.errorBanner.style.display = "block";
+      }
+
+      function applyStrings() {
+        const s = state.bootstrap.strings;
+        document.documentElement.lang = state.bootstrap.lang === "zh" ? "zh-CN" : "en-US";
+        els.language.value = state.bootstrap.lang;
+        els.language.setAttribute("aria-label", s.language);
+        els.title.textContent = s.welcomeTitle;
+        els.legal.innerHTML =
+          s.legalLine +
+          ' <a href="#">' +
+          s.serviceAgreement +
+          "</a> " +
+          (s.and || "") +
+          ' <a href="#">' +
+          s.privacyStatement +
+          "</a>";
+        els.quick.textContent = s.quickInstall;
+        els.custom.textContent = s.customInstall;
+        els.back.textContent = s.back;
+        els.setupTitle.textContent = s.customTitle;
+        els.setupSubtitle.textContent = s.customSubtitle;
+        els.pathLabel.textContent = s.installPath;
+        els.allowLabel.textContent = s.allowRead;
+        els.start.textContent = s.startInstall;
+        els.viewLog.textContent = s.viewLog;
+        els.failClose.textContent = s.close;
+        if (state.route === "failure") {
+          els.failTitle.textContent = s.installFailTitle;
+        }
       }
 
       function startTextCycle() {
@@ -652,7 +740,10 @@
               startImageCycle();
               startTextCycle();
             }
-            els.progressBar.style.width = snap.progress + "%";
+            const progress = Math.round(Math.min(100, Math.max(0, Number(snap.progress) || 0)));
+            els.progressBar.style.width = progress + "%";
+            els.progressTrack.setAttribute("aria-valuenow", String(progress));
+            els.progressPercent.textContent = progress + "%";
             const step = snap.progress_text || "";
             const detail = snap.progress_detail || "";
             const statusText = detail ? step + " — " + detail : step;
@@ -663,6 +754,8 @@
             stopImageCycle();
             stopTextCycle();
             els.progressBar.style.width = "100%";
+            els.progressTrack.setAttribute("aria-valuenow", "100");
+            els.progressPercent.textContent = "100%";
             els.progressStatus.classList.add("hidden");
             if (!state.closeTimer) {
               state.closeTimer = setTimeout(() => window.pywebview.api.close_window(), 2000);
@@ -716,27 +809,8 @@
 
         /* ---- fill UI ---- */
         try {
-          const s = state.bootstrap.strings;
           const a = state.bootstrap.assets;
-          els.title.textContent = s.welcomeTitle;
-          els.legal.innerHTML =
-            s.legalLine +
-            '<br><a href="#">' +
-            s.serviceAgreement +
-            "</a> " +
-            (s.and || "") +
-            ' <a href="#">' +
-            s.privacyStatement +
-            "</a>";
-          els.quick.textContent = s.quickInstall;
-          els.custom.textContent = s.customInstall;
-          els.back.textContent = s.back;
-          els.setupTitle.textContent = s.customTitle;
-          els.setupSubtitle.textContent = s.customSubtitle;
-          els.allowLabel.textContent = s.allowRead;
-          els.start.textContent = s.startInstall;
-          els.viewLog.textContent = s.viewLog;
-          els.failClose.textContent = s.close;
+          applyStrings();
           els.mascot.src = a.fold;
           els.pathInput.value = state.bootstrap.install_dir;
           setCheckbox(state.bootstrap.allow_read);
@@ -756,6 +830,13 @@
           if (!api) return; // retry later
           const a = state.bootstrap.assets;
           els.close.onclick = () => api.close_window();
+          els.language.onchange = async () => {
+            const localized = await api.set_language(els.language.value);
+            state.bootstrap.lang = localized.lang;
+            state.bootstrap.strings = localized.strings;
+            applyStrings();
+            if (state.installing) startTextCycle();
+          };
           els.custom.onclick = () => show("setup");
           els.back.onclick = () => show("welcome");
           els.browse.onclick = async () => {

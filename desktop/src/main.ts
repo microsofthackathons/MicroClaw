@@ -137,7 +137,7 @@ function isSubdirectoryOf(parentDir: string, childDir: string): boolean {
 
 // Chromium selects an appropriate rendering backend, including on RDP. Force software rendering
 // only for environments where GPU startup is known to be incompatible.
-if (shouldDisableHardwareAcceleration(process.env)) {
+if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release())) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("no-sandbox");
   app.commandLine.appendSwitch("disable-gpu");

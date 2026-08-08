@@ -374,6 +374,7 @@ _FSYNC_MAX_WORKERS = 16
 def _fsync_payload_tree(
     root: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    on_finalizing: Callable[[], None] | None = None,
 ) -> None:
     io_root = _native_io_path(root)
     if not io_root.exists():
@@ -397,6 +398,8 @@ def _fsync_payload_tree(
                 done += 1
                 if on_progress is not None and (done % report_every == 0 or done == total):
                     on_progress(done, total)
+    if on_finalizing is not None:
+        on_finalizing()
     for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
         _fsync_directory(directory)
 
@@ -803,6 +806,16 @@ class OpenClawUpgradeTransaction:
 
         return report
 
+    def _payload_finalizing(self, action: str) -> Callable[[], None] | None:
+        callback = self.progress_callback
+        if callback is None:
+            return None
+
+        def report() -> None:
+            callback(action)
+
+        return report
+
     def _publish_backup(self, staging: Path) -> None:
         metadata_files = {"transaction.json", "backup-files.json"}
         io_staging = _native_io_path(staging)
@@ -895,7 +908,11 @@ class OpenClawUpgradeTransaction:
             staging / "shims",
             staging / "state",
         ):
-            _fsync_payload_tree(payload_root, self._payload_progress("Backing up OpenClaw files"))
+            _fsync_payload_tree(
+                payload_root,
+                self._payload_progress("Backing up MicroClaw files"),
+                self._payload_finalizing("Finalizing MicroClaw backup…"),
+            )
 
         self._publish_backup(staging)
 
@@ -955,7 +972,11 @@ class OpenClawUpgradeTransaction:
                 _native_io_path(backup),
                 _native_io_path(staging),
             )
-            _fsync_payload_tree(staging, self._payload_progress("Restoring OpenClaw files"))
+            _fsync_payload_tree(
+                staging,
+                self._payload_progress("Restoring MicroClaw files"),
+                self._payload_finalizing("Finalizing MicroClaw file restore…"),
+            )
         self._move_to_failed(live, failed)
         if staging is not None:
             _durable_rename(staging, live)

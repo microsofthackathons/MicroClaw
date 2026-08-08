@@ -22,4 +22,12 @@ describe("shouldDisableHardwareAcceleration", () => {
   it("keeps GPU acceleration enabled when no explicit override is present", () => {
     expect(shouldDisableHardwareAcceleration({})).toBe(false);
   });
+
+  it("uses the compatibility fallback on untested Windows preview builds", () => {
+    expect(shouldDisableHardwareAcceleration({}, "win32", "10.0.26310")).toBe(true);
+  });
+
+  it("keeps GPU acceleration enabled on the maximum tested Windows build", () => {
+    expect(shouldDisableHardwareAcceleration({}, "win32", "10.0.26100")).toBe(false);
+  });
 });
