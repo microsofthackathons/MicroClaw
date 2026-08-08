@@ -260,9 +260,10 @@ const lastUpdatedLabel = computed(() => {
 });
 
 const currentAgent = computed(() => {
-  const session = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
-  const agentId = session?.agentId || agentStore.currentAgentId;
-  return agentStore.agents.find((a) => a.id === agentId) || agentStore.agents[0];
+  return (
+    agentStore.agents.find((agent) => agent.id === agentStore.currentAgentId) ||
+    agentStore.agents[0]
+  );
 });
 
 onMounted(() => {
