@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
@@ -1506,14 +1506,7 @@ const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
 );
-const LIGHT_WINDOW_BACKGROUND = "#ffffff";
-const DARK_WINDOW_BACKGROUND = "#18181b";
-
-function getWindowBackgroundColor(themeMode = settingsStore.get("themeMode")): string {
-  const useDarkBackground =
-    themeMode === "dark" || (themeMode === "system" && nativeTheme.shouldUseDarkColors);
-  return useDarkBackground ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND;
-}
+const TRANSPARENT_WINDOW_BACKGROUND = "#00000000";
 
 function _getRendererURL(): string {
   if (isDev) return VITE_DEV_URL;
@@ -1533,7 +1526,8 @@ function createMainWindow(): BrowserWindow {
     icon: APP_ICON_PATH,
     show: !settingsStore.get("startMinimized"),
     titleBarStyle: "hidden",
-    backgroundColor: getWindowBackgroundColor(),
+    transparent: true,
+    backgroundColor: TRANSPARENT_WINDOW_BACKGROUND,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -4429,9 +4423,6 @@ function registerIpcHandlers(): void {
     settingsStore.set(key as any, value);
     if (key === "autoStart") {
       app.setLoginItemSettings({ openAtLogin: !!value });
-    }
-    if (key === "themeMode" && mainWindow) {
-      mainWindow.setBackgroundColor(getWindowBackgroundColor(String(value)));
     }
   });
 
