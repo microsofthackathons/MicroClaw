@@ -96,6 +96,23 @@ class WebInstallerBridgeTests(unittest.TestCase):
 
         self.assertIn('id="language"', template)
         self.assertIn("api.set_language", template)
+        self.assertNotIn("<br><a", template)
+
+    def test_installer_uses_existing_app_font_stack(self):
+        root = Path(__file__).parents[1]
+        installer = (root / "deployer" / "assets" / "installer_template.html").read_text(
+            encoding="utf-8"
+        )
+        app_styles = (root / "desktop" / "renderer" / "src" / "styles" / "global.css").read_text(
+            encoding="utf-8"
+        )
+        font_stack = (
+            '"DM Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, '
+            '"Segoe UI", "SF Pro Display", sans-serif;'
+        )
+
+        self.assertIn(font_stack, " ".join(installer.split()))
+        self.assertIn(font_stack, " ".join(app_styles.split()))
 
     def test_prepare_upgrade_cancels_without_stopping_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=None)

@@ -14,6 +14,9 @@
         --text-secondary: #666666;
         --text-muted: #999999;
         --danger: #c42b1c;
+        --font-sans:
+          "DM Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "SF Pro Display", sans-serif;
       }
       * {
         box-sizing: border-box;
@@ -25,7 +28,7 @@
         margin: 0;
         overflow: hidden;
         background: transparent;
-        font-family: "Segoe UI", sans-serif;
+        font-family: var(--font-sans);
         color: var(--text-primary);
       }
       body {
@@ -557,7 +560,7 @@
         els.title.textContent = s.welcomeTitle;
         els.legal.innerHTML =
           s.legalLine +
-          '<br><a href="#">' +
+          ' <a href="#">' +
           s.serviceAgreement +
           "</a> " +
           (s.and || "") +
