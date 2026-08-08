@@ -179,9 +179,10 @@ const gatewayReady = computed(() => gateway.ready);
 const headerTitle = computed(() => {
   void locale.value;
   if (route.name === "agent-market") return t("agentMarket.title");
+  const session = sessionStore.sessions.find((candidate) => candidate.key === chatStore.sessionKey);
+  if (route.name === "chat" && session) return sessionStore.getDisplayTitle(session);
   let agentId = route.params.agentId as string | undefined;
   if (!agentId) {
-    const session = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
     agentId = session?.agentId;
   }
   if (agentId) {

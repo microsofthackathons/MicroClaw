@@ -238,7 +238,6 @@ const usageSnapshot = ref<UsageSnapshot | null>(null);
 const usageLoading = ref(false);
 const usageLastUpdated = ref<Date | null>(null);
 const usageCollapsed = ref(false);
-const openClawTitles = ref<Record<string, string>>({});
 let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let titleRequestGeneration = 0;
 
@@ -444,21 +443,21 @@ async function loadSessionTitles() {
   const generation = ++titleRequestGeneration;
   const keys = visibleSessions.value.map((session) => session.key).slice(0, 64);
   if (!gatewayOnline.value || keys.length === 0) {
-    openClawTitles.value = {};
+    sessionStore.setGatewayTitles({});
     return;
   }
-  openClawTitles.value = {};
+  sessionStore.setGatewayTitles({});
   try {
     const response = await window.openclaw.chat.listSessionTitles(keys);
     if (generation !== titleRequestGeneration) return;
-    openClawTitles.value = response.titles ?? {};
+    sessionStore.setGatewayTitles(response.titles ?? {});
   } catch {
-    if (generation === titleRequestGeneration) openClawTitles.value = {};
+    if (generation === titleRequestGeneration) sessionStore.setGatewayTitles({});
   }
 }
 
 function sessionTitle(session: { key: string; title: string }) {
-  return openClawTitles.value[session.key] || session.title;
+  return sessionStore.getDisplayTitle(session);
 }
 
 function selectSession(key: string) {
