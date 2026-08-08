@@ -45,9 +45,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 InstallDir "$LOCALAPPDATA\MicroClaw\Setup"
-AutoCloseWindow true
-ShowInstDetails show
-BrandingText "MicroClaw"
+SilentInstall silent
 
 ; Version resource — a proper version block improves the signed file's
 ; presentation in SmartScreen / UAC / file properties.
@@ -58,8 +56,6 @@ VIAddVersionKey "FileVersion"    "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "CompanyName"    "MicroClaw"
 VIAddVersionKey "LegalCopyright" "Copyright (C) 2026 MicroClaw"
-
-Page instfiles
 
 Section "Install"
   ; Bound disk usage to a single copy: wipe any leftover staging first.
