@@ -3,6 +3,7 @@ import locale
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -356,6 +357,7 @@ class WebInstallerBridge:
         self._settings_path = Path(settings_path or _app_settings_path())
         self._lang = _normalize_lang(lang) or _detect_lang(self._settings_path)
         self._state_lock = threading.Lock()
+        self._launched_desktop_process = None
         self._default_install_dir = str(DEFAULT_DESKTOP_DIR)
         self._default_allow_read = True
         self._state = {
@@ -589,10 +591,8 @@ class WebInstallerBridge:
                 NETWORK_RETRIES,
             ),
             (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
-            (94, steps["verifyUpgrade"], ws.verify_openclaw_upgrade, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
-            (98, steps["commitUpgrade"], ws.commit_openclaw_upgrade, LOCAL_RETRIES),
         ]
 
     def _install_thread(self):
@@ -634,8 +634,39 @@ class WebInstallerBridge:
                 timing.finish("failed")
                 return
 
+        final_steps = [
+            (94, "verifyUpgrade", ws.begin_openclaw_upgrade_validation),
+            (99, "startService", lambda: self._start_and_validate_desktop(ws)),
+            (100, "commitUpgrade", ws.commit_openclaw_upgrade),
+        ]
+        for pct, progress_key, fn in final_steps:
+            label = _STRINGS[self._lang]["steps"][progress_key]
+            self._set_progress(pct, label, progress_key)
+            started_at = timing.start_step()
+            step_ok = self._run_step_with_retry(pct, label, fn, LOCAL_RETRIES, progress_key)
+            timing.record_step(label, started_at, "success" if step_ok else "failed")
+            if not step_ok:
+                self._stop_launched_desktop()
+                if not ws.rollback_openclaw_upgrade():
+                    with self._state_lock:
+                        self._state["error"] += " Automatic rollback also failed."
+                timing.finish("failed")
+                return
+
         timing.finish("success")
         self._finish_ok()
+
+    def _start_and_validate_desktop(self, ws):
+        transaction_id = ws.get_openclaw_upgrade_transaction_id()
+        if not transaction_id:
+            raise RuntimeError("OpenClaw upgrade transaction is unavailable")
+        ready_path = DEFAULT_DESKTOP_DIR / "upgrade" / f"desktop-ready-{transaction_id}.json"
+        ready_path.unlink(missing_ok=True)
+        if not self._launch_desktop(transaction_id):
+            raise RuntimeError("MicroClaw could not be launched")
+        if not self._wait_for_desktop_service(transaction_id):
+            raise RuntimeError("MicroClaw service did not become ready before timeout")
+        return ws.validate_running_gateway()
 
     def _run_step_with_retry(self, pct, label, fn, retries, progress_key=""):
         """Execute one install step, retrying transient failures.
@@ -822,16 +853,6 @@ class WebInstallerBridge:
             self._persist_language_setting()
         except Exception as exc:
             self._logger.warn(f"Could not save MicroClaw language preference: {exc}")
-        self._set_progress(99, _STRINGS[self._lang]["steps"]["startService"], "startService")
-        launched = False
-        try:
-            launched = self._launch_desktop() is True
-        except Exception as exc:
-            self._logger.warn(f"Could not launch MicroClaw: {exc}")
-        if launched and not self._wait_for_desktop_service():
-            self._logger.warn(
-                "MicroClaw was installed, but its service did not become ready before timeout"
-            )
         with self._state_lock:
             self._state.update(
                 {
@@ -842,16 +863,36 @@ class WebInstallerBridge:
                 }
             )
 
-    def _wait_for_desktop_service(self, timeout_seconds=120):
+    def _wait_for_desktop_service(self, transaction_id, timeout_seconds=180):
         port = int(self._config.get("gateway.port", 18789))
         deadline = time.monotonic() + timeout_seconds
         url = f"http://127.0.0.1:{port}/health"
+        ready_path = DEFAULT_DESKTOP_DIR / "upgrade" / f"desktop-ready-{transaction_id}.json"
         while time.monotonic() < deadline:
             if not self.get_state()["running"]:
                 return False
+            process = self._launched_desktop_process
+            if process is not None and process.poll() is not None:
+                log_path = getattr(self, "_desktop_handoff_log_path", None)
+                self._logger.error(
+                    f"MicroClaw exited during service startup (code {process.returncode}); "
+                    f"desktop log: {log_path or 'unavailable'}"
+                )
+                return False
+            ready = False
+            try:
+                payload = json.loads(ready_path.read_text(encoding="utf-8"))
+                if payload.get("transactionId") == transaction_id and payload.get("error"):
+                    raise RuntimeError(f"MicroClaw startup rejected handoff: {payload['error']}")
+                ready = payload.get("transactionId") == transaction_id and (
+                    process is None or payload.get("pid") == process.pid
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
             try:
                 with urllib.request.urlopen(url, timeout=2) as response:
-                    if response.status == 200:
+                    if ready and response.status == 200:
+                        ready_path.unlink(missing_ok=True)
                         return True
             except (OSError, urllib.error.URLError):
                 pass
@@ -878,7 +919,26 @@ class WebInstallerBridge:
                 }
             )
 
-    def _launch_desktop(self):
+    def _launch_desktop(self, transaction_id=None):
+        desktop_dir = Path.home() / ".microclaw"
+        exe = desktop_dir / "MicroClawDesktop.exe"
+        if transaction_id and exe.exists():
+            self._logger.info(f"Launching desktop executable for transaction {transaction_id}")
+            log_path = desktop_dir / "upgrade" / f"desktop-handoff-{transaction_id}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._desktop_handoff_log_path = log_path
+            environment = os.environ.copy()
+            environment["ELECTRON_ENABLE_LOGGING"] = "1"
+            with log_path.open("w", encoding="utf-8") as desktop_log:
+                self._launched_desktop_process = subprocess.Popen(
+                    [str(exe), "--post-install-transaction", transaction_id],
+                    creationflags=0x08000000,
+                    env=environment,
+                    stdout=desktop_log,
+                    stderr=subprocess.STDOUT,
+                )
+            return True
+
         # Try known desktop shortcut locations
         candidates = [
             Path.home() / "Desktop" / "MicroClawDesktop.lnk",
@@ -903,8 +963,6 @@ class WebInstallerBridge:
                 return True
 
         # Fallback: try to launch the exe directly
-        desktop_dir = Path.home() / ".microclaw"
-        exe = desktop_dir / "MicroClawDesktop.exe"
         if exe.exists():
             self._logger.info(f"Launching exe directly: {exe}")
             os.startfile(str(exe))
@@ -914,6 +972,23 @@ class WebInstallerBridge:
                 f"Could not find MicroClaw to launch. Checked: {[str(c) for c in candidates]}"
             )
         return False
+
+    def _stop_launched_desktop(self):
+        process = self._launched_desktop_process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=15,
+                    creationflags=0x08000000,
+                )
+            else:
+                process.terminate()
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
 
 
 def _strip_motw(root: Path, logger: DeployerLogger) -> int:

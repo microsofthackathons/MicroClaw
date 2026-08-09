@@ -816,13 +816,13 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
+                ("appcontainer", True),
                 ("health", True),
                 ("v4-handshake", True),
                 ("config.get", True),
                 ("agents.list", True),
                 ("channels.status", True),
                 ("cron.list", True),
-                ("appcontainer", True),
             ],
         )
         self.ws._validate_weixin_plugin.assert_not_called()
@@ -854,8 +854,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("health", True),
                 ("appcontainer", True),
+                ("health", True),
             ],
         )
 
@@ -878,8 +878,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("health", True),
                 ("appcontainer", True),
+                ("health", True),
             ],
         )
         self.ws._validate_weixin_plugin.assert_not_called()

@@ -34,6 +34,7 @@ import { prepareAttachmentForOpen } from "./attachment-open";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
+  validateInstallerOwnedUpgrade,
 } from "./openclaw-upgrade-recovery";
 import {
   getOpenClawStateDir,
@@ -251,6 +252,42 @@ let agentRosterChangeInProgress = false;
 /** Tracks whether the post-spawn channel kick has already fired. */
 let postSpawnRestartDone = false;
 let postSpawnRestartRequired = false;
+const postInstallTransactionIndex = process.argv.indexOf("--post-install-transaction");
+const postInstallTransactionId =
+  postInstallTransactionIndex >= 0 ? process.argv[postInstallTransactionIndex + 1] : undefined;
+let postInstallReadySignaled = false;
+
+function signalPostInstallReady(): void {
+  if (!postInstallTransactionId || postInstallReadySignaled) return;
+  const readyDir = path.join(app.getPath("home"), ".microclaw", "upgrade");
+  const readyPath = path.join(readyDir, `desktop-ready-${postInstallTransactionId}.json`);
+  const temporary = `${readyPath}.${process.pid}.tmp`;
+  fs.mkdirSync(readyDir, { recursive: true });
+  fs.writeFileSync(
+    temporary,
+    JSON.stringify({ transactionId: postInstallTransactionId, pid: process.pid }),
+    "utf-8",
+  );
+  fs.renameSync(temporary, readyPath);
+  postInstallReadySignaled = true;
+  logStartupTiming("post-install-ready");
+}
+
+function signalPostInstallFailure(error: unknown): void {
+  if (!postInstallTransactionId) return;
+  const readyDir = path.join(app.getPath("home"), ".microclaw", "upgrade");
+  const readyPath = path.join(readyDir, `desktop-ready-${postInstallTransactionId}.json`);
+  fs.mkdirSync(readyDir, { recursive: true });
+  fs.writeFileSync(
+    readyPath,
+    JSON.stringify({
+      transactionId: postInstallTransactionId,
+      pid: process.pid,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+    "utf-8",
+  );
+}
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
 const githubCopilotAuthManager = new GitHubCopilotAuthManager(
@@ -2834,6 +2871,7 @@ function connectGatewayWs(): void {
       }
 
       mainWindow?.webContents.send("gateway:ws-connected", mainSessionKey || null);
+      signalPostInstallReady();
     },
     onDisconnected: (reason) => {
       console.log(`[gateway-ws] disconnected: ${reason}`);
@@ -5544,13 +5582,26 @@ app.whenReady().then(async () => {
 
   try {
     const home = app.getPath("home");
-    const recovery = recoverInterruptedOpenClawUpgrade(path.join(home, ".microclaw"), {
-      expectedStateDir: path.join(home, ".openclaw"),
-    });
-    if (recovery.status === "rolled-back") {
-      console.log("[upgrade] Restored the previous OpenClaw package and state");
+    const microclawRoot = path.join(home, ".microclaw");
+    const expectedStateDir = path.join(home, ".openclaw");
+    const installerOwnsUpgrade =
+      typeof postInstallTransactionId === "string" &&
+      validateInstallerOwnedUpgrade(microclawRoot, postInstallTransactionId, {
+        expectedStateDir,
+      });
+    if (!installerOwnsUpgrade) {
+      const recovery = recoverInterruptedOpenClawUpgrade(microclawRoot, {
+        expectedStateDir,
+      });
+      if (recovery.status === "rolled-back") {
+        console.log("[upgrade] Restored the previous OpenClaw package and state");
+      }
+    } else {
+      console.log(`[upgrade] Installer owns verifying transaction ${postInstallTransactionId}`);
     }
   } catch (error) {
+    signalPostInstallFailure(error);
+    console.error("[upgrade] Startup recovery failed:", error);
     const inProgress = error instanceof UpgradeInProgressError;
     dialog.showErrorBox(
       inProgress ? "MicroClaw upgrade in progress" : "OpenClaw recovery failed",

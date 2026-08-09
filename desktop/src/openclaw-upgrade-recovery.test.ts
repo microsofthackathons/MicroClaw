@@ -1,13 +1,29 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import {
   recoverInterruptedOpenClawUpgrade,
+  processIsAlive,
   UpgradeInProgressError,
+  validateInstallerOwnedUpgrade,
 } from "./openclaw-upgrade-recovery";
 
 const roots: string[] = [];
+
+describe("processIsAlive", () => {
+  for (const code of ["EPERM", "EACCES"]) {
+    it(`treats ${code} as an existing elevated process`, () => {
+      vi.spyOn(process, "kill").mockImplementation(() => {
+        const error = new Error("access denied") as NodeJS.ErrnoException;
+        error.code = code;
+        throw error;
+      });
+
+      expect(processIsAlive(1234)).toBe(true);
+    });
+  }
+});
 
 function fixture(phase = "installing") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-upgrade-"));
@@ -53,15 +69,13 @@ function fixture(phase = "installing") {
     validation_results: {},
   };
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  fs.writeFileSync(
-    lockPath,
-    JSON.stringify({
-      schema: 1,
-      owner_pid: 999999,
-      transaction_id: transactionId,
-      owner_token: "dead",
-    }),
-  );
+  const lockPayload = JSON.stringify({
+    schema: 1,
+    owner_pid: 999999,
+    transaction_id: transactionId,
+    owner_token: "dead",
+  });
+  fs.writeFileSync(lockPath, lockPayload + " ".repeat(4096 - lockPayload.length));
   return {
     microclawRoot,
     prefix,
@@ -75,6 +89,7 @@ function fixture(phase = "installing") {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -157,5 +172,33 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
         processIsAlive: () => false,
       }),
     ).toThrow(/backup directory/);
+  });
+});
+
+describe("validateInstallerOwnedUpgrade", () => {
+  it("accepts a matching verifying transaction owned by a live installer", () => {
+    const item = fixture("verifying");
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", {
+        expectedStateDir: item.stateDir,
+        trustedPrefixes: [item.prefix],
+        processIsAlive: (pid) => pid === 999999,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a mismatched transaction or dead installer", () => {
+    const item = fixture("verifying");
+    const options = {
+      expectedStateDir: item.stateDir,
+      trustedPrefixes: [item.prefix],
+      processIsAlive: () => false,
+    };
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", options),
+    ).toBe(false);
+    expect(validateInstallerOwnedUpgrade(item.microclawRoot, "other", options)).toBe(false);
   });
 });

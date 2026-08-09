@@ -2436,72 +2436,64 @@ class WindowsSetup:
         )
         return result.returncode == 0 and "microclaw-sandbox-ok" in result.stdout
 
-    def verify_openclaw_upgrade(self) -> bool:
-        if not self._openclaw_upgrade_required:
-            transaction = self._openclaw_transaction
-            if transaction is not None:
-                transaction.mark_verifying()
+    def get_openclaw_upgrade_transaction_id(self) -> str | None:
+        transaction = self._openclaw_transaction
+        return transaction.manifest.transaction_id if transaction is not None else None
 
-            def record_fast_path(name: str, passed: bool) -> None:
-                if transaction is not None:
-                    transaction.record_validation(name, passed)
-
-            version_ok = self._validate_installed_version()
-            record_fast_path("version", version_ok)
-            if not version_ok:
-                self.log.error("OpenClaw validation failed: version")
-                return False
-
-            process = None
-            checks = [("health", self._validate_gateway_health)]
-            checks.append(("appcontainer", self._validate_appcontainer_smoke))
-            try:
-                process = self._start_validation_gateway()
-                for name, check in checks:
-                    passed = bool(check())
-                    record_fast_path(name, passed)
-                    if not passed:
-                        raise RuntimeError(f"OpenClaw validation failed: {name}")
-                self.log.info("OpenClaw version unchanged; skipping deep RPC upgrade validation.")
-                return True
-            except Exception as error:
-                self.log.error(str(error))
-                return False
-            finally:
-                self._stop_validation_gateway(process)
-
+    def begin_openclaw_upgrade_validation(self) -> bool:
         transaction = self._openclaw_transaction
         if transaction is not None:
             transaction.mark_verifying()
+
+        checks = [
+            ("version", self._validate_installed_version),
+            ("appcontainer", self._validate_appcontainer_smoke),
+        ]
+        for name, check in checks:
+            passed = bool(check())
+            if transaction is not None:
+                transaction.record_validation(name, passed)
+            if not passed:
+                self.log.error(f"OpenClaw validation failed: {name}")
+                return False
+        return True
+
+    def validate_running_gateway(self) -> bool:
+        transaction = self._openclaw_transaction
 
         def record(name: str, passed: bool) -> None:
             if transaction is not None:
                 transaction.record_validation(name, passed)
 
-        version_ok = self._validate_installed_version()
-        record("version", version_ok)
-        if not version_ok:
-            self.log.error("OpenClaw validation failed: version")
+        checks = [("health", self._validate_gateway_health)]
+        if self._openclaw_upgrade_required:
+            checks.extend(
+                [
+                    ("v4-handshake", self._validate_gateway_status),
+                    ("config.get", lambda: self._validate_gateway_rpc("config.get")),
+                    ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
+                    ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
+                    ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
+                ]
+            )
+        for name, check in checks:
+            passed = bool(check())
+            record(name, passed)
+            if not passed:
+                self.log.error(f"OpenClaw validation failed: {name}")
+                return False
+        if not self._openclaw_upgrade_required:
+            self.log.info("OpenClaw version unchanged; skipping deep RPC upgrade validation.")
+        return True
+
+    def verify_openclaw_upgrade(self) -> bool:
+        if not self.begin_openclaw_upgrade_validation():
             return False
 
         process = None
-        checks = [
-            ("health", self._validate_gateway_health),
-            ("v4-handshake", self._validate_gateway_status),
-            ("config.get", lambda: self._validate_gateway_rpc("config.get")),
-            ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
-            ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
-            ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
-            ("appcontainer", self._validate_appcontainer_smoke),
-        ]
         try:
             process = self._start_validation_gateway()
-            for name, check in checks:
-                passed = bool(check())
-                record(name, passed)
-                if not passed:
-                    raise RuntimeError(f"OpenClaw validation failed: {name}")
-            return True
+            return self.validate_running_gateway()
         except Exception as error:
             self.log.error(str(error))
             return False
