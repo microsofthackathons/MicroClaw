@@ -2,9 +2,6 @@
   <div class="settings-view">
     <!-- Left sidebar: icon grid nav -->
     <div class="settings-sidebar">
-      <div class="settings-title">
-        {{ t("settings.title") }}
-      </div>
       <div class="menu-list">
         <div
           v-for="item in menuItems"
@@ -22,7 +19,7 @@
     <!-- Right content: grouped card rows -->
     <div
       class="settings-content"
-      :class="{ 'settings-content--skills': isDev && activeSection === 'skills' }"
+      :class="{ 'settings-content--skills': devSettingsEnabled && activeSection === 'skills' }"
     >
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
@@ -63,6 +60,41 @@
             </el-radio-group>
           </div>
         </div>
+
+        <div class="sub-label">{{ t("settings.gateway") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.connectionStatus") }}</span>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span
+                class="status-indicator"
+                :class="
+                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
+                "
+              >
+                <span class="status-dot"></span>
+                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+              </span>
+              <el-button size="small" @click="restartGateway">{{
+                t("settings.restart")
+              }}</el-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sub-label">{{ t("settings.logs") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.gatewayLog") }}</span>
+            <el-button
+              size="small"
+              :loading="exportingGatewayLogs"
+              :disabled="gateway.logs.length === 0"
+              @click="exportGatewayLogs"
+              >{{ t("settings.export") }}</el-button
+            >
+          </div>
+        </div>
       </div>
 
       <!-- Usage -->
@@ -96,7 +128,8 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
+                >{{ t("settings.currencySymbol")
+                }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -104,7 +137,8 @@
               <div class="budget-bar-wrapper">
                 <span class="row-value"
                   >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }} /
-                  {{ t("settings.currencySymbol") }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
+                  {{ t("settings.currencySymbol")
+                  }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
                 >
                 <div class="budget-bar">
                   <div
@@ -180,7 +214,6 @@
               </div>
             </div>
           </template>
-
         </template>
 
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
@@ -320,68 +353,14 @@
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
       </div>
 
-      <!-- Gateway -->
-      <div v-if="activeSection === 'gateway'" class="section">
-        <div class="section-label">{{ t("settings.connectionStatus") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.status") }}</span>
-            <div style="display: flex; align-items: center; gap: 8px">
-              <span
-                class="status-indicator"
-                :class="
-                  gateway.status === 'running'
-                    ? 'status-indicator--ok'
-                    : 'status-indicator--error'
-                "
-              >
-                <span class="status-dot"></span>
-                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-              </span>
-              <el-button size="small" @click="restartGateway">{{
-                t("settings.restart")
-              }}</el-button>
-            </div>
-          </div>
-        </div>
-
-        <div class="sub-label">{{ t("settings.port") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.port") }}</span>
-            <div class="port-input-group">
-              <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
-            </div>
-          </div>
-        </div>
-        <div class="section-footer">{{ t("settings.portDesc") }}</div>
-
-        <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.gatewayLog") }}</span>
-          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
-        </div>
-        <div class="gateway-log-box">
-          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
-            {{ t("settings.noLogs") }}
-          </div>
-          <div v-else class="gateway-log-content" ref="logBoxRef">
-            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
-              {{ line }}
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Channels -->
       <ChannelsView v-if="activeSection === 'channels'" embedded />
 
       <!-- Skills (development builds only) -->
-      <SkillsDevPanel v-if="isDev && activeSection === 'skills'" />
+      <component
+        :is="SkillsDevPanel"
+        v-if="devSettingsEnabled && SkillsDevPanel && activeSection === 'skills'"
+      />
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
@@ -851,13 +830,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
+import { ref, reactive, onMounted, onUnmounted, watch, computed, defineAsyncComponent } from "vue";
 import { useRoute } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
-import SkillsDevPanel from "@/components/skills/SkillsDevPanel.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -880,22 +858,14 @@ import { getManagedModelProvider } from "@/utils/managed-model-providers";
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
-const isDev = import.meta.env.DEV;
-
-const logBoxRef = ref<HTMLElement | null>(null);
-
-watch(
-  () => gateway.logs.length,
-  () => {
-    nextTick(() => {
-      if (logBoxRef.value) {
-        logBoxRef.value.scrollTop = logBoxRef.value.scrollHeight;
-      }
-    });
-  },
-);
+const devSettingsEnabled =
+  import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_SETTINGS === "true";
+const SkillsDevPanel = devSettingsEnabled
+  ? defineAsyncComponent(() => import("@/components/skills/SkillsDevPanel.vue"))
+  : null;
 
 const activeSection = ref("general");
+const exportingGatewayLogs = ref(false);
 const updateChecking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 
@@ -934,9 +904,8 @@ const VALID_SECTIONS = [
   "general",
   "usage",
   "models",
-  "gateway",
   "channels",
-  ...(isDev ? ["skills"] : []),
+  ...(devSettingsEnabled ? ["skills"] : []),
   "security",
   "privacy",
   "about",
@@ -944,7 +913,7 @@ const VALID_SECTIONS = [
 
 function normalizeSection(section: unknown) {
   if (section === "theme") return "general";
-  if (section === "workspace") return "gateway";
+  if (section === "workspace") return "general";
   return typeof section === "string" && VALID_SECTIONS.includes(section) ? section : null;
 }
 
@@ -1247,7 +1216,6 @@ const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 const removingModelRef = ref("");
 let copilotModelsGeneration = 0;
-const gatewayPort = ref("18789");
 const showProviderSetup = ref(false);
 const selectedModelEntry = computed(
   () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
@@ -1397,7 +1365,6 @@ const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h3M10 5h7M3 10h7M14 10h3M3 15h2M9 15h8"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>`,
   usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
   models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
-  gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
   channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
   skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3.5a2.5 2.5 0 0 1 5 0v2h2a2.5 2.5 0 1 1 0 5h-2v2a2.5 2.5 0 1 1-5 0v-2h-2a2.5 2.5 0 1 1 0-5h2v-2z"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
@@ -1409,9 +1376,8 @@ const menuItems = computed(() => [
   { id: "general", label: t("settings.menu.general"), color: "#636366", svg: svg.general },
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
-  { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
   { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
-  ...(isDev
+  ...(devSettingsEnabled
     ? [{ id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills }]
     : []),
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
@@ -1622,19 +1588,15 @@ onMounted(async () => {
     }
   }
 
-  // Load existing config for models & gateway
+  // Load existing model config
   const config = await window.openclaw.config.read();
   if (config) {
-    // Gateway port
-    gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
-
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
   }
 
   // Load web search provider configuration
   loadSearchConfig(config);
-
 });
 
 onUnmounted(() => {
@@ -1751,11 +1713,9 @@ async function removeCustomModel(idx: number) {
 async function disconnectGitHubCopilot() {
   if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
   try {
-    await ElMessageBox.confirm(
-      t("settings.copilotDisconnectConfirm"),
-      t("settings.confirm"),
-      { type: "warning" },
-    );
+    await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
+      type: "warning",
+    });
   } catch {
     return;
   }
@@ -1900,21 +1860,18 @@ async function restartGateway() {
   }
 }
 
-async function saveGatewayPort() {
-  const port = parseInt(gatewayPort.value, 10);
-  if (!port || port < 1 || port > 65535) {
-    ElMessage.warning(t("settings.invalidPort"));
-    return;
-  }
+async function exportGatewayLogs() {
+  if (exportingGatewayLogs.value || gateway.logs.length === 0) return;
+  exportingGatewayLogs.value = true;
   try {
-    const config = (await window.openclaw.config.read()) || {};
-    config.gateway = config.gateway || {};
-    config.gateway.port = port;
-    await window.openclaw.config.write(config);
-    await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.portUpdated"));
+    const result = await window.openclaw.logs.exportGateway([...gateway.logs]);
+    if (!result.canceled) {
+      ElMessage.success(t("settings.gatewayLogsExported"));
+    }
   } catch (err: any) {
-    ElMessage.error(t("settings.portUpdateFailed", { error: err.message }));
+    ElMessage.error(t("settings.gatewayLogsExportFailed", { error: err.message }));
+  } finally {
+    exportingGatewayLogs.value = false;
   }
 }
 
@@ -1953,17 +1910,6 @@ async function clearChatHistory() {
   display: flex;
   flex-direction: column;
   padding: 20px 0 12px;
-}
-
-.settings-title {
-  padding: 0 16px 16px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .menu-list {
@@ -2088,15 +2034,6 @@ async function clearChatHistory() {
   .row-value {
     text-align: left;
     max-width: 100%;
-  }
-
-  .port-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .port-input-group {
-    width: 100%;
   }
 
   .budget-bar-wrapper {
@@ -2318,18 +2255,6 @@ async function clearChatHistory() {
   width: 360px;
 }
 
-.port-row {
-  align-items: flex-start;
-  padding: 20px;
-  gap: 16px;
-  min-height: 80px;
-}
-
-.port-info {
-  flex: 1;
-  min-width: 0;
-}
-
 .search-provider-group {
   display: flex;
   flex-direction: column;
@@ -2408,73 +2333,6 @@ async function clearChatHistory() {
 
 .provider-link:hover {
   opacity: 0.8;
-}
-
-.port-title {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--text-primary);
-}
-
-.port-input-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px 8px 4px 12px;
-}
-
-.port-prefix {
-  font-size: 13px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.gateway-log-box {
-  margin-top: 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  height: 240px;
-  overflow: hidden;
-  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
-  font-size: 12px;
-}
-
-.gateway-log-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-}
-
-.gateway-log-content {
-  height: 100%;
-  overflow-y: auto;
-  padding: 10px 14px;
-}
-
-.gateway-log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.6;
-  color: var(--text-primary);
-}
-
-.port-input-group :deep(.el-input__wrapper) {
-  box-shadow: none !important;
-  background: transparent;
-  padding: 0;
-}
-
-.port-input-group :deep(.el-input__inner) {
-  font-size: 13px;
-  text-align: center;
-  font-weight: 400;
 }
 
 .settings-view :deep(.el-input__inner),

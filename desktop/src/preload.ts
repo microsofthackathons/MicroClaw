@@ -297,6 +297,14 @@ contextBridge.exposeInMainWorld("openclaw", {
       }) as Promise<PrepareChatAttachmentsResult>,
   },
 
+  logs: {
+    exportGateway: (lines: string[]) =>
+      ipcRenderer.invoke("logs:export-gateway", lines) as Promise<{
+        canceled: boolean;
+        filePath?: string;
+      }>,
+  },
+
   // --- Tool Sandbox ---
   sandbox: {
     getStatus: () => ipcRenderer.invoke("sandbox:get-status"),

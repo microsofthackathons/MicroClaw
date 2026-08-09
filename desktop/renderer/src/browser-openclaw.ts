@@ -13,6 +13,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
   const browserAgentsSnapshot = () => ({
     agents: browserAgentRoster.map((agent) => ({ ...agent })),
   });
+  const browserGatewayLogs = [
+    "[info] Browser development Gateway started",
+    "[info] Mock Agent roster loaded",
+  ];
 
   return {
     gateway: {
@@ -21,7 +25,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       warmUpAgent: async () => ({ outcome: "skipped", transcriptDeleted: true }),
       restart: noopAsync,
       onStatus: noopSub,
-      onLog: noopSub,
+      onLog: (callback) => {
+        queueMicrotask(() => browserGatewayLogs.forEach(callback));
+        return noop;
+      },
       onWsConnected: noopSub,
       onWsDisconnected: noopSub,
     },
@@ -196,5 +203,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       importClipboardImages: async () => emptyFiles,
     },
     dialog: { openFiles: async () => emptyFiles },
+    logs: {
+      exportGateway: async () => ({
+        canceled: false,
+        filePath: "browser-dev/microclaw-gateway-logs.log",
+      }),
+    },
   };
 }

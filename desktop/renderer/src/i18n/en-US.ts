@@ -262,7 +262,8 @@ export default {
   "settings.otherPlatforms": "Other Platforms",
   "settings.notInstalled": "Not Installed",
   "settings.connectionStatus": "Connection Status",
-  "settings.status": "Status",
+  "settings.gateway": "Gateway",
+  "settings.logs": "Logs",
   "settings.privacy": "Data & Privacy",
   "settings.privacyProtection": "Privacy Protection",
   "settings.privacyProtectionDesc":
@@ -350,8 +351,9 @@ export default {
   "settings.updateCheckFailed": "Could not check for updates",
   "settings.downloadUpdate": "Download update",
   "settings.gatewayLog": "Gateway Logs",
-  "settings.noLogs": "No logs",
-  "settings.clear": "Clear",
+  "settings.export": "Export",
+  "settings.gatewayLogsExported": "Gateway logs exported.",
+  "settings.gatewayLogsExportFailed": "Could not export Gateway logs: {error}",
   "settings.webSearchDesc":
     "MicroClaw uses the configured provider for web search. The gateway restarts automatically after you save.",
   "settings.noApiKeyRequired": "No API key required",
@@ -383,7 +385,6 @@ export default {
   "settings.menu.theme": "Appearance",
   "settings.menu.usage": "Usage",
   "settings.menu.models": "Models",
-  "settings.menu.gateway": "Gateway",
   "settings.menu.channels": "Channels",
   "settings.menu.skills": "Skills",
   "settings.menu.privacy": "Privacy",
@@ -430,9 +431,6 @@ export default {
   "settings.add": "Add",
   "settings.editCustomModel": "Edit Custom Model",
   "settings.connected": "Connected",
-  "settings.port": "Port",
-  "settings.portDesc":
-    "The gateway restarts automatically when you change the port. If the chosen port is in use, MicroClaw tries nearby ports.",
   "settings.webSearch": "Web search",
   "settings.reasoningOffDesc": "Reasoning off",
   "settings.reasoningDesc": "Reasoning {level}",
@@ -441,9 +439,6 @@ export default {
   "settings.modelNameExists": "A model with this name already exists",
   "settings.gatewayRestarting": "Gateway restarting...",
   "settings.restartFailed": "Restart failed: {error}",
-  "settings.invalidPort": "Invalid port number",
-  "settings.portUpdated": "Port updated, gateway restarting...",
-  "settings.portUpdateFailed": "Failed: {error}",
   "settings.connectionFailed": "Connection failed: {error}",
 
   // ── GatewayLoading ──
