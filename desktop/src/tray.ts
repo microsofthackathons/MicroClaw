@@ -24,7 +24,7 @@ export function createTray(callbacks: {
 
   updateTrayMenu("stopped", callbacks);
 
-  tray.on("double-click", () => {
+  tray.on("click", () => {
     callbacks.onShowWindow();
   });
 }
@@ -60,7 +60,7 @@ export function updateTrayMenu(
     },
     { type: "separator" },
     {
-      label: "Show Window",
+      label: "Open MicroClaw",
       click: () => callbacks?.onShowWindow(),
     },
     {
