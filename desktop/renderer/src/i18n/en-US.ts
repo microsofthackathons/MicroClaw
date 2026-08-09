@@ -262,7 +262,7 @@ export default {
   "settings.otherPlatforms": "Other Platforms",
   "settings.notInstalled": "Not Installed",
   "settings.connectionStatus": "Connection Status",
-  "settings.status": "Status",
+  "settings.gateway": "Gateway",
   "settings.privacy": "Data & Privacy",
   "settings.privacyProtection": "Privacy Protection",
   "settings.privacyProtectionDesc":
@@ -430,9 +430,6 @@ export default {
   "settings.add": "Add",
   "settings.editCustomModel": "Edit Custom Model",
   "settings.connected": "Connected",
-  "settings.port": "Port",
-  "settings.portDesc":
-    "The gateway restarts automatically when you change the port. If the chosen port is in use, MicroClaw tries nearby ports.",
   "settings.webSearch": "Web search",
   "settings.reasoningOffDesc": "Reasoning off",
   "settings.reasoningDesc": "Reasoning {level}",
@@ -441,9 +438,6 @@ export default {
   "settings.modelNameExists": "A model with this name already exists",
   "settings.gatewayRestarting": "Gateway restarting...",
   "settings.restartFailed": "Restart failed: {error}",
-  "settings.invalidPort": "Invalid port number",
-  "settings.portUpdated": "Port updated, gateway restarting...",
-  "settings.portUpdateFailed": "Failed: {error}",
   "settings.connectionFailed": "Connection failed: {error}",
 
   // ── GatewayLoading ──

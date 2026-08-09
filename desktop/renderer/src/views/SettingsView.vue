@@ -63,6 +63,27 @@
             </el-radio-group>
           </div>
         </div>
+
+        <div class="sub-label">{{ t("settings.gateway") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.connectionStatus") }}</span>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span
+                class="status-indicator"
+                :class="
+                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
+                "
+              >
+                <span class="status-dot"></span>
+                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+              </span>
+              <el-button size="small" @click="restartGateway">{{
+                t("settings.restart")
+              }}</el-button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Usage -->
@@ -322,47 +343,8 @@
 
       <!-- Gateway -->
       <div v-if="activeSection === 'gateway'" class="section">
-        <div class="section-label">{{ t("settings.connectionStatus") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.status") }}</span>
-            <div style="display: flex; align-items: center; gap: 8px">
-              <span
-                class="status-indicator"
-                :class="
-                  gateway.status === 'running'
-                    ? 'status-indicator--ok'
-                    : 'status-indicator--error'
-                "
-              >
-                <span class="status-dot"></span>
-                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-              </span>
-              <el-button size="small" @click="restartGateway">{{
-                t("settings.restart")
-              }}</el-button>
-            </div>
-          </div>
-        </div>
-
-        <div class="sub-label">{{ t("settings.port") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.port") }}</span>
-            <div class="port-input-group">
-              <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
-            </div>
-          </div>
-        </div>
-        <div class="section-footer">{{ t("settings.portDesc") }}</div>
-
-        <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.gatewayLog") }}</span>
+        <div class="section-label-row">
+          <span class="section-label">{{ t("settings.gatewayLog") }}</span>
           <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
         </div>
         <div class="gateway-log-box">
@@ -1247,7 +1229,6 @@ const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 const removingModelRef = ref("");
 let copilotModelsGeneration = 0;
-const gatewayPort = ref("18789");
 const showProviderSetup = ref(false);
 const selectedModelEntry = computed(
   () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
@@ -1622,12 +1603,9 @@ onMounted(async () => {
     }
   }
 
-  // Load existing config for models & gateway
+  // Load existing model config
   const config = await window.openclaw.config.read();
   if (config) {
-    // Gateway port
-    gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
-
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
   }
@@ -1900,24 +1878,6 @@ async function restartGateway() {
   }
 }
 
-async function saveGatewayPort() {
-  const port = parseInt(gatewayPort.value, 10);
-  if (!port || port < 1 || port > 65535) {
-    ElMessage.warning(t("settings.invalidPort"));
-    return;
-  }
-  try {
-    const config = (await window.openclaw.config.read()) || {};
-    config.gateway = config.gateway || {};
-    config.gateway.port = port;
-    await window.openclaw.config.write(config);
-    await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.portUpdated"));
-  } catch (err: any) {
-    ElMessage.error(t("settings.portUpdateFailed", { error: err.message }));
-  }
-}
-
 async function clearChatHistory() {
   try {
     await ElMessageBox.confirm(t("settings.clearHistoryConfirm"), t("settings.confirm"), {
@@ -2088,15 +2048,6 @@ async function clearChatHistory() {
   .row-value {
     text-align: left;
     max-width: 100%;
-  }
-
-  .port-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .port-input-group {
-    width: 100%;
   }
 
   .budget-bar-wrapper {
@@ -2318,18 +2269,6 @@ async function clearChatHistory() {
   width: 360px;
 }
 
-.port-row {
-  align-items: flex-start;
-  padding: 20px;
-  gap: 16px;
-  min-height: 80px;
-}
-
-.port-info {
-  flex: 1;
-  min-width: 0;
-}
-
 .search-provider-group {
   display: flex;
   flex-direction: column;
@@ -2410,29 +2349,6 @@ async function clearChatHistory() {
   opacity: 0.8;
 }
 
-.port-title {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--text-primary);
-}
-
-.port-input-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px 8px 4px 12px;
-}
-
-.port-prefix {
-  font-size: 13px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
 .gateway-log-box {
   margin-top: 8px;
   background: var(--bg-input);
@@ -2463,18 +2379,6 @@ async function clearChatHistory() {
   word-break: break-all;
   line-height: 1.6;
   color: var(--text-primary);
-}
-
-.port-input-group :deep(.el-input__wrapper) {
-  box-shadow: none !important;
-  background: transparent;
-  padding: 0;
-}
-
-.port-input-group :deep(.el-input__inner) {
-  font-size: 13px;
-  text-align: center;
-  font-weight: 400;
 }
 
 .settings-view :deep(.el-input__inner),
