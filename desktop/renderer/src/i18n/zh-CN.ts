@@ -217,7 +217,7 @@ export default {
   "settings.application": "应用",
   "settings.language": "语言",
   "settings.autoStart": "开机自启",
-  "settings.startMinimized": "启动时最小化到托盘",
+  "settings.minimizeToTray": "最小化到托盘",
   "settings.theme": "外观",
   "settings.themeMode": "主题",
   "settings.themeLight": "浅色",

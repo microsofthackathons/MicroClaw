@@ -7,6 +7,7 @@ describe("createBrowserOpenClawMock", () => {
 
     await expect(api.gateway.getStatus()).resolves.toBe("running");
     await expect(api.chat.isConnected()).resolves.toBe(true);
+    await expect(api.settings.get()).resolves.toMatchObject({ minimizeToTray: false });
     await expect(api.plugin.weixin.getStatus()).resolves.toMatchObject({ loggedIn: false });
 
     expect(api.sandbox.onPermissionRequest(vi.fn())).toBeTypeOf("function");

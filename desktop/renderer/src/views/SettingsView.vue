@@ -44,8 +44,8 @@
             <el-switch v-model="settings.autoStart" />
           </div>
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.startMinimized") }}</span>
-            <el-switch v-model="settings.startMinimized" />
+            <span class="row-label">{{ t("settings.minimizeToTray") }}</span>
+            <el-switch v-model="settings.minimizeToTray" />
           </div>
         </div>
 
@@ -1150,7 +1150,7 @@ async function revokeStaleAcl(item: { dir: string }) {
 const settings = reactive({
   language: "en-US",
   autoStart: false,
-  startMinimized: false,
+  minimizeToTray: false,
   themeMode: "light",
   privacyLevel: "balanced" as "basic" | "balanced" | "strict",
   fileAccessAudit: true,
@@ -1410,8 +1410,8 @@ watch(
   (v) => window.openclaw.settings.set("autoStart", v),
 );
 watch(
-  () => settings.startMinimized,
-  (v) => window.openclaw.settings.set("startMinimized", v),
+  () => settings.minimizeToTray,
+  (v) => window.openclaw.settings.set("minimizeToTray", v),
 );
 watch(
   () => settings.themeMode,
@@ -1574,7 +1574,7 @@ onMounted(async () => {
   if (saved) {
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
-    settings.startMinimized = saved.startMinimized ?? false;
+    settings.minimizeToTray = saved.minimizeToTray ?? false;
     settings.themeMode = saved.themeMode ?? "light";
     settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
     // Init PII toggles based on loaded privacy level

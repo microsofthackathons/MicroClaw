@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { showAndFocusWindow, type AppWindow } from "./window-lifecycle";
+import { minimizeWindow, showAndFocusWindow, type AppWindow } from "./window-lifecycle";
 
 function createWindow(options?: { destroyed?: boolean; minimized?: boolean }) {
   const calls: string[] = [];
   const window: AppWindow = {
     isDestroyed: () => options?.destroyed ?? false,
     isMinimized: () => options?.minimized ?? false,
+    minimize: vi.fn(() => calls.push("minimize")),
+    hide: vi.fn(() => calls.push("hide")),
     restore: vi.fn(() => calls.push("restore")),
     setSkipTaskbar: vi.fn(() => calls.push("taskbar")),
     show: vi.fn(() => calls.push("show")),
@@ -35,6 +37,32 @@ describe("showAndFocusWindow", () => {
     const { calls, window } = createWindow({ destroyed: true });
 
     showAndFocusWindow(window);
+
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("minimizeWindow", () => {
+  it("hides the window from the taskbar when minimize to tray is enabled", () => {
+    const { calls, window } = createWindow();
+
+    minimizeWindow(window, true);
+
+    expect(calls).toEqual(["taskbar", "hide"]);
+  });
+
+  it("keeps the window in the taskbar when minimize to tray is disabled", () => {
+    const { calls, window } = createWindow();
+
+    minimizeWindow(window, false);
+
+    expect(calls).toEqual(["taskbar", "minimize"]);
+  });
+
+  it("ignores a destroyed window", () => {
+    const { calls, window } = createWindow({ destroyed: true });
+
+    minimizeWindow(window, true);
 
     expect(calls).toEqual([]);
   });

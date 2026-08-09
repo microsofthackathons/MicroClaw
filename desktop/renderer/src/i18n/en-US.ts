@@ -230,7 +230,7 @@ export default {
   "settings.application": "Application",
   "settings.language": "Language",
   "settings.autoStart": "Launch at startup",
-  "settings.startMinimized": "Start minimized to tray",
+  "settings.minimizeToTray": "Minimize to tray",
   "settings.theme": "Appearance",
   "settings.themeMode": "Theme",
   "settings.themeLight": "Light",

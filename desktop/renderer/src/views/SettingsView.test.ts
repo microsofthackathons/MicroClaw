@@ -22,7 +22,7 @@ describe("SettingsView", () => {
         get: vi.fn().mockResolvedValue({
           language: "en-US",
           autoStart: false,
-          startMinimized: false,
+          minimizeToTray: false,
           themeMode: "light",
           privacyLevel: "balanced",
         }),
