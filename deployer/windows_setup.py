@@ -2686,6 +2686,21 @@ class WindowsSetup:
         state_dir = Path.home() / ".openclaw"
         cache_dir = state_dir / "compile-cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+        version_marker = cache_dir / ".microclaw-version"
+        try:
+            marker_matches = version_marker.read_text(encoding="utf-8").strip() == (
+                OPENCLAW_TARGET_VERSION
+            )
+        except OSError:
+            marker_matches = False
+        cache_has_files = any(
+            path.is_file() and path != version_marker for path in cache_dir.rglob("*")
+        )
+        if not self._openclaw_upgrade_required and cache_has_files:
+            if not marker_matches:
+                version_marker.write_text(OPENCLAW_TARGET_VERSION, encoding="utf-8")
+            self.log.info("  Compile cache is current; skipping warmup")
+            return True
 
         env = self._get_env()
         env["NODE_COMPILE_CACHE"] = str(cache_dir)
@@ -2738,6 +2753,7 @@ class WindowsSetup:
                 pass
 
             cached = sum(1 for _ in cache_dir.glob("**/*") if _.is_file())
+            version_marker.write_text(OPENCLAW_TARGET_VERSION, encoding="utf-8")
             self.log.success(f"Compile cache warmed up ({cached} files in {cache_dir})")
             return True
         except Exception as e:
@@ -2807,10 +2823,20 @@ class WindowsSetup:
             if not skill_src.is_dir():
                 continue
             skill_dest = dest_dir / skill_name
+            preserved_officecli = None
             try:
+                if skill_name == "officecli":
+                    existing_officecli = skill_dest / "bin" / "officecli.exe"
+                    if existing_officecli.is_file():
+                        preserved_officecli = existing_officecli.read_bytes()
                 if skill_dest.exists():
                     shutil.rmtree(skill_dest)
                 shutil.copytree(skill_src, skill_dest)
+                if preserved_officecli is not None:
+                    restored_officecli = skill_dest / "bin" / "officecli.exe"
+                    if not restored_officecli.exists():
+                        restored_officecli.parent.mkdir(parents=True, exist_ok=True)
+                        restored_officecli.write_bytes(preserved_officecli)
                 deployed += 1
                 self.log.info(f"  Deployed managed skill: {skill_name}")
             except Exception as e:
@@ -3584,6 +3610,37 @@ class WindowsSetup:
         env["OPENCLAW_STATE_DIR"] = str(state_dir)
         return openclaw_cmd, env
 
+    def _parallel_plugin_is_installed_locally(self, state_dir: Path) -> bool:
+        projects_dir = state_dir / "npm" / "projects"
+        if not projects_dir.is_dir():
+            return False
+        try:
+            packages = projects_dir.glob(
+                "*/node_modules/@openclaw/parallel-plugin/package.json"
+            )
+            for package_path in packages:
+                plugin_dir = package_path.parent
+                manifest_path = plugin_dir / "openclaw.plugin.json"
+                package = json.loads(package_path.read_text(encoding="utf-8"))
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                openclaw_metadata = package.get("openclaw", {})
+                extensions = openclaw_metadata.get("runtimeExtensions") or openclaw_metadata.get(
+                    "extensions", []
+                )
+                if (
+                    package.get("name") == _PARALLEL_PLUGIN_PACKAGE
+                    and manifest.get("id") == _PARALLEL_PLUGIN_ID
+                    and "parallel-free"
+                    in manifest.get("contracts", {}).get("webSearchProviders", [])
+                    and isinstance(extensions, list)
+                    and extensions
+                    and all((plugin_dir / str(path)).is_file() for path in extensions)
+                ):
+                    return True
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return False
+
     @staticmethod
     def _create_process_lifetime_job(process: subprocess.Popen) -> _WindowsKillOnCloseJob:
         return _WindowsKillOnCloseJob.attach(process)
@@ -3625,6 +3682,15 @@ class WindowsSetup:
             self.log.info(
                 f"  Web search provider is {provider or 'not configured'}; no plugin needed"
             )
+            return True
+
+        plugin_entry = config.get("plugins", {}).get("entries", {}).get(_PARALLEL_PLUGIN_ID)
+        if (
+            isinstance(plugin_entry, dict)
+            and plugin_entry.get("enabled") is True
+            and self._parallel_plugin_is_installed_locally(state_dir)
+        ):
+            self.log.info("  Parallel web search plugin is already installed")
             return True
 
         cli_context = self._weixin_cli_context(state_dir)
@@ -3673,11 +3739,15 @@ class WindowsSetup:
 
         state_dir = Path.home() / ".openclaw"
         existing = state_dir / "extensions" / "openclaw-weixin"
+        prior_policy = getattr(self, "_weixin_policy_snapshot", None)
+        if self._weixin_registration_verified and prior_policy is not None:
+            self.log.info("  微信插件已是内置版本且官方注册完整，跳过重复安装")
+            return True
+
         cli_context = self._weixin_cli_context(state_dir)
         if cli_context is None:
             return False
         openclaw_cmd, env = cli_context
-        prior_policy = getattr(self, "_weixin_policy_snapshot", None)
         if getattr(self, "_weixin_policy_restore_pending", False):
             if prior_policy is None:
                 self.log.error("插件策略恢复状态丢失，无法安全重试")
@@ -4150,6 +4220,36 @@ class WindowsSetup:
 
     # ────────────────────── AppContainer ──────────────────────
 
+    def _appcontainer_access_is_sufficient(
+        self,
+        launcher: Path,
+        container_name: str,
+        directory: str,
+        access: str,
+    ) -> bool:
+        try:
+            result = self._run(
+                [
+                    str(launcher),
+                    "check-acl",
+                    "--name",
+                    container_name,
+                    "--dir",
+                    directory,
+                    "--access",
+                    access,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return False
+            payload = json.loads(result.stdout)
+            return payload.get("sufficient") is True
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+            return False
+
     def provision_appcontainer(self) -> bool:
         """Provision AppContainer sandbox for MicroClaw (Windows 10 2004+).
 
@@ -4225,6 +4325,14 @@ class WindowsSetup:
         grant_failures = []
         for dir_path, access in dirs_to_grant:
             if Path(dir_path).exists():
+                if self._appcontainer_access_is_sufficient(
+                    launcher,
+                    container_name,
+                    dir_path,
+                    access,
+                ):
+                    self.log.info(f"  AppContainer ACL already configured: {dir_path}")
+                    continue
                 try:
                     subprocess.run(
                         [
@@ -5118,8 +5226,43 @@ class WindowsSetup:
         if not dirs:
             return
 
+        missing = list(dirs)
+        try:
+            result = self._run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "@((Get-MpPreference).ExclusionPath) | ConvertTo-Json -Compress",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                parsed = json.loads(result.stdout or "[]")
+                current = [parsed] if isinstance(parsed, str) else parsed
+                normalized = {
+                    os.path.normcase(os.path.normpath(str(path)))
+                    for path in current
+                    if path
+                }
+                missing = [
+                    path
+                    for path in dirs
+                    if os.path.normcase(os.path.normpath(str(path))) not in normalized
+                ]
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+            pass
+
+        if not missing:
+            self.log.info("  Windows Defender exclusions already configured")
+            return
+
         # Add-MpPreference always requires admin — elevate directly
-        safe_paths = ",".join(f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in dirs)
+        safe_paths = ",".join(
+            f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing
+        )
         try:
             self._run(
                 [
@@ -5133,7 +5276,7 @@ class WindowsSetup:
                 capture_output=True,
                 timeout=30,
             )
-            for d in dirs:
+            for d in missing:
                 self.log.info(f"  Defender exclusion added: {d}")
         except Exception as e:
             self.log.warning(f"  Defender 排除项添加失败（需要管理员权限）: {e}")

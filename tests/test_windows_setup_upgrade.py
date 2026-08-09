@@ -1028,6 +1028,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertFalse(self.ws._weixin_policy_snapshot.entry_present)
         self.assertTrue(self.ws._weixin_registration_verified)
 
+        self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
+
     def test_weixin_matching_payload_repairs_missing_config_record(self):
         bundled = self.root / "bundled-weixin"
         installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
@@ -1562,6 +1566,57 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin"],
         )
 
+    def test_install_search_provider_plugin_uses_verified_local_fast_path(self):
+        state_dir = self.home / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {"web": {"search": {"provider": "parallel-free"}}},
+                    "plugins": {"entries": {"parallel": {"enabled": True}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_dir = (
+            state_dir
+            / "npm"
+            / "projects"
+            / "parallel-project"
+            / "node_modules"
+            / "@openclaw"
+            / "parallel-plugin"
+        )
+        (plugin_dir / "dist").mkdir(parents=True)
+        (plugin_dir / "dist" / "index.js").write_text("", encoding="utf-8")
+        (plugin_dir / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "@openclaw/parallel-plugin",
+                    "openclaw": {
+                        "extensions": ["./index.ts"],
+                        "runtimeExtensions": ["./dist/index.js"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (plugin_dir / "openclaw.plugin.json").write_text(
+            json.dumps(
+                {
+                    "id": "parallel",
+                    "contracts": {"webSearchProviders": ["parallel", "parallel-free"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._weixin_cli_context.assert_not_called()
+
     def test_install_search_provider_plugin_preserves_other_provider(self):
         config_path = self.home / ".openclaw" / "openclaw.json"
         config_path.parent.mkdir(parents=True)
@@ -1574,6 +1629,113 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.install_search_provider_plugin())
 
         self.ws._weixin_cli_context.assert_not_called()
+
+    def test_warmup_compile_cache_skips_current_same_version_cache(self):
+        self.ws._openclaw_upgrade_required = False
+        state_dir = self.home / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / ".microclaw-version").write_text(
+            OPENCLAW_TARGET_VERSION,
+            encoding="utf-8",
+        )
+        (cache_dir / "cached-module").write_bytes(b"cache")
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_bytes(b"node")
+        package = self._write_package(self.appdata / "npm", OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = self.appdata / "npm"
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.warmup_compile_cache())
+
+        self.assertTrue(package.exists())
+        popen.assert_not_called()
+
+    def test_warmup_compile_cache_adopts_existing_same_version_cache(self):
+        self.ws._openclaw_upgrade_required = False
+        cache_dir = self.home / ".openclaw" / "compile-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "cached-module").write_bytes(b"cache")
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_bytes(b"node")
+        self._write_package(self.appdata / "npm", OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = self.appdata / "npm"
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.warmup_compile_cache())
+
+        self.assertEqual(
+            (cache_dir / ".microclaw-version").read_text(encoding="utf-8"),
+            OPENCLAW_TARGET_VERSION,
+        )
+        popen.assert_not_called()
+
+    def test_deploy_managed_skills_preserves_existing_officecli_binary(self):
+        bundled = self.root / "bundled-skills"
+        bundled_officecli = bundled / "officecli"
+        bundled_officecli.mkdir(parents=True)
+        (bundled_officecli / "SKILL.md").write_text("updated", encoding="utf-8")
+        state_dir = self.home / ".openclaw"
+        existing = state_dir / "skills" / "officecli" / "bin" / "officecli.exe"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"existing-binary")
+        self.ws._get_bundled_skills_dir = unittest.mock.Mock(return_value=bundled)
+
+        self.ws._deploy_managed_skills(state_dir)
+
+        self.assertEqual(existing.read_bytes(), b"existing-binary")
+        self.assertEqual(
+            (state_dir / "skills" / "officecli" / "SKILL.md").read_text(encoding="utf-8"),
+            "updated",
+        )
+
+    def test_appcontainer_acl_preflight_recognizes_sufficient_access(self):
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout='{"exists":true,"sufficient":true}',
+                stderr="",
+            )
+        )
+
+        self.assertTrue(
+            self.ws._appcontainer_access_is_sufficient(
+                Path("AppContainerLauncher.exe"),
+                "MicroClaw",
+                str(self.root),
+                "rw",
+            )
+        )
+
+    def test_defender_exclusions_skip_elevation_when_already_configured(self):
+        directories = [self.root / "one", self.root / "two"]
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([str(path) for path in directories]),
+                stderr="",
+            )
+        )
+
+        self.ws._add_defender_exclusions(directories)
+
+        self.ws._run.assert_called_once()
+
+    def test_defender_exclusions_add_only_missing_paths(self):
+        existing = self.root / "existing"
+        missing = self.root / "missing"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout=json.dumps([str(existing)]), stderr=""),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+        )
+
+        self.ws._add_defender_exclusions([existing, missing])
+
+        elevated_command = self.ws._run.call_args_list[1].args[0]
+        self.assertIn(str(missing), elevated_command[-1])
+        self.assertNotIn(str(existing), elevated_command[-1])
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"
