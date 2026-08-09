@@ -721,7 +721,7 @@ html.dark .sp-agent-avatar-item.active {
   background: #1d1d1f;
   border: none;
   color: #fff;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
