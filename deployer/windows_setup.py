@@ -405,26 +405,25 @@ class WindowsSetup:
         self.progress_callback: Callable[[str], None] | None = None
         self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
 
-        # Select mirror: respect explicit user override (npm.registry config)
-        # if set; otherwise probe all candidates in parallel and pick the
-        # one with the lowest latency. The probe is silent — users on a
-        # slow link just see one extra "Selecting fastest mirror…" line.
+        # Respect an explicit registry immediately. Otherwise start with the
+        # fallback and defer network probing until a download is required.
         registry = config.get("npm.registry", "")
         if registry:
             mirror_name = self._match_mirror_by_registry(registry)
         else:
-            mirror_name = self._probe_fastest_mirror()
+            mirror_name = MIRROR_FALLBACK
         mirror = MIRRORS[mirror_name]
         self._node_download_base = mirror["node_download_base"]
         self._git_mirror_base = mirror["git_mirror_base"]
         self._mirror_name = mirror_name
+        self._mirror_probe_pending = not registry
         # Persist the resolved registry on the config object so setup_npm_mirror
         # picks it up without needing to re-probe.
         if not registry:
             try:
                 config.set("npm.registry", mirror["npm_registry"])
             except Exception:
-                # config may not support .set(); fall back to internal attr
+                # Config may not support .set(); fall back to an internal value.
                 self._resolved_npm_registry = mirror["npm_registry"]
 
     # ────────────────────── Subprocess helper ──────────────────────
@@ -513,6 +512,16 @@ class WindowsSetup:
         self.log.info(f"Fastest mirror: {best_name} ({int(best_latency * 1000)} ms)")
         return best_name
 
+    def _select_download_mirror(self) -> None:
+        if not self._mirror_probe_pending:
+            return
+        mirror_name = self._probe_fastest_mirror()
+        mirror = MIRRORS[mirror_name]
+        self._mirror_name = mirror_name
+        self._node_download_base = mirror["node_download_base"]
+        self._git_mirror_base = mirror["git_mirror_base"]
+        self._mirror_probe_pending = False
+
     # ────────────────────── Rollback ──────────────────────
 
     def _register_rollback(self, label: str, fn):
@@ -543,6 +552,7 @@ class WindowsSetup:
             self.log.info("git already in PATH")
             return True
 
+        self._select_download_mirror()
         self.log.step(f"Installing Git for Windows ({self._mirror_name})…")
         arch = self._get_arch()
         # Resolve latest Git version from npmmirror
@@ -1092,6 +1102,7 @@ class WindowsSetup:
         detections that the previous zip-extract-to-dotfolder approach
         produced on some configurations.
         """
+        self._select_download_mirror()
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
 
         version = self._resolve_target_node_version()
@@ -1706,10 +1717,6 @@ class WindowsSetup:
         return ActiveInstallation(pids=tuple(sorted(target_pids)), gateway=gateway)
 
     def stop_active_installation_for_upgrade(self, active: ActiveInstallation) -> bool:
-        current = self.get_active_installation()
-        if current is None:
-            return True
-        active = current
         if not active.pids:
             gateway = active.gateway
             port = gateway.port if gateway is not None else int(self.cfg.get("gateway.port", 18789))
@@ -1753,21 +1760,32 @@ class WindowsSetup:
 
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if self.get_active_installation() is None:
-                gateway = active.gateway
-                if gateway is not None and gateway.lock_path is not None:
-                    try:
-                        gateway.lock_path.unlink(missing_ok=True)
-                    except OSError as error:
-                        self.log.warn(f"Could not remove stale Gateway lock: {error}")
-                self.log.success("MicroClaw/OpenClaw closed; continuing installation")
-                return True
+            pids_stopped = not any(process_is_alive(pid) for pid in active.pids)
+            gateway = active.gateway
+            port_stopped = gateway is None or not self._is_tcp_port_open(gateway.port)
+            if pids_stopped and port_stopped:
+                break
             time.sleep(0.5)
+        else:
+            self.log.error(
+                "MicroClaw/OpenClaw restarted or did not close. "
+                "Exit it from the system tray and retry."
+            )
+            return False
 
-        self.log.error(
-            "MicroClaw/OpenClaw restarted or did not close. Exit it from the system tray and retry."
-        )
-        return False
+        if self.get_active_installation() is not None:
+            self.log.error(
+                "MicroClaw/OpenClaw restarted during shutdown. "
+                "Exit it from the system tray and retry."
+            )
+            return False
+        if gateway is not None and gateway.lock_path is not None:
+            try:
+                gateway.lock_path.unlink(missing_ok=True)
+            except OSError as error:
+                self.log.warn(f"Could not remove stale Gateway lock: {error}")
+        self.log.success("MicroClaw/OpenClaw closed; continuing installation")
+        return True
 
     def _gateway_is_stopped_for_upgrade(self) -> bool:
         active_gateway = self.get_active_gateway()
@@ -5137,18 +5155,43 @@ class WindowsSetup:
         """
         self.log.step("正在添加 Windows Defender 排除项…")
         local_appdata = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
         dirs = [
             self.node_dir,  # ~/.openclaw-node (node + node_modules)
+            appdata / "npm" / "node_modules" / "openclaw",
             Path.home() / ".openclaw",  # config, skills, plugins, compile-cache
             Path.home() / ".openclaw-git",  # PortableGit
             Path.home() / ".microclaw",  # Electron desktop client
             local_appdata / "npm-cache",  # npm cache (heavy I/O during install)
             local_appdata / "Temp",  # %TEMP% (npm extracts packages here)
         ]
-        self._add_defender_exclusions(dirs)
+        normalized = sorted(
+            os.path.normcase(os.path.normpath(str(path))) for path in dirs
+        )
+        marker = DEFAULT_DESKTOP_DIR / "install-state" / "defender-exclusions.json"
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            if payload == {"schema": 1, "paths": normalized}:
+                self.log.info("  Windows Defender exclusions already configured")
+                return True
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+
+        if not self._add_defender_exclusions(dirs):
+            return True
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            temporary = marker.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps({"schema": 1, "paths": normalized}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, marker)
+        except OSError as error:
+            self.log.warn(f"  Defender exclusion marker could not be saved: {error}")
         return True
 
-    def _add_defender_exclusions(self, dirs: list[Path]) -> None:
+    def _add_defender_exclusions(self, dirs: list[Path]) -> bool:
         """Best-effort: add Windows Defender exclusions for multiple directories.
 
         Real-time AV scanning thousands of JS/EXE files is the primary cause
@@ -5158,7 +5201,7 @@ class WindowsSetup:
         Defender accepts paths that don't exist yet, so no need to filter.
         """
         if not dirs:
-            return
+            return True
 
         missing = list(dirs)
         try:
@@ -5191,14 +5234,14 @@ class WindowsSetup:
 
         if not missing:
             self.log.info("  Windows Defender exclusions already configured")
-            return
+            return True
 
         # Add-MpPreference always requires admin — elevate directly
         safe_paths = ",".join(
             f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing
         )
         try:
-            self._run(
+            result = self._run(
                 [
                     "powershell",
                     "-NoProfile",
@@ -5210,13 +5253,18 @@ class WindowsSetup:
                 capture_output=True,
                 timeout=30,
             )
+            if result.returncode != 0:
+                self.log.warning("  Defender exclusion command did not complete successfully")
+                return False
             for d in missing:
                 self.log.info(f"  Defender exclusion added: {d}")
+            return True
         except Exception as e:
             self.log.warning(f"  Defender 排除项添加失败（需要管理员权限）: {e}")
             self.log.warning(
                 "  提示: 手动在 Windows 安全中心 > 病毒防护 > 排除项 中添加上述目录可显著加速安装"
             )
+            return False
 
     def _find_openclaw_cmd(self) -> list[str] | None:
         """Find openclaw executable on Windows.

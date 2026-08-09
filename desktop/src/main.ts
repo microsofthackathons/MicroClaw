@@ -2194,6 +2194,7 @@ async function startGateway(): Promise<void> {
 }
 
 async function startGatewayInner(): Promise<void> {
+  logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   const config = readConfig();
   gatewayToken = config?.gateway?.auth?.token || "";
@@ -2221,6 +2222,7 @@ async function startGatewayInner(): Promise<void> {
   // Callers that need replacement use restartManagedGateway(), which stops the
   // old process and waits for the port before invoking this function.
   const alreadyRunning = await checkExistingGateway(configuredPort);
+  logStartupTiming("gateway-existing-check-complete");
   if (
     requiresExternalGatewayStop(
       alreadyRunning,
@@ -2252,6 +2254,7 @@ async function startGatewayInner(): Promise<void> {
 
   // Kill any old gateway on this port
   stopGatewayProcess();
+  logStartupTiming("gateway-stop-complete");
   await new Promise((r) => setTimeout(r, 1000));
 
   // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)

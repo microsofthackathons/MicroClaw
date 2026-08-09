@@ -41,6 +41,48 @@ class _Log:
         return lambda _message: None
 
 
+class WindowsSetupMirrorSelectionTests(unittest.TestCase):
+    def test_constructor_does_not_probe_without_registry_override(self):
+        with unittest.mock.patch.object(
+            WindowsSetup,
+            "_probe_fastest_mirror",
+        ) as probe:
+            setup = WindowsSetup(_Config(), _Log())
+
+        probe.assert_not_called()
+        self.assertTrue(setup._mirror_probe_pending)
+        self.assertEqual(setup._mirror_name, MIRROR_NPMMIRROR)
+
+    def test_explicit_registry_selects_mirror_without_probe(self):
+        with unittest.mock.patch.object(
+            WindowsSetup,
+            "_probe_fastest_mirror",
+        ) as probe:
+            setup = WindowsSetup(
+                _Config({"npm.registry": MIRRORS[MIRROR_OFFICIAL]["npm_registry"]}),
+                _Log(),
+            )
+
+        probe.assert_not_called()
+        self.assertFalse(setup._mirror_probe_pending)
+        self.assertEqual(setup._mirror_name, MIRROR_OFFICIAL)
+
+    def test_download_selection_probes_once(self):
+        setup = WindowsSetup(_Config(), _Log())
+        setup._probe_fastest_mirror = unittest.mock.Mock(return_value=MIRROR_OFFICIAL)
+
+        setup._select_download_mirror()
+        setup._select_download_mirror()
+
+        setup._probe_fastest_mirror.assert_called_once_with()
+        self.assertFalse(setup._mirror_probe_pending)
+        self.assertEqual(setup._mirror_name, MIRROR_OFFICIAL)
+        self.assertEqual(
+            setup._node_download_base,
+            MIRRORS[MIRROR_OFFICIAL]["node_download_base"],
+        )
+
+
 class WindowsSetupUpgradeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -79,6 +121,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws.node_dir = self.program_files / "nodejs"
         self.ws._node_bin = None
         self.ws._git_bin = None
+        self.ws._mirror_probe_pending = False
         self.ws._rollback_actions = []
         self.ws._openclaw_transaction = None
         self.ws._openclaw_upgrade_required = True
@@ -330,7 +373,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             lock_path=self.local_appdata / "Temp" / "openclaw" / "gateway.lock",
         )
         active = ActiveInstallation(pids=(100,), gateway=gateway)
-        self.ws.get_active_installation = unittest.mock.Mock(side_effect=[active, None])
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=None)
         self.ws._run = unittest.mock.Mock(
             return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
         )
@@ -350,6 +393,20 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 for call in self.ws._run.call_args_list
             )
         )
+        self.ws.get_active_installation.assert_called_once_with()
+
+    def test_upgrade_stop_rejects_restarted_desktop_after_pid_exits(self):
+        active = ActiveInstallation(pids=(100,), gateway=None)
+        restarted = ActiveInstallation(pids=(200,), gateway=None)
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=restarted)
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=False):
+            self.assertFalse(self.ws.stop_active_installation_for_upgrade(active))
+
+        self.ws.get_active_installation.assert_called_once_with()
 
     def test_unknown_port_owner_is_never_terminated(self):
         gateway = ActiveGateway(pid=300, port=18789, lock_path=None)
@@ -1736,6 +1793,52 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         elevated_command = self.ws._run.call_args_list[1].args[0]
         self.assertIn(str(missing), elevated_command[-1])
         self.assertNotIn(str(existing), elevated_command[-1])
+
+    def test_defender_exclusions_use_success_marker(self):
+        marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
+        marker.parent.mkdir(parents=True)
+        expected_paths = sorted(
+            os.path.normcase(os.path.normpath(str(path)))
+            for path in (
+                self.ws.node_dir,
+                self.appdata / "npm" / "node_modules" / "openclaw",
+                self.home / ".openclaw",
+                self.home / ".openclaw-git",
+                self.home / ".microclaw",
+                self.local_appdata / "npm-cache",
+                self.local_appdata / "Temp",
+            )
+        )
+        marker.write_text(
+            json.dumps({"schema": 1, "paths": expected_paths}),
+            encoding="utf-8",
+        )
+        self.ws._add_defender_exclusions = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.ensure_defender_exclusions())
+
+        self.ws._add_defender_exclusions.assert_not_called()
+
+    def test_defender_exclusions_write_marker_only_after_success(self):
+        marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
+        self.ws._add_defender_exclusions = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.ensure_defender_exclusions())
+
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["schema"], 1)
+        configured_paths = self.ws._add_defender_exclusions.call_args.args[0]
+        self.assertIn(
+            self.appdata / "npm" / "node_modules" / "openclaw",
+            configured_paths,
+        )
+
+    def test_defender_exclusions_do_not_write_marker_after_failure(self):
+        marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
+        self.ws._add_defender_exclusions = unittest.mock.Mock(return_value=False)
+
+        self.assertTrue(self.ws.ensure_defender_exclusions())
+
+        self.assertFalse(marker.exists())
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"

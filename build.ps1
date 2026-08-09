@@ -344,6 +344,24 @@ try {
 $verParts = @($pkgVersion -split '\.') + @('0','0','0','0')
 $version4 = ($verParts[0..3]) -join '.'
 
+# Fingerprint the complete onedir payload. The bootstrapper persists this ID
+# only after extraction finishes, allowing subsequent launches of the same
+# setup build to reuse the verified-complete staging directory.
+$payloadEntries = Get-ChildItem $installerDir -File -Recurse | Sort-Object FullName | ForEach-Object {
+    $relativePath = $_.FullName.Substring($installerDir.Length).TrimStart('\').Replace('\', '/')
+    $fileHash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$relativePath|$($_.Length)|$fileHash"
+}
+$payloadManifest = [Text.Encoding]::UTF8.GetBytes(($payloadEntries -join "`n"))
+$payloadHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $payloadHash = $payloadHasher.ComputeHash($payloadManifest)
+    $payloadId = ([BitConverter]::ToString($payloadHash)).Replace('-', '').ToLowerInvariant()
+} finally {
+    $payloadHasher.Dispose()
+}
+Write-Host "  Payload ID: $payloadId" -ForegroundColor DarkGray
+
 if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
 
 $prev = $ErrorActionPreference
@@ -355,6 +373,7 @@ $ErrorActionPreference = "Continue"
     "/DOUT_FILE=$setupExe" `
     "/DICON=$setupIcon" `
     "/DVERSION=$version4" `
+    "/DPAYLOAD_ID=$payloadId" `
     $nsiScript 2>&1 | ForEach-Object { Write-Host "  $_" }
 $nsisExit = $LASTEXITCODE
 $ErrorActionPreference = $prev

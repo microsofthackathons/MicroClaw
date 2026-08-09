@@ -8,10 +8,12 @@ import shutil
 import tempfile
 import warnings
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 INSTALLER_EXE = "MicroClawInstaller.exe"
 INTERNAL_DIR = "_internal"
+_HASH_WORKERS = 8
 
 
 class UninstallerBundleError(RuntimeError):
@@ -63,10 +65,12 @@ def bundles_match(source: Path, destination: Path) -> bool:
         source_manifest = bundle_manifest(source)
         if source_manifest != bundle_manifest(destination):
             return False
-        return all(
-            _file_digest(source / relative) == _file_digest(destination / relative)
-            for relative in source_manifest
-        )
+
+        def files_match(relative: str) -> bool:
+            return _file_digest(source / relative) == _file_digest(destination / relative)
+
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+            return all(pool.map(files_match, source_manifest))
     except (OSError, UninstallerBundleError):
         return False
 

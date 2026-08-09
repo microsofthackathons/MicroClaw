@@ -634,16 +634,12 @@ class WebInstallerBridge:
                 timing.finish("failed")
                 return
 
-        final_steps = [
-            (94, "verifyUpgrade", ws.begin_openclaw_upgrade_validation),
-            (99, "startService", lambda: self._start_and_validate_desktop(ws)),
-            (100, "commitUpgrade", ws.commit_openclaw_upgrade),
-        ]
-        for pct, progress_key, fn in final_steps:
+        final_steps = self._build_final_steps(ws)
+        for pct, progress_key, fn, retries in final_steps:
             label = _STRINGS[self._lang]["steps"][progress_key]
             self._set_progress(pct, label, progress_key)
             started_at = timing.start_step()
-            step_ok = self._run_step_with_retry(pct, label, fn, LOCAL_RETRIES, progress_key)
+            step_ok = self._run_step_with_retry(pct, label, fn, retries, progress_key)
             timing.record_step(label, started_at, "success" if step_ok else "failed")
             if not step_ok:
                 self._stop_launched_desktop()
@@ -655,6 +651,13 @@ class WebInstallerBridge:
 
         timing.finish("success")
         self._finish_ok()
+
+    def _build_final_steps(self, ws):
+        return [
+            (94, "verifyUpgrade", ws.begin_openclaw_upgrade_validation, LOCAL_RETRIES),
+            (99, "startService", lambda: self._start_and_validate_desktop(ws), 0),
+            (100, "commitUpgrade", ws.commit_openclaw_upgrade, LOCAL_RETRIES),
+        ]
 
     def _start_and_validate_desktop(self, ws):
         transaction_id = ws.get_openclaw_upgrade_transaction_id()
@@ -863,7 +866,7 @@ class WebInstallerBridge:
                 }
             )
 
-    def _wait_for_desktop_service(self, transaction_id, timeout_seconds=180):
+    def _wait_for_desktop_service(self, transaction_id, timeout_seconds=300):
         port = int(self._config.get("gateway.port", 18789))
         deadline = time.monotonic() + timeout_seconds
         url = f"http://127.0.0.1:{port}/health"

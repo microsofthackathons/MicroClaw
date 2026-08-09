@@ -126,6 +126,21 @@ class WebInstallerBridgeTests(unittest.TestCase):
         )
         setup.validate_running_gateway.assert_called_once_with()
 
+    def test_service_handoff_is_not_retried_with_a_second_desktop(self):
+        setup = unittest.mock.Mock()
+
+        final_steps = self.bridge._build_final_steps(setup)
+
+        retries_by_key = {progress_key: retries for _, progress_key, _, retries in final_steps}
+        self.assertEqual(retries_by_key["startService"], 0)
+        self.assertEqual(retries_by_key["verifyUpgrade"], 1)
+        self.assertEqual(retries_by_key["commitUpgrade"], 1)
+
+    def test_service_wait_allows_slow_gateway_cold_start(self):
+        defaults = WebInstallerBridge._wait_for_desktop_service.__defaults__
+
+        self.assertEqual(defaults, (300,))
+
     def test_service_wait_stops_when_launched_app_exits(self):
         process = unittest.mock.Mock(pid=4321)
         process.poll.return_value = 1
