@@ -112,6 +112,30 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
     expect(JSON.parse(fs.readFileSync(item.manifestPath, "utf-8")).phase).toBe("rolled-back");
   });
 
+  it("restores only declared schema 2 managed state", () => {
+    const item = fixture();
+    const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
+    manifest.schema_version = 2;
+    manifest.backup_mode = "managed-state";
+    manifest.managed_paths = ["openclaw.json"];
+    fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
+    fs.writeFileSync(path.join(item.stateDir, "openclaw.json"), "new-config");
+    fs.writeFileSync(path.join(item.backupDir, "state", "openclaw.json"), "old-config");
+    fs.writeFileSync(path.join(item.stateDir, "unrelated.txt"), "keep");
+
+    const result = recoverInterruptedOpenClawUpgrade(item.microclawRoot, {
+      expectedStateDir: item.stateDir,
+      trustedPrefixes: [item.prefix],
+      processIsAlive: () => false,
+    });
+
+    expect(result.status).toBe("rolled-back");
+    expect(fs.readFileSync(path.join(item.stateDir, "openclaw.json"), "utf-8")).toBe("old-config");
+    expect(fs.readFileSync(path.join(item.stateDir, "unrelated.txt"), "utf-8")).toBe("keep");
+    expect(fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8")).toBe("new");
+    expect(fs.readFileSync(item.shim, "utf-8")).toBe("@new");
+  });
+
   it("does not mutate live data while an installer owns the lock", () => {
     const item = fixture();
 
@@ -186,6 +210,40 @@ describe("validateInstallerOwnedUpgrade", () => {
         processIsAlive: (pid) => pid === 999999,
       }),
     ).toBe(true);
+  });
+
+  it("accepts schema 2 with explicit managed paths", () => {
+    const item = fixture("verifying");
+    const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
+    manifest.schema_version = 2;
+    manifest.backup_mode = "managed-state";
+    manifest.managed_paths = ["openclaw.json", "skills"];
+    fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", {
+        expectedStateDir: item.stateDir,
+        trustedPrefixes: [item.prefix],
+        processIsAlive: (pid) => pid === 999999,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects schema 2 paths outside installer-owned state", () => {
+    const item = fixture("verifying");
+    const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
+    manifest.schema_version = 2;
+    manifest.backup_mode = "managed-state";
+    manifest.managed_paths = ["../outside"];
+    fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", {
+        expectedStateDir: item.stateDir,
+        trustedPrefixes: [item.prefix],
+        processIsAlive: (pid) => pid === 999999,
+      }),
+    ).toBe(false);
   });
 
   it("rejects a mismatched transaction or dead installer", () => {

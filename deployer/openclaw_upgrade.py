@@ -33,7 +33,7 @@ class UpgradeBackupMode(StrEnum):
     MANAGED_STATE = "managed-state"
 
 
-_MANAGED_STATE_PATHS = (
+_MANAGED_STATE_CORE_PATHS = (
     Path(".env"),
     Path("openclaw.json"),
     Path("skill_catalog.json"),
@@ -43,11 +43,18 @@ _MANAGED_STATE_PATHS = (
     Path("skills_snapshot.sig"),
     Path("skills_signing_key.pub"),
     Path("skills_signing_key.pem"),
-    Path("MicroClawInstaller.exe"),
-    Path("_internal"),
     Path("microclaw.ico"),
     Path("microclaw-uninstall.ico"),
 )
+_UNINSTALLER_STATE_PATHS = (
+    Path("MicroClawInstaller.exe"),
+    Path("_internal"),
+)
+_MANAGED_STATE_PATHS = _MANAGED_STATE_CORE_PATHS + _UNINSTALLER_STATE_PATHS
+
+
+def managed_state_paths(*, include_uninstaller: bool) -> tuple[Path, ...]:
+    return _MANAGED_STATE_PATHS if include_uninstaller else _MANAGED_STATE_CORE_PATHS
 
 
 ACTIVE_PHASES = {
@@ -99,6 +106,7 @@ class UpgradeManifest:
     validation_results: dict[str, bool] = field(default_factory=dict)
     backup_mode: UpgradeBackupMode = UpgradeBackupMode.FULL
     config_existed: bool = False
+    managed_paths: list[str] | None = None
 
 
 def _now() -> str:
@@ -585,6 +593,7 @@ class OpenClawUpgradeTransaction:
         target_version: str,
         installation: OpenClawInstallation,
         backup_mode: UpgradeBackupMode = UpgradeBackupMode.FULL,
+        managed_paths: Iterable[Path] | None = None,
     ) -> OpenClawUpgradeTransaction:
         root = microclaw_root.resolve(strict=False)
         transaction_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -596,8 +605,13 @@ class OpenClawUpgradeTransaction:
             raise UpgradeRecoveryRequiredError("an interrupted OpenClaw upgrade must be recovered")
         backup_dir = root / "backups" / "openclaw" / transaction_id
         timestamp = _now()
+        selected_managed_paths = (
+            tuple(managed_paths)
+            if managed_paths is not None
+            else managed_state_paths(include_uninstaller=True)
+        )
         manifest = UpgradeManifest(
-            schema_version=1,
+            schema_version=2,
             transaction_id=transaction_id,
             owner_pid=os.getpid(),
             source_version=installation.version or None,
@@ -614,6 +628,11 @@ class OpenClawUpgradeTransaction:
             updated_at=timestamp,
             backup_mode=backup_mode,
             config_existed=(state_dir / "openclaw.json").exists(),
+            managed_paths=(
+                [path.as_posix() for path in selected_managed_paths]
+                if backup_mode == UpgradeBackupMode.MANAGED_STATE
+                else []
+            ),
         )
         try:
             transaction = cls(
@@ -693,13 +712,25 @@ class OpenClawUpgradeTransaction:
         return True
 
     def _validate_manifest(self) -> None:
-        if self.manifest.schema_version != 1:
+        if self.manifest.schema_version not in {1, 2}:
             raise ValueError("unsupported OpenClaw upgrade manifest schema")
         if self.manifest.backup_mode not in {
             UpgradeBackupMode.FULL,
             UpgradeBackupMode.MANAGED_STATE,
         }:
             raise ValueError("unsupported OpenClaw upgrade backup mode")
+        if self.manifest.schema_version == 1:
+            if self.manifest.managed_paths is not None:
+                raise ValueError("schema 1 manifest cannot declare managed paths")
+        else:
+            paths = self.manifest.managed_paths
+            if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+                raise ValueError("schema 2 manifest must declare managed paths")
+            allowed = {path.as_posix() for path in _MANAGED_STATE_PATHS}
+            if len(paths) != len(set(paths)) or any(path not in allowed for path in paths):
+                raise ValueError("manifest contains an invalid managed path")
+            if self.manifest.backup_mode == UpgradeBackupMode.FULL and paths:
+                raise ValueError("full backup manifest cannot declare managed paths")
         transaction_id = self.manifest.transaction_id
         if not isinstance(transaction_id, str) or not _TRANSACTION_ID_PATTERN.fullmatch(
             transaction_id
@@ -740,7 +771,14 @@ class OpenClawUpgradeTransaction:
     def _payload(self) -> dict[str, Any]:
         payload = asdict(self.manifest)
         payload["phase"] = self.manifest.phase.value
+        if self.manifest.schema_version == 1:
+            payload.pop("managed_paths", None)
         return payload
+
+    def _managed_state_paths(self) -> tuple[Path, ...]:
+        if self.manifest.schema_version == 1:
+            return _MANAGED_STATE_PATHS
+        return tuple(Path(path) for path in self.manifest.managed_paths or ())
 
     def _require_held_lock(self) -> None:
         held_lock = self._held_lock
@@ -845,7 +883,7 @@ class OpenClawUpgradeTransaction:
             f".{self.manifest.transaction_id}.{uuid.uuid4().hex}.staging"
         )
         _durable_mkdir(staging / "state")
-        for relative in _MANAGED_STATE_PATHS:
+        for relative in self._managed_state_paths():
             source = state_dir / relative
             destination = staging / "state" / relative
             if source.is_dir() and not source.is_symlink():
@@ -1020,7 +1058,7 @@ class OpenClawUpgradeTransaction:
 
     def _restore_managed_state(self, failed_dir: Path) -> None:
         state_dir = Path(self.manifest.state_dir)
-        for relative in _MANAGED_STATE_PATHS:
+        for relative in self._managed_state_paths():
             live = state_dir / relative
             backup = self.backup_dir / "state" / relative
             failed = failed_dir / "state" / relative

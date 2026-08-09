@@ -19,6 +19,7 @@
 ;   OUT_FILE     absolute path of the .exe to produce (dist\MicroClawSetup.exe)
 ;   ICON         absolute path to the app .ico
 ;   VERSION      4-part version string, e.g. 1.0.0.0
+;   PAYLOAD_ID   SHA-256 identity of the complete onedir payload
 ; ---------------------------------------------------------------------------
 
 Unicode true
@@ -33,6 +34,9 @@ LoadLanguageFile "${NSISDIR}\Contrib\Language files\SimpChinese.nlf"
 !endif
 !ifndef VERSION
   !define VERSION "0.0.0.0"
+!endif
+!ifndef PAYLOAD_ID
+  !error "PAYLOAD_ID is required."
 !endif
 
 Name "MicroClaw"
@@ -63,6 +67,16 @@ LangString PreparingText ${LANG_ENGLISH} "Preparing MicroClaw..."
 LangString PreparingText ${LANG_SIMPCHINESE} "正在准备 MicroClaw..."
 
 Section "Install"
+  ; Reuse staging only when the previous extraction completed with the exact
+  ; payload embedded in this setup build.
+  IfFileExists "$INSTDIR\MicroClawInstaller.exe" 0 extract_payload
+  IfFileExists "$INSTDIR\.payload-complete" 0 extract_payload
+  FileOpen $0 "$INSTDIR\.payload-complete" r
+  FileRead $0 $1
+  FileClose $0
+  StrCmp $1 "${PAYLOAD_ID}" launch_installer extract_payload
+
+extract_payload:
   Banner::show /NOUNLOAD "$(PreparingText)"
 
   ; Bound disk usage to a single copy: wipe any leftover staging first.
@@ -74,10 +88,18 @@ Section "Install"
   File /r "${PAYLOAD_DIR}\*"
   Banner::destroy
 
-  IfFileExists "$INSTDIR\MicroClawInstaller.exe" +3 0
+  IfFileExists "$INSTDIR\MicroClawInstaller.exe" payload_complete 0
+    Banner::destroy
     MessageBox MB_ICONSTOP "Setup payload is incomplete: MicroClawInstaller.exe was not found."
     Abort "Missing MicroClawInstaller.exe"
 
+payload_complete:
+  FileOpen $0 "$INSTDIR\.payload-complete" w
+  FileWrite $0 "${PAYLOAD_ID}"
+  FileClose $0
+  Banner::destroy
+
+launch_installer:
   ; Fire-and-forget: launch the real installer, then let this stub close.
   DetailPrint "Starting MicroClaw installer..."
   Exec '"$INSTDIR\MicroClawInstaller.exe"'

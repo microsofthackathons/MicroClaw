@@ -27,6 +27,13 @@ class InstallerStubTests(unittest.TestCase):
         self.assertIn('LangString PreparingText ${LANG_SIMPCHINESE}', self.script)
         self.assertIn("File /r \"${PAYLOAD_DIR}\\*\"", self.script)
         self.assertIn("Exec '\"$INSTDIR\\MicroClawInstaller.exe\"'", self.script)
+        self.assertIn('IfFileExists "$INSTDIR\\.payload-complete"', self.script)
+        self.assertIn('StrCmp $1 "${PAYLOAD_ID}" launch_installer extract_payload', self.script)
+        self.assertIn(
+            'IfFileExists "$INSTDIR\\MicroClawInstaller.exe" payload_complete 0',
+            self.script,
+        )
+        self.assertIn('FileWrite $0 "${PAYLOAD_ID}"', self.script)
         self.assertLess(self.script.index("Banner::show"), self.script.index("File /r"))
         self.assertLess(self.script.index("File /r"), self.script.index("Banner::destroy"))
         self.assertLess(self.script.index("Banner::destroy"), self.script.index("Exec '"))

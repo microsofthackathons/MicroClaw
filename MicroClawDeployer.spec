@@ -27,6 +27,7 @@ a = Analysis(
     binaries=webview_binaries,
     datas=[
         ('dist/microclaw-portable.zip', '.'),
+        ('dist/install-manifest.json', '.'),
         ('scripts/windows/setup-dependencies.ps1', '.'),
         ('skills', 'skills'),
         ('scripts', 'scripts'),
