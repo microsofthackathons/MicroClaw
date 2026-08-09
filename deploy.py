@@ -1353,28 +1353,6 @@ class DeployerApp(tk.Tk):
 # ═══════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════
-def _ensure_admin():
-    import ctypes
-    import os
-    import sys
-
-    try:
-        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        is_admin = False
-    if is_admin:
-        return
-    exe = sys.executable
-    script = os.path.abspath(sys.argv[0])
-    cwd = os.path.dirname(script)
-    params = f'"{script}"'
-    if sys.argv[1:]:
-        params += " " + " ".join(f'"{a}"' for a in sys.argv[1:])
-    ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, cwd, 1)
-    if ret > 32:
-        sys.exit(0)
-
-
 def _log_web_installer_failure(exc: Exception):
     try:
         logger = DeployerLogger()
@@ -1423,8 +1401,6 @@ def main(argv: list[str] | None = None) -> int:
     _setup_windows_taskbar()
     auto_uninstall = "--uninstall" in args
     use_legacy_ui = "--legacy-ui" in args or os.environ.get("LEGACY_INSTALL_UI", "") == "1"
-    if auto_uninstall:
-        _ensure_admin()
     _run_installer(auto_uninstall=auto_uninstall, use_legacy_ui=use_legacy_ui)
     return 0
 

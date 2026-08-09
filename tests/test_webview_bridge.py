@@ -241,14 +241,22 @@ class WebInstallerBridgeTests(unittest.TestCase):
     def test_uninstaller_check_exits_without_ui_or_elevation(self):
         with (
             unittest.mock.patch("deploy._setup_windows_taskbar") as taskbar,
-            unittest.mock.patch("deploy._ensure_admin") as elevate,
             unittest.mock.patch("deploy._run_installer") as run_installer,
         ):
             self.assertEqual(main(["--check-uninstaller"]), 0)
 
         taskbar.assert_not_called()
-        elevate.assert_not_called()
         run_installer.assert_not_called()
+
+    def test_installed_apps_uninstall_stays_in_current_user_context(self):
+        with (
+            unittest.mock.patch("deploy._setup_windows_taskbar") as taskbar,
+            unittest.mock.patch("deploy._run_installer") as run_installer,
+        ):
+            self.assertEqual(main(["--uninstall"]), 0)
+
+        taskbar.assert_called_once_with()
+        run_installer.assert_called_once_with(auto_uninstall=True, use_legacy_ui=False)
 
     def test_legacy_pipeline_installs_uninstaller_before_shortcuts(self):
         app = object.__new__(DeployerApp)
