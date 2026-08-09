@@ -446,6 +446,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         *,
         installation: OpenClawInstallation | None = None,
         backup_mode: UpgradeBackupMode = UpgradeBackupMode.FULL,
+        managed_paths: tuple[Path, ...] | None = None,
     ) -> OpenClawUpgradeTransaction:
         transaction = OpenClawUpgradeTransaction.create(
             microclaw_root=self.microclaw,
@@ -453,6 +454,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             target_version="2026.7.1-1",
             installation=installation or self._installation(),
             backup_mode=backup_mode,
+            managed_paths=managed_paths,
         )
         self.transactions.append(transaction)
         return transaction
@@ -561,7 +563,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             installation.version = "changed"  # type: ignore[misc]
 
-    def test_create_writes_schema_v1_manifest_atomically(self) -> None:
+    def test_create_writes_schema_v2_manifest_atomically(self) -> None:
         tx = self._create()
         data = json.loads(tx.manifest_path.read_text(encoding="utf-8"))
         lock_data = upgrade._read_lock(self.lock_path)
@@ -588,14 +590,16 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 "validation_results",
                 "backup_mode",
                 "config_existed",
+                "managed_paths",
             },
         )
-        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["schema_version"], 2)
         self.assertEqual(data["source_version"], "2026.3.12")
         self.assertEqual(data["target_version"], "2026.7.1-1")
         self.assertEqual(data["phase"], "backing-up")
         self.assertEqual(data["validation_results"], {})
         self.assertEqual(data["backup_mode"], "full")
+        self.assertEqual(data["managed_paths"], [])
         self.assertTrue(data["config_existed"])
         self.assertEqual(
             set(lock_data),
@@ -870,6 +874,54 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
             "old-runtime",
         )
         self.assertEqual((self.package / "old.txt").read_text(), "changed-package")
+
+    def test_schema_v2_managed_paths_leave_unchanged_uninstaller_outside_rollback(self) -> None:
+        (self.state / "MicroClawInstaller.exe").write_text("old-installer", encoding="utf-8")
+        (self.state / "_internal").mkdir()
+        (self.state / "_internal" / "runtime.dll").write_text(
+            "old-runtime", encoding="utf-8"
+        )
+        tx = self._create(
+            backup_mode=UpgradeBackupMode.MANAGED_STATE,
+            managed_paths=upgrade.managed_state_paths(include_uninstaller=False),
+        )
+        tx.backup()
+
+        self.assertNotIn("MicroClawInstaller.exe", tx.manifest.managed_paths)
+        self.assertFalse((tx.backup_dir / "state" / "MicroClawInstaller.exe").exists())
+        self.assertFalse((tx.backup_dir / "state" / "_internal").exists())
+
+        (self.state / "openclaw.json").write_text('{"changed":true}', encoding="utf-8")
+        (self.state / "MicroClawInstaller.exe").write_text("new-installer", encoding="utf-8")
+        (self.state / "_internal" / "runtime.dll").write_text(
+            "new-runtime", encoding="utf-8"
+        )
+        tx.rollback()
+
+        self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
+        self.assertEqual((self.state / "MicroClawInstaller.exe").read_text(), "new-installer")
+        self.assertEqual((self.state / "_internal" / "runtime.dll").read_text(), "new-runtime")
+
+    def test_schema_v1_manifest_uses_legacy_managed_paths(self) -> None:
+        (self.state / "MicroClawInstaller.exe").write_text("old-installer", encoding="utf-8")
+        (self.state / "_internal").mkdir()
+        (self.state / "_internal" / "runtime.dll").write_text(
+            "old-runtime", encoding="utf-8"
+        )
+        created = self._create(backup_mode=UpgradeBackupMode.MANAGED_STATE)
+        created.close()
+        payload = json.loads(created.manifest_path.read_text(encoding="utf-8"))
+        payload["schema_version"] = 1
+        payload.pop("managed_paths")
+        created.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = self._load()
+        self.assertIsNotNone(loaded)
+        loaded.backup()  # type: ignore[union-attr]
+
+        self.assertTrue(
+            (loaded.backup_dir / "state" / "_internal" / "runtime.dll").exists()  # type: ignore[union-attr]
+        )
 
     @unittest.skipUnless(os.name == "nt", "Windows extended path behavior")
     def test_backup_and_rollback_support_package_paths_beyond_max_path(self) -> None:

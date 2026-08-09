@@ -134,6 +134,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
         self.ws._bundled_install_manifest = None
         self.ws._persisted_install_manifest = None
+        self.ws._uninstaller_current_for_upgrade = None
         self.process_job = unittest.mock.Mock()
         self.ws._create_process_lifetime_job = unittest.mock.Mock(return_value=self.process_job)
         self.ws.progress_callback = None
@@ -474,6 +475,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
         self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
         self.ws._same_version_weixin_requires_full_backup = unittest.mock.Mock(return_value=False)
+        self.ws._uninstaller_install_is_current = unittest.mock.Mock(return_value=True)
         transaction = unittest.mock.Mock()
 
         with unittest.mock.patch(
@@ -487,7 +489,30 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             create.call_args.kwargs["backup_mode"],
             UpgradeBackupMode.MANAGED_STATE,
         )
+        managed_paths = create.call_args.kwargs["managed_paths"]
+        self.assertNotIn(Path("MicroClawInstaller.exe"), managed_paths)
+        self.assertNotIn(Path("_internal"), managed_paths)
+        self.assertTrue(self.ws._uninstaller_current_for_upgrade)
         transaction.backup.assert_called_once()
+
+    def test_prepare_includes_uninstaller_when_bundle_differs(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._uninstaller_install_is_current = unittest.mock.Mock(return_value=False)
+        transaction = unittest.mock.Mock()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ) as create:
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        managed_paths = create.call_args.kwargs["managed_paths"]
+        self.assertIn(Path("MicroClawInstaller.exe"), managed_paths)
+        self.assertIn(Path("_internal"), managed_paths)
+        self.assertFalse(self.ws._uninstaller_current_for_upgrade)
 
     def test_prepare_invalidates_committed_install_manifest_after_backup(self):
         prefix = self.home / ".openclaw-node"

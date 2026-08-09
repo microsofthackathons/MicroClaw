@@ -39,6 +39,7 @@ from deployer.openclaw_upgrade import (
     UpgradeBackupMode,
     UpgradeInProgressError,
     UpgradePhase,
+    managed_state_paths,
     process_is_alive,
     process_started_at,
     prune_previous_committed_backups,
@@ -418,6 +419,7 @@ class WindowsSetup:
             app_dir=Path(__file__).resolve().parent.parent,
         )
         self._persisted_install_manifest = load_install_manifest(self._install_manifest_path)
+        self._uninstaller_current_for_upgrade: bool | None = None
         # Optional UI hook forwarded to upgrade transactions so long backup /
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
@@ -1960,6 +1962,7 @@ class WindowsSetup:
         self._weixin_policy_snapshot = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
+        self._uninstaller_current_for_upgrade = None
         if not self._gateway_is_stopped_for_upgrade():
             return False
         if not self.recover_interrupted_openclaw_upgrade():
@@ -1990,12 +1993,19 @@ class WindowsSetup:
                 if self._openclaw_upgrade_required
                 else UpgradeBackupMode.MANAGED_STATE
             )
+            selected_managed_paths = None
+            if backup_mode == UpgradeBackupMode.MANAGED_STATE:
+                self._uninstaller_current_for_upgrade = self._uninstaller_install_is_current()
+                selected_managed_paths = managed_state_paths(
+                    include_uninstaller=not self._uninstaller_current_for_upgrade
+                )
             transaction = OpenClawUpgradeTransaction.create(
                 microclaw_root=DEFAULT_DESKTOP_DIR,
                 state_dir=Path.home() / ".openclaw",
                 target_version=OPENCLAW_TARGET_VERSION,
                 installation=source,
                 backup_mode=backup_mode,
+                managed_paths=selected_managed_paths,
             )
             self._openclaw_transaction = transaction
             transaction.progress_callback = self.progress_callback
