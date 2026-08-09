@@ -263,6 +263,7 @@ export default {
   "settings.notInstalled": "Not Installed",
   "settings.connectionStatus": "Connection Status",
   "settings.gateway": "Gateway",
+  "settings.logs": "Logs",
   "settings.privacy": "Data & Privacy",
   "settings.privacyProtection": "Privacy Protection",
   "settings.privacyProtectionDesc":
@@ -350,8 +351,9 @@ export default {
   "settings.updateCheckFailed": "Could not check for updates",
   "settings.downloadUpdate": "Download update",
   "settings.gatewayLog": "Gateway Logs",
-  "settings.noLogs": "No logs",
-  "settings.clear": "Clear",
+  "settings.export": "Export",
+  "settings.gatewayLogsExported": "Gateway logs exported.",
+  "settings.gatewayLogsExportFailed": "Could not export Gateway logs: {error}",
   "settings.webSearchDesc":
     "MicroClaw uses the configured provider for web search. The gateway restarts automatically after you save.",
   "settings.noApiKeyRequired": "No API key required",
@@ -383,7 +385,6 @@ export default {
   "settings.menu.theme": "Appearance",
   "settings.menu.usage": "Usage",
   "settings.menu.models": "Models",
-  "settings.menu.gateway": "Gateway",
   "settings.menu.channels": "Channels",
   "settings.menu.skills": "Skills",
   "settings.menu.privacy": "Privacy",

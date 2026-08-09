@@ -105,6 +105,7 @@ import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
+import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
   applyGlobalSkillChange,
@@ -3722,6 +3723,17 @@ function registerIpcHandlers(): void {
         ? Math.max(0, params.currentTotalBytes)
         : 0;
     return prepareChatAttachments(result.filePaths, undefined, undefined, currentTotalBytes);
+  });
+
+  ipcMain.handle("logs:export-gateway", async (_event, lines: unknown) => {
+    if (!mainWindow) throw new Error("Main window is not available");
+    const contents = formatGatewayLogExport(lines);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: path.join(app.getPath("documents"), createGatewayLogExportFilename()),
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fs.promises.writeFile(result.filePath, contents, "utf-8");
+    return { canceled: false, filePath: result.filePath };
   });
 
   ipcMain.handle(
