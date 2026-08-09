@@ -27,6 +27,8 @@ from deployer.windows_setup import (
 _ACTIVE_WINDOW = None
 INSTALLER_WINDOW_WIDTH = 710
 INSTALLER_WINDOW_HEIGHT = 680
+UNINSTALL_CONFIRM_WINDOW_WIDTH = 500
+UNINSTALL_CONFIRM_WINDOW_HEIGHT = 250
 
 # Per-step retry budgets for the install pipeline (number of *additional*
 # attempts after the first). Network/download-bound steps get more attempts to
@@ -38,6 +40,59 @@ LOCAL_RETRIES = 1
 
 class InstallationCancelled(Exception):
     """Raised when the user intentionally cancels an interactive install step."""
+
+
+class WebUninstallConfirmationBridge:
+    def __init__(self, lang=None):
+        self._lang = _normalize_lang(lang) or _detect_lang()
+        self._window = None
+        self.confirmed = False
+
+    def attach_window(self, window):
+        self._window = window
+
+    def get_bootstrap(self):
+        strings = {
+            "en": {
+                "title": "Uninstall MicroClaw?",
+                "message": (
+                    "This will stop MicroClaw services and remove the app and its related files."
+                ),
+                "cancel": "Cancel",
+                "confirm": "Uninstall",
+            },
+            "zh": {
+                "title": "卸载 MicroClaw？",
+                "message": "这将停止 MicroClaw 服务，并删除应用及其相关文件。",
+                "cancel": "取消",
+                "confirm": "卸载",
+            },
+        }
+        return {"lang": self._lang, "strings": strings[self._lang]}
+
+    def write_html_file(self):
+        assets_dir = _assets_dir()
+        template = (assets_dir / "uninstall_template.html").read_text(encoding="utf-8")
+        bootstrap_json = json.dumps(self.get_bootstrap(), ensure_ascii=True)
+        html_path = assets_dir / "_uninstall.html"
+        html_path.write_text(
+            template.replace("__BOOTSTRAP_JSON__", bootstrap_json),
+            encoding="utf-8",
+        )
+        return html_path
+
+    def confirm(self):
+        self.confirmed = True
+        self._close()
+        return True
+
+    def cancel(self):
+        self._close()
+        return True
+
+    def _close(self):
+        if self._window is not None:
+            self._window.destroy()
 
 
 def _get_centered_window_position(width, height):
@@ -884,9 +939,15 @@ def _strip_motw(root: Path, logger: DeployerLogger) -> int:
     return stripped
 
 
-def run_web_installer():
+def run_web_installer(mode="install"):
+    if mode not in ("install", "uninstall-confirmation"):
+        raise ValueError(f"Unsupported web installer mode: {mode}")
     logger = DeployerLogger()
-    logger.step("Starting web installer")
+    logger.step(
+        "Starting web installer"
+        if mode == "install"
+        else "Starting uninstall confirmation"
+    )
     logger.debug(
         f"frozen={getattr(sys, 'frozen', False)} executable={sys.executable} cwd={Path.cwd()}"
     )
@@ -965,19 +1026,34 @@ def run_web_installer():
         logger.debug(traceback.format_exc())
         raise
 
-    bridge = WebInstallerBridge(logger=logger)
+    is_uninstall_confirmation = mode == "uninstall-confirmation"
+    bridge = (
+        WebUninstallConfirmationBridge()
+        if is_uninstall_confirmation
+        else WebInstallerBridge(logger=logger)
+    )
     html_path = bridge.write_html_file()
     icon_path = _assets_dir() / "microclaw.ico"
     logger.debug(f"installer html path: {html_path}")
     logger.debug(f"installer icon path: {icon_path}")
     try:
-        x, y = _get_centered_window_position(INSTALLER_WINDOW_WIDTH, INSTALLER_WINDOW_HEIGHT)
+        width = (
+            UNINSTALL_CONFIRM_WINDOW_WIDTH
+            if is_uninstall_confirmation
+            else INSTALLER_WINDOW_WIDTH
+        )
+        height = (
+            UNINSTALL_CONFIRM_WINDOW_HEIGHT
+            if is_uninstall_confirmation
+            else INSTALLER_WINDOW_HEIGHT
+        )
+        x, y = _get_centered_window_position(width, height)
         window = webview.create_window(
             "MicroClaw",
             url=html_path.as_uri(),
             js_api=bridge,
-            width=INSTALLER_WINDOW_WIDTH,
-            height=INSTALLER_WINDOW_HEIGHT,
+            width=width,
+            height=height,
             x=x,
             y=y,
             resizable=False,
@@ -1036,7 +1112,13 @@ def run_web_installer():
 
         icon_arg = str(icon_path) if icon_path.exists() else None
         webview.start(debug=False, icon=icon_arg)
+        if is_uninstall_confirmation:
+            return bridge.confirmed
     except Exception as exc:
         logger.error(f"web installer startup failed: {exc}")
         logger.debug(traceback.format_exc())
         raise
+
+
+def run_web_uninstall_confirmation():
+    return run_web_installer(mode="uninstall-confirmation")

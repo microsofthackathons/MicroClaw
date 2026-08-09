@@ -20,7 +20,12 @@ from tkinter import filedialog, messagebox
 from deployer.config import DeployerConfig
 from deployer.install_timing import InstallTiming
 from deployer.logger import DeployerLogger
-from deployer.webview_bridge import InstallationCancelled, run_web_installer
+from deployer.webview_bridge import (
+    InstallationCancelled,
+    _detect_lang,
+    run_web_installer,
+    run_web_uninstall_confirmation,
+)
 from deployer.windows_setup import (
     DEFAULT_DESKTOP_DIR,
     DEFAULT_NODE_DIR,
@@ -60,6 +65,20 @@ WIN_WIDTH = 580
 WIN_HEIGHT = 640
 UNINSTALL_WIN_WIDTH = 700
 UNINSTALL_WIN_HEIGHT = 540
+
+INSTALLER_FONT_FAMILIES = {
+    "en": ("DM Sans", "Segoe UI"),
+    "zh": ("Noto Sans SC", "Microsoft YaHei UI", "Segoe UI"),
+}
+
+
+def select_installer_font_family(available_families, language: str) -> str:
+    """Choose the first installed family from the shared installer font stack."""
+    installed = {str(family).casefold(): str(family) for family in available_families}
+    for family in INSTALLER_FONT_FAMILIES.get(language, INSTALLER_FONT_FAMILIES["en"]):
+        if family.casefold() in installed:
+            return installed[family.casefold()]
+    return "Segoe UI"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -143,9 +162,11 @@ def _rounded_rect(canvas, x1, y1, x2, y2, r=10, **kwargs):
 # Main Application — Fluent Installer
 # ═══════════════════════════════════════════════════════════════
 class DeployerApp(tk.Tk):
-    def __init__(self, auto_uninstall: bool = False):
+    def __init__(self, auto_uninstall: bool = False, uninstall_confirmed: bool = False):
         super().__init__()
         self._auto_uninstall = auto_uninstall
+        self._uninstall_confirmed = uninstall_confirmed
+        self._language = _detect_lang()
 
         # DPI-aware scaling — fonts auto-scale via point sizes,
         # but pixel dimensions (window, canvas, padding) must be
@@ -192,9 +213,9 @@ class DeployerApp(tk.Tk):
         self.geometry(f"+{x}+{y}")
 
         if self._auto_uninstall:
-            # Uninstall mode: keep window hidden, show only the confirm dialog.
-            # The main window appears only after the user confirms.
-            self.after(100, self._on_uninstall)
+            # Keep the progress window hidden until consent has been collected.
+            callback = self._begin_uninstall if self._uninstall_confirmed else self._on_uninstall
+            self.after(100, callback)
         else:
             # Normal install mode: show the frameless window now
             self._apply_frameless()
@@ -218,18 +239,20 @@ class DeployerApp(tk.Tk):
     # Fonts
     # ─────────────────────────────────────────────────────
     def _init_fonts(self):
-        self._font_title = tkfont.Font(family="Segoe UI", size=20, weight="bold")
-        self._font_subtitle = tkfont.Font(family="Segoe UI", size=11)
-        self._font_body = tkfont.Font(family="Segoe UI", size=10)
-        self._font_small = tkfont.Font(family="Segoe UI", size=9)
-        self._font_btn = tkfont.Font(family="Segoe UI", size=12, weight="bold")
-        self._font_card = tkfont.Font(family="Segoe UI", size=10, weight="bold")
-        self._font_card_icon = tkfont.Font(family="Segoe UI", size=13)
-        self._font_section = tkfont.Font(family="Segoe UI", size=9)
-        self._font_pct = tkfont.Font(family="Segoe UI", size=14)
-        self._font_link = tkfont.Font(family="Segoe UI", size=9)
-        self._font_checkbox = tkfont.Font(family="Segoe UI", size=10)
-        self._font_chrome = tkfont.Font(family="Segoe UI", size=11)
+        family = select_installer_font_family(tkfont.families(self), self._language)
+        self._font_family = family
+        self._font_title = tkfont.Font(family=family, size=20, weight="bold")
+        self._font_subtitle = tkfont.Font(family=family, size=11)
+        self._font_body = tkfont.Font(family=family, size=10)
+        self._font_small = tkfont.Font(family=family, size=9)
+        self._font_btn = tkfont.Font(family=family, size=12, weight="bold")
+        self._font_card = tkfont.Font(family=family, size=10, weight="bold")
+        self._font_card_icon = tkfont.Font(family=family, size=13)
+        self._font_section = tkfont.Font(family=family, size=9)
+        self._font_pct = tkfont.Font(family=family, size=14)
+        self._font_link = tkfont.Font(family=family, size=9)
+        self._font_checkbox = tkfont.Font(family=family, size=10)
+        self._font_chrome = tkfont.Font(family=family, size=11)
 
     # ─────────────────────────────────────────────────────
     # Frameless window setup
@@ -1166,18 +1189,110 @@ class DeployerApp(tk.Tk):
     # ─────────────────────────────────────────────────────
     # Uninstall
     # ─────────────────────────────────────────────────────
+    def _confirm_uninstall(self) -> bool:
+        strings = {
+            "en": {
+                "title": "Uninstall MicroClaw?",
+                "message": (
+                    "This will stop MicroClaw services and remove the app and its related files."
+                ),
+                "cancel": "Cancel",
+                "confirm": "Uninstall",
+            },
+            "zh": {
+                "title": "卸载 MicroClaw？",
+                "message": "这将停止 MicroClaw 服务，并删除应用及其相关文件。",
+                "cancel": "取消",
+                "confirm": "卸载",
+            },
+        }[self._language]
+        result = {"confirmed": False}
+
+        dialog = tk.Toplevel(self)
+        dialog.title(strings["title"])
+        dialog.configure(bg=CARD_BG)
+        dialog.resizable(False, False)
+        if self.state() != "withdrawn":
+            dialog.transient(self)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        content = tk.Frame(dialog, bg=CARD_BG, padx=self._s(24), pady=self._s(22))
+        content.pack(fill="both", expand=True)
+        tk.Label(
+            content,
+            text=strings["title"],
+            font=tkfont.Font(family=self._font_family, size=14, weight="bold"),
+            bg=CARD_BG,
+            fg=TEXT_PRIMARY,
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            content,
+            text=strings["message"],
+            font=self._font_body,
+            bg=CARD_BG,
+            fg=TEXT_SECONDARY,
+            justify="left",
+            wraplength=self._s(380),
+            anchor="w",
+        ).pack(fill="x", pady=(self._s(12), self._s(22)))
+
+        actions = tk.Frame(content, bg=CARD_BG)
+        actions.pack(fill="x")
+
+        def confirm():
+            result["confirmed"] = True
+            dialog.destroy()
+
+        cancel_button = tk.Button(
+            actions,
+            text=strings["cancel"],
+            font=self._font_body,
+            command=dialog.destroy,
+            padx=self._s(16),
+            pady=self._s(6),
+        )
+        cancel_button.pack(side="right")
+        confirm_button = tk.Button(
+            actions,
+            text=strings["confirm"],
+            font=self._font_body,
+            command=confirm,
+            bg=ERROR_COLOR,
+            fg="#ffffff",
+            activebackground="#a4262c",
+            activeforeground="#ffffff",
+            padx=self._s(16),
+            pady=self._s(6),
+        )
+        confirm_button.pack(side="right", padx=(0, self._s(8)))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.bind("<Return>", lambda _event: confirm())
+
+        dialog.update_idletasks()
+        width = self._s(460)
+        height = dialog.winfo_reqheight()
+        x = (dialog.winfo_screenwidth() - width) // 2
+        y = (dialog.winfo_screenheight() - height) // 2
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.grab_set()
+        cancel_button.focus_set()
+        dialog.wait_window()
+        return result["confirmed"]
+
     def _on_uninstall(self):
         if self._running:
             return
-        confirmed = messagebox.askyesno(
-            "Confirm Uninstall",
-            "Are you sure you want to uninstall MicroClaw?\n\n"
-            "This will stop all services and delete related files.",
-            icon="warning",
-        )
+        confirmed = self._confirm_uninstall()
         if not confirmed:
             if self._auto_uninstall:
                 self.destroy()
+            return
+
+        self._begin_uninstall()
+
+    def _begin_uninstall(self):
+        if self._running:
             return
         self._running = True
 
@@ -1375,15 +1490,24 @@ def _show_legacy_ui_warning():
 
 
 def _run_installer(auto_uninstall: bool, use_legacy_ui: bool):
-    if not auto_uninstall and not use_legacy_ui:
+    uninstall_confirmed = False
+    if not use_legacy_ui:
         try:
-            run_web_installer()
-            return
+            if auto_uninstall:
+                uninstall_confirmed = run_web_uninstall_confirmation()
+                if not uninstall_confirmed:
+                    return
+            else:
+                run_web_installer()
+                return
         except Exception as exc:
             _log_web_installer_failure(exc)
             _show_legacy_ui_warning()
 
-    app = DeployerApp(auto_uninstall=auto_uninstall)
+    app = DeployerApp(
+        auto_uninstall=auto_uninstall,
+        uninstall_confirmed=uninstall_confirmed,
+    )
     app.mainloop()
 
 
