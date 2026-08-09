@@ -19,7 +19,7 @@ interface ChatEventPayload {
 interface AppSettings {
   language: string;
   autoStart: boolean;
-  startMinimized: boolean;
+  minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
   privacyLevel: string;

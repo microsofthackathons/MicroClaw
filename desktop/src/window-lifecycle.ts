@@ -1,6 +1,8 @@
 export interface AppWindow {
   isDestroyed(): boolean;
   isMinimized(): boolean;
+  minimize(): void;
+  hide(): void;
   restore(): void;
   setSkipTaskbar(skip: boolean): void;
   show(): void;
@@ -16,4 +18,15 @@ export function showAndFocusWindow(window: AppWindow | null): void {
   window.setSkipTaskbar(false);
   window.show();
   window.focus();
+}
+
+export function minimizeWindow(window: AppWindow | null, minimizeToTray: boolean): void {
+  if (!window || window.isDestroyed()) return;
+
+  window.setSkipTaskbar(minimizeToTray);
+  if (minimizeToTray) {
+    window.hide();
+  } else {
+    window.minimize();
+  }
 }

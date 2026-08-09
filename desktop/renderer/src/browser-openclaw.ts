@@ -102,7 +102,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       get: async () => ({
         language: "en-US",
         autoStart: false,
-        startMinimized: false,
+        minimizeToTray: false,
         themeMode: "light",
         accentColor: "#1e1f25",
         privacyLevel: "balanced",

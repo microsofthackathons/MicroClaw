@@ -44,8 +44,8 @@
             <el-switch v-model="settings.autoStart" />
           </div>
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.startMinimized") }}</span>
-            <el-switch v-model="settings.startMinimized" />
+            <span class="row-label">{{ t("settings.minimizeToTray") }}</span>
+            <el-switch v-model="settings.minimizeToTray" />
           </div>
         </div>
 
@@ -585,7 +585,7 @@
                       <span class="acl-reason">{{ item.reason }}</span>
                       <button
                         class="dir-add-btn"
-                        style="margin-left: auto; font-size: 11px"
+                        style="margin-left: auto"
                         @click="repairAcl(item)"
                       >
                         修复
@@ -606,7 +606,7 @@
                       <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
                       <button
                         class="dir-add-btn"
-                        style="margin-left: auto; font-size: 11px"
+                        style="margin-left: auto"
                         @click="revokeStaleAcl(item)"
                       >
                         清除
@@ -754,7 +754,7 @@
         <div class="sub-label">{{ t("settings.fileAccessAudit") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
+            <span class="row-label">{{ t("settings.fileAccessAuditToggle") }}</span>
             <el-switch
               v-model="settings.fileAccessAudit"
               :disabled="settings.privacyLevel === 'basic'"
@@ -767,7 +767,7 @@
         <div class="sub-label">{{ t("settings.chatHistory") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.chatHistory") }}</span>
+            <span class="row-label">{{ t("settings.savedChatHistory") }}</span>
             <el-button type="danger" plain size="small" @click="clearChatHistory">{{
               t("settings.clearAllHistory")
             }}</el-button>
@@ -1150,7 +1150,7 @@ async function revokeStaleAcl(item: { dir: string }) {
 const settings = reactive({
   language: "en-US",
   autoStart: false,
-  startMinimized: false,
+  minimizeToTray: false,
   themeMode: "light",
   privacyLevel: "balanced" as "basic" | "balanced" | "strict",
   fileAccessAudit: true,
@@ -1410,8 +1410,8 @@ watch(
   (v) => window.openclaw.settings.set("autoStart", v),
 );
 watch(
-  () => settings.startMinimized,
-  (v) => window.openclaw.settings.set("startMinimized", v),
+  () => settings.minimizeToTray,
+  (v) => window.openclaw.settings.set("minimizeToTray", v),
 );
 watch(
   () => settings.themeMode,
@@ -1574,7 +1574,7 @@ onMounted(async () => {
   if (saved) {
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
-    settings.startMinimized = saved.startMinimized ?? false;
+    settings.minimizeToTray = saved.minimizeToTray ?? false;
     settings.themeMode = saved.themeMode ?? "light";
     settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
     // Init PII toggles based on loaded privacy level
@@ -1915,19 +1915,24 @@ async function clearChatHistory() {
 .menu-list {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .settings-menu-item {
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 12px 7px 16px;
+  padding: 8px 12px 8px 16px;
   cursor: pointer;
   border-radius: 8px;
-  margin: 1px 8px;
+  margin: 0 8px;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 400;
+  line-height: 20px;
   transition: background 0.1s;
 }
 
@@ -2337,11 +2342,120 @@ async function clearChatHistory() {
 
 .settings-view :deep(.el-input__inner),
 .settings-view :deep(.el-select__selected-item),
-.settings-view :deep(.el-radio__label),
-.settings-view :deep(.el-button) {
+.settings-view :deep(.el-radio__label) {
   font-family: inherit;
   font-size: 13px;
   font-weight: 400;
+}
+
+.settings-view :deep(.el-button) {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-action-border);
+  border-radius: 6px;
+  background: var(--settings-action-bg);
+  color: var(--settings-action-fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
+}
+
+.settings-view :deep(.el-button:hover) {
+  border-color: var(--settings-action-border);
+  background: var(--settings-action-hover);
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.settings-view :deep(.el-button:active) {
+  background: var(--settings-action-active);
+}
+
+.settings-view :deep(.el-button:focus-visible),
+.tag-remove:focus-visible,
+.tag-add-btn:focus-visible,
+.dir-add-btn:focus-visible {
+  outline: 2px solid var(--settings-action-focus);
+  outline-offset: 2px;
+}
+
+.settings-view :deep(.el-button--primary:not(.is-plain, .is-text)) {
+  border-color: var(--settings-action-primary);
+  background: var(--settings-action-primary);
+  color: var(--settings-action-primary-fg);
+}
+
+.settings-view :deep(.el-button--primary:not(.is-plain, .is-text):hover) {
+  border-color: var(--settings-action-primary-hover);
+  background: var(--settings-action-primary-hover);
+  color: var(--settings-action-primary-fg);
+}
+
+.settings-view :deep(.el-button--primary:not(.is-plain, .is-text):active) {
+  border-color: var(--settings-action-primary-active);
+  background: var(--settings-action-primary-active);
+}
+
+.settings-view :deep(.el-button.is-plain) {
+  border-color: var(--settings-action-border);
+  background: transparent;
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button.is-plain:hover) {
+  border-color: var(--settings-action-border);
+  background: var(--settings-action-hover);
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button--danger.is-plain) {
+  border-color: color-mix(in srgb, var(--settings-action-danger) 50%, transparent);
+  color: var(--settings-action-danger);
+}
+
+.settings-view :deep(.el-button--danger.is-plain:hover) {
+  border-color: var(--settings-action-danger);
+  background: var(--settings-action-danger);
+  color: #ffffff;
+}
+
+.settings-view :deep(.el-button--danger.is-plain:active) {
+  border-color: var(--settings-action-danger-active);
+  background: var(--settings-action-danger-active);
+}
+
+.settings-view :deep(.el-button.is-text) {
+  min-height: 28px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button.is-text:hover) {
+  border-color: transparent;
+  background: var(--settings-action-hover);
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button--danger.is-text) {
+  color: var(--settings-action-danger);
+}
+
+.settings-view :deep(.el-button.is-disabled),
+.settings-view :deep(.el-button.is-disabled:hover) {
+  border-color: var(--settings-action-border);
+  background: var(--settings-action-bg);
+  color: var(--text-muted);
+  opacity: 0.55;
 }
 
 .test-result {
@@ -2428,16 +2542,22 @@ async function clearChatHistory() {
   color: var(--text-secondary);
 }
 .app-tag .tag-remove {
-  background: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  background: transparent;
   border: none;
+  border-radius: 4px;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  padding: 0 2px;
+  padding: 0;
 }
 .app-tag .tag-remove:hover {
-  color: #ff3b30;
+  background: color-mix(in srgb, var(--settings-action-danger) 12%, transparent);
+  color: var(--settings-action-danger);
 }
 .app-tag-add {
   border-style: dashed;
@@ -2453,17 +2573,54 @@ async function clearChatHistory() {
   color: var(--text-primary);
 }
 .tag-add-btn {
-  background: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  background: transparent;
   border: none;
-  color: var(--accent);
+  border-radius: 4px;
+  color: var(--settings-action-fg);
   cursor: pointer;
   font-size: 16px;
-  font-weight: bold;
-  padding: 0 2px;
+  font-weight: 400;
+  padding: 0;
   line-height: 1;
 }
 .tag-add-btn:hover {
-  opacity: 0.7;
+  background: var(--settings-action-hover);
+}
+
+.dir-add-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-action-border);
+  border-radius: 6px;
+  background: var(--settings-action-bg);
+  color: var(--settings-action-fg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
+}
+
+.dir-add-btn:hover:not(:disabled) {
+  background: var(--settings-action-hover);
+}
+
+.dir-add-btn:active:not(:disabled) {
+  background: var(--settings-action-active);
+}
+
+.dir-add-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* Sandbox directory permissions */

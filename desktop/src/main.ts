@@ -12,7 +12,7 @@ import {
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
 import { createTray, destroyTray, updateTrayMenu } from "./tray";
-import { showAndFocusWindow } from "./window-lifecycle";
+import { minimizeWindow, showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
@@ -175,7 +175,7 @@ const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
 const settingsStore = new Store<{
   language?: string;
   autoStart: boolean;
-  startMinimized: boolean;
+  minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
   /** Apps that bypass AppContainer sandbox (need COM/RPC/named-pipes). */
@@ -196,7 +196,7 @@ const settingsStore = new Store<{
   name: "settings",
   defaults: {
     autoStart: false,
-    startMinimized: false,
+    minimizeToTray: false,
     themeMode: "light",
     accentColor: "#1e1f25",
     sandboxExternalApps: [
@@ -1628,7 +1628,6 @@ function _getRendererURL(): string {
 // Window creation
 // ---------------------------------------------------------------------------
 function createMainWindow(): BrowserWindow {
-  const startMinimized = settingsStore.get("startMinimized");
   const win = new BrowserWindow({
     width: LOADING_WINDOW_WIDTH,
     height: LOADING_WINDOW_HEIGHT,
@@ -1637,7 +1636,7 @@ function createMainWindow(): BrowserWindow {
     title: "MicroClaw",
     icon: APP_ICON_PATH,
     show: false,
-    skipTaskbar: startMinimized,
+    skipTaskbar: false,
     titleBarStyle: "hidden",
     transparent: true,
     backgroundColor: TRANSPARENT_WINDOW_BACKGROUND,
@@ -1685,11 +1684,7 @@ function createMainWindow(): BrowserWindow {
 
   Menu.setApplicationMenu(null);
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
-  const showWindowOnStartup = () => {
-    if (!startMinimized) {
-      showAndFocusWindow(win);
-    }
-  };
+  const showWindowOnStartup = () => showAndFocusWindow(win);
   win.once("ready-to-show", showWindowOnStartup);
   win.webContents.once("did-finish-load", showWindowOnStartup);
 
@@ -4552,7 +4547,9 @@ function registerIpcHandlers(): void {
   });
 
   // --- Window ---
-  ipcMain.handle("window:minimize", () => mainWindow?.minimize());
+  ipcMain.handle("window:minimize", () => {
+    minimizeWindow(mainWindow, settingsStore.get("minimizeToTray"));
+  });
   ipcMain.handle("window:maximize", () => {
     if (mainWindow?.isMaximized()) {
       mainWindow.unmaximize();
