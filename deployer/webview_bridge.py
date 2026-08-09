@@ -8,6 +8,8 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog
@@ -223,11 +225,11 @@ _STRINGS = {
             "compileCache": "正在预热启动缓存…",
             "searchProvider": "正在安装网络搜索插件…",
             "sandbox": "正在配置 AppContainer 沙箱…",
-            "weixin": "正在安装微信插件…",
             "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
             "shortcut": "正在创建桌面快捷方式…",
             "commitUpgrade": "正在完成 MicroClaw 更新…",
+            "startService": "正在启动 MicroClaw 服务…",
         },
         "carousel": [
             ["顺手", "不用再学提示词"],
@@ -277,11 +279,11 @@ _STRINGS = {
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
             "sandbox": "Provisioning AppContainer sandbox...",
-            "weixin": "Installing WeChat plugin...",
             "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
             "shortcut": "Creating desktop shortcut...",
             "commitUpgrade": "Finalizing MicroClaw update...",
+            "startService": "Starting MicroClaw service...",
         },
         "carousel": [
             ["Intuitive", "No prompt engineering needed"],
@@ -532,7 +534,6 @@ class WebInstallerBridge:
                 NETWORK_RETRIES,
             ),
             (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
-            (90, steps["weixin"], ws.install_weixin_plugin, NETWORK_RETRIES),
             (94, steps["verifyUpgrade"], ws.verify_openclaw_upgrade, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
@@ -766,6 +767,16 @@ class WebInstallerBridge:
             self._persist_language_setting()
         except Exception as exc:
             self._logger.warn(f"Could not save MicroClaw language preference: {exc}")
+        self._set_progress(99, _STRINGS[self._lang]["steps"]["startService"], "startService")
+        launched = False
+        try:
+            launched = self._launch_desktop() is True
+        except Exception as exc:
+            self._logger.warn(f"Could not launch MicroClaw: {exc}")
+        if launched and not self._wait_for_desktop_service():
+            self._logger.warn(
+                "MicroClaw was installed, but its service did not become ready before timeout"
+            )
         with self._state_lock:
             self._state.update(
                 {
@@ -775,10 +786,22 @@ class WebInstallerBridge:
                     "error": "",
                 }
             )
-        try:
-            self._launch_desktop()
-        except Exception:
-            pass
+
+    def _wait_for_desktop_service(self, timeout_seconds=120):
+        port = int(self._config.get("gateway.port", 18789))
+        deadline = time.monotonic() + timeout_seconds
+        url = f"http://127.0.0.1:{port}/health"
+        while time.monotonic() < deadline:
+            if not self.get_state()["running"]:
+                return False
+            try:
+                with urllib.request.urlopen(url, timeout=2) as response:
+                    if response.status == 200:
+                        return True
+            except (OSError, urllib.error.URLError):
+                pass
+            time.sleep(0.5)
+        return False
 
     def _finish_fail(self, msg):
         with self._state_lock:
@@ -822,7 +845,7 @@ class WebInstallerBridge:
             if shortcut.exists():
                 self._logger.info(f"Launching desktop shortcut: {shortcut}")
                 os.startfile(str(shortcut))
-                return
+                return True
 
         # Fallback: try to launch the exe directly
         desktop_dir = Path.home() / ".microclaw"
@@ -830,10 +853,12 @@ class WebInstallerBridge:
         if exe.exists():
             self._logger.info(f"Launching exe directly: {exe}")
             os.startfile(str(exe))
+            return True
         else:
             self._logger.warn(
                 f"Could not find MicroClaw to launch. Checked: {[str(c) for c in candidates]}"
             )
+        return False
 
 
 def _strip_motw(root: Path, logger: DeployerLogger) -> int:

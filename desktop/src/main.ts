@@ -106,6 +106,7 @@ import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
+import { requiresPostSpawnChannelRestart } from "./post-spawn-restart";
 import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
@@ -223,13 +224,15 @@ let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
+const appStartupStartedAt = Date.now();
+
+function logStartupTiming(phase: string): void {
+  console.log(`[startup-timing] ${phase} +${Date.now() - appStartupStartedAt}ms`);
+}
 
 function setGatewayStatus(status: GatewayStatus): void {
   gatewayStatus = status;
-  updateTrayMenu(
-    status,
-    resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
-  );
+  updateTrayMenu(status, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send("gateway:status", status);
   }
@@ -247,6 +250,7 @@ let gatewaySpawnedByUs = false;
 let agentRosterChangeInProgress = false;
 /** Tracks whether the post-spawn channel kick has already fired. */
 let postSpawnRestartDone = false;
+let postSpawnRestartRequired = false;
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
 const githubCopilotAuthManager = new GitHubCopilotAuthManager(
@@ -2175,6 +2179,8 @@ async function startGatewayInner(): Promise<void> {
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
+  postSpawnRestartRequired = requiresPostSpawnChannelRestart(readConfig());
+  if (!postSpawnRestartRequired) postSpawnRestartDone = true;
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
   const agentRosterChanged = preparedPersonas?.changed ?? false;
@@ -2389,6 +2395,7 @@ async function startGatewayInner(): Promise<void> {
     "--allow-unconfigured",
   ];
 
+  logStartupTiming("gateway-spawn");
   const child = spawn(nodePath, gwArgs, {
     cwd: path.dirname(entryPath),
     env: gwEnv,
@@ -2744,6 +2751,7 @@ async function startGatewayInner(): Promise<void> {
 
   const ready = await waitForGatewayReady(configuredPort);
   if (ready) {
+    logStartupTiming("gateway-ready");
     setGatewayStatus("running");
   } else {
     mainWindow?.webContents.send(
@@ -2808,7 +2816,7 @@ function connectGatewayWs(): void {
       // announce connectivity now, the user can send a message that will be
       // killed when the restart fires seconds later (causing a 30s timeout).
       // The renderer will be notified on the SECOND onConnected (after restart).
-      if (gatewaySpawnedByUs && !postSpawnRestartDone) {
+      if (gatewaySpawnedByUs && postSpawnRestartRequired && !postSpawnRestartDone) {
         postSpawnRestartDone = true;
         console.log("[gateway-ws] post-spawn: deferring ws-connected until after restart");
         mainWindow?.webContents.send("gateway:log", "[startup] 正在重启网关以激活插件通道…");
@@ -5529,6 +5537,7 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  logStartupTiming("app-ready");
   if (!settingsStore.has("language")) {
     settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
   }
@@ -5572,10 +5581,7 @@ app.whenReady().then(async () => {
       );
     },
   };
-  createTray(
-    trayCallbacks,
-    resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
-  );
+  createTray(trayCallbacks, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
 
   // Skill integrity check — must run BEFORE loading renderer so
   // pendingIntegrityResult is ready when App.vue calls the IPC.
@@ -5589,6 +5595,14 @@ app.whenReady().then(async () => {
     console.log("Skill integrity check failed — changes detected");
     pendingIntegrityResult = integrityResult;
   }
+  logStartupTiming("integrity-complete");
+
+  // Gateway startup is independent of renderer loading. Starting it here lets
+  // the local UI and background service initialize concurrently.
+  logStartupTiming("gateway-requested");
+  startGateway().catch((err) => {
+    console.error("Failed to start gateway:", err);
+  });
 
   // Load the Vue renderer UI.
   if (isDev) {
@@ -5615,13 +5629,10 @@ app.whenReady().then(async () => {
       await mainWindow.loadFile(indexPath);
     }
   }
+  logStartupTiming("renderer-loaded");
 
   // Watch skill directories for mid-session changes
   startSkillFileWatcher();
-
-  startGateway().catch((err) => {
-    console.error("Failed to start gateway:", err);
-  });
 });
 
 app.on("window-all-closed", () => {

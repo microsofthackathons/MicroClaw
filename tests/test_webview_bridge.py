@@ -111,6 +111,19 @@ class WebInstallerBridgeTests(unittest.TestCase):
         settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self.assertEqual(settings, {"themeMode": "dark", "language": "zh-CN"})
 
+    def test_success_waits_for_desktop_service_after_launch(self):
+        self.bridge._launch_desktop = unittest.mock.Mock(return_value=True)
+        self.bridge._wait_for_desktop_service = unittest.mock.Mock(return_value=True)
+
+        self.bridge._finish_ok()
+
+        self.bridge._launch_desktop.assert_called_once_with()
+        self.bridge._wait_for_desktop_service.assert_called_once_with()
+        state = self.bridge.get_state()
+        self.assertEqual(state["progress"], 100)
+        self.assertEqual(state["status"], "success")
+        self.assertFalse(state["running"])
+
     def test_failed_install_does_not_persist_language(self):
         self.bridge.set_language("zh")
 
@@ -289,6 +302,18 @@ class WebInstallerBridgeTests(unittest.TestCase):
             self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
             self.assertLess(search_index, labels.index("Validating MicroClaw update..."))
             self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
+
+    def test_both_installers_exclude_wechat_installation(self):
+        setup = unittest.mock.Mock()
+        app = object.__new__(DeployerApp)
+        app._prepare_upgrade = unittest.mock.Mock()
+        app._ensure_node = unittest.mock.Mock()
+        app._ensure_openclaw = unittest.mock.Mock()
+        app._copy_bundled_assets = unittest.mock.Mock()
+        app._write_env_file = unittest.mock.Mock()
+
+        for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
+            self.assertNotIn(setup.install_weixin_plugin, [step[2] for step in steps])
 
 
 if __name__ == "__main__":

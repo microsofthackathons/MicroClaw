@@ -397,7 +397,6 @@ class WindowsSetup:
         self._rollback_actions: list[tuple[str, Callable]] = []
         self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
         self._openclaw_upgrade_required = True
-        self._weixin_plugin_mutation_required = False
         self._weixin_policy_snapshot: WeixinPluginPolicy | None = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
@@ -405,7 +404,6 @@ class WindowsSetup:
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
         self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
-        self.weixin_plugin_enabled = True  # Install by default
 
         # Select mirror: respect explicit user override (npm.registry config)
         # if set; otherwise probe all candidates in parallel and pick the
@@ -1854,7 +1852,6 @@ class WindowsSetup:
     def prepare_openclaw_upgrade(self) -> bool:
         """Block active gateways and snapshot the current package and state."""
         self._openclaw_upgrade_required = True
-        self._weixin_plugin_mutation_required = False
         self._weixin_policy_snapshot = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
@@ -1869,7 +1866,6 @@ class WindowsSetup:
         if same_version:
             self.install_prefix = installation.prefix
             self._openclaw_upgrade_required = False
-            self._weixin_plugin_mutation_required = self._same_version_weixin_requires_full_backup()
         prefix = (
             installation.prefix if installation is not None else self._choose_npm_install_prefix()
         )
@@ -1886,7 +1882,7 @@ class WindowsSetup:
         try:
             backup_mode = (
                 UpgradeBackupMode.FULL
-                if self._openclaw_upgrade_required or self._weixin_plugin_mutation_required
+                if self._openclaw_upgrade_required
                 else UpgradeBackupMode.MANAGED_STATE
             )
             transaction = OpenClawUpgradeTransaction.create(
@@ -1906,11 +1902,6 @@ class WindowsSetup:
                 self.log.info(
                     f"OpenClaw {OPENCLAW_TARGET_VERSION} is already installed; "
                     "creating a lightweight managed-state rollback point."
-                )
-            elif same_version:
-                self.log.info(
-                    "The bundled WeChat plugin requires reconciliation; "
-                    "creating a full rollback point."
                 )
             transaction.backup()
             return True
@@ -2463,8 +2454,6 @@ class WindowsSetup:
 
             process = None
             checks = [("health", self._validate_gateway_health)]
-            if getattr(self, "_weixin_plugin_mutation_required", False):
-                checks.append(("weixin-plugin", self._validate_weixin_plugin))
             checks.append(("appcontainer", self._validate_appcontainer_smoke))
             try:
                 process = self._start_validation_gateway()
@@ -2503,7 +2492,6 @@ class WindowsSetup:
             ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
             ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
             ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
-            ("weixin-plugin", self._validate_weixin_plugin),
             ("appcontainer", self._validate_appcontainer_smoke),
         ]
         try:
@@ -3884,11 +3872,12 @@ class WindowsSetup:
             )
 
     def create_desktop_shortcut(self) -> bool:
-        """Create best-effort shortcuts and required uninstall registration."""
+        """Create app shortcuts and required uninstall registration."""
         self.log.step("Creating desktop shortcut…")
 
         desktop = self._get_desktop_path()
         desktop_exe = self._find_desktop_exe()
+        self._remove_legacy_uninstall_shortcuts(desktop)
 
         if desktop_exe:
             self._create_lnk_shortcut(desktop, desktop_exe)
@@ -3897,62 +3886,15 @@ class WindowsSetup:
             self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
             self._create_url_shortcut(desktop)
 
-        self._create_uninstall_shortcut(desktop)
         return self._register_installed_app(desktop_exe)
 
-    def _create_uninstall_shortcut(self, desktop: Path) -> bool:
-        """Create an uninstall shortcut for the persisted installer."""
-        shortcut_path = desktop / "Uninstall MicroClaw.lnk"
-        openclaw_dir = Path.home() / ".openclaw"
-        installer_dest = openclaw_dir / "MicroClawInstaller.exe"
-
-        try:
-            validate_uninstaller_bundle(openclaw_dir)
-        except UninstallerBundleError as error:
-            self.log.error(f"无法创建卸载快捷方式: {error}")
-            return False
-
-        try:
-            ico_path = self._resolve_uninstall_icon()
-            ico_arg = ""
-            if ico_path:
-                ico_arg = f'$s.IconLocation = "{ico_path},0";'
-
-            # Use single-quoted paths in PowerShell to avoid interpolation issues,
-            # then cast to [string] for CreateShortcut which expects a string argument.
-            ps_script = (
-                f"$ws = New-Object -ComObject WScript.Shell;"
-                f"$s = $ws.CreateShortcut([string]'{shortcut_path}');"
-                f"$s.TargetPath = [string]'{installer_dest}';"
-                f'$s.Arguments = "--uninstall";'
-                f"$s.WorkingDirectory = [string]'{installer_dest.parent}';"
-                f"$s.Description = 'Uninstall MicroClaw';"
-                f"{ico_arg}"
-                f"$s.Save()"
-            )
-            import base64
-
-            encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
-            r = self._run(
-                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
-
-            if shortcut_path.exists():
-                self.log.success(f"卸载快捷方式已创建: {shortcut_path}")
-                return True
-
-            self.log.warn(
-                f"卸载快捷方式创建失败 (stdout={r.stdout.strip()}, stderr={r.stderr.strip()}, rc={r.returncode})"
-            )
-            return False
-        except Exception as e:
-            self.log.warn(f"创建卸载快捷方式异常: {e}")
-            return False
+    def _remove_legacy_uninstall_shortcuts(self, desktop: Path) -> None:
+        """Remove obsolete desktop uninstall shortcuts from earlier installs."""
+        for name in ("Uninstall MicroClaw.lnk", "卸载 MicroClaw.lnk"):
+            try:
+                (desktop / name).unlink(missing_ok=True)
+            except OSError as error:
+                self.log.warn(f"无法删除旧的桌面卸载快捷方式 {name}: {error}")
 
     def _get_desktop_path(self) -> Path:
         """Resolve the user's Desktop folder path."""

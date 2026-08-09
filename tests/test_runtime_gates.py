@@ -45,29 +45,24 @@ class RuntimeGateTests(unittest.TestCase):
         )
         self.assertIn("$pipExitCode = $LASTEXITCODE", build_script)
 
-    def test_installer_spec_uses_staged_weixin_runtime(self):
+    def test_installer_spec_excludes_weixin_runtime(self):
         spec = (ROOT / "MicroClawDeployer.spec").read_text(encoding="utf-8")
 
-        self.assertIn(
-            "weixin_plugin_datas = [('dist/openclaw-weixin', 'plugins/openclaw-weixin')]",
-            spec,
-        )
+        self.assertNotIn("weixin_plugin_datas", spec)
+        self.assertNotIn("plugins/openclaw-weixin", spec)
         self.assertNotIn("collect_plugin_files", spec)
         self.assertNotIn("('plugins', 'plugins')", spec)
 
-    def test_build_stages_pinned_weixin_archives_offline(self):
+    def test_build_does_not_stage_weixin_archives(self):
         build_script = (ROOT / "build.ps1").read_text(encoding="utf-8")
-        vendor = ROOT / "plugins" / "openclaw-weixin" / "vendor"
 
         for archive in (
             "tencent-weixin-openclaw-weixin-2.4.6.tgz",
             "zod-4.4.3.tgz",
             "qrcode-terminal-0.12.0.tgz",
         ):
-            self.assertIn(archive, build_script)
-            self.assertTrue((vendor / archive).is_file())
-        self.assertIn("Get-FileHash", build_script)
-        self.assertIn("--offline", build_script)
+            self.assertNotIn(archive, build_script)
+        self.assertNotIn("Stage Weixin plugin", build_script)
 
     def test_nsis_build_declares_utf8_input_charset(self):
         build_script = (ROOT / "build.ps1").read_text(encoding="utf-8")

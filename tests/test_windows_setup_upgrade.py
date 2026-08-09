@@ -385,7 +385,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertFalse(self.ws._openclaw_upgrade_required)
         self.assertIs(self.ws._openclaw_transaction, transaction)
 
-    def test_prepare_uses_full_transaction_when_same_version_plugin_needs_repair(self):
+    def test_prepare_ignores_weixin_state_for_same_version_installation(self):
         prefix = self.home / ".openclaw-node"
         self._write_package(prefix, OPENCLAW_TARGET_VERSION)
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
@@ -399,8 +399,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         ) as create:
             self.assertTrue(self.ws.prepare_openclaw_upgrade())
 
-        self.assertEqual(create.call_args.kwargs["backup_mode"], UpgradeBackupMode.FULL)
-        self.assertTrue(self.ws._weixin_plugin_mutation_required)
+        self.assertEqual(create.call_args.kwargs["backup_mode"], UpgradeBackupMode.MANAGED_STATE)
+        self.ws._same_version_weixin_requires_full_backup.assert_not_called()
         transaction.backup.assert_called_once()
 
     def test_prepare_backs_up_existing_installation_in_same_prefix(self):
@@ -822,10 +822,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 ("agents.list", True),
                 ("channels.status", True),
                 ("cron.list", True),
-                ("weixin-plugin", True),
                 ("appcontainer", True),
             ],
         )
+        self.ws._validate_weixin_plugin.assert_not_called()
         transaction.mark_verifying.assert_called_once()
         self.ws._stop_validation_gateway.assert_called_once_with(process)
 
@@ -859,7 +859,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             ],
         )
 
-    def test_same_version_plugin_repair_validates_plugin_before_commit(self):
+    def test_same_version_validation_excludes_weixin(self):
         self.ws._openclaw_upgrade_required = False
         self.ws._weixin_plugin_mutation_required = True
         transaction = unittest.mock.Mock()
@@ -879,10 +879,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [
                 ("version", True),
                 ("health", True),
-                ("weixin-plugin", True),
                 ("appcontainer", True),
             ],
         )
+        self.ws._validate_weixin_plugin.assert_not_called()
 
     def test_failed_validation_returns_false_without_rolling_back_inside_validator(self):
         transaction = unittest.mock.Mock()
@@ -1850,14 +1850,22 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             self.assertFalse(self.ws._register_installed_app(None))
         fake_winreg.CreateKeyEx.assert_not_called()
 
-    def test_uninstall_shortcut_refuses_missing_uninstaller(self):
+    def test_create_desktop_shortcut_removes_legacy_uninstall_shortcuts(self):
         desktop = self.root / "Desktop"
         desktop.mkdir()
-        self.ws._run = unittest.mock.Mock()
+        uninstall_shortcut = desktop / "Uninstall MicroClaw.lnk"
+        localized_shortcut = desktop / "卸载 MicroClaw.lnk"
+        uninstall_shortcut.write_text("shortcut", encoding="utf-8")
+        localized_shortcut.write_text("shortcut", encoding="utf-8")
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=desktop)
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=None)
+        self.ws._create_url_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
-        self.assertFalse(self.ws._create_uninstall_shortcut(desktop))
+        self.assertTrue(self.ws.create_desktop_shortcut())
 
-        self.ws._run.assert_not_called()
+        self.assertFalse(uninstall_shortcut.exists())
+        self.assertFalse(localized_shortcut.exists())
 
     def _configure_entry_point_mocks(self):
         desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
@@ -1865,14 +1873,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
         self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
     def test_create_desktop_shortcut_treats_shortcut_failures_as_nonfatal(self):
         for helper_name in (
             "_create_lnk_shortcut",
             "_create_start_menu_shortcut",
-            "_create_uninstall_shortcut",
         ):
             with self.subTest(helper=helper_name):
                 self._configure_entry_point_mocks()
@@ -1882,7 +1888,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
                 self.ws._create_lnk_shortcut.assert_called_once()
                 self.ws._create_start_menu_shortcut.assert_called_once()
-                self.ws._create_uninstall_shortcut.assert_called_once()
                 self.ws._register_installed_app.assert_called_once()
 
     def test_create_desktop_shortcut_propagates_registry_failure(self):
@@ -1893,7 +1898,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.ws._create_lnk_shortcut.assert_called_once()
         self.ws._create_start_menu_shortcut.assert_called_once()
-        self.ws._create_uninstall_shortcut.assert_called_once()
         self.ws._register_installed_app.assert_called_once()
 
     def test_browser_fallback_failure_defers_to_registry_result(self):
@@ -1904,7 +1908,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 self.ws._create_lnk_shortcut = unittest.mock.Mock()
                 self.ws._create_start_menu_shortcut = unittest.mock.Mock()
                 self.ws._create_url_shortcut = unittest.mock.Mock(return_value=False)
-                self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
                 self.ws._register_installed_app = unittest.mock.Mock(return_value=registry_result)
 
                 self.assertEqual(self.ws.create_desktop_shortcut(), registry_result)
@@ -1912,7 +1915,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 self.ws._create_lnk_shortcut.assert_not_called()
                 self.ws._create_start_menu_shortcut.assert_not_called()
                 self.ws._create_url_shortcut.assert_called_once()
-                self.ws._create_uninstall_shortcut.assert_called_once()
                 self.ws._register_installed_app.assert_called_once_with(None)
 
     def test_url_shortcut_reports_write_failure(self):
