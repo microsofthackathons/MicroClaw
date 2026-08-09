@@ -68,9 +68,9 @@ describe("SettingsView", () => {
     const menuItems = wrapper.findAll(".settings-menu-item");
     await menuItems.find((item) => item.text() === "General")!.trigger("click");
     expect(wrapper.find(".settings-content").text()).toContain("Gateway");
-    expect(wrapper.find(".settings-content").text()).toContain("Connection Status");
+    expect(wrapper.find(".settings-content").text()).toContain("Connection status");
     expect(wrapper.find(".settings-content").text()).toContain("Logs");
-    expect(wrapper.find(".settings-content").text()).toContain("Gateway Logs");
+    expect(wrapper.find(".settings-content").text()).toContain("Gateway logs");
     expect(menuItems.some((item) => item.text() === "Gateway")).toBe(false);
 
     await wrapper

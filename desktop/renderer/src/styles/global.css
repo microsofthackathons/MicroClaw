@@ -151,6 +151,12 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
 }
 
+html:lang(zh-CN) .settings-view .section-label,
+html:lang(zh-CN) .settings-view .sub-label,
+html:lang(zh-CN) .channels-view.embedded .settings-group-title {
+  letter-spacing: 0;
+}
+
 /* Dark theme */
 html.dark {
   --bg-primary: #18181b;

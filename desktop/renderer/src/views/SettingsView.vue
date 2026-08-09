@@ -754,7 +754,7 @@
         <div class="sub-label">{{ t("settings.fileAccessAudit") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
+            <span class="row-label">{{ t("settings.fileAccessAuditToggle") }}</span>
             <el-switch
               v-model="settings.fileAccessAudit"
               :disabled="settings.privacyLevel === 'basic'"
@@ -767,7 +767,7 @@
         <div class="sub-label">{{ t("settings.chatHistory") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.chatHistory") }}</span>
+            <span class="row-label">{{ t("settings.savedChatHistory") }}</span>
             <el-button type="danger" plain size="small" @click="clearChatHistory">{{
               t("settings.clearAllHistory")
             }}</el-button>
