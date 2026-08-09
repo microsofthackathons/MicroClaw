@@ -128,7 +128,8 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
+                >{{ t("settings.currencySymbol")
+                }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -136,7 +137,8 @@
               <div class="budget-bar-wrapper">
                 <span class="row-value"
                   >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }} /
-                  {{ t("settings.currencySymbol") }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
+                  {{ t("settings.currencySymbol")
+                  }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
                 >
                 <div class="budget-bar">
                   <div
@@ -212,7 +214,6 @@
               </div>
             </div>
           </template>
-
         </template>
 
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
@@ -1596,7 +1597,6 @@ onMounted(async () => {
 
   // Load web search provider configuration
   loadSearchConfig(config);
-
 });
 
 onUnmounted(() => {
@@ -1713,11 +1713,9 @@ async function removeCustomModel(idx: number) {
 async function disconnectGitHubCopilot() {
   if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
   try {
-    await ElMessageBox.confirm(
-      t("settings.copilotDisconnectConfirm"),
-      t("settings.confirm"),
-      { type: "warning" },
-    );
+    await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
+      type: "warning",
+    });
   } catch {
     return;
   }
