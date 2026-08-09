@@ -20,7 +20,6 @@ if importlib.util.find_spec('webview') is None:
 webview_datas = collect_data_files('webview', subdir='lib') + collect_data_files('webview', subdir='js')
 webview_binaries = collect_dynamic_libs('webview')
 pythonnet_datas = collect_data_files('pythonnet', subdir='runtime')
-weixin_plugin_datas = [('dist/openclaw-weixin', 'plugins/openclaw-weixin')]
 
 a = Analysis(
     ['deploy.py'],
@@ -32,7 +31,7 @@ a = Analysis(
         ('skills', 'skills'),
         ('scripts', 'scripts'),
         ('deployer/assets', 'deployer/assets'),
-    ] + weixin_plugin_datas + webview_datas + pythonnet_datas,
+    ] + webview_datas + pythonnet_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

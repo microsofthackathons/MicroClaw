@@ -385,7 +385,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertFalse(self.ws._openclaw_upgrade_required)
         self.assertIs(self.ws._openclaw_transaction, transaction)
 
-    def test_prepare_uses_full_transaction_when_same_version_plugin_needs_repair(self):
+    def test_prepare_ignores_weixin_state_for_same_version_installation(self):
         prefix = self.home / ".openclaw-node"
         self._write_package(prefix, OPENCLAW_TARGET_VERSION)
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
@@ -399,8 +399,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         ) as create:
             self.assertTrue(self.ws.prepare_openclaw_upgrade())
 
-        self.assertEqual(create.call_args.kwargs["backup_mode"], UpgradeBackupMode.FULL)
-        self.assertTrue(self.ws._weixin_plugin_mutation_required)
+        self.assertEqual(create.call_args.kwargs["backup_mode"], UpgradeBackupMode.MANAGED_STATE)
+        self.ws._same_version_weixin_requires_full_backup.assert_not_called()
         transaction.backup.assert_called_once()
 
     def test_prepare_backs_up_existing_installation_in_same_prefix(self):
@@ -816,16 +816,16 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
+                ("appcontainer", True),
                 ("health", True),
                 ("v4-handshake", True),
                 ("config.get", True),
                 ("agents.list", True),
                 ("channels.status", True),
                 ("cron.list", True),
-                ("weixin-plugin", True),
-                ("appcontainer", True),
             ],
         )
+        self.ws._validate_weixin_plugin.assert_not_called()
         transaction.mark_verifying.assert_called_once()
         self.ws._stop_validation_gateway.assert_called_once_with(process)
 
@@ -854,12 +854,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("health", True),
                 ("appcontainer", True),
+                ("health", True),
             ],
         )
 
-    def test_same_version_plugin_repair_validates_plugin_before_commit(self):
+    def test_same_version_validation_excludes_weixin(self):
         self.ws._openclaw_upgrade_required = False
         self.ws._weixin_plugin_mutation_required = True
         transaction = unittest.mock.Mock()
@@ -878,11 +878,11 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("health", True),
-                ("weixin-plugin", True),
                 ("appcontainer", True),
+                ("health", True),
             ],
         )
+        self.ws._validate_weixin_plugin.assert_not_called()
 
     def test_failed_validation_returns_false_without_rolling_back_inside_validator(self):
         transaction = unittest.mock.Mock()
@@ -1027,6 +1027,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws._weixin_policy_snapshot.entry_present)
         self.assertTrue(self.ws._weixin_registration_verified)
+
+        self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
 
     def test_weixin_matching_payload_repairs_missing_config_record(self):
         bundled = self.root / "bundled-weixin"
@@ -1562,6 +1566,57 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin"],
         )
 
+    def test_install_search_provider_plugin_uses_verified_local_fast_path(self):
+        state_dir = self.home / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {"web": {"search": {"provider": "parallel-free"}}},
+                    "plugins": {"entries": {"parallel": {"enabled": True}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_dir = (
+            state_dir
+            / "npm"
+            / "projects"
+            / "parallel-project"
+            / "node_modules"
+            / "@openclaw"
+            / "parallel-plugin"
+        )
+        (plugin_dir / "dist").mkdir(parents=True)
+        (plugin_dir / "dist" / "index.js").write_text("", encoding="utf-8")
+        (plugin_dir / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "@openclaw/parallel-plugin",
+                    "openclaw": {
+                        "extensions": ["./index.ts"],
+                        "runtimeExtensions": ["./dist/index.js"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (plugin_dir / "openclaw.plugin.json").write_text(
+            json.dumps(
+                {
+                    "id": "parallel",
+                    "contracts": {"webSearchProviders": ["parallel", "parallel-free"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._weixin_cli_context.assert_not_called()
+
     def test_install_search_provider_plugin_preserves_other_provider(self):
         config_path = self.home / ".openclaw" / "openclaw.json"
         config_path.parent.mkdir(parents=True)
@@ -1574,6 +1629,113 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.install_search_provider_plugin())
 
         self.ws._weixin_cli_context.assert_not_called()
+
+    def test_warmup_compile_cache_skips_current_same_version_cache(self):
+        self.ws._openclaw_upgrade_required = False
+        state_dir = self.home / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / ".microclaw-version").write_text(
+            OPENCLAW_TARGET_VERSION,
+            encoding="utf-8",
+        )
+        (cache_dir / "cached-module").write_bytes(b"cache")
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_bytes(b"node")
+        package = self._write_package(self.appdata / "npm", OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = self.appdata / "npm"
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.warmup_compile_cache())
+
+        self.assertTrue(package.exists())
+        popen.assert_not_called()
+
+    def test_warmup_compile_cache_adopts_existing_same_version_cache(self):
+        self.ws._openclaw_upgrade_required = False
+        cache_dir = self.home / ".openclaw" / "compile-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "cached-module").write_bytes(b"cache")
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_bytes(b"node")
+        self._write_package(self.appdata / "npm", OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = self.appdata / "npm"
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.warmup_compile_cache())
+
+        self.assertEqual(
+            (cache_dir / ".microclaw-version").read_text(encoding="utf-8"),
+            OPENCLAW_TARGET_VERSION,
+        )
+        popen.assert_not_called()
+
+    def test_deploy_managed_skills_preserves_existing_officecli_binary(self):
+        bundled = self.root / "bundled-skills"
+        bundled_officecli = bundled / "officecli"
+        bundled_officecli.mkdir(parents=True)
+        (bundled_officecli / "SKILL.md").write_text("updated", encoding="utf-8")
+        state_dir = self.home / ".openclaw"
+        existing = state_dir / "skills" / "officecli" / "bin" / "officecli.exe"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"existing-binary")
+        self.ws._get_bundled_skills_dir = unittest.mock.Mock(return_value=bundled)
+
+        self.ws._deploy_managed_skills(state_dir)
+
+        self.assertEqual(existing.read_bytes(), b"existing-binary")
+        self.assertEqual(
+            (state_dir / "skills" / "officecli" / "SKILL.md").read_text(encoding="utf-8"),
+            "updated",
+        )
+
+    def test_appcontainer_acl_preflight_recognizes_sufficient_access(self):
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout='{"exists":true,"sufficient":true}',
+                stderr="",
+            )
+        )
+
+        self.assertTrue(
+            self.ws._appcontainer_access_is_sufficient(
+                Path("AppContainerLauncher.exe"),
+                "MicroClaw",
+                str(self.root),
+                "rw",
+            )
+        )
+
+    def test_defender_exclusions_skip_elevation_when_already_configured(self):
+        directories = [self.root / "one", self.root / "two"]
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([str(path) for path in directories]),
+                stderr="",
+            )
+        )
+
+        self.ws._add_defender_exclusions(directories)
+
+        self.ws._run.assert_called_once()
+
+    def test_defender_exclusions_add_only_missing_paths(self):
+        existing = self.root / "existing"
+        missing = self.root / "missing"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout=json.dumps([str(existing)]), stderr=""),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+        )
+
+        self.ws._add_defender_exclusions([existing, missing])
+
+        elevated_command = self.ws._run.call_args_list[1].args[0]
+        self.assertIn(str(missing), elevated_command[-1])
+        self.assertNotIn(str(existing), elevated_command[-1])
 
     def test_desktop_update_preserves_upgrade_transaction_directories(self):
         install_dir = self.root / ".microclaw"
@@ -1688,14 +1850,22 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             self.assertFalse(self.ws._register_installed_app(None))
         fake_winreg.CreateKeyEx.assert_not_called()
 
-    def test_uninstall_shortcut_refuses_missing_uninstaller(self):
+    def test_create_desktop_shortcut_removes_legacy_uninstall_shortcuts(self):
         desktop = self.root / "Desktop"
         desktop.mkdir()
-        self.ws._run = unittest.mock.Mock()
+        uninstall_shortcut = desktop / "Uninstall MicroClaw.lnk"
+        localized_shortcut = desktop / "卸载 MicroClaw.lnk"
+        uninstall_shortcut.write_text("shortcut", encoding="utf-8")
+        localized_shortcut.write_text("shortcut", encoding="utf-8")
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=desktop)
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=None)
+        self.ws._create_url_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
-        self.assertFalse(self.ws._create_uninstall_shortcut(desktop))
+        self.assertTrue(self.ws.create_desktop_shortcut())
 
-        self.ws._run.assert_not_called()
+        self.assertFalse(uninstall_shortcut.exists())
+        self.assertFalse(localized_shortcut.exists())
 
     def _configure_entry_point_mocks(self):
         desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
@@ -1703,14 +1873,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
         self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
     def test_create_desktop_shortcut_treats_shortcut_failures_as_nonfatal(self):
         for helper_name in (
             "_create_lnk_shortcut",
             "_create_start_menu_shortcut",
-            "_create_uninstall_shortcut",
         ):
             with self.subTest(helper=helper_name):
                 self._configure_entry_point_mocks()
@@ -1720,7 +1888,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
                 self.ws._create_lnk_shortcut.assert_called_once()
                 self.ws._create_start_menu_shortcut.assert_called_once()
-                self.ws._create_uninstall_shortcut.assert_called_once()
                 self.ws._register_installed_app.assert_called_once()
 
     def test_create_desktop_shortcut_propagates_registry_failure(self):
@@ -1731,7 +1898,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.ws._create_lnk_shortcut.assert_called_once()
         self.ws._create_start_menu_shortcut.assert_called_once()
-        self.ws._create_uninstall_shortcut.assert_called_once()
         self.ws._register_installed_app.assert_called_once()
 
     def test_browser_fallback_failure_defers_to_registry_result(self):
@@ -1742,7 +1908,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 self.ws._create_lnk_shortcut = unittest.mock.Mock()
                 self.ws._create_start_menu_shortcut = unittest.mock.Mock()
                 self.ws._create_url_shortcut = unittest.mock.Mock(return_value=False)
-                self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=True)
                 self.ws._register_installed_app = unittest.mock.Mock(return_value=registry_result)
 
                 self.assertEqual(self.ws.create_desktop_shortcut(), registry_result)
@@ -1750,7 +1915,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 self.ws._create_lnk_shortcut.assert_not_called()
                 self.ws._create_start_menu_shortcut.assert_not_called()
                 self.ws._create_url_shortcut.assert_called_once()
-                self.ws._create_uninstall_shortcut.assert_called_once()
                 self.ws._register_installed_app.assert_called_once_with(None)
 
     def test_url_shortcut_reports_write_failure(self):

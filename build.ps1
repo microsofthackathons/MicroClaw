@@ -47,7 +47,7 @@ if (-not $nodeFound) {
 }
 
 # -- Step 1: Build AppContainerLauncher.exe (.NET 9) --
-Write-Host "`n=== Step 1/8: Build AppContainerLauncher ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 1/7: Build AppContainerLauncher ===" -ForegroundColor Cyan
 $acProject = "$root\appcontainer"
 if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
     Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
@@ -88,7 +88,7 @@ if (Test-Path $preloadSrc) {
 }
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
-Write-Host "`n=== Step 2/8: Clean stale build artifacts ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan
 $distDir = "$root\desktop\dist"
 if (Test-Path $distDir) {
     Remove-Item "$distDir\*.js" -Force -ErrorAction SilentlyContinue
@@ -104,7 +104,7 @@ if (-not (Test-Path $outDist)) {
 }
 
 # -- Step 3: Build & pack desktop --
-Write-Host "`n=== Step 3/8: Build & pack desktop ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
 try {
     # First-run bootstrap: install npm deps (including renderer via postinstall)
@@ -160,122 +160,16 @@ if (Test-Path $desktopAsar) {
     }
 }
 
-# Step 4: Stage a self-contained Weixin runtime from pinned npm archives.
-# OpenClaw does not install dependencies for local directory installs, so the
-# installer must carry the plugin's production node_modules.
-Write-Host "`n=== Step 4/8: Stage Weixin plugin ===" -ForegroundColor Cyan
-$weixinDir = "$root\plugins\openclaw-weixin"
-$weixinPackage = Get-Content "$weixinDir\package.json" -Raw | ConvertFrom-Json
-$weixinManifest = Get-Content "$weixinDir\openclaw.plugin.json" -Raw | ConvertFrom-Json
-if ($weixinPackage.version -ne $weixinManifest.version) {
-    Write-Host "  ERROR: Weixin package and manifest versions do not match" -ForegroundColor Red
-    exit 1
-}
-
-$weixinVendor = "$weixinDir\vendor"
-$weixinArchive = "$weixinVendor\tencent-weixin-openclaw-weixin-2.4.6.tgz"
-$zodArchive = "$weixinVendor\zod-4.4.3.tgz"
-$qrcodeArchive = "$weixinVendor\qrcode-terminal-0.12.0.tgz"
-$weixinArchives = @(
-    [PSCustomObject]@{
-        Path = $weixinArchive
-        Sha256 = 'ef1c3600ca2fc0ee9076c1327af1e0d5d2e8e19fbb61e9f56c961fcde0bd07f6'
-    },
-    [PSCustomObject]@{
-        Path = $zodArchive
-        Sha256 = 'ee38f17f533fd500610685a483ae2f413c26f4eb33a51684314563c8d60f279c'
-    },
-    [PSCustomObject]@{
-        Path = $qrcodeArchive
-        Sha256 = '3a6260c4e0d80bd527a3f930e90ea2348c03646621f25aa0bd960ee205a0a706'
-    }
-)
-foreach ($archive in $weixinArchives) {
-    if (-not (Test-Path $archive.Path)) {
-        Write-Host "  ERROR: Vendored Weixin archive is missing: $($archive.Path)" -ForegroundColor Red
-        exit 1
-    }
-    $actualHash = (Get-FileHash $archive.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $archive.Sha256) {
-        Write-Host "  ERROR: Vendored Weixin archive checksum mismatch: $($archive.Path)" -ForegroundColor Red
-        exit 1
-    }
-}
-
-$weixinStage = "$outDist\openclaw-weixin"
-if (Test-Path $weixinStage) { Remove-Item $weixinStage -Recurse -Force }
-$weixinInstallRoot = "$outDist\openclaw-weixin-offline-install"
-if (Test-Path $weixinInstallRoot) { Remove-Item $weixinInstallRoot -Recurse -Force }
-New-Item -ItemType Directory -Path $weixinInstallRoot -Force | Out-Null
-
-try {
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    npm install --prefix $weixinInstallRoot --offline --ignore-scripts `
-        --omit=dev --omit=peer --legacy-peer-deps --no-package-lock --no-save `
-        $weixinArchive $zodArchive $qrcodeArchive 2>&1 |
-        ForEach-Object { Write-Host "  $_" }
-    $weixinInstallExitCode = $LASTEXITCODE
-    $ErrorActionPreference = $previousPreference
-    if ($weixinInstallExitCode -ne 0) {
-        Write-Host "  ERROR: Vendored Weixin package installation failed" -ForegroundColor Red
-        exit 1
-    }
-
-    $weixinInstalled = "$weixinInstallRoot\node_modules\@tencent-weixin\openclaw-weixin"
-    $installedPackage = Get-Content "$weixinInstalled\package.json" -Raw | ConvertFrom-Json
-    $installedManifest = Get-Content "$weixinInstalled\openclaw.plugin.json" -Raw | ConvertFrom-Json
-    if ($installedPackage.version -ne $weixinPackage.version -or
-        $installedManifest.version -ne $weixinManifest.version) {
-        Write-Host "  ERROR: Vendored Weixin version does not match tracked metadata" -ForegroundColor Red
-        exit 1
-    }
-    if (-not (Test-Path "$weixinInstalled\dist\index.js")) {
-        Write-Host "  ERROR: Vendored Weixin plugin is missing dist\index.js" -ForegroundColor Red
-        exit 1
-    }
-
-    Copy-Item $weixinInstalled $weixinStage -Recurse -Force
-    New-Item -ItemType Directory -Path "$weixinStage\node_modules" -Force | Out-Null
-    Copy-Item "$weixinInstallRoot\node_modules\zod" `
-        "$weixinStage\node_modules\zod" -Recurse -Force
-    Copy-Item "$weixinInstallRoot\node_modules\qrcode-terminal" `
-        "$weixinStage\node_modules\qrcode-terminal" -Recurse -Force
-} finally {
-    if (Test-Path $weixinInstallRoot) {
-        Remove-Item $weixinInstallRoot -Recurse -Force
-    }
-}
-
-# The staged package is runtime-only. Removing devDependencies avoids pulling a
-# second OpenClaw toolchain if the staged package is inspected by npm tooling.
-$runtimePackage = Get-Content "$weixinStage\package.json" -Raw | ConvertFrom-Json
-$runtimePackage.PSObject.Properties.Remove('devDependencies')
-$runtimeJson = $runtimePackage | ConvertTo-Json -Depth 20
-[IO.File]::WriteAllText(
-    "$weixinStage\package.json",
-    $runtimeJson + [Environment]::NewLine,
-    (New-Object Text.UTF8Encoding($false))
-)
-
-foreach ($dependency in @('zod', 'qrcode-terminal')) {
-    if (-not (Test-Path "$weixinStage\node_modules\$dependency\package.json")) {
-        Write-Host "  ERROR: Weixin runtime dependency '$dependency' is missing" -ForegroundColor Red
-        exit 1
-    }
-}
-Write-Host "  Verified: openclaw-weixin $($weixinPackage.version), runtime dependencies bundled" -ForegroundColor Green
-
-# Step 5: Create portable zip
-Write-Host "`n=== Step 5/8: Create portable zip ===" -ForegroundColor Cyan
+# Step 4: Create portable zip
+Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  -> $zipPath  ${zipSizeMB} MB"
 
-# Step 6: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
-Write-Host "`n=== Step 6/8: Build installer ===" -ForegroundColor Cyan
+# Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
+Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan
 Push-Location $root
 $installerBuilt = $false
 
@@ -396,8 +290,8 @@ if (-not $installerBuilt) {
     exit 1
 }
 
-# Step 7: Pack onedir output into a single distributable zip
-Write-Host "`n=== Step 7/8: Pack installer directory ===" -ForegroundColor Cyan
+# Step 6: Pack onedir output into a single distributable zip
+Write-Host "`n=== Step 6/7: Pack installer directory ===" -ForegroundColor Cyan
 $installerDir = "$root\dist\MicroClawInstaller"
 $installerZip = "$root\dist\MicroClawInstaller.zip"
 if (-not (Test-Path $installerDir)) {
@@ -410,12 +304,12 @@ Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
 $instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
 Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
 
-# Step 8: Build the single-exe setup (NSIS self-extractor) and code-sign it.
+# Step 7: Build the single-exe setup (NSIS self-extractor) and code-sign it.
 # This is the ONE file end users download. It extracts the onedir installer to a
 # real directory under %LOCALAPPDATA% (not %TEMP%, preserving WDAC safety) and
 # auto-launches MicroClawInstaller.exe. Only this stub needs signing to clear
 # SmartScreen (it is the only file that carries Mark-of-the-Web on download).
-Write-Host "`n=== Step 8/8: Build single-exe setup + sign ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 7/7: Build single-exe setup + sign ===" -ForegroundColor Cyan
 $setupExe = "$root\dist\MicroClawSetup.exe"
 $nsiScript = "$root\installer\microclaw-setup.nsi"
 $setupIcon = "$root\deployer\assets\microclaw.ico"

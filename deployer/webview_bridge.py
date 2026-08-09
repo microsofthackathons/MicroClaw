@@ -3,11 +3,14 @@ import locale
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 import traceback
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog
@@ -25,6 +28,8 @@ from deployer.windows_setup import (
 _ACTIVE_WINDOW = None
 INSTALLER_WINDOW_WIDTH = 710
 INSTALLER_WINDOW_HEIGHT = 680
+UNINSTALL_CONFIRM_WINDOW_WIDTH = 500
+UNINSTALL_CONFIRM_WINDOW_HEIGHT = 250
 
 # Per-step retry budgets for the install pipeline (number of *additional*
 # attempts after the first). Network/download-bound steps get more attempts to
@@ -36,6 +41,59 @@ LOCAL_RETRIES = 1
 
 class InstallationCancelled(Exception):
     """Raised when the user intentionally cancels an interactive install step."""
+
+
+class WebUninstallConfirmationBridge:
+    def __init__(self, lang=None):
+        self._lang = _normalize_lang(lang) or _detect_lang()
+        self._window = None
+        self.confirmed = False
+
+    def attach_window(self, window):
+        self._window = window
+
+    def get_bootstrap(self):
+        strings = {
+            "en": {
+                "title": "Uninstall MicroClaw?",
+                "message": (
+                    "This will stop MicroClaw services and remove the app and its related files."
+                ),
+                "cancel": "Cancel",
+                "confirm": "Uninstall",
+            },
+            "zh": {
+                "title": "卸载 MicroClaw？",
+                "message": "这将停止 MicroClaw 服务，并删除应用及其相关文件。",
+                "cancel": "取消",
+                "confirm": "卸载",
+            },
+        }
+        return {"lang": self._lang, "strings": strings[self._lang]}
+
+    def write_html_file(self):
+        assets_dir = _assets_dir()
+        template = (assets_dir / "uninstall_template.html").read_text(encoding="utf-8")
+        bootstrap_json = json.dumps(self.get_bootstrap(), ensure_ascii=True)
+        html_path = assets_dir / "_uninstall.html"
+        html_path.write_text(
+            template.replace("__BOOTSTRAP_JSON__", bootstrap_json),
+            encoding="utf-8",
+        )
+        return html_path
+
+    def confirm(self):
+        self.confirmed = True
+        self._close()
+        return True
+
+    def cancel(self):
+        self._close()
+        return True
+
+    def _close(self):
+        if self._window is not None:
+            self._window.destroy()
 
 
 def _get_centered_window_position(width, height):
@@ -223,11 +281,11 @@ _STRINGS = {
             "compileCache": "正在预热启动缓存…",
             "searchProvider": "正在安装网络搜索插件…",
             "sandbox": "正在配置 AppContainer 沙箱…",
-            "weixin": "正在安装微信插件…",
             "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
             "shortcut": "正在创建桌面快捷方式…",
             "commitUpgrade": "正在完成 MicroClaw 更新…",
+            "startService": "正在启动 MicroClaw 服务…",
         },
         "carousel": [
             ["顺手", "不用再学提示词"],
@@ -277,11 +335,11 @@ _STRINGS = {
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
             "sandbox": "Provisioning AppContainer sandbox...",
-            "weixin": "Installing WeChat plugin...",
             "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
             "shortcut": "Creating desktop shortcut...",
             "commitUpgrade": "Finalizing MicroClaw update...",
+            "startService": "Starting MicroClaw service...",
         },
         "carousel": [
             ["Intuitive", "No prompt engineering needed"],
@@ -299,6 +357,7 @@ class WebInstallerBridge:
         self._settings_path = Path(settings_path or _app_settings_path())
         self._lang = _normalize_lang(lang) or _detect_lang(self._settings_path)
         self._state_lock = threading.Lock()
+        self._launched_desktop_process = None
         self._default_install_dir = str(DEFAULT_DESKTOP_DIR)
         self._default_allow_read = True
         self._state = {
@@ -532,11 +591,8 @@ class WebInstallerBridge:
                 NETWORK_RETRIES,
             ),
             (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
-            (90, steps["weixin"], ws.install_weixin_plugin, NETWORK_RETRIES),
-            (94, steps["verifyUpgrade"], ws.verify_openclaw_upgrade, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
-            (98, steps["commitUpgrade"], ws.commit_openclaw_upgrade, LOCAL_RETRIES),
         ]
 
     def _install_thread(self):
@@ -578,8 +634,39 @@ class WebInstallerBridge:
                 timing.finish("failed")
                 return
 
+        final_steps = [
+            (94, "verifyUpgrade", ws.begin_openclaw_upgrade_validation),
+            (99, "startService", lambda: self._start_and_validate_desktop(ws)),
+            (100, "commitUpgrade", ws.commit_openclaw_upgrade),
+        ]
+        for pct, progress_key, fn in final_steps:
+            label = _STRINGS[self._lang]["steps"][progress_key]
+            self._set_progress(pct, label, progress_key)
+            started_at = timing.start_step()
+            step_ok = self._run_step_with_retry(pct, label, fn, LOCAL_RETRIES, progress_key)
+            timing.record_step(label, started_at, "success" if step_ok else "failed")
+            if not step_ok:
+                self._stop_launched_desktop()
+                if not ws.rollback_openclaw_upgrade():
+                    with self._state_lock:
+                        self._state["error"] += " Automatic rollback also failed."
+                timing.finish("failed")
+                return
+
         timing.finish("success")
         self._finish_ok()
+
+    def _start_and_validate_desktop(self, ws):
+        transaction_id = ws.get_openclaw_upgrade_transaction_id()
+        if not transaction_id:
+            raise RuntimeError("OpenClaw upgrade transaction is unavailable")
+        ready_path = DEFAULT_DESKTOP_DIR / "upgrade" / f"desktop-ready-{transaction_id}.json"
+        ready_path.unlink(missing_ok=True)
+        if not self._launch_desktop(transaction_id):
+            raise RuntimeError("MicroClaw could not be launched")
+        if not self._wait_for_desktop_service(transaction_id):
+            raise RuntimeError("MicroClaw service did not become ready before timeout")
+        return ws.validate_running_gateway()
 
     def _run_step_with_retry(self, pct, label, fn, retries, progress_key=""):
         """Execute one install step, retrying transient failures.
@@ -775,10 +862,42 @@ class WebInstallerBridge:
                     "error": "",
                 }
             )
-        try:
-            self._launch_desktop()
-        except Exception:
-            pass
+
+    def _wait_for_desktop_service(self, transaction_id, timeout_seconds=180):
+        port = int(self._config.get("gateway.port", 18789))
+        deadline = time.monotonic() + timeout_seconds
+        url = f"http://127.0.0.1:{port}/health"
+        ready_path = DEFAULT_DESKTOP_DIR / "upgrade" / f"desktop-ready-{transaction_id}.json"
+        while time.monotonic() < deadline:
+            if not self.get_state()["running"]:
+                return False
+            process = self._launched_desktop_process
+            if process is not None and process.poll() is not None:
+                log_path = getattr(self, "_desktop_handoff_log_path", None)
+                self._logger.error(
+                    f"MicroClaw exited during service startup (code {process.returncode}); "
+                    f"desktop log: {log_path or 'unavailable'}"
+                )
+                return False
+            ready = False
+            try:
+                payload = json.loads(ready_path.read_text(encoding="utf-8"))
+                if payload.get("transactionId") == transaction_id and payload.get("error"):
+                    raise RuntimeError(f"MicroClaw startup rejected handoff: {payload['error']}")
+                ready = payload.get("transactionId") == transaction_id and (
+                    process is None or payload.get("pid") == process.pid
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+            try:
+                with urllib.request.urlopen(url, timeout=2) as response:
+                    if ready and response.status == 200:
+                        ready_path.unlink(missing_ok=True)
+                        return True
+            except (OSError, urllib.error.URLError):
+                pass
+            time.sleep(0.5)
+        return False
 
     def _finish_fail(self, msg):
         with self._state_lock:
@@ -800,7 +919,26 @@ class WebInstallerBridge:
                 }
             )
 
-    def _launch_desktop(self):
+    def _launch_desktop(self, transaction_id=None):
+        desktop_dir = Path.home() / ".microclaw"
+        exe = desktop_dir / "MicroClawDesktop.exe"
+        if transaction_id and exe.exists():
+            self._logger.info(f"Launching desktop executable for transaction {transaction_id}")
+            log_path = desktop_dir / "upgrade" / f"desktop-handoff-{transaction_id}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._desktop_handoff_log_path = log_path
+            environment = os.environ.copy()
+            environment["ELECTRON_ENABLE_LOGGING"] = "1"
+            with log_path.open("w", encoding="utf-8") as desktop_log:
+                self._launched_desktop_process = subprocess.Popen(
+                    [str(exe), "--post-install-transaction", transaction_id],
+                    creationflags=0x08000000,
+                    env=environment,
+                    stdout=desktop_log,
+                    stderr=subprocess.STDOUT,
+                )
+            return True
+
         # Try known desktop shortcut locations
         candidates = [
             Path.home() / "Desktop" / "MicroClawDesktop.lnk",
@@ -822,18 +960,35 @@ class WebInstallerBridge:
             if shortcut.exists():
                 self._logger.info(f"Launching desktop shortcut: {shortcut}")
                 os.startfile(str(shortcut))
-                return
+                return True
 
         # Fallback: try to launch the exe directly
-        desktop_dir = Path.home() / ".microclaw"
-        exe = desktop_dir / "MicroClawDesktop.exe"
         if exe.exists():
             self._logger.info(f"Launching exe directly: {exe}")
             os.startfile(str(exe))
+            return True
         else:
             self._logger.warn(
                 f"Could not find MicroClaw to launch. Checked: {[str(c) for c in candidates]}"
             )
+        return False
+
+    def _stop_launched_desktop(self):
+        process = self._launched_desktop_process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=15,
+                    creationflags=0x08000000,
+                )
+            else:
+                process.terminate()
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
 
 
 def _strip_motw(root: Path, logger: DeployerLogger) -> int:
@@ -859,9 +1014,15 @@ def _strip_motw(root: Path, logger: DeployerLogger) -> int:
     return stripped
 
 
-def run_web_installer():
+def run_web_installer(mode="install"):
+    if mode not in ("install", "uninstall-confirmation"):
+        raise ValueError(f"Unsupported web installer mode: {mode}")
     logger = DeployerLogger()
-    logger.step("Starting web installer")
+    logger.step(
+        "Starting web installer"
+        if mode == "install"
+        else "Starting uninstall confirmation"
+    )
     logger.debug(
         f"frozen={getattr(sys, 'frozen', False)} executable={sys.executable} cwd={Path.cwd()}"
     )
@@ -940,19 +1101,34 @@ def run_web_installer():
         logger.debug(traceback.format_exc())
         raise
 
-    bridge = WebInstallerBridge(logger=logger)
+    is_uninstall_confirmation = mode == "uninstall-confirmation"
+    bridge = (
+        WebUninstallConfirmationBridge()
+        if is_uninstall_confirmation
+        else WebInstallerBridge(logger=logger)
+    )
     html_path = bridge.write_html_file()
     icon_path = _assets_dir() / "microclaw.ico"
     logger.debug(f"installer html path: {html_path}")
     logger.debug(f"installer icon path: {icon_path}")
     try:
-        x, y = _get_centered_window_position(INSTALLER_WINDOW_WIDTH, INSTALLER_WINDOW_HEIGHT)
+        width = (
+            UNINSTALL_CONFIRM_WINDOW_WIDTH
+            if is_uninstall_confirmation
+            else INSTALLER_WINDOW_WIDTH
+        )
+        height = (
+            UNINSTALL_CONFIRM_WINDOW_HEIGHT
+            if is_uninstall_confirmation
+            else INSTALLER_WINDOW_HEIGHT
+        )
+        x, y = _get_centered_window_position(width, height)
         window = webview.create_window(
             "MicroClaw",
             url=html_path.as_uri(),
             js_api=bridge,
-            width=INSTALLER_WINDOW_WIDTH,
-            height=INSTALLER_WINDOW_HEIGHT,
+            width=width,
+            height=height,
             x=x,
             y=y,
             resizable=False,
@@ -1011,7 +1187,13 @@ def run_web_installer():
 
         icon_arg = str(icon_path) if icon_path.exists() else None
         webview.start(debug=False, icon=icon_arg)
+        if is_uninstall_confirmation:
+            return bridge.confirmed
     except Exception as exc:
         logger.error(f"web installer startup failed: {exc}")
         logger.debug(traceback.format_exc())
         raise
+
+
+def run_web_uninstall_confirmation():
+    return run_web_installer(mode="uninstall-confirmation")

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MicroClaw</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&amp;family=Noto+Sans+SC:wght@400;500;600;700&amp;display=swap"
+    />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --border: #e4e4e4;
+        --text-primary: #1a1a1a;
+        --text-secondary: #666666;
+        --danger: #c42b1c;
+        --danger-hover: #a4262c;
+        --font-sans:
+          "DM Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "SF Pro Display", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      button {
+        font: inherit;
+      }
+      .dialog {
+        width: 100%;
+        height: 100%;
+        padding: 28px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg);
+        display: flex;
+        flex-direction: column;
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        line-height: 1.3;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+      p {
+        margin: 14px 0 0;
+        color: var(--text-secondary);
+        font-size: 14px;
+        line-height: 1.55;
+        letter-spacing: 0;
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: auto;
+      }
+      button {
+        min-width: 92px;
+        height: 36px;
+        padding: 0 16px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #ffffff;
+        color: var(--text-primary);
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      button:focus-visible {
+        outline: 2px solid #0067c0;
+        outline-offset: 2px;
+      }
+      .confirm {
+        border-color: var(--danger);
+        background: var(--danger);
+        color: #ffffff;
+      }
+      .confirm:hover {
+        border-color: var(--danger-hover);
+        background: var(--danger-hover);
+      }
+    </style>
+  </head>
+  <body>
+    <main
+      class="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="title"
+      aria-describedby="message"
+    >
+      <h1 id="title"></h1>
+      <p id="message"></p>
+      <div class="actions">
+        <button id="cancel" type="button"></button>
+        <button id="confirm" class="confirm" type="button"></button>
+      </div>
+    </main>
+    <script>
+      const bootstrap = __BOOTSTRAP_JSON__;
+      document.documentElement.lang = bootstrap.lang === "zh" ? "zh-CN" : "en-US";
+      document.getElementById("title").textContent = bootstrap.strings.title;
+      document.getElementById("message").textContent = bootstrap.strings.message;
+      document.getElementById("cancel").textContent = bootstrap.strings.cancel;
+      document.getElementById("confirm").textContent = bootstrap.strings.confirm;
+      document.getElementById("cancel").onclick = () => window.pywebview.api.cancel();
+      document.getElementById("confirm").onclick = () => window.pywebview.api.confirm();
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") window.pywebview.api.cancel();
+      });
+      document.getElementById("cancel").focus();
+    </script>
+  </body>
+</html>

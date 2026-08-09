@@ -6,6 +6,7 @@ import router from "./router";
 import App from "./App.vue";
 import "./styles/global.css";
 import { createBrowserOpenClawMock } from "./browser-openclaw";
+import { loadWebFontsAfterPageLoad } from "./web-fonts";
 
 // Browser dev mode: mock window.openclaw so the app bypasses gateway/IPC checks
 const isBrowserDev = import.meta.env.DEV && !window.openclaw;
@@ -19,6 +20,7 @@ app.use(pinia);
 app.use(router);
 app.use(ElementPlus);
 app.mount("#app");
+loadWebFontsAfterPageLoad();
 
 // In browser dev mode, mark gateway ready after pinia stores are initialized
 if (isBrowserDev) {

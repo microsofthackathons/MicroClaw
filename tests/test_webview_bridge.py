@@ -4,7 +4,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from deploy import DeployerApp, main
+from deploy import DeployerApp, _run_installer, main, select_installer_font_family
 from deployer.webview_bridge import (
     _STRINGS,
     InstallationCancelled,
@@ -111,6 +111,28 @@ class WebInstallerBridgeTests(unittest.TestCase):
         settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self.assertEqual(settings, {"themeMode": "dark", "language": "zh-CN"})
 
+    def test_handoff_launches_app_and_validates_its_gateway(self):
+        setup = unittest.mock.Mock()
+        setup.get_openclaw_upgrade_transaction_id.return_value = "20260720T000000Z-1234abcd"
+        setup.validate_running_gateway.return_value = True
+        self.bridge._launch_desktop = unittest.mock.Mock(return_value=True)
+        self.bridge._wait_for_desktop_service = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.bridge._start_and_validate_desktop(setup))
+
+        self.bridge._launch_desktop.assert_called_once_with("20260720T000000Z-1234abcd")
+        self.bridge._wait_for_desktop_service.assert_called_once_with(
+            "20260720T000000Z-1234abcd"
+        )
+        setup.validate_running_gateway.assert_called_once_with()
+
+    def test_service_wait_stops_when_launched_app_exits(self):
+        process = unittest.mock.Mock(pid=4321)
+        process.poll.return_value = 1
+        self.bridge._launched_desktop_process = process
+
+        self.assertFalse(self.bridge._wait_for_desktop_service("20260720T000000Z-1234abcd"))
+
     def test_failed_install_does_not_persist_language(self):
         self.bridge.set_language("zh")
 
@@ -147,7 +169,13 @@ class WebInstallerBridgeTests(unittest.TestCase):
         installer = (root / "deployer" / "assets" / "installer_template.html").read_text(
             encoding="utf-8"
         )
+        uninstaller = (root / "deployer" / "assets" / "uninstall_template.html").read_text(
+            encoding="utf-8"
+        )
         app_styles = (root / "desktop" / "renderer" / "src" / "styles" / "global.css").read_text(
+            encoding="utf-8"
+        )
+        app_fonts = (root / "desktop" / "renderer" / "src" / "web-fonts.ts").read_text(
             encoding="utf-8"
         )
         font_stack = (
@@ -156,7 +184,18 @@ class WebInstallerBridgeTests(unittest.TestCase):
         )
 
         self.assertIn(font_stack, " ".join(installer.split()))
+        self.assertIn(font_stack, " ".join(uninstaller.split()))
         self.assertIn(font_stack, " ".join(app_styles.split()))
+        for source in (installer, uninstaller, app_fonts):
+            self.assertIn("DM+Sans:ital,opsz,wght@0,9..40,400", source)
+            self.assertIn("Noto+Sans+SC:wght@400;500;600;700", source)
+
+    def test_legacy_installer_uses_matching_bilingual_font_preferences(self):
+        available = {"DM Sans", "Noto Sans SC", "Microsoft YaHei UI", "Segoe UI"}
+
+        self.assertEqual(select_installer_font_family(available, "en"), "DM Sans")
+        self.assertEqual(select_installer_font_family(available, "zh"), "Noto Sans SC")
+        self.assertEqual(select_installer_font_family({"Segoe UI"}, "zh"), "Segoe UI")
 
     def test_prepare_upgrade_cancels_without_stopping_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=None)
@@ -228,14 +267,50 @@ class WebInstallerBridgeTests(unittest.TestCase):
     def test_uninstaller_check_exits_without_ui_or_elevation(self):
         with (
             unittest.mock.patch("deploy._setup_windows_taskbar") as taskbar,
-            unittest.mock.patch("deploy._ensure_admin") as elevate,
             unittest.mock.patch("deploy._run_installer") as run_installer,
         ):
             self.assertEqual(main(["--check-uninstaller"]), 0)
 
         taskbar.assert_not_called()
-        elevate.assert_not_called()
         run_installer.assert_not_called()
+
+    def test_installed_apps_uninstall_stays_in_current_user_context(self):
+        with (
+            unittest.mock.patch("deploy._setup_windows_taskbar") as taskbar,
+            unittest.mock.patch("deploy._run_installer") as run_installer,
+        ):
+            self.assertEqual(main(["--uninstall"]), 0)
+
+        taskbar.assert_called_once_with()
+        run_installer.assert_called_once_with(auto_uninstall=True, use_legacy_ui=False)
+
+    def test_web_uninstall_consent_starts_confirmed_progress_ui(self):
+        app = unittest.mock.Mock()
+        with (
+            unittest.mock.patch(
+                "deploy.run_web_uninstall_confirmation",
+                return_value=True,
+            ) as confirm,
+            unittest.mock.patch("deploy.DeployerApp", return_value=app) as app_type,
+        ):
+            _run_installer(auto_uninstall=True, use_legacy_ui=False)
+
+        confirm.assert_called_once_with()
+        app_type.assert_called_once_with(auto_uninstall=True, uninstall_confirmed=True)
+        app.mainloop.assert_called_once_with()
+
+    def test_cancelled_web_uninstall_does_not_start_progress_ui(self):
+        with (
+            unittest.mock.patch(
+                "deploy.run_web_uninstall_confirmation",
+                return_value=False,
+            ) as confirm,
+            unittest.mock.patch("deploy.DeployerApp") as app_type,
+        ):
+            _run_installer(auto_uninstall=True, use_legacy_ui=False)
+
+        confirm.assert_called_once_with()
+        app_type.assert_not_called()
 
     def test_legacy_pipeline_installs_uninstaller_before_shortcuts(self):
         app = object.__new__(DeployerApp)
@@ -287,8 +362,20 @@ class WebInstallerBridgeTests(unittest.TestCase):
             labels = self._step_labels(steps)
             search_index = labels.index("Installing web search provider...")
             self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
-            self.assertLess(search_index, labels.index("Validating MicroClaw update..."))
+            self.assertLess(search_index, labels.index("Installing uninstaller..."))
             self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
+
+    def test_both_installers_exclude_wechat_installation(self):
+        setup = unittest.mock.Mock()
+        app = object.__new__(DeployerApp)
+        app._prepare_upgrade = unittest.mock.Mock()
+        app._ensure_node = unittest.mock.Mock()
+        app._ensure_openclaw = unittest.mock.Mock()
+        app._copy_bundled_assets = unittest.mock.Mock()
+        app._write_env_file = unittest.mock.Mock()
+
+        for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
+            self.assertNotIn(setup.install_weixin_plugin, [step[2] for step in steps])
 
 
 if __name__ == "__main__":

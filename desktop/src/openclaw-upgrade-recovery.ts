@@ -45,6 +45,11 @@ export type UpgradeRecoveryOptions = {
   claimLock?: (lockPath: string, processIsAlive: (pid: number) => boolean) => ClaimedLock;
 };
 
+export type InstallerOwnedUpgradeOptions = Pick<
+  UpgradeRecoveryOptions,
+  "expectedStateDir" | "trustedPrefixes" | "processIsAlive"
+>;
+
 export class UpgradeInProgressError extends Error {}
 
 function canonicalPath(value: string): string {
@@ -74,12 +79,13 @@ function strictChildOf(candidate: string, root: string): boolean {
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return true;
     return false;
   }
 }
@@ -195,13 +201,30 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
   }
 }
 
+function readLockObject(lockPath: string): Record<string, unknown> | null {
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(lockPath, "r");
+    const buffer = Buffer.alloc(1024);
+    const length = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const value: unknown = JSON.parse(buffer.subarray(0, length).toString("utf-8").trim());
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
 function defaultClaimLock(lockPath: string, isProcessAlive: (pid: number) => boolean): ClaimedLock {
   if (process.platform !== "win32") {
     throw new UpgradeInProgressError("automatic upgrade recovery is only supported on Windows");
   }
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   if (fs.existsSync(lockPath)) {
-    const payload = readJsonObject(lockPath);
+    const payload = readLockObject(lockPath);
     const ownerPid = payload?.owner_pid;
     if (typeof ownerPid === "number" && isProcessAlive(ownerPid)) {
       throw new UpgradeInProgressError(`installer process ${ownerPid} is still upgrading OpenClaw`);
@@ -293,6 +316,51 @@ function persistManifest(manifestPath: string, manifest: UpgradeManifest): void 
     atomicJsonWrite(backupManifest, manifest);
   }
   atomicJsonWrite(manifestPath, manifest);
+}
+
+export function validateInstallerOwnedUpgrade(
+  microclawRoot: string,
+  transactionId: string,
+  options: InstallerOwnedUpgradeOptions = {},
+): boolean {
+  const manifestPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.json");
+  const lockPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.lock");
+  if (!fs.existsSync(manifestPath) || !fs.existsSync(lockPath)) return false;
+
+  try {
+    const manifest = parseManifest(manifestPath);
+    const expectedStateDir =
+      options.expectedStateDir ?? path.join(process.env.USERPROFILE || "", ".openclaw");
+    validateManifest(
+      manifest,
+      microclawRoot,
+      expectedStateDir,
+      options.trustedPrefixes ?? defaultTrustedPrefixes(),
+    );
+    const lock = readLockObject(lockPath);
+    const processAlive = options.processIsAlive ?? processIsAlive;
+    if (manifest.phase !== "verifying") {
+      throw new Error(`transaction phase is ${manifest.phase}, expected verifying`);
+    }
+    if (manifest.transaction_id !== transactionId) {
+      throw new Error("manifest transaction ID does not match launch argument");
+    }
+    if (lock?.transaction_id !== transactionId) {
+      throw new Error("lock transaction ID does not match launch argument");
+    }
+    if (lock?.owner_pid !== manifest.owner_pid) {
+      throw new Error("lock owner PID does not match manifest owner");
+    }
+    if (!processAlive(manifest.owner_pid)) {
+      throw new Error(`installer process ${manifest.owner_pid} is not observable`);
+    }
+    return true;
+  } catch (error) {
+    console.error(
+      `[upgrade] Installer handoff rejected: ${error instanceof Error ? error.message : error}`,
+    );
+    return false;
+  }
 }
 
 export function recoverInterruptedOpenClawUpgrade(

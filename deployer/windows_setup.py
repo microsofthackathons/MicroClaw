@@ -397,7 +397,6 @@ class WindowsSetup:
         self._rollback_actions: list[tuple[str, Callable]] = []
         self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
         self._openclaw_upgrade_required = True
-        self._weixin_plugin_mutation_required = False
         self._weixin_policy_snapshot: WeixinPluginPolicy | None = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
@@ -405,7 +404,6 @@ class WindowsSetup:
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
         self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
-        self.weixin_plugin_enabled = True  # Install by default
 
         # Select mirror: respect explicit user override (npm.registry config)
         # if set; otherwise probe all candidates in parallel and pick the
@@ -1854,7 +1852,6 @@ class WindowsSetup:
     def prepare_openclaw_upgrade(self) -> bool:
         """Block active gateways and snapshot the current package and state."""
         self._openclaw_upgrade_required = True
-        self._weixin_plugin_mutation_required = False
         self._weixin_policy_snapshot = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
@@ -1869,7 +1866,6 @@ class WindowsSetup:
         if same_version:
             self.install_prefix = installation.prefix
             self._openclaw_upgrade_required = False
-            self._weixin_plugin_mutation_required = self._same_version_weixin_requires_full_backup()
         prefix = (
             installation.prefix if installation is not None else self._choose_npm_install_prefix()
         )
@@ -1886,7 +1882,7 @@ class WindowsSetup:
         try:
             backup_mode = (
                 UpgradeBackupMode.FULL
-                if self._openclaw_upgrade_required or self._weixin_plugin_mutation_required
+                if self._openclaw_upgrade_required
                 else UpgradeBackupMode.MANAGED_STATE
             )
             transaction = OpenClawUpgradeTransaction.create(
@@ -1906,11 +1902,6 @@ class WindowsSetup:
                 self.log.info(
                     f"OpenClaw {OPENCLAW_TARGET_VERSION} is already installed; "
                     "creating a lightweight managed-state rollback point."
-                )
-            elif same_version:
-                self.log.info(
-                    "The bundled WeChat plugin requires reconciliation; "
-                    "creating a full rollback point."
                 )
             transaction.backup()
             return True
@@ -2445,75 +2436,64 @@ class WindowsSetup:
         )
         return result.returncode == 0 and "microclaw-sandbox-ok" in result.stdout
 
-    def verify_openclaw_upgrade(self) -> bool:
-        if not self._openclaw_upgrade_required:
-            transaction = self._openclaw_transaction
-            if transaction is not None:
-                transaction.mark_verifying()
+    def get_openclaw_upgrade_transaction_id(self) -> str | None:
+        transaction = self._openclaw_transaction
+        return transaction.manifest.transaction_id if transaction is not None else None
 
-            def record_fast_path(name: str, passed: bool) -> None:
-                if transaction is not None:
-                    transaction.record_validation(name, passed)
-
-            version_ok = self._validate_installed_version()
-            record_fast_path("version", version_ok)
-            if not version_ok:
-                self.log.error("OpenClaw validation failed: version")
-                return False
-
-            process = None
-            checks = [("health", self._validate_gateway_health)]
-            if getattr(self, "_weixin_plugin_mutation_required", False):
-                checks.append(("weixin-plugin", self._validate_weixin_plugin))
-            checks.append(("appcontainer", self._validate_appcontainer_smoke))
-            try:
-                process = self._start_validation_gateway()
-                for name, check in checks:
-                    passed = bool(check())
-                    record_fast_path(name, passed)
-                    if not passed:
-                        raise RuntimeError(f"OpenClaw validation failed: {name}")
-                self.log.info("OpenClaw version unchanged; skipping deep RPC upgrade validation.")
-                return True
-            except Exception as error:
-                self.log.error(str(error))
-                return False
-            finally:
-                self._stop_validation_gateway(process)
-
+    def begin_openclaw_upgrade_validation(self) -> bool:
         transaction = self._openclaw_transaction
         if transaction is not None:
             transaction.mark_verifying()
+
+        checks = [
+            ("version", self._validate_installed_version),
+            ("appcontainer", self._validate_appcontainer_smoke),
+        ]
+        for name, check in checks:
+            passed = bool(check())
+            if transaction is not None:
+                transaction.record_validation(name, passed)
+            if not passed:
+                self.log.error(f"OpenClaw validation failed: {name}")
+                return False
+        return True
+
+    def validate_running_gateway(self) -> bool:
+        transaction = self._openclaw_transaction
 
         def record(name: str, passed: bool) -> None:
             if transaction is not None:
                 transaction.record_validation(name, passed)
 
-        version_ok = self._validate_installed_version()
-        record("version", version_ok)
-        if not version_ok:
-            self.log.error("OpenClaw validation failed: version")
+        checks = [("health", self._validate_gateway_health)]
+        if self._openclaw_upgrade_required:
+            checks.extend(
+                [
+                    ("v4-handshake", self._validate_gateway_status),
+                    ("config.get", lambda: self._validate_gateway_rpc("config.get")),
+                    ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
+                    ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
+                    ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
+                ]
+            )
+        for name, check in checks:
+            passed = bool(check())
+            record(name, passed)
+            if not passed:
+                self.log.error(f"OpenClaw validation failed: {name}")
+                return False
+        if not self._openclaw_upgrade_required:
+            self.log.info("OpenClaw version unchanged; skipping deep RPC upgrade validation.")
+        return True
+
+    def verify_openclaw_upgrade(self) -> bool:
+        if not self.begin_openclaw_upgrade_validation():
             return False
 
         process = None
-        checks = [
-            ("health", self._validate_gateway_health),
-            ("v4-handshake", self._validate_gateway_status),
-            ("config.get", lambda: self._validate_gateway_rpc("config.get")),
-            ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
-            ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
-            ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
-            ("weixin-plugin", self._validate_weixin_plugin),
-            ("appcontainer", self._validate_appcontainer_smoke),
-        ]
         try:
             process = self._start_validation_gateway()
-            for name, check in checks:
-                passed = bool(check())
-                record(name, passed)
-                if not passed:
-                    raise RuntimeError(f"OpenClaw validation failed: {name}")
-            return True
+            return self.validate_running_gateway()
         except Exception as error:
             self.log.error(str(error))
             return False
@@ -2686,6 +2666,21 @@ class WindowsSetup:
         state_dir = Path.home() / ".openclaw"
         cache_dir = state_dir / "compile-cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+        version_marker = cache_dir / ".microclaw-version"
+        try:
+            marker_matches = version_marker.read_text(encoding="utf-8").strip() == (
+                OPENCLAW_TARGET_VERSION
+            )
+        except OSError:
+            marker_matches = False
+        cache_has_files = any(
+            path.is_file() and path != version_marker for path in cache_dir.rglob("*")
+        )
+        if not self._openclaw_upgrade_required and cache_has_files:
+            if not marker_matches:
+                version_marker.write_text(OPENCLAW_TARGET_VERSION, encoding="utf-8")
+            self.log.info("  Compile cache is current; skipping warmup")
+            return True
 
         env = self._get_env()
         env["NODE_COMPILE_CACHE"] = str(cache_dir)
@@ -2738,6 +2733,7 @@ class WindowsSetup:
                 pass
 
             cached = sum(1 for _ in cache_dir.glob("**/*") if _.is_file())
+            version_marker.write_text(OPENCLAW_TARGET_VERSION, encoding="utf-8")
             self.log.success(f"Compile cache warmed up ({cached} files in {cache_dir})")
             return True
         except Exception as e:
@@ -2807,10 +2803,20 @@ class WindowsSetup:
             if not skill_src.is_dir():
                 continue
             skill_dest = dest_dir / skill_name
+            preserved_officecli = None
             try:
+                if skill_name == "officecli":
+                    existing_officecli = skill_dest / "bin" / "officecli.exe"
+                    if existing_officecli.is_file():
+                        preserved_officecli = existing_officecli.read_bytes()
                 if skill_dest.exists():
                     shutil.rmtree(skill_dest)
                 shutil.copytree(skill_src, skill_dest)
+                if preserved_officecli is not None:
+                    restored_officecli = skill_dest / "bin" / "officecli.exe"
+                    if not restored_officecli.exists():
+                        restored_officecli.parent.mkdir(parents=True, exist_ok=True)
+                        restored_officecli.write_bytes(preserved_officecli)
                 deployed += 1
                 self.log.info(f"  Deployed managed skill: {skill_name}")
             except Exception as e:
@@ -3584,6 +3590,37 @@ class WindowsSetup:
         env["OPENCLAW_STATE_DIR"] = str(state_dir)
         return openclaw_cmd, env
 
+    def _parallel_plugin_is_installed_locally(self, state_dir: Path) -> bool:
+        projects_dir = state_dir / "npm" / "projects"
+        if not projects_dir.is_dir():
+            return False
+        try:
+            packages = projects_dir.glob(
+                "*/node_modules/@openclaw/parallel-plugin/package.json"
+            )
+            for package_path in packages:
+                plugin_dir = package_path.parent
+                manifest_path = plugin_dir / "openclaw.plugin.json"
+                package = json.loads(package_path.read_text(encoding="utf-8"))
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                openclaw_metadata = package.get("openclaw", {})
+                extensions = openclaw_metadata.get("runtimeExtensions") or openclaw_metadata.get(
+                    "extensions", []
+                )
+                if (
+                    package.get("name") == _PARALLEL_PLUGIN_PACKAGE
+                    and manifest.get("id") == _PARALLEL_PLUGIN_ID
+                    and "parallel-free"
+                    in manifest.get("contracts", {}).get("webSearchProviders", [])
+                    and isinstance(extensions, list)
+                    and extensions
+                    and all((plugin_dir / str(path)).is_file() for path in extensions)
+                ):
+                    return True
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return False
+
     @staticmethod
     def _create_process_lifetime_job(process: subprocess.Popen) -> _WindowsKillOnCloseJob:
         return _WindowsKillOnCloseJob.attach(process)
@@ -3625,6 +3662,15 @@ class WindowsSetup:
             self.log.info(
                 f"  Web search provider is {provider or 'not configured'}; no plugin needed"
             )
+            return True
+
+        plugin_entry = config.get("plugins", {}).get("entries", {}).get(_PARALLEL_PLUGIN_ID)
+        if (
+            isinstance(plugin_entry, dict)
+            and plugin_entry.get("enabled") is True
+            and self._parallel_plugin_is_installed_locally(state_dir)
+        ):
+            self.log.info("  Parallel web search plugin is already installed")
             return True
 
         cli_context = self._weixin_cli_context(state_dir)
@@ -3673,11 +3719,15 @@ class WindowsSetup:
 
         state_dir = Path.home() / ".openclaw"
         existing = state_dir / "extensions" / "openclaw-weixin"
+        prior_policy = getattr(self, "_weixin_policy_snapshot", None)
+        if self._weixin_registration_verified and prior_policy is not None:
+            self.log.info("  微信插件已是内置版本且官方注册完整，跳过重复安装")
+            return True
+
         cli_context = self._weixin_cli_context(state_dir)
         if cli_context is None:
             return False
         openclaw_cmd, env = cli_context
-        prior_policy = getattr(self, "_weixin_policy_snapshot", None)
         if getattr(self, "_weixin_policy_restore_pending", False):
             if prior_policy is None:
                 self.log.error("插件策略恢复状态丢失，无法安全重试")
@@ -3814,11 +3864,12 @@ class WindowsSetup:
             )
 
     def create_desktop_shortcut(self) -> bool:
-        """Create best-effort shortcuts and required uninstall registration."""
+        """Create app shortcuts and required uninstall registration."""
         self.log.step("Creating desktop shortcut…")
 
         desktop = self._get_desktop_path()
         desktop_exe = self._find_desktop_exe()
+        self._remove_legacy_uninstall_shortcuts(desktop)
 
         if desktop_exe:
             self._create_lnk_shortcut(desktop, desktop_exe)
@@ -3827,62 +3878,15 @@ class WindowsSetup:
             self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
             self._create_url_shortcut(desktop)
 
-        self._create_uninstall_shortcut(desktop)
         return self._register_installed_app(desktop_exe)
 
-    def _create_uninstall_shortcut(self, desktop: Path) -> bool:
-        """Create an uninstall shortcut for the persisted installer."""
-        shortcut_path = desktop / "Uninstall MicroClaw.lnk"
-        openclaw_dir = Path.home() / ".openclaw"
-        installer_dest = openclaw_dir / "MicroClawInstaller.exe"
-
-        try:
-            validate_uninstaller_bundle(openclaw_dir)
-        except UninstallerBundleError as error:
-            self.log.error(f"无法创建卸载快捷方式: {error}")
-            return False
-
-        try:
-            ico_path = self._resolve_uninstall_icon()
-            ico_arg = ""
-            if ico_path:
-                ico_arg = f'$s.IconLocation = "{ico_path},0";'
-
-            # Use single-quoted paths in PowerShell to avoid interpolation issues,
-            # then cast to [string] for CreateShortcut which expects a string argument.
-            ps_script = (
-                f"$ws = New-Object -ComObject WScript.Shell;"
-                f"$s = $ws.CreateShortcut([string]'{shortcut_path}');"
-                f"$s.TargetPath = [string]'{installer_dest}';"
-                f'$s.Arguments = "--uninstall";'
-                f"$s.WorkingDirectory = [string]'{installer_dest.parent}';"
-                f"$s.Description = 'Uninstall MicroClaw';"
-                f"{ico_arg}"
-                f"$s.Save()"
-            )
-            import base64
-
-            encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
-            r = self._run(
-                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
-
-            if shortcut_path.exists():
-                self.log.success(f"卸载快捷方式已创建: {shortcut_path}")
-                return True
-
-            self.log.warn(
-                f"卸载快捷方式创建失败 (stdout={r.stdout.strip()}, stderr={r.stderr.strip()}, rc={r.returncode})"
-            )
-            return False
-        except Exception as e:
-            self.log.warn(f"创建卸载快捷方式异常: {e}")
-            return False
+    def _remove_legacy_uninstall_shortcuts(self, desktop: Path) -> None:
+        """Remove obsolete desktop uninstall shortcuts from earlier installs."""
+        for name in ("Uninstall MicroClaw.lnk", "卸载 MicroClaw.lnk"):
+            try:
+                (desktop / name).unlink(missing_ok=True)
+            except OSError as error:
+                self.log.warn(f"无法删除旧的桌面卸载快捷方式 {name}: {error}")
 
     def _get_desktop_path(self) -> Path:
         """Resolve the user's Desktop folder path."""
@@ -4150,6 +4154,36 @@ class WindowsSetup:
 
     # ────────────────────── AppContainer ──────────────────────
 
+    def _appcontainer_access_is_sufficient(
+        self,
+        launcher: Path,
+        container_name: str,
+        directory: str,
+        access: str,
+    ) -> bool:
+        try:
+            result = self._run(
+                [
+                    str(launcher),
+                    "check-acl",
+                    "--name",
+                    container_name,
+                    "--dir",
+                    directory,
+                    "--access",
+                    access,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return False
+            payload = json.loads(result.stdout)
+            return payload.get("sufficient") is True
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+            return False
+
     def provision_appcontainer(self) -> bool:
         """Provision AppContainer sandbox for MicroClaw (Windows 10 2004+).
 
@@ -4225,6 +4259,14 @@ class WindowsSetup:
         grant_failures = []
         for dir_path, access in dirs_to_grant:
             if Path(dir_path).exists():
+                if self._appcontainer_access_is_sufficient(
+                    launcher,
+                    container_name,
+                    dir_path,
+                    access,
+                ):
+                    self.log.info(f"  AppContainer ACL already configured: {dir_path}")
+                    continue
                 try:
                     subprocess.run(
                         [
@@ -5118,8 +5160,43 @@ class WindowsSetup:
         if not dirs:
             return
 
+        missing = list(dirs)
+        try:
+            result = self._run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "@((Get-MpPreference).ExclusionPath) | ConvertTo-Json -Compress",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                parsed = json.loads(result.stdout or "[]")
+                current = [parsed] if isinstance(parsed, str) else parsed
+                normalized = {
+                    os.path.normcase(os.path.normpath(str(path)))
+                    for path in current
+                    if path
+                }
+                missing = [
+                    path
+                    for path in dirs
+                    if os.path.normcase(os.path.normpath(str(path))) not in normalized
+                ]
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+            pass
+
+        if not missing:
+            self.log.info("  Windows Defender exclusions already configured")
+            return
+
         # Add-MpPreference always requires admin — elevate directly
-        safe_paths = ",".join(f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in dirs)
+        safe_paths = ",".join(
+            f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing
+        )
         try:
             self._run(
                 [
@@ -5133,7 +5210,7 @@ class WindowsSetup:
                 capture_output=True,
                 timeout=30,
             )
-            for d in dirs:
+            for d in missing:
                 self.log.info(f"  Defender exclusion added: {d}")
         except Exception as e:
             self.log.warning(f"  Defender 排除项添加失败（需要管理员权限）: {e}")
