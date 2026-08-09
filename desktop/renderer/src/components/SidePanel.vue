@@ -860,6 +860,7 @@ html.dark .sp-usage-card {
 
 .sp-section-header {
   width: 100%;
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -870,6 +871,7 @@ html.dark .sp-usage-card {
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
+  line-height: 20px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
@@ -907,15 +909,17 @@ html.dark .sp-section-header:hover {
 /* ── Chat items ── */
 .sp-chat-item {
   width: 100%;
+  min-height: 32px;
   display: flex;
   align-items: center;
   text-align: left;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   border-radius: 8px;
   font-size: 13px;
+  line-height: 18px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
@@ -933,7 +937,6 @@ html.dark .sp-chat-item:hover {
 .sp-chat-item.selected {
   background: #f0ece7;
   color: var(--text-primary);
-  font-weight: 600;
 }
 
 html.dark .sp-chat-item.selected {
@@ -988,6 +991,7 @@ html.dark .sp-chat-item.selected {
 /* ── Menu items ── */
 .sp-menu-item {
   width: 100%;
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -997,6 +1001,7 @@ html.dark .sp-chat-item.selected {
   color: var(--text-secondary);
   border-radius: 8px;
   font-size: 14px;
+  line-height: 20px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
@@ -1016,7 +1021,6 @@ html.dark .sp-chat-item.selected {
 .sp-menu-item.active {
   background: #f0ece7;
   color: var(--text-primary);
-  font-weight: 600;
 }
 
 html.dark .sp-menu-item:hover {
