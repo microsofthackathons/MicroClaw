@@ -329,6 +329,9 @@ interface OpenClawAPI {
   dialog: {
     openFiles(currentTotalBytes?: number): Promise<OpenFilesResult>;
   };
+  logs: {
+    exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
+  };
   sandbox: {
     getStatus(): Promise<{
       available: boolean;

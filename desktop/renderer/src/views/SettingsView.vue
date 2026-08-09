@@ -84,6 +84,20 @@
             </div>
           </div>
         </div>
+
+        <div class="sub-label">{{ t("settings.logs") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.gatewayLog") }}</span>
+            <el-button
+              size="small"
+              :loading="exportingGatewayLogs"
+              :disabled="gateway.logs.length === 0"
+              @click="exportGatewayLogs"
+              >{{ t("settings.export") }}</el-button
+            >
+          </div>
+        </div>
       </div>
 
       <!-- Usage -->
@@ -339,24 +353,6 @@
           </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
-      </div>
-
-      <!-- Gateway -->
-      <div v-if="activeSection === 'gateway'" class="section">
-        <div class="section-label-row">
-          <span class="section-label">{{ t("settings.gatewayLog") }}</span>
-          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
-        </div>
-        <div class="gateway-log-box">
-          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
-            {{ t("settings.noLogs") }}
-          </div>
-          <div v-else class="gateway-log-content" ref="logBoxRef">
-            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
-              {{ line }}
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- Channels -->
@@ -833,7 +829,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
+import { ref, reactive, onMounted, onUnmounted, watch, computed } from "vue";
 import { useRoute } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -864,20 +860,8 @@ const gateway = useGatewayStore();
 const chatStore = useChatStore();
 const isDev = import.meta.env.DEV;
 
-const logBoxRef = ref<HTMLElement | null>(null);
-
-watch(
-  () => gateway.logs.length,
-  () => {
-    nextTick(() => {
-      if (logBoxRef.value) {
-        logBoxRef.value.scrollTop = logBoxRef.value.scrollHeight;
-      }
-    });
-  },
-);
-
 const activeSection = ref("general");
+const exportingGatewayLogs = ref(false);
 const updateChecking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 
@@ -916,7 +900,6 @@ const VALID_SECTIONS = [
   "general",
   "usage",
   "models",
-  "gateway",
   "channels",
   ...(isDev ? ["skills"] : []),
   "security",
@@ -926,7 +909,7 @@ const VALID_SECTIONS = [
 
 function normalizeSection(section: unknown) {
   if (section === "theme") return "general";
-  if (section === "workspace") return "gateway";
+  if (section === "workspace") return "general";
   return typeof section === "string" && VALID_SECTIONS.includes(section) ? section : null;
 }
 
@@ -1378,7 +1361,6 @@ const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h3M10 5h7M3 10h7M14 10h3M3 15h2M9 15h8"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>`,
   usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
   models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
-  gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
   channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
   skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3.5a2.5 2.5 0 0 1 5 0v2h2a2.5 2.5 0 1 1 0 5h-2v2a2.5 2.5 0 1 1-5 0v-2h-2a2.5 2.5 0 1 1 0-5h2v-2z"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
@@ -1390,7 +1372,6 @@ const menuItems = computed(() => [
   { id: "general", label: t("settings.menu.general"), color: "#636366", svg: svg.general },
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
-  { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
   { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
   ...(isDev
     ? [{ id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills }]
@@ -1878,6 +1859,21 @@ async function restartGateway() {
   }
 }
 
+async function exportGatewayLogs() {
+  if (exportingGatewayLogs.value || gateway.logs.length === 0) return;
+  exportingGatewayLogs.value = true;
+  try {
+    const result = await window.openclaw.logs.exportGateway([...gateway.logs]);
+    if (!result.canceled) {
+      ElMessage.success(t("settings.gatewayLogsExported"));
+    }
+  } catch (err: any) {
+    ElMessage.error(t("settings.gatewayLogsExportFailed", { error: err.message }));
+  } finally {
+    exportingGatewayLogs.value = false;
+  }
+}
+
 async function clearChatHistory() {
   try {
     await ElMessageBox.confirm(t("settings.clearHistoryConfirm"), t("settings.confirm"), {
@@ -2347,38 +2343,6 @@ async function clearChatHistory() {
 
 .provider-link:hover {
   opacity: 0.8;
-}
-
-.gateway-log-box {
-  margin-top: 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  height: 240px;
-  overflow: hidden;
-  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
-  font-size: 12px;
-}
-
-.gateway-log-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-}
-
-.gateway-log-content {
-  height: 100%;
-  overflow-y: auto;
-  padding: 10px 14px;
-}
-
-.gateway-log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.6;
-  color: var(--text-primary);
 }
 
 .settings-view :deep(.el-input__inner),
