@@ -12,6 +12,7 @@ import {
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
 import { createTray, destroyTray } from "./tray";
+import { showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
@@ -1578,6 +1579,7 @@ function _getRendererURL(): string {
 // Window creation
 // ---------------------------------------------------------------------------
 function createMainWindow(): BrowserWindow {
+  const startMinimized = settingsStore.get("startMinimized");
   const win = new BrowserWindow({
     width: LOADING_WINDOW_WIDTH,
     height: LOADING_WINDOW_HEIGHT,
@@ -1585,7 +1587,8 @@ function createMainWindow(): BrowserWindow {
     center: true,
     title: "MicroClaw",
     icon: APP_ICON_PATH,
-    show: !settingsStore.get("startMinimized"),
+    show: false,
+    skipTaskbar: startMinimized,
     titleBarStyle: "hidden",
     transparent: true,
     backgroundColor: TRANSPARENT_WINDOW_BACKGROUND,
@@ -1631,20 +1634,11 @@ function createMainWindow(): BrowserWindow {
   win.on("maximize", () => win.webContents.send("window:maximize-change", true));
   win.on("unmaximize", () => win.webContents.send("window:maximize-change", false));
 
-  // Minimize to tray instead of closing
-  win.on("close", (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      win.hide();
-    }
-  });
-
   Menu.setApplicationMenu(null);
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
   const showWindowOnStartup = () => {
-    if (!settingsStore.get("startMinimized")) {
-      win.show();
-      win.focus();
+    if (!startMinimized) {
+      showAndFocusWindow(win);
     }
   };
   win.once("ready-to-show", showWindowOnStartup);
@@ -5527,11 +5521,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    showAndFocusWindow(mainWindow);
     // Ensure gateway is alive when user re-opens the app
     ensureGatewayConnected().catch((err) =>
       console.error("[second-instance] gateway reconnect failed:", err),
@@ -5571,10 +5561,7 @@ app.whenReady().then(async () => {
 
   const trayCallbacks = {
     onShowWindow: () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show();
-        mainWindow.focus();
-      }
+      showAndFocusWindow(mainWindow);
       // Ensure gateway is alive when user shows window from tray
       ensureGatewayConnected().catch((err) =>
         console.error("[tray-show] gateway reconnect failed:", err),
@@ -5665,9 +5652,7 @@ app.on("before-quit", () => {
 });
 
 app.on("activate", () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-  }
+  showAndFocusWindow(mainWindow);
   ensureGatewayConnected().catch((err) =>
     console.error("[activate] gateway reconnect failed:", err),
   );

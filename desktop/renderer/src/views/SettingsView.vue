@@ -19,7 +19,7 @@
     <!-- Right content: grouped card rows -->
     <div
       class="settings-content"
-      :class="{ 'settings-content--skills': isDev && activeSection === 'skills' }"
+      :class="{ 'settings-content--skills': devSettingsEnabled && activeSection === 'skills' }"
     >
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
@@ -356,7 +356,10 @@
       <ChannelsView v-if="activeSection === 'channels'" embedded />
 
       <!-- Skills (development builds only) -->
-      <SkillsDevPanel v-if="isDev && activeSection === 'skills'" />
+      <component
+        :is="SkillsDevPanel"
+        v-if="devSettingsEnabled && SkillsDevPanel && activeSection === 'skills'"
+      />
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
@@ -826,13 +829,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch, computed } from "vue";
+import { ref, reactive, onMounted, onUnmounted, watch, computed, defineAsyncComponent } from "vue";
 import { useRoute } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
-import SkillsDevPanel from "@/components/skills/SkillsDevPanel.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -855,7 +857,11 @@ import { getManagedModelProvider } from "@/utils/managed-model-providers";
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
-const isDev = import.meta.env.DEV;
+const devSettingsEnabled =
+  import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_SETTINGS === "true";
+const SkillsDevPanel = devSettingsEnabled
+  ? defineAsyncComponent(() => import("@/components/skills/SkillsDevPanel.vue"))
+  : null;
 
 const activeSection = ref("general");
 const exportingGatewayLogs = ref(false);
@@ -898,7 +904,7 @@ const VALID_SECTIONS = [
   "usage",
   "models",
   "channels",
-  ...(isDev ? ["skills"] : []),
+  ...(devSettingsEnabled ? ["skills"] : []),
   "security",
   "privacy",
   "about",
@@ -1370,7 +1376,7 @@ const menuItems = computed(() => [
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
   { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
-  ...(isDev
+  ...(devSettingsEnabled
     ? [{ id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills }]
     : []),
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },

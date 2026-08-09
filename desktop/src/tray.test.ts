@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { GatewayStatus } from "./constants";
 
+const trayEventHandlers = vi.hoisted(() => new Map<string, () => void>());
+
 // ── Mock electron ─────────────────────────────────────────────────────
 vi.mock("electron", () => {
   class MockTray {
     setToolTip = vi.fn();
     setContextMenu = vi.fn();
-    on = vi.fn();
+    on = vi.fn((event: string, handler: () => void) => {
+      trayEventHandlers.set(event, handler);
+    });
     destroy = vi.fn();
   }
   return {
@@ -33,6 +37,7 @@ import { createTray, updateTrayMenu, destroyTray } from "./tray";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  trayEventHandlers.clear();
 });
 
 describe("createTray", () => {
@@ -43,6 +48,19 @@ describe("createTray", () => {
       onQuit: vi.fn(),
     };
     expect(() => createTray(callbacks)).not.toThrow();
+  });
+
+  it("opens the app on a single click", () => {
+    const callbacks = {
+      onShowWindow: vi.fn(),
+      onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
+    };
+    createTray(callbacks);
+
+    trayEventHandlers.get("click")?.();
+
+    expect(callbacks.onShowWindow).toHaveBeenCalledOnce();
   });
 });
 

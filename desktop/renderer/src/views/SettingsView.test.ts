@@ -9,7 +9,7 @@ vi.mock("vue-router", () => ({
   useRoute: () => ({ params: { section: "skills" } }),
 }));
 
-describe("SettingsView Skills section", () => {
+describe("SettingsView", () => {
   const exportGatewayLogs = vi.fn();
 
   beforeEach(() => {
@@ -38,21 +38,20 @@ describe("SettingsView Skills section", () => {
     });
   });
 
-  it("opens the existing Skills panel from the deep-linked Settings section", async () => {
+  it("hides the development-only Skills section by default", async () => {
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [createPinia()],
-        stubs: {
-          SkillsDevPanel: { template: '<div data-testid="skills-panel" />' },
-        },
       },
     });
 
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="skills-panel"]').exists()).toBe(true);
-    expect(wrapper.find(".settings-content--skills").exists()).toBe(true);
-    expect(wrapper.find(".settings-menu-item.active").text()).toBe("Skills");
+    expect(wrapper.find(".settings-content--skills").exists()).toBe(false);
+    expect(wrapper.findAll(".settings-menu-item").some((item) => item.text() === "Skills")).toBe(
+      false,
+    );
+    expect(wrapper.find(".settings-menu-item.active").text()).toBe("General");
   });
 
   it("shows Gateway status and log export at the end of General", async () => {
@@ -61,9 +60,6 @@ describe("SettingsView Skills section", () => {
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [pinia],
-        stubs: {
-          SkillsDevPanel: true,
-        },
       },
     });
 
