@@ -248,7 +248,7 @@ export default {
   "settings.otherPlatforms": "其他平台",
   "settings.notInstalled": "未安装",
   "settings.connectionStatus": "连接状态",
-  "settings.status": "状态",
+  "settings.gateway": "网关",
   "settings.privacy": "数据与隐私",
   "settings.privacyProtection": "隐私防护",
   "settings.privacyProtectionDesc": "控制 MicroClaw 在将数据发送给 AI 模型前如何处理你的敏感信息。",
@@ -408,9 +408,6 @@ export default {
   "settings.add": "添加",
   "settings.editCustomModel": "编辑自定义模型",
   "settings.connected": "已连接",
-  "settings.port": "端口",
-  "settings.portDesc":
-    "更改端口后网关将自动重启。如果所选端口被占用，MicroClaw 将尝试使用相邻端口。",
   "settings.webSearch": "联网搜索",
   "settings.reasoningOffDesc": "推理关闭",
   "settings.reasoningDesc": "推理 {level}",
@@ -419,9 +416,6 @@ export default {
   "settings.modelNameExists": "已存在同名模型",
   "settings.gatewayRestarting": "正在重启网关…",
   "settings.restartFailed": "重启失败: {error}",
-  "settings.invalidPort": "端口号无效",
-  "settings.portUpdated": "端口已更新，网关正在重启…",
-  "settings.portUpdateFailed": "操作失败: {error}",
   "settings.connectionFailed": "连接失败: {error}",
 
   // ── GatewayLoading ──
