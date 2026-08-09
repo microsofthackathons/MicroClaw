@@ -11,7 +11,7 @@ import {
   hardRestartGateway,
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
-import { createTray, destroyTray } from "./tray";
+import { createTray, destroyTray, updateTrayMenu } from "./tray";
 import { showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
 import {
@@ -216,8 +216,6 @@ const settingsStore = new Store<{
   },
 });
 
-/** Module-level quit flag — replaces `(app as any).isQuitting`. */
-let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
@@ -225,6 +223,17 @@ let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
+
+function setGatewayStatus(status: GatewayStatus): void {
+  gatewayStatus = status;
+  updateTrayMenu(
+    status,
+    resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
+  );
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("gateway:status", status);
+  }
+}
 let weixinLoginProcess: ChildProcess | null = null;
 let pendingIntegrityResult: IntegrityResult | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -1283,8 +1292,7 @@ function failForExternalGateway(port: number): never {
   const message =
     `Agent configuration changed, but Gateway port ${port} is owned by another process. ` +
     "Stop that Gateway and retry so MicroClaw can apply the new roster safely.";
-  gatewayStatus = "failed";
-  mainWindow?.webContents.send("gateway:status", "failed");
+  setGatewayStatus("failed");
   mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
   throw new Error(message);
 }
@@ -1808,8 +1816,7 @@ async function restartManagedGateway(reason: string): Promise<void> {
   if (gatewayRestartPromise) return gatewayRestartPromise;
   const restart = (async () => {
     gatewayRestarting = true;
-    gatewayStatus = "restarting";
-    mainWindow?.webContents.send("gateway:status", "restarting");
+    setGatewayStatus("restarting");
     mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
     try {
       await hardRestartGateway({
@@ -1822,8 +1829,7 @@ async function restartManagedGateway(reason: string): Promise<void> {
         pollMs: 500,
       });
     } catch (error) {
-      gatewayStatus = "failed";
-      mainWindow?.webContents.send("gateway:status", "failed");
+      setGatewayStatus("failed");
       throw error;
     } finally {
       gatewayRestarting = false;
@@ -1934,8 +1940,7 @@ async function ensureGatewayConnected(): Promise<void> {
     // Gateway is up — if WS is not connected, reconnect
     if (!gwClient?.connected) {
       if (gatewayStatus !== "running") {
-        gatewayStatus = "running";
-        mainWindow?.webContents.send("gateway:status", "running");
+        setGatewayStatus("running");
       }
       connectGatewayWs();
     }
@@ -2197,8 +2202,7 @@ async function startGatewayInner(): Promise<void> {
   if (alreadyRunning && !agentRosterChanged) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
     gatewaySpawnedByUs = false;
-    gatewayStatus = "running";
-    mainWindow?.webContents.send("gateway:status", "running");
+    setGatewayStatus("running");
     connectGatewayWs();
     startHealthMonitor();
     return;
@@ -2233,8 +2237,7 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
     );
-    gatewayStatus = "failed";
-    mainWindow?.webContents.send("gateway:status", "failed");
+    setGatewayStatus("failed");
     return;
   }
   if (!fs.existsSync(entryPath)) {
@@ -2245,8 +2248,7 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
     );
-    gatewayStatus = "failed";
-    mainWindow?.webContents.send("gateway:status", "failed");
+    setGatewayStatus("failed");
     return;
   }
 
@@ -2432,8 +2434,7 @@ async function startGatewayInner(): Promise<void> {
     safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
     safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
     gatewayProcess = null;
-    gatewayStatus = "failed";
-    safeSendLog("gateway:status", "failed");
+    setGatewayStatus("failed");
   });
 
   child.on("exit", (code, signal) => {
@@ -2739,13 +2740,11 @@ async function startGatewayInner(): Promise<void> {
   });
 
   // Wait for gateway to become ready
-  gatewayStatus = "starting";
-  mainWindow?.webContents.send("gateway:status", "starting");
+  setGatewayStatus("starting");
 
   const ready = await waitForGatewayReady(configuredPort);
   if (ready) {
-    gatewayStatus = "running";
-    mainWindow?.webContents.send("gateway:status", "running");
+    setGatewayStatus("running");
   } else {
     mainWindow?.webContents.send(
       "gateway:log",
@@ -2755,8 +2754,7 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
     );
-    gatewayStatus = "timeout";
-    mainWindow?.webContents.send("gateway:status", "timeout");
+    setGatewayStatus("timeout");
   }
   // Always connect WS — even on timeout the gateway may start shortly after,
   // and GatewayClient has built-in reconnect with exponential backoff.
@@ -2799,8 +2797,7 @@ function connectGatewayWs(): void {
       wsAuthRestartInProgress = false;
       // Sync the status indicator — fixes "timeout" showing while WS is actually connected
       if (gatewayStatus !== "running") {
-        gatewayStatus = "running";
-        mainWindow?.webContents.send("gateway:status", "running");
+        setGatewayStatus("running");
       }
       const mainSessionKey = gwClient?.mainSessionKey;
 
@@ -4494,6 +4491,8 @@ function registerIpcHandlers(): void {
     settingsStore.set(key as any, value);
     if (key === "autoStart") {
       app.setLoginItemSettings({ openAtLogin: !!value });
+    } else if (key === "language") {
+      updateTrayMenu(gatewayStatus, resolveSupportedLocale(String(value)));
     }
   });
 
@@ -5572,11 +5571,11 @@ app.whenReady().then(async () => {
         console.error("[tray] Gateway restart failed:", error),
       );
     },
-    onQuit: () => {
-      isQuitting = true;
-    },
   };
-  createTray(trayCallbacks);
+  createTray(
+    trayCallbacks,
+    resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
+  );
 
   // Skill integrity check — must run BEFORE loading renderer so
   // pendingIntegrityResult is ready when App.vue calls the IPC.
@@ -5632,7 +5631,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  isQuitting = true;
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   // Clean up skill file watchers
   for (const w of skillWatchers) {
