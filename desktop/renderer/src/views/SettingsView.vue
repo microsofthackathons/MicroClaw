@@ -2,9 +2,6 @@
   <div class="settings-view">
     <!-- Left sidebar: icon grid nav -->
     <div class="settings-sidebar">
-      <div class="settings-title">
-        {{ t("settings.title") }}
-      </div>
       <div class="menu-list">
         <div
           v-for="item in menuItems"
@@ -1909,17 +1906,6 @@ async function clearChatHistory() {
   display: flex;
   flex-direction: column;
   padding: 20px 0 12px;
-}
-
-.settings-title {
-  padding: 0 16px 16px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .menu-list {
