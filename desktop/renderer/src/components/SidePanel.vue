@@ -944,6 +944,7 @@ html.dark .sp-chat-item.selected {
 .sp-chat-item-title {
   flex: 1;
   min-width: 0;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -989,7 +990,7 @@ html.dark .sp-chat-item.selected {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   padding: 8px 12px;
   border: none;
   background: transparent;
@@ -1000,6 +1001,11 @@ html.dark .sp-chat-item.selected {
   font-family: inherit;
   transition: background 0.15s;
   margin-bottom: 2px;
+}
+
+.sp-menu-item > span {
+  flex: 1;
+  text-align: left;
 }
 
 .sp-menu-item:hover {
