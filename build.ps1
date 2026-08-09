@@ -10,6 +10,27 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+function Get-FileSetId {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.FileInfo[]]$Files,
+        [Parameter(Mandatory = $true)][string]$BasePath
+    )
+
+    $entries = $Files | Sort-Object FullName | ForEach-Object {
+        $relativePath = $_.FullName.Substring($BasePath.Length).TrimStart('\').Replace('\', '/')
+        $fileHash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$relativePath|$($_.Length)|$fileHash"
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($entries -join "`n"))
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $hasher.ComputeHash($bytes)
+        return ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $hasher.Dispose()
+    }
+}
+
 # Prefer Node 22 from the standard per-user MSI install location, falling back
 # to the legacy zip-extract path and finally the system Node.
 $nodeCandidates = @(
@@ -167,6 +188,34 @@ if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  -> $zipPath  ${zipSizeMB} MB"
+
+# Build identity consumed by repeat-install fast paths. It is generated before
+# PyInstaller so the onedir bundle carries the identity of every managed input.
+$manifestPath = "$root\dist\install-manifest.json"
+$skillsFiles = @(Get-ChildItem "$root\skills" -File -Recurse)
+$installerIdentityFiles = @(
+    Get-Item "$root\deploy.py"
+    Get-Item "$root\MicroClawDeployer.spec"
+    Get-Item "$root\requirements.txt"
+    Get-ChildItem "$root\deployer" -File -Recurse |
+        Where-Object { $_.FullName -notmatch '\\(__pycache__|logs)\\' }
+    Get-ChildItem "$root\scripts" -File -Recurse
+)
+$versionSource = Get-Content "$root\deployer\openclaw_version.py" -Raw
+if ($versionSource -notmatch 'OPENCLAW_TARGET_VERSION\s*=\s*"([^"]+)"') {
+    Write-Host "  ERROR: could not resolve OPENCLAW_TARGET_VERSION" -ForegroundColor Red
+    exit 1
+}
+$installManifest = [ordered]@{
+    schema = 1
+    desktopArchiveSha256 = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    installerBundleId = Get-FileSetId -Files $installerIdentityFiles -BasePath $root
+    managedSkillsId = Get-FileSetId -Files $skillsFiles -BasePath "$root\skills"
+    openClawVersion = $Matches[1]
+    appContainerSchema = 1
+}
+$installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
+Write-Host "  Install manifest: $manifestPath" -ForegroundColor DarkGray
 
 # Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
 Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan

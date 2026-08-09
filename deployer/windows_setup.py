@@ -23,6 +23,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from deployer.install_manifest import (
+    build_identity_matches,
+    committed_install_manifest,
+    load_install_manifest,
+    normalize_registry,
+    resolve_bundled_install_manifest,
+    write_install_manifest,
+)
 from deployer.logger import DeployerLogger
 from deployer.openclaw_upgrade import (
     RECOVERABLE_PHASES,
@@ -43,6 +51,7 @@ from deployer.openclaw_version import (
 from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
 from deployer.uninstaller_bundle import (
     UninstallerBundleError,
+    bundles_match,
     publish_uninstaller_bundle,
     resolve_uninstaller_bundle,
     validate_uninstaller_bundle,
@@ -400,6 +409,15 @@ class WindowsSetup:
         self._weixin_policy_snapshot: WeixinPluginPolicy | None = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
+        self._install_manifest_path = (
+            DEFAULT_DESKTOP_DIR / "install-state" / "install-manifest.json"
+        )
+        self._bundled_install_manifest = resolve_bundled_install_manifest(
+            frozen=getattr(sys, "frozen", False),
+            executable=Path(sys.executable),
+            app_dir=Path(__file__).resolve().parent.parent,
+        )
+        self._persisted_install_manifest = load_install_manifest(self._install_manifest_path)
         # Optional UI hook forwarded to upgrade transactions so long backup /
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
@@ -527,6 +545,77 @@ class WindowsSetup:
     def _register_rollback(self, label: str, fn):
         """Push a cleanup action onto the rollback stack."""
         self._rollback_actions.append((label, fn))
+
+    def _build_install_identity_matches(self) -> bool:
+        return build_identity_matches(
+            getattr(self, "_bundled_install_manifest", None),
+            getattr(self, "_persisted_install_manifest", None),
+        )
+
+    def _invalidate_committed_install_manifest(self) -> None:
+        path = getattr(self, "_install_manifest_path", None)
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+    def _desired_npm_registry(self) -> str:
+        mirror_name = getattr(self, "_mirror_name", MIRROR_FALLBACK)
+        default_registry = getattr(
+            self,
+            "_resolved_npm_registry",
+            MIRRORS.get(mirror_name, MIRRORS[MIRROR_FALLBACK])["npm_registry"],
+        )
+        return self.cfg.get("npm.registry", default_registry) or default_registry
+
+    def _desktop_install_is_current(self) -> bool:
+        return self._build_install_identity_matches() and all(
+            path.exists()
+            for path in (
+                DEFAULT_DESKTOP_DIR / "MicroClawDesktop.exe",
+                DEFAULT_DESKTOP_DIR / "resources" / "app.asar",
+            )
+        )
+
+    def _uninstaller_install_is_current(self) -> bool:
+        if not self._build_install_identity_matches():
+            return False
+        try:
+            source = resolve_uninstaller_bundle(
+                frozen=getattr(sys, "frozen", False),
+                executable=Path(sys.executable),
+                app_dir=Path(__file__).resolve().parent.parent,
+            )
+            return bundles_match(source, Path.home() / ".openclaw")
+        except UninstallerBundleError:
+            return False
+
+    def _entry_points_are_current(self) -> bool:
+        if not self._build_install_identity_matches():
+            return False
+        desktop_exe = self._find_desktop_exe()
+        if desktop_exe is None:
+            return False
+        desktop_shortcut = self._get_desktop_path() / "MicroClawDesktop.lnk"
+        start_shortcut = self._get_start_menu_path() / "MicroClaw.lnk"
+        if not desktop_shortcut.is_file() or not start_shortcut.is_file():
+            return False
+        try:
+            import winreg
+
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._UNINSTALL_REG_KEY)
+            try:
+                display_version, _ = winreg.QueryValueEx(key, "DisplayVersion")
+                install_location, _ = winreg.QueryValueEx(key, "InstallLocation")
+                uninstall_string, _ = winreg.QueryValueEx(key, "UninstallString")
+            finally:
+                winreg.CloseKey(key)
+        except OSError:
+            return False
+        expected_uninstaller = Path.home() / ".openclaw" / "MicroClawInstaller.exe"
+        return (
+            display_version == OPENCLAW_TARGET_VERSION
+            and Path(install_location) == DEFAULT_DESKTOP_DIR
+            and uninstall_string == f'"{expected_uninstaller}" --uninstall'
+        )
 
     def rollback(self):
         """Execute all registered rollback actions in reverse order."""
@@ -1342,15 +1431,13 @@ class WindowsSetup:
         so that npm never touches the system npmrc (which may be under
         C:\\Program Files and need admin privileges).
         """
-        # Honour the registry resolved during __init__ (auto-probe or user
-        # override). _resolved_npm_registry is only set when cfg.set() was
-        # unavailable; otherwise the resolved value lives in cfg.
-        default_registry = getattr(
-            self,
-            "_resolved_npm_registry",
-            MIRRORS.get(self._mirror_name, MIRRORS[MIRROR_FALLBACK])["npm_registry"],
-        )
-        registry = self.cfg.get("npm.registry", default_registry) or default_registry
+        registry = self._desired_npm_registry()
+        persisted = getattr(self, "_persisted_install_manifest", None) or {}
+        if self._build_install_identity_matches() and normalize_registry(registry) == persisted.get(
+            "npmRegistry"
+        ):
+            self.log.info("npm registry configuration is current; skipping")
+            return True
         self.log.step(f"Configuring npm registry ({registry})…")
         npm = self._get_npm_path()
         if not npm:
@@ -1922,6 +2009,7 @@ class WindowsSetup:
                     "creating a lightweight managed-state rollback point."
                 )
             transaction.backup()
+            self._invalidate_committed_install_manifest()
             return True
         except Exception as error:
             self.log.error(f"Could not prepare OpenClaw upgrade backup: {error}")
@@ -2523,6 +2611,14 @@ class WindowsSetup:
         if transaction is None:
             return True
         transaction.commit()
+        bundled = getattr(self, "_bundled_install_manifest", None)
+        if bundled is not None:
+            committed = committed_install_manifest(bundled, self._desired_npm_registry())
+            try:
+                write_install_manifest(self._install_manifest_path, committed)
+                self._persisted_install_manifest = committed
+            except OSError as error:
+                self.log.warn(f"Could not save committed install manifest: {error}")
         try:
             prune_previous_committed_backups(transaction.backup_root, keep=transaction.backup_dir)
         except OSError as error:
@@ -3294,6 +3390,9 @@ class WindowsSetup:
         Priority: local zip next to exe > network download.
         """
         install_dir = DEFAULT_DESKTOP_DIR
+        if self._desktop_install_is_current():
+            self.log.info("桌面客户端与当前安装包一致，跳过解压")
+            return True
 
         # If already installed, overwrite with bundled version
         exe_path = install_dir / "MicroClawDesktop.exe"
@@ -3838,6 +3937,9 @@ class WindowsSetup:
 
     def install_uninstaller_bundle(self) -> bool:
         """Persist a verified uninstaller before exposing Windows entry points."""
+        if self._uninstaller_install_is_current():
+            self.log.info("卸载程序与当前安装包一致，跳过发布")
+            return True
         try:
             app_dir = Path(__file__).resolve().parent.parent
             source = resolve_uninstaller_bundle(
@@ -3883,6 +3985,9 @@ class WindowsSetup:
 
     def create_desktop_shortcut(self) -> bool:
         """Create app shortcuts and required uninstall registration."""
+        if self._entry_points_are_current():
+            self.log.info("应用快捷方式和卸载注册信息已是最新，跳过创建")
+            return True
         self.log.step("Creating desktop shortcut…")
 
         desktop = self._get_desktop_path()
