@@ -5,6 +5,13 @@
 **MicroClaw** 的目标是让 [OpenClaw](https://github.com/openclaw) 在 Windows 上做到“装好就能用”。它把桌面客户端、本地 Gateway、运行时、预装技能和带权限控制的沙箱整合成一个熟悉、低摩擦的安装体验，让用户尽快进入真实任务。你只需要提供大模型连接信息，Windows 侧运行环境、桌面应用和信任边界都由 MicroClaw 预置完成。
 
 > [!WARNING]
+> **实验性 Docker 沙箱分支：**AppContainer 已停用。OpenClaw 工具必须通过 WSL2 在 Docker Desktop Linux 容器中运行。只有 WSL2、Docker Desktop、Linux 容器模式以及固定镜像 `microclaw-openclaw-sandbox:2026.7.1-1` 全部就绪后，MicroClaw 才会启动 Gateway 或发送对话；否则默认拒绝。MicroClaw 不会自动安装或提权安装 Docker/WSL。
+>
+> 安装 WSL2 和 Docker Desktop 后，在**设置 → 安全**中构建镜像。生效策略为 `mode: all`、Docker 后端、每会话隔离、独立工作区（`workspaceAccess: none`）、只读根目录、非 root 用户、移除全部能力、资源限制、无网络并禁用提权工具。附件由 OpenClaw 放入隔离工作区；工具不能访问任意 Windows 路径。已有 AppContainer 配置和 ACL 会被忽略，仅在用户明确卸载时清理。
+>
+> 安装 Docker 后的实机检查：确认“安全”页所有状态为绿色；构建固定镜像；重启 MicroClaw；运行文件工具并确认只能看到隔离工作区；确认附件可读；确认外网和 Windows 主机路径访问失败；停止 Docker 并确认 Gateway/对话默认拒绝；最后确认 EXE 和 MSIX 均包含 `resources/docker-sandbox/Dockerfile`。
+
+> [!WARNING]
 > **AI 与安全声明**
 > MicroClaw 是一个由 Microsoft 发起的实验性开源项目，为用户已安装在设备上的开源 [OpenClaw](https://github.com/openclaw) 软件提供安全执行环境和用户界面。MicroClaw **不是** AI 服务，不包含 AI 模型，也不会代替用户生成或修改用户提示、响应或任何 AI 生成的内容。
 >

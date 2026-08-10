@@ -423,7 +423,7 @@ class WindowsSetup:
         # Optional UI hook forwarded to upgrade transactions so long backup /
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
-        self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
+        self.appcontainer_enabled = False  # Legacy cleanup only; Docker sandbox replaces it.
 
         # Respect an explicit registry immediately. Otherwise start with the
         # fallback and defer network probing until a download is required.

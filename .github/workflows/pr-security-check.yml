@@ -4,9 +4,8 @@
 # Acts as a fast pre-merge gate; the full build.ps1 packaging pipeline
 # runs separately in pr-build.yml.
 #
-# Covers all three language stacks:
+# Covers the active language stacks:
 #   - JavaScript / TypeScript (Electron + Vue)
-#   - C# / .NET 9 (AppContainerLauncher)
 #   - Python (Deployer / Installer)
 #
 # Each job only runs when its relevant files are changed (path filtering).
@@ -37,7 +36,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       js: ${{ steps.filter.outputs.js }}
-      csharp: ${{ steps.filter.outputs.csharp }}
       python: ${{ steps.filter.outputs.python }}
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +49,6 @@ jobs:
               - 'package-lock.json'
               - 'skills/**'
               - 'plugins/**'
-            csharp:
-              - 'appcontainer/**'
-              - 'MicroClaw.sln'
             python:
               - 'deployer/**'
               - 'requirements.txt'
@@ -113,41 +108,6 @@ jobs:
       - name: Run renderer tests
         working-directory: desktop/renderer
         run: npm run test
-
-  # ── C# / .NET 9 ────────────────────────────────────────────────
-  security-and-build-csharp:
-    name: C# - Audit & Build
-    needs: changes
-    if: needs.changes.outputs.csharp == 'true'
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup .NET 9 SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x"
-
-      - name: Restore NuGet packages
-        run: dotnet restore appcontainer/AppContainerLauncher.csproj
-
-      # Security: check for known vulnerable NuGet packages
-      - name: Check for vulnerable NuGet packages
-        shell: pwsh
-        run: |
-          $output = dotnet list appcontainer/AppContainerLauncher.csproj package --vulnerable --include-transitive 2>&1
-          Write-Host $output
-          if ($output -match "has the following vulnerable packages") {
-            Write-Host "::error::Vulnerable NuGet packages detected!"
-            exit 1
-          }
-          Write-Host "No vulnerable NuGet packages found."
-
-      # Build
-      - name: Build AppContainerLauncher
-        run: dotnet build appcontainer/AppContainerLauncher.csproj -c Release --no-restore
 
   # ── Python ──────────────────────────────────────────────────────
   security-check-python:

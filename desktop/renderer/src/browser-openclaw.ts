@@ -17,6 +17,19 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     "[info] Browser development Gateway started",
     "[info] Mock Agent roster loaded",
   ];
+  const readyState: DockerSandboxState = { status: "ready", reason: "ready" };
+  const browserDockerReadiness = (): DockerSandboxReadiness => ({
+    checkedAt: new Date().toISOString(),
+    ready: true,
+    reasons: [],
+    windows: readyState,
+    wslCommand: readyState,
+    wsl2: readyState,
+    dockerCli: readyState,
+    dockerDaemon: readyState,
+    linuxContainers: readyState,
+    image: readyState,
+  });
 
   return {
     gateway: {
@@ -79,24 +92,25 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         sandboxDirsRO: [],
         externalApps: [],
       }),
-      setEnabled: async () => ({ ok: true }),
+      setEnabled: noopAsync,
       getExternalApps: async () => [],
-      setExternalApps: async (apps) => ({ ok: true, apps }),
-      applyExternalApps: async () => ({ ok: true, restarted: false }),
+      setExternalApps: noopAsync,
+      applyExternalApps: noopAsync,
       getCapabilities: async () => [],
-      setCapabilities: async (caps) => ({ ok: true, caps, needsRestart: false }),
-      provision: async () => true,
+      setCapabilities: noopAsync,
       getUserDirs: async () => ({ rw: [], ro: [] }),
       addUserDir: async () => ({ ok: false, reason: "browser-dev", dirs: { rw: [], ro: [] } }),
       removeUserDir: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
-      onPermissionRequest: noopSub,
-      respondPermission: noopAsync,
-      onAclTimeout: noopSub,
-      onAclIneffective: noopSub,
-      onPermissionCompleted: noopSub,
       verifyAcls: async () => ({ missing: [], stale: [], ok: [], errors: [] }),
       repairAcl: async () => ({ ok: true }),
       revokeStaleAcl: async () => ({ ok: true }),
+    },
+    dockerSandbox: {
+      check: async () => browserDockerReadiness(),
+      getStatus: async () => browserDockerReadiness(),
+      buildImage: async () => browserDockerReadiness(),
+      onStatus: noopSub,
+      onBuildProgress: noopSub,
     },
     settings: {
       get: async () => ({
@@ -143,7 +157,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       clearHistory: async () => ({ cleared: 0 }),
       onEvent: noopSub,
       onToolEvent: noopSub,
-      onExecCommand: noopSub,
     },
     cron: { list: async () => ({ jobs: [] }) },
     channels: { list: async () => ({ channels: [] }) },

@@ -25,6 +25,45 @@ interface AppSettings {
   privacyLevel: string;
 }
 
+type DockerSandboxReason =
+  | "ready"
+  | "windows-required"
+  | "windows-version-unsupported"
+  | "wsl-command-missing"
+  | "wsl-feature-disabled"
+  | "wsl-no-distribution"
+  | "wsl2-distribution-missing"
+  | "wsl-kernel-update-required"
+  | "wsl-reboot-required"
+  | "wsl-check-timeout"
+  | "wsl-check-failed"
+  | "docker-cli-missing"
+  | "docker-daemon-unavailable"
+  | "docker-desktop-required"
+  | "docker-linux-containers-required"
+  | "docker-check-timeout"
+  | "docker-check-failed"
+  | "sandbox-image-missing";
+
+interface DockerSandboxState {
+  status: "ready" | "missing" | "not-ready" | "unsupported" | "error";
+  reason: DockerSandboxReason;
+  detail?: string;
+}
+
+interface DockerSandboxReadiness {
+  checkedAt: string;
+  ready: boolean;
+  reasons: DockerSandboxReason[];
+  windows: DockerSandboxState;
+  wslCommand: DockerSandboxState;
+  wsl2: DockerSandboxState;
+  dockerCli: DockerSandboxState;
+  dockerDaemon: DockerSandboxState;
+  linuxContainers: DockerSandboxState;
+  image: DockerSandboxState;
+}
+
 interface ChatAttachment {
   type: "image" | "file";
   mimeType: string;
@@ -195,9 +234,15 @@ interface OpenClawAPI {
     refresh(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
-    setAgentSkills(agentId: string, skillIds: string[]): Promise<{ agentId: string; skills: string[] }>;
+    setAgentSkills(
+      agentId: string,
+      skillIds: string[],
+    ): Promise<{ agentId: string; skills: string[] }>;
     getStatus(agentId: string): Promise<SkillsStatus>;
-    setGlobalEnabled(skillKey: string, enabled: boolean): Promise<{ skillKey: string; enabled: boolean }>;
+    setGlobalEnabled(
+      skillKey: string,
+      enabled: boolean,
+    ): Promise<{ skillKey: string; enabled: boolean }>;
     applyAgentConfig(
       agentId: string,
       skillIds: string[],
@@ -215,11 +260,7 @@ interface OpenClawAPI {
   };
   chat: {
     isConnected(): Promise<boolean>;
-    sendMessage(
-      sessionKey: string,
-      message: string,
-      attachments?: ChatAttachment[],
-    ): Promise<void>;
+    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
@@ -242,7 +283,6 @@ interface OpenClawAPI {
         };
       }) => void,
     ): () => void;
-    onExecCommand?(callback: (data: { shell: string; command: string }) => void): () => void;
   };
   cron: {
     list(): Promise<{ jobs?: unknown[] }>;
@@ -303,9 +343,7 @@ interface OpenClawAPI {
     disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
     getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
     listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
-    onGitHubCopilotLoginEvent(
-      callback: (event: GitHubCopilotLoginEvent) => void,
-    ): () => void;
+    onGitHubCopilotLoginEvent(callback: (event: GitHubCopilotLoginEvent) => void): () => void;
   };
   window: {
     minimize(): Promise<void>;
@@ -332,26 +370,27 @@ interface OpenClawAPI {
   logs: {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
+  dockerSandbox: {
+    check(): Promise<DockerSandboxReadiness>;
+    getStatus(): Promise<DockerSandboxReadiness | null>;
+    buildImage(): Promise<DockerSandboxReadiness>;
+    onStatus(callback: (status: DockerSandboxReadiness) => void): () => void;
+    onBuildProgress(callback: (line: string) => void): () => void;
+  };
+  /** @deprecated AppContainer is inactive; retained only while migration UI code is removed. */
   sandbox: {
     getStatus(): Promise<{
       available: boolean;
       enabled: boolean;
-      launcherPath: string | null;
-      containerName: string;
-      capabilities: string[];
       sandboxDirsRW: string[];
       sandboxDirsRO: string[];
-      externalApps: string[];
     }>;
-    setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
+    setEnabled(enabled: boolean): Promise<void>;
     getExternalApps(): Promise<string[]>;
-    setExternalApps(apps: string[]): Promise<{ ok: boolean; apps: string[] }>;
-    applyExternalApps(): Promise<{ ok: boolean; restarted: boolean }>;
+    setExternalApps(apps: string[]): Promise<void>;
+    applyExternalApps(): Promise<void>;
     getCapabilities(): Promise<string[]>;
-    setCapabilities(
-      caps: string[],
-    ): Promise<{ ok: boolean; caps: string[]; needsRestart: boolean }>;
-    provision(): Promise<boolean>;
+    setCapabilities(capabilities: string[]): Promise<void>;
     getUserDirs(): Promise<{ rw: string[]; ro: string[] }>;
     addUserDir(params: { access: "rw" | "ro" }): Promise<{
       ok: boolean;
@@ -364,34 +403,7 @@ interface OpenClawAPI {
     removeUserDir(params: {
       dir: string;
       access: "rw" | "ro";
-    }): Promise<{ ok: boolean; dirs: { rw: string[]; ro: string[] } }>;
-    onPermissionRequest(
-      callback: (data: {
-        requestId: string;
-        type: "file" | "shell" | "shell-async";
-        targetPath: string;
-        dirPath: string;
-        command?: string;
-      }) => void,
-    ): () => void;
-    respondPermission(requestId: string, decision: string): Promise<void>;
-    onAclTimeout?(callback: (data: { dir: string; access: string }) => void): () => void;
-    onAclIneffective?(
-      callback: (data: {
-        dir: string;
-        deniedPath: string;
-        access: string;
-        command?: string;
-      }) => void,
-    ): () => void;
-    onPermissionCompleted?(
-      callback: (data: {
-        requestId: string;
-        result: "verified" | "verify-timeout" | "failed";
-        dir: string;
-        access: string;
-      }) => void,
-    ): () => void;
+    }): Promise<{ dirs: { rw: string[]; ro: string[] } }>;
     verifyAcls(): Promise<{
       missing: Array<{ dir: string; access: string; reason: string }>;
       stale: Array<{ dir: string; rights: string }>;

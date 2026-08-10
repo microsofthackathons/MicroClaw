@@ -43,22 +43,8 @@ extraResources:
     to: openclaw/
   - from: resources/openclaw.asar
     to: openclaw.asar
-  - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
-    to: AppContainerLauncher.exe
-  - from: ../appcontainer/sandbox-preload.js
-    to: sandbox-preload.js
-  - from: ../appcontainer/sandbox-state.js
-    to: sandbox-state.js
-  - from: ../appcontainer/sandbox-permission.js
-    to: sandbox-permission.js
-  - from: ../appcontainer/sandbox-fs-hooks.js
-    to: sandbox-fs-hooks.js
-  - from: ../appcontainer/sandbox-cp-hooks.js
-    to: sandbox-cp-hooks.js
-  - from: ../appcontainer/sandbox-sensitive.js
-    to: sandbox-sensitive.js
-  - from: ../appcontainer/path-extraction.js
-    to: path-extraction.js
+  - from: ../docker-sandbox/Dockerfile
+    to: docker-sandbox/Dockerfile
 
 files:
   - dist/**/*
