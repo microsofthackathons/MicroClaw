@@ -32,6 +32,10 @@ import {
   checkDockerSandboxReadiness,
   type DockerSandboxReadiness,
 } from "./docker-sandbox";
+
+if (process.env.MICROCLAW_USER_DATA_DIR) {
+  app.setPath("userData", process.env.MICROCLAW_USER_DATA_DIR);
+}
 import {
   prepareChatAttachments,
   prepareClipboardImageAttachments,
