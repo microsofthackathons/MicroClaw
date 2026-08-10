@@ -664,23 +664,6 @@
             <ul class="privacy-card-list">
               <li>{{ t("settings.privacyBasicDesc1") }}</li>
               <li>{{ t("settings.privacyBasicDesc2") }}</li>
-              <li>{{ t("settings.privacyBasicDesc3") }}</li>
-            </ul>
-          </div>
-          <div
-            class="privacy-card"
-            :class="{ active: settings.privacyLevel === 'balanced' }"
-            @click="setPrivacyLevel('balanced')"
-          >
-            <div class="privacy-card-header">
-              <span class="privacy-card-icon">⚖️</span>
-              <span class="privacy-card-title">{{ t("settings.privacyBalanced") }}</span>
-              <span class="privacy-badge-recommended">{{ t("settings.privacyRecommended") }}</span>
-            </div>
-            <ul class="privacy-card-list">
-              <li>{{ t("settings.privacyBalancedDesc1") }}</li>
-              <li>{{ t("settings.privacyBalancedDesc2") }}</li>
-              <li>{{ t("settings.privacyBalancedDesc3") }}</li>
             </ul>
           </div>
           <div
@@ -695,7 +678,6 @@
             <ul class="privacy-card-list">
               <li>{{ t("settings.privacyStrictDesc1") }}</li>
               <li>{{ t("settings.privacyStrictDesc2") }}</li>
-              <li>{{ t("settings.privacyStrictDesc3") }}</li>
             </ul>
           </div>
         </div>
@@ -706,26 +688,43 @@
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
-            <el-switch v-model="piiToggles.phone" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.phone"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiIdCard") }}</span>
-            <el-switch v-model="piiToggles.idCard" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.idCard"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiBankCard") }}</span>
             <el-switch
               v-model="piiToggles.bankCard"
               :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
             />
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiEmail") }}</span>
-            <el-switch v-model="piiToggles.email" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.email"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.piiApiKey") }}</span>
-            <el-switch v-model="piiToggles.apiKey" :disabled="settings.privacyLevel === 'basic'" />
+            <el-switch
+              v-model="piiToggles.apiKey"
+              :disabled="settings.privacyLevel === 'basic'"
+              @change="persistPrivacyControls"
+            />
           </div>
         </div>
         <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
@@ -749,19 +748,6 @@
           </div>
         </div>
         <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
-
-        <!-- File Access Audit -->
-        <div class="sub-label">{{ t("settings.fileAccessAudit") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.fileAccessAuditToggle") }}</span>
-            <el-switch
-              v-model="settings.fileAccessAudit"
-              :disabled="settings.privacyLevel === 'basic'"
-            />
-          </div>
-        </div>
-        <div class="section-footer">{{ t("settings.fileAccessAuditDesc") }}</div>
 
         <!-- Chat History (existing) -->
         <div class="sub-label">{{ t("settings.chatHistory") }}</div>
@@ -854,6 +840,11 @@ import {
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
 import { getManagedModelProvider } from "@/utils/managed-model-providers";
+import {
+  hydratePrivacyControls,
+  type PrivacyControls,
+  type PrivacyLevel,
+} from "@/utils/privacy-settings";
 
 const route = useRoute();
 const gateway = useGatewayStore();
@@ -1152,16 +1143,15 @@ const settings = reactive({
   autoStart: false,
   minimizeToTray: false,
   themeMode: "light",
-  privacyLevel: "balanced" as "basic" | "balanced" | "strict",
-  fileAccessAudit: true,
+  privacyLevel: "basic" as PrivacyLevel,
 });
 
 const piiToggles = reactive({
-  phone: true,
-  idCard: true,
-  bankCard: true,
-  email: true,
-  apiKey: true,
+  phone: false,
+  idCard: false,
+  bankCard: false,
+  email: false,
+  apiKey: false,
 });
 
 // --- Models & API state ---
@@ -1421,32 +1411,26 @@ watch(
   },
 );
 
-function setPrivacyLevel(level: "basic" | "balanced" | "strict") {
+function currentPrivacyControls(): PrivacyControls {
+  return { ...piiToggles };
+}
+
+function applyPrivacyControls(controls: PrivacyControls) {
+  piiToggles.phone = controls.phone;
+  piiToggles.idCard = controls.idCard;
+  piiToggles.bankCard = controls.bankCard;
+  piiToggles.email = controls.email;
+  piiToggles.apiKey = controls.apiKey;
+}
+
+function persistPrivacyControls() {
+  return window.openclaw.settings.set("privacyControls", currentPrivacyControls());
+}
+
+function setPrivacyLevel(level: PrivacyLevel) {
   settings.privacyLevel = level;
-  window.openclaw.settings.set("privacyLevel", level);
-  // Auto-configure PII toggles based on level
-  if (level === "basic") {
-    piiToggles.phone = false;
-    piiToggles.idCard = false;
-    piiToggles.bankCard = false;
-    piiToggles.email = false;
-    piiToggles.apiKey = false;
-    settings.fileAccessAudit = false;
-  } else if (level === "balanced") {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  } else {
-    piiToggles.phone = true;
-    piiToggles.idCard = true;
-    piiToggles.bankCard = true;
-    piiToggles.email = true;
-    piiToggles.apiKey = true;
-    settings.fileAccessAudit = true;
-  }
+  applyPrivacyControls(hydratePrivacyControls(level));
+  void Promise.all([window.openclaw.settings.set("privacyLevel", level), persistPrivacyControls()]);
 }
 
 // --- Auto-load data when tab is selected ---
@@ -1576,15 +1560,12 @@ onMounted(async () => {
     settings.autoStart = saved.autoStart ?? false;
     settings.minimizeToTray = saved.minimizeToTray ?? false;
     settings.themeMode = saved.themeMode ?? "light";
-    settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
-    // Init PII toggles based on loaded privacy level
-    if (settings.privacyLevel === "basic") {
-      piiToggles.phone = false;
-      piiToggles.idCard = false;
-      piiToggles.bankCard = false;
-      piiToggles.email = false;
-      piiToggles.apiKey = false;
-      settings.fileAccessAudit = false;
+    const savedPrivacyLevel: string | undefined = saved.privacyLevel;
+    settings.privacyLevel = savedPrivacyLevel === "strict" ? "strict" : "basic";
+    applyPrivacyControls(hydratePrivacyControls(settings.privacyLevel, saved.privacyControls));
+    await persistPrivacyControls();
+    if (savedPrivacyLevel === "balanced") {
+      await window.openclaw.settings.set("privacyLevel", "basic");
     }
   }
 
@@ -2744,7 +2725,7 @@ async function clearChatHistory() {
 /* ── Privacy Protection ── */
 .privacy-levels {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
 }
 
@@ -2783,16 +2764,6 @@ async function clearChatHistory() {
   font-size: 13px;
   font-weight: 400;
   color: var(--text-primary);
-}
-
-.privacy-badge-recommended {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(212, 168, 67, 0.15);
-  color: var(--accent-selected);
-  margin-left: auto;
 }
 
 .privacy-card-list {

@@ -8,6 +8,7 @@ const mockAbort = vi.fn().mockResolvedValue(undefined);
 const mockDeleteSession = vi.fn().mockResolvedValue(undefined);
 const mockGenerateSessionTitle = vi.fn().mockResolvedValue("Summary title");
 const mockIsConnected = vi.fn().mockResolvedValue(false);
+const mockGetSettings = vi.fn().mockResolvedValue({});
 
 Object.defineProperty(globalThis, "window", {
   value: {
@@ -34,7 +35,7 @@ Object.defineProperty(globalThis, "window", {
         onWsDisconnected: vi.fn(),
         restart: vi.fn(),
       },
-      settings: { get: vi.fn().mockResolvedValue({}) },
+      settings: { get: mockGetSettings },
       sandbox: { onPermissionRequest: vi.fn() },
       skills: { pendingIntegrityResult: vi.fn().mockResolvedValue(null) },
       cron: { list: vi.fn().mockResolvedValue({ jobs: [] }) },
@@ -923,6 +924,66 @@ describe("useChatStore — attachments", () => {
     expect(store.messages).toHaveLength(2);
     expect(store.getMessageAttachments(store.messages[0])[0].fileName).toBe("old.txt");
     expect(store.getMessageAttachments(store.messages[1])[0].fileName).toBe("pixel.png");
+  });
+});
+
+describe("useChatStore — privacy", () => {
+  beforeEach(() => {
+    Object.keys(storage).forEach((k) => delete storage[k]);
+    setActivePinia(createPinia());
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("sends PII unchanged when privacy defaults to basic", async () => {
+    const store = useChatStore();
+
+    await store.sendMessage("phone 13812345678");
+
+    expect(mockSendMessage).toHaveBeenCalledWith("main", "phone 13812345678", undefined);
+  });
+
+  it("redacts PII before sending in strict mode", async () => {
+    mockGetSettings.mockResolvedValueOnce({ privacyLevel: "strict" });
+    const store = useChatStore();
+
+    await store.sendMessage("phone 13812345678");
+
+    expect(mockSendMessage).toHaveBeenCalledWith("main", "phone 138****5678", undefined);
+  });
+
+  it("honors disabled Strict categories while redacting enabled ones", async () => {
+    mockGetSettings.mockResolvedValueOnce({
+      privacyLevel: "strict",
+      privacyControls: {
+        phone: false,
+        idCard: true,
+        bankCard: true,
+        email: true,
+        apiKey: true,
+      },
+    });
+    const store = useChatStore();
+
+    await store.sendMessage("phone 13812345678 email alice@example.com");
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      "main",
+      "phone 13812345678 email al***@example.com",
+      undefined,
+    );
+  });
+
+  it("defaults missing legacy Strict controls to enabled", async () => {
+    mockGetSettings.mockResolvedValueOnce({ privacyLevel: "strict", privacyControls: {} });
+    const store = useChatStore();
+
+    await store.sendMessage("phone 13812345678 email alice@example.com");
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      "main",
+      "phone 138****5678 email al***@example.com",
+      undefined,
+    );
   });
 });
 

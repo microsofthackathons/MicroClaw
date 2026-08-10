@@ -190,8 +190,16 @@ const settingsStore = new Store<{
   sandboxUserDirsRO: string[];
   /** All directories we've ever granted AC ACL to. Used to detect stale ACLs on startup. */
   sandboxGrantHistory: string[];
-  /** Privacy protection level: basic, balanced, strict */
-  privacyLevel: string;
+  /** Privacy protection level. */
+  privacyLevel: "basic" | "strict";
+  /** Per-control privacy preferences. Missing fields use mode-specific defaults. */
+  privacyControls?: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+  };
 }>({
   name: "settings",
   defaults: {
@@ -214,7 +222,7 @@ const settingsStore = new Store<{
     sandboxUserDirsRW: [],
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
-    privacyLevel: "balanced",
+    privacyLevel: "basic",
   },
 });
 

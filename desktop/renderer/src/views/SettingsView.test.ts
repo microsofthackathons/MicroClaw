@@ -24,7 +24,7 @@ describe("SettingsView", () => {
           autoStart: false,
           minimizeToTray: false,
           themeMode: "light",
-          privacyLevel: "balanced",
+          privacyLevel: "basic",
         }),
         set: vi.fn().mockResolvedValue(undefined),
       },

@@ -22,7 +22,14 @@ interface AppSettings {
   minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
-  privacyLevel: string;
+  privacyLevel: "basic" | "strict";
+  privacyControls?: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+  };
 }
 
 interface ChatAttachment {

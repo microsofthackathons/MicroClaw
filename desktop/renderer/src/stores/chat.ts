@@ -1,7 +1,8 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { useSessionStore } from "./sessions";
-import { scanPii, redactPii } from "@/utils/pii-scanner";
+import { redactPii } from "@/utils/pii-scanner";
+import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -839,17 +840,13 @@ export const useChatStore = defineStore("chat", () => {
     lastError.value = null;
     let optimisticTimestamp: number | undefined;
     try {
-      // Privacy protection: scan for PII based on privacy level
+      // Strict privacy mode redacts PII before sending.
       let finalMsg = msg;
       const privacySettings = await window.openclaw.settings.get();
-      const privacyLevel = privacySettings?.privacyLevel ?? "balanced";
-      if (privacyLevel !== "basic") {
-        const piiMatches = scanPii(msg);
-        if (privacyLevel === "strict" && piiMatches.length > 0) {
-          // Auto-redact in strict mode
-          finalMsg = redactPii(msg);
-        }
-        // In balanced mode, piiMatches are available for UI warning (future)
+      const privacyLevel = privacySettings?.privacyLevel ?? "basic";
+      if (privacyLevel === "strict") {
+        const controls = hydratePrivacyControls("strict", privacySettings.privacyControls);
+        finalMsg = redactPii(msg, privacyControlsToScanOptions(controls));
       }
 
       // Optimistic: add user message locally
