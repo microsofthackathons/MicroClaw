@@ -10,6 +10,7 @@ export interface Session {
   updatedAt: number;
   preview: string; // last message snippet
   agentId?: string;
+  pinned?: boolean;
 }
 
 const STORAGE_KEY = "openclaw-sessions";
@@ -31,6 +32,7 @@ function saveToStorage(sessions: Session[]) {
 export const useSessionStore = defineStore("sessions", () => {
   const sessions = ref<Session[]>(loadFromStorage());
   const currentKey = ref<string | null>(null);
+  const gatewayTitles = ref<Record<string, string>>({});
 
   const sortedSessions = computed(() =>
     [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -94,6 +96,14 @@ export const useSessionStore = defineStore("sessions", () => {
     }
   }
 
+  function setGatewayTitles(titles: Readonly<Record<string, string>>) {
+    gatewayTitles.value = { ...titles };
+  }
+
+  function getDisplayTitle(session: Pick<Session, "key" | "title">) {
+    return gatewayTitles.value[session.key] || session.title;
+  }
+
   /** Remove a session. */
   function removeSession(key: string) {
     sessions.value = sessions.value.filter((s) => s.key !== key);
@@ -101,12 +111,18 @@ export const useSessionStore = defineStore("sessions", () => {
     saveToStorage(sessions.value);
   }
 
+  /** Toggle whether a session stays at the top of the sidebar. */
+  function togglePinned(key: string) {
+    const session = sessions.value.find((session) => session.key === key);
+    if (!session) return;
+
+    session.pinned = !session.pinned;
+    saveToStorage(sessions.value);
+  }
+
   /** Replace a local alias with its canonical Gateway key and merge duplicates. */
   function canonicalizeSession(aliasKey: string, canonicalKey: string) {
-    if (
-      aliasKey === AGENT_WARMUP_SESSION_KEY ||
-      canonicalKey === AGENT_WARMUP_SESSION_KEY
-    ) {
+    if (aliasKey === AGENT_WARMUP_SESSION_KEY || canonicalKey === AGENT_WARMUP_SESSION_KEY) {
       return;
     }
     if (!aliasKey || aliasKey === canonicalKey) return;
@@ -123,6 +139,7 @@ export const useSessionStore = defineStore("sessions", () => {
         title: newer.title !== defaultTitle ? newer.title : older.title,
         preview: newer.preview || older.preview,
         agentId: newer.agentId || older.agentId,
+        pinned: alias.pinned || canonical.pinned,
         createdAt: Math.min(alias.createdAt, canonical.createdAt),
         updatedAt: Math.max(alias.updatedAt, canonical.updatedAt),
       };
@@ -158,11 +175,15 @@ export const useSessionStore = defineStore("sessions", () => {
   return {
     sessions,
     currentKey,
+    gatewayTitles,
     sortedSessions,
     ensureSession,
     reconcileEmptySessions,
     updateSession,
+    setGatewayTitles,
+    getDisplayTitle,
     removeSession,
+    togglePinned,
     canonicalizeSession,
     clearAll,
     autoTitle,

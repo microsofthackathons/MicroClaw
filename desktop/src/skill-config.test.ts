@@ -31,9 +31,9 @@ describe("applyAgentSkillsToConfig", () => {
 
   it("passes through slugs that equal their frontmatter name", () => {
     const config: MutableSkillsConfig = {
-      agents: { list: [{ id: "coder", skills: ["stale"] }] },
+      agents: { list: [{ id: "code-geek", skills: ["stale"] }] },
     };
-    applyAgentSkillsToConfig(config, "coder", ["1password", "healthcheck"]);
+    applyAgentSkillsToConfig(config, "code-geek", ["1password", "healthcheck"]);
     const entry = (config.agents!.list as Array<{ id: string; skills: string[] }>)[0];
     expect(entry.skills).toEqual(["1password", "healthcheck"]);
   });

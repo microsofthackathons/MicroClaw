@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
@@ -6,8 +6,13 @@ import * as net from "net";
 import * as os from "os";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
-import { hardRestartGateway, requiresExternalGatewayStop } from "./gateway-lifecycle";
-import { createTray, destroyTray } from "./tray";
+import {
+  applyAgentRosterReload,
+  hardRestartGateway,
+  requiresExternalGatewayStop,
+} from "./gateway-lifecycle";
+import { createTray, destroyTray, updateTrayMenu } from "./tray";
+import { minimizeWindow, showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
@@ -17,15 +22,19 @@ import {
 } from "./skill-integrity";
 import { ToolSandbox } from "./tool-sandbox";
 import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
-import { StudioBackendManager } from "./studio-backend-manager";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
-import { prepareChatAttachments, validateChatAttachments } from "./chat-attachments";
+import {
+  prepareChatAttachments,
+  prepareClipboardImageAttachments,
+  validateChatAttachments,
+} from "./chat-attachments";
 import { prepareAttachmentForOpen } from "./attachment-open";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
+  validateInstallerOwnedUpgrade,
 } from "./openclaw-upgrade-recovery";
 import {
   getOpenClawStateDir,
@@ -98,6 +107,8 @@ import { assertConfigWriteAllowed } from "./config-write-policy";
 import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
+import { requiresPostSpawnChannelRestart } from "./post-spawn-restart";
+import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
   applyGlobalSkillChange,
@@ -130,7 +141,7 @@ function isSubdirectoryOf(parentDir: string, childDir: string): boolean {
 
 // Chromium selects an appropriate rendering backend, including on RDP. Force software rendering
 // only for environments where GPU startup is known to be incompatible.
-if (shouldDisableHardwareAcceleration(process.env)) {
+if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release())) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("no-sandbox");
   app.commandLine.appendSwitch("disable-gpu");
@@ -164,7 +175,7 @@ const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
 const settingsStore = new Store<{
   language?: string;
   autoStart: boolean;
-  startMinimized: boolean;
+  minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
   /** Apps that bypass AppContainer sandbox (need COM/RPC/named-pipes). */
@@ -185,7 +196,7 @@ const settingsStore = new Store<{
   name: "settings",
   defaults: {
     autoStart: false,
-    startMinimized: false,
+    minimizeToTray: false,
     themeMode: "light",
     accentColor: "#1e1f25",
     sandboxExternalApps: [
@@ -207,8 +218,6 @@ const settingsStore = new Store<{
   },
 });
 
-/** Module-level quit flag — replaces `(app as any).isQuitting`. */
-let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
@@ -216,6 +225,19 @@ let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
+const appStartupStartedAt = Date.now();
+
+function logStartupTiming(phase: string): void {
+  console.log(`[startup-timing] ${phase} +${Date.now() - appStartupStartedAt}ms`);
+}
+
+function setGatewayStatus(status: GatewayStatus): void {
+  gatewayStatus = status;
+  updateTrayMenu(status, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("gateway:status", status);
+  }
+}
 let weixinLoginProcess: ChildProcess | null = null;
 let pendingIntegrityResult: IntegrityResult | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -229,6 +251,43 @@ let gatewaySpawnedByUs = false;
 let agentRosterChangeInProgress = false;
 /** Tracks whether the post-spawn channel kick has already fired. */
 let postSpawnRestartDone = false;
+let postSpawnRestartRequired = false;
+const postInstallTransactionIndex = process.argv.indexOf("--post-install-transaction");
+const postInstallTransactionId =
+  postInstallTransactionIndex >= 0 ? process.argv[postInstallTransactionIndex + 1] : undefined;
+let postInstallReadySignaled = false;
+
+function signalPostInstallReady(): void {
+  if (!postInstallTransactionId || postInstallReadySignaled) return;
+  const readyDir = path.join(app.getPath("home"), ".microclaw", "upgrade");
+  const readyPath = path.join(readyDir, `desktop-ready-${postInstallTransactionId}.json`);
+  const temporary = `${readyPath}.${process.pid}.tmp`;
+  fs.mkdirSync(readyDir, { recursive: true });
+  fs.writeFileSync(
+    temporary,
+    JSON.stringify({ transactionId: postInstallTransactionId, pid: process.pid }),
+    "utf-8",
+  );
+  fs.renameSync(temporary, readyPath);
+  postInstallReadySignaled = true;
+  logStartupTiming("post-install-ready");
+}
+
+function signalPostInstallFailure(error: unknown): void {
+  if (!postInstallTransactionId) return;
+  const readyDir = path.join(app.getPath("home"), ".microclaw", "upgrade");
+  const readyPath = path.join(readyDir, `desktop-ready-${postInstallTransactionId}.json`);
+  fs.mkdirSync(readyDir, { recursive: true });
+  fs.writeFileSync(
+    readyPath,
+    JSON.stringify({
+      transactionId: postInstallTransactionId,
+      pid: process.pid,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+    "utf-8",
+  );
+}
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
 const githubCopilotAuthManager = new GitHubCopilotAuthManager(
@@ -242,9 +301,6 @@ const githubCopilotAuthManager = new GitHubCopilotAuthManager(
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
 let activeChatSession = "";
-/** Studio Node backend manager. */
-let studioBackendManager: StudioBackendManager | null = null;
-let studioBackendStatus: string = "stopped";
 /** Pending in-app permission requests (renderer UI replaces native dialogs). */
 const pendingPermissionRequests = new Map<
   string,
@@ -1277,8 +1333,7 @@ function failForExternalGateway(port: number): never {
   const message =
     `Agent configuration changed, but Gateway port ${port} is owned by another process. ` +
     "Stop that Gateway and retry so MicroClaw can apply the new roster safely.";
-  gatewayStatus = "failed";
-  mainWindow?.webContents.send("gateway:status", "failed");
+  setGatewayStatus("failed");
   mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
   throw new Error(message);
 }
@@ -1359,6 +1414,38 @@ function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
   }
 }
 
+async function applyGatewayAgentRoster(
+  agentId: string,
+  shouldExist: boolean,
+  restartGateway?: () => Promise<void>,
+) {
+  if (!gwClient?.connected) throw new Error("Gateway not connected");
+  return await applyAgentRosterReload({
+    listAgentIds: async () => {
+      const result = await gwClient!.listAgents();
+      if (!Array.isArray(result.agents))
+        throw new Error("OpenClaw returned an invalid agent roster");
+      return new Set(
+        result.agents.flatMap((candidate) => {
+          if (
+            typeof candidate !== "object" ||
+            candidate === null ||
+            typeof (candidate as { id?: unknown }).id !== "string"
+          ) {
+            return [];
+          }
+          return [(candidate as { id: string }).id];
+        }),
+      );
+    },
+    isApplied: (agentIds) => agentIds.has(agentId) === shouldExist,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    timeoutMs: 45_000,
+    pollMs: 100,
+    restartGateway,
+  });
+}
+
 async function addCatalogAgent(
   agentId: string,
 ): Promise<{ agents: Array<{ id: string; name: string }> }> {
@@ -1378,15 +1465,7 @@ async function addCatalogAgent(
     return { agents: listConfiguredAgents(config) };
   }
 
-  const alreadyRunning = await checkExistingGateway(gatewayPort);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
-  if (
-    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
-  ) {
-    throw new Error(
-      "Cannot add an agent while MicroClaw is connected to an externally managed Gateway",
-    );
-  }
 
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
@@ -1400,7 +1479,6 @@ async function addCatalogAgent(
   let restartAttempted = false;
 
   try {
-    persistAgentPersonas(config);
     seedAgentPersonaWorkspace(
       config,
       stateDir,
@@ -1410,8 +1488,25 @@ async function addCatalogAgent(
       os.homedir(),
       path.dirname(entryPath),
     );
-    restartAttempted = true;
-    await restartManagedGatewayAndRequireReady(`Adding agent ${agentId}`);
+    persistAgentPersonas(config);
+    const applyResult = await applyGatewayAgentRoster(
+      agentId,
+      true,
+      managedGateway
+        ? async () => {
+            restartAttempted = true;
+            await restartManagedGatewayAndRequireReady(
+              `Adding agent ${agentId} after hot-reload timeout`,
+            );
+          }
+        : undefined,
+    );
+    if (applyResult === "timed-out") {
+      throw new Error(
+        `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
+      );
+    }
+    console.log(`[agents] Added ${agentId} via ${applyResult}`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1427,9 +1522,7 @@ async function addCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent addition ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent addition ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -1438,6 +1531,7 @@ async function addCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to add agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
       );
     }
     throw error;
@@ -1464,21 +1558,29 @@ async function removeCatalogAgent(
     return { agents: listConfiguredAgents(config) };
   }
 
-  const alreadyRunning = await checkExistingGateway(gatewayPort);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
-  if (
-    requiresExternalGatewayStop(alreadyRunning, true, gatewaySpawnedByUs, gatewayProcess !== null)
-  ) {
-    throw new Error(
-      "Cannot remove an agent while MicroClaw is connected to an externally managed Gateway",
-    );
-  }
 
   let restartAttempted = false;
   try {
     persistAgentPersonas(config);
-    restartAttempted = true;
-    await restartManagedGatewayAndRequireReady(`Removing agent ${agentId}`);
+    const applyResult = await applyGatewayAgentRoster(
+      agentId,
+      false,
+      managedGateway
+        ? async () => {
+            restartAttempted = true;
+            await restartManagedGatewayAndRequireReady(
+              `Removing agent ${agentId} after hot-reload timeout`,
+            );
+          }
+        : undefined,
+    );
+    if (applyResult === "timed-out") {
+      throw new Error(
+        `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
+      );
+    }
+    console.log(`[agents] Removed ${agentId} via ${applyResult}`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1489,9 +1591,7 @@ async function removeCatalogAgent(
     }
     if (restartAttempted && managedGateway) {
       try {
-        await restartManagedGatewayAndRequireReady(
-          `Rolling back failed agent removal ${agentId}`,
-        );
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -1500,6 +1600,7 @@ async function removeCatalogAgent(
       throw new AggregateError(
         [error, ...rollbackErrors],
         `Failed to remove agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
       );
     }
     throw error;
@@ -1516,14 +1617,7 @@ const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
 );
-const LIGHT_WINDOW_BACKGROUND = "#ffffff";
-const DARK_WINDOW_BACKGROUND = "#18181b";
-
-function getWindowBackgroundColor(themeMode = settingsStore.get("themeMode")): string {
-  const useDarkBackground =
-    themeMode === "dark" || (themeMode === "system" && nativeTheme.shouldUseDarkColors);
-  return useDarkBackground ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND;
-}
+const TRANSPARENT_WINDOW_BACKGROUND = "#00000000";
 
 function _getRendererURL(): string {
   if (isDev) return VITE_DEV_URL;
@@ -1541,9 +1635,11 @@ function createMainWindow(): BrowserWindow {
     center: true,
     title: "MicroClaw",
     icon: APP_ICON_PATH,
-    show: !settingsStore.get("startMinimized"),
+    show: false,
+    skipTaskbar: false,
     titleBarStyle: "hidden",
-    backgroundColor: getWindowBackgroundColor(),
+    transparent: true,
+    backgroundColor: TRANSPARENT_WINDOW_BACKGROUND,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -1586,22 +1682,9 @@ function createMainWindow(): BrowserWindow {
   win.on("maximize", () => win.webContents.send("window:maximize-change", true));
   win.on("unmaximize", () => win.webContents.send("window:maximize-change", false));
 
-  // Minimize to tray instead of closing
-  win.on("close", (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      win.hide();
-    }
-  });
-
   Menu.setApplicationMenu(null);
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
-  const showWindowOnStartup = () => {
-    if (!settingsStore.get("startMinimized")) {
-      win.show();
-      win.focus();
-    }
-  };
+  const showWindowOnStartup = () => showAndFocusWindow(win);
   win.once("ready-to-show", showWindowOnStartup);
   win.webContents.once("did-finish-load", showWindowOnStartup);
 
@@ -1769,8 +1852,7 @@ async function restartManagedGateway(reason: string): Promise<void> {
   if (gatewayRestartPromise) return gatewayRestartPromise;
   const restart = (async () => {
     gatewayRestarting = true;
-    gatewayStatus = "restarting";
-    mainWindow?.webContents.send("gateway:status", "restarting");
+    setGatewayStatus("restarting");
     mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
     try {
       await hardRestartGateway({
@@ -1783,8 +1865,7 @@ async function restartManagedGateway(reason: string): Promise<void> {
         pollMs: 500,
       });
     } catch (error) {
-      gatewayStatus = "failed";
-      mainWindow?.webContents.send("gateway:status", "failed");
+      setGatewayStatus("failed");
       throw error;
     } finally {
       gatewayRestarting = false;
@@ -1895,8 +1976,7 @@ async function ensureGatewayConnected(): Promise<void> {
     // Gateway is up — if WS is not connected, reconnect
     if (!gwClient?.connected) {
       if (gatewayStatus !== "running") {
-        gatewayStatus = "running";
-        mainWindow?.webContents.send("gateway:status", "running");
+        setGatewayStatus("running");
       }
       connectGatewayWs();
     }
@@ -2114,6 +2194,7 @@ async function startGateway(): Promise<void> {
 }
 
 async function startGatewayInner(): Promise<void> {
+  logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   const config = readConfig();
   gatewayToken = config?.gateway?.auth?.token || "";
@@ -2131,6 +2212,8 @@ async function startGatewayInner(): Promise<void> {
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
+  postSpawnRestartRequired = requiresPostSpawnChannelRestart(readConfig());
+  if (!postSpawnRestartRequired) postSpawnRestartDone = true;
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
   const agentRosterChanged = preparedPersonas?.changed ?? false;
@@ -2139,6 +2222,7 @@ async function startGatewayInner(): Promise<void> {
   // Callers that need replacement use restartManagedGateway(), which stops the
   // old process and waits for the port before invoking this function.
   const alreadyRunning = await checkExistingGateway(configuredPort);
+  logStartupTiming("gateway-existing-check-complete");
   if (
     requiresExternalGatewayStop(
       alreadyRunning,
@@ -2158,8 +2242,7 @@ async function startGatewayInner(): Promise<void> {
   if (alreadyRunning && !agentRosterChanged) {
     console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
     gatewaySpawnedByUs = false;
-    gatewayStatus = "running";
-    mainWindow?.webContents.send("gateway:status", "running");
+    setGatewayStatus("running");
     connectGatewayWs();
     startHealthMonitor();
     return;
@@ -2171,6 +2254,7 @@ async function startGatewayInner(): Promise<void> {
 
   // Kill any old gateway on this port
   stopGatewayProcess();
+  logStartupTiming("gateway-stop-complete");
   await new Promise((r) => setTimeout(r, 1000));
 
   // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
@@ -2194,8 +2278,7 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
     );
-    gatewayStatus = "failed";
-    mainWindow?.webContents.send("gateway:status", "failed");
+    setGatewayStatus("failed");
     return;
   }
   if (!fs.existsSync(entryPath)) {
@@ -2206,8 +2289,7 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
     );
-    gatewayStatus = "failed";
-    mainWindow?.webContents.send("gateway:status", "failed");
+    setGatewayStatus("failed");
     return;
   }
 
@@ -2348,6 +2430,7 @@ async function startGatewayInner(): Promise<void> {
     "--allow-unconfigured",
   ];
 
+  logStartupTiming("gateway-spawn");
   const child = spawn(nodePath, gwArgs, {
     cwd: path.dirname(entryPath),
     env: gwEnv,
@@ -2393,8 +2476,7 @@ async function startGatewayInner(): Promise<void> {
     safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
     safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
     gatewayProcess = null;
-    gatewayStatus = "failed";
-    safeSendLog("gateway:status", "failed");
+    setGatewayStatus("failed");
   });
 
   child.on("exit", (code, signal) => {
@@ -2700,13 +2782,12 @@ async function startGatewayInner(): Promise<void> {
   });
 
   // Wait for gateway to become ready
-  gatewayStatus = "starting";
-  mainWindow?.webContents.send("gateway:status", "starting");
+  setGatewayStatus("starting");
 
   const ready = await waitForGatewayReady(configuredPort);
   if (ready) {
-    gatewayStatus = "running";
-    mainWindow?.webContents.send("gateway:status", "running");
+    logStartupTiming("gateway-ready");
+    setGatewayStatus("running");
   } else {
     mainWindow?.webContents.send(
       "gateway:log",
@@ -2716,8 +2797,7 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
     );
-    gatewayStatus = "timeout";
-    mainWindow?.webContents.send("gateway:status", "timeout");
+    setGatewayStatus("timeout");
   }
   // Always connect WS — even on timeout the gateway may start shortly after,
   // and GatewayClient has built-in reconnect with exponential backoff.
@@ -2760,8 +2840,7 @@ function connectGatewayWs(): void {
       wsAuthRestartInProgress = false;
       // Sync the status indicator — fixes "timeout" showing while WS is actually connected
       if (gatewayStatus !== "running") {
-        gatewayStatus = "running";
-        mainWindow?.webContents.send("gateway:status", "running");
+        setGatewayStatus("running");
       }
       const mainSessionKey = gwClient?.mainSessionKey;
 
@@ -2772,7 +2851,7 @@ function connectGatewayWs(): void {
       // announce connectivity now, the user can send a message that will be
       // killed when the restart fires seconds later (causing a 30s timeout).
       // The renderer will be notified on the SECOND onConnected (after restart).
-      if (gatewaySpawnedByUs && !postSpawnRestartDone) {
+      if (gatewaySpawnedByUs && postSpawnRestartRequired && !postSpawnRestartDone) {
         postSpawnRestartDone = true;
         console.log("[gateway-ws] post-spawn: deferring ws-connected until after restart");
         mainWindow?.webContents.send("gateway:log", "[startup] 正在重启网关以激活插件通道…");
@@ -2790,6 +2869,7 @@ function connectGatewayWs(): void {
       }
 
       mainWindow?.webContents.send("gateway:ws-connected", mainSessionKey || null);
+      signalPostInstallReady();
     },
     onDisconnected: (reason) => {
       console.log(`[gateway-ws] disconnected: ${reason}`);
@@ -3674,24 +3754,41 @@ function registerIpcHandlers(): void {
     });
     if (result.canceled) return { attachments: [], rejections: [] };
     const currentTotalBytes =
-      typeof params?.currentTotalBytes === "number" &&
-      Number.isFinite(params.currentTotalBytes)
+      typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
         ? Math.max(0, params.currentTotalBytes)
         : 0;
-    return prepareChatAttachments(
-      result.filePaths,
-      undefined,
-      undefined,
-      currentTotalBytes,
-    );
+    return prepareChatAttachments(result.filePaths, undefined, undefined, currentTotalBytes);
+  });
+
+  ipcMain.handle("logs:export-gateway", async (_event, lines: unknown) => {
+    if (!mainWindow) throw new Error("Main window is not available");
+    const contents = formatGatewayLogExport(lines);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: path.join(app.getPath("documents"), createGatewayLogExportFilename()),
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fs.promises.writeFile(result.filePath, contents, "utf-8");
+    return { canceled: false, filePath: result.filePath };
   });
 
   ipcMain.handle(
+    "attachment:import-clipboard-images",
+    async (_event, params?: { images?: unknown; currentTotalBytes?: number }) => {
+      const currentTotalBytes =
+        typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
+          ? Math.max(0, params.currentTotalBytes)
+          : 0;
+      return prepareClipboardImageAttachments(
+        params?.images,
+        app.getPath("temp"),
+        currentTotalBytes,
+      );
+    },
+  );
+
+  ipcMain.handle(
     "chat:send-message",
-    async (
-      _event,
-      params: { sessionKey: string; message: string; attachments?: unknown },
-    ) => {
+    async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
@@ -3706,6 +3803,16 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:load-history", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     return await gwClient.loadHistory(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:list-session-titles", async (_event, params: { keys: string[] }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listSessionTitles(params.keys);
+  });
+
+  ipcMain.handle("chat:generate-session-title", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.generateSessionTitle(params.sessionKey);
   });
 
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
@@ -4167,9 +4274,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:status", () => {
     const client = gwClient;
-    const queryGateway = client?.connected
-      ? () => client.request("models.authStatus")
-      : undefined;
+    const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
@@ -4430,9 +4535,8 @@ function registerIpcHandlers(): void {
     settingsStore.set(key as any, value);
     if (key === "autoStart") {
       app.setLoginItemSettings({ openAtLogin: !!value });
-    }
-    if (key === "themeMode" && mainWindow) {
-      mainWindow.setBackgroundColor(getWindowBackgroundColor(String(value)));
+    } else if (key === "language") {
+      updateTrayMenu(gatewayStatus, resolveSupportedLocale(String(value)));
     }
   });
 
@@ -4441,36 +4545,14 @@ function registerIpcHandlers(): void {
     return checkForUpdates({
       currentVersion: app.getVersion(),
       manifestUrl: UPDATE_MANIFEST_URL,
+      storeManaged: process.windowsStore,
     });
   });
 
-  // --- Studio Backend ---
-  ipcMain.handle("studio:start", async () => {
-    if (!studioBackendManager) {
-      const stateDir = getOpenClawStateDir();
-      studioBackendManager = new StudioBackendManager(stateDir);
-      studioBackendManager.on("status", (status: string) => {
-        studioBackendStatus = status;
-        mainWindow?.webContents.send("studio:status", status);
-      });
-    }
-    if (studioBackendManager.isRunning()) return studioBackendManager.getPort();
-    return studioBackendManager.start();
-  });
-  ipcMain.handle("studio:stop", () => {
-    if (studioBackendManager) {
-      studioBackendManager.stop();
-      studioBackendManager.removeAllListeners("status");
-      studioBackendManager = null;
-    }
-    studioBackendStatus = "stopped";
-    mainWindow?.webContents.send("studio:status", "stopped");
-  });
-  ipcMain.handle("studio:get-status", () => studioBackendStatus);
-  ipcMain.handle("studio:get-port", () => studioBackendManager?.getPort() ?? 0);
-
   // --- Window ---
-  ipcMain.handle("window:minimize", () => mainWindow?.minimize());
+  ipcMain.handle("window:minimize", () => {
+    minimizeWindow(mainWindow, settingsStore.get("minimizeToTray"));
+  });
   ipcMain.handle("window:maximize", () => {
     if (mainWindow?.isMaximized()) {
       mainWindow.unmaximize();
@@ -5484,11 +5566,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    showAndFocusWindow(mainWindow);
     // Ensure gateway is alive when user re-opens the app
     ensureGatewayConnected().catch((err) =>
       console.error("[second-instance] gateway reconnect failed:", err),
@@ -5497,19 +5575,33 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  logStartupTiming("app-ready");
   if (!settingsStore.has("language")) {
     settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
   }
 
   try {
     const home = app.getPath("home");
-    const recovery = recoverInterruptedOpenClawUpgrade(path.join(home, ".microclaw"), {
-      expectedStateDir: path.join(home, ".openclaw"),
-    });
-    if (recovery.status === "rolled-back") {
-      console.log("[upgrade] Restored the previous OpenClaw package and state");
+    const microclawRoot = path.join(home, ".microclaw");
+    const expectedStateDir = path.join(home, ".openclaw");
+    const installerOwnsUpgrade =
+      typeof postInstallTransactionId === "string" &&
+      validateInstallerOwnedUpgrade(microclawRoot, postInstallTransactionId, {
+        expectedStateDir,
+      });
+    if (!installerOwnsUpgrade) {
+      const recovery = recoverInterruptedOpenClawUpgrade(microclawRoot, {
+        expectedStateDir,
+      });
+      if (recovery.status === "rolled-back") {
+        console.log("[upgrade] Restored the previous OpenClaw package and state");
+      }
+    } else {
+      console.log(`[upgrade] Installer owns verifying transaction ${postInstallTransactionId}`);
     }
   } catch (error) {
+    signalPostInstallFailure(error);
+    console.error("[upgrade] Startup recovery failed:", error);
     const inProgress = error instanceof UpgradeInProgressError;
     dialog.showErrorBox(
       inProgress ? "MicroClaw upgrade in progress" : "OpenClaw recovery failed",
@@ -5528,10 +5620,7 @@ app.whenReady().then(async () => {
 
   const trayCallbacks = {
     onShowWindow: () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show();
-        mainWindow.focus();
-      }
+      showAndFocusWindow(mainWindow);
       // Ensure gateway is alive when user shows window from tray
       ensureGatewayConnected().catch((err) =>
         console.error("[tray-show] gateway reconnect failed:", err),
@@ -5542,11 +5631,8 @@ app.whenReady().then(async () => {
         console.error("[tray] Gateway restart failed:", error),
       );
     },
-    onQuit: () => {
-      isQuitting = true;
-    },
   };
-  createTray(trayCallbacks);
+  createTray(trayCallbacks, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
 
   // Skill integrity check — must run BEFORE loading renderer so
   // pendingIntegrityResult is ready when App.vue calls the IPC.
@@ -5560,6 +5646,14 @@ app.whenReady().then(async () => {
     console.log("Skill integrity check failed — changes detected");
     pendingIntegrityResult = integrityResult;
   }
+  logStartupTiming("integrity-complete");
+
+  // Gateway startup is independent of renderer loading. Starting it here lets
+  // the local UI and background service initialize concurrently.
+  logStartupTiming("gateway-requested");
+  startGateway().catch((err) => {
+    console.error("Failed to start gateway:", err);
+  });
 
   // Load the Vue renderer UI.
   if (isDev) {
@@ -5586,13 +5680,10 @@ app.whenReady().then(async () => {
       await mainWindow.loadFile(indexPath);
     }
   }
+  logStartupTiming("renderer-loaded");
 
   // Watch skill directories for mid-session changes
   startSkillFileWatcher();
-
-  startGateway().catch((err) => {
-    console.error("Failed to start gateway:", err);
-  });
 });
 
 app.on("window-all-closed", () => {
@@ -5602,7 +5693,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  isQuitting = true;
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   // Clean up skill file watchers
   for (const w of skillWatchers) {
@@ -5618,14 +5708,11 @@ app.on("before-quit", () => {
   destroyTray();
   githubCopilotAuthManager.stop();
   gwClient?.stop();
-  studioBackendManager?.stop();
   stopGatewayProcess();
 });
 
 app.on("activate", () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-  }
+  showAndFocusWindow(mainWindow);
   ensureGatewayConnected().catch((err) =>
     console.error("[activate] gateway reconnect failed:", err),
   );

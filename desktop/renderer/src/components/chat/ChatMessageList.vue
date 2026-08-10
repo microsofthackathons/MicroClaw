@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-messages" :class="{ 'chat-messages--studio-mode': studioMode }">
+  <div class="chat-messages">
     <!-- Loading (only shown on initial load, not background refresh) -->
     <div v-if="chatStore.loading && chatStore.messages.length === 0" class="chat-empty">
       <div class="chat-empty__hint">{{ t("chat.loading") }}</div>
@@ -7,23 +7,21 @@
 
     <!-- Empty state -->
     <div v-else-if="chatStore.messages.length === 0 && !chatStore.streaming" class="chat-empty">
-      <template v-if="!studioMode">
-        <div class="chat-empty__logo">
-          <svg
-            width="32"
-            height="32"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#fff"
-            stroke-width="2.2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-          </svg>
-        </div>
-        <div class="chat-empty__title">MicroClaw</div>
-      </template>
+      <div class="chat-empty__logo">
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#fff"
+          stroke-width="2.2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+        </svg>
+      </div>
+      <div class="chat-empty__title">MicroClaw</div>
       <div class="chat-empty__hint">{{ t("chat.emptyHint") }}</div>
     </div>
 
@@ -190,23 +188,6 @@
                 <!-- Thinking/reasoning content — skip per-message rendering; merged at group level below -->
                 <!-- Normal text content -->
                 <div class="chat-content-wrapper">
-                  <button class="chat-copy-btn" @click="copyMessage(getMessageText(msg))">
-                    {{ justCopied ? "&#x2713;" : ""
-                    }}<svg
-                      v-if="!justCopied"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
-                  </button>
                   <template
                     v-for="(seg, si) in getMessageSegments(msg, group.key + '-' + idx)"
                     :key="si"
@@ -297,6 +278,34 @@
                 </div>
               </template>
             </template>
+            <button
+              v-if="!isToolMessage(msg) && !isEditingMessage(group, idx)"
+              class="chat-copy-btn"
+              :title="
+                copiedMessageKey === group.key + '-' + idx ? t('chat.copied') : t('chat.copy')
+              "
+              :aria-label="
+                copiedMessageKey === group.key + '-' + idx ? t('chat.copied') : t('chat.copy')
+              "
+              @click.stop="copyMessage(getMessageText(msg), group.key + '-' + idx)"
+              @dblclick.stop
+            >
+              <span v-if="copiedMessageKey === group.key + '-' + idx">&#x2713;</span>
+              <svg
+                v-else
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -425,6 +434,28 @@
         <!-- Text output (hidden entirely when plan progress panel is visible during streaming) -->
         <div v-if="displayStreamText && !streamHasPlan" class="chat-bubble assistant streaming">
           <div class="chat-text" v-html="renderMarkdown(displayStreamText)"></div>
+          <button
+            class="chat-copy-btn"
+            :title="copiedMessageKey === 'streaming' ? t('chat.copied') : t('chat.copy')"
+            :aria-label="copiedMessageKey === 'streaming' ? t('chat.copied') : t('chat.copy')"
+            @click.stop="copyMessage(displayStreamText, 'streaming')"
+          >
+            <span v-if="copiedMessageKey === 'streaming'">&#x2713;</span>
+            <svg
+              v-else
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -494,11 +525,7 @@ import searchGif from "@/assets/openclaw_search_preview_transparent.gif";
 import bookGif from "@/assets/book.gif";
 import binocularsGif from "@/assets/binoculars.gif";
 import mapGif from "@/assets/map.gif";
-import defaultAvatar from "@/assets/normal.png";
-
-defineProps<{
-  studioMode?: boolean;
-}>();
+import defaultAvatar from "@/assets/main-avatar.png";
 
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
@@ -517,7 +544,7 @@ function openModelSettings() {
 
 const execPanelOpen = ref(true);
 const openHistoryPanels = ref(new Set<string>());
-const justCopied = ref(false);
+const copiedMessageKey = ref<string | null>(null);
 
 // ── Edit-message state ──
 const editingGroupKey = ref<string | null>(null);
@@ -878,11 +905,13 @@ function getGroupThinkingBlocks(group: MessageGroup): string[] {
   return parts;
 }
 
-async function copyMessage(content: string) {
+async function copyMessage(content: string, messageKey: string) {
   try {
     await navigator.clipboard.writeText(content);
-    justCopied.value = true;
-    setTimeout(() => (justCopied.value = false), 1500);
+    copiedMessageKey.value = messageKey;
+    setTimeout(() => {
+      if (copiedMessageKey.value === messageKey) copiedMessageKey.value = null;
+    }, 1500);
   } catch {
     /* Clipboard not available */
   }
@@ -973,8 +1002,18 @@ function handleEditKeydown(e: KeyboardEvent) {
   position: relative;
   display: inline-block;
   max-width: 100%;
+  margin-bottom: 24px;
   word-wrap: break-word;
   transition: border-color 0.15s;
+}
+
+.chat-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: 24px;
 }
 
 /* User bubble: dark rounded pill */
@@ -1104,9 +1143,9 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 .chat-copy-btn {
   position: absolute;
-  top: auto;
-  bottom: 0;
+  bottom: -24px;
   right: 0;
+  z-index: 1;
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -1116,13 +1155,14 @@ function handleEditKeydown(e: KeyboardEvent) {
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
   transition: opacity 0.12s;
 }
 
-.chat-content-wrapper:hover .chat-copy-btn {
+.chat-bubble:hover > .chat-copy-btn,
+.chat-copy-btn:hover,
+.chat-copy-btn:focus-visible {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .chat-copy-btn:hover {
@@ -1780,180 +1820,5 @@ function handleEditKeydown(e: KeyboardEvent) {
 .thinking-block__text :deep(ul) {
   margin: 2px 0;
   padding-left: 1.2em;
-}
-
-/* ══════════════════════════════════════════
-   Compact mode overrides (Studio overlay)
-   ══════════════════════════════════════════ */
-
-.chat-messages--studio-mode {
-  font-family: "Cascadia Code", "Consolas", monospace;
-}
-
-.chat-messages--studio-mode .chat-group {
-  margin-bottom: 8px;
-}
-
-.chat-messages--studio-mode .chat-group-messages {
-  max-width: 95%;
-}
-
-.chat-messages--studio-mode .chat-bubble.user {
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: rgba(59, 93, 138, 0.6);
-  border: 1px solid rgba(90, 130, 180, 0.4);
-  color: #e0eaff;
-  box-shadow: none;
-}
-
-.chat-messages--studio-mode .chat-bubble.assistant {
-  padding: 4px 0;
-  font-size: 12px;
-}
-
-.chat-messages--studio-mode .chat-bubble.assistant .chat-text {
-  background: rgba(20, 24, 38, 0.85);
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(80, 90, 120, 0.4);
-}
-
-.chat-messages--studio-mode .chat-bubble.assistant.streaming {
-  border-left-width: 2px;
-  padding-left: 8px;
-}
-
-.chat-messages--studio-mode .chat-text {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #d5ddf3;
-}
-
-.chat-messages--studio-mode .chat-group.user .chat-text {
-  color: #e0eaff;
-}
-
-.chat-messages--studio-mode .chat-text :deep(pre) {
-  background: rgba(0, 0, 0, 0.3);
-  padding: 6px 8px;
-  font-size: 11px;
-  border: 1px solid rgba(80, 90, 110, 0.3);
-}
-
-.chat-messages--studio-mode .chat-text :deep(code) {
-  font-size: 11px;
-  font-family: "Cascadia Code", "Consolas", monospace;
-}
-
-.chat-messages--studio-mode .chat-text :deep(p) {
-  margin: 4px 0;
-}
-
-.chat-messages--studio-mode .chat-text :deep(p:first-child) {
-  margin-top: 0;
-}
-
-.chat-messages--studio-mode .chat-text :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.chat-messages--studio-mode .chat-text :deep(ul),
-.chat-messages--studio-mode .chat-text :deep(ol) {
-  padding-left: 1.5em;
-  margin: 4px 0 8px;
-}
-
-.chat-messages--studio-mode .chat-copy-btn {
-  display: none;
-}
-
-.chat-messages--studio-mode .chat-empty {
-  padding-bottom: 20px;
-}
-
-.chat-messages--studio-mode .chat-empty__hint {
-  font-size: 12px;
-  color: #6b7a99;
-}
-
-.chat-messages--studio-mode .exec-panel {
-  border-radius: 6px;
-}
-
-.chat-messages--studio-mode .exec-panel__header {
-  padding: 6px 10px;
-}
-
-.chat-messages--studio-mode .exec-panel__title {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .exec-panel__count {
-  font-size: 10px;
-}
-
-.chat-messages--studio-mode .exec-panel__body {
-  padding: 2px 10px 8px;
-}
-
-.chat-messages--studio-mode .exec-step {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .exec-step__name {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .exec-step__meta {
-  font-size: 10px;
-  padding-left: 22px;
-}
-
-.chat-messages--studio-mode .exec-step__result {
-  font-size: 9px;
-  padding-left: 22px;
-  max-height: 120px;
-}
-
-.chat-messages--studio-mode .context-panel {
-  border-radius: 6px;
-}
-
-.chat-messages--studio-mode .context-panel__header {
-  padding: 6px 10px;
-}
-
-.chat-messages--studio-mode .context-panel__title {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .context-panel__body {
-  padding: 6px 10px 8px;
-}
-
-.chat-messages--studio-mode .context-panel__text {
-  font-size: 11px;
-  max-height: 200px;
-}
-
-/* Compact reading dots */
-.chat-messages--studio-mode .chat-reading-dots span {
-  width: 5px;
-  height: 5px;
-  background: #8899bb;
-}
-
-/* Compact edit */
-.chat-messages--studio-mode .chat-edit-input {
-  font-size: 12px;
-  padding: 6px 8px;
-  border-radius: 6px;
-}
-
-.chat-messages--studio-mode .chat-edit-btn {
-  font-size: 11px;
-  padding: 3px 10px;
 }
 </style>

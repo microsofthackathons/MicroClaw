@@ -1,10 +1,29 @@
 <template>
-  <div class="agent-market">
-    <div class="agent-market-header">
-      <h1 class="agent-market-title">{{ t("agentMarket.pageTitle") }}</h1>
+  <div class="agent-catalog">
+    <div class="agent-catalog-toolbar">
+      <div class="agent-catalog-tabs" role="tablist" :aria-label="t('agentCatalog.pageTitle')">
+        <button
+          class="agent-catalog-tab"
+          :class="{ active: activeTab === 'marketplace' }"
+          role="tab"
+          :aria-selected="activeTab === 'marketplace'"
+          @click="activeTab = 'marketplace'"
+        >
+          {{ t("agentCatalog.marketplace") }}
+        </button>
+        <button
+          class="agent-catalog-tab"
+          :class="{ active: activeTab === 'custom' }"
+          role="tab"
+          :aria-selected="activeTab === 'custom'"
+          @click="activeTab = 'custom'"
+        >
+          {{ t("agentCatalog.customAgents") }}
+        </button>
+      </div>
     </div>
 
-    <div class="agent-market-grid">
+    <div v-if="activeTab === 'marketplace'" class="agent-catalog-grid">
       <AgentCard
         v-for="agent in filteredAgents"
         :key="agent.id"
@@ -13,6 +32,11 @@
         @add="handleAdd"
         @remove="handleRemove"
       />
+    </div>
+
+    <div v-else class="custom-agent-empty">
+      <strong>{{ t("agentCatalog.noCustomAgents") }}</strong>
+      <span>{{ t("agentCatalog.noCustomAgentsHint") }}</span>
     </div>
   </div>
 </template>
@@ -28,6 +52,7 @@ import { t } from "@/i18n";
 const agentStore = useAgentStore();
 const { filteredAgents } = useAgentList(computed(() => agentStore.marketAgents));
 const addingAgentIds = ref(new Set<string>());
+const activeTab = ref<"marketplace" | "custom">("marketplace");
 
 async function handleAdd(agentId: string) {
   const agent = agentStore.marketAgents.find((candidate) => candidate.id === agentId);
@@ -45,7 +70,7 @@ async function handleAdd(agentId: string) {
 }
 
 async function handleRemove(agentId: string) {
-  const agent = agentStore.marketAgents.find((candidate) => candidate.id === agentId);
+  const agent = agentStore.agents.find((candidate) => candidate.id === agentId);
   if (!agent) return;
   try {
     await ElMessageBox.confirm(
@@ -71,39 +96,78 @@ async function handleRemove(agentId: string) {
 </script>
 
 <style scoped>
-.agent-market {
+.agent-catalog {
+  --ux-ctrl-brand-rest: var(--smtc-background-ctrl-brand-rest, #211d1a);
+  --ux-ctrl-on-brand: var(--smtc-foreground-ctrl-on-brand-rest, #fff);
+  --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, var(--text-muted));
+
   height: 100%;
   display: flex;
   flex-direction: column;
   padding: 32px;
   overflow-y: auto;
   background: var(--bg-primary);
-  border-radius: 12px;
   align-items: center;
 }
 
-.agent-market-header {
+.agent-catalog-toolbar {
   margin-bottom: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   width: 100%;
   max-width: 1080px;
 }
 
-.agent-market-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-  letter-spacing: -0.02em;
+.agent-catalog-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
-.agent-market-grid {
+.agent-catalog-tab {
+  padding: 4px 14px;
+  border: 1px solid var(--ux-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ux-text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.agent-catalog-tab.active {
+  background: var(--ux-ctrl-brand-rest);
+  color: var(--ux-ctrl-on-brand);
+  border-color: var(--ux-ctrl-brand-rest);
+}
+
+.agent-catalog-tab:not(.active):hover {
+  background: var(--ux-surface-hover);
+  color: var(--ux-text-primary);
+}
+
+.agent-catalog-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: clamp(16px, 2vw, 24px);
   width: 100%;
   max-width: 1080px;
+}
+
+.custom-agent-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 1080px;
+  padding: 72px 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.custom-agent-empty strong {
+  color: var(--text-primary);
+  font-size: 15px;
 }
 </style>

@@ -85,6 +85,19 @@ class UninstallerBundleTests(unittest.TestCase):
             any(path.name.startswith(".microclaw-uninstaller-") for path in state.iterdir())
         )
 
+    def test_identical_bundle_skips_republish_and_startup_check(self):
+        source = self._write_bundle(self.root / "source")
+        state = self._write_bundle(self.root / "state")
+        startup_check = unittest.mock.Mock()
+
+        published = publish_uninstaller_bundle(source, state, startup_check)
+
+        self.assertEqual(published, state / "MicroClawInstaller.exe")
+        startup_check.assert_not_called()
+        self.assertFalse(
+            any(path.name.startswith(".microclaw-uninstaller-") for path in state.iterdir())
+        )
+
     def test_manifest_mismatch_does_not_replace_existing_bundle(self):
         source = self._write_bundle(self.root / "source", "new")
         state = self._write_bundle(self.root / "state", "old")

@@ -49,4 +49,21 @@ describe("i18n", () => {
     expect(t("store.defaultAgent")).toBe("阿虾");
     setLocale("en-US"); // restore
   });
+
+  it("Code Geek catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.codeGeek.name")).toBe("Code Geek");
+    setLocale("zh-CN");
+    expect(t("agent.codeGeek.name")).toBe("灵码极客");
+    setLocale("en-US"); // restore
+  });
+
+  it("localizes Agent Team and Agent Catalog navigation in zh-CN", () => {
+    setLocale("zh-CN");
+    expect(t("sidebar.agents")).toBe("智能体团队");
+    expect(t("agentCatalog.pageTitle")).toBe("智能体目录");
+    expect(t("agentCatalog.marketplace")).toBe("智能体市场");
+    expect(t("agentCatalog.customAgents")).toBe("自定义智能体");
+    setLocale("en-US");
+  });
 });

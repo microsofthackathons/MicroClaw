@@ -1,13 +1,29 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import {
   recoverInterruptedOpenClawUpgrade,
+  processIsAlive,
   UpgradeInProgressError,
+  validateInstallerOwnedUpgrade,
 } from "./openclaw-upgrade-recovery";
 
 const roots: string[] = [];
+
+describe("processIsAlive", () => {
+  for (const code of ["EPERM", "EACCES"]) {
+    it(`treats ${code} as an existing elevated process`, () => {
+      vi.spyOn(process, "kill").mockImplementation(() => {
+        const error = new Error("access denied") as NodeJS.ErrnoException;
+        error.code = code;
+        throw error;
+      });
+
+      expect(processIsAlive(1234)).toBe(true);
+    });
+  }
+});
 
 function fixture(phase = "installing") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-upgrade-"));
@@ -53,15 +69,13 @@ function fixture(phase = "installing") {
     validation_results: {},
   };
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  fs.writeFileSync(
-    lockPath,
-    JSON.stringify({
-      schema: 1,
-      owner_pid: 999999,
-      transaction_id: transactionId,
-      owner_token: "dead",
-    }),
-  );
+  const lockPayload = JSON.stringify({
+    schema: 1,
+    owner_pid: 999999,
+    transaction_id: transactionId,
+    owner_token: "dead",
+  });
+  fs.writeFileSync(lockPath, lockPayload + " ".repeat(4096 - lockPayload.length));
   return {
     microclawRoot,
     prefix,
@@ -75,6 +89,7 @@ function fixture(phase = "installing") {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -95,6 +110,30 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
     expect(fs.readFileSync(path.join(item.stateDir, "state.txt"), "utf-8")).toBe("old-state");
     expect(fs.readFileSync(item.shim, "utf-8")).toBe("@old");
     expect(JSON.parse(fs.readFileSync(item.manifestPath, "utf-8")).phase).toBe("rolled-back");
+  });
+
+  it("restores only declared schema 2 managed state", () => {
+    const item = fixture();
+    const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
+    manifest.schema_version = 2;
+    manifest.backup_mode = "managed-state";
+    manifest.managed_paths = ["openclaw.json"];
+    fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
+    fs.writeFileSync(path.join(item.stateDir, "openclaw.json"), "new-config");
+    fs.writeFileSync(path.join(item.backupDir, "state", "openclaw.json"), "old-config");
+    fs.writeFileSync(path.join(item.stateDir, "unrelated.txt"), "keep");
+
+    const result = recoverInterruptedOpenClawUpgrade(item.microclawRoot, {
+      expectedStateDir: item.stateDir,
+      trustedPrefixes: [item.prefix],
+      processIsAlive: () => false,
+    });
+
+    expect(result.status).toBe("rolled-back");
+    expect(fs.readFileSync(path.join(item.stateDir, "openclaw.json"), "utf-8")).toBe("old-config");
+    expect(fs.readFileSync(path.join(item.stateDir, "unrelated.txt"), "utf-8")).toBe("keep");
+    expect(fs.readFileSync(path.join(item.packageDir, "version.txt"), "utf-8")).toBe("new");
+    expect(fs.readFileSync(item.shim, "utf-8")).toBe("@new");
   });
 
   it("does not mutate live data while an installer owns the lock", () => {
@@ -157,5 +196,67 @@ describe("recoverInterruptedOpenClawUpgrade", () => {
         processIsAlive: () => false,
       }),
     ).toThrow(/backup directory/);
+  });
+});
+
+describe("validateInstallerOwnedUpgrade", () => {
+  it("accepts a matching verifying transaction owned by a live installer", () => {
+    const item = fixture("verifying");
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", {
+        expectedStateDir: item.stateDir,
+        trustedPrefixes: [item.prefix],
+        processIsAlive: (pid) => pid === 999999,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts schema 2 with explicit managed paths", () => {
+    const item = fixture("verifying");
+    const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
+    manifest.schema_version = 2;
+    manifest.backup_mode = "managed-state";
+    manifest.managed_paths = ["openclaw.json", "skills"];
+    fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", {
+        expectedStateDir: item.stateDir,
+        trustedPrefixes: [item.prefix],
+        processIsAlive: (pid) => pid === 999999,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects schema 2 paths outside installer-owned state", () => {
+    const item = fixture("verifying");
+    const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
+    manifest.schema_version = 2;
+    manifest.backup_mode = "managed-state";
+    manifest.managed_paths = ["../outside"];
+    fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", {
+        expectedStateDir: item.stateDir,
+        trustedPrefixes: [item.prefix],
+        processIsAlive: (pid) => pid === 999999,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a mismatched transaction or dead installer", () => {
+    const item = fixture("verifying");
+    const options = {
+      expectedStateDir: item.stateDir,
+      trustedPrefixes: [item.prefix],
+      processIsAlive: () => false,
+    };
+
+    expect(
+      validateInstallerOwnedUpgrade(item.microclawRoot, "20260720T000000Z-1234abcd", options),
+    ).toBe(false);
+    expect(validateInstallerOwnedUpgrade(item.microclawRoot, "other", options)).toBe(false);
   });
 });

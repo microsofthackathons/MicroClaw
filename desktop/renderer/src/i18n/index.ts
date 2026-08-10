@@ -13,6 +13,9 @@ const currentLocale = ref<Locale>("en-US");
 
 export function setLocale(locale: Locale) {
   currentLocale.value = locale;
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = locale;
+  }
 }
 
 export function getLocale(): Locale {

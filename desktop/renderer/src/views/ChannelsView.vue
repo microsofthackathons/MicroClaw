@@ -432,6 +432,10 @@ function goToWeixinChat() {
   margin-bottom: 24px;
 }
 
+.channels-view.embedded .view-header {
+  margin-bottom: 8px;
+}
+
 .view-header h2 {
   font-size: 20px;
   font-weight: 600;

@@ -28,7 +28,25 @@ type UpgradeManifest = {
   created_at: string;
   updated_at: string;
   validation_results: Record<string, boolean>;
+  backup_mode?: "full" | "managed-state";
+  managed_paths?: string[];
 };
+
+const managedStatePaths = new Set([
+  ".env",
+  "openclaw.json",
+  "skill_catalog.json",
+  "managed_skill_catalog.json",
+  "skills",
+  "skills_snapshot.json",
+  "skills_snapshot.sig",
+  "skills_signing_key.pub",
+  "skills_signing_key.pem",
+  "microclaw.ico",
+  "microclaw-uninstall.ico",
+  "MicroClawInstaller.exe",
+  "_internal",
+]);
 
 type ClaimedLock = {
   complete(success: boolean): void;
@@ -44,6 +62,11 @@ export type UpgradeRecoveryOptions = {
   processIsAlive?: (pid: number) => boolean;
   claimLock?: (lockPath: string, processIsAlive: (pid: number) => boolean) => ClaimedLock;
 };
+
+export type InstallerOwnedUpgradeOptions = Pick<
+  UpgradeRecoveryOptions,
+  "expectedStateDir" | "trustedPrefixes" | "processIsAlive"
+>;
 
 export class UpgradeInProgressError extends Error {}
 
@@ -74,12 +97,13 @@ function strictChildOf(candidate: string, root: string): boolean {
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return true;
     return false;
   }
 }
@@ -184,6 +208,30 @@ function restoreTree(backup: string, live: string, failed: string, existed: bool
   if (staging) fs.renameSync(staging, live);
 }
 
+function restoreManagedState(manifest: UpgradeManifest, failedRoot: string): void {
+  const relativePaths =
+    manifest.schema_version === 1 ? [...managedStatePaths] : (manifest.managed_paths ?? []);
+  for (const relative of relativePaths) {
+    const backup = path.join(manifest.backup_dir, "state", relative);
+    const live = path.join(manifest.state_dir, relative);
+    const failed = path.join(failedRoot, "state", relative);
+    if (fs.existsSync(backup) && fs.statSync(backup).isDirectory()) {
+      restoreTree(backup, live, failed, true);
+      continue;
+    }
+
+    let staging: string | null = null;
+    if (fs.existsSync(backup)) {
+      fs.mkdirSync(path.dirname(live), { recursive: true });
+      staging = path.join(path.dirname(live), `.${path.basename(live)}.${randomUUID()}.restore`);
+      fs.copyFileSync(backup, staging);
+      fsyncFile(staging);
+    }
+    quarantine(live, failed);
+    if (staging) fs.renameSync(staging, live);
+  }
+}
+
 function readJsonObject(filePath: string): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
@@ -195,13 +243,30 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
   }
 }
 
+function readLockObject(lockPath: string): Record<string, unknown> | null {
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(lockPath, "r");
+    const buffer = Buffer.alloc(1024);
+    const length = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const value: unknown = JSON.parse(buffer.subarray(0, length).toString("utf-8").trim());
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
 function defaultClaimLock(lockPath: string, isProcessAlive: (pid: number) => boolean): ClaimedLock {
   if (process.platform !== "win32") {
     throw new UpgradeInProgressError("automatic upgrade recovery is only supported on Windows");
   }
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   if (fs.existsSync(lockPath)) {
-    const payload = readJsonObject(lockPath);
+    const payload = readLockObject(lockPath);
     const ownerPid = payload?.owner_pid;
     if (typeof ownerPid === "number" && isProcessAlive(ownerPid)) {
       throw new UpgradeInProgressError(`installer process ${ownerPid} is still upgrading OpenClaw`);
@@ -249,8 +314,27 @@ function validateManifest(
   expectedStateDir: string,
   trustedPrefixes: string[],
 ): void {
-  if (manifest.schema_version !== 1) {
+  if (![1, 2].includes(manifest.schema_version)) {
     throw new Error("unsupported upgrade manifest schema");
+  }
+  if (manifest.schema_version === 1 && manifest.managed_paths !== undefined) {
+    throw new Error("schema 1 manifest cannot declare managed paths");
+  }
+  if (manifest.schema_version === 2) {
+    const managedPaths = manifest.managed_paths;
+    if (
+      !Array.isArray(managedPaths) ||
+      managedPaths.some((value) => typeof value !== "string" || !managedStatePaths.has(value)) ||
+      new Set(managedPaths).size !== managedPaths.length
+    ) {
+      throw new Error("schema 2 manifest contains invalid managed paths");
+    }
+    if (manifest.backup_mode === "full" && managedPaths.length > 0) {
+      throw new Error("full backup manifest cannot declare managed paths");
+    }
+    if (!new Set(["full", "managed-state"]).has(manifest.backup_mode ?? "")) {
+      throw new Error("schema 2 manifest has invalid backup mode");
+    }
   }
   if (!/^\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(manifest.transaction_id)) {
     throw new Error("invalid upgrade transaction ID");
@@ -295,6 +379,51 @@ function persistManifest(manifestPath: string, manifest: UpgradeManifest): void 
   atomicJsonWrite(manifestPath, manifest);
 }
 
+export function validateInstallerOwnedUpgrade(
+  microclawRoot: string,
+  transactionId: string,
+  options: InstallerOwnedUpgradeOptions = {},
+): boolean {
+  const manifestPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.json");
+  const lockPath = path.join(microclawRoot, "upgrade", "openclaw-upgrade.lock");
+  if (!fs.existsSync(manifestPath) || !fs.existsSync(lockPath)) return false;
+
+  try {
+    const manifest = parseManifest(manifestPath);
+    const expectedStateDir =
+      options.expectedStateDir ?? path.join(process.env.USERPROFILE || "", ".openclaw");
+    validateManifest(
+      manifest,
+      microclawRoot,
+      expectedStateDir,
+      options.trustedPrefixes ?? defaultTrustedPrefixes(),
+    );
+    const lock = readLockObject(lockPath);
+    const processAlive = options.processIsAlive ?? processIsAlive;
+    if (manifest.phase !== "verifying") {
+      throw new Error(`transaction phase is ${manifest.phase}, expected verifying`);
+    }
+    if (manifest.transaction_id !== transactionId) {
+      throw new Error("manifest transaction ID does not match launch argument");
+    }
+    if (lock?.transaction_id !== transactionId) {
+      throw new Error("lock transaction ID does not match launch argument");
+    }
+    if (lock?.owner_pid !== manifest.owner_pid) {
+      throw new Error("lock owner PID does not match manifest owner");
+    }
+    if (!processAlive(manifest.owner_pid)) {
+      throw new Error(`installer process ${manifest.owner_pid} is not observable`);
+    }
+    return true;
+  } catch (error) {
+    console.error(
+      `[upgrade] Installer handoff rejected: ${error instanceof Error ? error.message : error}`,
+    );
+    return false;
+  }
+}
+
 export function recoverInterruptedOpenClawUpgrade(
   microclawRoot: string,
   options: UpgradeRecoveryOptions = {},
@@ -329,32 +458,36 @@ export function recoverInterruptedOpenClawUpgrade(
     persistManifest(manifestPath, manifest);
     const failedRoot = path.join(manifest.backup_dir, "failed");
     fs.mkdirSync(failedRoot, { recursive: true });
-    restoreTree(
-      path.join(manifest.backup_dir, "package"),
-      manifest.package_dir,
-      path.join(failedRoot, "package"),
-      manifest.package_existed,
-    );
-    for (const shim of manifest.shim_paths) {
-      const backupShim = path.join(manifest.backup_dir, "shims", path.basename(shim));
-      if (fs.existsSync(backupShim)) {
-        const staging = path.join(
-          path.dirname(shim),
-          `.${path.basename(shim)}.${randomUUID()}.restore`,
-        );
-        fs.copyFileSync(backupShim, staging);
-        fsyncFile(staging);
-        fs.renameSync(staging, shim);
-      } else {
-        removePath(shim);
+    if (manifest.backup_mode === "managed-state") {
+      restoreManagedState(manifest, failedRoot);
+    } else {
+      restoreTree(
+        path.join(manifest.backup_dir, "package"),
+        manifest.package_dir,
+        path.join(failedRoot, "package"),
+        manifest.package_existed,
+      );
+      for (const shim of manifest.shim_paths) {
+        const backupShim = path.join(manifest.backup_dir, "shims", path.basename(shim));
+        if (fs.existsSync(backupShim)) {
+          const staging = path.join(
+            path.dirname(shim),
+            `.${path.basename(shim)}.${randomUUID()}.restore`,
+          );
+          fs.copyFileSync(backupShim, staging);
+          fsyncFile(staging);
+          fs.renameSync(staging, shim);
+        } else {
+          removePath(shim);
+        }
       }
+      restoreTree(
+        path.join(manifest.backup_dir, "state"),
+        manifest.state_dir,
+        path.join(failedRoot, "state"),
+        manifest.state_existed,
+      );
     }
-    restoreTree(
-      path.join(manifest.backup_dir, "state"),
-      manifest.state_dir,
-      path.join(failedRoot, "state"),
-      manifest.state_existed,
-    );
     manifest.phase = "rolled-back";
     persistManifest(manifestPath, manifest);
     claim.complete(true);

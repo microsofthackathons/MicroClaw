@@ -6,6 +6,7 @@ const mockLoadHistory = vi.fn().mockResolvedValue({ messages: [] });
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockAbort = vi.fn().mockResolvedValue(undefined);
 const mockDeleteSession = vi.fn().mockResolvedValue(undefined);
+const mockGenerateSessionTitle = vi.fn().mockResolvedValue("Summary title");
 const mockIsConnected = vi.fn().mockResolvedValue(false);
 
 Object.defineProperty(globalThis, "window", {
@@ -17,6 +18,7 @@ Object.defineProperty(globalThis, "window", {
         sendMessage: mockSendMessage,
         abort: mockAbort,
         deleteSession: mockDeleteSession,
+        generateSessionTitle: mockGenerateSessionTitle,
         isConnected: mockIsConnected,
         onEvent: vi.fn(),
         onToolEvent: vi.fn(),
@@ -309,12 +311,13 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.lastStreamEventAt).toBeLessThanOrEqual(Date.now());
   });
 
-  it("handleChatEvent clears lastStreamEventAt on final", () => {
+  it("handleChatEvent clears stream state and generates a summary title on final", async () => {
     const store = useChatStore();
     store.streaming = true;
     store.sessionKey = "main";
     store.resolvedSessionKey = "agent:main:main";
     (store as any).lastStreamEventAt = Date.now();
+    const initialTitleRefreshRevision = store.sessionTitleRefreshRevision;
 
     store.handleChatEvent({
       runId: "r1",
@@ -325,6 +328,11 @@ describe("useChatStore — stale stream recovery", () => {
 
     expect(store.streaming).toBe(false);
     expect(store.lastStreamEventAt).toBeNull();
+    expect(store.sessionTitleRefreshRevision).toBe(initialTitleRefreshRevision + 1);
+    expect(mockGenerateSessionTitle).toHaveBeenCalledWith("agent:main:main");
+    await vi.waitFor(() => {
+      expect(store.sessionTitleRefreshRevision).toBe(initialTitleRefreshRevision + 2);
+    });
   });
 
   it("handleChatEvent clears lastStreamEventAt on aborted", () => {
@@ -1261,6 +1269,12 @@ function readVueTemplate(relativePath: string): string {
 }
 
 describe("template structure guards", () => {
+  it("ChatView wires clipboard paste through the image attachment handler", () => {
+    const content = readVueTemplate("views/ChatView.vue");
+    expect(content).toContain('@paste="handlePaste"');
+    expect(content).toContain("window.openclaw.attachment.importClipboardImages");
+  });
+
   // Guard against the thinking panel v-else-if regression:
   // hasThinking must NOT appear in a v-else-if directive, because that makes
   // the thinking panel mutually exclusive with the text content rendering.

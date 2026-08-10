@@ -11,13 +11,15 @@ describe("agent store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     setLocale("en-US");
-    agentsList
-      .mockReset()
-      .mockResolvedValue({ agents: [{ id: "main", name: "Assistant" }] });
+    agentsList.mockReset().mockResolvedValue({ agents: [{ id: "main", name: "Assistant" }] });
     agentsAdd.mockReset();
     agentsRemove.mockReset();
     window.openclaw = {
-      agents: { list: agentsList, add: agentsAdd, remove: agentsRemove },
+      agents: {
+        list: agentsList,
+        add: agentsAdd,
+        remove: agentsRemove,
+      },
     } as unknown as typeof window.openclaw;
   });
 
@@ -38,9 +40,7 @@ describe("agent store", () => {
 
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
     const store = useAgentStore();
-    const marketAgent = store.marketAgents.find(
-      (entry) => entry.id === "master-archive",
-    );
+    const marketAgent = store.marketAgents.find((entry) => entry.id === "master-archive");
 
     expect(marketAgent).toMatchObject({
       name: "Master Archive",
@@ -58,22 +58,16 @@ describe("agent store", () => {
     await store.addAgent("master-archive");
 
     expect(agentsAdd).toHaveBeenCalledWith("master-archive");
-    expect(store.agents.map((agent) => agent.id)).toEqual([
-      "main",
-      "master-archive",
-    ]);
-    expect(
-      store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
-    ).toBe(true);
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "master-archive"]);
+    expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(true);
   });
 
-  it("presents Code Geek through the compatible coder runtime id", () => {
+  it("presents the Code Geek engineering scenarios", () => {
     const store = useAgentStore();
 
-    expect(store.marketAgents.find((entry) => entry.id === "coder")).toMatchObject({
+    expect(store.marketAgents.find((entry) => entry.id === "code-geek")).toMatchObject({
       name: "Code Geek",
-      description:
-        "Expert engineering for app prototypes, code audits, and build failures",
+      description: "Expert engineering for app prototypes, code audits, and build failures",
       tags: ["App Prototyping", "Code Audits", "Build Diagnostics"],
       isAdded: false,
     });
@@ -83,13 +77,9 @@ describe("agent store", () => {
     const store = useAgentStore();
     agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));
 
-    await expect(store.addAgent("master-archive")).rejects.toThrow(
-      "Gateway restart failed",
-    );
+    await expect(store.addAgent("master-archive")).rejects.toThrow("Gateway restart failed");
     expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
-    expect(
-      store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
-    ).toBe(false);
+    expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(false);
   });
 
   it("removes an agent and selects main when the removed agent was active", async () => {
@@ -111,9 +101,7 @@ describe("agent store", () => {
     expect(agentsRemove).toHaveBeenCalledWith("master-archive");
     expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
     expect(store.currentAgentId).toBe("main");
-    expect(
-      store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded,
-    ).toBe(false);
+    expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(false);
   });
 
   it("keeps the installed agent when Remove fails", async () => {
@@ -127,13 +115,8 @@ describe("agent store", () => {
     await store.fetchAgents();
     agentsRemove.mockRejectedValueOnce(new Error("Gateway restart failed"));
 
-    await expect(store.removeAgent("master-archive")).rejects.toThrow(
-      "Gateway restart failed",
-    );
-    expect(store.agents.map((agent) => agent.id)).toEqual([
-      "main",
-      "master-archive",
-    ]);
+    await expect(store.removeAgent("master-archive")).rejects.toThrow("Gateway restart failed");
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "master-archive"]);
   });
 
   it("preserves the last real roster when refresh fails", async () => {

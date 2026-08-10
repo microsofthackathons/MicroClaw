@@ -135,6 +135,7 @@ export const useChatStore = defineStore("chat", () => {
   const loading = ref(false);
   const sending = ref(false);
   const streaming = ref(false);
+  const sessionTitleRefreshRevision = ref(0);
   const streamText = ref("");
   const streamToolCalls = ref<
     {
@@ -1019,6 +1020,11 @@ export const useChatStore = defineStore("chat", () => {
       streamTextOffset.value = 0;
       _toolPhaseActive.value = false;
       streaming.value = false;
+      sessionTitleRefreshRevision.value++;
+      void window.openclaw.chat.generateSessionTitle(payload.sessionKey).then(
+        () => sessionTitleRefreshRevision.value++,
+        () => undefined,
+      );
       chatRunId.value = null;
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
@@ -1088,7 +1094,8 @@ export const useChatStore = defineStore("chat", () => {
 
     const { phase, name, toolCallId, meta } = payload.data;
     const args = (payload.data as Record<string, unknown>).args as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
     if (phase === "start") {
       // Build a descriptive display name combining tool name + primary argument
       let displayName = name;
@@ -1432,6 +1439,11 @@ export const useChatStore = defineStore("chat", () => {
         ];
       }
       cached.streaming = false;
+      sessionTitleRefreshRevision.value++;
+      void window.openclaw.chat.generateSessionTitle(payload.sessionKey).then(
+        () => sessionTitleRefreshRevision.value++,
+        () => undefined,
+      );
       cached.streamText = "";
       cached.chatRunId = null;
       cached.streamStartedAt = null;
@@ -1574,6 +1586,7 @@ export const useChatStore = defineStore("chat", () => {
     loading,
     sending,
     streaming,
+    sessionTitleRefreshRevision,
     streamText,
     streamTextOffset,
     streamToolCalls,

@@ -2,9 +2,6 @@
   <div class="settings-view">
     <!-- Left sidebar: icon grid nav -->
     <div class="settings-sidebar">
-      <div class="settings-title">
-        {{ t("settings.title") }}
-      </div>
       <div class="menu-list">
         <div
           v-for="item in menuItems"
@@ -20,25 +17,35 @@
     </div>
 
     <!-- Right content: grouped card rows -->
-    <div class="settings-content">
+    <div
+      class="settings-content"
+      :class="{ 'settings-content--skills': devSettingsEnabled && activeSection === 'skills' }"
+    >
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
         <div class="section-label">{{ t("settings.application") }}</div>
         <div class="card-group">
           <div class="card-row">
-            <span class="row-label">{{ t("settings.language") }}</span>
-            <el-select v-model="settings.language" style="width: 140px">
-              <el-option label="简体中文" value="zh-CN" />
-              <el-option label="English" value="en-US" />
-            </el-select>
+            <label class="row-label" for="settings-language-select">
+              {{ t("settings.language") }}
+            </label>
+            <select
+              id="settings-language-select"
+              v-model="settings.language"
+              class="language-select"
+              :aria-label="t('settings.language')"
+            >
+              <option value="zh-CN">简体中文</option>
+              <option value="en-US">English</option>
+            </select>
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.autoStart") }}</span>
             <el-switch v-model="settings.autoStart" />
           </div>
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.startMinimized") }}</span>
-            <el-switch v-model="settings.startMinimized" />
+            <span class="row-label">{{ t("settings.minimizeToTray") }}</span>
+            <el-switch v-model="settings.minimizeToTray" />
           </div>
         </div>
 
@@ -51,6 +58,41 @@
               <el-radio value="dark">{{ t("settings.themeDark") }}</el-radio>
               <el-radio value="system">{{ t("settings.themeSystem") }}</el-radio>
             </el-radio-group>
+          </div>
+        </div>
+
+        <div class="sub-label">{{ t("settings.gateway") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.connectionStatus") }}</span>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span
+                class="status-indicator"
+                :class="
+                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
+                "
+              >
+                <span class="status-dot"></span>
+                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+              </span>
+              <el-button size="small" @click="restartGateway">{{
+                t("settings.restart")
+              }}</el-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sub-label">{{ t("settings.logs") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.gatewayLog") }}</span>
+            <el-button
+              size="small"
+              :loading="exportingGatewayLogs"
+              :disabled="gateway.logs.length === 0"
+              @click="exportGatewayLogs"
+              >{{ t("settings.export") }}</el-button
+            >
           </div>
         </div>
       </div>
@@ -86,7 +128,8 @@
             <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
               <span class="row-label">{{ t("settings.totalSpend") }}</span>
               <span class="row-value usage-spend"
-                >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
+                >{{ t("settings.currencySymbol")
+                }}{{ toCny(usageData.totalSpend).toFixed(2) }}</span
               >
             </div>
             <div v-if="usageData.maxBudget" class="card-row no-border">
@@ -94,7 +137,8 @@
               <div class="budget-bar-wrapper">
                 <span class="row-value"
                   >{{ t("settings.currencySymbol") }}{{ toCny(usageData.totalSpend).toFixed(2) }} /
-                  {{ t("settings.currencySymbol") }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
+                  {{ t("settings.currencySymbol")
+                  }}{{ toCny(usageData.maxBudget).toFixed(2) }}</span
                 >
                 <div class="budget-bar">
                   <div
@@ -170,7 +214,6 @@
               </div>
             </div>
           </template>
-
         </template>
 
         <div class="section-footer">{{ t("settings.usageFooter") }}</div>
@@ -286,7 +329,7 @@
               <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
           </div>
-          <div class="card-row no-border api-key-row">
+          <div v-if="activeSearchProvider.requiresKey" class="card-row no-border api-key-row">
             <span class="row-label">{{ t("settings.apiKey") }}</span>
             <a
               href="#"
@@ -302,69 +345,22 @@
               class="provider-key-input"
             />
           </div>
+          <div v-else class="card-row no-border">
+            <span class="row-label">{{ t("settings.apiKey") }}</span>
+            <span class="placeholder-text">{{ t("settings.noApiKeyRequired") }}</span>
+          </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
       </div>
 
-      <!-- Gateway -->
-      <div v-if="activeSection === 'gateway'" class="section">
-        <div class="section-label">{{ t("settings.connectionStatus") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.status") }}</span>
-            <div style="display: flex; align-items: center; gap: 8px">
-              <span
-                class="status-indicator"
-                :class="
-                  gateway.status === 'running'
-                    ? 'status-indicator--ok'
-                    : 'status-indicator--error'
-                "
-              >
-                <span class="status-dot"></span>
-                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-              </span>
-              <el-button size="small" @click="restartGateway">{{
-                t("settings.restart")
-              }}</el-button>
-            </div>
-          </div>
-        </div>
-
-        <div class="sub-label">{{ t("settings.port") }}</div>
-        <div class="card-group">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.port") }}</span>
-            <div class="port-input-group">
-              <span class="port-prefix">ws://127.0.0.1 :</span>
-              <el-input
-                v-model="gatewayPort"
-                style="width: 80px"
-                @change="saveGatewayPort"
-              />
-            </div>
-          </div>
-        </div>
-        <div class="section-footer">{{ t("settings.portDesc") }}</div>
-
-        <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.gatewayLog") }}</span>
-          <el-button size="small" @click="gateway.logs = []">{{ t("settings.clear") }}</el-button>
-        </div>
-        <div class="gateway-log-box">
-          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">
-            {{ t("settings.noLogs") }}
-          </div>
-          <div v-else class="gateway-log-content" ref="logBoxRef">
-            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">
-              {{ line }}
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Channels -->
       <ChannelsView v-if="activeSection === 'channels'" embedded />
+
+      <!-- Skills (development builds only) -->
+      <component
+        :is="SkillsDevPanel"
+        v-if="devSettingsEnabled && SkillsDevPanel && activeSection === 'skills'"
+      />
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
@@ -589,7 +585,7 @@
                       <span class="acl-reason">{{ item.reason }}</span>
                       <button
                         class="dir-add-btn"
-                        style="margin-left: auto; font-size: 11px"
+                        style="margin-left: auto"
                         @click="repairAcl(item)"
                       >
                         修复
@@ -610,7 +606,7 @@
                       <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
                       <button
                         class="dir-add-btn"
-                        style="margin-left: auto; font-size: 11px"
+                        style="margin-left: auto"
                         @click="revokeStaleAcl(item)"
                       >
                         清除
@@ -758,7 +754,7 @@
         <div class="sub-label">{{ t("settings.fileAccessAudit") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.fileAccessAudit") }}</span>
+            <span class="row-label">{{ t("settings.fileAccessAuditToggle") }}</span>
             <el-switch
               v-model="settings.fileAccessAudit"
               :disabled="settings.privacyLevel === 'basic'"
@@ -771,7 +767,7 @@
         <div class="sub-label">{{ t("settings.chatHistory") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.chatHistory") }}</span>
+            <span class="row-label">{{ t("settings.savedChatHistory") }}</span>
             <el-button type="danger" plain size="small" @click="clearChatHistory">{{
               t("settings.clearAllHistory")
             }}</el-button>
@@ -834,7 +830,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
+import { ref, reactive, onMounted, onUnmounted, watch, computed, defineAsyncComponent } from "vue";
 import { useRoute } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -862,21 +858,14 @@ import { getManagedModelProvider } from "@/utils/managed-model-providers";
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
-
-const logBoxRef = ref<HTMLElement | null>(null);
-
-watch(
-  () => gateway.logs.length,
-  () => {
-    nextTick(() => {
-      if (logBoxRef.value) {
-        logBoxRef.value.scrollTop = logBoxRef.value.scrollHeight;
-      }
-    });
-  },
-);
+const devSettingsEnabled =
+  import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_SETTINGS === "true";
+const SkillsDevPanel = devSettingsEnabled
+  ? defineAsyncComponent(() => import("@/components/skills/SkillsDevPanel.vue"))
+  : null;
 
 const activeSection = ref("general");
+const exportingGatewayLogs = ref(false);
 const updateChecking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 
@@ -887,6 +876,9 @@ const updateStatusTitle = computed(() => {
   }
   if (updateResult.value.status === "up-to-date") {
     return t("settings.updateUpToDate");
+  }
+  if (updateResult.value.status === "managed-by-store") {
+    return t("settings.updateManagedByStore");
   }
   return t("settings.updateCheckFailed");
 });
@@ -902,6 +894,9 @@ const updateStatusDetail = computed(() => {
   if (updateResult.value.status === "up-to-date") {
     return t("settings.updateUpToDateDetail", { version: updateResult.value.currentVersion });
   }
+  if (updateResult.value.status === "managed-by-store") {
+    return t("settings.updateManagedByStoreDetail");
+  }
   return updateResult.value.message;
 });
 
@@ -909,8 +904,8 @@ const VALID_SECTIONS = [
   "general",
   "usage",
   "models",
-  "gateway",
   "channels",
+  ...(devSettingsEnabled ? ["skills"] : []),
   "security",
   "privacy",
   "about",
@@ -918,7 +913,7 @@ const VALID_SECTIONS = [
 
 function normalizeSection(section: unknown) {
   if (section === "theme") return "general";
-  if (section === "workspace") return "gateway";
+  if (section === "workspace") return "general";
   return typeof section === "string" && VALID_SECTIONS.includes(section) ? section : null;
 }
 
@@ -1155,7 +1150,7 @@ async function revokeStaleAcl(item: { dir: string }) {
 const settings = reactive({
   language: "en-US",
   autoStart: false,
-  startMinimized: false,
+  minimizeToTray: false,
   themeMode: "light",
   privacyLevel: "balanced" as "basic" | "balanced" | "strict",
   fileAccessAudit: true,
@@ -1221,7 +1216,6 @@ const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 const removingModelRef = ref("");
 let copilotModelsGeneration = 0;
-const gatewayPort = ref("18789");
 const showProviderSetup = ref(false);
 const selectedModelEntry = computed(
   () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
@@ -1239,26 +1233,54 @@ const currentProviderName = computed(() => {
 });
 
 // --- Web search providers ---
-type SearchProviderId = "brave" | "tavily";
+type SearchProviderId = "parallel-free" | "brave" | "tavily";
 const searchProviders: {
   id: SearchProviderId;
   name: string;
   placeholder: string;
   link: string;
+  requiresKey: boolean;
 }[] = [
-  { id: "brave", name: "Brave", placeholder: "BSA...", link: "https://brave.com/search/api/" },
-  { id: "tavily", name: "Tavily", placeholder: "tvly-...", link: "https://tavily.com/" },
+  {
+    id: "parallel-free",
+    name: "Parallel",
+    placeholder: "",
+    link: "https://parallel.ai/",
+    requiresKey: false,
+  },
+  {
+    id: "brave",
+    name: "Brave",
+    placeholder: "BSA...",
+    link: "https://brave.com/search/api/",
+    requiresKey: true,
+  },
+  {
+    id: "tavily",
+    name: "Tavily",
+    placeholder: "tvly-...",
+    link: "https://tavily.com/",
+    requiresKey: true,
+  },
 ];
-const searchProvider = ref<SearchProviderId>("brave");
-const searchKeys = reactive<Record<SearchProviderId, string>>({ brave: "", tavily: "" });
+const searchProvider = ref<SearchProviderId>("parallel-free");
+const searchKeys = reactive<Record<SearchProviderId, string>>({
+  "parallel-free": "",
+  brave: "",
+  tavily: "",
+});
 // The provider metadata (placeholder, docs link) for the currently selected provider.
 const activeSearchProvider = computed(
   () => searchProviders.find((p) => p.id === searchProvider.value) ?? searchProviders[0],
 );
 // Snapshot of the last persisted state, used to drive the "Configured" status and the
 // enabled/disabled state of the single Save button.
-const savedSearchProvider = ref<SearchProviderId>("brave");
-const savedSearchKeys = reactive<Record<SearchProviderId, string>>({ brave: "", tavily: "" });
+const savedSearchProvider = ref<SearchProviderId>("parallel-free");
+const savedSearchKeys = reactive<Record<SearchProviderId, string>>({
+  "parallel-free": "",
+  brave: "",
+  tavily: "",
+});
 const searchSavingAll = ref(false);
 const searchDirty = computed(() => {
   if (searchProvider.value !== savedSearchProvider.value) return true;
@@ -1343,8 +1365,8 @@ const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h3M10 5h7M3 10h7M14 10h3M3 15h2M9 15h8"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>`,
   usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
   models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="9" height="9" rx="2"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/><path d="m10 7 .7 2.3L13 10l-2.3.7L10 13l-.7-2.3L7 10l2.3-.7L10 7z"/></svg>`,
-  gateway: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="6" rx="1.5"/><rect x="3" y="11" width="14" height="6" rx="1.5"/><circle cx="6" cy="6" r=".75" fill="currentColor" stroke="none"/><circle cx="6" cy="14" r=".75" fill="currentColor" stroke="none"/><path d="M9 6h5M9 14h5"/></svg>`,
   channels: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M6.8 6.8a4.5 4.5 0 0 0 0 6.4M13.2 6.8a4.5 4.5 0 0 1 0 6.4M4.4 4.4a8 8 0 0 0 0 11.2M15.6 4.4a8 8 0 0 1 0 11.2"/></svg>`,
+  skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3.5a2.5 2.5 0 0 1 5 0v2h2a2.5 2.5 0 1 1 0 5h-2v2a2.5 2.5 0 1 1-5 0v-2h-2a2.5 2.5 0 1 1 0-5h2v-2z"/></svg>`,
   security: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2l6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V5l6-3z"/><path d="M7.5 10l2 2 3.5-4"/></svg>`,
   privacy: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="9" width="12" height="9" rx="2"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/><circle cx="10" cy="14" r="1" fill="currentColor" stroke="none"/></svg>`,
   about: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.75" fill="currentColor" stroke="none"/></svg>`,
@@ -1354,8 +1376,10 @@ const menuItems = computed(() => [
   { id: "general", label: t("settings.menu.general"), color: "#636366", svg: svg.general },
   { id: "usage", label: t("settings.menu.usage"), color: "#636366", svg: svg.usage },
   { id: "models", label: t("settings.menu.models"), color: "#636366", svg: svg.models },
-  { id: "gateway", label: t("settings.menu.gateway"), color: "#636366", svg: svg.gateway },
   { id: "channels", label: t("settings.menu.channels"), color: "#636366", svg: svg.channels },
+  ...(devSettingsEnabled
+    ? [{ id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills }]
+    : []),
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
   { id: "privacy", label: t("settings.menu.privacy"), color: "#636366", svg: svg.privacy },
   { id: "about", label: t("settings.menu.about"), color: "#636366", svg: svg.about },
@@ -1386,8 +1410,8 @@ watch(
   (v) => window.openclaw.settings.set("autoStart", v),
 );
 watch(
-  () => settings.startMinimized,
-  (v) => window.openclaw.settings.set("startMinimized", v),
+  () => settings.minimizeToTray,
+  (v) => window.openclaw.settings.set("minimizeToTray", v),
 );
 watch(
   () => settings.themeMode,
@@ -1550,7 +1574,7 @@ onMounted(async () => {
   if (saved) {
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
-    settings.startMinimized = saved.startMinimized ?? false;
+    settings.minimizeToTray = saved.minimizeToTray ?? false;
     settings.themeMode = saved.themeMode ?? "light";
     settings.privacyLevel = (saved.privacyLevel ?? "balanced") as "basic" | "balanced" | "strict";
     // Init PII toggles based on loaded privacy level
@@ -1564,19 +1588,15 @@ onMounted(async () => {
     }
   }
 
-  // Load existing config for models & gateway
+  // Load existing model config
   const config = await window.openclaw.config.read();
   if (config) {
-    // Gateway port
-    gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
-
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
   }
 
   // Load web search provider configuration
   loadSearchConfig(config);
-
 });
 
 onUnmounted(() => {
@@ -1693,11 +1713,9 @@ async function removeCustomModel(idx: number) {
 async function disconnectGitHubCopilot() {
   if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
   try {
-    await ElMessageBox.confirm(
-      t("settings.copilotDisconnectConfirm"),
-      t("settings.confirm"),
-      { type: "warning" },
-    );
+    await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
+      type: "warning",
+    });
   } catch {
     return;
   }
@@ -1747,7 +1765,7 @@ async function disconnectGitHubCopilot() {
 
 function loadSearchConfig(config: any): void {
   const active = config?.tools?.web?.search;
-  if (active?.provider === "brave" || active?.provider === "tavily") {
+  if (searchProviders.some((provider) => provider.id === active?.provider)) {
     const provider: SearchProviderId = active.provider;
     searchProvider.value = provider;
     if (typeof active.apiKey === "string" && active.apiKey) {
@@ -1773,7 +1791,9 @@ async function persistSearchConfig(): Promise<void> {
   config.tools.web = config.tools.web || {};
   delete config.tools.web.searchProviders;
   const activeKey = searchKeys[searchProvider.value].trim();
-  if (activeKey) {
+  if (!activeSearchProvider.value.requiresKey) {
+    config.tools.web.search = { provider: searchProvider.value };
+  } else if (activeKey) {
     config.tools.web.search = { provider: searchProvider.value, apiKey: activeKey };
   } else {
     delete config.tools.web.search;
@@ -1808,6 +1828,8 @@ async function checkForUpdates() {
       ElMessage.success(t("settings.updateAvailableToast"));
     } else if (updateResult.value.status === "up-to-date") {
       ElMessage.success(t("settings.updateUpToDate"));
+    } else if (updateResult.value.status === "managed-by-store") {
+      ElMessage.success(t("settings.updateManagedByStore"));
     } else {
       ElMessage.error(t("settings.updateCheckFailed"));
     }
@@ -1838,21 +1860,18 @@ async function restartGateway() {
   }
 }
 
-async function saveGatewayPort() {
-  const port = parseInt(gatewayPort.value, 10);
-  if (!port || port < 1 || port > 65535) {
-    ElMessage.warning(t("settings.invalidPort"));
-    return;
-  }
+async function exportGatewayLogs() {
+  if (exportingGatewayLogs.value || gateway.logs.length === 0) return;
+  exportingGatewayLogs.value = true;
   try {
-    const config = (await window.openclaw.config.read()) || {};
-    config.gateway = config.gateway || {};
-    config.gateway.port = port;
-    await window.openclaw.config.write(config);
-    await window.openclaw.gateway.restart();
-    ElMessage.success(t("settings.portUpdated"));
+    const result = await window.openclaw.logs.exportGateway([...gateway.logs]);
+    if (!result.canceled) {
+      ElMessage.success(t("settings.gatewayLogsExported"));
+    }
   } catch (err: any) {
-    ElMessage.error(t("settings.portUpdateFailed", { error: err.message }));
+    ElMessage.error(t("settings.gatewayLogsExportFailed", { error: err.message }));
+  } finally {
+    exportingGatewayLogs.value = false;
   }
 }
 
@@ -1893,33 +1912,27 @@ async function clearChatHistory() {
   padding: 20px 0 12px;
 }
 
-.settings-title {
-  padding: 0 16px 16px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .menu-list {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .settings-menu-item {
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 12px 7px 16px;
+  padding: 8px 12px 8px 16px;
   cursor: pointer;
   border-radius: 8px;
-  margin: 1px 8px;
+  margin: 0 8px;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 400;
+  line-height: 20px;
   transition: background 0.1s;
 }
 
@@ -1965,6 +1978,12 @@ async function clearChatHistory() {
   overflow-y: auto;
   padding: 28px clamp(16px, 3vw, 32px);
   container-type: inline-size;
+}
+
+.settings-content--skills {
+  display: flex;
+  overflow: hidden;
+  padding: 0;
 }
 
 .section-label,
@@ -2022,15 +2041,6 @@ async function clearChatHistory() {
     max-width: 100%;
   }
 
-  .port-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .port-input-group {
-    width: 100%;
-  }
-
   .budget-bar-wrapper {
     width: 100%;
     align-items: flex-start;
@@ -2058,6 +2068,29 @@ async function clearChatHistory() {
   color: var(--text-primary);
   flex-shrink: 1;
   min-width: 0;
+}
+
+.language-select {
+  width: 140px;
+  height: 32px;
+  flex-shrink: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.language-select:hover {
+  border-color: var(--text-muted);
+}
+
+.language-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .row-value {
@@ -2227,18 +2260,6 @@ async function clearChatHistory() {
   width: 360px;
 }
 
-.port-row {
-  align-items: flex-start;
-  padding: 20px;
-  gap: 16px;
-  min-height: 80px;
-}
-
-.port-info {
-  flex: 1;
-  min-width: 0;
-}
-
 .search-provider-group {
   display: flex;
   flex-direction: column;
@@ -2319,80 +2340,122 @@ async function clearChatHistory() {
   opacity: 0.8;
 }
 
-.port-title {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--text-primary);
-}
-
-.port-input-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px 8px 4px 12px;
-}
-
-.port-prefix {
-  font-size: 13px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.gateway-log-box {
-  margin-top: 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  height: 240px;
-  overflow: hidden;
-  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
-  font-size: 12px;
-}
-
-.gateway-log-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-}
-
-.gateway-log-content {
-  height: 100%;
-  overflow-y: auto;
-  padding: 10px 14px;
-}
-
-.gateway-log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.6;
-  color: var(--text-primary);
-}
-
-.port-input-group :deep(.el-input__wrapper) {
-  box-shadow: none !important;
-  background: transparent;
-  padding: 0;
-}
-
-.port-input-group :deep(.el-input__inner) {
-  font-size: 13px;
-  text-align: center;
-  font-weight: 400;
-}
-
 .settings-view :deep(.el-input__inner),
 .settings-view :deep(.el-select__selected-item),
-.settings-view :deep(.el-radio__label),
-.settings-view :deep(.el-button) {
+.settings-view :deep(.el-radio__label) {
   font-family: inherit;
   font-size: 13px;
   font-weight: 400;
+}
+
+.settings-view :deep(.el-button) {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-action-border);
+  border-radius: 6px;
+  background: var(--settings-action-bg);
+  color: var(--settings-action-fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
+}
+
+.settings-view :deep(.el-button:hover) {
+  border-color: var(--settings-action-border);
+  background: var(--settings-action-hover);
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.settings-view :deep(.el-button:active) {
+  background: var(--settings-action-active);
+}
+
+.settings-view :deep(.el-button:focus-visible),
+.tag-remove:focus-visible,
+.tag-add-btn:focus-visible,
+.dir-add-btn:focus-visible {
+  outline: 2px solid var(--settings-action-focus);
+  outline-offset: 2px;
+}
+
+.settings-view :deep(.el-button--primary:not(.is-plain, .is-text)) {
+  border-color: var(--settings-action-primary);
+  background: var(--settings-action-primary);
+  color: var(--settings-action-primary-fg);
+}
+
+.settings-view :deep(.el-button--primary:not(.is-plain, .is-text):hover) {
+  border-color: var(--settings-action-primary-hover);
+  background: var(--settings-action-primary-hover);
+  color: var(--settings-action-primary-fg);
+}
+
+.settings-view :deep(.el-button--primary:not(.is-plain, .is-text):active) {
+  border-color: var(--settings-action-primary-active);
+  background: var(--settings-action-primary-active);
+}
+
+.settings-view :deep(.el-button.is-plain) {
+  border-color: var(--settings-action-border);
+  background: transparent;
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button.is-plain:hover) {
+  border-color: var(--settings-action-border);
+  background: var(--settings-action-hover);
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button--danger.is-plain) {
+  border-color: color-mix(in srgb, var(--settings-action-danger) 50%, transparent);
+  color: var(--settings-action-danger);
+}
+
+.settings-view :deep(.el-button--danger.is-plain:hover) {
+  border-color: var(--settings-action-danger);
+  background: var(--settings-action-danger);
+  color: #ffffff;
+}
+
+.settings-view :deep(.el-button--danger.is-plain:active) {
+  border-color: var(--settings-action-danger-active);
+  background: var(--settings-action-danger-active);
+}
+
+.settings-view :deep(.el-button.is-text) {
+  min-height: 28px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button.is-text:hover) {
+  border-color: transparent;
+  background: var(--settings-action-hover);
+  color: var(--settings-action-fg);
+}
+
+.settings-view :deep(.el-button--danger.is-text) {
+  color: var(--settings-action-danger);
+}
+
+.settings-view :deep(.el-button.is-disabled),
+.settings-view :deep(.el-button.is-disabled:hover) {
+  border-color: var(--settings-action-border);
+  background: var(--settings-action-bg);
+  color: var(--text-muted);
+  opacity: 0.55;
 }
 
 .test-result {
@@ -2479,16 +2542,22 @@ async function clearChatHistory() {
   color: var(--text-secondary);
 }
 .app-tag .tag-remove {
-  background: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  background: transparent;
   border: none;
+  border-radius: 4px;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  padding: 0 2px;
+  padding: 0;
 }
 .app-tag .tag-remove:hover {
-  color: #ff3b30;
+  background: color-mix(in srgb, var(--settings-action-danger) 12%, transparent);
+  color: var(--settings-action-danger);
 }
 .app-tag-add {
   border-style: dashed;
@@ -2504,17 +2573,54 @@ async function clearChatHistory() {
   color: var(--text-primary);
 }
 .tag-add-btn {
-  background: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  background: transparent;
   border: none;
-  color: var(--accent);
+  border-radius: 4px;
+  color: var(--settings-action-fg);
   cursor: pointer;
   font-size: 16px;
-  font-weight: bold;
-  padding: 0 2px;
+  font-weight: 400;
+  padding: 0;
   line-height: 1;
 }
 .tag-add-btn:hover {
-  opacity: 0.7;
+  background: var(--settings-action-hover);
+}
+
+.dir-add-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-action-border);
+  border-radius: 6px;
+  background: var(--settings-action-bg);
+  color: var(--settings-action-fg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  transition:
+    background 0.1s,
+    border-color 0.1s,
+    color 0.1s;
+}
+
+.dir-add-btn:hover:not(:disabled) {
+  background: var(--settings-action-hover);
+}
+
+.dir-add-btn:active:not(:disabled) {
+  background: var(--settings-action-active);
+}
+
+.dir-add-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* Sandbox directory permissions */
