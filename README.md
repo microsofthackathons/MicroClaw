@@ -202,6 +202,15 @@ npm run lint:sarif    # outputs eslint-results.sarif
 - **Node.js preload hooks** (`sandbox-preload.js`, `sandbox-fs-hooks.js`, …) intercept `fs.*` / `child_process.*` calls and prompt the user for permission
 - **Sensitive-path shield** hard-denies access to `~/.ssh`, `~/.azure`, and other credential directories — no override
 
+### Future Docker sandbox prerequisites
+
+Setup and **Settings → Security sandbox** can check whether Windows, WSL2, Docker
+Desktop, and Linux container mode are ready for a future OpenClaw Docker sandbox.
+These checks are read-only and use bounded commands; MicroClaw does not install
+or enable WSL/Docker, request elevation, pull images, or change OpenClaw sandbox
+configuration. The existing AppContainer sandbox remains active and unchanged.
+Enabling and validating OpenClaw's Docker sandbox is separate follow-up work.
+
 See [appcontainer/README.md](appcontainer/README.md) for details.
 
 ---

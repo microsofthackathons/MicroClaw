@@ -25,6 +25,7 @@ import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
+import { checkDockerPrerequisites } from "./docker-prerequisites";
 import {
   prepareChatAttachments,
   prepareClipboardImageAttachments,
@@ -4548,6 +4549,9 @@ function registerIpcHandlers(): void {
       storeManaged: process.windowsStore,
     });
   });
+
+  // --- Future Docker sandbox prerequisites (read-only checks only) ---
+  ipcMain.handle("docker-prerequisites:check", () => checkDockerPrerequisites());
 
   // --- Window ---
   ipcMain.handle("window:minimize", () => {

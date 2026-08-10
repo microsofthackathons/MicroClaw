@@ -365,6 +365,7 @@
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
         <div class="section-label">{{ t("settings.security") }}</div>
+        <DockerPrerequisitesPanel />
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
@@ -840,6 +841,7 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import DockerPrerequisitesPanel from "@/components/DockerPrerequisitesPanel.vue";
 import {
   normalizeModelInput,
   removeModelProviderConfig,

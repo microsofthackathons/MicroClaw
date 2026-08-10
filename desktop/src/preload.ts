@@ -5,6 +5,7 @@ import type {
   PrepareChatAttachmentsResult,
 } from "./chat-attachments";
 import type { OpenAttachmentRequest } from "./attachment-open";
+import type { DockerPrerequisites } from "./docker-prerequisites";
 
 contextBridge.exposeInMainWorld("openclaw", {
   // --- Gateway lifecycle ---
@@ -54,6 +55,10 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Updates ---
   updates: {
     check: () => ipcRenderer.invoke("updates:check"),
+  },
+
+  dockerPrerequisites: {
+    check: () => ipcRenderer.invoke("docker-prerequisites:check") as Promise<DockerPrerequisites>,
   },
 
   // --- Skills ---

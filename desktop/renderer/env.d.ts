@@ -161,6 +161,44 @@ type UpdateCheckResult =
       message: string;
     };
 
+type PrerequisiteStatus = "ready" | "missing" | "not-ready" | "unsupported" | "error";
+type DockerPrerequisiteReason =
+  | "ready"
+  | "windows-required"
+  | "windows-version-unsupported"
+  | "wsl-command-missing"
+  | "wsl-feature-disabled"
+  | "wsl-no-distribution"
+  | "wsl2-distribution-missing"
+  | "wsl-kernel-update-required"
+  | "wsl-reboot-required"
+  | "wsl-check-timeout"
+  | "wsl-check-failed"
+  | "docker-cli-missing"
+  | "docker-daemon-unavailable"
+  | "docker-desktop-required"
+  | "docker-linux-containers-required"
+  | "docker-check-timeout"
+  | "docker-check-failed";
+
+interface PrerequisiteState {
+  status: PrerequisiteStatus;
+  reason: DockerPrerequisiteReason;
+  detail?: string;
+}
+
+interface DockerPrerequisites {
+  checkedAt: string;
+  ready: boolean;
+  reasons: DockerPrerequisiteReason[];
+  windows: PrerequisiteState;
+  wslCommand: PrerequisiteState;
+  wsl2: PrerequisiteState;
+  dockerCli: PrerequisiteState;
+  dockerDaemon: PrerequisiteState;
+  linuxContainers: PrerequisiteState;
+}
+
 interface OpenClawAPI {
   gateway: {
     getPort(): Promise<number>;
@@ -189,6 +227,9 @@ interface OpenClawAPI {
   };
   updates: {
     check(): Promise<UpdateCheckResult>;
+  };
+  dockerPrerequisites: {
+    check(): Promise<DockerPrerequisites>;
   };
   skills: {
     list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;

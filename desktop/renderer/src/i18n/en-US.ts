@@ -298,6 +298,49 @@ export default {
   "settings.fileAccessAuditDesc":
     "Log every file the agent reads during conversations. Audit logs are saved in the workspace data directory.",
   "settings.security": "Security sandbox",
+  "dockerPrep.title": "Prepare Docker Desktop + WSL2",
+  "dockerPrep.description":
+    "Optional preparation for a future OpenClaw Docker sandbox. Detection does not install, enable, or configure Docker sandboxing.",
+  "dockerPrep.appContainerNotice":
+    "MicroClaw's current AppContainer sandbox remains active and unchanged. You can continue without Docker.",
+  "dockerPrep.refresh": "Recheck",
+  "dockerPrep.notChecked": "Prerequisites have not been checked yet.",
+  "dockerPrep.windows": "Supported Windows",
+  "dockerPrep.wslCommand": "WSL available",
+  "dockerPrep.wsl2": "Usable WSL2 distribution",
+  "dockerPrep.dockerCli": "Docker CLI installed",
+  "dockerPrep.dockerDaemon": "Docker Desktop running",
+  "dockerPrep.linuxContainers": "Linux container mode",
+  "dockerPrep.adminReboot":
+    "Installing WSL2 or Docker Desktop may require administrator approval and a Windows restart. MicroClaw will not request elevation or start an installer.",
+  "dockerPrep.licensing":
+    "Review Docker Desktop's license terms for your organization before installing. MicroClaw does not accept terms on your behalf.",
+  "dockerPrep.openWslDocs": "Microsoft WSL installation guide",
+  "dockerPrep.openDockerDocs": "Docker Desktop installation guide",
+  "dockerPrep.linkNotice":
+    "Opening a guide or download does not mark a prerequisite as installed. Return here and recheck after completing setup.",
+  "dockerPrep.checkFailed": "Prerequisite check failed: {error}",
+  "dockerPrep.reason.ready": "Ready",
+  "dockerPrep.reason.windows-required": "Windows is required.",
+  "dockerPrep.reason.windows-version-unsupported": "Windows 10 version 2004 or newer is required.",
+  "dockerPrep.reason.wsl-command-missing": "WSL is not available.",
+  "dockerPrep.reason.wsl-feature-disabled":
+    "Required Windows virtualization features are disabled.",
+  "dockerPrep.reason.wsl-no-distribution": "Install a Linux distribution for WSL2.",
+  "dockerPrep.reason.wsl2-distribution-missing": "No installed distribution is using WSL2.",
+  "dockerPrep.reason.wsl-kernel-update-required": "The WSL2 kernel needs an update.",
+  "dockerPrep.reason.wsl-reboot-required": "Restart Windows to finish enabling WSL2.",
+  "dockerPrep.reason.wsl-check-timeout": "The WSL status check timed out.",
+  "dockerPrep.reason.wsl-check-failed": "WSL status could not be determined.",
+  "dockerPrep.reason.docker-cli-missing": "Docker Desktop or Docker CLI is not installed.",
+  "dockerPrep.reason.docker-daemon-unavailable":
+    "Docker daemon is not responding. Start Docker Desktop, then recheck.",
+  "dockerPrep.reason.docker-desktop-required":
+    "The active Docker engine is not Docker Desktop. Start Docker Desktop and select its context.",
+  "dockerPrep.reason.docker-linux-containers-required":
+    "Switch Docker Desktop to Linux containers.",
+  "dockerPrep.reason.docker-check-timeout": "The Docker status check timed out.",
+  "dockerPrep.reason.docker-check-failed": "Docker status could not be determined.",
   "settings.sandboxEnabled": "Tool sandbox (AppContainer)",
   "settings.externalApps": "Apps allowed outside the sandbox",
   "settings.externalAppsHint":

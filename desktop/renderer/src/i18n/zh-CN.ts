@@ -281,6 +281,46 @@ export default {
   "settings.fileAccessAuditDesc":
     "记录智能体在对话中读取的所有文件。审计日志保存在工作区数据目录中。",
   "settings.security": "安全沙箱",
+  "dockerPrep.title": "准备 Docker Desktop + WSL2",
+  "dockerPrep.description":
+    "这是为未来 OpenClaw Docker 沙箱提供的可选准备。检测不会安装、启用或配置 Docker 沙箱。",
+  "dockerPrep.appContainerNotice":
+    "MicroClaw 当前的 AppContainer 沙箱保持启用且不会更改。无需 Docker 也可继续使用。",
+  "dockerPrep.refresh": "重新检测",
+  "dockerPrep.notChecked": "尚未检测先决条件。",
+  "dockerPrep.windows": "受支持的 Windows",
+  "dockerPrep.wslCommand": "WSL 可用",
+  "dockerPrep.wsl2": "可用的 WSL2 发行版",
+  "dockerPrep.dockerCli": "已安装 Docker CLI",
+  "dockerPrep.dockerDaemon": "Docker Desktop 正在运行",
+  "dockerPrep.linuxContainers": "Linux 容器模式",
+  "dockerPrep.adminReboot":
+    "安装 WSL2 或 Docker Desktop 可能需要管理员批准并重启 Windows。MicroClaw 不会请求提权或启动安装程序。",
+  "dockerPrep.licensing":
+    "安装前请查看适用于您组织的 Docker Desktop 许可条款。MicroClaw 不会代您接受条款。",
+  "dockerPrep.openWslDocs": "Microsoft WSL 安装指南",
+  "dockerPrep.openDockerDocs": "Docker Desktop 安装指南",
+  "dockerPrep.linkNotice": "打开指南或下载页面并不代表安装成功。完成设置后请返回此处重新检测。",
+  "dockerPrep.checkFailed": "先决条件检测失败：{error}",
+  "dockerPrep.reason.ready": "已就绪",
+  "dockerPrep.reason.windows-required": "需要 Windows。",
+  "dockerPrep.reason.windows-version-unsupported": "需要 Windows 10 版本 2004 或更高版本。",
+  "dockerPrep.reason.wsl-command-missing": "WSL 不可用。",
+  "dockerPrep.reason.wsl-feature-disabled": "所需的 Windows 虚拟化功能未启用。",
+  "dockerPrep.reason.wsl-no-distribution": "请为 WSL2 安装 Linux 发行版。",
+  "dockerPrep.reason.wsl2-distribution-missing": "没有使用 WSL2 的已安装发行版。",
+  "dockerPrep.reason.wsl-kernel-update-required": "需要更新 WSL2 内核。",
+  "dockerPrep.reason.wsl-reboot-required": "请重启 Windows 以完成 WSL2 启用。",
+  "dockerPrep.reason.wsl-check-timeout": "WSL 状态检测超时。",
+  "dockerPrep.reason.wsl-check-failed": "无法确定 WSL 状态。",
+  "dockerPrep.reason.docker-cli-missing": "未安装 Docker Desktop 或 Docker CLI。",
+  "dockerPrep.reason.docker-daemon-unavailable":
+    "Docker 守护进程未响应。请启动 Docker Desktop 后重新检测。",
+  "dockerPrep.reason.docker-desktop-required":
+    "当前 Docker 引擎不是 Docker Desktop。请启动 Docker Desktop 并选择其上下文。",
+  "dockerPrep.reason.docker-linux-containers-required": "请将 Docker Desktop 切换到 Linux 容器。",
+  "dockerPrep.reason.docker-check-timeout": "Docker 状态检测超时。",
+  "dockerPrep.reason.docker-check-failed": "无法确定 Docker 状态。",
   "settings.sandboxEnabled": "工具沙箱（AppContainer）",
   "settings.externalApps": "允许在沙箱外运行的应用",
   "settings.externalAppsHint":
@@ -347,8 +387,7 @@ export default {
   "settings.customModelDeleted": "自定义模型已删除",
   "settings.copilotDisconnected": "GitHub Copilot 已断开连接",
   "settings.copilotDisconnectFailed": "无法断开 GitHub Copilot：{error}",
-  "settings.copilotDisconnectedRestartFailed":
-    "GitHub Copilot 已断开，但网关重启失败：{error}",
+  "settings.copilotDisconnectedRestartFailed": "GitHub Copilot 已断开，但网关重启失败：{error}",
   "settings.copilotConfigUnavailable": "无法读取当前模型配置",
   "settings.searchSettingsSaved": "联网搜索设置已保存",
   "settings.searchConfigured": "已配置",

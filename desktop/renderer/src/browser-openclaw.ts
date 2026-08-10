@@ -132,6 +132,22 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         latestVersion: "1.0.0",
       }),
     },
+    dockerPrerequisites: {
+      check: async () => {
+        const ready = { status: "ready", reason: "ready" } as const;
+        return {
+          checkedAt: new Date().toISOString(),
+          ready: true,
+          reasons: [],
+          windows: ready,
+          wslCommand: ready,
+          wsl2: ready,
+          dockerCli: ready,
+          dockerDaemon: ready,
+          linuxContainers: ready,
+        };
+      },
+    },
     chat: {
       isConnected: async () => true,
       loadHistory: async () => ({ messages: [] }),

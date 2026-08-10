@@ -49,6 +49,8 @@
         <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
       </el-form>
 
+      <DockerPrerequisitesPanel compact />
+
       <el-button
         type="primary"
         size="large"
@@ -66,6 +68,7 @@
 import { ref, reactive, onMounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { t } from "@/i18n";
+import DockerPrerequisitesPanel from "@/components/DockerPrerequisitesPanel.vue";
 
 const router = useRouter();
 const saving = ref(false);
@@ -291,7 +294,7 @@ async function saveAndFinish() {
 .setup-overlay {
   height: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   background: var(--bg-primary);
   overflow-y: auto;
@@ -310,6 +313,7 @@ async function saveAndFinish() {
 .setup-content {
   width: 100%;
   max-width: 440px;
+  margin-block: auto;
   padding: 36px 28px 28px;
   text-align: center;
 }
