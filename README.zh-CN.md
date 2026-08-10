@@ -7,7 +7,7 @@
 > [!WARNING]
 > **实验性 Docker 沙箱分支：**AppContainer 已停用。OpenClaw 工具必须通过 WSL2 在 Docker Desktop Linux 容器中运行。只有 WSL2、Docker Desktop、Linux 容器模式以及固定镜像 `microclaw-openclaw-sandbox:2026.7.1-1` 全部就绪后，MicroClaw 才会启动 Gateway 或发送对话；否则默认拒绝。MicroClaw 不会自动安装或提权安装 Docker/WSL。
 >
-> 安装 WSL2 和 Docker Desktop 后，在**设置 → 安全**中构建镜像。生效策略为 `mode: all`、Docker 后端、每会话隔离、独立工作区（`workspaceAccess: none`）、只读根目录、非 root 用户、移除全部能力、资源限制、无网络并禁用提权工具。附件由 OpenClaw 放入隔离工作区；工具不能访问任意 Windows 路径。已有 AppContainer 配置和 ACL 会被忽略，仅在用户明确卸载时清理。
+> 安装 WSL2 和 Docker Desktop 后，在**设置 → 安全**中构建镜像。生效策略为 `mode: all`、Docker 后端、每智能体隔离、独立工作区（`workspaceAccess: none`）、只读根目录、非 root 用户、移除全部能力、资源限制、无网络并禁用提权工具。“安全”页可为每个智能体分别授予经过验证的 Windows 文件夹只读或读写权限，并生成 `/mnt/microclaw/...` 目标路径。每项授权会暴露所选文件夹的整个子树且不会逐次询问；系统、应用数据、状态和凭据等高风险位置会被拒绝。附件由 OpenClaw 放入隔离工作区。已有 AppContainer 配置和 ACL 会被忽略，仅在用户明确卸载时清理。
 >
 > 安装 Docker 后的实机检查：确认“安全”页所有状态为绿色；构建固定镜像；重启 MicroClaw；运行文件工具并确认只能看到隔离工作区；确认附件可读；确认外网和 Windows 主机路径访问失败；停止 Docker 并确认 Gateway/对话默认拒绝；最后确认 EXE 和 MSIX 均包含 `resources/docker-sandbox/Dockerfile`。
 

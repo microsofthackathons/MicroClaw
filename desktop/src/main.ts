@@ -4,7 +4,8 @@ import * as fs from "fs";
 import * as http from "http";
 import * as net from "net";
 import * as os from "os";
-import { ChildProcess, execFileSync, spawn } from "child_process";
+import { randomUUID } from "crypto";
+import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import {
   applyAgentRosterReload,
@@ -26,10 +27,17 @@ import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
 import {
-  applyRequiredDockerSandboxConfig,
+  addAgentDockerBinding,
   buildDockerSandboxImage,
   canExecuteWithDockerSandbox,
   checkDockerSandboxReadiness,
+  findStateOwnedSandboxContainerIds,
+  listAgentDockerBindings,
+  normalizeAgentDockerBindings,
+  prependDockerExecutableToPath,
+  removeAgentDockerBinding,
+  resolveDockerExecutable,
+  saveAndRecreateAgentDockerBindings,
   type DockerSandboxReadiness,
 } from "./docker-sandbox";
 
@@ -378,14 +386,222 @@ function getConfigPath(): string {
   return path.join(getOpenClawStateDir(), "openclaw.json");
 }
 
-function persistRequiredDockerSandboxConfig(config: Record<string, any>): Record<string, any> {
-  const applied = applyRequiredDockerSandboxConfig(config);
+const DOCKER_SCOPE_MIGRATION_MARKER = ".microclaw-docker-agent-scope.pending";
+const DOCKER_BINDING_PENDING_FILE = ".microclaw-docker-bindings.pending.json";
+const dockerBindingApplyStatus = new Map<
+  string,
+  { effective: "unknown" | "pending" | "applied" | "error"; error?: string }
+>();
+let configMutationTail: Promise<void> = Promise.resolve();
+
+async function writeJsonAtomically(target: string, value: unknown): Promise<void> {
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, JSON.stringify(value, null, 2), "utf-8");
+    await fs.promises.rename(temporary, target);
+  } finally {
+    await fs.promises.rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+async function writeConfigAtomically(config: Record<string, any>): Promise<void> {
+  await writeJsonAtomically(getConfigPath(), config);
+}
+
+function enqueueConfigMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = configMutationTail.then(operation, operation);
+  configMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function dockerBindingPendingPath(): string {
+  return path.join(getOpenClawStateDir(), DOCKER_BINDING_PENDING_FILE);
+}
+
+function readPendingDockerBindings(): Record<
+  string,
+  { effective: "pending" | "error"; error?: string }
+> {
+  try {
+    const value = JSON.parse(fs.readFileSync(dockerBindingPendingPath(), "utf-8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Docker binding pending state is invalid");
+    }
+    return value as Record<string, { effective: "pending" | "error"; error?: string }>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+async function setPendingDockerBinding(
+  agentId: string,
+  status?: { effective: "pending" | "error"; error?: string },
+): Promise<void> {
+  const pending = readPendingDockerBindings();
+  if (status) pending[agentId] = status;
+  else delete pending[agentId];
+  if (Object.keys(pending).length === 0) {
+    await fs.promises.rm(dockerBindingPendingPath(), { force: true });
+  } else {
+    await writeJsonAtomically(dockerBindingPendingPath(), pending);
+  }
+}
+
+async function prepareRequiredDockerSandboxConfig(
+  config: Record<string, any>,
+): Promise<{ config: Record<string, any>; changed: boolean }> {
+  return normalizeAgentDockerBindings(config, {
+    homeDir: app.getPath("home"),
+    stateDir: getOpenClawStateDir(),
+  });
+}
+
+async function persistRequiredDockerSandboxConfig(
+  config: Record<string, any>,
+): Promise<Record<string, any>> {
+  const previousScope = config?.agents?.defaults?.sandbox?.scope;
+  const applied = await prepareRequiredDockerSandboxConfig(config);
+  if (previousScope === "session") {
+    await fs.promises.mkdir(getOpenClawStateDir(), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(getOpenClawStateDir(), DOCKER_SCOPE_MIGRATION_MARKER),
+      new Date().toISOString(),
+      "utf-8",
+    );
+  }
   if (applied.changed) {
-    fs.mkdirSync(getOpenClawStateDir(), { recursive: true });
-    fs.writeFileSync(getConfigPath(), JSON.stringify(applied.config, null, 2), "utf-8");
+    await writeConfigAtomically(applied.config);
     console.log("[docker-sandbox] Enforced Docker-only OpenClaw sandbox configuration");
   }
   return applied.config;
+}
+
+async function recreateDockerSandboxes(options: {
+  agentId?: string;
+  all?: boolean;
+}): Promise<void> {
+  if (options.agentId && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(options.agentId)) {
+    throw new Error("Invalid agent id");
+  }
+  const stateDir = getOpenClawStateDir();
+  const nodePath = resolveNodePath();
+  const entryPath = resolveOpenClawEntry();
+  const dockerExecutable = resolveDockerExecutable();
+  const dockerPath = prependDockerExecutableToPath(dockerExecutable);
+  const args = [
+    entryPath,
+    "sandbox",
+    "recreate",
+    ...(options.all ? ["--all"] : ["--agent", options.agentId!]),
+    "--force",
+  ];
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      nodePath,
+      args,
+      {
+        cwd: path.dirname(entryPath),
+        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir, PATH: dockerPath },
+        windowsHide: true,
+        timeout: 120_000,
+        maxBuffer: 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error((stderr || stdout || error.message).trim()));
+        } else {
+          resolve();
+        }
+      },
+    );
+  });
+}
+
+async function removeOrphanedStateSandboxContainers(): Promise<void> {
+  const docker = resolveDockerExecutable();
+  const runDocker = (args: string[]): Promise<string> =>
+    new Promise((resolve, reject) => {
+      execFile(
+        docker,
+        args,
+        {
+          windowsHide: true,
+          timeout: 120_000,
+          maxBuffer: 4 * 1024 * 1024,
+          env: {
+            ...process.env,
+            PATH: prependDockerExecutableToPath(docker),
+          },
+        },
+        (error, stdout, stderr) => {
+          if (error) reject(new Error((stderr || stdout || error.message).trim()));
+          else resolve(stdout.trim());
+        },
+      );
+    });
+  const listed = await runDocker(["ps", "-aq", "--filter", "label=openclaw.sandbox=1"]);
+  const candidateIds = listed.split(/\r?\n/).filter(Boolean);
+  if (candidateIds.length === 0) return;
+  const inspections = JSON.parse(await runDocker(["inspect", ...candidateIds])) as unknown;
+  if (!Array.isArray(inspections)) throw new Error("Docker inspect returned an invalid response");
+  const ownedIds = findStateOwnedSandboxContainerIds(inspections, getOpenClawStateDir());
+  if (ownedIds.length > 0) {
+    await runDocker(["rm", "-f", ...ownedIds]);
+    console.log(`[docker-sandbox] Removed ${ownedIds.length} orphaned state-owned containers`);
+  }
+}
+
+function dockerBindingState() {
+  const config = readConfig() ?? {};
+  const pending = readPendingDockerBindings();
+  return {
+    agents: listAgentDockerBindings(config),
+    statuses: { ...Object.fromEntries(dockerBindingApplyStatus), ...pending },
+  };
+}
+
+function dockerBindingConfigSnapshot(config: Record<string, any>): string {
+  return JSON.stringify(
+    listAgentDockerBindings(config).map((agent) => ({ id: agent.id, bindings: agent.bindings })),
+  );
+}
+
+async function persistAndRecreateAgentBindings(
+  agentId: string,
+  config: Record<string, any>,
+): Promise<ReturnType<typeof dockerBindingState>> {
+  dockerBindingApplyStatus.set(agentId, { effective: "pending" });
+  await setPendingDockerBinding(agentId, { effective: "pending" });
+  let result;
+  try {
+    result = await saveAndRecreateAgentDockerBindings(config, agentId, {
+      write: writeConfigAtomically,
+      recreate: async (id) => {
+        if (gatewaySpawnedByUs && isManagedGatewayProcessAlive()) {
+          await restartManagedGateway(`Docker bindings changed for agent ${id}`);
+        }
+        await recreateDockerSandboxes({ agentId: id });
+      },
+    });
+  } catch (error) {
+    await setPendingDockerBinding(agentId);
+    throw error;
+  }
+  dockerBindingApplyStatus.set(agentId, {
+    effective: result.effective,
+    ...(result.error ? { error: result.error } : {}),
+  });
+  if (result.effective === "applied") {
+    await setPendingDockerBinding(agentId);
+  } else {
+    await setPendingDockerBinding(agentId, { effective: "error", error: result.error });
+  }
+  return dockerBindingState();
 }
 
 async function refreshDockerSandboxReadiness(): Promise<DockerSandboxReadiness> {
@@ -403,7 +619,13 @@ async function assertManagedDockerGatewayReady(): Promise<void> {
     throw new Error("Managed Docker-sandbox Gateway is not running");
   }
   const readiness = await refreshDockerSandboxReadiness();
-  if (!canExecuteWithDockerSandbox(readiness, readConfig() ?? {})) {
+  const config = readConfig() ?? {};
+  const prepared = await prepareRequiredDockerSandboxConfig(config);
+  const bindingsPending = Object.keys(readPendingDockerBindings()).length > 0;
+  if (prepared.changed || !canExecuteWithDockerSandbox(readiness, config, bindingsPending)) {
+    if (bindingsPending) {
+      throw new Error("Docker binding changes are pending successful sandbox recreation");
+    }
     throw new Error(dockerSandboxBlockedMessage(readiness));
   }
 }
@@ -1167,7 +1389,13 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -2244,7 +2472,7 @@ async function startGateway(): Promise<void> {
 async function startGatewayInner(): Promise<void> {
   logStartupTiming("gateway-preflight-start");
   // Enforce Docker as the only tool sandbox before inspecting or starting any Gateway.
-  const config = persistRequiredDockerSandboxConfig(readConfig() ?? {});
+  const config = await persistRequiredDockerSandboxConfig(readConfig() ?? {});
   gatewayToken = config?.gateway?.auth?.token || "";
   const configuredPort = config?.gateway?.port || DEFAULT_PORT;
   gatewayPort = configuredPort;
@@ -2261,6 +2489,19 @@ async function startGatewayInner(): Promise<void> {
     mainWindow?.webContents.send("gateway:log", `[docker-sandbox] ${message}`);
     setGatewayStatus("failed");
     return;
+  }
+  const scopeMigrationMarker = path.join(stateDir, DOCKER_SCOPE_MIGRATION_MARKER);
+  if (fs.existsSync(scopeMigrationMarker)) {
+    try {
+      await recreateDockerSandboxes({ all: true });
+      await removeOrphanedStateSandboxContainers();
+      await fs.promises.rm(scopeMigrationMarker, { force: true });
+      console.log("[docker-sandbox] Recreated containers for agent-scope migration");
+    } catch (error) {
+      console.error("[docker-sandbox] Agent-scope migration recreation failed:", error);
+      setGatewayStatus("failed");
+      return;
+    }
   }
 
   // Apply MicroClaw's default workspace identity before persona migration.
@@ -2368,8 +2609,13 @@ async function startGatewayInner(): Promise<void> {
   // Spawn gateway as a hidden background process — logs are forwarded
   // to the renderer via the gateway:log IPC channel (visible in Settings).
 
+  const gatewayDockerExecutable = resolveDockerExecutable();
   const gwEnv: Record<string, string> = {
     ...gatewayEnvironment,
+    PATH: prependDockerExecutableToPath(
+      gatewayDockerExecutable,
+      gatewayEnvironment.PATH ?? process.env.PATH ?? "",
+    ),
     OPENCLAW_STATE_DIR: stateDir,
     NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
     NODE_ENV: "production",
@@ -3166,13 +3412,19 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:needs-setup", () => needsSetup());
   ipcMain.handle("config:read", () => readConfig());
   ipcMain.handle("config:read-env", () => loadStateDirEnv());
-  ipcMain.handle("config:write", async (_event, config: any) => {
-    const stateDir = getOpenClawStateDir();
-    await fs.promises.mkdir(stateDir, { recursive: true });
-    assertConfigWriteAllowed(config, readConfig());
-    const enforcedConfig = applyRequiredDockerSandboxConfig(config).config;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(enforcedConfig, null, 2), "utf-8");
-  });
+  ipcMain.handle("config:write", (_event, config: any) =>
+    enqueueConfigMutation(async () => {
+      const current = readConfig() ?? {};
+      assertConfigWriteAllowed(config, current);
+      const enforcedConfig = await prepareRequiredDockerSandboxConfig(config);
+      if (
+        dockerBindingConfigSnapshot(current) !== dockerBindingConfigSnapshot(enforcedConfig.config)
+      ) {
+        throw new Error("Docker bindings must be changed through the Security settings");
+      }
+      await writeConfigAtomically(enforcedConfig.config);
+    }),
+  );
 
   ipcMain.handle("docker-sandbox:check", () => refreshDockerSandboxReadiness());
   ipcMain.handle("docker-sandbox:get-status", () => dockerSandboxReadiness);
@@ -3189,6 +3441,64 @@ function registerIpcHandlers(): void {
     } finally {
       dockerSandboxBuildInProgress = false;
     }
+  });
+  ipcMain.handle("docker-sandbox:get-bindings", () => dockerBindingState());
+  ipcMain.handle(
+    "docker-sandbox:add-binding",
+    async (_event, params: { agentId?: unknown; access?: unknown }) => {
+      if (!mainWindow) throw new Error("Main window is not available");
+      if (typeof params?.agentId !== "string") throw new Error("Agent id is required");
+      if (params.access !== "ro" && params.access !== "rw") {
+        throw new Error("Binding access must be ro or rw");
+      }
+      const agentId = params.agentId;
+      const access = params.access;
+      if (!listAgentDockerBindings(readConfig() ?? {}).some((agent) => agent.id === agentId)) {
+        throw new Error("Unknown agent");
+      }
+      const selected = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+      if (selected.canceled || selected.filePaths.length !== 1) return dockerBindingState();
+      return enqueueConfigMutation(async () => {
+        const config = readConfig() ?? {};
+        if (!listAgentDockerBindings(config).some((agent) => agent.id === agentId)) {
+          throw new Error("Unknown agent");
+        }
+        const updated = await addAgentDockerBinding(
+          config,
+          agentId,
+          selected.filePaths[0],
+          access,
+          { homeDir: app.getPath("home"), stateDir: getOpenClawStateDir() },
+        );
+        return persistAndRecreateAgentBindings(agentId, updated);
+      });
+    },
+  );
+  ipcMain.handle(
+    "docker-sandbox:remove-binding",
+    async (_event, params: { agentId?: unknown; source?: unknown }) => {
+      if (typeof params?.agentId !== "string" || typeof params.source !== "string") {
+        throw new Error("Agent id and binding source are required");
+      }
+      const agentId = params.agentId;
+      const source = params.source;
+      return enqueueConfigMutation(async () => {
+        const updated = await removeAgentDockerBinding(readConfig() ?? {}, agentId, source, {
+          homeDir: app.getPath("home"),
+          stateDir: getOpenClawStateDir(),
+        });
+        return persistAndRecreateAgentBindings(agentId, updated);
+      });
+    },
+  );
+  ipcMain.handle("docker-sandbox:retry-bindings", (_event, agentId: unknown) => {
+    if (typeof agentId !== "string") throw new Error("Agent id is required");
+    return enqueueConfigMutation(async () => {
+      if (!listAgentDockerBindings(readConfig() ?? {}).some((agent) => agent.id === agentId)) {
+        throw new Error("Unknown agent");
+      }
+      return persistAndRecreateAgentBindings(agentId, readConfig() ?? {});
+    });
   });
 
   // --- Skills ---
@@ -4560,7 +4870,8 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      { width?: number; height?: number; x?: number; y?: number } | undefined;
+      | { width?: number; height?: number; x?: number; y?: number }
+      | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);

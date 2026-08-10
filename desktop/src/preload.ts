@@ -299,6 +299,13 @@ contextBridge.exposeInMainWorld("openclaw", {
     check: () => ipcRenderer.invoke("docker-sandbox:check"),
     getStatus: () => ipcRenderer.invoke("docker-sandbox:get-status"),
     buildImage: () => ipcRenderer.invoke("docker-sandbox:build-image"),
+    getBindings: () => ipcRenderer.invoke("docker-sandbox:get-bindings"),
+    addBinding: (params: { agentId: string; access: "ro" | "rw" }) =>
+      ipcRenderer.invoke("docker-sandbox:add-binding", params),
+    removeBinding: (params: { agentId: string; source: string }) =>
+      ipcRenderer.invoke("docker-sandbox:remove-binding", params),
+    retryBindings: (agentId: string) =>
+      ipcRenderer.invoke("docker-sandbox:retry-bindings", agentId),
     onStatus: (callback: (status: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: unknown) => callback(status);
       ipcRenderer.on("docker-sandbox:status", handler);

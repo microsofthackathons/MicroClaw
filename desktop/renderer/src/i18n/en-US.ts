@@ -302,13 +302,29 @@ export default {
   "settings.dockerSandboxRequired":
     "WSL2, Docker Desktop in Linux-container mode, and the pinned sandbox image are mandatory. Chat and agent execution fail closed until every check is ready.",
   "settings.dockerSandboxIsolation":
-    "Tools run as a non-root user in a per-session container with a read-only root, no network, dropped capabilities, resource limits, and an isolated workspace. Arbitrary Windows paths are not mounted.",
+    "Tools run as a non-root user in a per-agent container with a read-only root, no network, dropped capabilities, resource limits, and an isolated workspace. Only folders explicitly listed below are mounted.",
   "settings.dockerInstallNotice":
     "Installation may require administrator approval and a restart. Review Docker Desktop licensing for your organization; MicroClaw does not install software, elevate, reboot, or accept terms for you.",
   "settings.dockerSandboxPosture":
-    "Effective policy: backend Docker; mode all; scope session; workspace isolated; network none; elevated tools disabled.",
+    "Effective policy: backend Docker; mode all; scope agent; workspace isolated; network none; elevated tools disabled.",
   "settings.dockerSandboxMigration":
     "AppContainer is inactive. Existing AppContainer profiles and ACLs are ignored and are not silently removed.",
+  "settings.dockerBindingsTitle": "Per-agent Windows folder access",
+  "settings.dockerBindingsWarning":
+    "The entire selected subtree is exposed to this agent without per-read prompts. Read-only or read-write access is enforced by the Docker mount.",
+  "settings.dockerBindingsLifecycle":
+    "Desired bindings are saved atomically, the managed Gateway reloads them through a controlled restart, then only this agent's containers are removed and lazily recreated. Workspace data remains; an apply error leaves the desired config saved but blocks execution until Retry succeeds.",
+  "settings.dockerBindingsReadOnly": "Read-only folders",
+  "settings.dockerBindingsReadWrite": "Read-write folders",
+  "settings.dockerBindingsAdd": "Add folder",
+  "settings.dockerBindingsRemove": "Remove",
+  "settings.dockerBindingsEmpty": "No folders configured",
+  "settings.dockerBindingsRetry": "Retry recreation",
+  "settings.dockerBindingsApplied": "Bindings applied; the agent container will recreate on use.",
+  "settings.dockerBindingsStatus.unknown": "Desired saved · runtime not yet verified",
+  "settings.dockerBindingsStatus.pending": "Applying and recreating…",
+  "settings.dockerBindingsStatus.applied": "Desired and runtime synchronized",
+  "settings.dockerBindingsStatus.error": "Desired saved · recreation failed",
   "settings.dockerRecheck": "Recheck",
   "settings.dockerOpenSettings": "Open Docker sandbox settings",
   "settings.dockerBuildImage": "Build pinned sandbox image",

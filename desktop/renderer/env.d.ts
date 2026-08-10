@@ -64,6 +64,26 @@ interface DockerSandboxReadiness {
   image: DockerSandboxState;
 }
 
+interface ManagedDockerBinding {
+  source: string;
+  target: string;
+  access: "ro" | "rw";
+}
+
+interface DockerBindingAgent {
+  id: string;
+  name: string;
+  bindings: ManagedDockerBinding[];
+}
+
+interface DockerBindingState {
+  agents: DockerBindingAgent[];
+  statuses: Record<
+    string,
+    { effective: "unknown" | "pending" | "applied" | "error"; error?: string }
+  >;
+}
+
 interface ChatAttachment {
   type: "image" | "file";
   mimeType: string;
@@ -374,6 +394,13 @@ interface OpenClawAPI {
     check(): Promise<DockerSandboxReadiness>;
     getStatus(): Promise<DockerSandboxReadiness | null>;
     buildImage(): Promise<DockerSandboxReadiness>;
+    getBindings(): Promise<DockerBindingState>;
+    addBinding(params: {
+      agentId: string;
+      access: "ro" | "rw";
+    }): Promise<DockerBindingState>;
+    removeBinding(params: { agentId: string; source: string }): Promise<DockerBindingState>;
+    retryBindings(agentId: string): Promise<DockerBindingState>;
     onStatus(callback: (status: DockerSandboxReadiness) => void): () => void;
     onBuildProgress(callback: (line: string) => void): () => void;
   };

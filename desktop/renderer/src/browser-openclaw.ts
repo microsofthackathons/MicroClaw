@@ -109,6 +109,22 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       check: async () => browserDockerReadiness(),
       getStatus: async () => browserDockerReadiness(),
       buildImage: async () => browserDockerReadiness(),
+      getBindings: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      addBinding: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      removeBinding: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      retryBindings: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
       onStatus: noopSub,
       onBuildProgress: noopSub,
     },

@@ -1,4 +1,5 @@
 import { execFile, spawn } from "child_process";
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -53,6 +54,40 @@ export interface CommandResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+export type DockerBindingAccess = "ro" | "rw";
+
+export interface ManagedDockerBinding {
+  source: string;
+  target: string;
+  access: DockerBindingAccess;
+}
+
+export interface DockerBindingAgent {
+  id: string;
+  name: string;
+  bindings: ManagedDockerBinding[];
+}
+
+export interface DockerBindingApplyResult {
+  config: JsonObject;
+  effective: "applied" | "error";
+  error?: string;
+}
+
+export interface DockerContainerInspection {
+  Id?: unknown;
+  Config?: { Labels?: Record<string, string> | null } | null;
+  Mounts?: Array<{ Source?: unknown }> | null;
+}
+
+export interface DockerBindingValidationOptions {
+  homeDir?: string;
+  stateDir?: string;
+  environment?: NodeJS.ProcessEnv;
+  realpath?: (value: string) => Promise<string>;
+  stat?: (value: string) => Promise<fs.Stats>;
 }
 
 export type CommandRunner = (
@@ -231,6 +266,15 @@ export function resolveDockerExecutable(
   return candidates.find((candidate) => candidate && exists(candidate)) || "docker.exe";
 }
 
+export function prependDockerExecutableToPath(
+  executable: string,
+  currentPath = process.env.PATH ?? "",
+): string {
+  return path.isAbsolute(executable)
+    ? `${path.dirname(executable)}${path.delimiter}${currentPath}`
+    : currentPath;
+}
+
 export async function checkDockerSandboxReadiness(
   runner: CommandRunner = runCommand,
   options: {
@@ -384,7 +428,7 @@ export async function buildDockerSandboxImage(
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
-          PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
+          PATH: prependDockerExecutableToPath(executable),
         },
       },
     );
@@ -417,7 +461,7 @@ export async function buildDockerSandboxImage(
 export const REQUIRED_DOCKER_SANDBOX = {
   mode: "all",
   backend: "docker",
-  scope: "session",
+  scope: "agent",
   workspaceAccess: "none",
   docker: {
     image: OPENCLAW_SANDBOX_IMAGE,
@@ -463,6 +507,342 @@ function objectValue(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 }
 
+const MANAGED_BIND_TARGET_ROOT = "/mnt/microclaw";
+const BLOCKED_CREDENTIAL_SEGMENTS = new Set([
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".azure",
+  ".docker",
+  ".kube",
+]);
+
+function normalizePathForComparison(value: string): string {
+  return path.win32
+    .normalize(value)
+    .replace(/[\\/]+$/, "")
+    .toLowerCase();
+}
+
+function pathContains(parent: string, candidate: string): boolean {
+  const normalizedParent = normalizePathForComparison(parent);
+  const normalizedCandidate = normalizePathForComparison(candidate);
+  return (
+    normalizedCandidate === normalizedParent ||
+    normalizedCandidate.startsWith(`${normalizedParent}\\`)
+  );
+}
+
+export function findStateOwnedSandboxContainerIds(
+  inspections: DockerContainerInspection[],
+  stateDir: string,
+): string[] {
+  const sandboxRoot = path.win32.join(stateDir, "sandboxes");
+  return inspections.flatMap((inspection) => {
+    if (
+      typeof inspection.Id !== "string" ||
+      inspection.Config?.Labels?.["openclaw.sandbox"] !== "1" ||
+      !inspection.Mounts?.some(
+        (mount) => typeof mount.Source === "string" && pathContains(sandboxRoot, mount.Source),
+      )
+    ) {
+      return [];
+    }
+    return [inspection.Id];
+  });
+}
+
+function parseDockerBind(value: string): ManagedDockerBinding | null {
+  const match = /^([a-zA-Z]:[\\/].*):(\/[^:]+):(ro|rw)$/.exec(value);
+  if (!match) return null;
+  return { source: match[1], target: match[2], access: match[3] as DockerBindingAccess };
+}
+
+function formatDockerBind(binding: ManagedDockerBinding): string {
+  return `${binding.source}:${binding.target}:${binding.access}`;
+}
+
+function bindingTarget(source: string): string {
+  const baseName = path.win32
+    .basename(source)
+    .normalize("NFKD")
+    .split("")
+    .filter((character) => character.charCodeAt(0) <= 0x7f)
+    .join("")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 36);
+  const hash = createHash("sha256")
+    .update(normalizePathForComparison(source))
+    .digest("hex")
+    .slice(0, 10);
+  return `${MANAGED_BIND_TARGET_ROOT}/${baseName || "folder"}-${hash}`;
+}
+
+function lexicalBlockedReason(
+  source: string,
+  options: DockerBindingValidationOptions,
+): string | undefined {
+  const environment = options.environment ?? process.env;
+  const homeDir = options.homeDir ?? os.homedir();
+  const normalized = normalizePathForComparison(source);
+  if (/^[a-z]:$/i.test(normalized)) return "Drive roots cannot be exposed";
+  if (source.startsWith("\\\\") || source.startsWith("\\\\?\\") || source.startsWith("\\\\.\\"))
+    return "Network, device, and extended Windows paths cannot be exposed";
+
+  const broadRoots = [
+    environment.SystemRoot,
+    environment.windir,
+    environment.ProgramFiles,
+    environment["ProgramFiles(x86)"],
+    environment.ProgramData,
+    environment.APPDATA,
+    environment.LOCALAPPDATA,
+    options.stateDir,
+  ].filter((value): value is string => Boolean(value));
+  if (broadRoots.some((root) => pathContains(root, source))) {
+    return "System, application-data, user-home, and MicroClaw state roots cannot be exposed";
+  }
+  if (homeDir && normalizePathForComparison(homeDir) === normalized) {
+    return "The user home root cannot be exposed";
+  }
+
+  const segments = normalized.split("\\");
+  if (segments.some((segment) => BLOCKED_CREDENTIAL_SEGMENTS.has(segment))) {
+    return "Credential directories cannot be exposed";
+  }
+  if (
+    /\\(google\\chrome|microsoft\\edge)\\user data(?:\\|$)/i.test(normalized) ||
+    /\\mozilla\\firefox\\profiles(?:\\|$)/i.test(normalized) ||
+    /\\packages\\.*(canonicalgrouplimited|dockerdesktop|windows subsystem)/i.test(normalized)
+  ) {
+    return "Browser, WSL, and Docker data directories cannot be exposed";
+  }
+  return undefined;
+}
+
+export async function validateDockerBindingSource(
+  source: string,
+  access: DockerBindingAccess,
+  options: DockerBindingValidationOptions = {},
+): Promise<ManagedDockerBinding> {
+  if (access !== "ro" && access !== "rw") throw new Error("Binding access must be ro or rw");
+  if (!path.win32.isAbsolute(source)) throw new Error("Binding source must be an absolute path");
+  const normalized = path.win32.normalize(source);
+  const lexicalReason = lexicalBlockedReason(normalized, options);
+  if (lexicalReason) throw new Error(lexicalReason);
+
+  const canonical = path.win32.normalize(
+    await (options.realpath ?? fs.promises.realpath)(normalized),
+  );
+  const canonicalReason = lexicalBlockedReason(canonical, options);
+  if (canonicalReason) throw new Error(canonicalReason);
+  const stats = await (options.stat ?? fs.promises.stat)(canonical);
+  if (!stats.isDirectory()) throw new Error("Binding source must be an existing directory");
+  return { source: canonical, target: bindingTarget(canonical), access };
+}
+
+function assertNoBindingOverlap(
+  bindings: ManagedDockerBinding[],
+  candidate: ManagedDockerBinding,
+): void {
+  const conflict = bindings.find(
+    (binding) =>
+      normalizePathForComparison(binding.source) !== normalizePathForComparison(candidate.source) &&
+      (pathContains(binding.source, candidate.source) ||
+        pathContains(candidate.source, binding.source)),
+  );
+  if (conflict) {
+    throw new Error(`Overlapping folder binding already exists: ${conflict.source}`);
+  }
+}
+
+export function listAgentDockerBindings(config: JsonObject): DockerBindingAgent[] {
+  const agents = objectValue(config.agents);
+  const configured = Array.isArray(agents.list) ? agents.list : [];
+  const result: DockerBindingAgent[] = [];
+  const seen = new Set<string>();
+  for (const value of [...configured, { id: "main", name: "Main" }]) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const agent = value as JsonObject;
+    const id = typeof agent.id === "string" ? agent.id : "";
+    if (!id || seen.has(id.toLowerCase())) continue;
+    seen.add(id.toLowerCase());
+    const sandbox = objectValue(agent.sandbox);
+    const docker = objectValue(sandbox.docker);
+    const bindings = Array.isArray(docker.binds)
+      ? docker.binds.map((bind) => {
+          if (typeof bind !== "string") throw new Error(`Invalid Docker binding for ${agent.id}`);
+          const parsed = parseDockerBind(bind);
+          if (!parsed) throw new Error(`Invalid Docker binding for ${agent.id}: ${bind}`);
+          return parsed;
+        })
+      : [];
+    result.push({
+      id,
+      name: typeof agent.name === "string" && agent.name.trim() ? agent.name : id,
+      bindings,
+    });
+  }
+  return result;
+}
+
+function configuredAgentDockerBindings(config: JsonObject): DockerBindingAgent[] {
+  const agents = objectValue(config.agents);
+  const configured = Array.isArray(agents.list) ? agents.list : [];
+  return configured.flatMap((value): DockerBindingAgent[] => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const agent = value as JsonObject;
+    if (typeof agent.id !== "string") return [];
+    const docker = objectValue(objectValue(agent.sandbox).docker);
+    const bindings = Array.isArray(docker.binds)
+      ? docker.binds.map((bind) => {
+          if (typeof bind !== "string") throw new Error(`Invalid Docker binding for ${agent.id}`);
+          const parsed = parseDockerBind(bind);
+          if (!parsed) throw new Error(`Invalid Docker binding for ${agent.id}: ${bind}`);
+          return parsed;
+        })
+      : [];
+    return [
+      {
+        id: agent.id,
+        name: typeof agent.name === "string" ? agent.name : agent.id,
+        bindings,
+      },
+    ];
+  });
+}
+
+export function setAgentDockerBindings(
+  input: JsonObject,
+  agentId: string,
+  bindings: ManagedDockerBinding[],
+): JsonObject {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(agentId)) throw new Error("Invalid agent id");
+  const config = structuredClone(input);
+  const agents = objectValue(config.agents);
+  config.agents = agents;
+  const list = Array.isArray(agents.list) ? agents.list : [];
+  agents.list = list;
+  let agent = list.find(
+    (value) =>
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      (value as JsonObject).id === agentId,
+  ) as JsonObject | undefined;
+  if (!agent) {
+    agent = { id: agentId };
+    list.push(agent);
+  }
+  if (bindings.length === 0) {
+    delete agent.sandbox;
+  } else {
+    agent.sandbox = {
+      docker: {
+        binds: bindings.map(formatDockerBind),
+        dangerouslyAllowExternalBindSources: true,
+      },
+    };
+  }
+  return applyRequiredDockerSandboxConfig(config).config;
+}
+
+export async function normalizeAgentDockerBindings(
+  input: JsonObject,
+  options: DockerBindingValidationOptions = {},
+): Promise<{ config: JsonObject; changed: boolean }> {
+  const before = JSON.stringify(input);
+  const configuredBindings = configuredAgentDockerBindings(input);
+  let config = applyRequiredDockerSandboxConfig(input).config;
+  for (const agent of configuredBindings) {
+    if (agent.bindings.length === 0) continue;
+    const normalized: ManagedDockerBinding[] = [];
+    for (const binding of agent.bindings) {
+      const candidate = await validateDockerBindingSource(binding.source, binding.access, options);
+      const existing = normalized.find(
+        (value) =>
+          normalizePathForComparison(value.source) === normalizePathForComparison(candidate.source),
+      );
+      if (existing) {
+        if (existing.access !== candidate.access) {
+          throw new Error(`Folder is configured with conflicting access: ${candidate.source}`);
+        }
+        continue;
+      }
+      assertNoBindingOverlap(normalized, candidate);
+      normalized.push(candidate);
+    }
+    config = setAgentDockerBindings(config, agent.id, normalized);
+  }
+  return { config, changed: JSON.stringify(config) !== before };
+}
+
+export async function addAgentDockerBinding(
+  input: JsonObject,
+  agentId: string,
+  source: string,
+  access: DockerBindingAccess,
+  options: DockerBindingValidationOptions = {},
+): Promise<JsonObject> {
+  const normalized = await normalizeAgentDockerBindings(input, options);
+  const agents = listAgentDockerBindings(normalized.config);
+  const current = agents.find((agent) => agent.id === agentId);
+  if (!current) throw new Error(`Unknown agent: ${agentId}`);
+  const candidate = await validateDockerBindingSource(source, access, options);
+  const bindings = current.bindings.filter(
+    (binding) =>
+      normalizePathForComparison(binding.source) !== normalizePathForComparison(candidate.source),
+  );
+  assertNoBindingOverlap(bindings, candidate);
+  bindings.push(candidate);
+  return setAgentDockerBindings(normalized.config, agentId, bindings);
+}
+
+export async function removeAgentDockerBinding(
+  input: JsonObject,
+  agentId: string,
+  source: string,
+  options: DockerBindingValidationOptions = {},
+): Promise<JsonObject> {
+  const normalized = await normalizeAgentDockerBindings(input, options);
+  const current = listAgentDockerBindings(normalized.config).find((agent) => agent.id === agentId);
+  if (!current) throw new Error(`Unknown agent: ${agentId}`);
+  const sourceKey = normalizePathForComparison(source);
+  if (
+    !current.bindings.some((binding) => normalizePathForComparison(binding.source) === sourceKey)
+  ) {
+    throw new Error("Binding no longer exists");
+  }
+  return setAgentDockerBindings(
+    normalized.config,
+    agentId,
+    current.bindings.filter((binding) => normalizePathForComparison(binding.source) !== sourceKey),
+  );
+}
+
+export async function saveAndRecreateAgentDockerBindings(
+  config: JsonObject,
+  agentId: string,
+  dependencies: {
+    write: (config: JsonObject) => Promise<void>;
+    recreate: (agentId: string) => Promise<void>;
+  },
+): Promise<DockerBindingApplyResult> {
+  await dependencies.write(config);
+  try {
+    await dependencies.recreate(agentId);
+    return { config, effective: "applied" };
+  } catch (error) {
+    return {
+      config,
+      effective: "error",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function applyRequiredDockerSandboxConfig(input: JsonObject): {
   config: JsonObject;
   changed: boolean;
@@ -478,7 +858,22 @@ export function applyRequiredDockerSandboxConfig(input: JsonObject): {
     for (const agent of agents.list) {
       if (agent && typeof agent === "object" && !Array.isArray(agent)) {
         const agentConfig = agent as JsonObject;
-        delete agentConfig.sandbox;
+        const sandbox = objectValue(agentConfig.sandbox);
+        const docker = objectValue(sandbox.docker);
+        const binds = Array.isArray(docker.binds)
+          ? docker.binds.filter(
+              (bind): bind is string =>
+                typeof bind === "string" &&
+                parseDockerBind(bind)?.target.startsWith(`${MANAGED_BIND_TARGET_ROOT}/`) === true,
+            )
+          : [];
+        if (binds.length > 0) {
+          agentConfig.sandbox = {
+            docker: { binds, dangerouslyAllowExternalBindSources: true },
+          };
+        } else {
+          delete agentConfig.sandbox;
+        }
         delete agentConfig.tools;
         const runtime = objectValue(agentConfig.runtime);
         if (runtime.type === "acp") delete agentConfig.runtime;
@@ -508,6 +903,7 @@ export function isRequiredDockerSandboxConfig(config: JsonObject): boolean {
 export function canExecuteWithDockerSandbox(
   readiness: DockerSandboxReadiness,
   config: JsonObject,
+  bindingsPending = false,
 ): boolean {
-  return readiness.ready && isRequiredDockerSandboxConfig(config);
+  return readiness.ready && !bindingsPending && isRequiredDockerSandboxConfig(config);
 }

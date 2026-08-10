@@ -400,6 +400,82 @@
         </div>
         <div class="section-footer">{{ t("settings.dockerSandboxPosture") }}</div>
         <div class="section-footer">{{ t("settings.dockerSandboxMigration") }}</div>
+        <div class="section-label">{{ t("settings.dockerBindingsTitle") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+            <div class="docker-binding-toolbar">
+              <el-select v-model="selectedDockerAgentId" style="min-width: 220px">
+                <el-option
+                  v-for="agent in dockerBindingState?.agents ?? []"
+                  :key="agent.id"
+                  :label="`${agent.name} (${agent.id})`"
+                  :value="agent.id"
+                />
+              </el-select>
+              <el-tag :type="dockerBindingStatusType">
+                {{ dockerBindingStatusLabel }}
+              </el-tag>
+              <el-button
+                v-if="selectedDockerBindingStatus?.effective === 'error'"
+                :loading="dockerBindingsApplying"
+                @click="retryDockerBindings"
+              >
+                {{ t("settings.dockerBindingsRetry") }}
+              </el-button>
+            </div>
+            <p>{{ t("settings.dockerBindingsWarning") }}</p>
+            <p>{{ t("settings.dockerBindingsLifecycle") }}</p>
+            <div v-for="access in dockerBindingAccesses" :key="access" class="docker-binding-group">
+              <div class="docker-binding-heading">
+                <strong>{{
+                  access === "ro"
+                    ? t("settings.dockerBindingsReadOnly")
+                    : t("settings.dockerBindingsReadWrite")
+                }}</strong>
+                <el-button
+                  size="small"
+                  :disabled="!selectedDockerAgent || dockerBindingsApplying"
+                  @click="addDockerBinding(access)"
+                >
+                  {{ t("settings.dockerBindingsAdd") }}
+                </el-button>
+              </div>
+              <div
+                v-for="binding in selectedDockerAgent?.bindings.filter(
+                  (item) => item.access === access,
+                ) ?? []"
+                :key="binding.source"
+                class="docker-binding-row"
+              >
+                <div class="docker-binding-paths">
+                  <span>{{ binding.source }}</span>
+                  <code>{{ binding.target }}</code>
+                </div>
+                <el-tag :type="binding.access === 'ro' ? 'info' : 'warning'">
+                  {{ binding.access.toUpperCase() }}
+                </el-tag>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :disabled="dockerBindingsApplying"
+                  @click="removeDockerBinding(binding)"
+                >
+                  {{ t("settings.dockerBindingsRemove") }}
+                </el-button>
+              </div>
+              <span
+                v-if="!selectedDockerAgent?.bindings.some((item) => item.access === access)"
+                class="placeholder-text"
+              >
+                {{ t("settings.dockerBindingsEmpty") }}
+              </span>
+            </div>
+            <div v-if="selectedDockerBindingStatus?.error" class="docker-binding-error">
+              {{ selectedDockerBindingStatus.error }}
+            </div>
+          </div>
+        </div>
       </div>
 
       <template v-if="false">
@@ -1194,6 +1270,26 @@ const dockerReadiness = ref<DockerSandboxReadiness | null>(null);
 const dockerChecking = ref(false);
 const dockerBuilding = ref(false);
 const dockerBuildLog = ref("");
+const dockerBindingAccesses = ["ro", "rw"] as const;
+const dockerBindingState = ref<DockerBindingState | null>(null);
+const selectedDockerAgentId = ref("main");
+const dockerBindingsApplying = ref(false);
+
+const selectedDockerAgent = computed(() =>
+  dockerBindingState.value?.agents.find((agent) => agent.id === selectedDockerAgentId.value),
+);
+const selectedDockerBindingStatus = computed(
+  () => dockerBindingState.value?.statuses[selectedDockerAgentId.value],
+);
+const dockerBindingStatusType = computed(() => {
+  const effective = selectedDockerBindingStatus.value?.effective ?? "unknown";
+  if (effective === "applied") return "success";
+  if (effective === "error") return "danger";
+  return "info";
+});
+const dockerBindingStatusLabel = computed(() =>
+  t(`settings.dockerBindingsStatus.${selectedDockerBindingStatus.value?.effective ?? "unknown"}`),
+);
 
 const dockerChecks = computed(() => {
   if (!dockerReadiness.value) return [];
@@ -1233,9 +1329,68 @@ function openDockerGuide(guide: "wsl" | "docker") {
 async function refreshDockerSandbox() {
   dockerChecking.value = true;
   try {
-    dockerReadiness.value = await window.openclaw.dockerSandbox.check();
+    [dockerReadiness.value, dockerBindingState.value] = await Promise.all([
+      window.openclaw.dockerSandbox.check(),
+      window.openclaw.dockerSandbox.getBindings(),
+    ]);
+    if (
+      !dockerBindingState.value.agents.some((agent) => agent.id === selectedDockerAgentId.value)
+    ) {
+      selectedDockerAgentId.value = dockerBindingState.value.agents[0]?.id ?? "main";
+    }
   } finally {
     dockerChecking.value = false;
+  }
+}
+
+async function addDockerBinding(access: "ro" | "rw") {
+  if (!selectedDockerAgent.value) return;
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.addBinding({
+      agentId: selectedDockerAgent.value.id,
+      access,
+    });
+    const status = dockerBindingState.value.statuses[selectedDockerAgent.value.id];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else if (status?.effective === "applied")
+      ElMessage.success(t("settings.dockerBindingsApplied"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function removeDockerBinding(binding: ManagedDockerBinding) {
+  if (!selectedDockerAgent.value) return;
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.removeBinding({
+      agentId: selectedDockerAgent.value.id,
+      source: binding.source,
+    });
+    const status = dockerBindingState.value.statuses[selectedDockerAgent.value.id];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else ElMessage.success(t("settings.dockerBindingsApplied"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function retryDockerBindings() {
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.retryBindings(
+      selectedDockerAgentId.value,
+    );
+    const status = dockerBindingState.value.statuses[selectedDockerAgentId.value];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else ElMessage.success(t("settings.dockerBindingsApplied"));
+  } finally {
+    dockerBindingsApplying.value = false;
   }
 }
 
@@ -2756,6 +2911,51 @@ async function clearChatHistory() {
   font-weight: 400;
   color: var(--text-primary);
 }
+.docker-binding-toolbar,
+.docker-binding-heading,
+.docker-binding-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.docker-binding-toolbar,
+.docker-binding-heading {
+  justify-content: space-between;
+}
+
+.docker-binding-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.docker-binding-row {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.docker-binding-paths {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.docker-binding-paths code {
+  color: var(--text-secondary);
+}
+
+.docker-binding-error {
+  margin-top: 10px;
+  color: var(--el-color-danger);
+  overflow-wrap: anywhere;
+}
+
 .sandbox-disabled {
   opacity: 0.45;
   pointer-events: none;
