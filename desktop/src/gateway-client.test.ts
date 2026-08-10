@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   extractMainSessionKey,
+  buildSessionTitlePrompt,
   GatewayClient,
   isAgentWarmupEvent,
+  normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
   type GatewayEventFrame,
 } from "./gateway-client";
@@ -50,7 +52,6 @@ describe("normalizeGatewayChannelsStatus", () => {
     ]);
   });
 });
-
 describe("extractMainSessionKey", () => {
   it("reads the canonical main key from the Gateway hello snapshot", () => {
     expect(
@@ -62,6 +63,24 @@ describe("extractMainSessionKey", () => {
 
   it("returns null for a malformed Gateway hello snapshot", () => {
     expect(extractMainSessionKey({ snapshot: { sessionDefaults: [] } })).toBeNull();
+  });
+});
+
+describe("session summary titles", () => {
+  it("builds a bounded transcript prompt from user and assistant turns", () => {
+    const prompt = buildSessionTitlePrompt([
+      { role: "system", content: "hidden" },
+      { role: "user", content: [{ type: "text", text: "Plan a Japan trip" }] },
+      { role: "assistant", content: "Here is a seven-day itinerary" },
+    ]);
+
+    expect(prompt).toContain("user: Plan a Japan trip");
+    expect(prompt).toContain("assistant: Here is a seven-day itinerary");
+    expect(prompt).not.toContain("hidden");
+  });
+
+  it("normalizes the model response to a single plain-text title", () => {
+    expect(normalizeSessionTitle("## “日本七日游规划”\nExtra detail")).toBe("日本七日游规划");
   });
 });
 
@@ -324,5 +343,66 @@ describe("GatewayClient.deleteSession", () => {
       "permission denied",
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GatewayClient.listSessionTitles", () => {
+  it("uses OpenClaw's built-in derived titles and returns requested sessions only", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({
+      sessions: [
+        { key: "session-0", derivedTitle: "First title" },
+        { key: "other", derivedTitle: "Not requested" },
+      ],
+    });
+    const keys = Array.from({ length: 70 }, (_, index) => `session-${index}`);
+
+    const result = await client.listSessionTitles(keys);
+
+    expect(request).toHaveBeenCalledWith("sessions.list", {
+      includeDerivedTitles: true,
+      limit: 200,
+    });
+    expect(result).toEqual({ titles: { "session-0": "First title" } });
+  });
+});
+
+describe("GatewayClient.generateSessionTitle", () => {
+  it("persists the generated summary and deletes the hidden transcript", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    (client as any).sessionTitleWaiters = new Map();
+    (client as any).sessionTitlePromises = new Map();
+    vi.spyOn(client, "loadHistory").mockResolvedValue({
+      messages: [
+        { role: "user", content: "Plan a Japan trip" },
+        { role: "assistant", content: "Here is a seven-day itinerary" },
+      ],
+    });
+    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    vi.spyOn(client, "sendChat").mockImplementation(async (titleSessionKey) => {
+      queueMicrotask(() => {
+        (client as any).handleMessage(
+          JSON.stringify({
+            type: "event",
+            event: "chat",
+            payload: {
+              sessionKey: titleSessionKey,
+              state: "final",
+              message: { role: "assistant", content: "Japan itinerary" },
+            },
+          }),
+        );
+      });
+    });
+
+    await expect(client.generateSessionTitle("agent:travel:main")).resolves.toBe("Japan itinerary");
+    expect(request).toHaveBeenCalledWith("sessions.patch", {
+      key: "agent:travel:main",
+      label: "Japan itinerary",
+    });
+    expect(request).toHaveBeenCalledWith("sessions.delete", {
+      key: expect.stringMatching(/^agent:travel:microclaw-title-/),
+      deleteTranscript: true,
+    });
   });
 });

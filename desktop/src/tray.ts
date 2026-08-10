@@ -1,17 +1,19 @@
 import { app, Tray, Menu, nativeImage } from "electron";
 import * as path from "path";
 import type { GatewayStatus } from "./constants";
+import { t, type SupportedLocale } from "./i18n";
 
 let tray: Tray | null = null;
 
-/** Callback set provided by main.ts — includes a quit hook to set the isQuitting flag. */
-let quitCallback: (() => void) | null = null;
-
-export function createTray(callbacks: {
+interface TrayCallbacks {
   onShowWindow: () => void;
   onRestartGateway: () => void;
-  onQuit: () => void;
-}): void {
+}
+
+let trayCallbacks: TrayCallbacks | null = null;
+let trayLocale: SupportedLocale = "en-US";
+
+export function createTray(callbacks: TrayCallbacks, locale: SupportedLocale): void {
   const iconPath = path.join(
     __dirname,
     process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
@@ -20,11 +22,12 @@ export function createTray(callbacks: {
 
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setToolTip("MicroClaw");
-  quitCallback = callbacks.onQuit;
+  trayCallbacks = callbacks;
+  trayLocale = locale;
 
-  updateTrayMenu("stopped", callbacks);
+  updateTrayMenu("stopped");
 
-  tray.on("double-click", () => {
+  tray.on("click", () => {
     callbacks.onShowWindow();
   });
 }
@@ -35,22 +38,21 @@ export function destroyTray(): void {
     tray.destroy();
     tray = null;
   }
+  trayCallbacks = null;
 }
 
-export function updateTrayMenu(
-  gatewayStatus: GatewayStatus,
-  callbacks?: { onShowWindow: () => void; onRestartGateway: () => void },
-): void {
+export function updateTrayMenu(gatewayStatus: GatewayStatus, locale?: SupportedLocale): void {
   if (!tray) return;
+  if (locale) trayLocale = locale;
 
   const statusLabels: Record<GatewayStatus, string> = {
-    stopped: "⏹ Gateway Stopped",
-    starting: "⏳ Gateway Starting...",
-    running: "✅ Gateway Running",
-    restarting: "🔄 Gateway Restarting...",
-    failed: "❌ Gateway Failed",
-    stopping: "⏳ Gateway Stopping...",
-    timeout: "⚠️ Gateway Timeout",
+    stopped: `⏹ ${t(trayLocale, "tray.status.stopped")}`,
+    starting: `⏳ ${t(trayLocale, "tray.status.starting")}`,
+    running: `✅ ${t(trayLocale, "tray.status.running")}`,
+    restarting: `🔄 ${t(trayLocale, "tray.status.restarting")}`,
+    failed: `❌ ${t(trayLocale, "tray.status.failed")}`,
+    stopping: `⏳ ${t(trayLocale, "tray.status.stopping")}`,
+    timeout: `⚠️ ${t(trayLocale, "tray.status.timeout")}`,
   };
 
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -60,18 +62,17 @@ export function updateTrayMenu(
     },
     { type: "separator" },
     {
-      label: "Show Window",
-      click: () => callbacks?.onShowWindow(),
+      label: t(trayLocale, "tray.open"),
+      click: () => trayCallbacks?.onShowWindow(),
     },
     {
-      label: "Restart Gateway",
-      click: () => callbacks?.onRestartGateway(),
+      label: t(trayLocale, "tray.restartGateway"),
+      click: () => trayCallbacks?.onRestartGateway(),
     },
     { type: "separator" },
     {
-      label: "Quit",
+      label: t(trayLocale, "tray.quit"),
       click: () => {
-        quitCallback?.();
         app.quit();
       },
     },

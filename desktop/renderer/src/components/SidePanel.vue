@@ -9,7 +9,6 @@
         <img class="sp-brand-avatar" :src="currentAgent.avatar" :alt="currentAgent.name" />
         <div>
           <div class="sp-brand-name">{{ currentAgent.name }}</div>
-          <div class="sp-brand-tagline">{{ t("sidebar.tagline") }}</div>
         </div>
         <span
           class="sp-conn-dot"
@@ -29,9 +28,7 @@
         @click.stop
       >
         <div class="sp-agent-flyout-header">
-          <button class="sp-agent-flyout-search-btn" @click="focusAgentSearch">
-            {{ t("sidebar.agents") }}
-          </button>
+          <span class="sp-agent-flyout-title">{{ t("sidebar.agents") }}</span>
           <button
             class="sp-agent-flyout-add-btn"
             :title="t('sidebar.newAgent')"
@@ -42,17 +39,9 @@
           </button>
         </div>
 
-        <input
-          ref="flyoutSearchInputRef"
-          v-model="agentQuery"
-          class="sp-agent-flyout-input"
-          :placeholder="t('sidebar.searchAgents')"
-          type="text"
-        />
-
         <div class="sp-agent-avatar-list">
           <button
-            v-for="agent in filteredAgents"
+            v-for="agent in agentStore.agents"
             :key="agent.id"
             class="sp-agent-avatar-item"
             :class="{ active: agentStore.currentAgentId === agent.id }"
@@ -63,23 +52,6 @@
             <span class="sp-agent-avatar-name">{{ agent.name }}</span>
           </button>
         </div>
-
-        <button class="sp-agent-flyout-footer" @click="handleExploreAgents">
-          <span>{{ t("sidebar.explorePopularAgents") }}</span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m9 18 6-6-6-6" />
-          </svg>
-        </button>
       </div>
     </Teleport>
 
@@ -117,18 +89,32 @@
 
         <div v-show="chatExpanded" class="sp-section-body">
           <button
-            v-for="s in allSessions"
+            v-for="s in visibleSessions"
             :key="s.key"
             class="sp-chat-item"
-            :class="{ selected: chatStore.sessionKey === s.key }"
+            :class="{ selected: route.name === 'chat' && chatStore.sessionKey === s.key }"
             @click="selectSession(s.key)"
           >
-            <span class="sp-chat-item-title">{{ s.title }}</span>
-            <span class="sp-chat-item-delete" @click.stop="deleteSession(s.key)"
+            <span class="sp-chat-item-title" :title="sessionTitle(s)">
+              {{ sessionTitle(s) }}
+            </span>
+            <span
+              class="sp-chat-item-action sp-chat-item-pin"
+              :class="{ pinned: s.pinned }"
+              :title="s.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
+              :aria-label="s.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
+              @click.stop="sessionStore.togglePinned(s.key)"
+              ><IconPin :size="12"
+            /></span>
+            <span
+              class="sp-chat-item-action sp-chat-item-delete"
+              :title="t('sidebar.delete')"
+              :aria-label="t('sidebar.delete')"
+              @click.stop="deleteSession(s.key)"
               ><IconClose :size="12" :stroke-width="2.5"
             /></span>
           </button>
-          <div v-if="allSessions.length === 0" class="sp-empty-hint">
+          <div v-if="visibleSessions.length === 0" class="sp-empty-hint">
             {{ t("sidebar.noChats") }}
           </div>
         </div>
@@ -164,7 +150,9 @@
         <span class="sp-usage-title">{{ t("sidebar.usageSnapshotTitle") }}</span>
         <button
           class="sp-usage-toggle"
-          :title="usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')"
+          :title="
+            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
+          "
           :aria-label="
             usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
           "
@@ -200,21 +188,24 @@
             <span class="sp-usage-value">{{ formatCompact(usageSnapshot.totalTokens) }}</span>
           </div>
         </div>
-        <div v-else-if="!gatewayOnline" class="sp-usage-state">{{ t("sidebar.usageSnapshotOffline") }}</div>
+        <div v-else-if="!gatewayOnline" class="sp-usage-state">
+          {{ t("sidebar.usageSnapshotOffline") }}
+        </div>
         <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
 
         <div class="sp-usage-foot">
           <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
-          <span v-if="lastUpdatedLabel">{{ t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel }) }}</span>
+          <span v-if="lastUpdatedLabel">{{
+            t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel })
+          }}</span>
         </div>
       </template>
     </section>
-
   </aside>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { useGatewayStore } from "@/stores/gateway";
@@ -225,6 +216,7 @@ import { t } from "@/i18n";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
+import IconPin from "@/components/icons/IconPin.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -247,13 +239,12 @@ const usageLoading = ref(false);
 const usageLastUpdated = ref<Date | null>(null);
 const usageCollapsed = ref(false);
 let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let titleRequestGeneration = 0;
 
 const chatExpanded = ref(true);
 const isAgentFlyoutOpen = ref(false);
-const agentQuery = ref("");
 const flyoutRef = ref<HTMLElement | null>(null);
 const brandTriggerRef = ref<HTMLElement | null>(null);
-const flyoutSearchInputRef = ref<HTMLInputElement | null>(null);
 const flyoutTop = ref(0);
 const flyoutLeft = ref(0);
 
@@ -268,20 +259,11 @@ const lastUpdatedLabel = computed(() => {
   return usageLastUpdated.value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 });
 
-const filteredAgents = computed(() => {
-  const q = agentQuery.value.trim().toLowerCase();
-  if (!q) return agentStore.agents;
-  return agentStore.agents.filter((agent) => {
-    const name = agent.name.toLowerCase();
-    const desc = (agent.description || "").toLowerCase();
-    return name.includes(q) || desc.includes(q);
-  });
-});
-
 const currentAgent = computed(() => {
-  const session = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
-  const agentId = session?.agentId || agentStore.currentAgentId;
-  return agentStore.agents.find((a) => a.id === agentId) || agentStore.agents[0];
+  return (
+    agentStore.agents.find((agent) => agent.id === agentStore.currentAgentId) ||
+    agentStore.agents[0]
+  );
 });
 
 onMounted(() => {
@@ -392,25 +374,12 @@ function ensureEmptySession() {
 function toggleAgentFlyout() {
   isAgentFlyoutOpen.value = !isAgentFlyoutOpen.value;
   if (isAgentFlyoutOpen.value) {
-    nextTick(() => {
-      updateFlyoutPosition();
-      flyoutSearchInputRef.value?.focus();
-    });
+    nextTick(updateFlyoutPosition);
   }
 }
 
 function closeAgentFlyout() {
   isAgentFlyoutOpen.value = false;
-}
-
-function focusAgentSearch() {
-  if (!isAgentFlyoutOpen.value) {
-    isAgentFlyoutOpen.value = true;
-  }
-  nextTick(() => {
-    updateFlyoutPosition();
-    flyoutSearchInputRef.value?.focus();
-  });
 }
 
 function updateFlyoutPosition() {
@@ -453,9 +422,44 @@ function handleDocumentKeyDown(event: KeyboardEvent) {
   }
 }
 
-const allSessions = computed(() =>
-  [...sessionStore.sessions].sort((a, b) => b.createdAt - a.createdAt),
+const visibleSessions = computed(() =>
+  sessionStore.sessions
+    .filter((session) => (session.agentId || "main") === agentStore.currentAgentId)
+    .sort(
+      (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.createdAt - a.createdAt,
+    ),
 );
+
+watch(
+  [
+    gatewayOnline,
+    () => visibleSessions.value.map((session) => `${session.key}\0${session.title}`).join("\n"),
+    () => chatStore.sessionTitleRefreshRevision,
+  ],
+  () => void loadSessionTitles(),
+  { immediate: true },
+);
+
+async function loadSessionTitles() {
+  const generation = ++titleRequestGeneration;
+  const keys = visibleSessions.value.map((session) => session.key).slice(0, 64);
+  if (!gatewayOnline.value || keys.length === 0) {
+    sessionStore.setGatewayTitles({});
+    return;
+  }
+  sessionStore.setGatewayTitles({});
+  try {
+    const response = await window.openclaw.chat.listSessionTitles(keys);
+    if (generation !== titleRequestGeneration) return;
+    sessionStore.setGatewayTitles(response.titles ?? {});
+  } catch {
+    if (generation === titleRequestGeneration) sessionStore.setGatewayTitles({});
+  }
+}
+
+function sessionTitle(session: { key: string; title: string }) {
+  return sessionStore.getDisplayTitle(session);
+}
 
 function selectSession(key: string) {
   chatStore.switchSession(key);
@@ -497,12 +501,7 @@ function handleAgentSelect(agentId: string) {
 
 function handleCreateAgent() {
   closeAgentFlyout();
-  router.push("/chat/market");
-}
-
-function handleExploreAgents() {
-  closeAgentFlyout();
-  router.push("/chat/market");
+  router.push("/chat/catalog");
 }
 </script>
 
@@ -595,12 +594,6 @@ html.dark .sp-conn-dot {
   color: var(--text-primary);
 }
 
-.sp-brand-tagline {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
-}
-
 .sp-agent-flyout {
   position: fixed;
   width: min(260px, calc(100vw - 24px));
@@ -628,19 +621,11 @@ html.dark .sp-agent-flyout {
   justify-content: space-between;
 }
 
-.sp-agent-flyout-search-btn {
-  border: none;
-  background: transparent;
+.sp-agent-flyout-title {
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 600;
-  cursor: pointer;
   padding: 4px 2px;
-  font-family: inherit;
-}
-
-.sp-agent-flyout-search-btn:hover {
-  color: var(--text-primary);
 }
 
 .sp-agent-flyout-add-btn {
@@ -666,26 +651,6 @@ html.dark .sp-agent-flyout-add-btn {
 
 html.dark .sp-agent-flyout-add-btn:hover {
   background: var(--border);
-}
-
-.sp-agent-flyout-input {
-  width: 100%;
-  border: 1px solid #e3ddd7;
-  border-radius: 10px;
-  background: #fff;
-  color: var(--text-primary);
-  font-size: 13px;
-  padding: 8px 10px;
-  outline: none;
-}
-
-.sp-agent-flyout-input:focus {
-  border-color: #c9beb3;
-}
-
-html.dark .sp-agent-flyout-input {
-  background: var(--bg-primary);
-  border-color: var(--border);
 }
 
 .sp-agent-avatar-list {
@@ -744,31 +709,6 @@ html.dark .sp-agent-avatar-item.active {
   line-height: 1.25;
 }
 
-.sp-agent-flyout-footer {
-  margin-top: 2px;
-  border: none;
-  border-top: 1px solid #ece7e2;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 10px 4px 2px;
-  text-align: right;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.sp-agent-flyout-footer:hover {
-  color: var(--text-primary);
-}
-
-html.dark .sp-agent-flyout-footer {
-  border-top-color: var(--border);
-}
-
 /* ── Create chat button ── */
 .sp-create-btn {
   width: 100%;
@@ -781,7 +721,7 @@ html.dark .sp-agent-flyout-footer {
   background: #1d1d1f;
   border: none;
   color: #fff;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -920,6 +860,7 @@ html.dark .sp-usage-card {
 
 .sp-section-header {
   width: 100%;
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -930,6 +871,7 @@ html.dark .sp-usage-card {
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
+  line-height: 20px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
@@ -967,15 +909,17 @@ html.dark .sp-section-header:hover {
 /* ── Chat items ── */
 .sp-chat-item {
   width: 100%;
+  min-height: 32px;
   display: flex;
   align-items: center;
   text-align: left;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   border-radius: 8px;
   font-size: 13px;
+  line-height: 18px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
@@ -993,7 +937,6 @@ html.dark .sp-chat-item:hover {
 .sp-chat-item.selected {
   background: #f0ece7;
   color: var(--text-primary);
-  font-weight: 600;
 }
 
 html.dark .sp-chat-item.selected {
@@ -1003,27 +946,38 @@ html.dark .sp-chat-item.selected {
 
 .sp-chat-item-title {
   flex: 1;
+  min-width: 0;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sp-chat-item-delete {
+.sp-chat-item-action {
   display: none;
   padding: 0 4px;
   color: var(--text-muted);
-  font-size: 15px;
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
   flex-shrink: 0;
 }
 
+.sp-chat-item-pin.pinned {
+  display: block;
+  color: var(--text-secondary);
+}
+
+.sp-chat-item-pin:hover,
+.sp-chat-item-pin.pinned:hover {
+  color: var(--text-primary);
+}
+
 .sp-chat-item-delete:hover {
   color: var(--danger);
 }
 
-.sp-chat-item:hover .sp-chat-item-delete {
+.sp-chat-item:hover .sp-chat-item-action {
   display: block;
 }
 
@@ -1037,19 +991,26 @@ html.dark .sp-chat-item.selected {
 /* ── Menu items ── */
 .sp-menu-item {
   width: 100%;
+  min-height: 36px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   padding: 8px 12px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   border-radius: 8px;
   font-size: 14px;
+  line-height: 20px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s;
   margin-bottom: 2px;
+}
+
+.sp-menu-item > span {
+  flex: 1;
+  text-align: left;
 }
 
 .sp-menu-item:hover {
@@ -1060,7 +1021,6 @@ html.dark .sp-chat-item.selected {
 .sp-menu-item.active {
   background: #f0ece7;
   color: var(--text-primary);
-  font-weight: 600;
 }
 
 html.dark .sp-menu-item:hover {
@@ -1089,5 +1049,4 @@ html.dark .sp-menu-item.active {
   flex-direction: column;
   gap: 4px;
 }
-
 </style>

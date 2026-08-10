@@ -126,9 +126,7 @@ const MASTER_ARCHIVE_IDENTITY_MD = `# IDENTITY.md
 - Vibe: Meticulous, private, and dependable
 `;
 
-type PersonaProfile = NonNullable<
-  (typeof AGENT_CATALOG)[number]["personaProfile"]
->;
+type PersonaProfile = NonNullable<(typeof AGENT_CATALOG)[number]["personaProfile"]>;
 
 const PERSONA_PROFILES: Record<PersonaProfile, WorkspaceFiles> = {
   "master-archive": {
@@ -159,10 +157,7 @@ export function getAgentPersona(agentId: string): AgentPersona | undefined {
   return AGENT_PERSONAS.find((persona) => persona.id === agentId);
 }
 
-export function getAgentWorkspacePath(
-  stateDir: string,
-  persona: AgentPersona,
-): string | undefined {
+export function getAgentWorkspacePath(stateDir: string, persona: AgentPersona): string | undefined {
   return persona.workspaceDirName ? path.join(stateDir, persona.workspaceDirName) : undefined;
 }
 
@@ -290,9 +285,7 @@ export function ensureAgentPersonasConfig(
     }
   }
 
-  const catalogSkillsById = new Map(
-    AGENT_PERSONAS.map((persona) => [persona.id, persona.skills]),
-  );
+  const catalogSkillsById = new Map(AGENT_PERSONAS.map((persona) => [persona.id, persona.skills]));
   for (const entry of entries) {
     const catalogSkills = catalogSkillsById.get(entry.id);
     // Seed catalog skills ONLY when the entry has no skills key yet
@@ -324,10 +317,7 @@ export function listConfiguredAgents(
     return [
       {
         id,
-        name:
-          typeof candidate.name === "string" && candidate.name.trim()
-            ? candidate.name
-            : id,
+        name: typeof candidate.name === "string" && candidate.name.trim() ? candidate.name : id,
       },
     ];
   });
@@ -359,9 +349,7 @@ export function removeConfiguredAgent(
 
   if (!removed) return { changed: false };
   if (removedDefault) {
-    const mainAgent = remaining.find(
-      (candidate) => isRecord(candidate) && candidate.id === "main",
-    );
+    const mainAgent = remaining.find((candidate) => isRecord(candidate) && candidate.id === "main");
     if (!isRecord(mainAgent)) {
       throw new Error("Cannot reassign the default agent because main is missing");
     }
@@ -376,19 +364,13 @@ function normalizeHomeValue(value: string | undefined): string | undefined {
   return !trimmed || trimmed === "undefined" || trimmed === "null" ? undefined : trimmed;
 }
 
-function resolveEffectiveHome(
-  env: NodeJS.ProcessEnv,
-  homeDir: string,
-  cwd: string,
-): string {
+function resolveEffectiveHome(env: NodeJS.ProcessEnv, homeDir: string, cwd: string): string {
   const osHome =
     normalizeHomeValue(env.HOME) ??
     normalizeHomeValue(env.USERPROFILE) ??
     normalizeHomeValue(homeDir);
   const configuredHome = normalizeHomeValue(env.OPENCLAW_HOME);
-  const rawHome = configuredHome
-    ? configuredHome.replace(/^~(?=$|[\\/])/, osHome ?? "")
-    : osHome;
+  const rawHome = configuredHome ? configuredHome.replace(/^~(?=$|[\\/])/, osHome ?? "") : osHome;
   return path.resolve(cwd, rawHome ?? ".");
 }
 
@@ -400,10 +382,7 @@ function resolveUserPath(
 ): string {
   const trimmed = value.trim();
   if (trimmed.startsWith("~")) {
-    const expanded = trimmed.replace(
-      /^~(?=$|[\\/])/,
-      resolveEffectiveHome(env, homeDir, cwd),
-    );
+    const expanded = trimmed.replace(/^~(?=$|[\\/])/, resolveEffectiveHome(env, homeDir, cwd));
     return path.resolve(cwd, expanded);
   }
   return path.resolve(cwd, trimmed);
@@ -435,10 +414,9 @@ export function resolveAgentPersonaWorkspace(
     typeof defaults.workspace === "string" && defaults.workspace.trim()
       ? resolveUserPath(defaults.workspace, env, homeDir, cwd)
       : undefined;
-  const defaultAgentId =
-    normalizeAgentId(
-      String(entries.find((candidate) => candidate.default === true)?.id ?? entries[0]?.id ?? "main"),
-    );
+  const defaultAgentId = normalizeAgentId(
+    String(entries.find((candidate) => candidate.default === true)?.id ?? entries[0]?.id ?? "main"),
+  );
 
   if (persona.id === defaultAgentId) {
     return defaultWorkspace ?? path.join(stateDir, "workspace");
@@ -462,15 +440,7 @@ export function seedAgentPersonaWorkspaces(
   for (const persona of AGENT_PERSONAS) {
     if (!persona.workspaceFiles || !configuredIds.has(persona.id)) continue;
     updatedFiles.push(
-      ...seedAgentPersonaWorkspace(
-        config,
-        stateDir,
-        persona,
-        soulAppendix,
-        env,
-        homeDir,
-        cwd,
-      ),
+      ...seedAgentPersonaWorkspace(config, stateDir, persona, soulAppendix, env, homeDir, cwd),
     );
   }
 
@@ -488,25 +458,14 @@ export function seedAgentPersonaWorkspace(
 ): string[] {
   if (!persona.workspaceFiles) return [];
   const updatedFiles: string[] = [];
-  const workspaceDir = resolveAgentPersonaWorkspace(
-    config,
-    stateDir,
-    persona,
-    env,
-    homeDir,
-    cwd,
-  );
+  const workspaceDir = resolveAgentPersonaWorkspace(config, stateDir, persona, env, homeDir, cwd);
 
   fs.mkdirSync(workspaceDir, { recursive: true });
   for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
     const filePath = path.join(workspaceDir, filename);
     if (fs.existsSync(filePath)) {
       let existing = fs.readFileSync(filePath, "utf-8");
-      if (
-        persona.id === "main" &&
-        filename === "IDENTITY.md" &&
-        isUnconfiguredIdentity(existing)
-      ) {
+      if (persona.id === "main" && filename === "IDENTITY.md" && isUnconfiguredIdentity(existing)) {
         fs.writeFileSync(filePath, `${source.trimEnd()}\n`, "utf-8");
         updatedFiles.push(filePath);
         continue;

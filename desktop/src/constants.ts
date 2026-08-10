@@ -127,36 +127,6 @@ export const CHAT_ATTACHMENT_MAX_FILE_BYTES = 20 * 1024 * 1024;
 /** Maximum decoded size of all attachments selected for one message (50 MiB). */
 export const CHAT_ATTACHMENT_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
-// ── Studio backend ──────────────────────────────────────────────────────
-
-/** Default port for the Studio Node backend. */
-export const STUDIO_DEFAULT_PORT = 19000;
-
-/** Max time to wait for the studio backend to become ready after spawn (ms). */
-export const STUDIO_READY_TIMEOUT_MS = 30_000;
-
-/** Health-check poll interval while waiting for studio backend ready (ms). */
-export const STUDIO_HEALTH_POLL_MS = 500;
-
-/** HTTP timeout for a single studio health-check request (ms). */
-export const STUDIO_HEALTH_HTTP_TIMEOUT_MS = 2_000;
-
-/** Max automatic restart attempts for the studio backend. */
-export const STUDIO_MAX_RESTARTS = 3;
-
-/** Sub-directory under the state dir for studio data files. */
-export const STUDIO_DATA_SUBDIR = "studio-data";
-
-// ── Studio backend status ───────────────────────────────────────────────
-
-export type StudioBackendStatus =
-  | "stopped"
-  | "starting"
-  | "running"
-  | "restarting"
-  | "failed"
-  | "stopping";
-
 // ── Gateway status ──────────────────────────────────────────────────────
 
 export type GatewayStatus =

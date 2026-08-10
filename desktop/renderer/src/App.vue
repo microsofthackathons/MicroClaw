@@ -178,10 +178,12 @@ const setupActive = computed(() => showSetup.value || route.path === "/setup");
 const gatewayReady = computed(() => gateway.ready);
 const headerTitle = computed(() => {
   void locale.value;
-  if (route.name === "agent-market") return t("agentMarket.title");
+  if (route.name === "settings") return t("settings.title");
+  if (route.name === "agent-catalog") return t("agentCatalog.pageTitle");
+  const session = sessionStore.sessions.find((candidate) => candidate.key === chatStore.sessionKey);
+  if (route.name === "chat" && session) return sessionStore.getDisplayTitle(session);
   let agentId = route.params.agentId as string | undefined;
   if (!agentId) {
-    const session = sessionStore.sessions.find((s) => s.key === chatStore.sessionKey);
     agentId = session?.agentId;
   }
   if (agentId) {
@@ -569,8 +571,8 @@ onUnmounted(() => {
   --ux-surface-primary: var(--smtc-background-web-page-primary, var(--bg-primary));
   --ux-surface-secondary: var(--smtc-background-window-primary-solid, var(--bg-secondary));
   --ux-surface-hover: var(--smtc-background-ctrl-subtle-hover, #f0f0f0);
-  --ux-danger-surface: var(--smtc-status-danger-background);
-  --ux-danger-text: var(--smtc-status-danger-foreground);
+  --ux-danger-surface: #c42b1c;
+  --ux-danger-text: #ffffff;
   --ux-text-primary: var(--smtc-foreground-ctrl-neutral-primary-rest, var(--text-primary));
   --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, var(--text-secondary));
   --ux-border: var(--smtc-stroke-divider-subtle, #e0e0e0);
@@ -602,6 +604,7 @@ onUnmounted(() => {
 }
 
 .app-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -619,31 +622,42 @@ onUnmounted(() => {
 }
 
 .app-header-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   -webkit-app-region: no-drag;
 }
 
 .win-ctrl {
-  width: 32px;
+  width: 46px;
   height: 32px;
   display: grid;
   place-items: center;
   border: none;
   background: transparent;
   color: var(--ux-text-secondary);
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.1s;
 }
 
 .win-ctrl:hover {
   background: var(--ux-surface-hover);
 }
 
+.win-ctrl:active {
+  background: color-mix(in srgb, var(--ux-text-primary) 12%, transparent);
+}
+
 .win-ctrl--close:hover {
   background: var(--ux-danger-surface);
+}
+
+.win-ctrl--close:active {
+  background: #a4262c;
 }
 
 .win-ctrl--close:hover svg {

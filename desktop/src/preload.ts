@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ChatAttachment, PrepareChatAttachmentsResult } from "./chat-attachments";
+import type {
+  ChatAttachment,
+  ClipboardImageInput,
+  PrepareChatAttachmentsResult,
+} from "./chat-attachments";
 import type { OpenAttachmentRequest } from "./attachment-open";
 
 contextBridge.exposeInMainWorld("openclaw", {
@@ -107,6 +111,13 @@ contextBridge.exposeInMainWorld("openclaw", {
 
     /** Load chat history for a session. */
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
+
+    /** Load titles derived by OpenClaw from session transcripts. */
+    listSessionTitles: (keys: string[]) => ipcRenderer.invoke("chat:list-session-titles", { keys }),
+
+    /** Generate a summary title and persist it on the Gateway session. */
+    generateSessionTitle: (sessionKey: string) =>
+      ipcRenderer.invoke("chat:generate-session-title", { sessionKey }),
 
     /** Abort the current run on a session. */
     abort: (sessionKey: string) => ipcRenderer.invoke("chat:abort", { sessionKey }),
@@ -245,19 +256,6 @@ contextBridge.exposeInMainWorld("openclaw", {
     getExchangeRate: () => ipcRenderer.invoke("usage:get-exchange-rate"),
   },
 
-  // --- Studio Backend ---
-  studio: {
-    start: () => ipcRenderer.invoke("studio:start"),
-    stop: () => ipcRenderer.invoke("studio:stop"),
-    getStatus: () => ipcRenderer.invoke("studio:get-status"),
-    getPort: () => ipcRenderer.invoke("studio:get-port"),
-    onStatus: (callback: (status: string) => void) => {
-      const handler = (_event: any, status: string) => callback(status);
-      ipcRenderer.on("studio:status", handler);
-      return () => ipcRenderer.removeListener("studio:status", handler);
-    },
-  },
-
   // --- Window ---
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),
@@ -284,6 +282,11 @@ contextBridge.exposeInMainWorld("openclaw", {
         ok: boolean;
         error?: string;
       }>,
+    importClipboardImages: (images: ClipboardImageInput[], currentTotalBytes = 0) =>
+      ipcRenderer.invoke("attachment:import-clipboard-images", {
+        images,
+        currentTotalBytes,
+      }) as Promise<PrepareChatAttachmentsResult>,
   },
 
   // --- Native dialogs ---
@@ -292,6 +295,14 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.invoke("dialog:open-files", {
         currentTotalBytes,
       }) as Promise<PrepareChatAttachmentsResult>,
+  },
+
+  logs: {
+    exportGateway: (lines: string[]) =>
+      ipcRenderer.invoke("logs:export-gateway", lines) as Promise<{
+        canceled: boolean;
+        filePath?: string;
+      }>,
   },
 
   // --- Tool Sandbox ---

@@ -380,25 +380,25 @@ watch(
 /* ── Window controls ── */
 .window-controls {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 0;
+  right: 0;
   display: flex;
-  gap: 2px;
+  gap: 0;
   -webkit-app-region: no-drag;
   z-index: 20;
 }
 
 .win-ctrl {
-  width: 32px;
+  width: 46px;
   height: 32px;
   display: grid;
   place-items: center;
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.1s;
 }
 
 .win-ctrl:hover {
@@ -409,16 +409,24 @@ watch(
   background: var(--bg-tertiary);
 }
 
+.win-ctrl:active {
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
+
 .win-ctrl--close:hover {
-  background: var(--smtc-status-danger-background);
+  background: #c42b1c;
+}
+
+.win-ctrl--close:active {
+  background: #a4262c;
 }
 
 .win-ctrl--close:hover svg {
-  stroke: var(--smtc-status-danger-foreground);
+  stroke: #ffffff;
 }
 
 :global(html.dark) .win-ctrl--close:hover {
-  background: color-mix(in srgb, var(--smtc-status-danger-background) 28%, transparent);
+  background: #c42b1c;
 }
 
 .loading-center {

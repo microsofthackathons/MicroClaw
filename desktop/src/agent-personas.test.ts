@@ -42,9 +42,7 @@ describe("agent personas", () => {
     const config = { agents: { defaults: { model: "custom/model" } } };
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
-    expect(listConfiguredAgents(config)).toEqual([
-      { id: "main", name: "Assistant" },
-    ]);
+    expect(listConfiguredAgents(config)).toEqual([{ id: "main", name: "Assistant" }]);
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
@@ -61,9 +59,7 @@ describe("agent personas", () => {
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
     expect(agents).not.toHaveProperty("entries");
-    expect(listConfiguredAgents(config)).toEqual([
-      { id: "main", name: "Existing Assistant" },
-    ]);
+    expect(listConfiguredAgents(config)).toEqual([{ id: "main", name: "Existing Assistant" }]);
   });
 
   it("preserves the effective legacy default and removes extra default markers", () => {
@@ -82,9 +78,7 @@ describe("agent personas", () => {
     expect(config.agents.list.find((entry) => entry.id === "coder")).toMatchObject({
       default: true,
     });
-    expect(config.agents.list.find((entry) => entry.id === "main")).not.toHaveProperty(
-      "default",
-    );
+    expect(config.agents.list.find((entry) => entry.id === "main")).not.toHaveProperty("default");
   });
 
   it("rejects normalized id collisions without rewriting the legacy roster", () => {
@@ -132,10 +126,7 @@ describe("agent personas", () => {
     const config = { agents: {} };
     const persona = getAgentPersona("master-archive");
     if (!persona) throw new Error("Master Archive persona is not registered");
-    ensureAgentPersonasConfig(config, stateDir, [
-      ...DEFAULT_AGENT_PERSONAS,
-      persona,
-    ]);
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
     expect(listConfiguredAgents(config).map((agent) => agent.id)).toEqual([
       "main",
       "master-archive",
@@ -166,9 +157,7 @@ describe("agent personas", () => {
       path.join(stateDir, "workspace", "IDENTITY.md"),
       path.join(stateDir, "workspace", "SOUL.md"),
     ]);
-    expect(fs.existsSync(path.join(stateDir, "workspace-master-archive"))).toBe(
-      false,
-    );
+    expect(fs.existsSync(path.join(stateDir, "workspace-master-archive"))).toBe(false);
   });
 
   it("seeds a user-nameable MicroClaw identity for main", () => {
@@ -180,10 +169,7 @@ describe("agent personas", () => {
       path.join(stateDir, "workspace", "IDENTITY.md"),
       path.join(stateDir, "workspace", "SOUL.md"),
     ]);
-    const identity = fs.readFileSync(
-      path.join(stateDir, "workspace", "IDENTITY.md"),
-      "utf-8",
-    );
+    const identity = fs.readFileSync(path.join(stateDir, "workspace", "IDENTITY.md"), "utf-8");
     expect(identity).toContain("the user may choose one");
     expect(identity).toContain("assistant in MicroClaw");
     expect(identity).toContain('Never identify yourself as "OpenClaw"');
@@ -273,9 +259,7 @@ _Fill this in during your first conversation. Make it yours._
 
     expect(removeConfiguredAgent(config, "master-archive").changed).toBe(true);
     expect(config.agents.defaults).toEqual({ model: "custom/model" });
-    expect(config.agents.list).toEqual([
-      { id: "main", name: "Assistant", default: true },
-    ]);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
     expect(fs.readFileSync(soulPath, "utf-8")).toBe("custom persona\n");
     expect(removeConfiguredAgent(config, "master-archive").changed).toBe(false);
   });
@@ -305,9 +289,7 @@ _Fill this in during your first conversation. Make it yours._
 
     removeConfiguredAgent(config, "coder");
 
-    expect(config.agents.list).toEqual([
-      { id: "main", name: "Assistant", default: true },
-    ]);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
   });
 
   it("does not overwrite user-customized workspace files", () => {
@@ -329,9 +311,7 @@ _Fill this in during your first conversation. Make it yours._
     const updated = seedAgentPersonaWorkspaces(config, stateDir, "## Required appendix");
 
     expect(updated).toEqual([soulPath]);
-    expect(fs.readFileSync(soulPath, "utf-8")).toBe(
-      "custom persona\n\n## Required appendix\n",
-    );
+    expect(fs.readFileSync(soulPath, "utf-8")).toBe("custom persona\n\n## Required appendix\n");
     expect(
       resolveAgentPersonaWorkspace(config, stateDir, AGENT_PERSONAS[1], {}, stateDir, stateDir),
     ).toBe(customWorkspace);
@@ -411,9 +391,7 @@ _Fill this in during your first conversation. Make it yours._
     ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
 
     const mainEntry = agentList(config).find((entry) => entry.id === "main");
-    const archiveEntry = agentList(config).find(
-      (entry) => entry.id === "master-archive",
-    );
+    const archiveEntry = agentList(config).find((entry) => entry.id === "master-archive");
     if (!mainEntry || !archiveEntry) throw new Error("expected both agents");
 
     expect(mainEntry.skills).not.toBe(archiveEntry.skills);

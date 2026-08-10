@@ -274,6 +274,38 @@ This script sequentially:
 2. Creates portable zip package (`dist/microclaw-portable.zip`)
 3. Packages the installer exe (PyInstaller → `dist/MicroClawInstaller.exe`)
 
+### MSIX package
+
+The CI and release workflows also build `desktop/release/MicroClawDesktop-<version>-x64.msix`
+with Electron Builder. The package includes the Electron app, the pinned OpenClaw
+runtime, Node.js, and the AppContainer launcher resources. On first launch, the
+read-only bundled runtime archive is expanded under Electron's per-user
+`userData` directory; configuration and other writable state remain in per-user
+application data.
+
+Build and validate it locally on Windows:
+
+```powershell
+npm ci --prefix desktop
+npm run dist:msix --prefix desktop
+$msix = Get-ChildItem .\desktop\release\MicroClawDesktop-*-x64.msix | Select-Object -First 1
+.\scripts\windows\validate-msix.ps1 -Path $msix.FullName
+```
+
+Without configuration, the build uses a non-production `MicroClaw.Test` identity
+for CI validation. Before Partner Center submission, configure
+`MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER`, `MSIX_PUBLISHER_DISPLAY_NAME`, and
+`MSIX_APPLICATION_ID` from the reserved app identity. The publisher must exactly
+match Partner Center (and the subject of any sideloading certificate). Store
+submissions may remain unsigned because Microsoft signs accepted packages;
+sideloaded packages must be signed with a trusted certificate after packaging.
+The Partner Center identity values should be stored as GitHub Actions secrets,
+not committed. Tagged workflows derive the MSIX version from the `vX.Y.Z` tag
+and only attach the MSIX to the GitHub Release when all four production identity
+secrets are configured; validation-identity packages remain Actions artifacts.
+Store/MSIX installs use package-managed updates rather than the EXE
+download-update path.
+
 ### Prerequisites
 
 - Node.js 22+
@@ -303,8 +335,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── plugins/openclaw-weixin/     # WeChat channel plugin
 ├── scripts/
 │   ├── windows/                 # Canonical Windows helper scripts
-│   ├── generate-skill-snapshot.js
-│   └── sync-studio-assets.js
+│   └── generate-skill-snapshot.js
 ├── docs/
 │   ├── architecture/            # Repo structure and architectural decisions
 │   ├── plans/                   # Planning docs
@@ -325,6 +356,11 @@ See [docs/architecture/repository-layout.md](docs/architecture/repository-layout
 ## Configuration
 
 Most users can do everything from **Settings** inside the desktop app — models, Brave API key, skill allowlist, etc. Runtime settings live in `~/.openclaw/openclaw.json`; you can hand-edit it if needed.
+
+Fresh installs include the official Parallel web-search plugin and select its keyless
+`parallel-free` provider, so web search works without additional setup. Usable existing web-search
+provider choices are preserved during upgrades; Brave or Tavily without an API key falls back to
+Parallel. The provider can be changed later in **Settings**.
 
 For developers / unattended installs, the installer also accepts a `.env` file (`MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_API_FORMAT`, `MODEL_REASONING_EFFORT`, `BRAVE_API_KEY`) — see [.env.example](.env.example). `python deploy.py` reads `.env` from the repo root; the packaged `MicroClawInstaller.exe` reads `.env` from next to the exe.
 

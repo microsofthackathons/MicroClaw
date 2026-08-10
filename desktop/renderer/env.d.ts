@@ -19,7 +19,7 @@ interface ChatEventPayload {
 interface AppSettings {
   language: string;
   autoStart: boolean;
-  startMinimized: boolean;
+  minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
   privacyLevel: "basic" | "strict";
@@ -53,6 +53,12 @@ interface AttachmentRejection {
 interface OpenFilesResult {
   attachments: ChatAttachment[];
   rejections: AttachmentRejection[];
+}
+
+interface ClipboardImageInput {
+  mimeType: string;
+  fileName: string;
+  data: ArrayBuffer;
 }
 
 type GitHubCopilotLoginEvent =
@@ -138,6 +144,10 @@ interface IntegrityResult {
 
 type UpdateCheckResult =
   | {
+      status: "managed-by-store";
+      currentVersion: string;
+    }
+  | {
       status: "update-available";
       currentVersion: string;
       latestVersion: string;
@@ -218,6 +228,8 @@ interface OpenClawAPI {
       attachments?: ChatAttachment[],
     ): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
+    listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
+    generateSessionTitle(sessionKey: string): Promise<string | null>;
     abort(sessionKey: string): Promise<void>;
     deleteSession(sessionKey: string): Promise<void>;
     clearHistory(): Promise<{ cleared: number }>;
@@ -302,13 +314,6 @@ interface OpenClawAPI {
       callback: (event: GitHubCopilotLoginEvent) => void,
     ): () => void;
   };
-  studio: {
-    start(): Promise<number>;
-    stop(): Promise<void>;
-    getStatus(): Promise<string>;
-    getPort(): Promise<number>;
-    onStatus(callback: (status: string) => void): () => void;
-  };
   window: {
     minimize(): Promise<void>;
     maximize(): Promise<void>;
@@ -323,9 +328,16 @@ interface OpenClawAPI {
   };
   attachment: {
     open(attachment: ChatAttachment): Promise<{ ok: boolean; error?: string }>;
+    importClipboardImages(
+      images: ClipboardImageInput[],
+      currentTotalBytes?: number,
+    ): Promise<OpenFilesResult>;
   };
   dialog: {
     openFiles(currentTotalBytes?: number): Promise<OpenFilesResult>;
+  };
+  logs: {
+    exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
   sandbox: {
     getStatus(): Promise<{

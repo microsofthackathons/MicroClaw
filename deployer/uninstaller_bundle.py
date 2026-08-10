@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tempfile
 import warnings
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 INSTALLER_EXE = "MicroClawInstaller.exe"
 INTERNAL_DIR = "_internal"
+_HASH_WORKERS = 8
 
 
 class UninstallerBundleError(RuntimeError):
@@ -47,6 +50,29 @@ def bundle_manifest(root: Path) -> dict[str, int]:
         path.relative_to(root).as_posix(): path.stat().st_size
         for path in sorted(files, key=lambda path: path.relative_to(root).as_posix())
     }
+
+
+def _file_digest(path: Path) -> bytes:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.digest()
+
+
+def bundles_match(source: Path, destination: Path) -> bool:
+    try:
+        source_manifest = bundle_manifest(source)
+        if source_manifest != bundle_manifest(destination):
+            return False
+
+        def files_match(relative: str) -> bool:
+            return _file_digest(source / relative) == _file_digest(destination / relative)
+
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+            return all(pool.map(files_match, source_manifest))
+    except (OSError, UninstallerBundleError):
+        return False
 
 
 def _remove_path(path: Path) -> None:
@@ -106,6 +132,9 @@ def publish_uninstaller_bundle(
     validate_uninstaller_bundle(source)
     if source == destination:
         raise UninstallerBundleError("Uninstaller source and destination must differ")
+
+    if bundles_match(source, destination):
+        return destination / INSTALLER_EXE
 
     destination.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".microclaw-uninstaller-", dir=destination))
