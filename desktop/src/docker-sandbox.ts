@@ -210,6 +210,16 @@ export function resolveDockerExecutable(
       ? path.join(
           environment.LOCALAPPDATA,
           "Programs",
+          "DockerDesktop",
+          "resources",
+          "bin",
+          "docker.exe",
+        )
+      : "",
+    environment.LOCALAPPDATA
+      ? path.join(
+          environment.LOCALAPPDATA,
+          "Programs",
           "Docker",
           "Docker",
           "resources",
@@ -369,7 +379,14 @@ export async function buildDockerSandboxImage(
         dockerfile,
         path.dirname(dockerfile),
       ],
-      { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
     );
     let settled = false;
     const timer = setTimeout(() => {

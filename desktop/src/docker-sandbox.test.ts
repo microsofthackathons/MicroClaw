@@ -8,6 +8,7 @@ import {
   checkDockerSandboxReadiness,
   parseDockerInfo,
   parseWslState,
+  resolveDockerExecutable,
   type CommandRunner,
   type DockerSandboxReadiness,
 } from "./docker-sandbox";
@@ -93,6 +94,17 @@ describe("Docker sandbox configuration", () => {
 });
 
 describe("Docker readiness", () => {
+  it("detects the per-user Docker Desktop CLI location", () => {
+    const localAppData = "C:\\Users\\test\\AppData\\Local";
+    const expected = `${localAppData}\\Programs\\DockerDesktop\\resources\\bin\\docker.exe`;
+    expect(
+      resolveDockerExecutable(
+        { LOCALAPPDATA: localAppData },
+        (candidate) => String(candidate) === expected,
+      ),
+    ).toBe(expected);
+  });
+
   it("requires an installed WSL2 distribution", () => {
     expect(parseWslState(ok("Default Version: 2"), ok("NAME STATE VERSION"))).toMatchObject({
       reason: "wsl-no-distribution",

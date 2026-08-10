@@ -1163,13 +1163,7 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "adaptive";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -1652,7 +1646,7 @@ async function removeCatalogAgent(
 // ---------------------------------------------------------------------------
 // In local development, prefer the Vite dev server. Packaged builds always use renderer/dist.
 const isDev = !app.isPackaged;
-const VITE_DEV_URL = "http://localhost:5173";
+const VITE_DEV_URL = process.env.MICROCLAW_VITE_DEV_URL || "http://localhost:5173";
 const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
@@ -4562,8 +4556,7 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      | { width?: number; height?: number; x?: number; y?: number }
-      | undefined;
+      { width?: number; height?: number; x?: number; y?: number } | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);
