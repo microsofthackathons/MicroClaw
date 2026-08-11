@@ -148,6 +148,33 @@ describe("agent personas", () => {
     );
   });
 
+  it("seeds the Code Geek workspace with its engineering context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("code-geek");
+    if (!persona) throw new Error("Code Geek persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "code-geek",
+      name: "Code Geek",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Code Geek workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-code-geek"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "sharp, pragmatic software engineer",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "Separate root causes from cascading errors",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Code Geek",
+    );
+  });
+
   it("does not seed a Popular Agent before it is installed", () => {
     const stateDir = createStateDir();
     const config = { agents: {} };
@@ -158,6 +185,7 @@ describe("agent personas", () => {
       path.join(stateDir, "workspace", "SOUL.md"),
     ]);
     expect(fs.existsSync(path.join(stateDir, "workspace-master-archive"))).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, "workspace-code-geek"))).toBe(false);
   });
 
   it("seeds a user-nameable MicroClaw identity for main", () => {

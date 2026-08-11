@@ -768,17 +768,19 @@ export default {
     "Consolidate owners, due dates, and source references into a clean checklist.",
 
   "agent.codeGeek.name": "Code Geek",
-  "agent.codeGeek.desc": "Code development, debugging & code review",
-  "agent.codeGeek.tag.1": "Development",
-  "agent.codeGeek.tag.2": "Debugging",
-  "agent.codeGeek.tag.3": "Code Review",
-  "agent.codeGeek.task.1.title": "Write a Python script for me",
-  "agent.codeGeek.task.1.desc": "Quickly generate runnable Python code based on your requirements.",
-  "agent.codeGeek.task.2.title": "Review this code",
+  "agent.codeGeek.desc": "Expert engineering for app prototypes, code audits, and build failures",
+  "agent.codeGeek.tag.1": "App Prototyping",
+  "agent.codeGeek.tag.2": "Code Audits",
+  "agent.codeGeek.tag.3": "Build Diagnostics",
+  "agent.codeGeek.task.1.title": "Build this feature or web app",
+  "agent.codeGeek.task.1.desc":
+    "Turn the requirements into runnable, integrated code that follows the existing project.",
+  "agent.codeGeek.task.2.title": "Audit this code",
   "agent.codeGeek.task.2.desc":
-    "Review code logic line by line, identifying potential issues and improvements.",
-  "agent.codeGeek.task.3.title": "Explain this algorithm",
-  "agent.codeGeek.task.3.desc": "Break down algorithm principles and complexity in plain language.",
+    "Find correctness, security, and performance issues and propose concrete fixes.",
+  "agent.codeGeek.task.3.title": "Diagnose this build failure",
+  "agent.codeGeek.task.3.desc":
+    "Trace the first relevant error to its root cause, apply a fix, and verify the command.",
 
   "agent.painter.name": "Van Gogh",
   "agent.painter.desc": "Pixel-style illustration & scene creation",

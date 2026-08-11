@@ -62,6 +62,17 @@ describe("agent store", () => {
     expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(true);
   });
 
+  it("presents the Code Geek engineering scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "code-geek")).toMatchObject({
+      name: "Code Geek",
+      description: "Expert engineering for app prototypes, code audits, and build failures",
+      tags: ["App Prototyping", "Code Audits", "Build Diagnostics"],
+      isAdded: false,
+    });
+  });
+
   it("keeps the roster unchanged when Add fails", async () => {
     const store = useAgentStore();
     agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));

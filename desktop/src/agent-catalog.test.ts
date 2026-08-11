@@ -120,6 +120,14 @@ describe("agent catalog skills binding", () => {
     expect(getAgentSkills("does-not-exist")).toEqual([]);
   });
 
+  it("configures Code Geek with a dedicated persona workspace", () => {
+    expect(AGENT_CATALOG.find((agent) => agent.id === "code-geek")).toMatchObject({
+      name: "Code Geek",
+      workspaceDirName: "workspace-code-geek",
+      personaProfile: "code-geek",
+    });
+  });
+
   it("recognizes known skill ids and rejects unknown ones", () => {
     expect(isKnownSkillId("canvas")).toBe(true);
     expect(isKnownSkillId("not-a-skill")).toBe(false);
