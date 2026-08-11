@@ -346,10 +346,12 @@ export default {
   "settings.gatewayLogsExported": "Gateway logs exported.",
   "settings.gatewayLogsExportFailed": "Could not export Gateway logs: {error}",
   "settings.webSearchDesc":
-    "MicroClaw uses the configured provider for web search. The gateway restarts automatically after you save.",
+    "MicroClaw uses the configured provider for web search. Changes are saved automatically.",
   "settings.noApiKeyRequired": "No API key required",
   "settings.getApiKey": "Get API key",
   "settings.save": "Save",
+  "settings.saving": "Saving...",
+  "settings.saved": "Saved",
   "settings.configSaveFailed": "Failed to save configuration: {error}",
   "settings.modelSwitched": "Model switched to {model}",
   "settings.customModelAdded": "Custom model added",
@@ -364,6 +366,9 @@ export default {
   "settings.searchConfigured": "Configured",
   "settings.searchNotConfigured": "Not configured",
   "settings.searchDefault": "Default",
+  "settings.searchApiKeyRequired": "API key required",
+  "settings.searchApiKeyFormatInvalid": "Check the key format",
+  "settings.searchSaveFailed": "Failed to save",
   "settings.saveFailed": "Save failed: {error}",
   "settings.clearHistoryConfirm":
     "Are you sure you want to clear all chat history? This action cannot be undone.",
