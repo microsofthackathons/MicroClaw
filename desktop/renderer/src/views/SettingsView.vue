@@ -61,20 +61,22 @@
           </div>
         </div>
 
-        <div class="sub-label">{{ t("settings.gateway") }}</div>
+        <div class="sub-label-row">
+          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.gateway") }}</span>
+          <span
+            class="status-indicator"
+            :class="
+              gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
+            "
+          >
+            <span class="status-dot"></span>
+            {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+          </span>
+        </div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.connectionStatus") }}</span>
+            <span class="row-label">{{ t("settings.restartGateway") }}</span>
             <div style="display: flex; align-items: center; gap: 8px">
-              <span
-                class="status-indicator"
-                :class="
-                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
-                "
-              >
-                <span class="status-dot"></span>
-                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-              </span>
               <el-button size="small" @click="restartGateway">{{
                 t("settings.restart")
               }}</el-button>
@@ -101,9 +103,31 @@
       <div v-if="activeSection === 'usage'" class="section">
         <div class="section-label-row">
           <span class="section-label">{{ t("settings.usage") }}</span>
-          <el-button v-if="usageData" size="small" :loading="usageLoading" @click="loadUsage">{{
-            t("settings.refresh")
-          }}</el-button>
+          <button
+            v-if="usageData"
+            class="usage-refresh-btn"
+            type="button"
+            :aria-label="t('settings.refresh')"
+            :title="t('settings.refresh')"
+            :disabled="usageLoading"
+            @click="loadUsage"
+          >
+            <svg
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              :class="{ 'is-spinning': usageLoading }"
+              aria-hidden="true"
+            >
+              <path d="M16 7a6 6 0 0 0-10.2-2.8L4 6" />
+              <path d="M4 3v3h3" />
+              <path d="M4 13a6 6 0 0 0 10.2 2.8L16 14" />
+              <path d="M16 17v-3h-3" />
+            </svg>
+          </button>
         </div>
 
         <!-- Loading / Error states -->
@@ -733,17 +757,12 @@
         <div class="sub-label">{{ t("settings.sensitiveFiles") }}</div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span
-              class="row-value"
-              style="
-                text-align: left;
-                max-width: none;
-                font-family: &quot;Cascadia Code&quot;, &quot;Fira Code&quot;, Consolas, monospace;
-                font-size: 12px;
-                color: var(--text-secondary);
-              "
-            >
-              {{ t("settings.sensitiveFilePatterns") }}
+            <div class="sensitive-file-info">
+              <span class="sensitive-file-examples">{{ t("settings.sensitiveFilePatterns") }}</span>
+            </div>
+            <span class="status-indicator status-indicator--warn">
+              <span class="status-dot"></span>
+              {{ t("settings.permissionRequired") }}
             </span>
           </div>
         </div>
@@ -762,46 +781,45 @@
       </div>
 
       <!-- About -->
-      <div v-if="activeSection === 'about'" class="section">
+      <div v-if="activeSection === 'about'" class="section about-section">
         <div class="section-label">{{ t("settings.about") }}</div>
-        <div class="about-card">
-          <img class="about-icon" :src="microclawLogo" alt="MicroClaw" />
-          <div class="about-name">{{ t("app.name") }}</div>
-          <div class="about-version">{{ t("settings.version") }}</div>
-          <el-button
-            type="primary"
-            plain
-            size="small"
-            :loading="updateChecking"
-            class="update-check-btn"
-            @click="checkForUpdates"
-          >
-            {{ updateChecking ? t("settings.updateChecking") : t("settings.checkForUpdates") }}
-          </el-button>
-        </div>
-        <div v-if="updateResult" class="update-card" :class="`update-card-${updateResult.status}`">
-          <div class="update-title">{{ updateStatusTitle }}</div>
-          <div class="update-detail">{{ updateStatusDetail }}</div>
-          <ul
-            v-if="updateResult.status === 'update-available' && updateResult.releaseNotes.length"
-            class="update-notes"
-          >
-            <li v-for="note in updateResult.releaseNotes" :key="note">{{ note }}</li>
-          </ul>
-          <el-button
-            v-if="updateResult.status === 'update-available'"
-            type="primary"
-            size="small"
-            class="update-download-btn"
-            @click="openUpdateDownload"
-          >
-            {{ t("settings.downloadUpdate") }}
-          </el-button>
-        </div>
-        <div class="card-group" style="margin-top: 16px">
-          <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.copyright") }}</span>
-            <span class="row-value">© 2026 {{ t("app.name") }}</span>
+        <div class="about-main">
+          <div class="about-card">
+            <div class="about-card-content">
+              <img class="about-icon" :src="microclawLogo" alt="MicroClaw" />
+              <div class="about-name">{{ t("app.name") }}</div>
+              <div class="about-version">{{ t("settings.version") }}</div>
+              <el-button
+                type="primary"
+                plain
+                size="small"
+                :loading="updateChecking"
+                class="update-check-btn"
+                @click="checkForUpdates"
+              >
+                {{ updateChecking ? t("settings.updateChecking") : t("settings.checkForUpdates") }}
+              </el-button>
+            </div>
+            <p class="copyright-notice">Copyright © 2026 {{ t("app.name") }}</p>
+          </div>
+          <div v-if="updateResult" class="update-card" :class="`update-card-${updateResult.status}`">
+            <div class="update-title">{{ updateStatusTitle }}</div>
+            <div class="update-detail">{{ updateStatusDetail }}</div>
+            <ul
+              v-if="updateResult.status === 'update-available' && updateResult.releaseNotes.length"
+              class="update-notes"
+            >
+              <li v-for="note in updateResult.releaseNotes" :key="note">{{ note }}</li>
+            </ul>
+            <el-button
+              v-if="updateResult.status === 'update-available'"
+              type="primary"
+              size="small"
+              class="update-download-btn"
+              @click="openUpdateDownload"
+            >
+              {{ t("settings.downloadUpdate") }}
+            </el-button>
           </div>
         </div>
       </div>
@@ -1782,8 +1800,6 @@ async function persistSearchConfig(): Promise<void> {
   await window.openclaw.config.write(config);
 }
 
-// Single save for the Web search section: commits both provider keys and the selected default
-// provider in one action. The gateway hot-reloads the tools config on write.
 async function saveSearchSettings(): Promise<void> {
   searchSavingAll.value = true;
   try {
@@ -2055,10 +2071,15 @@ async function clearChatHistory() {
   width: 140px;
   height: 32px;
   flex-shrink: 0;
-  padding: 0 10px;
+  padding: 0 32px 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: var(--bg-input);
+  appearance: none;
+  background-color: var(--bg-input);
+  background-image: url("data:image/svg+xml,%3Csvg width='14' height='14' viewBox='0 0 14 14' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.5 5.25L7 8.75L10.5 5.25' stroke='%236B7280' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 12px center;
+  background-repeat: no-repeat;
+  background-size: 14px 14px;
   color: var(--text-primary);
   font: inherit;
   font-size: 13px;
@@ -2107,14 +2128,37 @@ async function clearChatHistory() {
 }
 
 /* About card */
+.about-section {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.about-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .about-card {
+  flex: 1;
   background: var(--bg-grouped);
-  border-radius: 12px;
   border: 1px solid var(--border);
+  border-radius: 12px;
   padding: 28px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
+}
+
+.about-card-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
@@ -2139,6 +2183,14 @@ async function clearChatHistory() {
 
 .update-check-btn {
   margin-top: 10px;
+}
+
+.copyright-notice {
+  margin: 0;
+  padding-top: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .update-card {
@@ -2208,6 +2260,11 @@ async function clearChatHistory() {
 
 .sub-label-row .sub-label {
   margin: 0;
+}
+
+.sub-label-row > .status-indicator,
+.sub-label-actions > .status-indicator {
+  margin-right: 12px;
 }
 
 .custom-model-info {
@@ -2300,6 +2357,20 @@ async function clearChatHistory() {
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;
+}
+
+.sensitive-file-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sensitive-file-examples {
+  color: var(--text-muted);
+  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .provider-link {
@@ -2461,6 +2532,51 @@ async function clearChatHistory() {
 }
 
 /* Usage section */
+.usage-refresh-btn {
+  width: 28px;
+  height: 28px;
+  margin-right: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.usage-refresh-btn:hover:not(:disabled) {
+  background: var(--settings-action-hover);
+  color: var(--text-primary);
+}
+
+.usage-refresh-btn:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.usage-refresh-btn:focus-visible {
+  outline: 2px solid var(--settings-action-focus);
+  outline-offset: 2px;
+}
+
+.usage-refresh-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.usage-refresh-btn svg.is-spinning {
+  animation: usage-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes usage-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .usage-spend {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
