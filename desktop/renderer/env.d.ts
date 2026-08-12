@@ -32,6 +32,37 @@ interface AppSettings {
   };
 }
 
+interface MxcFolderPolicy {
+  readonlyPaths: string[];
+  readwritePaths: string[];
+  workspace?: string | null;
+  deniedPaths?: string[];
+}
+
+interface MxcStatus {
+  ready: boolean;
+  packageReady: boolean;
+  hashReady: boolean;
+  osSupported: boolean;
+  policyReady: boolean;
+  workerReady: boolean;
+  sdkVersion: string;
+  policyVersion: string;
+  upstreamCommit: string;
+  architecture: string;
+  binaryHash: string | null;
+  isolationTier: "base-container" | "appcontainer-bfs" | "appcontainer-dacl" | null;
+  isolationWarnings: string[];
+  requiresHostPreparation: boolean;
+  lastError: string | null;
+  agents: Array<{
+    id: string;
+    name: string;
+    desired: MxcFolderPolicy;
+    effective: MxcFolderPolicy;
+  }>;
+}
+
 interface ChatAttachment {
   type: "image" | "file";
   mimeType: string;
@@ -249,7 +280,6 @@ interface OpenClawAPI {
         };
       }) => void,
     ): () => void;
-    onExecCommand?(callback: (data: { shell: string; command: string }) => void): () => void;
   };
   cron: {
     list(): Promise<{ jobs?: unknown[] }>;
@@ -339,74 +369,12 @@ interface OpenClawAPI {
   logs: {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
-  sandbox: {
-    getStatus(): Promise<{
-      available: boolean;
-      enabled: boolean;
-      launcherPath: string | null;
-      containerName: string;
-      capabilities: string[];
-      sandboxDirsRW: string[];
-      sandboxDirsRO: string[];
-      externalApps: string[];
-    }>;
-    setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
-    getExternalApps(): Promise<string[]>;
-    setExternalApps(apps: string[]): Promise<{ ok: boolean; apps: string[] }>;
-    applyExternalApps(): Promise<{ ok: boolean; restarted: boolean }>;
-    getCapabilities(): Promise<string[]>;
-    setCapabilities(
-      caps: string[],
-    ): Promise<{ ok: boolean; caps: string[]; needsRestart: boolean }>;
-    provision(): Promise<boolean>;
-    getUserDirs(): Promise<{ rw: string[]; ro: string[] }>;
-    addUserDir(params: { access: "rw" | "ro" }): Promise<{
-      ok: boolean;
-      reason?: string;
-      parentDir?: string;
-      parentAccess?: string;
-      removedChildren?: string[];
-      dirs: { rw: string[]; ro: string[] };
-    }>;
-    removeUserDir(params: {
-      dir: string;
-      access: "rw" | "ro";
-    }): Promise<{ ok: boolean; dirs: { rw: string[]; ro: string[] } }>;
-    onPermissionRequest(
-      callback: (data: {
-        requestId: string;
-        type: "file" | "shell" | "shell-async";
-        targetPath: string;
-        dirPath: string;
-        command?: string;
-      }) => void,
-    ): () => void;
-    respondPermission(requestId: string, decision: string): Promise<void>;
-    onAclTimeout?(callback: (data: { dir: string; access: string }) => void): () => void;
-    onAclIneffective?(
-      callback: (data: {
-        dir: string;
-        deniedPath: string;
-        access: string;
-        command?: string;
-      }) => void,
-    ): () => void;
-    onPermissionCompleted?(
-      callback: (data: {
-        requestId: string;
-        result: "verified" | "verify-timeout" | "failed";
-        dir: string;
-        access: string;
-      }) => void,
-    ): () => void;
-    verifyAcls(): Promise<{
-      missing: Array<{ dir: string; access: string; reason: string }>;
-      stale: Array<{ dir: string; rights: string }>;
-      ok: Array<{ dir: string; access: string }>;
-      errors: Array<{ dir: string; error: string }>;
-    }>;
-    repairAcl(params: { dir: string; access: "rw" | "ro" }): Promise<{ ok: boolean }>;
-    revokeStaleAcl(dir: string): Promise<{ ok: boolean }>;
+  mxc: {
+    getStatus(): Promise<MxcStatus>;
+    chooseFolder(agentId: string, access: "ro" | "rw"): Promise<MxcStatus>;
+    removeFolder(agentId: string, access: "ro" | "rw", path: string): Promise<MxcStatus>;
+    retry(): Promise<MxcStatus>;
+    cleanup(): Promise<MxcStatus>;
   };
   usage: {
     getStats(): Promise<any>;

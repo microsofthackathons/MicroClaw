@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@electron/asar": "^3.4.1",
+    "@microsoft/mxc-sdk": "0.7.0",
     "electron-store": "^8.2.0",
     "node-addon-api": "^8.7.0",
     "ws": "^8.19.0"

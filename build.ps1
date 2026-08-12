@@ -1,4 +1,4 @@
-﻿# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
+﻿# One-click build: desktop app -> portable zip -> installer exe
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -67,49 +67,8 @@ if (-not $nodeFound) {
     exit 1
 }
 
-# -- Step 1: Build AppContainerLauncher.exe (.NET 9) --
-Write-Host "`n=== Step 1/7: Build AppContainerLauncher ===" -ForegroundColor Cyan
-$acProject = "$root\appcontainer"
-if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
-    Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
-    exit 1
-}
-
-# Pipe to ForEach-Object loses the native exit code in $LASTEXITCODE detection
-# under StrictMode, so temporarily relax ErrorActionPreference (matches the
-# npm/pyinstaller invocation style below) and then check $LASTEXITCODE.
-$prev = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-dotnet publish $acProject -c Release -o "$acProject\bin\Release\net9.0-windows\win-x64" 2>&1 |
-    ForEach-Object { Write-Host "  $_" }
-$publishExit = $LASTEXITCODE
-$ErrorActionPreference = $prev
-if ($publishExit -ne 0) {
-    Write-Host "  ERROR: dotnet publish failed with exit code $publishExit" -ForegroundColor Red
-    exit 1
-}
-
-$acExe = "$acProject\bin\Release\net9.0-windows\win-x64\AppContainerLauncher.exe"
-if (-not (Test-Path $acExe)) {
-    Write-Host "  ERROR: AppContainerLauncher.exe not found after build at $acExe" -ForegroundColor Red
-    exit 1
-}
-Write-Host "  AppContainerLauncher.exe built" -ForegroundColor Green
-
-# Copy sandbox-preload.js and its modules alongside launcher (used by electron-builder extraResources)
-$preloadSrc = "$acProject\sandbox-preload.js"
-if (Test-Path $preloadSrc) {
-    $releaseDir = "$acProject\bin\Release\net9.0-windows\win-x64"
-    Copy-Item $preloadSrc "$releaseDir\sandbox-preload.js" -Force
-    foreach ($mod in @('sandbox-state.js','sandbox-permission.js','sandbox-fs-hooks.js','sandbox-cp-hooks.js','sandbox-sensitive.js','path-extraction.js')) {
-        $modSrc = "$acProject\$mod"
-        if (Test-Path $modSrc) { Copy-Item $modSrc "$releaseDir\$mod" -Force }
-    }
-    Write-Host "  sandbox-preload.js + modules copied" -ForegroundColor Green
-}
-
-# -- Step 2: Clean dist/ to prevent stale TypeScript output --
-Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan
+# -- Step 1: Clean dist/ to prevent stale TypeScript output --
+Write-Host "`n=== Step 1/6: Clean stale build artifacts ===" -ForegroundColor Cyan
 $distDir = "$root\desktop\dist"
 if (Test-Path $distDir) {
     Remove-Item "$distDir\*.js" -Force -ErrorAction SilentlyContinue
@@ -124,8 +83,8 @@ if (-not (Test-Path $outDist)) {
     Write-Host "  Created $outDist"
 }
 
-# -- Step 3: Build & pack desktop --
-Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
+# -- Step 2: Build & pack desktop --
+Write-Host "`n=== Step 2/6: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
 try {
     # First-run bootstrap: install npm deps (including renderer via postinstall)
@@ -181,8 +140,8 @@ if (Test-Path $desktopAsar) {
     }
 }
 
-# Step 4: Create portable zip
-Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
+# Step 3: Create portable zip
+Write-Host "`n=== Step 3/6: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
@@ -217,8 +176,8 @@ $installManifest = [ordered]@{
 $installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
 Write-Host "  Install manifest: $manifestPath" -ForegroundColor DarkGray
 
-# Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
-Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan
+# Step 4: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
+Write-Host "`n=== Step 4/6: Build installer ===" -ForegroundColor Cyan
 Push-Location $root
 $installerBuilt = $false
 
@@ -339,8 +298,8 @@ if (-not $installerBuilt) {
     exit 1
 }
 
-# Step 6: Pack onedir output into a single distributable zip
-Write-Host "`n=== Step 6/7: Pack installer directory ===" -ForegroundColor Cyan
+# Step 5: Pack onedir output into a single distributable zip
+Write-Host "`n=== Step 5/6: Pack installer directory ===" -ForegroundColor Cyan
 $installerDir = "$root\dist\MicroClawInstaller"
 $installerZip = "$root\dist\MicroClawInstaller.zip"
 if (-not (Test-Path $installerDir)) {
@@ -353,12 +312,12 @@ Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
 $instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
 Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
 
-# Step 7: Build the single-exe setup (NSIS self-extractor) and code-sign it.
+# Step 6: Build the single-exe setup (NSIS self-extractor) and code-sign it.
 # This is the ONE file end users download. It extracts the onedir installer to a
 # real directory under %LOCALAPPDATA% (not %TEMP%, preserving WDAC safety) and
 # auto-launches MicroClawInstaller.exe. Only this stub needs signing to clear
 # SmartScreen (it is the only file that carries Mark-of-the-Web on download).
-Write-Host "`n=== Step 7/7: Build single-exe setup + sign ===" -ForegroundColor Cyan
+Write-Host "`n=== Step 6/6: Build single-exe setup + sign ===" -ForegroundColor Cyan
 $setupExe = "$root\dist\MicroClawSetup.exe"
 $nsiScript = "$root\installer\microclaw-setup.nsi"
 $setupIcon = "$root\deployer\assets\microclaw.ico"

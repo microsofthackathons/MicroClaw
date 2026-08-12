@@ -597,7 +597,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         transaction.rollback.assert_called_once()
         transaction.complete_rollback.assert_called_once()
 
-    def test_interrupted_recovery_health_checks_the_restored_gateway(self):
+    def test_interrupted_recovery_does_not_start_gateway_before_mxc(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.phase = UpgradePhase.INSTALLING
         transaction.manifest.source_version = "2026.3.12"
@@ -617,9 +617,9 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         ):
             self.assertTrue(self.ws.recover_interrupted_openclaw_upgrade())
 
-        self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
+        self.ws._start_validation_gateway.assert_not_called()
         transaction.complete_rollback.assert_called_once()
-        self.ws._stop_validation_gateway.assert_called_once_with(process)
+        self.ws._stop_validation_gateway.assert_not_called()
 
     def test_recovery_releases_its_lock_if_gateway_starts_before_restore(self):
         transaction = unittest.mock.Mock()
@@ -948,7 +948,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.ws._terminate_process_tree.assert_called_once_with(process, self.process_job)
 
-    def test_validation_records_every_required_check_and_stops_gateway(self):
+    def test_validation_checks_version_without_starting_gateway_before_mxc(self):
         transaction = unittest.mock.Mock()
         process = unittest.mock.Mock()
         self.ws._openclaw_transaction = transaction
@@ -965,22 +965,14 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertEqual(
             [call.args for call in transaction.record_validation.call_args_list],
-            [
-                ("version", True),
-                ("appcontainer", True),
-                ("health", True),
-                ("v4-handshake", True),
-                ("config.get", True),
-                ("agents.list", True),
-                ("channels.status", True),
-                ("cron.list", True),
-            ],
+            [("version", True)],
         )
         self.ws._validate_weixin_plugin.assert_not_called()
         transaction.mark_verifying.assert_called_once()
-        self.ws._stop_validation_gateway.assert_called_once_with(process)
+        self.ws._start_validation_gateway.assert_not_called()
+        self.ws._stop_validation_gateway.assert_not_called()
 
-    def test_same_version_fast_path_runs_health_without_deep_rpc_checks(self):
+    def test_same_version_fast_path_does_not_start_gateway_before_mxc(self):
         self.ws._openclaw_upgrade_required = False
         transaction = unittest.mock.Mock()
         self.ws._openclaw_transaction = transaction
@@ -995,19 +987,15 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.verify_openclaw_upgrade())
 
         self.ws._validate_installed_version.assert_called_once()
-        self.ws._start_validation_gateway.assert_called_once()
-        self.ws._validate_gateway_health.assert_called_once()
-        self.ws._validate_appcontainer_smoke.assert_called_once()
+        self.ws._start_validation_gateway.assert_not_called()
+        self.ws._validate_gateway_health.assert_not_called()
+        self.ws._validate_appcontainer_smoke.assert_not_called()
         self.ws._validate_gateway_rpc.assert_not_called()
-        self.ws._stop_validation_gateway.assert_called_once_with(process)
+        self.ws._stop_validation_gateway.assert_not_called()
         transaction.mark_verifying.assert_called_once()
         self.assertEqual(
             [call.args for call in transaction.record_validation.call_args_list],
-            [
-                ("version", True),
-                ("appcontainer", True),
-                ("health", True),
-            ],
+            [("version", True)],
         )
 
     def test_same_version_validation_excludes_weixin(self):
@@ -1027,11 +1015,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertEqual(
             [call.args for call in transaction.record_validation.call_args_list],
-            [
-                ("version", True),
-                ("appcontainer", True),
-                ("health", True),
-            ],
+            [("version", True)],
         )
         self.ws._validate_weixin_plugin.assert_not_called()
 
@@ -1050,7 +1034,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._start_validation_gateway.assert_not_called()
         self.ws._stop_validation_gateway.assert_not_called()
 
-    def test_rollback_restores_and_health_checks_previous_gateway(self):
+    def test_rollback_restores_without_starting_gateway_before_mxc(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.source_version = "2026.3.12"
         transaction.manifest.phase = UpgradePhase.ROLLING_BACK
@@ -1065,8 +1049,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         transaction.rollback.assert_called_once()
         transaction.complete_rollback.assert_called_once()
         transaction.mark_rollback_failed.assert_not_called()
-        self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
-        self.ws._stop_validation_gateway.assert_called_once_with(process)
+        self.ws._start_validation_gateway.assert_not_called()
+        self.ws._stop_validation_gateway.assert_not_called()
 
     def test_backing_up_rollback_skips_gateway_health_check(self):
         transaction = unittest.mock.Mock()
@@ -1099,7 +1083,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         transaction.complete_rollback.assert_called_once()
         self.ws._start_validation_gateway.assert_not_called()
 
-    def test_failed_rollback_health_check_discards_transaction(self):
+    def test_rollback_does_not_run_unsafe_gateway_health_check(self):
         transaction = unittest.mock.Mock()
         transaction.manifest.source_version = "2026.3.12"
         transaction.manifest.phase = UpgradePhase.ROLLING_BACK
@@ -1108,13 +1092,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._stop_validation_gateway = unittest.mock.Mock()
         self.ws._validate_gateway_health = unittest.mock.Mock(return_value=False)
 
-        self.assertFalse(self.ws.rollback_openclaw_upgrade())
+        self.assertTrue(self.ws.rollback_openclaw_upgrade())
 
-        # A failed post-rollback health check must not leave a permanent
-        # rollback-failed brick; the transaction is discarded so future
-        # installs are not blocked by the retained lock.
-        transaction.discard.assert_called_once()
-        transaction.complete_rollback.assert_not_called()
+        self.ws._start_validation_gateway.assert_not_called()
+        self.ws._validate_gateway_health.assert_not_called()
+        transaction.discard.assert_not_called()
+        transaction.complete_rollback.assert_called_once()
 
     def test_weixin_install_skips_matching_bundled_payload(self):
         bundled = self.root / "bundled-weixin"
@@ -1802,7 +1785,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(package.exists())
         popen.assert_not_called()
 
-    def test_warmup_compile_cache_adopts_existing_same_version_cache(self):
+    def test_warmup_compile_cache_is_deferred_until_mxc_desktop_startup(self):
         self.ws._openclaw_upgrade_required = False
         cache_dir = self.home / ".openclaw" / "compile-cache"
         cache_dir.mkdir(parents=True)
@@ -1815,10 +1798,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
             self.assertTrue(self.ws.warmup_compile_cache())
 
-        self.assertEqual(
-            (cache_dir / ".microclaw-version").read_text(encoding="utf-8"),
-            OPENCLAW_TARGET_VERSION,
-        )
+        self.assertFalse((cache_dir / ".microclaw-version").exists())
         popen.assert_not_called()
 
     def test_deploy_managed_skills_preserves_existing_officecli_binary(self):
