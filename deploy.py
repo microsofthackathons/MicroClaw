@@ -927,8 +927,6 @@ class DeployerApp(tk.Tk):
             (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(ws)),
             (65, "Writing API keys...", lambda: self._write_env_file()),
             (70, "Writing MicroClaw configuration...", ws.write_config),
-            (80, "Installing web search provider...", ws.install_search_provider_plugin),
-            (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (94, "Validating MicroClaw update...", ws.verify_openclaw_upgrade),
             (95, "Installing uninstaller...", ws.install_uninstaller_bundle),
             (97, "Creating desktop shortcut...", ws.create_desktop_shortcut),

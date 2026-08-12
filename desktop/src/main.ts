@@ -6,11 +6,7 @@ import * as net from "net";
 import * as os from "os";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
-import {
-  applyAgentRosterReload,
-  hardRestartGateway,
-  requiresExternalGatewayStop,
-} from "./gateway-lifecycle";
+import { hardRestartGateway, requiresExternalGatewayStop } from "./gateway-lifecycle";
 import { createTray, destroyTray, updateTrayMenu } from "./tray";
 import { minimizeWindow, showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
@@ -114,6 +110,16 @@ import {
   applyGlobalSkillChange,
   type GlobalSkillChange,
 } from "./skill-config";
+import {
+  assertMxcReadyForChat,
+  buildMxcAgentPolicies,
+  ensureMxcSecurityConfig,
+  MxcRuntimeManager,
+  type MxcAgentPolicy,
+  type MxcStoredAgentPolicy,
+  resolveMxcPluginDir,
+  validateMxcFolder,
+} from "./mxc-sandbox";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -190,6 +196,8 @@ const settingsStore = new Store<{
   sandboxUserDirsRO: string[];
   /** All directories we've ever granted AC ACL to. Used to detect stale ACLs on startup. */
   sandboxGrantHistory: string[];
+  /** Desired per-agent Microsoft MXC folder policies. Effective state is runtime-proven only. */
+  mxcAgentPolicies: Record<string, MxcStoredAgentPolicy>;
   /** Privacy protection level. */
   privacyLevel: "basic" | "strict";
   /** Per-control privacy preferences. Missing fields use mode-specific defaults. */
@@ -222,6 +230,7 @@ const settingsStore = new Store<{
     sandboxUserDirsRW: [],
     sandboxUserDirsRO: [],
     sandboxGrantHistory: [],
+    mxcAgentPolicies: { main: { readonlyPaths: [], readwritePaths: [] } },
     privacyLevel: "basic",
   },
 });
@@ -233,6 +242,7 @@ let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus: GatewayStatus = "stopped";
+const mxcRuntime = new MxcRuntimeManager();
 const appStartupStartedAt = Date.now();
 
 function logStartupTiming(phase: string): void {
@@ -273,7 +283,13 @@ function signalPostInstallReady(): void {
   fs.mkdirSync(readyDir, { recursive: true });
   fs.writeFileSync(
     temporary,
-    JSON.stringify({ transactionId: postInstallTransactionId, pid: process.pid }),
+    JSON.stringify({
+      transactionId: postInstallTransactionId,
+      pid: process.pid,
+      controlPlaneReady: true,
+      mxcReady: mxcRuntime.getStatus().ready,
+      gatewayReady: gatewaySpawnedByUs && gatewayProcess !== null,
+    }),
     "utf-8",
   );
   fs.renameSync(temporary, readyPath);
@@ -673,7 +689,7 @@ function denyAppContainerReadWrite(targetPath: string, isDir: boolean): void {
  * Re-applied on every gateway start to cover files created after the
  * initial provisioning step.
  */
-function hardenOpenClawStateDir(): void {
+function _hardenOpenClawStateDir(): void {
   try {
     const stateDir = getOpenClawStateDir();
     const SENSITIVE_FILES = [".env", "openclaw.json", "device-identity.json"];
@@ -1266,38 +1282,195 @@ function autoConfigureModelFromEnv(config: any, env: Record<string, string>): vo
  * Enable plugins required by the selected model and keep enabled plugin entries
  * in plugins.allow so the gateway loads them synchronously at startup.
  */
-function ensurePluginsAllow(): void {
+function ensureSelectedModelPlugin(): void {
   try {
     const config = readConfig();
     if (!config) return;
-    let changed = ensureSelectedModelProviderPlugins(config);
-    if (!config?.plugins?.entries) {
-      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      return;
-    }
-    const entries = config.plugins.entries as Record<string, { enabled?: boolean }>;
-    const enabledIds = Object.keys(entries).filter((id) => entries[id].enabled);
-    if (enabledIds.length === 0) {
-      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      return;
-    }
-
-    if (!Array.isArray(config.plugins.allow)) {
-      config.plugins.allow = [];
-      changed = true;
-    }
-    for (const id of enabledIds) {
-      if (!config.plugins.allow.includes(id)) {
-        config.plugins.allow.push(id);
-        changed = true;
-      }
-    }
+    const changed = ensureSelectedModelProviderPlugins(config);
     if (changed) {
       fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      console.log(`[config] Updated plugins.allow: ${config.plugins.allow.join(", ")}`);
+      console.log("[config] Enabled selected model provider plugin");
     }
   } catch (err) {
-    console.error("[config] Failed to update plugins.allow:", err);
+    console.error("[config] Failed to enable selected model provider plugin:", err);
+  }
+}
+
+function getMxcAgentRoster(config: any = readConfig() || {}): Array<{ id: string; name: string }> {
+  const roster = listConfiguredAgents(config);
+  if (!roster.some((agent) => agent.id === "main")) {
+    roster.unshift({ id: "main", name: "Assistant" });
+  }
+  return roster;
+}
+
+function getMxcWorkspaceRoot(): string {
+  return path.join(app.getPath("documents"), "MicroClaw MXC Workspaces");
+}
+
+function getMxcDeniedPaths(): string[] {
+  const home = app.getPath("home");
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const candidates = [
+    getOpenClawStateDir(),
+    app.getPath("userData"),
+    path.join(home, ".ssh"),
+    path.join(home, ".gnupg"),
+    path.join(home, ".aws"),
+    path.join(home, ".azure"),
+    path.join(home, ".docker"),
+    path.join(home, ".kube"),
+    localAppData ? path.join(localAppData, "Docker") : "",
+    localAppData ? path.join(localAppData, "Packages") : "",
+    localAppData ? path.join(localAppData, "Google", "Chrome", "User Data") : "",
+    localAppData ? path.join(localAppData, "Microsoft", "Edge", "User Data") : "",
+  ];
+  return candidates.filter((candidate) => candidate && fs.existsSync(candidate));
+}
+
+function getDesiredMxcPolicies(): Record<string, MxcStoredAgentPolicy> {
+  const raw = settingsStore.get("mxcAgentPolicies") ?? {};
+  const result: Record<string, MxcStoredAgentPolicy> = {};
+  for (const [agentId, policy] of Object.entries(raw)) {
+    result[agentId] = {
+      readonlyPaths: Array.isArray(policy?.readonlyPaths)
+        ? policy.readonlyPaths.filter((item): item is string => typeof item === "string")
+        : [],
+      readwritePaths: Array.isArray(policy?.readwritePaths)
+        ? policy.readwritePaths.filter((item): item is string => typeof item === "string")
+        : [],
+    };
+  }
+  return result;
+}
+
+function buildCurrentMxcPolicies(config: any = readConfig() || {}): Record<string, MxcAgentPolicy> {
+  return buildMxcAgentPolicies(
+    getMxcAgentRoster(config).map((agent) => agent.id),
+    getDesiredMxcPolicies(),
+    getMxcWorkspaceRoot(),
+    getMxcDeniedPaths(),
+  );
+}
+
+function applyMxcConfigPolicy(config: Record<string, any>): Record<string, MxcAgentPolicy> {
+  const policies = buildCurrentMxcPolicies(config);
+  ensureMxcSecurityConfig(
+    config,
+    resolveMxcPluginDir(app.isPackaged, process.resourcesPath),
+    policies,
+  );
+  return policies;
+}
+
+async function initializeMxc(
+  config: Record<string, any>,
+  nodeExecutable = resolveNodePath(),
+): Promise<void> {
+  await fs.promises.mkdir(getOpenClawStateDir(), { recursive: true });
+  ensureMxcSecurityConfig(config, resolveMxcPluginDir(app.isPackaged, process.resourcesPath), {});
+  writeConfigTextAtomically(JSON.stringify(config, null, 2));
+  try {
+    await validateDesiredMxcPolicies(config);
+  } catch (error: any) {
+    mxcRuntime.markBlocked(`MXC folder policy validation failed: ${error?.message || error}`);
+    throw error;
+  }
+  const policies = applyMxcConfigPolicy(config);
+  writeConfigTextAtomically(JSON.stringify(config, null, 2));
+  const status = await mxcRuntime.initialize(
+    resolveMxcPluginDir(app.isPackaged, process.resourcesPath),
+    policies,
+    nodeExecutable,
+  );
+  const summary = status.ready ? `${status.isolationTier}` : status.lastError;
+  console.log(`[mxc] readiness: ${status.ready ? "ready" : "blocked"} (${summary})`);
+}
+
+function getMxcStatusPayload(): Record<string, unknown> {
+  const runtime = mxcRuntime.getStatus();
+  const desired = getDesiredMxcPolicies();
+  const planned = buildCurrentMxcPolicies();
+  const agents = getMxcAgentRoster().map((agent) => ({
+    ...agent,
+    desired: {
+      ...(desired[agent.id] ?? { readonlyPaths: [], readwritePaths: [] }),
+      workspace: planned[agent.id]?.workspace ?? null,
+    },
+    effective: runtime.effectivePolicies[agent.id] ?? {
+      readonlyPaths: [],
+      readwritePaths: [],
+      workspace: null,
+    },
+  }));
+  return { ...runtime, agents };
+}
+
+function assertManagedMxcReady(): void {
+  assertMxcReadyForChat(mxcRuntime.getStatus());
+  if (!gatewaySpawnedByUs) {
+    throw new Error(
+      "MXC policy is not proven on the currently running external Gateway. Stop it and restart MicroClaw; host-tool fallback remains disabled.",
+    );
+  }
+}
+
+function getMxcFolderValidationOptions(): {
+  existing: Array<{ path: string; access: "ro" | "rw" }>;
+  blockedRoots: string[];
+  blockedExact: string[];
+} {
+  const desired = getDesiredMxcPolicies();
+  const existing = Object.values(desired).flatMap((policy) => [
+    ...policy.readonlyPaths.map((item) => ({ path: item, access: "ro" as const })),
+    ...policy.readwritePaths.map((item) => ({ path: item, access: "rw" as const })),
+  ]);
+  return {
+    existing,
+    blockedRoots: [
+      ...getMxcDeniedPaths(),
+      getMxcWorkspaceRoot(),
+      process.env.WINDIR || "",
+      process.env.SystemRoot || "",
+      process.env.ProgramFiles || "",
+      process.env["ProgramFiles(x86)"] || "",
+      process.env.ProgramData || "",
+      process.env.APPDATA || "",
+      process.env.LOCALAPPDATA || "",
+    ],
+    blockedExact: [app.getPath("home")],
+  };
+}
+
+async function validateDesiredMxcPolicies(config: Record<string, any>): Promise<void> {
+  const desired = getDesiredMxcPolicies();
+  const knownAgents = new Set(getMxcAgentRoster(config).map((agent) => agent.id));
+  const validationOptions = getMxcFolderValidationOptions();
+  validationOptions.existing = [];
+  const canonicalPolicies: Record<string, MxcStoredAgentPolicy> = {};
+
+  for (const [agentId, policy] of Object.entries(desired)) {
+    if (!knownAgents.has(agentId)) {
+      throw new Error(`Saved MXC policy references unknown agent "${agentId}".`);
+    }
+    const canonical: MxcStoredAgentPolicy = {
+      readonlyPaths: [],
+      readwritePaths: [],
+    };
+    canonicalPolicies[agentId] = canonical;
+    for (const access of ["ro", "rw"] as const) {
+      const source = access === "ro" ? policy.readonlyPaths : policy.readwritePaths;
+      const target = access === "ro" ? canonical.readonlyPaths : canonical.readwritePaths;
+      for (const folderPath of source) {
+        const validated = await validateMxcFolder(folderPath, validationOptions);
+        target.push(validated);
+        validationOptions.existing.push({ path: validated, access });
+      }
+    }
+  }
+
+  if (JSON.stringify(canonicalPolicies) !== JSON.stringify(desired)) {
+    settingsStore.set("mxcAgentPolicies", canonicalPolicies);
   }
 }
 
@@ -1335,15 +1508,6 @@ function writeConfigTextAtomically(contents: string): void {
   } finally {
     if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
   }
-}
-
-function failForExternalGateway(port: number): never {
-  const message =
-    `Agent configuration changed, but Gateway port ${port} is owned by another process. ` +
-    "Stop that Gateway and retry so MicroClaw can apply the new roster safely.";
-  setGatewayStatus("failed");
-  mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
-  throw new Error(message);
 }
 
 function seedSpecialistAgentWorkspaces(
@@ -1422,38 +1586,6 @@ function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
   }
 }
 
-async function applyGatewayAgentRoster(
-  agentId: string,
-  shouldExist: boolean,
-  restartGateway?: () => Promise<void>,
-) {
-  if (!gwClient?.connected) throw new Error("Gateway not connected");
-  return await applyAgentRosterReload({
-    listAgentIds: async () => {
-      const result = await gwClient!.listAgents();
-      if (!Array.isArray(result.agents))
-        throw new Error("OpenClaw returned an invalid agent roster");
-      return new Set(
-        result.agents.flatMap((candidate) => {
-          if (
-            typeof candidate !== "object" ||
-            candidate === null ||
-            typeof (candidate as { id?: unknown }).id !== "string"
-          ) {
-            return [];
-          }
-          return [(candidate as { id: string }).id];
-        }),
-      );
-    },
-    isApplied: (agentIds) => agentIds.has(agentId) === shouldExist,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    timeoutMs: 45_000,
-    pollMs: 100,
-    restartGateway,
-  });
-}
-
 async function addCatalogAgent(
   agentId: string,
 ): Promise<{ agents: Array<{ id: string; name: string }> }> {
@@ -1497,24 +1629,13 @@ async function addCatalogAgent(
       path.dirname(entryPath),
     );
     persistAgentPersonas(config);
-    const applyResult = await applyGatewayAgentRoster(
-      agentId,
-      true,
-      managedGateway
-        ? async () => {
-            restartAttempted = true;
-            await restartManagedGatewayAndRequireReady(
-              `Adding agent ${agentId} after hot-reload timeout`,
-            );
-          }
-        : undefined,
-    );
-    if (applyResult === "timed-out") {
-      throw new Error(
-        `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
-      );
+    mxcRuntime.markPolicyPending();
+    if (!managedGateway) {
+      throw new Error(`Cannot add agent "${agentId}" while the Gateway is externally managed`);
     }
-    console.log(`[agents] Added ${agentId} via ${applyResult}`);
+    restartAttempted = true;
+    await restartManagedGatewayAndRequireReady(`Adding agent ${agentId} with MXC policy`);
+    console.log(`[agents] Added ${agentId} via MXC-verified Gateway restart`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1557,6 +1678,7 @@ async function removeCatalogAgent(
   const stateDir = getOpenClawStateDir();
   const configPath = getConfigPath();
   const originalConfigText = fs.readFileSync(configPath, "utf-8");
+  const originalMxcPolicies = getDesiredMxcPolicies();
   const config = readConfig();
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
@@ -1571,24 +1693,16 @@ async function removeCatalogAgent(
   let restartAttempted = false;
   try {
     persistAgentPersonas(config);
-    const applyResult = await applyGatewayAgentRoster(
-      agentId,
-      false,
-      managedGateway
-        ? async () => {
-            restartAttempted = true;
-            await restartManagedGatewayAndRequireReady(
-              `Removing agent ${agentId} after hot-reload timeout`,
-            );
-          }
-        : undefined,
-    );
-    if (applyResult === "timed-out") {
-      throw new Error(
-        `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
-      );
+    const nextMxcPolicies = getDesiredMxcPolicies();
+    delete nextMxcPolicies[agentId];
+    settingsStore.set("mxcAgentPolicies", nextMxcPolicies);
+    mxcRuntime.markPolicyPending();
+    if (!managedGateway) {
+      throw new Error(`Cannot remove agent "${agentId}" while the Gateway is externally managed`);
     }
-    console.log(`[agents] Removed ${agentId} via ${applyResult}`);
+    restartAttempted = true;
+    await restartManagedGatewayAndRequireReady(`Removing agent ${agentId} with MXC policy`);
+    console.log(`[agents] Removed ${agentId} via MXC-verified Gateway restart`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
@@ -1597,6 +1711,7 @@ async function removeCatalogAgent(
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
     }
+    settingsStore.set("mxcAgentPolicies", originalMxcPolicies);
     if (restartAttempted && managedGateway) {
       try {
         await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
@@ -1892,6 +2007,26 @@ async function restartManagedGatewayAndRequireReady(reason: string): Promise<voi
   if (gatewayStatus !== "running") {
     throw new Error(`Gateway did not become ready after restart (status: ${gatewayStatus})`);
   }
+  const deadline = Date.now() + GATEWAY_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (
+      mxcRuntime.getStatus().ready &&
+      gatewaySpawnedByUs &&
+      isManagedGatewayProcessAlive() &&
+      gwClient?.connected
+    ) {
+      return;
+    }
+    if (
+      !mxcRuntime.getStatus().ready ||
+      !gatewaySpawnedByUs ||
+      !isManagedGatewayProcessAlive()
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Gateway restart did not establish an MXC-verified WebSocket connection.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1978,6 +2113,11 @@ function startHealthMonitor(): void {
 async function ensureGatewayConnected(): Promise<void> {
   if (gatewayRestarting || gatewayStatus === "starting") return;
   if (!gatewayPort) return;
+  if (!gatewaySpawnedByUs || !gatewayProcess || !mxcRuntime.getStatus().ready) {
+    gwClient?.stop();
+    if (gatewayStatus !== "stopped") setGatewayStatus("failed");
+    return;
+  }
 
   const alive = await checkExistingGateway(gatewayPort);
   if (alive) {
@@ -2204,12 +2344,12 @@ async function startGateway(): Promise<void> {
 async function startGatewayInner(): Promise<void> {
   logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
-  const config = readConfig();
+  const config = readConfig() || {};
+  const nodePath = resolveNodePath();
   gatewayToken = config?.gateway?.auth?.token || "";
   const configuredPort = config?.gateway?.port || DEFAULT_PORT;
   gatewayPort = configuredPort;
   const stateDir = getOpenClawStateDir();
-  const nodePath = resolveNodePath();
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
@@ -2217,47 +2357,46 @@ async function startGatewayInner(): Promise<void> {
   // This also updates existing installations when connecting to a running Gateway.
   seedWorkspaceFiles(stateDir);
 
-  // Ensure plugins.allow includes enabled plugins so they load synchronously
-  // (avoids the race where auto-discovered plugins miss the channel-start sweep)
-  ensurePluginsAllow();
-  postSpawnRestartRequired = requiresPostSpawnChannelRestart(readConfig());
-  if (!postSpawnRestartRequired) postSpawnRestartDone = true;
+  ensureSelectedModelPlugin();
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
-  const agentRosterChanged = preparedPersonas?.changed ?? false;
-
-  // If gateway is already healthy, just connect WS and return — no new process.
-  // Callers that need replacement use restartManagedGateway(), which stops the
-  // old process and waits for the port before invoking this function.
-  const alreadyRunning = await checkExistingGateway(configuredPort);
-  logStartupTiming("gateway-existing-check-complete");
-  if (
-    requiresExternalGatewayStop(
-      alreadyRunning,
-      agentRosterChanged,
-      gatewaySpawnedByUs,
-      gatewayProcess !== null,
-    )
-  ) {
-    failForExternalGateway(configuredPort);
-  }
   if (preparedPersonas?.changed) {
     persistAgentPersonas(preparedPersonas.config);
   }
   if (preparedPersonas) {
     seedSpecialistAgentWorkspaces(preparedPersonas.config, stateDir, entryPath, gatewayEnvironment);
   }
-  if (alreadyRunning && !agentRosterChanged) {
-    console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
-    gatewaySpawnedByUs = false;
-    setGatewayStatus("running");
-    connectGatewayWs();
-    startHealthMonitor();
+  try {
+    await initializeMxc(readConfig() || config, nodePath);
+  } catch (error: any) {
+    const message = `[mxc] Gateway blocked: ${error?.message || error}`;
+    console.error(message);
+    mainWindow?.webContents.send("gateway:log", message);
+    setGatewayStatus("failed");
+    signalPostInstallReady();
     return;
   }
+  if (!mxcRuntime.getStatus().ready) {
+    const message = `[mxc] Gateway blocked: ${mxcRuntime.getStatus().lastError}`;
+    console.error(message);
+    mainWindow?.webContents.send("gateway:log", message);
+    setGatewayStatus("failed");
+    signalPostInstallReady();
+    return;
+  }
+
+  postSpawnRestartRequired = requiresPostSpawnChannelRestart(readConfig());
+  if (!postSpawnRestartRequired) postSpawnRestartDone = true;
+
+  const alreadyRunning = await checkExistingGateway(configuredPort);
+  logStartupTiming("gateway-existing-check-complete");
   if (alreadyRunning) {
-    console.log("[gateway] Agent roster changed — restarting to load canonical configuration");
-    gwClient?.stop();
+    console.error(`[gateway] Port ${configuredPort} is owned by an unverified external Gateway`);
+    gatewaySpawnedByUs = false;
+    mxcRuntime.markExternalGateway();
+    setGatewayStatus("failed");
+    signalPostInstallReady();
+    return;
   }
 
   // Kill any old gateway on this port
@@ -2287,6 +2426,7 @@ async function startGatewayInner(): Promise<void> {
       "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
     );
     setGatewayStatus("failed");
+    signalPostInstallFailure(new Error(msg));
     return;
   }
   if (!fs.existsSync(entryPath)) {
@@ -2298,6 +2438,7 @@ async function startGatewayInner(): Promise<void> {
       "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
     );
     setGatewayStatus("failed");
+    signalPostInstallFailure(new Error(msg));
     return;
   }
 
@@ -2325,102 +2466,14 @@ async function startGatewayInner(): Promise<void> {
     // the OpenClaw launcher from self-respawning through the tool sandbox.
     OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
     OPENCLAW_NO_RESPAWN: "1",
-    // HMAC key for verifying the external apps whitelist file
-    OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
+    // Plugin factories register no MXC tools unless this process follows a
+    // successful package/hash/policy/worker proof in the desktop main process.
+    MICROCLAW_MXC_READY: mxcRuntime.getStatus().ready ? "1" : "0",
   };
 
-  // Determine spawn command
-  const launcherPath = resolveAppContainerLauncher();
-
-  // Initialize tool sandbox for AI agent command sandboxing.
-  // Gateway runs outside AppContainer, but tool commands are routed
-  // through AppContainer via preload interception.
-  toolSandbox = new ToolSandbox(launcherPath, nodePath);
-
-  // Restore sandbox enabled state from settings
-  const sandboxEnabled = settingsStore.get("sandboxEnabled");
-  if (!sandboxEnabled) {
-    toolSandbox.setEnabled(false);
-  }
-
-  // Grant sandbox access to the state directory and the resolved runtimes.
-  if (fs.existsSync(stateDir)) toolSandbox.addDirRW(stateDir);
-  const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
-  if (fs.existsSync(openClawPackageDir)) toolSandbox.addDirRO(openClawPackageDir);
-  const nodeRuntimeDir = path.dirname(nodePath);
-  if (fs.existsSync(nodeRuntimeDir)) toolSandbox.addDirRO(nodeRuntimeDir);
-
-  // Preserve support for the legacy per-user runtime layout.
-  const ocNodeDir = process.env.USERPROFILE
-    ? path.join(process.env.USERPROFILE, ".openclaw-node")
-    : "";
-  if (ocNodeDir && fs.existsSync(ocNodeDir)) toolSandbox.addDirRO(ocNodeDir);
-
-  // Grant read access to custom skills dir (~/.agents/skills/) so the
-  // gateway can scan it without triggering a sandbox permission prompt.
-  const customSkillsDir = process.env.USERPROFILE
-    ? path.join(process.env.USERPROFILE, ".agents", "skills")
-    : "";
-  if (customSkillsDir && fs.existsSync(customSkillsDir)) toolSandbox.addDirRO(customSkillsDir);
-
-  // Load user-configured external apps whitelist from settings.
-  // These apps bypass AppContainer when launched (need COM/RPC/named-pipes).
-  // Stored in Electron settings (not accessible from sandbox).
-  const externalApps = settingsStore.get("sandboxExternalApps");
-  toolSandbox.setExternalApps(externalApps);
-  // Write to %APPDATA%/microclaw/ so sandbox-preload.js can read it.
-  // This file is NOT in the AppContainer's writable dirs, so it's safe.
-  writeExternalAppsFile(externalApps);
-
-  // Load AppContainer capabilities from settings (e.g. internetClient, privateNetworkClientServer).
-  const savedCaps = settingsStore.get("sandboxCapabilities");
-  if (savedCaps && savedCaps.length > 0) {
-    toolSandbox.setCapabilities(savedCaps);
-  }
-
-  // Load user-configured sandbox directory permissions from settings.
-  const userDirsRW = settingsStore.get("sandboxUserDirsRW");
-  const userDirsRO = settingsStore.get("sandboxUserDirsRO");
-  for (const dir of userDirsRW) {
-    if (fs.existsSync(dir)) toolSandbox.addDirRW(dir);
-  }
-  for (const dir of userDirsRO) {
-    if (fs.existsSync(dir)) toolSandbox.addDirRO(dir);
-  }
-
-  if (toolSandbox.isActive()) {
-    // Provision AppContainer profile and ACLs (async to avoid blocking UI)
-    toolSandbox.provisionAsync().then(async (provisioned) => {
-      if (provisioned) {
-        console.log("[sandbox] AppContainer tool sandbox provisioned");
-        mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
-        // Clean up any stale ACLs from previous failed revokes
-        await cleanupStaleAcls();
-        // Apply explicit DENY ACEs on credential / private files inside the
-        // OpenClaw state dir. The state dir as a whole is granted rw to the
-        // AppContainer (skills need it for logs/scratch/plugin state), but
-        // .env / openclaw.json / device-identity.json / sessions/ must be
-        // shielded from sandboxed skill subprocesses.
-        hardenOpenClawStateDir();
-      } else {
-        console.warn("[sandbox] AppContainer provisioning failed — sandbox disabled");
-        toolSandbox!.setEnabled(false);
-      }
-    });
-  }
-
-  // Merge sandbox env (COMSPEC, sandbox config)
-  const sandboxEnv = toolSandbox.getGatewayEnv();
-  Object.assign(gwEnv, sandboxEnv);
-
-  // Append sandbox preload to NODE_OPTIONS if available
-  const preloadPath = toolSandbox.getPreloadPath();
-  if (preloadPath) {
-    // NODE_OPTIONS --require treats backslashes as escapes; use forward slashes
-    const preloadForward = preloadPath.replace(/\\/g, "/");
-    gwEnv.NODE_OPTIONS = `${gwEnv.NODE_OPTIONS} --require ${preloadForward}`;
-    console.log(`[sandbox] Preload: ${preloadForward}`);
-  }
+  // AppContainer interception is disabled. Legacy cleanup IPC remains inert
+  // because no ToolSandbox instance, COMSPEC override, or preload is installed.
+  toolSandbox = null;
 
   const gwArgs = [
     entryPath,
@@ -2430,11 +2483,7 @@ async function startGatewayInner(): Promise<void> {
     String(configuredPort),
     "--bind",
     "loopback",
-    // Note: --force is intentionally omitted. It calls exec("netstat") which
-    // routes through COMSPEC=AppContainerLauncher, causing netstat to run inside
-    // AppContainer where it may return wrong results, leading to the gateway
-    // killing itself in a restart loop. Stale lock cleanup is handled by
-    // ContainerManager.CleanStaleLockFiles() instead.
+    // Stale lock cleanup is handled without OpenClaw's force/netstat path.
     "--allow-unconfigured",
   ];
 
@@ -2484,13 +2533,21 @@ async function startGatewayInner(): Promise<void> {
     safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
     safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
     gatewayProcess = null;
+    gatewaySpawnedByUs = false;
+    gwClient?.stop();
+    mxcRuntime.markGatewayUnavailable();
     setGatewayStatus("failed");
+    signalPostInstallFailure(err);
   });
 
   child.on("exit", (code, signal) => {
     console.log(`[gateway] exited: code=${code} signal=${signal}`);
     safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
     gatewayProcess = null;
+    gatewaySpawnedByUs = false;
+    gwClient?.stop();
+    mxcRuntime.markGatewayUnavailable();
+    setGatewayStatus("failed");
   });
 
   // Log ALL IPC messages from gateway for debugging remote permission routing
@@ -2503,6 +2560,7 @@ async function startGatewayInner(): Promise<void> {
   // Forward actual shell command notifications to renderer for exec panel display
   child.on("message", (msg: any) => {
     if (msg?.type !== "sandbox-exec-command") return;
+    if (!toolSandbox) return;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("sandbox:exec-command", {
         shell: msg.shell,
@@ -2516,6 +2574,7 @@ async function startGatewayInner(): Promise<void> {
   // We pause the health-monitor while blocked to prevent it killing the gateway.
   child.on("message", (msg: any) => {
     if (msg?.type !== "sandbox-approval-request") return;
+    if (!toolSandbox) return;
     const { id, app, command, responseFile } = msg;
     const appLower = (app || "").toLowerCase();
     console.log(
@@ -2559,6 +2618,7 @@ async function startGatewayInner(): Promise<void> {
   // ACL is granted BEFORE writing the response file so the retried write succeeds.
   child.on("message", (msg: any) => {
     if (msg?.type !== "sandbox-file-permission-request") return;
+    if (!toolSandbox) return;
     const {
       id,
       filePath: reqPath,
@@ -2600,6 +2660,7 @@ async function startGatewayInner(): Promise<void> {
   // Triggered when a shell command inside AppContainer fails with "Access is denied".
   child.on("message", (msg: any) => {
     if (msg?.type !== "sandbox-shell-permission-request") return;
+    if (!toolSandbox) return;
     const { id, deniedPath, dirPath, command, accessNeeded, responseFile } = msg;
     console.log(
       `[sandbox] Shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded} id=${id}`,
@@ -2665,6 +2726,7 @@ async function startGatewayInner(): Promise<void> {
   // and the AI will naturally retry the command.
   child.on("message", (msg: any) => {
     if (msg?.type !== "sandbox-shell-permission-request-async") return;
+    if (!toolSandbox) return;
     const { deniedPath, dirPath, command, accessNeeded } = msg;
     console.log(
       `[sandbox] Async shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded}`,
@@ -2731,6 +2793,7 @@ async function startGatewayInner(): Promise<void> {
   // still got Access Denied. Attempt silent re-grant and notify the user.
   child.on("message", (msg: any) => {
     if (msg?.type !== "sandbox-acl-ineffective") return;
+    if (!toolSandbox) return;
     const { deniedPath, dirPath, command } = msg;
     console.warn(
       `[sandbox] ACL ineffective: path=${deniedPath} dir=${dirPath} cmd=${command?.substring(0, 80)}`,
@@ -2877,7 +2940,9 @@ function connectGatewayWs(): void {
       }
 
       mainWindow?.webContents.send("gateway:ws-connected", mainSessionKey || null);
-      signalPostInstallReady();
+      if (gatewaySpawnedByUs && mxcRuntime.getStatus().ready) {
+        signalPostInstallReady();
+      }
     },
     onDisconnected: (reason) => {
       console.log(`[gateway-ws] disconnected: ${reason}`);
@@ -3010,7 +3075,7 @@ function removeFromGrantHistory(dir: string): void {
  * Handles: failed revokes from previous sessions, removed-then-not-cleaned dirs.
  * Does NOT touch dirs that were re-added (they're in settings → safe).
  */
-async function cleanupStaleAcls(): Promise<void> {
+async function _cleanupStaleAcls(): Promise<void> {
   if (!toolSandbox) return;
   const history = settingsStore.get("sandboxGrantHistory");
   const rwSet = new Set(
@@ -3197,7 +3262,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
   ipcMain.handle("gateway:restart", async (_event, _options?: { hard?: boolean }) => {
     try {
-      await restartManagedGateway("Restart requested by user");
+      await restartManagedGatewayAndRequireReady("Restart requested by user");
       mainWindow?.webContents.send("gateway:log", "[restart] 网关重启完成");
     } catch (err: any) {
       const msg = `[error] Gateway restart failed: ${err?.message || err}`;
@@ -3216,8 +3281,88 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:write", async (_event, config: any) => {
     const stateDir = getOpenClawStateDir();
     await fs.promises.mkdir(stateDir, { recursive: true });
-    assertConfigWriteAllowed(config, readConfig());
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    const currentConfig = readConfig();
+    assertConfigWriteAllowed(config, currentConfig);
+    const currentRoster = getMxcAgentRoster(currentConfig).map((agent) => agent.id);
+    const nextRoster = getMxcAgentRoster(config).map((agent) => agent.id);
+    if (JSON.stringify(currentRoster) !== JSON.stringify(nextRoster)) {
+      throw new Error("Agent roster changes must use the validated Agents controls.");
+    }
+    applyMxcConfigPolicy(config);
+    writeConfigTextAtomically(JSON.stringify(config, null, 2));
+  });
+
+  // --- Microsoft MXC experimental sandbox ---
+  ipcMain.handle("mxc:get-status", () => getMxcStatusPayload());
+  ipcMain.handle(
+    "mxc:choose-folder",
+    async (_event, params: { agentId: string; access: "ro" | "rw" }) => {
+      const agentId = typeof params?.agentId === "string" ? params.agentId : "";
+      const access = params?.access === "rw" ? "rw" : "ro";
+      if (!getMxcAgentRoster().some((agent) => agent.id === agentId)) {
+        throw new Error("Unknown MXC agent policy.");
+      }
+      if (!mainWindow) throw new Error("Main window is not available.");
+      const selection = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+      if (selection.canceled || !selection.filePaths[0]) return getMxcStatusPayload();
+      const canonical = await validateMxcFolder(
+        selection.filePaths[0],
+        getMxcFolderValidationOptions(),
+      );
+      const policies = getDesiredMxcPolicies();
+      const policy = (policies[agentId] ??= { readonlyPaths: [], readwritePaths: [] });
+      (access === "rw" ? policy.readwritePaths : policy.readonlyPaths).push(canonical);
+      settingsStore.set("mxcAgentPolicies", policies);
+      mxcRuntime.markPolicyPending();
+      if (gatewaySpawnedByUs && gatewayProcess) {
+        gwClient?.stop();
+        stopGatewayProcess();
+        setGatewayStatus("stopped");
+      }
+      return getMxcStatusPayload();
+    },
+  );
+  ipcMain.handle(
+    "mxc:remove-folder",
+    (_event, params: { agentId: string; access: "ro" | "rw"; path: string }) => {
+      const policies = getDesiredMxcPolicies();
+      const policy = policies[params?.agentId];
+      if (!policy) return getMxcStatusPayload();
+      const key = params?.access === "rw" ? "readwritePaths" : "readonlyPaths";
+      policy[key] = policy[key].filter(
+        (item) =>
+          path.resolve(item).toLowerCase() !== path.resolve(params.path || "").toLowerCase(),
+      );
+      settingsStore.set("mxcAgentPolicies", policies);
+      mxcRuntime.markPolicyPending();
+      if (gatewaySpawnedByUs && gatewayProcess) {
+        gwClient?.stop();
+        stopGatewayProcess();
+        setGatewayStatus("stopped");
+      }
+      return getMxcStatusPayload();
+    },
+  );
+  ipcMain.handle("mxc:retry", async () => {
+    const config = readConfig() || {};
+    await initializeMxc(config);
+    if (mxcRuntime.getStatus().ready) {
+      if (gatewaySpawnedByUs && gatewayProcess) {
+        await restartManagedGateway("Applying Microsoft MXC policy");
+      } else {
+        await startGateway();
+      }
+    }
+    return getMxcStatusPayload();
+  });
+  ipcMain.handle("mxc:cleanup", async () => {
+    for (const policy of Object.values(buildCurrentMxcPolicies())) {
+      await fs.promises.rm(path.join(policy.workspace, ".mxc-tmp"), {
+        recursive: true,
+        force: true,
+      });
+    }
+    return getMxcStatusPayload();
   });
 
   // --- Skills ---
@@ -3798,6 +3943,7 @@ function registerIpcHandlers(): void {
     "chat:send-message",
     async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
+      assertManagedMxcReady();
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
       await gwClient.sendChat(
@@ -3820,6 +3966,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("chat:generate-session-title", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
+    assertManagedMxcReady();
     return await gwClient.generateSessionTitle(params.sessionKey);
   });
 
@@ -3840,6 +3987,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("gateway:warm-up-agent", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (!mxcRuntime.getStatus().ready || !gatewaySpawnedByUs) {
+      console.log("[gateway-ws] agent warm-up skipped: MXC is not ready");
+      return { outcome: "skipped", transcriptDeleted: true };
+    }
     if (needsSetup()) {
       console.log("[gateway-ws] agent warm-up skipped: no model is configured");
       return { outcome: "skipped", transcriptDeleted: true };
@@ -4540,6 +4691,13 @@ function registerIpcHandlers(): void {
   // --- Settings ---
   ipcMain.handle("settings:get", () => settingsStore.store);
   ipcMain.handle("settings:set", (_event, key: string, value: any) => {
+    if (
+      key === "mxcAgentPolicies" ||
+      key.startsWith("mxcAgentPolicies.") ||
+      key.startsWith("sandbox")
+    ) {
+      throw new Error("Security policies can only be changed through validated MXC IPC.");
+    }
     settingsStore.set(key as any, value);
     if (key === "autoStart") {
       app.setLoginItemSettings({ openAtLogin: !!value });
@@ -5635,7 +5793,7 @@ app.whenReady().then(async () => {
       );
     },
     onRestartGateway: () => {
-      restartManagedGateway("Restart requested from system tray").catch((error) =>
+      restartManagedGatewayAndRequireReady("Restart requested from system tray").catch((error) =>
         console.error("[tray] Gateway restart failed:", error),
       );
     },

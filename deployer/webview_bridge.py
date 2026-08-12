@@ -9,8 +9,6 @@ import threading
 import time
 import tkinter as tk
 import traceback
-import urllib.error
-import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog
@@ -280,7 +278,6 @@ _STRINGS = {
             "config": "正在写入 MicroClaw 配置…",
             "compileCache": "正在预热启动缓存…",
             "searchProvider": "正在安装网络搜索插件…",
-            "sandbox": "正在配置 AppContainer 沙箱…",
             "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
             "shortcut": "正在创建桌面快捷方式…",
@@ -334,7 +331,6 @@ _STRINGS = {
             "config": "Writing MicroClaw configuration...",
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
-            "sandbox": "Provisioning AppContainer sandbox...",
             "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
             "shortcut": "Creating desktop shortcut...",
@@ -583,14 +579,6 @@ class WebInstallerBridge:
             (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
             (65, steps["apiKeys"], lambda: self._write_env_file(), LOCAL_RETRIES),
             (70, steps["config"], ws.write_config, LOCAL_RETRIES),
-            (75, steps["compileCache"], ws.warmup_compile_cache, LOCAL_RETRIES),
-            (
-                80,
-                steps["searchProvider"],
-                ws.install_search_provider_plugin,
-                NETWORK_RETRIES,
-            ),
-            (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
         ]
@@ -669,7 +657,7 @@ class WebInstallerBridge:
             raise RuntimeError("MicroClaw could not be launched")
         if not self._wait_for_desktop_service(transaction_id):
             raise RuntimeError("MicroClaw service did not become ready before timeout")
-        return ws.validate_running_gateway()
+        return True
 
     def _run_step_with_retry(self, pct, label, fn, retries, progress_key=""):
         """Execute one install step, retrying transient failures.
@@ -867,9 +855,7 @@ class WebInstallerBridge:
             )
 
     def _wait_for_desktop_service(self, transaction_id, timeout_seconds=300):
-        port = int(self._config.get("gateway.port", 18789))
         deadline = time.monotonic() + timeout_seconds
-        url = f"http://127.0.0.1:{port}/health"
         ready_path = DEFAULT_DESKTOP_DIR / "upgrade" / f"desktop-ready-{transaction_id}.json"
         while time.monotonic() < deadline:
             if not self.get_state()["running"]:
@@ -887,18 +873,16 @@ class WebInstallerBridge:
                 payload = json.loads(ready_path.read_text(encoding="utf-8"))
                 if payload.get("transactionId") == transaction_id and payload.get("error"):
                     raise RuntimeError(f"MicroClaw startup rejected handoff: {payload['error']}")
-                ready = payload.get("transactionId") == transaction_id and (
-                    process is None or payload.get("pid") == process.pid
+                ready = (
+                    payload.get("transactionId") == transaction_id
+                    and payload.get("controlPlaneReady") is True
+                    and (process is None or payload.get("pid") == process.pid)
                 )
             except (OSError, json.JSONDecodeError, TypeError):
                 pass
-            try:
-                with urllib.request.urlopen(url, timeout=2) as response:
-                    if ready and response.status == 200:
-                        ready_path.unlink(missing_ok=True)
-                        return True
-            except (OSError, urllib.error.URLError):
-                pass
+            if ready:
+                ready_path.unlink(missing_ok=True)
+                return True
             time.sleep(0.5)
         return False
 

@@ -1,0 +1,69 @@
+{
+  "id": "microclaw-mxc",
+  "name": "MicroClaw Microsoft MXC Tools",
+  "description": "Experimental fail-closed filesystem and command tools backed by Microsoft MXC.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": ["mxc_read", "mxc_write", "mxc_edit", "mxc_exec"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["sdkVersion", "policyVersion", "upstreamCommit", "fallback", "agents"],
+    "properties": {
+      "sdkVersion": {
+        "const": "0.7.0"
+      },
+      "policyVersion": {
+        "const": "0.7.0-alpha"
+      },
+      "upstreamCommit": {
+        "const": "34d7fe2b4b3226bd4d11dc4a32419b7ec198a88b"
+      },
+      "fallback": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["allowDaclMutation"],
+        "properties": {
+          "allowDaclMutation": {
+            "const": false
+          }
+        }
+      },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workspace", "readonlyPaths", "readwritePaths", "deniedPaths"],
+          "properties": {
+            "workspace": {
+              "type": "string"
+            },
+            "readonlyPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "readwritePaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "deniedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

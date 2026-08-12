@@ -1,0 +1,20 @@
+{
+  "name": "@microclaw/openclaw-mxc-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "index.mjs",
+    "runtime.mjs",
+    "worker.mjs",
+    "openclaw.plugin.json"
+  ],
+  "peerDependencies": {
+    "openclaw": "2026.7.1-1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  }
+}

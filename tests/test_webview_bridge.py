@@ -111,7 +111,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
         settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self.assertEqual(settings, {"themeMode": "dark", "language": "zh-CN"})
 
-    def test_handoff_launches_app_and_validates_its_gateway(self):
+    def test_handoff_accepts_the_fail_closed_desktop_control_plane(self):
         setup = unittest.mock.Mock()
         setup.get_openclaw_upgrade_transaction_id.return_value = "20260720T000000Z-1234abcd"
         setup.validate_running_gateway.return_value = True
@@ -124,7 +124,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.bridge._wait_for_desktop_service.assert_called_once_with(
             "20260720T000000Z-1234abcd"
         )
-        setup.validate_running_gateway.assert_called_once_with()
+        setup.validate_running_gateway.assert_not_called()
 
     def test_service_handoff_is_not_retried_with_a_second_desktop(self):
         setup = unittest.mock.Mock()
@@ -140,6 +140,35 @@ class WebInstallerBridgeTests(unittest.TestCase):
         defaults = WebInstallerBridge._wait_for_desktop_service.__defaults__
 
         self.assertEqual(defaults, (300,))
+
+    def test_service_wait_accepts_blocked_mxc_control_plane_without_gateway(self):
+        transaction_id = "20260720T000000Z-1234abcd"
+        desktop_dir = Path(self.temp.name) / "desktop"
+        ready_path = desktop_dir / "upgrade" / f"desktop-ready-{transaction_id}.json"
+        ready_path.parent.mkdir(parents=True)
+        ready_path.write_text(
+            json.dumps(
+                {
+                    "transactionId": transaction_id,
+                    "pid": 4321,
+                    "controlPlaneReady": True,
+                    "mxcReady": False,
+                    "gatewayReady": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.bridge._state["running"] = True
+        self.bridge._launched_desktop_process = unittest.mock.Mock(pid=4321)
+        self.bridge._launched_desktop_process.poll.return_value = None
+
+        with unittest.mock.patch(
+            "deployer.webview_bridge.DEFAULT_DESKTOP_DIR",
+            desktop_dir,
+        ):
+            self.assertTrue(self.bridge._wait_for_desktop_service(transaction_id, 1))
+
+        self.assertFalse(ready_path.exists())
 
     def test_service_wait_stops_when_launched_app_exits(self):
         process = unittest.mock.Mock(pid=4321)
@@ -364,7 +393,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
         self.assertEqual(uninstaller_step[3], 1)
 
-    def test_both_installers_install_web_search_provider_after_configuration(self):
+    def test_both_installers_exclude_host_search_plugin_installation(self):
         setup = unittest.mock.Mock()
         app = object.__new__(DeployerApp)
         app._prepare_upgrade = unittest.mock.Mock()
@@ -374,11 +403,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
         app._write_env_file = unittest.mock.Mock()
 
         for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
-            labels = self._step_labels(steps)
-            search_index = labels.index("Installing web search provider...")
-            self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
-            self.assertLess(search_index, labels.index("Installing uninstaller..."))
-            self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
+            self.assertNotIn(setup.install_search_provider_plugin, [step[2] for step in steps])
 
     def test_both_installers_exclude_wechat_installation(self):
         setup = unittest.mock.Mock()
@@ -391,6 +416,8 @@ class WebInstallerBridgeTests(unittest.TestCase):
 
         for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
             self.assertNotIn(setup.install_weixin_plugin, [step[2] for step in steps])
+            self.assertNotIn(setup.provision_appcontainer, [step[2] for step in steps])
+            self.assertNotIn(setup.warmup_compile_cache, [step[2] for step in steps])
 
 
 if __name__ == "__main__":

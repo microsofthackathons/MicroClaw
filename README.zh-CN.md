@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-**MicroClaw** 的目标是让 [OpenClaw](https://github.com/openclaw) 在 Windows 上做到“装好就能用”。它把桌面客户端、本地 Gateway、运行时、预装技能和带权限控制的沙箱整合成一个熟悉、低摩擦的安装体验，让用户尽快进入真实任务。你只需要提供大模型连接信息，Windows 侧运行环境、桌面应用和信任边界都由 MicroClaw 预置完成。
+**MicroClaw** 的目标是让 [OpenClaw](https://github.com/openclaw) 在 Windows 上做到“装好就能用”。此分支包含 Microsoft MXC 实验性沙箱 POC。
 
 > [!WARNING]
 > **AI 与安全声明**
@@ -19,7 +19,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 即装即用
 
 - **熟悉的 Windows 安装流程**：带桌面快捷方式、开始菜单入口和一键卸载
-- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端、托管技能和 AppContainer 配置
+- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端、托管技能和固定版本 MXC 包
 - **安装完成即可启动**：不需要先手动搭本地 OpenClaw 运行环境
 
 ### 真正可用，而不是只装了个壳
@@ -31,10 +31,22 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 
 ### 内建信任
 
-- **动作透明、权限可控**：文件和工具访问需要明确向用户申请，而不是静默放行
-- **基于 Windows AppContainer 的沙箱隔离**：在支持的系统上，工具执行运行在操作系统强制边界内
-- **Hook 加沙箱，形成纵深防御**：Hook 负责更好的交互体验，真正的安全边界仍由 AppContainer ACL 强制执行
+- **原生文件夹策略**：通过桌面端原生选择器配置只读/读写文件夹
+- **Microsoft MXC 实验**：专用 Node 工作进程通过 `@microsoft/mxc-sdk@0.7.0` 启动
+- **故障关闭**：禁用 OpenClaw 主机文件/运行时、提权、浏览器、画布和原生代码执行工具；MXC 工具没有主机回退
 - **敏感路径直接硬拦截**：例如 `.ssh`、云凭据目录等不会只是提醒，而是直接拒绝访问
+
+> [!WARNING]
+> 本分支固定 [`@microsoft/mxc-sdk@0.7.0`](https://github.com/microsoft/mxc/tree/v0.7.0)
+>（提交 `34d7fe2b4b3226bd4d11dc4a32419b7ec198a88b`）和稳定策略
+> `0.7.0-alpha`。MXC 仍是**公共预览**：策略可能过度宽松，当前没有任何配置可作为生产安全边界。
+> POC 设置 `fallback.allowDaclMutation=false`。Microsoft 文档要求管理员明确同意运行
+> `wxc-host-prep prepare-system-drive`（机器级元数据 ACE）及 `prepare-null-device`，MSIX 无法串联这些步骤。
+> MicroClaw 不会自动运行、提权或修改 ACL；本 POC 也无法验证准备状态或收集临时文件夹 DACL 修改同意，
+> 因此在 `appcontainer-dacl` 层级仍保持阻止，且不会静默清理旧 AppContainer ACL。
+>
+> POC 范围有意收窄：文件工具仅支持 UTF-8 且上限 1 MiB，`mxc_edit` 只替换一个唯一字符串，
+> `mxc_exec` 为非交互式（最多 30 秒、输出 1 MiB）。不提供后台进程控制、`apply_patch`、无限制主机回退或自动主机准备。
 
 ---
 
@@ -43,7 +55,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 | 组件 | 路径 | 技术栈 | 说明 |
 |---|---|---|---|
 | **桌面应用** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
-| **AppContainer 沙盒** | `appcontainer/` | .NET 9 + Node.js preload hooks | Windows AppContainer 启动器 + 权限钩子，隔离工具执行 |
+| **MXC 工具插件** | `desktop/mxc-plugin/` | OpenClaw Plugin SDK + MXC 0.7.0 | 注册 `mxc_*` 工具并启动受隔离工作进程 |
 | **安装器** | `deploy.py` + `deployer/` | Python 3 + Tkinter | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
 | **微信插件** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | 微信频道接入 |
@@ -73,7 +85,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 - Node.js 22+，通过官方签名 `.msi` 以 per-machine 方式安装到 `%ProgramFiles%\nodejs\`（UAC 提权；若该路径已存在 ≥22.16 的系统 Node 则直接复用）
 - OpenClaw Gateway（`npm install -g openclaw`）
 - 配置 npm 镜像源与 V8 编译缓存
-- 安装 MicroClaw 桌面客户端、托管技能、AppContainer 沙箱、微信插件
+- 安装 MicroClaw 桌面客户端、托管技能、固定版本 MXC 运行时和微信插件
 - 添加 Windows Defender 排除项，创建桌面快捷方式（含一键卸载）
 
 安装完成后，从开始菜单或桌面快捷方式启动 **MicroClaw**。桌面应用会自动拉起 Gateway。
@@ -170,7 +182,7 @@ npm run dev
 | **技能完整性校验** | SHA-256 哈希 + Ed25519 签名，启动时检测所有技能文件是否被篡改 |
 | **设备认证** | 每台设备生成 Ed25519 密钥对，Gateway 连接时签名认证 |
 | **技能白名单** | `allowBundled` / `allowManaged` 控制可用技能范围 |
-| **沙盒隔离** | Windows AppContainer 沙盒，限制 AI 工具执行环境 |
+| **沙盒隔离** | 实验性 MXC 0.7.0 工作进程；校验哈希、禁用网络/UI、严格文件夹策略且无主机回退 |
 | **本地 Gateway** | 仅绑定 loopback，不接受远程连接 |
 
 ---
@@ -193,7 +205,6 @@ npm run dev
 
 - Node.js 22+
 - Python 3.10+ —— 通过 `pip install -r requirements.txt` 安装构建依赖（已包含 PyInstaller）
-- .NET 9 SDK（用于构建 AppContainer 启动器）
 - npm 依赖已安装（`cd desktop && npm install`）
 
 ---
@@ -213,7 +224,8 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ├── desktop/                     # Electron 桌面应用
 │   ├── src/                     # 主进程（TypeScript）
 │   └── renderer/                # Vue 3 渲染进程
-├── appcontainer/                # Windows AppContainer 沙盒（.NET + preload hooks）
+├── appcontainer/                # 旧版未激活 AppContainer 源码（不再打包）
+├── desktop/mxc-plugin/          # 实验性 MXC OpenClaw 工具
 ├── skills/                      # 托管技能定义
 ├── plugins/openclaw-weixin/     # 微信频道插件
 ├── scripts/

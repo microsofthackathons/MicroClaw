@@ -23,7 +23,6 @@ Object.defineProperty(globalThis, "window", {
         isConnected: mockIsConnected,
         onEvent: vi.fn(),
         onToolEvent: vi.fn(),
-        onExecCommand: vi.fn(),
       },
       config: { needsSetup: vi.fn().mockResolvedValue(false) },
       gateway: {
@@ -36,7 +35,6 @@ Object.defineProperty(globalThis, "window", {
         restart: vi.fn(),
       },
       settings: { get: mockGetSettings },
-      sandbox: { onPermissionRequest: vi.fn() },
       skills: { pendingIntegrityResult: vi.fn().mockResolvedValue(null) },
       cron: { list: vi.fn().mockResolvedValue({ jobs: [] }) },
     },

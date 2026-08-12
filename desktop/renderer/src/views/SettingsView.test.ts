@@ -31,6 +31,33 @@ describe("SettingsView", () => {
       logs: {
         exportGateway: exportGatewayLogs,
       },
+      mxc: {
+        getStatus: vi.fn().mockResolvedValue({
+          ready: false,
+          packageReady: true,
+          hashReady: true,
+          osSupported: true,
+          policyReady: true,
+          workerReady: false,
+          sdkVersion: "0.7.0",
+          policyVersion: "0.7.0-alpha",
+          upstreamCommit: "34d7fe2b4b3226bd4d11dc4a32419b7ec198a88b",
+          architecture: "x64",
+          binaryHash: "pinned-hash",
+          isolationTier: "appcontainer-dacl",
+          isolationWarnings: [],
+          requiresHostPreparation: true,
+          lastError: "DACL fallback refused",
+          agents: [
+            {
+              id: "main",
+              name: "Assistant",
+              desired: { readonlyPaths: [], readwritePaths: [] },
+              effective: { readonlyPaths: [], readwritePaths: [], workspace: null },
+            },
+          ],
+        }),
+      },
     } as unknown as typeof window.openclaw;
     exportGatewayLogs.mockReset().mockResolvedValue({
       canceled: false,
@@ -80,5 +107,25 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
+  });
+
+  it("shows honest fail-closed Microsoft MXC readiness", async () => {
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+    await wrapper
+      .findAll(".settings-menu-item")
+      .find((item) => item.text() === "Security")!
+      .trigger("click");
+    await flushPromises();
+
+    const text = wrapper.find(".settings-content").text();
+    expect(wrapper.find("el-alert").attributes("title")).toBe(
+      "Microsoft MXC public preview experiment",
+    );
+    expect(text).toContain("Blocked (fail closed)");
+    expect(text).toContain("DACL fallback refused");
+    expect(text).not.toContain("Tool sandbox (AppContainer)");
   });
 });

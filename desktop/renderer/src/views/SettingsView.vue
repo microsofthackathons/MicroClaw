@@ -365,6 +365,172 @@
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
         <div class="section-label">{{ t("settings.security") }}</div>
+        <el-alert
+          class="mxc-preview-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="t('settings.mxcPreviewTitle')"
+          :description="t('settings.mxcPreviewWarning')"
+        />
+        <div class="card-group" style="margin-top: 12px">
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.mxcOverall") }}</span>
+            <span
+              class="status-indicator"
+              :class="mxcStatus?.ready ? 'status-indicator--ok' : 'status-indicator--error'"
+            >
+              <span class="status-dot"></span>
+              {{ mxcStatus?.ready ? t("settings.mxcReady") : t("settings.mxcBlocked") }}
+            </span>
+          </div>
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.mxcPackage") }}</span>
+            <span class="row-value"
+              >@microsoft/mxc-sdk {{ mxcStatus?.sdkVersion || "0.7.0" }} ·
+              {{ mxcStatus?.architecture || "—" }}</span
+            >
+          </div>
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.mxcRuntimeHash") }}</span>
+            <span class="row-value mxc-hash">{{ mxcStatus?.binaryHash || "—" }}</span>
+          </div>
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.mxcOsTier") }}</span>
+            <span class="row-value">{{ mxcStatus?.isolationTier || "—" }}</span>
+          </div>
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.mxcPolicyReady") }}</span>
+            <span class="row-value">{{
+              mxcStatus?.policyReady ? t("settings.yes") : t("settings.no")
+            }}</span>
+          </div>
+          <div class="card-row no-border">
+            <span class="row-label">{{ t("settings.mxcWorkerReady") }}</span>
+            <span class="row-value">{{
+              mxcStatus?.workerReady ? t("settings.yes") : t("settings.no")
+            }}</span>
+          </div>
+        </div>
+        <div v-if="mxcStatus?.lastError" class="section-footer mxc-error">
+          {{ mxcStatus.lastError }}
+        </div>
+        <div v-if="mxcStatus?.requiresHostPreparation" class="section-footer mxc-warning">
+          {{ t("settings.mxcHostPrep") }}
+        </div>
+
+        <div class="sub-label">{{ t("settings.mxcAgentPolicy") }}</div>
+        <div class="card-group">
+          <div class="card-row">
+            <span class="row-label">{{ t("settings.mxcAgent") }}</span>
+            <el-select v-model="selectedMxcAgentId" size="small" style="width: 220px">
+              <el-option
+                v-for="agent in mxcStatus?.agents || []"
+                :key="agent.id"
+                :label="agent.name"
+                :value="agent.id"
+              />
+            </el-select>
+          </div>
+          <div class="card-row" style="align-items: flex-start">
+            <span class="row-label">{{ t("settings.mxcDesired") }}</span>
+            <div class="mxc-policy-column">
+              <div class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</div>
+              <div v-if="selectedMxcAgent?.desired.workspace" class="dir-item dir-item-system">
+                <span class="dir-path" :title="selectedMxcAgent.desired.workspace">{{
+                  selectedMxcAgent.desired.workspace
+                }}</span>
+                <span class="dir-badge dir-badge-rw">RW</span>
+                <span class="dir-badge dir-badge-system">{{ t("settings.mxcWorkspace") }}</span>
+              </div>
+              <div
+                v-for="folder in selectedMxcAgent?.desired.readwritePaths || []"
+                :key="'drw-' + folder"
+                class="dir-item"
+              >
+                <span class="dir-path" :title="folder">{{ folder }}</span>
+                <span class="dir-badge dir-badge-rw">RW</span>
+                <button class="tag-remove" @click="removeMxcFolder(folder, 'rw')">&times;</button>
+              </div>
+              <el-button size="small" plain @click="chooseMxcFolder('rw')">{{
+                t("settings.sandboxAddDir")
+              }}</el-button>
+              <div class="dir-section-label" style="margin-top: 10px">
+                {{ t("settings.sandboxDirsRO") }}
+              </div>
+              <div
+                v-for="folder in selectedMxcAgent?.desired.readonlyPaths || []"
+                :key="'dro-' + folder"
+                class="dir-item"
+              >
+                <span class="dir-path" :title="folder">{{ folder }}</span>
+                <span class="dir-badge dir-badge-ro">RO</span>
+                <button class="tag-remove" @click="removeMxcFolder(folder, 'ro')">&times;</button>
+              </div>
+              <el-button size="small" plain @click="chooseMxcFolder('ro')">{{
+                t("settings.sandboxAddDir")
+              }}</el-button>
+            </div>
+          </div>
+          <div class="card-row no-border" style="align-items: flex-start">
+            <span class="row-label">{{ t("settings.mxcEffective") }}</span>
+            <div class="mxc-policy-column">
+              <div v-if="selectedMxcAgent?.effective.workspace" class="dir-item dir-item-system">
+                <span class="dir-path" :title="selectedMxcAgent.effective.workspace">{{
+                  selectedMxcAgent.effective.workspace
+                }}</span>
+                <span class="dir-badge dir-badge-rw">RW</span>
+                <span class="dir-badge dir-badge-system">{{ t("settings.mxcWorkspace") }}</span>
+              </div>
+              <div
+                v-for="folder in selectedMxcAgent?.effective.readwritePaths || []"
+                :key="'erw-' + folder"
+                class="dir-item"
+              >
+                <span class="dir-path" :title="folder">{{ folder }}</span
+                ><span class="dir-badge dir-badge-rw">RW</span>
+              </div>
+              <div
+                v-for="folder in selectedMxcAgent?.effective.readonlyPaths || []"
+                :key="'ero-' + folder"
+                class="dir-item"
+              >
+                <span class="dir-path" :title="folder">{{ folder }}</span
+                ><span class="dir-badge dir-badge-ro">RO</span>
+              </div>
+              <div
+                v-if="
+                  !(
+                    selectedMxcAgent?.effective.workspace ||
+                    selectedMxcAgent?.effective.readwritePaths.length ||
+                    selectedMxcAgent?.effective.readonlyPaths.length
+                  )
+                "
+                class="dir-empty"
+              >
+                {{ t("settings.mxcNoEffective") }}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mxc-actions">
+          <el-button type="primary" :loading="mxcApplying" @click="retryMxc">{{
+            t("settings.mxcRetry")
+          }}</el-button>
+          <el-button :loading="mxcCleaning" @click="cleanupMxc">{{
+            t("settings.mxcCleanup")
+          }}</el-button>
+          <el-button link type="primary" @click="openMxcDocs">{{
+            t("settings.mxcDocs")
+          }}</el-button>
+          <el-button link type="primary" @click="openMxcRepo">{{
+            t("settings.mxcRepo")
+          }}</el-button>
+        </div>
+        <div class="section-footer">{{ t("settings.mxcNoFallback") }}</div>
+      </div>
+
+      <div v-else-if="false" class="section">
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
@@ -926,7 +1092,72 @@ watch(
   },
 );
 
-// -- Sandbox state --
+// -- Microsoft MXC experimental sandbox --
+const mxcStatus = ref<MxcStatus | null>(null);
+const selectedMxcAgentId = ref("main");
+const mxcApplying = ref(false);
+const mxcCleaning = ref(false);
+const selectedMxcAgent = computed(
+  () => mxcStatus.value?.agents.find((agent) => agent.id === selectedMxcAgentId.value) ?? null,
+);
+
+function applyMxcStatus(status: MxcStatus) {
+  mxcStatus.value = status;
+  if (!status.agents.some((agent) => agent.id === selectedMxcAgentId.value)) {
+    selectedMxcAgentId.value = status.agents[0]?.id ?? "main";
+  }
+}
+
+async function loadMxcStatus() {
+  try {
+    applyMxcStatus(await window.openclaw.mxc.getStatus());
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function chooseMxcFolder(access: "ro" | "rw") {
+  try {
+    applyMxcStatus(await window.openclaw.mxc.chooseFolder(selectedMxcAgentId.value, access));
+  } catch (error) {
+    ElMessage.warning(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function removeMxcFolder(folderPath: string, access: "ro" | "rw") {
+  applyMxcStatus(
+    await window.openclaw.mxc.removeFolder(selectedMxcAgentId.value, access, folderPath),
+  );
+}
+
+async function retryMxc() {
+  mxcApplying.value = true;
+  try {
+    applyMxcStatus(await window.openclaw.mxc.retry());
+  } finally {
+    mxcApplying.value = false;
+  }
+}
+
+async function cleanupMxc() {
+  mxcCleaning.value = true;
+  try {
+    applyMxcStatus(await window.openclaw.mxc.cleanup());
+  } finally {
+    mxcCleaning.value = false;
+  }
+}
+
+function openMxcDocs() {
+  window.openclaw.shell.openExternal("https://github.com/microsoft/mxc/tree/v0.7.0/docs");
+}
+
+function openMxcRepo() {
+  window.openclaw.shell.openExternal("https://github.com/microsoft/mxc/tree/v0.7.0");
+}
+
+// -- Disabled legacy AppContainer state (kept for settings migration only) --
+const legacySandboxApi = (window.openclaw as any).sandbox;
 const sandboxStatus = reactive({ available: false, enabled: false });
 const externalApps = ref<string[]>([]);
 const newAppName = ref("");
@@ -942,14 +1173,14 @@ const sandboxRestarting = ref(false);
 
 async function loadSandboxStatus() {
   try {
-    const status = await window.openclaw.sandbox.getStatus();
+    const status = await legacySandboxApi.getStatus();
     sandboxStatus.available = status.available;
     sandboxStatus.enabled = status.enabled;
-    externalApps.value = await window.openclaw.sandbox.getExternalApps();
+    externalApps.value = await legacySandboxApi.getExternalApps();
     externalAppsOriginal = [...externalApps.value];
     sandboxNeedsRestart.value = false;
-    sandboxCapabilities.value = await window.openclaw.sandbox.getCapabilities();
-    const dirs = await window.openclaw.sandbox.getUserDirs();
+    sandboxCapabilities.value = await legacySandboxApi.getCapabilities();
+    const dirs = await legacySandboxApi.getUserDirs();
     sandboxUserDirs.rw = dirs.rw;
     sandboxUserDirs.ro = dirs.ro;
     // System dirs = all dirs from sandbox status minus user-added dirs
@@ -966,7 +1197,7 @@ async function loadSandboxStatus() {
 
 async function toggleSandbox(enabled: boolean) {
   sandboxRestarting.value = true;
-  await window.openclaw.sandbox.setEnabled(enabled);
+  await legacySandboxApi.setEnabled(enabled);
   // Wait for reconnection
   const deadline = Date.now() + 15000;
   const poll = setInterval(async () => {
@@ -1001,13 +1232,13 @@ async function addExternalApp() {
   }
   externalApps.value.push(name);
   newAppName.value = "";
-  await window.openclaw.sandbox.setExternalApps([...externalApps.value]);
+  await legacySandboxApi.setExternalApps([...externalApps.value]);
   checkDirty();
 }
 
 async function removeExternalApp(idx: number) {
   externalApps.value.splice(idx, 1);
-  await window.openclaw.sandbox.setExternalApps([...externalApps.value]);
+  await legacySandboxApi.setExternalApps([...externalApps.value]);
   checkDirty();
 }
 
@@ -1017,7 +1248,7 @@ async function toggleCapability(cap: string, enabled: boolean) {
   } else {
     sandboxCapabilities.value = sandboxCapabilities.value.filter((c) => c !== cap);
   }
-  await window.openclaw.sandbox.setCapabilities([...sandboxCapabilities.value]);
+  await legacySandboxApi.setCapabilities([...sandboxCapabilities.value]);
   // Auto-restart gateway (capabilities require process restart)
   capsRestarting.value = true;
   try {
@@ -1041,7 +1272,7 @@ async function toggleCapability(cap: string, enabled: boolean) {
 async function _applyExternalApps() {
   sandboxApplying.value = true;
   try {
-    await window.openclaw.sandbox.applyExternalApps();
+    await legacySandboxApi.applyExternalApps();
     externalAppsOriginal = [...externalApps.value];
     sandboxNeedsRestart.value = false;
   } finally {
@@ -1050,7 +1281,7 @@ async function _applyExternalApps() {
 }
 
 async function addSandboxDir(access: "rw" | "ro") {
-  const result = await window.openclaw.sandbox.addUserDir({ access });
+  const result = await legacySandboxApi.addUserDir({ access });
   if (result.reason === "parent-covers") {
     const accessLabel =
       result.parentAccess === "rw" ? t("settings.sandboxDirsRW") : t("settings.sandboxDirsRO");
@@ -1080,7 +1311,7 @@ async function removeSandboxDir(dir: string, access: "rw" | "ro") {
   const idx = sandboxUserDirs[listKey].indexOf(dir);
   if (idx >= 0) sandboxUserDirs[listKey].splice(idx, 1);
 
-  const result = await window.openclaw.sandbox.removeUserDir({ dir, access });
+  const result = await legacySandboxApi.removeUserDir({ dir, access });
   // Sync with actual backend state (adds back if revoke failed)
   sandboxUserDirs.rw.splice(0, sandboxUserDirs.rw.length, ...result.dirs.rw);
   sandboxUserDirs.ro.splice(0, sandboxUserDirs.ro.length, ...result.dirs.ro);
@@ -1094,7 +1325,7 @@ const aclVerifyResult = ref<{
   stale: Array<{ dir: string; rights: string }>;
   ok: Array<{ dir: string; access: string }>;
   errors: Array<{ dir: string; error: string }>;
-} | null>(null);
+}>({ missing: [], stale: [], ok: [], errors: [] });
 let _aclTripleClickCount = 0;
 let _aclTripleClickTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1112,9 +1343,9 @@ function onSandboxDirsLabelClick() {
 
 async function verifyAcls() {
   aclVerifying.value = true;
-  aclVerifyResult.value = null;
+  aclVerifyResult.value = { missing: [], stale: [], ok: [], errors: [] };
   try {
-    aclVerifyResult.value = await window.openclaw.sandbox.verifyAcls();
+    aclVerifyResult.value = await legacySandboxApi.verifyAcls();
   } catch (e: any) {
     aclVerifyResult.value = {
       missing: [],
@@ -1129,12 +1360,12 @@ async function verifyAcls() {
 
 async function repairAcl(item: { dir: string; access: string }) {
   const access = item.access === "rw" ? "rw" : ("ro" as const);
-  const result = await window.openclaw.sandbox.repairAcl({ dir: item.dir, access });
+  const result = await legacySandboxApi.repairAcl({ dir: item.dir, access });
   if (result.ok) await verifyAcls();
 }
 
 async function revokeStaleAcl(item: { dir: string }) {
-  const result = await window.openclaw.sandbox.revokeStaleAcl(item.dir);
+  const result = await legacySandboxApi.revokeStaleAcl(item.dir);
   if (result.ok) await verifyAcls();
 }
 
@@ -1442,7 +1673,7 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    loadSandboxStatus();
+    loadMxcStatus();
   }
 });
 
@@ -1552,6 +1783,7 @@ watch(showProviderSetup, (visible, wasVisible) => {
 
 onMounted(async () => {
   window.addEventListener("focus", handleSettingsWindowFocus);
+  if (activeSection.value === "security") void loadMxcStatus();
 
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
@@ -2633,6 +2865,41 @@ async function clearChatHistory() {
   opacity: 0.45;
   pointer-events: none;
   user-select: none;
+}
+
+.mxc-preview-alert {
+  text-align: left;
+}
+
+.mxc-hash {
+  max-width: 420px;
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.mxc-policy-column {
+  width: min(520px, 70%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mxc-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mxc-error {
+  color: var(--el-color-danger);
+  overflow-wrap: anywhere;
+}
+
+.mxc-warning {
+  color: var(--el-color-warning);
 }
 .restart-hint {
   font-size: 12px;

@@ -423,7 +423,7 @@ class WindowsSetup:
         # Optional UI hook forwarded to upgrade transactions so long backup /
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
-        self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
+        self.appcontainer_enabled = False  # Legacy AppContainer is inactive in the MXC experiment.
 
         # Respect an explicit registry immediately. Otherwise start with the
         # fallback and defer network probing until a download is required.
@@ -1909,7 +1909,6 @@ class WindowsSetup:
 
     def _rollback_openclaw_transaction(self, transaction: OpenClawUpgradeTransaction) -> bool:
         transaction.progress_callback = self.progress_callback
-        process: subprocess.Popen | None = None
         try:
             original_phase = transaction.manifest.phase
             transaction.rollback()
@@ -1918,17 +1917,6 @@ class WindowsSetup:
             if original_phase == UpgradePhase.BACKING_UP:
                 transaction.complete_rollback()
                 return True
-            source_version = transaction.manifest.source_version
-            if source_version is not None:
-                process = self._start_validation_gateway(expected_version=source_version)
-                if not self._validate_gateway_health():
-                    self.log.error(
-                        "Previous OpenClaw Gateway did not become healthy after rollback"
-                    )
-                    self._discard_failed_transaction(
-                        transaction, "restored gateway did not become healthy"
-                    )
-                    return False
             transaction.complete_rollback()
             return True
         except Exception as error:
@@ -1937,8 +1925,6 @@ class WindowsSetup:
             )
             self._discard_failed_transaction(transaction, str(error) or error.__class__.__name__)
             return False
-        finally:
-            self._stop_validation_gateway(process)
 
     def recover_interrupted_openclaw_upgrade(self) -> bool:
         if not self._gateway_is_stopped_for_upgrade():
@@ -2271,83 +2257,6 @@ class WindowsSetup:
             pass
         return values
 
-    def _resolve_validation_node(self) -> Path:
-        candidates = []
-        if self._node_bin is not None:
-            candidates.append(Path(self._node_bin) / "node.exe")
-        candidates.append(self.node_dir / "node.exe")
-        path_node = shutil.which("node")
-        if path_node:
-            candidates.append(Path(path_node))
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        raise FileNotFoundError("node.exe not found for OpenClaw validation")
-
-    def _start_validation_gateway(
-        self, expected_version: str | None = OPENCLAW_TARGET_VERSION
-    ) -> subprocess.Popen:
-        installation = self._detect_openclaw_installation()
-        if installation is None or (
-            expected_version is not None and installation.version != expected_version
-        ):
-            raise RuntimeError(f"Expected OpenClaw package is not installed: {expected_version}")
-        node = self._resolve_validation_node()
-        state_dir = Path.home() / ".openclaw"
-        cache_dir = state_dir / "compile-cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        env = self._get_env()
-        env.update(self._load_openclaw_state_env(state_dir))
-        env.update(
-            {
-                "OPENCLAW_STATE_DIR": str(state_dir),
-                "NODE_COMPILE_CACHE": str(cache_dir),
-                "NODE_ENV": "production",
-                "OPENCLAW_NO_RESPAWN": "1",
-            }
-        )
-        return subprocess.Popen(
-            [
-                str(node),
-                str(installation.entry_path),
-                "gateway",
-                "run",
-                "--port",
-                str(self.cfg.get("gateway.port", 18789)),
-                "--bind",
-                "loopback",
-                "--allow-unconfigured",
-            ],
-            cwd=str(installation.package_dir),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=_CREATE_NO_WINDOW,
-        )
-
-    def _stop_validation_gateway(self, process: subprocess.Popen | None) -> None:
-        if process is None or process.poll() is not None:
-            return
-        if platform.system() == "Windows" and process.pid:
-            result = self._run(
-                ["taskkill", "/pid", str(process.pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if result.returncode not in (0, 128):
-                self.log.warn(
-                    f"Could not stop validation Gateway process tree: "
-                    f"{result.stderr.strip() or result.stdout.strip()}"
-                )
-        else:
-            process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-
     def _validate_installed_version(self) -> bool:
         installation = self._detect_openclaw_installation()
         return bool(
@@ -2561,10 +2470,7 @@ class WindowsSetup:
         if transaction is not None:
             transaction.mark_verifying()
 
-        checks = [
-            ("version", self._validate_installed_version),
-            ("appcontainer", self._validate_appcontainer_smoke),
-        ]
+        checks = [("version", self._validate_installed_version)]
         for name, check in checks:
             passed = bool(check())
             if transaction is not None:
@@ -2603,18 +2509,9 @@ class WindowsSetup:
         return True
 
     def verify_openclaw_upgrade(self) -> bool:
-        if not self.begin_openclaw_upgrade_validation():
-            return False
-
-        process = None
-        try:
-            process = self._start_validation_gateway()
-            return self.validate_running_gateway()
-        except Exception as error:
-            self.log.error(str(error))
-            return False
-        finally:
-            self._stop_validation_gateway(process)
+        # The desktop applies and proves MXC policy before it starts the Gateway.
+        # Starting a validation Gateway here would create a host-tool execution window.
+        return self.begin_openclaw_upgrade_validation()
 
     def commit_openclaw_upgrade(self) -> bool:
         transaction = self._openclaw_transaction
@@ -2748,121 +2645,9 @@ class WindowsSetup:
             self.log.warn(f"  Failed to write pi-ai usage-streaming patch: {exc}")
 
     def warmup_compile_cache(self) -> bool:
-        """Warm up Node.js compile cache by briefly starting the gateway.
-
-        Node 22's NODE_COMPILE_CACHE stores V8 compiled bytecode so that
-        subsequent starts skip JS parsing.  We run the gateway for a few
-        seconds during install so the cache is pre-populated and the user's
-        first real launch is fast.
-        """
-        self.log.step("Warming up compile cache for faster startup…")
-
-        node = self.node_dir / "node.exe"
-        # Search both node_dir and the npm install prefix actually used
-        # (these differ when we fell back to %APPDATA%\npm).
-        entry_roots: list[Path] = [self.node_dir]
-        install_prefix = getattr(self, "install_prefix", None)
-        if install_prefix and Path(install_prefix) not in entry_roots:
-            entry_roots.append(Path(install_prefix))
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            appdata_npm = Path(appdata) / "npm"
-            if appdata_npm not in entry_roots:
-                entry_roots.append(appdata_npm)
-        entry: Path | None = None
-        for root in entry_roots:
-            for sub in (
-                ("node_modules", "openclaw", "openclaw.mjs"),
-                ("node_modules", "openclaw", "dist", "index.js"),
-                ("lib", "node_modules", "openclaw", "openclaw.mjs"),
-                ("lib", "node_modules", "openclaw", "dist", "index.js"),
-            ):
-                candidate = root.joinpath(*sub)
-                if candidate.exists():
-                    entry = candidate
-                    break
-            if entry:
-                break
-        if not node.exists() or entry is None:
-            self.log.info("  Node or openclaw entry not found — skipping warmup")
-            return True
-
-        state_dir = Path.home() / ".openclaw"
-        cache_dir = state_dir / "compile-cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        version_marker = cache_dir / ".microclaw-version"
-        try:
-            marker_matches = version_marker.read_text(encoding="utf-8").strip() == (
-                OPENCLAW_TARGET_VERSION
-            )
-        except OSError:
-            marker_matches = False
-        cache_has_files = any(
-            path.is_file() and path != version_marker for path in cache_dir.rglob("*")
-        )
-        if not self._openclaw_upgrade_required and cache_has_files:
-            if not marker_matches:
-                version_marker.write_text(OPENCLAW_TARGET_VERSION, encoding="utf-8")
-            self.log.info("  Compile cache is current; skipping warmup")
-            return True
-
-        env = self._get_env()
-        env["NODE_COMPILE_CACHE"] = str(cache_dir)
-        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first"
-        env["NODE_ENV"] = "production"
-        env["OPENCLAW_STATE_DIR"] = str(state_dir)
-
-        try:
-            # Start gateway, let it initialize (populates compile cache), then stop it
-            proc = subprocess.Popen(
-                [
-                    str(node),
-                    str(entry),
-                    "gateway",
-                    "run",
-                    "--port",
-                    "18789",
-                    "--bind",
-                    "loopback",
-                    "--force",
-                    "--allow-unconfigured",
-                ],
-                env=env,
-                cwd=str(entry.parent),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
-            )
-            # Wait enough time for Node to parse and compile all modules
-            time.sleep(8)
-            # Kill the entire process tree (terminate alone may leave child node processes)
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            # Also kill any node processes still listening on the warmup port
-            try:
-                subprocess.run(
-                    [
-                        "cmd",
-                        "/c",
-                        "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr LISTENING ^| findstr :18789') do taskkill /PID %a /T /F >nul 2>&1",
-                    ],
-                    shell=True,
-                    timeout=10,
-                    creationflags=0x08000000,
-                )
-            except Exception:
-                pass
-
-            cached = sum(1 for _ in cache_dir.glob("**/*") if _.is_file())
-            version_marker.write_text(OPENCLAW_TARGET_VERSION, encoding="utf-8")
-            self.log.success(f"Compile cache warmed up ({cached} files in {cache_dir})")
-            return True
-        except Exception as e:
-            self.log.warn(f"Compile cache warmup failed (non-fatal): {e}")
-            return True  # non-fatal
+        """Defer Gateway warmup until the desktop can prove MXC readiness."""
+        self.log.info("  Compile-cache warmup deferred until MXC-secured desktop startup")
+        return True
 
     # ────────────────────── Managed Skills ──────────────────────
 
@@ -5222,7 +5007,7 @@ class WindowsSetup:
         self._uninstall_kill_desktop()
         self._uninstall_plugins()
         self._uninstall_clean_official()
-        self._uninstall_appcontainer()
+        # Legacy AppContainer profiles and ACLs are intentionally left untouched.
         self._uninstall_clean_desktop()
         self._uninstall_clean_config()
         self._uninstall_clean_shortcuts()

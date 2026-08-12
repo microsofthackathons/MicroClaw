@@ -4,7 +4,7 @@
 
   <!-- Gateway loading screen — blocks UI until WS is connected -->
   <GatewayLoading
-    v-else-if="!gatewayReady"
+    v-else-if="!gatewayReady && gateway.status !== 'failed'"
     :status="gateway.status"
     :connected="chatStore.wsConnected"
     :warming="gateway.warming"
@@ -139,9 +139,6 @@
       </el-button>
     </template>
   </el-dialog>
-
-  <!-- In-app permission dialog (replaces native OS dialog) -->
-  <PermissionDialog :request="currentPermission" @respond="handlePermissionResponse" />
 </template>
 
 <script setup lang="ts">
@@ -150,7 +147,6 @@ import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import SidePanel from "@/components/SidePanel.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
-import PermissionDialog from "@/components/PermissionDialog.vue";
 import { useAgentStore } from "@/stores/agents";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -223,39 +219,6 @@ const integrityDialogVisible = ref(false);
 const integrityResult = ref<IntegrityResult | null>(null);
 const integrityLoading = ref(false);
 
-// ── Permission dialog state (queue of pending requests) ──
-interface PermissionRequestData {
-  requestId: string;
-  type: "file" | "shell" | "shell-async" | "app-approval";
-  targetPath: string;
-  dirPath: string;
-  command?: string;
-  accessNeeded?: string;
-}
-const permissionQueue = ref<PermissionRequestData[]>([]);
-const currentPermission = computed(() =>
-  permissionQueue.value.length > 0 ? permissionQueue.value[0] : null,
-);
-
-function handlePermissionResponse(decision: string) {
-  const req = permissionQueue.value[0];
-  if (!req) return;
-  window.openclaw.sandbox.respondPermission(req.requestId, decision);
-  // Show immediate permission decision in exec panel
-  if (decision === "deny") {
-    chatStore.completeToolCall(req.requestId, t("perm.denied"), true);
-  } else if (decision.startsWith("grant")) {
-    // Mark as "granting..." — will be updated when ACL result arrives
-    const access = decision === "grant-ro" ? t("perm.grantingRo") : t("perm.grantingRw");
-    chatStore.completeToolCall(req.requestId, access);
-  } else if (decision === "allow-once") {
-    chatStore.completeToolCall(req.requestId, t("perm.allowedOnce"));
-  } else {
-    chatStore.completeToolCall(req.requestId);
-  }
-  permissionQueue.value.shift();
-}
-
 const modifiedChanges = computed(
   () => integrityResult.value?.changes.filter((c) => c.type === "modified") ?? [],
 );
@@ -326,10 +289,6 @@ let unsubWsDisconnected: (() => void) | null = null;
 let unsubChatEvent: (() => void) | null = null;
 let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
-let unsubPermission: (() => void) | null = null;
-let unsubAclTimeout: (() => void) | null = null;
-let unsubAclIneffective: (() => void) | null = null;
-let unsubPermCompleted: (() => void) | null = null;
 let unsubMaximizeChange: (() => void) | null = null;
 let historyPollTimer: number | null = null;
 
@@ -386,77 +345,12 @@ onMounted(async () => {
     }
   } catch {}
 
-  // Listen for sandbox permission requests
-  unsubPermission = window.openclaw.sandbox.onPermissionRequest((data: PermissionRequestData) => {
-    permissionQueue.value.push(data);
-    // Add a pending entry to the exec panel so user sees what's waiting for permission
-    if (chatStore.streaming) {
-      const path = data.targetPath || data.dirPath;
-      const access = data.accessNeeded === "ro" ? "Read" : "Write";
-      const label = `${access} permission: ${path}`;
-      chatStore.addPendingToolCall(data.requestId, label);
-    }
-  });
-
-  // Listen for ACL verification timeout after user approved permission
-  unsubAclTimeout =
-    window.openclaw.sandbox.onAclTimeout?.((data: { dir: string; access: string }) => {
-      // Mark the corresponding permission tool call as failed
-      const pending = permissionQueue.value.find(
-        (p) => p.dirPath === data.dir || p.targetPath === data.dir,
-      );
-      if (pending) {
-        chatStore.completeToolCall(
-          pending.requestId,
-          t("perm.aclTimeout", { dir: data.dir }),
-          true,
-        );
-      }
-      // Also check streamToolCalls for already-completed entries
-      for (const tc of chatStore.streamToolCalls) {
-        if (tc.name.includes(data.dir) && !tc.isError) {
-          chatStore.completeToolCall(tc.id, t("perm.aclTimeout", { dir: data.dir }), true);
-        }
-      }
-      ElMessage.warning({
-        message: t("perm.aclTimeout", { dir: data.dir }),
-        duration: 8000,
-        showClose: true,
-      });
-    }) ?? null;
-
-  // Listen for ACL-ineffective reports (ACL set but AppContainer still Access Denied)
-  unsubAclIneffective =
-    window.openclaw.sandbox.onAclIneffective?.(
-      (data: { dir: string; deniedPath: string; access: string; command?: string }) => {
-        const detail = data.command
-          ? `\n${t("perm.commandLabel")}: ${data.command.substring(0, 120)}`
-          : "";
-        ElMessage.error({
-          message: t("perm.aclIneffective", { dir: data.dir, path: data.deniedPath }) + detail,
-          duration: 12000,
-          showClose: true,
-        });
-      },
-    ) ?? null;
-
-  // Listen for ACL grant results to update exec panel with final status
-  unsubPermCompleted =
-    window.openclaw.sandbox.onPermissionCompleted?.((data) => {
-      if (data.result === "verified") {
-        const access = data.access === "rw" ? t("perm.grantedRw") : t("perm.grantedRo");
-        chatStore.completeToolCall(data.requestId, access);
-      } else if (data.result === "verify-timeout") {
-        const access = data.access === "rw" ? t("perm.grantedRw") : t("perm.grantedRo");
-        chatStore.completeToolCall(data.requestId, `${access} (${t("perm.verifyPending")})`);
-      } else if (data.result === "failed") {
-        chatStore.completeToolCall(data.requestId, t("perm.aclFailed"), true);
-      }
-    }) ?? null;
-
   // Gateway process status
   unsubStatus = window.openclaw.gateway.onStatus((status) => {
     gateway.status = status;
+    if (status === "failed" && (route.name !== "settings" || route.params.section !== "security")) {
+      void router.replace({ name: "settings", params: { section: "security" } });
+    }
     if (status === "running") {
       window.openclaw.gateway.getPort().then((p) => (gateway.port = p));
     }
@@ -502,15 +396,13 @@ onMounted(async () => {
     chatStore.handleToolEvent(payload);
   });
 
-  // Actual shell command notifications from sandbox-preload
-  if (window.openclaw.chat.onExecCommand) {
-    window.openclaw.chat.onExecCommand((data) => {
-      chatStore.updateLatestExecCommand(data.command);
-    });
-  }
-
   // Get initial status
-  window.openclaw.gateway.getStatus().then((s) => (gateway.status = s));
+  window.openclaw.gateway.getStatus().then((s) => {
+    gateway.status = s;
+    if (s === "failed" && (route.name !== "settings" || route.params.section !== "security")) {
+      void router.replace({ name: "settings", params: { section: "security" } });
+    }
+  });
   window.openclaw.gateway.getPort().then((p) => (gateway.port = p));
   window.openclaw.chat.isConnected().then((c) => {
     if (c && !chatStore.wsConnected) {
@@ -552,10 +444,6 @@ onUnmounted(() => {
   unsubChatEvent?.();
   unsubToolEvent?.();
   unsubIntegrityAlert?.();
-  unsubPermission?.();
-  unsubAclTimeout?.();
-  unsubAclIneffective?.();
-  unsubPermCompleted?.();
   unsubMaximizeChange?.();
   if (historyPollTimer) window.clearInterval(historyPollTimer);
 });
