@@ -128,6 +128,16 @@ describe("agent catalog skills binding", () => {
     });
   });
 
+  it("replaces Growth Hacker with the dedicated Intel Analyst persona", () => {
+    expect(AGENT_CATALOG.some((agent) => agent.id === "growth-hacker")).toBe(false);
+    expect(AGENT_CATALOG.find((agent) => agent.id === "intel-analyst")).toMatchObject({
+      name: "Intel Analyst",
+      image: "Scientist.png",
+      workspaceDirName: "workspace-intel-analyst",
+      personaProfile: "intel-analyst",
+    });
+  });
+
   it("recognizes known skill ids and rejects unknown ones", () => {
     expect(isKnownSkillId("canvas")).toBe(true);
     expect(isKnownSkillId("not-a-skill")).toBe(false);

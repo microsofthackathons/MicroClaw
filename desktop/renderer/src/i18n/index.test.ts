@@ -58,6 +58,14 @@ describe("i18n", () => {
     setLocale("en-US"); // restore
   });
 
+  it("Intel Analyst catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.intelAnalyst.name")).toBe("Intel Analyst");
+    setLocale("zh-CN");
+    expect(t("agent.intelAnalyst.name")).toBe("前哨智囊");
+    setLocale("en-US"); // restore
+  });
+
   it("localizes Agent Team and Agent Catalog navigation in zh-CN", () => {
     setLocale("zh-CN");
     expect(t("sidebar.agents")).toBe("智能体团队");

@@ -8,7 +8,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     { id: "main", name: "Assistant" },
     { id: "master-archive", name: "Master Archive" },
     { id: "painter", name: "Van Gogh" },
-    { id: "growth-hacker", name: "Growth Hacker" },
+    { id: "intel-analyst", name: "Intel Analyst" },
   ];
   const browserAgentsSnapshot = () => ({
     agents: browserAgentRoster.map((agent) => ({ ...agent })),

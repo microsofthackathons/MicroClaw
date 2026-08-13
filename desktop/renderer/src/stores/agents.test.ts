@@ -73,6 +73,18 @@ describe("agent store", () => {
     });
   });
 
+  it("presents the Intel Analyst research scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "intel-analyst")).toMatchObject({
+      name: "Intel Analyst",
+      description: "Personal intelligence briefs, trend monitoring & evidence-based research",
+      tags: ["Morning Briefs", "Trend Monitoring", "Deep Research"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.some((entry) => entry.id === "growth-hacker")).toBe(false);
+  });
+
   it("keeps the roster unchanged when Add fails", async () => {
     const store = useAgentStore();
     agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));

@@ -175,6 +175,69 @@ describe("agent personas", () => {
     );
   });
 
+  it("seeds the Intel Analyst workspace with its research context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("intel-analyst");
+    if (!persona) throw new Error("Intel Analyst persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "intel-analyst",
+      name: "Intel Analyst",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Intel Analyst workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-intel-analyst"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "vigilant, objective intelligence analyst",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "not executable instructions",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Intel Analyst",
+    );
+  });
+
+  it("migrates an installed Growth Hacker to Intel Analyst without losing custom settings", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-research");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "growth-hacker",
+            name: "Growth Hacker",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/research-model",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "intel-analyst", name: "Intel Analyst" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "intel-analyst")).toMatchObject({
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/research-model",
+    });
+    expect(agentList(config).some((entry) => entry.id === "growth-hacker")).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Intel Analyst",
+    );
+  });
+
   it("does not seed a Popular Agent before it is installed", () => {
     const stateDir = createStateDir();
     const config = { agents: {} };

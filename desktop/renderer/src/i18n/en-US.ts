@@ -806,18 +806,21 @@ export default {
   "agent.master.task.3.title": "Create a study plan",
   "agent.master.task.3.desc": "Break down an efficient daily study schedule by goals and time.",
 
-  "agent.growthHacker.name": "Growth Hacker",
-  "agent.growthHacker.desc": "Social media content operations & data analytics",
-  "agent.growthHacker.tag.1": "Content Planning",
-  "agent.growthHacker.tag.2": "Data Analytics",
-  "agent.growthHacker.tag.3": "Viral Copy",
-  "agent.growthHacker.task.1.title": "Generate viral headlines",
-  "agent.growthHacker.task.1.desc": "Batch-generate high-click-rate promotional headlines.",
-  "agent.growthHacker.task.2.title": "Write a summer outfit post",
-  "agent.growthHacker.task.2.desc": "Craft a social-media-style outfit post with emojis.",
-  "agent.growthHacker.task.3.title": "Follower growth report",
-  "agent.growthHacker.task.3.desc":
-    "Analyze recent data trends and provide growth optimization advice.",
+  "agent.intelAnalyst.name": "Intel Analyst",
+  "agent.intelAnalyst.desc":
+    "Personal intelligence briefs, trend monitoring & evidence-based research",
+  "agent.intelAnalyst.tag.1": "Morning Briefs",
+  "agent.intelAnalyst.tag.2": "Trend Monitoring",
+  "agent.intelAnalyst.tag.3": "Deep Research",
+  "agent.intelAnalyst.task.1.title": "Prepare my morning brief",
+  "agent.intelAnalyst.task.1.desc":
+    "Summarize today's schedule, urgent updates, weather, and requested news.",
+  "agent.intelAnalyst.task.2.title": "Track today's AI agent trends",
+  "agent.intelAnalyst.task.2.desc":
+    "Review recent Chinese tech coverage and explain the most important developments.",
+  "agent.intelAnalyst.task.3.title": "Research and compare products",
+  "agent.intelAnalyst.task.3.desc":
+    "Compare leading options using sourced evidence, consistent criteria, and clear tradeoffs.",
 
   "agent.leopard.name": "Money Leopard",
   "agent.leopard.desc": "Stock market analysis & portfolio tracking",
