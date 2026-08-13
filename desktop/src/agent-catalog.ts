@@ -41,7 +41,7 @@ export interface AgentCatalogEntry {
   installedByDefault: boolean;
   skills: readonly string[];
   workspaceDirName?: string;
-  personaProfile?: "master-archive" | "code-geek";
+  personaProfile?: "master-archive" | "code-geek" | "intel-analyst";
 }
 
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
@@ -143,29 +143,31 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     skills: [...ALL_SKILL_IDS],
   },
   {
-    id: "growth-hacker",
-    name: "Growth Hacker",
-    nameKey: "agent.growthHacker.name",
-    descKey: "agent.growthHacker.desc",
-    avatar: "growth-hacker-avatar.png",
+    id: "intel-analyst",
+    name: "Intel Analyst",
+    nameKey: "agent.intelAnalyst.name",
+    descKey: "agent.intelAnalyst.desc",
+    avatar: "intel-analyst-avatar.png",
     image: "Scientist.png",
-    tagKeys: ["agent.growthHacker.tag.1", "agent.growthHacker.tag.2", "agent.growthHacker.tag.3"],
+    tagKeys: ["agent.intelAnalyst.tag.1", "agent.intelAnalyst.tag.2", "agent.intelAnalyst.tag.3"],
     taskKeys: [
       {
-        titleKey: "agent.growthHacker.task.1.title",
-        descKey: "agent.growthHacker.task.1.desc",
+        titleKey: "agent.intelAnalyst.task.1.title",
+        descKey: "agent.intelAnalyst.task.1.desc",
       },
       {
-        titleKey: "agent.growthHacker.task.2.title",
-        descKey: "agent.growthHacker.task.2.desc",
+        titleKey: "agent.intelAnalyst.task.2.title",
+        descKey: "agent.intelAnalyst.task.2.desc",
       },
       {
-        titleKey: "agent.growthHacker.task.3.title",
-        descKey: "agent.growthHacker.task.3.desc",
+        titleKey: "agent.intelAnalyst.task.3.title",
+        descKey: "agent.intelAnalyst.task.3.desc",
       },
     ],
     installedByDefault: false,
     skills: [...ALL_SKILL_IDS],
+    workspaceDirName: "workspace-intel-analyst",
+    personaProfile: "intel-analyst",
   },
   {
     id: "leopard",
