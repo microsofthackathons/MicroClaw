@@ -18,6 +18,7 @@ from deployer.windows_setup import (
     MIRROR_NPMMIRROR,
     MIRROR_OFFICIAL,
     MIRRORS,
+    NPM_REGISTRY_MICROSOFT,
     ActiveGateway,
     ActiveInstallation,
     NodeInstallBlocked,
@@ -844,6 +845,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(
             all(registry.startswith("https://") for registry in self.ws._npm_registry_candidates())
         )
+        self.assertIn(NPM_REGISTRY_MICROSOFT, self.ws._npm_registry_candidates())
 
     def test_node_download_bases_start_with_selected_and_are_deduped(self):
         self.ws._mirror_name = MIRROR_NPMMIRROR
@@ -1705,6 +1707,9 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             return_value=(["openclaw.cmd"], {"OPENCLAW_STATE_DIR": str(config_path.parent)})
         )
         self.ws._run_openclaw_json = unittest.mock.Mock(side_effect=RuntimeError("not installed"))
+        self.ws._reachable_npm_registries = unittest.mock.Mock(
+            return_value=[NPM_REGISTRY_MICROSOFT]
+        )
         self.ws._run = unittest.mock.Mock(
             return_value=SimpleNamespace(returncode=0, stdout="installed", stderr="")
         )
@@ -1715,6 +1720,52 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(
             self.ws._run.call_args.args[0],
             ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin"],
+        )
+        self.assertEqual(
+            self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
+            NPM_REGISTRY_MICROSOFT,
+        )
+
+    def test_install_search_provider_plugin_retries_registry_tls_failure(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "parallel-free"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock(
+            return_value=(["openclaw.cmd"], {"OPENCLAW_STATE_DIR": str(config_path.parent)})
+        )
+        self.ws._run_openclaw_json = unittest.mock.Mock(side_effect=RuntimeError("not installed"))
+        self.ws._reachable_npm_registries = unittest.mock.Mock(
+            return_value=[
+                MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+                NPM_REGISTRY_MICROSOFT,
+            ]
+        )
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
+                ),
+                SimpleNamespace(returncode=0, stdout="installed", stderr=""),
+            ]
+        )
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.assertEqual(self.ws._run.call_count, 2)
+        attempted_registries = [
+            call.kwargs["env"]["npm_config_registry"] for call in self.ws._run.call_args_list
+        ]
+        self.assertEqual(
+            attempted_registries,
+            [
+                MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+                NPM_REGISTRY_MICROSOFT,
+            ],
         )
 
     def test_install_search_provider_plugin_uses_verified_local_fast_path(self):

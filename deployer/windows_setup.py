@@ -66,6 +66,7 @@ MIRROR_TENCENT = "tencent"
 MIRROR_HUAWEI = "huawei"
 MIRROR_FALLBACK = MIRROR_NPMMIRROR
 NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
+NPM_REGISTRY_MICROSOFT = "https://packagefeedproxy.microsoft.io/npm/"
 _PARALLEL_PLUGIN_ID = "parallel"
 _PARALLEL_PLUGIN_PACKAGE = "@openclaw/parallel-plugin"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
@@ -2102,6 +2103,7 @@ class WindowsSetup:
         candidates = [
             configured,
             MIRRORS[MIRROR_OFFICIAL]["npm_registry"],
+            NPM_REGISTRY_MICROSOFT,
             MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
             NPM_REGISTRY_HUAWEI,
         ]
@@ -2211,12 +2213,6 @@ class WindowsSetup:
         )
 
     def _install_openclaw_with_registry_fallback(self, install_prefix: Path) -> bool:
-        retryable_registry_error = re.compile(
-            r"ERR_SSL|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|"
-            r"\bE(?:401|403|404|408|429|5\d{2})\b|"
-            r"\b(?:401|403|404|408|429|5\d{2})\b",
-            re.IGNORECASE,
-        )
         channel = self.cfg.get("openclaw.channel", "stable")
         expected_version = OPENCLAW_TARGET_VERSION if channel == "stable" else None
         candidates = self._npm_registry_candidates()
@@ -2246,7 +2242,7 @@ class WindowsSetup:
                         "OpenClaw package and entry were verified"
                     )
                 return True
-            if not retryable_registry_error.search(attempt.output):
+            if not self._is_retryable_npm_registry_error(attempt.output):
                 self.log.error(
                     f"npm install failed (exit {attempt.returncode}) via {registry}:\n"
                     f"{attempt.output[-1500:]}"
@@ -2255,6 +2251,18 @@ class WindowsSetup:
             self.log.warn(f"npm registry failure via {registry}; trying next registry")
         self.log.error("OpenClaw install failed through every configured npm registry")
         return False
+
+    @staticmethod
+    def _is_retryable_npm_registry_error(detail: str) -> bool:
+        return bool(
+            re.search(
+                r"ERR_SSL|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|"
+                r"\bE(?:401|403|404|408|429|5\d{2})\b|"
+                r"\b(?:401|403|404|408|429|5\d{2})\b",
+                detail,
+                re.IGNORECASE,
+            )
+        )
 
     def _load_openclaw_state_env(self, state_dir: Path) -> dict[str, str]:
         values: dict[str, str] = {}
@@ -3815,25 +3823,55 @@ class WindowsSetup:
             pass
 
         self.log.step("Installing Parallel web search plugin…")
-        try:
-            result = self._run(
-                openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_PACKAGE],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=300,
-                env=env,
+        candidates = self._npm_registry_candidates()
+        registries = self._reachable_npm_registries(candidates)
+        if not registries:
+            self.log.error(
+                "Parallel web search plugin install failed: no npm registry is reachable. "
+                "Tried: " + ", ".join(candidates)
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            self.log.error(f"Parallel web search plugin install failed: {error}")
             return False
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            self.log.error(f"Parallel web search plugin install failed: {detail}")
-            return False
-        self.log.success("Parallel-free web search is ready")
-        return True
+
+        last_detail = ""
+        for registry in registries:
+            attempt_env = env.copy()
+            for key in list(attempt_env):
+                if key.lower() == "npm_config_registry":
+                    del attempt_env[key]
+            attempt_env["npm_config_registry"] = registry
+            self.log.info(f"  Parallel plugin npm registry attempt: {registry}")
+            try:
+                result = self._run(
+                    openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_PACKAGE],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    env=attempt_env,
+                )
+            except subprocess.TimeoutExpired:
+                last_detail = f"timed out via {registry}"
+                self.log.warn(f"Parallel plugin install {last_detail}; trying next registry")
+                continue
+            except OSError as error:
+                self.log.error(f"Parallel web search plugin install failed: {error}")
+                return False
+            if result.returncode == 0:
+                self.log.success("Parallel-free web search is ready")
+                return True
+
+            last_detail = result.stderr.strip() or result.stdout.strip()
+            if not self._is_retryable_npm_registry_error(last_detail):
+                self.log.error(f"Parallel web search plugin install failed: {last_detail}")
+                return False
+            self.log.warn(f"Parallel plugin registry failure via {registry}; trying next registry")
+
+        self.log.error(
+            "Parallel web search plugin install failed through every npm registry"
+            + (f": {last_detail}" if last_detail else "")
+        )
+        return False
 
     def install_weixin_plugin(self) -> bool:
         """Reconcile the bundled openclaw-weixin plugin through OpenClaw."""
