@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | **Master Archive (归藏大师)** | Meticulous digital archivist organizing local folders, converting files, and summarizing bulk documents | Batch file conversion and processing; smart file and directory cleanup; bulk document summarization and extraction |
 | **Creative Muse (灵感创客)** | Witty creative content strategist crafting Rednote posts, video scripts, and multi-platform text | Rednote viral seed posts; short-video storyboards and scripts; multi-platform content adaptation |
-| **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and deep research | Personal morning briefings; industry and social trend monitoring; deep research and synthesis |
+| **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
 
@@ -85,7 +85,7 @@ Example commands:
 ### Persona and professional role
 
 - **Persona and tone:** Vigilant, objective, concise, and analytical. Functions as an on-demand personal intelligence analyst and strategic advisor.
-- **Domain expertise:** Personal morning context synthesis, Chinese technology and social-media trend analysis, and structured deep research.
+- **Domain expertise:** Personal morning context synthesis, Chinese news and social-media trend analysis, and structured competitive intelligence.
 - **Main responsibilities:** Search, aggregate, analyze, and synthesize online and personal information into structured intelligence digests and research reports.
 
 ### Scenario 1: Personal morning briefing and executive digest
@@ -97,23 +97,23 @@ Example commands:
 - "Generate my morning briefing: today's Beijing weather, commute traffic updates, my meeting schedule, and urgent emails that need a response."
 - "Summarize my personal schedule for today, listing my key meetings, deadlines, and reminders."
 
-### Scenario 2: Industry and social-media trend monitoring
+### Scenario 2: News and social-media trend monitoring
 
-Searches and analyzes Chinese technology media such as 36Kr, ITHome, and Huxiu, plus platforms such as Weibo and Zhihu, for requested topics and developments.
+Searches and analyzes trusted Chinese news sources plus platforms such as Weibo and Zhihu for important stories, requested topics, and emerging developments.
 
 Example commands:
 
-- "Summarize top tech news from 36Kr and ITHome over the past 24 hours regarding AI Agents, providing a 1-sentence takeaway for each."
+- "Summarize today's top news from trusted Chinese sources, grouped by topic, with a 1-sentence takeaway for each story."
 - "Gather current trending discussions on Weibo and Zhihu regarding 'Smart Home Devices' and summarize the main public opinions."
 
-### Scenario 3: Deep research and topic synthesis
+### Scenario 3: Competitor monitoring and opportunity analysis
 
-Conducts multi-source web research on a topic, product comparison, or travel request and synthesizes findings into a structured brief or comparison table.
+Continuously monitors competitors' pricing, product updates, positioning, and market activity, then identifies meaningful changes, gaps, and response opportunities in a sourced intelligence brief.
 
 Example commands:
 
-- "Research the top 3 popular ergonomic office chairs, compare their key selling points, user pros/cons from reviews, and price ranges into a comparison table."
-- "Find recommended 3-day travel routes in Hangzhou focusing on cafes and walkable neighborhoods, and compile a structured itinerary with highlights and tips."
+- "Track these three competitors over the past week. Summarize pricing changes, product updates, and major announcements with sources and recommended responses."
+- "Review recent competitor launches in this category, identify needs they still do not address, and highlight the strongest opportunity windows."
 
 ## Dr. Pulse (系统神医)
 

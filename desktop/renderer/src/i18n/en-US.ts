@@ -815,12 +815,12 @@ export default {
   "agent.intelAnalyst.task.1.title": "Prepare my morning brief",
   "agent.intelAnalyst.task.1.desc":
     "Summarize today's schedule, urgent updates, weather, and requested news.",
-  "agent.intelAnalyst.task.2.title": "Track today's AI agent trends",
+  "agent.intelAnalyst.task.2.title": "Track today's top stories",
   "agent.intelAnalyst.task.2.desc":
-    "Review recent Chinese tech coverage and explain the most important developments.",
-  "agent.intelAnalyst.task.3.title": "Research and compare products",
+    "Review recent coverage from trusted news sources and explain the most important developments.",
+  "agent.intelAnalyst.task.3.title": "Track key competitor moves",
   "agent.intelAnalyst.task.3.desc":
-    "Compare leading options using sourced evidence, consistent criteria, and clear tradeoffs.",
+    "Monitor pricing, product updates, and market activity to surface changes and recommended responses.",
 
   "agent.leopard.name": "Money Leopard",
   "agent.leopard.desc": "Stock market analysis & portfolio tracking",
