@@ -170,16 +170,6 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.on("agent:tool-event", handler);
       return () => ipcRenderer.removeListener("agent:tool-event", handler);
     },
-
-    /**
-     * Subscribe to actual shell command notifications from sandbox-preload.
-     * Fired when the sandbox executes a shell command, providing the real command payload.
-     */
-    onExecCommand: (callback: (data: { shell: string; command: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:exec-command", handler);
-      return () => ipcRenderer.removeListener("sandbox:exec-command", handler);
-    },
   },
 
   // --- Cron / Scheduled Tasks ---
@@ -305,96 +295,26 @@ contextBridge.exposeInMainWorld("openclaw", {
       }>,
   },
 
-  // --- Tool Sandbox ---
-  sandbox: {
-    getStatus: () => ipcRenderer.invoke("sandbox:get-status"),
-    setEnabled: (enabled: boolean) => ipcRenderer.invoke("sandbox:set-enabled", enabled),
-    execShell: (params: { command: string; cwd?: string; timeout?: number }) =>
-      ipcRenderer.invoke("sandbox:exec-shell", params),
-    execNode: (params: { code: string; cwd?: string; timeout?: number }) =>
-      ipcRenderer.invoke("sandbox:exec-node", params),
-    provision: () => ipcRenderer.invoke("sandbox:provision"),
-    getExternalApps: () => ipcRenderer.invoke("sandbox:get-external-apps") as Promise<string[]>,
-    setExternalApps: (apps: string[]) => ipcRenderer.invoke("sandbox:set-external-apps", apps),
-    applyExternalApps: () =>
-      ipcRenderer.invoke("sandbox:apply-external-apps") as Promise<{
-        ok: boolean;
-        restarted: boolean;
-      }>,
-    getCapabilities: () => ipcRenderer.invoke("sandbox:get-capabilities") as Promise<string[]>,
-    setCapabilities: (caps: string[]) =>
-      ipcRenderer.invoke("sandbox:set-capabilities", caps) as Promise<{
-        ok: boolean;
-        caps: string[];
-        needsRestart: boolean;
-      }>,
-    getUserDirs: () =>
-      ipcRenderer.invoke("sandbox:get-user-dirs") as Promise<{ rw: string[]; ro: string[] }>,
-    addUserDir: (params: { access: "rw" | "ro" }) =>
-      ipcRenderer.invoke("sandbox:add-user-dir", params) as Promise<{
-        ok: boolean;
-        reason?: string;
-        parentDir?: string;
-        parentAccess?: string;
-        removedChildren?: string[];
-        dirs: { rw: string[]; ro: string[] };
-      }>,
-    removeUserDir: (params: { dir: string; access: "rw" | "ro" }) =>
-      ipcRenderer.invoke("sandbox:remove-user-dir", params) as Promise<{
-        ok: boolean;
-        dirs: { rw: string[]; ro: string[] };
-      }>,
-    onPermissionRequest: (
-      callback: (data: {
-        requestId: string;
-        type: "file" | "shell" | "shell-async" | "app-approval";
-        targetPath: string;
-        dirPath: string;
-        command?: string;
-        callerStack?: string;
-        accessNeeded?: string;
-      }) => void,
-    ) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:permission-request", handler);
-      return () => ipcRenderer.removeListener("sandbox:permission-request", handler);
+  dockerSandbox: {
+    check: () => ipcRenderer.invoke("docker-sandbox:check"),
+    getStatus: () => ipcRenderer.invoke("docker-sandbox:get-status"),
+    buildImage: () => ipcRenderer.invoke("docker-sandbox:build-image"),
+    getBindings: () => ipcRenderer.invoke("docker-sandbox:get-bindings"),
+    addBinding: (params: { agentId: string; access: "ro" | "rw" }) =>
+      ipcRenderer.invoke("docker-sandbox:add-binding", params),
+    removeBinding: (params: { agentId: string; source: string }) =>
+      ipcRenderer.invoke("docker-sandbox:remove-binding", params),
+    retryBindings: (agentId: string) =>
+      ipcRenderer.invoke("docker-sandbox:retry-bindings", agentId),
+    onStatus: (callback: (status: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: unknown) => callback(status);
+      ipcRenderer.on("docker-sandbox:status", handler);
+      return () => ipcRenderer.removeListener("docker-sandbox:status", handler);
     },
-    respondPermission: (requestId: string, decision: string) =>
-      ipcRenderer.invoke("sandbox:permission-respond", requestId, decision),
-    onAclTimeout: (callback: (data: { dir: string; access: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:acl-timeout", handler);
-      return () => ipcRenderer.removeListener("sandbox:acl-timeout", handler);
+    onBuildProgress: (callback: (line: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, line: string) => callback(line);
+      ipcRenderer.on("docker-sandbox:build-progress", handler);
+      return () => ipcRenderer.removeListener("docker-sandbox:build-progress", handler);
     },
-    onAclIneffective: (
-      callback: (data: { dir: string; deniedPath: string; access: string }) => void,
-    ) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:acl-ineffective", handler);
-      return () => ipcRenderer.removeListener("sandbox:acl-ineffective", handler);
-    },
-    onPermissionCompleted: (
-      callback: (data: {
-        requestId: string;
-        result: "verified" | "verify-timeout" | "failed";
-        dir: string;
-        access: string;
-      }) => void,
-    ) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:permission-completed", handler);
-      return () => ipcRenderer.removeListener("sandbox:permission-completed", handler);
-    },
-    verifyAcls: () =>
-      ipcRenderer.invoke("sandbox:verify-acl") as Promise<{
-        missing: Array<{ dir: string; access: string; reason: string }>;
-        stale: Array<{ dir: string; rights: string }>;
-        ok: Array<{ dir: string; access: string }>;
-        errors: Array<{ dir: string; error: string }>;
-      }>,
-    repairAcl: (params: { dir: string; access: "rw" | "ro" }) =>
-      ipcRenderer.invoke("sandbox:repair-acl", params) as Promise<{ ok: boolean }>,
-    revokeStaleAcl: (dir: string) =>
-      ipcRenderer.invoke("sandbox:revoke-stale-acl", dir) as Promise<{ ok: boolean }>,
   },
 });

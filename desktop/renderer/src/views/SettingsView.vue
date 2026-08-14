@@ -364,180 +364,161 @@
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
-        <div class="section-label">{{ t("settings.security") }}</div>
+        <div class="section-label">{{ t("settings.dockerSandboxTitle") }}</div>
         <div class="card-group">
-          <div class="card-row">
-            <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
-            <div style="display: flex; align-items: center; gap: 10px">
-              <span v-if="sandboxRestarting" class="restart-hint">{{
-                t("settings.sandboxCapsRestarting")
-              }}</span>
-              <el-switch
-                v-model="sandboxStatus.enabled"
-                :disabled="sandboxRestarting"
-                @change="toggleSandbox"
-              />
+          <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+            <p>{{ t("settings.dockerSandboxRequired") }}</p>
+            <p>{{ t("settings.dockerSandboxIsolation") }}</p>
+            <p>{{ t("settings.dockerInstallNotice") }}</p>
+            <div v-for="item in dockerChecks" :key="item.key" class="docker-check-row">
+              <span class="row-label">{{ item.label }}</span>
+              <el-tag :type="item.state.status === 'ready' ? 'success' : 'danger'">
+                {{ dockerReasonLabel(item.state.reason) }}
+              </el-tag>
+            </div>
+            <div class="docker-actions">
+              <el-button :loading="dockerChecking" @click="refreshDockerSandbox">
+                {{ t("settings.dockerRecheck") }}
+              </el-button>
+              <el-button
+                v-if="dockerReadiness?.image.reason === 'sandbox-image-missing'"
+                type="primary"
+                :loading="dockerBuilding"
+                @click="buildDockerImage"
+              >
+                {{ t("settings.dockerBuildImage") }}
+              </el-button>
+              <el-button @click="openDockerGuide('wsl')">{{
+                t("settings.dockerWslDocs")
+              }}</el-button>
+              <el-button @click="openDockerGuide('docker')">{{
+                t("settings.dockerDesktopDocs")
+              }}</el-button>
+            </div>
+            <pre v-if="dockerBuildLog" class="docker-build-log">{{ dockerBuildLog }}</pre>
+          </div>
+        </div>
+        <div class="section-footer">{{ t("settings.dockerSandboxPosture") }}</div>
+        <div class="section-footer">{{ t("settings.dockerSandboxMigration") }}</div>
+        <div class="section-label">{{ t("settings.dockerBindingsTitle") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+            <div class="docker-binding-toolbar">
+              <el-select v-model="selectedDockerAgentId" style="min-width: 220px">
+                <el-option
+                  v-for="agent in dockerBindingState?.agents ?? []"
+                  :key="agent.id"
+                  :label="`${agent.name} (${agent.id})`"
+                  :value="agent.id"
+                />
+              </el-select>
+              <el-tag :type="dockerBindingStatusType">
+                {{ dockerBindingStatusLabel }}
+              </el-tag>
+              <el-button
+                v-if="selectedDockerBindingStatus?.effective === 'error'"
+                :loading="dockerBindingsApplying"
+                @click="retryDockerBindings"
+              >
+                {{ t("settings.dockerBindingsRetry") }}
+              </el-button>
+            </div>
+            <p>{{ t("settings.dockerBindingsWarning") }}</p>
+            <p>{{ t("settings.dockerBindingsLifecycle") }}</p>
+            <div v-for="access in dockerBindingAccesses" :key="access" class="docker-binding-group">
+              <div class="docker-binding-heading">
+                <strong>{{
+                  access === "ro"
+                    ? t("settings.dockerBindingsReadOnly")
+                    : t("settings.dockerBindingsReadWrite")
+                }}</strong>
+                <el-button
+                  size="small"
+                  :disabled="!selectedDockerAgent || dockerBindingsApplying"
+                  @click="addDockerBinding(access)"
+                >
+                  {{ t("settings.dockerBindingsAdd") }}
+                </el-button>
+              </div>
+              <div
+                v-for="binding in selectedDockerAgent?.bindings.filter(
+                  (item) => item.access === access,
+                ) ?? []"
+                :key="binding.source"
+                class="docker-binding-row"
+              >
+                <div class="docker-binding-paths">
+                  <span>{{ binding.source }}</span>
+                  <code>{{ binding.target }}</code>
+                </div>
+                <el-tag :type="binding.access === 'ro' ? 'info' : 'warning'">
+                  {{ binding.access.toUpperCase() }}
+                </el-tag>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :disabled="dockerBindingsApplying"
+                  @click="removeDockerBinding(binding)"
+                >
+                  {{ t("settings.dockerBindingsRemove") }}
+                </el-button>
+              </div>
+              <span
+                v-if="!selectedDockerAgent?.bindings.some((item) => item.access === access)"
+                class="placeholder-text"
+              >
+                {{ t("settings.dockerBindingsEmpty") }}
+              </span>
+            </div>
+            <div v-if="selectedDockerBindingStatus?.error" class="docker-binding-error">
+              {{ selectedDockerBindingStatus.error }}
             </div>
           </div>
         </div>
+      </div>
 
-        <div :class="{ 'sandbox-disabled': !sandboxStatus.enabled }">
-          <!-- Sandbox capabilities (network) -->
-          <div class="card-group" style="margin-top: 12px">
+      <template v-if="false">
+        <div v-if="activeSection === 'security'" class="section">
+          <div class="section-label">{{ t("settings.security") }}</div>
+          <div class="card-group">
             <div class="card-row">
-              <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
+              <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
               <div style="display: flex; align-items: center; gap: 10px">
-                <span v-if="capsRestarting" class="restart-hint">{{
+                <span v-if="sandboxRestarting" class="restart-hint">{{
                   t("settings.sandboxCapsRestarting")
                 }}</span>
                 <el-switch
-                  :model-value="sandboxCapabilities.includes('internetClient')"
-                  :disabled="capsRestarting"
-                  @change="(v: boolean) => toggleCapability('internetClient', v)"
+                  v-model="sandboxStatus.enabled"
+                  :disabled="sandboxRestarting"
+                  @change="toggleSandbox"
                 />
               </div>
             </div>
           </div>
-          <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
 
-          <!-- External apps whitelist -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
-              </div>
-              <div class="external-apps-list">
-                <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
-                  <span>{{ app }}</span>
-                  <button class="tag-remove" @click="removeExternalApp(idx)">&times;</button>
-                </div>
-                <div class="app-tag app-tag-add">
-                  <input
-                    v-model="newAppName"
-                    class="app-add-input"
-                    :placeholder="t('settings.addApp')"
-                    @keyup.enter="addExternalApp"
+          <div :class="{ 'sandbox-disabled': !sandboxStatus.enabled }">
+            <!-- Sandbox capabilities (network) -->
+            <div class="card-group" style="margin-top: 12px">
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
+                <div style="display: flex; align-items: center; gap: 10px">
+                  <span v-if="capsRestarting" class="restart-hint">{{
+                    t("settings.sandboxCapsRestarting")
+                  }}</span>
+                  <el-switch
+                    :model-value="sandboxCapabilities.includes('internetClient')"
+                    :disabled="capsRestarting"
+                    @change="(v: boolean) => toggleCapability('internetClient', v)"
                   />
-                  <button class="tag-add-btn" @click="addExternalApp">+</button>
                 </div>
               </div>
             </div>
-          </div>
-          <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
+            <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
 
-          <!-- Sandbox directory permissions -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span
-                  class="row-label"
-                  style="margin: 0; cursor: default; user-select: none"
-                  @click="onSandboxDirsLabelClick"
-                  >{{ t("settings.sandboxDirs") }}</span
-                >
-              </div>
-              <!-- Read-Write directories -->
-              <div class="dir-section">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <el-button size="small" type="primary" plain @click="addSandboxDir('rw')">
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.rw"
-                  :key="'srw-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.rw" :key="'rw-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'rw')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.rw.length === 0 && sandboxUserDirs.rw.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- Read-Only directories -->
-              <div class="dir-section" style="margin-top: 10px">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <el-button size="small" type="primary" plain @click="addSandboxDir('ro')">
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.ro"
-                  :key="'sro-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.ro" :key="'ro-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'ro')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.ro.length === 0 && sandboxUserDirs.ro.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- ACL Verify Button (dev/testing tool, triple-click to show) -->
-              <div
-                v-if="showAclVerify"
-                class="dir-section"
-                style="
-                  margin-top: 14px;
-                  border-top: 1px solid var(--border-color);
-                  padding-top: 12px;
-                "
-              >
+            <!-- External apps whitelist -->
+            <div class="card-group" style="margin-top: 12px">
+              <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
                 <div
                   style="
                     display: flex;
@@ -546,106 +527,242 @@
                     margin-bottom: 8px;
                   "
                 >
-                  <span class="dir-section-label">🔍 ACL 验证</span>
-                  <button class="dir-add-btn" :disabled="aclVerifying" @click="verifyAcls">
-                    {{ aclVerifying ? "扫描中..." : "验证权限一致性" }}
-                  </button>
+                  <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
                 </div>
-                <div v-if="aclVerifyResult" class="acl-verify-results">
-                  <!-- OK -->
-                  <div v-if="aclVerifyResult.ok.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-ok">
-                      ✓ 正常 ({{ aclVerifyResult.ok.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.ok"
-                      :key="'ok-' + item.dir"
-                      class="dir-item dir-item-system"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span
-                        class="dir-badge"
-                        :class="item.access === 'rw' ? 'dir-badge-rw' : 'dir-badge-ro'"
-                        >{{ item.access.toUpperCase() }}</span
-                      >
-                    </div>
+                <div class="external-apps-list">
+                  <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
+                    <span>{{ app }}</span>
+                    <button class="tag-remove" @click="removeExternalApp(idx)">&times;</button>
                   </div>
-                  <!-- Missing -->
-                  <div v-if="aclVerifyResult.missing.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      ⚠ 缺少 ACL ({{ aclVerifyResult.missing.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.missing"
-                      :key="'miss-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-ro">{{ item.access.toUpperCase() }}</span>
-                      <span class="acl-reason">{{ item.reason }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="repairAcl(item)"
-                      >
-                        修复
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Stale -->
-                  <div v-if="aclVerifyResult.stale.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      🗑 残留 ACL ({{ aclVerifyResult.stale.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.stale"
-                      :key="'stale-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="revokeStaleAcl(item)"
-                      >
-                        清除
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Errors -->
-                  <div v-if="aclVerifyResult.errors.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-err">
-                      ✗ 错误 ({{ aclVerifyResult.errors.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.errors"
-                      :key="'err-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="acl-reason">{{ item.error }}</span>
-                    </div>
-                  </div>
-                  <!-- Summary -->
-                  <div
-                    v-if="
-                      aclVerifyResult.missing.length === 0 &&
-                      aclVerifyResult.stale.length === 0 &&
-                      aclVerifyResult.errors.length === 0
-                    "
-                    class="acl-summary-ok"
-                  >
-                    ✓ 所有权限均已正确设置
+                  <div class="app-tag app-tag-add">
+                    <input
+                      v-model="newAppName"
+                      class="app-add-input"
+                      :placeholder="t('settings.addApp')"
+                      @keyup.enter="addExternalApp"
+                    />
+                    <button class="tag-add-btn" @click="addExternalApp">+</button>
                   </div>
                 </div>
               </div>
             </div>
+            <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
+
+            <!-- Sandbox directory permissions -->
+            <div class="card-group" style="margin-top: 12px">
+              <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+                <div
+                  style="
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    margin-bottom: 8px;
+                  "
+                >
+                  <span
+                    class="row-label"
+                    style="margin: 0; cursor: default; user-select: none"
+                    @click="onSandboxDirsLabelClick"
+                    >{{ t("settings.sandboxDirs") }}</span
+                  >
+                </div>
+                <!-- Read-Write directories -->
+                <div class="dir-section">
+                  <div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      margin-bottom: 6px;
+                    "
+                  >
+                    <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
+                    <el-button size="small" type="primary" plain @click="addSandboxDir('rw')">
+                      {{ t("settings.sandboxAddDir") }}
+                    </el-button>
+                  </div>
+                  <div
+                    v-for="(dir, idx) in sandboxSystemDirs.rw"
+                    :key="'srw-' + idx"
+                    class="dir-item dir-item-system"
+                  >
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-rw">RW</span>
+                    <span class="dir-badge dir-badge-system">{{
+                      t("settings.sandboxSystemDir")
+                    }}</span>
+                  </div>
+                  <div v-for="dir in sandboxUserDirs.rw" :key="'rw-' + dir" class="dir-item">
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-rw">RW</span>
+                    <button class="tag-remove" @click="removeSandboxDir(dir, 'rw')">&times;</button>
+                  </div>
+                  <div
+                    v-if="sandboxSystemDirs.rw.length === 0 && sandboxUserDirs.rw.length === 0"
+                    class="dir-empty"
+                  >
+                    {{ t("settings.sandboxNoDirs") }}
+                  </div>
+                </div>
+
+                <!-- Read-Only directories -->
+                <div class="dir-section" style="margin-top: 10px">
+                  <div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      margin-bottom: 6px;
+                    "
+                  >
+                    <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
+                    <el-button size="small" type="primary" plain @click="addSandboxDir('ro')">
+                      {{ t("settings.sandboxAddDir") }}
+                    </el-button>
+                  </div>
+                  <div
+                    v-for="(dir, idx) in sandboxSystemDirs.ro"
+                    :key="'sro-' + idx"
+                    class="dir-item dir-item-system"
+                  >
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-ro">RO</span>
+                    <span class="dir-badge dir-badge-system">{{
+                      t("settings.sandboxSystemDir")
+                    }}</span>
+                  </div>
+                  <div v-for="dir in sandboxUserDirs.ro" :key="'ro-' + dir" class="dir-item">
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-ro">RO</span>
+                    <button class="tag-remove" @click="removeSandboxDir(dir, 'ro')">&times;</button>
+                  </div>
+                  <div
+                    v-if="sandboxSystemDirs.ro.length === 0 && sandboxUserDirs.ro.length === 0"
+                    class="dir-empty"
+                  >
+                    {{ t("settings.sandboxNoDirs") }}
+                  </div>
+                </div>
+
+                <!-- ACL Verify Button (dev/testing tool, triple-click to show) -->
+                <div
+                  v-if="showAclVerify"
+                  class="dir-section"
+                  style="
+                    margin-top: 14px;
+                    border-top: 1px solid var(--border-color);
+                    padding-top: 12px;
+                  "
+                >
+                  <div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      margin-bottom: 8px;
+                    "
+                  >
+                    <span class="dir-section-label">🔍 ACL 验证</span>
+                    <button class="dir-add-btn" :disabled="aclVerifying" @click="verifyAcls">
+                      {{ aclVerifying ? "扫描中..." : "验证权限一致性" }}
+                    </button>
+                  </div>
+                  <div v-if="aclVerifyResult" class="acl-verify-results">
+                    <!-- OK -->
+                    <div v-if="aclVerifyResultSafe.ok.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-ok">
+                        ✓ 正常 ({{ aclVerifyResultSafe.ok.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.ok"
+                        :key="'ok-' + item.dir"
+                        class="dir-item dir-item-system"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span
+                          class="dir-badge"
+                          :class="item.access === 'rw' ? 'dir-badge-rw' : 'dir-badge-ro'"
+                          >{{ item.access.toUpperCase() }}</span
+                        >
+                      </div>
+                    </div>
+                    <!-- Missing -->
+                    <div v-if="aclVerifyResultSafe.missing.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-warn">
+                        ⚠ 缺少 ACL ({{ aclVerifyResultSafe.missing.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.missing"
+                        :key="'miss-' + item.dir"
+                        class="dir-item"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span class="dir-badge dir-badge-ro">{{ item.access.toUpperCase() }}</span>
+                        <span class="acl-reason">{{ item.reason }}</span>
+                        <button
+                          class="dir-add-btn"
+                          style="margin-left: auto"
+                          @click="repairAcl(item)"
+                        >
+                          修复
+                        </button>
+                      </div>
+                    </div>
+                    <!-- Stale -->
+                    <div v-if="aclVerifyResultSafe.stale.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-warn">
+                        🗑 残留 ACL ({{ aclVerifyResultSafe.stale.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.stale"
+                        :key="'stale-' + item.dir"
+                        class="dir-item"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
+                        <button
+                          class="dir-add-btn"
+                          style="margin-left: auto"
+                          @click="revokeStaleAcl(item)"
+                        >
+                          清除
+                        </button>
+                      </div>
+                    </div>
+                    <!-- Errors -->
+                    <div v-if="aclVerifyResultSafe.errors.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-err">
+                        ✗ 错误 ({{ aclVerifyResultSafe.errors.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.errors"
+                        :key="'err-' + item.dir"
+                        class="dir-item"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span class="acl-reason">{{ item.error }}</span>
+                      </div>
+                    </div>
+                    <!-- Summary -->
+                    <div
+                      v-if="
+                        aclVerifyResultSafe.missing.length === 0 &&
+                        aclVerifyResultSafe.stale.length === 0 &&
+                        aclVerifyResultSafe.errors.length === 0
+                      "
+                      class="acl-summary-ok"
+                    >
+                      ✓ 所有权限均已正确设置
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
           </div>
-          <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
+          <!-- .sandbox-disabled wrapper -->
         </div>
-        <!-- .sandbox-disabled wrapper -->
-      </div>
+      </template>
 
       <!-- Data & Privacy -->
       <div v-if="activeSection === 'privacy'" class="section">
@@ -926,7 +1043,7 @@ watch(
   },
 );
 
-// -- Sandbox state --
+// Legacy AppContainer settings are unreachable migration code on the Docker experiment.
 const sandboxStatus = reactive({ available: false, enabled: false });
 const externalApps = ref<string[]>([]);
 const newAppName = ref("");
@@ -1095,6 +1212,9 @@ const aclVerifyResult = ref<{
   ok: Array<{ dir: string; access: string }>;
   errors: Array<{ dir: string; error: string }>;
 } | null>(null);
+const aclVerifyResultSafe = computed(
+  () => aclVerifyResult.value ?? { missing: [], stale: [], ok: [], errors: [] },
+);
 let _aclTripleClickCount = 0;
 let _aclTripleClickTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1136,6 +1256,149 @@ async function repairAcl(item: { dir: string; access: string }) {
 async function revokeStaleAcl(item: { dir: string }) {
   const result = await window.openclaw.sandbox.revokeStaleAcl(item.dir);
   if (result.ok) await verifyAcls();
+}
+const dockerReadiness = ref<DockerSandboxReadiness | null>(null);
+const dockerChecking = ref(false);
+const dockerBuilding = ref(false);
+const dockerBuildLog = ref("");
+const dockerBindingAccesses = ["ro", "rw"] as const;
+const dockerBindingState = ref<DockerBindingState | null>(null);
+const selectedDockerAgentId = ref("main");
+const dockerBindingsApplying = ref(false);
+
+const selectedDockerAgent = computed(() =>
+  dockerBindingState.value?.agents.find((agent) => agent.id === selectedDockerAgentId.value),
+);
+const selectedDockerBindingStatus = computed(
+  () => dockerBindingState.value?.statuses[selectedDockerAgentId.value],
+);
+const dockerBindingStatusType = computed(() => {
+  const effective = selectedDockerBindingStatus.value?.effective ?? "unknown";
+  if (effective === "applied") return "success";
+  if (effective === "error") return "danger";
+  return "info";
+});
+const dockerBindingStatusLabel = computed(() =>
+  t(`settings.dockerBindingsStatus.${selectedDockerBindingStatus.value?.effective ?? "unknown"}`),
+);
+
+const dockerChecks = computed(() => {
+  if (!dockerReadiness.value) return [];
+  return [
+    {
+      key: "windows",
+      label: t("settings.dockerCheckWindows"),
+      state: dockerReadiness.value.windows,
+    },
+    { key: "wsl2", label: t("settings.dockerCheckWsl2"), state: dockerReadiness.value.wsl2 },
+    {
+      key: "docker",
+      label: t("settings.dockerCheckDaemon"),
+      state: dockerReadiness.value.dockerDaemon,
+    },
+    {
+      key: "linux",
+      label: t("settings.dockerCheckLinux"),
+      state: dockerReadiness.value.linuxContainers,
+    },
+    { key: "image", label: t("settings.dockerCheckImage"), state: dockerReadiness.value.image },
+  ];
+});
+
+function dockerReasonLabel(reason: DockerSandboxReason) {
+  return t(`settings.dockerReason.${reason}`);
+}
+
+function openDockerGuide(guide: "wsl" | "docker") {
+  const url =
+    guide === "wsl"
+      ? "https://learn.microsoft.com/windows/wsl/install"
+      : "https://docs.docker.com/desktop/setup/install/windows-install/";
+  void window.openclaw.shell.openExternal(url);
+}
+
+async function refreshDockerSandbox() {
+  dockerChecking.value = true;
+  try {
+    [dockerReadiness.value, dockerBindingState.value] = await Promise.all([
+      window.openclaw.dockerSandbox.check(),
+      window.openclaw.dockerSandbox.getBindings(),
+    ]);
+    if (
+      !dockerBindingState.value.agents.some((agent) => agent.id === selectedDockerAgentId.value)
+    ) {
+      selectedDockerAgentId.value = dockerBindingState.value.agents[0]?.id ?? "main";
+    }
+  } finally {
+    dockerChecking.value = false;
+  }
+}
+
+async function addDockerBinding(access: "ro" | "rw") {
+  if (!selectedDockerAgent.value) return;
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.addBinding({
+      agentId: selectedDockerAgent.value.id,
+      access,
+    });
+    const status = dockerBindingState.value.statuses[selectedDockerAgent.value.id];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else if (status?.effective === "applied")
+      ElMessage.success(t("settings.dockerBindingsApplied"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function removeDockerBinding(binding: ManagedDockerBinding) {
+  if (!selectedDockerAgent.value) return;
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.removeBinding({
+      agentId: selectedDockerAgent.value.id,
+      source: binding.source,
+    });
+    const status = dockerBindingState.value.statuses[selectedDockerAgent.value.id];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else ElMessage.success(t("settings.dockerBindingsApplied"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function retryDockerBindings() {
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.retryBindings(
+      selectedDockerAgentId.value,
+    );
+    const status = dockerBindingState.value.statuses[selectedDockerAgentId.value];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else ElMessage.success(t("settings.dockerBindingsApplied"));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function buildDockerImage() {
+  dockerBuilding.value = true;
+  dockerBuildLog.value = "";
+  const unsubscribe = window.openclaw.dockerSandbox.onBuildProgress((line) => {
+    dockerBuildLog.value = `${dockerBuildLog.value}${line}\n`.slice(-12000);
+  });
+  try {
+    dockerReadiness.value = await window.openclaw.dockerSandbox.buildImage();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    unsubscribe();
+    dockerBuilding.value = false;
+  }
 }
 
 const settings = reactive({
@@ -1442,7 +1705,7 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    loadSandboxStatus();
+    void refreshDockerSandbox();
   }
 });
 
@@ -2629,6 +2892,51 @@ async function clearChatHistory() {
   font-weight: 400;
   color: var(--text-primary);
 }
+.docker-binding-toolbar,
+.docker-binding-heading,
+.docker-binding-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.docker-binding-toolbar,
+.docker-binding-heading {
+  justify-content: space-between;
+}
+
+.docker-binding-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.docker-binding-row {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.docker-binding-paths {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.docker-binding-paths code {
+  color: var(--text-secondary);
+}
+
+.docker-binding-error {
+  margin-top: 10px;
+  color: var(--el-color-danger);
+  overflow-wrap: anywhere;
+}
+
 .sandbox-disabled {
   opacity: 0.45;
   pointer-events: none;

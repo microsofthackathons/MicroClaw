@@ -590,7 +590,6 @@ class WebInstallerBridge:
                 ws.install_search_provider_plugin,
                 NETWORK_RETRIES,
             ),
-            (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
         ]

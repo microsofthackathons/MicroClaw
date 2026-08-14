@@ -2,7 +2,7 @@
 #
 # Runs the end-to-end packaging script (build.ps1) on every PR.
 # Verifies that the entire pipeline still produces:
-#   - AppContainerLauncher.exe (.NET 9)
+#   - Pinned Docker sandbox definition
 #   - desktop\release\win-unpacked\ (electron-builder)
 #   - dist\microclaw-portable.zip
 #   - dist\MicroClawInstaller\ + dist\MicroClawInstaller.zip (PyInstaller)

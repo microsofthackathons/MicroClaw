@@ -5,6 +5,13 @@
 **MicroClaw** makes [OpenClaw](https://github.com/openclaw) instantly available on Windows through a familiar, low-friction install experience. It packages the desktop client, local Gateway, managed runtime, preloaded skills, and permission-controlled sandbox into one product so users can get to real tasks quickly. You bring the LLM connection; MicroClaw brings the Windows app, local runtime, and trust boundary.
 
 > [!WARNING]
+> **Experimental Docker sandbox branch:** AppContainer is inactive. OpenClaw tools are required to run in Docker Desktop Linux containers through WSL2. MicroClaw fails closed and does not start the Gateway or send chat requests until WSL2, Docker Desktop, Linux-container mode, and the pinned `microclaw-openclaw-sandbox:2026.7.1-1` image are ready. MicroClaw never installs or elevates Docker/WSL automatically.
+>
+> Build the image from **Settings → Security** after installing WSL2 and Docker Desktop. The effective policy uses `mode: all`, Docker backend, per-agent scope, an isolated workspace (`workspaceAccess: none`), read-only root, non-root user, dropped capabilities, resource limits, no network, and disabled elevated tools. The Security page can grant each agent explicit read-only or read-write access to validated Windows folders at generated `/mnt/microclaw/...` targets. Each grant exposes the whole selected subtree without per-read prompts; broad system, application-data, state, and credential locations are rejected. Attachments are staged by OpenClaw into the isolated workspace. Existing AppContainer profiles/ACLs are ignored and only removed by explicit uninstall cleanup.
+>
+> Live validation after installing Docker: confirm every Security check is green; build the pinned image; restart MicroClaw; run a filesystem tool and verify it sees only the isolated workspace; verify an attachment is readable; verify outbound network access and Windows host paths fail; stop Docker and confirm Gateway/chat fail closed; then confirm both EXE and MSIX builds retain `resources/docker-sandbox/Dockerfile`.
+
+> [!WARNING]
 > **AI & Security Notice**
 > MicroClaw is an experimental open-source project initiated by Microsoft that provides a secure execution environment and user interface for the open-source [OpenClaw](https://github.com/openclaw) software that users have installed on their devices. MicroClaw is **not** an AI service, it doesn't contain an AI model, nor does it generate or alter user prompts, responses, or any AI-generated contents on behalf of users.
 >
