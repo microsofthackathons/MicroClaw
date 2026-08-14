@@ -66,6 +66,14 @@ describe("i18n", () => {
     setLocale("en-US"); // restore
   });
 
+  it("Creative Muse catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.creativeMuse.name")).toBe("Creative Muse");
+    setLocale("zh-CN");
+    expect(t("agent.creativeMuse.name")).toBe("灵感创客");
+    setLocale("en-US"); // restore
+  });
+
   it("localizes Agent Team and Agent Catalog navigation in zh-CN", () => {
     setLocale("zh-CN");
     expect(t("sidebar.agents")).toBe("智能体团队");

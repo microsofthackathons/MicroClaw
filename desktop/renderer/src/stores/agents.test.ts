@@ -85,6 +85,18 @@ describe("agent store", () => {
     expect(store.marketAgents.some((entry) => entry.id === "growth-hacker")).toBe(false);
   });
 
+  it("presents the Creative Muse platform content scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      description: "Rednote posts, short-video scripts & WeChat article adaptation",
+      tags: ["Rednote Posts", "Short-Video Scripts", "WeChat Articles"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.some((entry) => entry.id === "singer")).toBe(false);
+  });
+
   it("keeps the roster unchanged when Add fails", async () => {
     const store = useAgentStore();
     agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));

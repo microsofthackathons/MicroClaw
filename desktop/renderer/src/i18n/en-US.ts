@@ -835,18 +835,20 @@ export default {
   "agent.leopard.task.3.desc":
     "Provide risk diversification optimization based on current holdings.",
 
-  "agent.singer.name": "Singer-Songwriter",
-  "agent.singer.desc": "Lyrics, arrangement inspiration & music style analysis",
-  "agent.singer.tag.1": "Lyrics Writing",
-  "agent.singer.tag.2": "Arrangement Ideas",
-  "agent.singer.tag.3": "Style Analysis",
-  "agent.singer.task.1.title": "Write some lyrics for me",
-  "agent.singer.task.1.desc": "Create original lyrics based on theme and emotion.",
-  "agent.singer.task.2.title": "Analyze this song's style",
-  "agent.singer.task.2.desc": "Break down genre, arrangement techniques, and emotional expression.",
-  "agent.singer.task.3.title": "Recommend arrangement inspiration",
-  "agent.singer.task.3.desc":
-    "Suggest reference tracks and sound combinations by style preference.",
+  "agent.creativeMuse.name": "Creative Muse",
+  "agent.creativeMuse.desc": "Rednote posts, short-video scripts & WeChat article adaptation",
+  "agent.creativeMuse.tag.1": "Rednote Posts",
+  "agent.creativeMuse.tag.2": "Short-Video Scripts",
+  "agent.creativeMuse.tag.3": "WeChat Articles",
+  "agent.creativeMuse.task.1.title": "Turn this material into a Rednote post",
+  "agent.creativeMuse.task.1.desc":
+    "Extract the highlights and create titles, body copy, cover text, visual ideas, and hashtags.",
+  "agent.creativeMuse.task.2.title": "Write a 60-second short-video script",
+  "agent.creativeMuse.task.2.desc":
+    "Build an opening hook, shot list, spoken lines, and captions around the core message.",
+  "agent.creativeMuse.task.3.title": "Adapt this long article for WeChat",
+  "agent.creativeMuse.task.3.desc":
+    "Reshape the title, summary, and article structure with clear formatting guidance.",
 
   "agent.main.task.1.title": "Summarize this content",
   "agent.main.task.1.desc": "Quickly extract key points from articles or documents.",

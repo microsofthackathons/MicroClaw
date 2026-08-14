@@ -202,6 +202,33 @@ describe("agent personas", () => {
     );
   });
 
+  it("seeds the Creative Muse workspace with its platform content context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("creative-muse");
+    if (!persona) throw new Error("Creative Muse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "creative-muse",
+      name: "Creative Muse",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Creative Muse workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-creative-muse"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "trend-aware content strategist",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "Produce reviewable local drafts",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Creative Muse",
+    );
+  });
+
   it("migrates an installed Growth Hacker to Intel Analyst without losing custom settings", () => {
     const stateDir = createStateDir();
     const customWorkspace = path.join(stateDir, "custom-research");
@@ -236,6 +263,104 @@ describe("agent personas", () => {
     expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Intel Analyst",
     );
+  });
+
+  it("migrates an installed Singer to Creative Muse without losing custom settings", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-content");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "singer",
+            name: "Singer",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/content-model",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "creative-muse", name: "Creative Muse" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/content-model",
+    });
+    expect(agentList(config).some((entry) => entry.id === "singer")).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Creative Muse",
+    );
+  });
+
+  it("keeps Singer's implicit workspace when migrating to Creative Muse", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "singer", name: "Singer" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      workspace: path.join(stateDir, "workspace-singer"),
+    });
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(
+      fs.readFileSync(path.join(stateDir, "workspace-singer", "IDENTITY.md"), "utf-8"),
+    ).toContain("Name: Creative Muse");
+    expect(fs.existsSync(path.join(stateDir, "workspace-creative-muse"))).toBe(false);
+  });
+
+  it("prefers customized Singer settings over default Creative Muse settings", () => {
+    const stateDir = createStateDir();
+    const legacyWorkspace = path.join(stateDir, "custom-singer");
+    const creativePersona = getAgentPersona("creative-muse");
+    if (!creativePersona) throw new Error("Creative Muse persona is not registered");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "creative-muse",
+            name: "Creative Muse",
+            workspace: path.join(stateDir, "workspace-creative-muse"),
+            skills: resolveSkillFilterNames(getAgentSkills("creative-muse")),
+          },
+          {
+            id: "singer",
+            name: "My Content Partner",
+            workspace: legacyWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/content-model",
+          },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).filter((entry) => entry.id === "creative-muse")).toHaveLength(1);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "My Content Partner",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/content-model",
+    });
+    expect(agentList(config).some((entry) => entry.id === "singer")).toBe(false);
   });
 
   it("does not seed a Popular Agent before it is installed", () => {

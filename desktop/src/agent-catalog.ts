@@ -41,7 +41,7 @@ export interface AgentCatalogEntry {
   installedByDefault: boolean;
   skills: readonly string[];
   workspaceDirName?: string;
-  personaProfile?: "master-archive" | "code-geek" | "intel-analyst";
+  personaProfile?: "master-archive" | "code-geek" | "intel-analyst" | "creative-muse";
 }
 
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
@@ -186,20 +186,31 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     skills: [...ALL_SKILL_IDS],
   },
   {
-    id: "singer",
-    name: "Singer",
-    nameKey: "agent.singer.name",
-    descKey: "agent.singer.desc",
-    avatar: "singer-avatar.png",
-    image: "Singer.png",
-    tagKeys: ["agent.singer.tag.1", "agent.singer.tag.2", "agent.singer.tag.3"],
+    id: "creative-muse",
+    name: "Creative Muse",
+    nameKey: "agent.creativeMuse.name",
+    descKey: "agent.creativeMuse.desc",
+    avatar: "creative-muse-avatar.png",
+    image: "CreativeMuse.png",
+    tagKeys: ["agent.creativeMuse.tag.1", "agent.creativeMuse.tag.2", "agent.creativeMuse.tag.3"],
     taskKeys: [
-      { titleKey: "agent.singer.task.1.title", descKey: "agent.singer.task.1.desc" },
-      { titleKey: "agent.singer.task.2.title", descKey: "agent.singer.task.2.desc" },
-      { titleKey: "agent.singer.task.3.title", descKey: "agent.singer.task.3.desc" },
+      {
+        titleKey: "agent.creativeMuse.task.1.title",
+        descKey: "agent.creativeMuse.task.1.desc",
+      },
+      {
+        titleKey: "agent.creativeMuse.task.2.title",
+        descKey: "agent.creativeMuse.task.2.desc",
+      },
+      {
+        titleKey: "agent.creativeMuse.task.3.title",
+        descKey: "agent.creativeMuse.task.3.desc",
+      },
     ],
     installedByDefault: false,
     skills: [...ALL_SKILL_IDS],
+    workspaceDirName: "workspace-creative-muse",
+    personaProfile: "creative-muse",
   },
 ];
 

@@ -138,6 +138,16 @@ describe("agent catalog skills binding", () => {
     });
   });
 
+  it("replaces Singer with the dedicated Creative Muse persona", () => {
+    expect(AGENT_CATALOG.some((agent) => agent.id === "singer")).toBe(false);
+    expect(AGENT_CATALOG.find((agent) => agent.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      image: "CreativeMuse.png",
+      workspaceDirName: "workspace-creative-muse",
+      personaProfile: "creative-muse",
+    });
+  });
+
   it("recognizes known skill ids and rejects unknown ones", () => {
     expect(isKnownSkillId("canvas")).toBe(true);
     expect(isKnownSkillId("not-a-skill")).toBe(false);

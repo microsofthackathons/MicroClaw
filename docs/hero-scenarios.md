@@ -71,14 +71,14 @@ Example commands:
 - "Turn this wireless earbud feature sheet into a 60-second Douyin video script with visual camera directions, sound effects, and spoken dialogue."
 - "Draft an outline for a 5-minute Bilibili tech review video covering smart home gadgets, including a strong 3-second opening hook."
 
-### Scenario 3: Multi-platform content repurposing and adaptation
+### Scenario 3: WeChat Official Account article adaptation
 
-Rewrites master copy into versions tailored to the style, length, and audience expectations of specific platforms.
+Reshapes long-form source material into a reader-friendly WeChat Official Account draft with title options, a concise summary, clear section structure, and practical formatting guidance.
 
 Example commands:
 
-- "Take my 1500-word WeChat Official Account article and adapt it into three versions: a Bilibili dynamic post, a Feishu document summary, and a Rednote card note."
-- "Polish this product launch text into three different tones: casual and friendly, geeky and professional, and humorous."
+- "Turn this 1500-word industry analysis into a WeChat Official Account draft with 3 title options, an opening summary, section headings, and formatting notes."
+- "Adapt this interview transcript into a polished WeChat article while preserving the speaker's key claims and marking any facts that need verification."
 
 ## Intel Analyst (前哨智囊)
 
