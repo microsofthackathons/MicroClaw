@@ -19,6 +19,7 @@ export const ALL_SKILL_IDS: readonly string[] = [
   "openhue",
   "oracle",
   "powerpoint-pptx",
+  "rednote-publisher",
   "security-practice",
   "session-logs",
   "sherpa-onnx-tts",
@@ -235,6 +236,7 @@ export const SKILL_MATCH_NAMES: Readonly<Record<string, string>> = {
   "desktop-organizer": "Desktop Organizer",
   "excel-xlsx": "Excel / XLSX",
   "powerpoint-pptx": "Powerpoint / PPTX",
+  "rednote-publisher": "Rednote Publisher",
   "security-practice": "Security Practice",
   "word-docx": "Word / DOCX",
 };

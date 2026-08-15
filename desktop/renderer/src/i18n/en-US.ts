@@ -836,19 +836,20 @@ export default {
     "Provide risk diversification optimization based on current holdings.",
 
   "agent.creativeMuse.name": "Creative Muse",
-  "agent.creativeMuse.desc": "Rednote posts, short-video scripts & WeChat article adaptation",
-  "agent.creativeMuse.tag.1": "Rednote Posts",
-  "agent.creativeMuse.tag.2": "Short-Video Scripts",
-  "agent.creativeMuse.tag.3": "WeChat Articles",
-  "agent.creativeMuse.task.1.title": "Turn this material into a Rednote post",
+  "agent.creativeMuse.desc":
+    "A Rednote content studio from topic inspiration to publish-ready visual packages",
+  "agent.creativeMuse.tag.1": "Topic Discovery",
+  "agent.creativeMuse.tag.2": "Visual Creation",
+  "agent.creativeMuse.tag.3": "Package Export",
+  "agent.creativeMuse.task.1.title": "From inspiration to a Rednote package",
   "agent.creativeMuse.task.1.desc":
-    "Extract the highlights and create titles, body copy, cover text, visual ideas, and hashtags.",
-  "agent.creativeMuse.task.2.title": "Write a 60-second short-video script",
+    "Research recent topics, choose a useful angle, and create copy, a cover, and visual cards.",
+  "agent.creativeMuse.task.2.title": "Turn this material into a Rednote package",
   "agent.creativeMuse.task.2.desc":
-    "Build an opening hook, shot list, spoken lines, and captions around the core message.",
-  "agent.creativeMuse.task.3.title": "Adapt this long article for WeChat",
+    "Extract the strongest details and create the full post, cover, visual cards, and hashtags.",
+  "agent.creativeMuse.task.3.title": "Review and improve the current package",
   "agent.creativeMuse.task.3.desc":
-    "Reshape the title, summary, and article structure with clear formatting guidance.",
+    "Check facts, titles, copy, and visual consistency, then export revised publish-ready files.",
 
   "agent.main.task.1.title": "Summarize this content",
   "agent.main.task.1.desc": "Quickly extract key points from articles or documents.",

@@ -5,7 +5,7 @@
 | Specialist agent | Persona and professional role | Hero scenarios |
 | --- | --- | --- |
 | **Master Archive (归藏大师)** | Meticulous digital archivist organizing local folders, converting files, and summarizing bulk documents | Batch file conversion and processing; smart file and directory cleanup; bulk document summarization and extraction |
-| **Creative Muse (灵感创客)** | Witty creative content strategist crafting Rednote posts, video scripts, and multi-platform text | Rednote viral seed posts; short-video storyboards and scripts; multi-platform content adaptation |
+| **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic discovery and angle selection; post and visual-card production; package review and export |
 | **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
@@ -50,35 +50,35 @@ Example commands:
 ### Persona and professional role
 
 - **Persona and tone:** Creative, trend-aware, audience-oriented, and witty, with a strong understanding of Chinese social platform conventions.
-- **Domain expertise:** Rednote (小红书) seed posts, short-video and live-stream scripts, and multi-platform copy adaptation.
-- **Main responsibilities:** Convert raw ideas, product highlights, or master copy into platform-specific content packages ready for publishing.
+- **Domain expertise:** Rednote (小红书) topic discovery, audience hooks, post writing, visual-card design, and publishing QA.
+- **Main responsibilities:** Connect research, writing, visual production, and validation into a local package ready for human review and upload.
 
-### Scenario 1: Rednote viral seed post creation
+### Scenario 1: Topic discovery to publish-ready Rednote package
 
-Generates engaging, emoji-rich Rednote copy, title candidates, and structured post outlines from product features, lifestyle experiences, or local store visits.
-
-Example commands:
-
-- "I visited a new zen-style tea house today. Write 5 catchy Rednote titles with emojis, a 300-word review post highlighting key tea drinks, and 5 trending hashtags."
-- "Write a Rednote post for a rose moisturizing cream targeting young professionals, highlighting ingredient safety and texture."
-
-### Scenario 2: Short-video storyboarding and scriptwriting
-
-Transforms concepts or product features into structured short-video or live-stream scripts with visual directions, audio cues, timecodes, and dialogue.
+Researches recent audience conversations, selects a defensible angle, writes the post, renders a cover and visual cards, and exports a validated package in one workflow.
 
 Example commands:
 
-- "Turn this wireless earbud feature sheet into a 60-second Douyin video script with visual camera directions, sound effects, and spoken dialogue."
-- "Draft an outline for a 5-minute Bilibili tech review video covering smart home gadgets, including a strong 3-second opening hook."
+- "Find a useful topic for first-time home coffee brewers, then create a complete Rednote post package with sources, copy, cover, visual cards, and hashtags."
+- "Research recent discussion about compact workspaces and turn the strongest practical angle into a publish-ready Rednote package."
 
-### Scenario 3: WeChat Official Account article adaptation
+### Scenario 2: Source material to Rednote package
 
-Reshapes long-form source material into a reader-friendly WeChat Official Account draft with title options, a concise summary, clear section structure, and practical formatting guidance.
+Extracts the strongest truthful details from user-provided notes, documents, links, or transcripts and turns them into the same complete visual package without broad topic discovery.
 
 Example commands:
 
-- "Turn this 1500-word industry analysis into a WeChat Official Account draft with 3 title options, an opening summary, section headings, and formatting notes."
-- "Adapt this interview transcript into a polished WeChat article while preserving the speaker's key claims and marking any facts that need verification."
+- "Turn these tea-house visit notes into a Rednote package with title options, a complete post, a cover, four visual cards, and hashtags."
+- "Use this interview transcript to create a Rednote explainer package while preserving every quoted claim and marking facts that need verification."
+
+### Scenario 3: Package review, revision, and export
+
+Loads the current package, checks factual support and visual consistency, applies revisions, rerenders the assets, and verifies that no placeholders or missing deliverables remain.
+
+Example commands:
+
+- "Review the current Rednote package for unsupported claims, weak titles, repeated cards, and unreadable text, then revise and export it again."
+- "Shorten the current post, make the cover more specific, regenerate the visual cards, and verify the final upload checklist."
 
 ## Intel Analyst (前哨智囊)
 

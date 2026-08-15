@@ -28,6 +28,7 @@ const EXPECTED_SKILL_IDS = [
   "openhue",
   "oracle",
   "powerpoint-pptx",
+  "rednote-publisher",
   "security-practice",
   "session-logs",
   "sherpa-onnx-tts",
@@ -76,9 +77,9 @@ describe("agent catalog artwork", () => {
 });
 
 describe("agent catalog skills binding", () => {
-  it("exposes exactly the 23 expected skill IDs", () => {
+  it("exposes exactly the 24 expected skill IDs", () => {
     expect(ALL_SKILL_IDS).toEqual(EXPECTED_SKILL_IDS);
-    expect(ALL_SKILL_IDS).toHaveLength(23);
+    expect(ALL_SKILL_IDS).toHaveLength(24);
   });
 
   it("keeps ALL_SKILL_IDS sorted with no duplicates", () => {
@@ -175,6 +176,7 @@ describe("OpenClaw skill match-name resolution", () => {
     "desktop-organizer": "Desktop Organizer",
     "excel-xlsx": "Excel / XLSX",
     "powerpoint-pptx": "Powerpoint / PPTX",
+    "rednote-publisher": "Rednote Publisher",
     "security-practice": "Security Practice",
     "word-docx": "Word / DOCX",
   };

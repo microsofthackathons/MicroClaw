@@ -6,6 +6,7 @@ import { getAgentSkills, matchesSkill, resolveSkillFilterNames } from "./agent-c
 import {
   AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
+  CREATIVE_MUSE_PIPELINE_SECTION,
   ensureAgentPersonasConfig,
   getAgentPersona,
   getAgentWorkspacePath,
@@ -219,14 +220,38 @@ describe("agent personas", () => {
     expect(workspace).toBe(path.join(stateDir, "workspace-creative-muse"));
     expect(created).toHaveLength(5);
     expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
-      "trend-aware content strategist",
+      "trend-aware Rednote content producer",
     );
     expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
-      "Produce reviewable local drafts",
+      "Rednote Publisher skill",
     );
     expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Creative Muse",
     );
+  });
+
+  it("adds the Rednote pipeline to an existing Creative Muse guide without replacing it", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("creative-muse");
+    if (!persona) throw new Error("Creative Muse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Creative Muse workspace is not configured");
+    fs.mkdirSync(workspace, { recursive: true });
+    const agentsPath = path.join(workspace, "AGENTS.md");
+    fs.writeFileSync(agentsPath, "# Custom guide\n\nKeep my editorial rules.\n", "utf-8");
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
+    const migrated = fs.readFileSync(agentsPath, "utf-8");
+    expect(migrated).toContain("Keep my editorial rules.");
+    expect(migrated).toContain("## Rednote publishing pipeline");
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
+    expect(
+      fs
+        .readFileSync(agentsPath, "utf-8")
+        .match(new RegExp(CREATIVE_MUSE_PIPELINE_SECTION.split("\n")[0], "g")),
+    ).toHaveLength(1);
   });
 
   it("migrates an installed Growth Hacker to Intel Analyst without losing custom settings", () => {
@@ -630,6 +655,79 @@ _Fill this in during your first conversation. Make it yours._
     const mainEntry = agentList(config).find((entry) => entry.id === "main");
     expect(mainEntry?.skills).toEqual(["stale-skill"]);
     expect(result.changed).toBe(false);
+  });
+
+  it("adds Rednote Publisher to an untouched previous catalog skill set", () => {
+    const stateDir = createStateDir();
+    const currentSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
+    const previousSkills = currentSkills.filter((skill) => skill !== "Rednote Publisher");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "creative-muse", name: "Creative Muse", skills: previousSkills },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")?.skills).toEqual(
+      currentSkills,
+    );
+  });
+
+  it("does not add Rednote Publisher to a customized skill set", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "creative-muse", name: "Creative Muse", skills: ["custom-skill"] },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")?.skills).toEqual([
+      "custom-skill",
+    ]);
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(
+      fs.readFileSync(path.join(stateDir, "workspace-creative-muse", "AGENTS.md"), "utf-8"),
+    ).not.toContain("## Rednote publishing pipeline");
+  });
+
+  it("removes the managed pipeline when Rednote Publisher is globally disabled", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "creative-muse",
+            name: "Creative Muse",
+            skills: resolveSkillFilterNames(getAgentSkills("creative-muse")),
+          },
+        ],
+      },
+      skills: {
+        entries: {
+          "rednote-publisher": { enabled: true },
+        },
+      },
+    };
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    const agentsPath = path.join(stateDir, "workspace-creative-muse", "AGENTS.md");
+    fs.appendFileSync(agentsPath, "\nCustom editorial note.\n", "utf-8");
+    expect(fs.readFileSync(agentsPath, "utf-8")).toContain("## Rednote publishing pipeline");
+
+    config.skills.entries["rednote-publisher"].enabled = false;
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
+    const disabled = fs.readFileSync(agentsPath, "utf-8");
+    expect(disabled).not.toContain("## Rednote publishing pipeline");
+    expect(disabled).toContain("Custom editorial note.");
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
   });
 
   it("leaves a custom non-catalog agent without an injected skills field", () => {

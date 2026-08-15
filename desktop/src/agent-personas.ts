@@ -1,7 +1,12 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AGENT_CATALOG, DEFAULT_AGENT_IDS, resolveSkillFilterNames } from "./agent-catalog";
+import {
+  AGENT_CATALOG,
+  DEFAULT_AGENT_IDS,
+  matchesSkill,
+  resolveSkillFilterNames,
+} from "./agent-catalog";
 
 type WorkspaceFileName = "AGENTS.md" | "IDENTITY.md" | "SOUL.md";
 type WorkspaceFiles = Partial<Record<WorkspaceFileName, string>>;
@@ -16,6 +21,7 @@ export interface AgentPersona {
 
 export interface AgentRosterConfig {
   agents?: Record<string, unknown>;
+  skills?: Record<string, unknown>;
 }
 
 export interface AgentPersonasConfigResult {
@@ -292,14 +298,14 @@ const INTEL_ANALYST_IDENTITY_MD = `# IDENTITY.md
 
 const CREATIVE_MUSE_SOUL_MD = `# SOUL.md - Creative Muse
 
-You are Creative Muse, a trend-aware content strategist who turns source material into platform-ready drafts with a clear audience and purpose.
+You are Creative Muse, a trend-aware Rednote content producer who turns an initial idea or source material into a coherent, publish-ready visual package.
 
 ## Character
 
 - Creative, witty, audience-oriented, and practical.
 - Start from the source material and the user's objective instead of inventing unsupported claims.
-- Adapt structure, tone, pacing, and calls to action to the conventions of the requested platform.
-- Prefer a complete, reviewable content package over disconnected ideas.
+- Connect topic discovery, writing, visual cards, and final quality checks into one workflow.
+- Prefer a complete, reviewable package over disconnected ideas or copy-only answers.
 
 ## Editorial standards
 
@@ -322,19 +328,30 @@ You are Creative Muse, a trend-aware content strategist who turns source materia
 - Explain platform-specific choices only when they help the user make a decision.
 `;
 
+export const CREATIVE_MUSE_PIPELINE_SECTION = `## Rednote publishing pipeline
+
+- Connect topic discovery, writing, visual-card rendering, and package validation in one workflow.
+- Use the Rednote Publisher skill to create local artifacts instead of stopping at copy or visual suggestions.
+- Keep ideas.json, package.json, rendered images, and validation.json in the same package directory.
+- The inspiration entry runs all stages; the material entry skips broad discovery; the review entry writes package.next.json and rerenders it transactionally.
+- Never call a package complete until validation reports ok: true and the exact output path has been reported.
+`;
+
 const CREATIVE_MUSE_AGENTS_MD = `# AGENTS.md - Creative Muse Operating Guide
 
 ## Mission
 
-Transform raw material into focused Rednote posts, 60-second short-video scripts, and WeChat Official Account drafts that are ready for human review.
+Take a Rednote project from topic discovery through copy and visual production to a publish-ready local package.
 
 ## Standard workflow
 
-1. Inspect the provided material and identify its strongest audience-relevant message.
-2. Confirm the target platform, audience, objective, tone, length, and non-negotiable facts.
-3. Select a platform-appropriate structure before drafting.
-4. Produce the complete requested content package.
-5. Check factual fidelity, consistency, readability, and publishing constraints.
+1. Reuse the current package directory when the conversation is continuing an earlier stage.
+2. Discover or extract a specific topic and record the evidence and selected angle.
+3. Draft titles, body copy, cover text, visual-card content, and hashtags as one package spec.
+4. Produce a complete, reviewable package specification instead of stopping at loose ideas.
+5. Use only configured tools, verify every generated output, and report exact local paths.
+
+${CREATIVE_MUSE_PIPELINE_SECTION}
 
 ## Rednote posts
 
@@ -343,31 +360,24 @@ Transform raw material into focused Rednote posts, 60-second short-video scripts
 - Keep the tone conversational and scannable without forcing emojis or exaggerated claims.
 - Distinguish firsthand experience supplied by the user from editorial framing.
 
-## Short-video scripts
+## Package requirements
 
-- Build a clear opening hook, timed shot list, spoken lines, on-screen captions, and closing action.
-- Keep visual directions executable with the user's available footage or assets.
-- Fit the requested runtime and make every scene advance the message.
-- Do not hide essential qualifications in captions that are too brief to read.
-
-## WeChat Official Account drafts
-
-- Deliver title options, an opening summary, section headings, body structure, and formatting guidance.
-- Preserve the source's important reasoning while improving flow for long-form reading.
-- Use pull quotes, lists, and image placements only where they improve comprehension.
-- Mark facts, links, and quotations that need final editorial verification.
+- Deliver at least three title options, complete body copy, cover text, three to eight visual cards, and three to ten hashtags.
+- Use 3:4 portrait PNG images when an approved renderer is available.
+- Include source links and retrieval dates when web research informs factual claims.
+- Never leave placeholders, unsupported superlatives, invented personal experience, prices, addresses, or performance claims.
 
 ## Tools and boundaries
 
 - Read source files and linked material before drafting when access is available.
-- Produce reviewable local drafts before taking any external publishing action.
+- Use only skills available in the configured allowlist.
 - Never sign in, upload, schedule, publish, or change account settings without explicit approval.
 `;
 
 const CREATIVE_MUSE_IDENTITY_MD = `# IDENTITY.md
 
 - Name: Creative Muse
-- Role: Platform content strategist and creative editor
+- Role: End-to-end Rednote content producer and creative editor
 - Vibe: Creative, trend-aware, audience-oriented, and witty
 `;
 
@@ -423,6 +433,27 @@ export function getAgentWorkspacePath(stateDir: string, persona: AgentPersona): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function configuredAgentAllowsSkill(
+  config: AgentRosterConfig,
+  agentId: string,
+  skillId: string,
+): boolean {
+  if (isRecord(config.skills) && isRecord(config.skills.entries)) {
+    for (const [entryId, entry] of Object.entries(config.skills.entries)) {
+      if (matchesSkill(entryId, skillId) && isRecord(entry) && entry.enabled === false) {
+        return false;
+      }
+    }
+  }
+  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) return true;
+  const entry = config.agents.list.find(
+    (candidate) => isRecord(candidate) && candidate.id === agentId,
+  );
+  if (!isRecord(entry) || !Object.hasOwn(entry, "skills")) return true;
+  if (!Array.isArray(entry.skills)) return false;
+  return entry.skills.some((value) => typeof value === "string" && matchesSkill(value, skillId));
 }
 
 function normalizeAgentId(value: string): string {
@@ -630,6 +661,15 @@ export function ensureAgentPersonasConfig(
     if (catalogSkills !== undefined && !Object.hasOwn(entry, "skills")) {
       // Persist match-names (not raw slugs) — see resolveSkillFilterNames.
       entry.skills = resolveSkillFilterNames([...catalogSkills]);
+    } else if (catalogSkills !== undefined && Array.isArray(entry.skills)) {
+      const resolvedCatalogSkills = resolveSkillFilterNames([...catalogSkills]);
+      const rednoteSkillName = resolveSkillFilterNames(["rednote-publisher"])[0];
+      const previousDefaultSkills = resolvedCatalogSkills.filter(
+        (skill) => skill !== rednoteSkillName,
+      );
+      if (JSON.stringify(entry.skills) === JSON.stringify(previousDefaultSkills)) {
+        entry.skills = resolvedCatalogSkills;
+      }
     }
   }
 
@@ -798,12 +838,37 @@ export function seedAgentPersonaWorkspace(
 
   fs.mkdirSync(workspaceDir, { recursive: true });
   for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
+    const includeCreativePipeline =
+      persona.id !== "creative-muse" ||
+      configuredAgentAllowsSkill(config, persona.id, "rednote-publisher");
+    const workspaceSource =
+      filename === "AGENTS.md" && !includeCreativePipeline
+        ? source.replace(CREATIVE_MUSE_PIPELINE_SECTION, "")
+        : source;
     const filePath = path.join(workspaceDir, filename);
     if (fs.existsSync(filePath)) {
       let existing = fs.readFileSync(filePath, "utf-8");
       if (persona.id === "main" && filename === "IDENTITY.md" && isUnconfiguredIdentity(existing)) {
-        fs.writeFileSync(filePath, `${source.trimEnd()}\n`, "utf-8");
+        fs.writeFileSync(filePath, `${workspaceSource.trimEnd()}\n`, "utf-8");
         updatedFiles.push(filePath);
+        continue;
+      }
+
+      if (persona.id === "creative-muse" && filename === "AGENTS.md" && includeCreativePipeline) {
+        const pipelineMarker = markdownSectionMarker(CREATIVE_MUSE_PIPELINE_SECTION);
+        if (pipelineMarker && !existing.includes(pipelineMarker)) {
+          fs.appendFileSync(filePath, `\n${CREATIVE_MUSE_PIPELINE_SECTION.trim()}\n`, "utf-8");
+          updatedFiles.push(filePath);
+        }
+        continue;
+      }
+      if (persona.id === "creative-muse" && filename === "AGENTS.md" && !includeCreativePipeline) {
+        const pipelineSection = CREATIVE_MUSE_PIPELINE_SECTION.trim();
+        if (existing.includes(pipelineSection)) {
+          const withoutPipeline = existing.replace(pipelineSection, "").replace(/\n{3,}/g, "\n\n");
+          fs.writeFileSync(filePath, `${withoutPipeline.trimEnd()}\n`, "utf-8");
+          updatedFiles.push(filePath);
+        }
         continue;
       }
 
@@ -813,8 +878,8 @@ export function seedAgentPersonaWorkspace(
           persona.id === "main" &&
           !existing.includes(markdownSectionMarker(MAIN_PLATFORM_IDENTITY_SECTION))
         ) {
-          sections.push(source.trim());
-          existing += `\n${source.trim()}\n`;
+          sections.push(workspaceSource.trim());
+          existing += `\n${workspaceSource.trim()}\n`;
         }
         const appendixMarker = markdownSectionMarker(soulAppendix);
         if (soulAppendix.trim() && appendixMarker && !existing.includes(appendixMarker)) {
@@ -833,10 +898,10 @@ export function seedAgentPersonaWorkspace(
       filename === "SOUL.md" &&
       soulAppendix.trim() &&
       appendixMarker &&
-      !source.includes(appendixMarker);
+      !workspaceSource.includes(appendixMarker);
     const content = shouldAppendSoulSection
-      ? `${source.trimEnd()}\n\n${soulAppendix.trim()}\n`
-      : `${source.trimEnd()}\n`;
+      ? `${workspaceSource.trimEnd()}\n\n${soulAppendix.trim()}\n`
+      : `${workspaceSource.trimEnd()}\n`;
     fs.writeFileSync(filePath, content, "utf-8");
     updatedFiles.push(filePath);
   }

@@ -919,9 +919,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         with unittest.mock.patch(
             "deployer.windows_setup.subprocess.Popen", return_value=process
         ) as popen:
-            result = self.ws._run_openclaw_json(
-                ["gateway", "call", "config.get", "--json"]
-            )
+            result = self.ws._run_openclaw_json(["gateway", "call", "config.get", "--json"])
 
         self.assertEqual(result, {"ok": True})
         process.communicate.assert_called_once_with(timeout=_OPENCLAW_RPC_TIMEOUT)
@@ -941,9 +939,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             "openclaw", _OPENCLAW_RPC_TIMEOUT
         )
 
-        with unittest.mock.patch(
-            "deployer.windows_setup.subprocess.Popen", return_value=process
-        ), self.assertRaisesRegex(RuntimeError, "timed out"):
+        with (
+            unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process),
+            self.assertRaisesRegex(RuntimeError, "timed out"),
+        ):
             self.ws._run_openclaw_json(["plugins", "inspect", "openclaw-weixin", "--json"])
 
         self.ws._terminate_process_tree.assert_called_once_with(process, self.process_job)
@@ -1630,6 +1629,26 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(written["tools"]["web"]["search"], {"provider": "parallel-free"})
         self.assertEqual(written["plugins"]["entries"]["parallel"], {"enabled": True})
 
+    def test_write_config_disables_new_managed_skills_outside_whitelist(self):
+        self.ws.cfg = _Config(
+            {
+                "skills.enable": True,
+                "skills.allowManaged": ["officecli"],
+            }
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        entries = written["skills"]["entries"]
+        self.assertTrue(entries["officecli"]["enabled"])
+        self.assertFalse(entries["rednote-publisher"]["enabled"])
+        self.assertFalse(entries["desktop-organizer"]["enabled"])
+
     def test_write_config_preserves_existing_web_search_provider(self):
         config_path = self.home / ".openclaw" / "openclaw.json"
         config_path.parent.mkdir(parents=True)
@@ -2009,9 +2028,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_install_uninstaller_bundle_skips_matching_committed_build(self):
         self.ws._uninstaller_install_is_current = unittest.mock.Mock(return_value=True)
-        with unittest.mock.patch(
-            "deployer.windows_setup.resolve_uninstaller_bundle"
-        ) as resolve:
+        with unittest.mock.patch("deployer.windows_setup.resolve_uninstaller_bundle") as resolve:
             self.assertTrue(self.ws.install_uninstaller_bundle())
 
         resolve.assert_not_called()
