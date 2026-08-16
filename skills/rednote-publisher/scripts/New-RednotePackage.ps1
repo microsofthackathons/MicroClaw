@@ -391,6 +391,26 @@ Assert-NoLinkedPath $resolvedSpecPath
 Assert-NoLinkedPath $resolvedOutputPath
 
 $spec = Get-Content -LiteralPath $resolvedSpecPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$materialPath = Join-Path $resolvedOutputPath "material-kit.json"
+if (-not (Test-Path -LiteralPath $materialPath -PathType Leaf)) {
+    throw "material-kit.json is required before rendering the final package."
+}
+Assert-NoLinkedPath $materialPath
+$material = Get-Content -LiteralPath $materialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($spec.schemaVersion -ne 1) {
+    throw "package.json schemaVersion must be 1."
+}
+if ($material.schemaVersion -ne 1) {
+    throw "material-kit.json schemaVersion must be 1."
+}
+$projectId = Get-RequiredText $spec "projectId"
+$materialKitId = Get-RequiredText $spec "materialKitId"
+if ($projectId -ne (Get-RequiredText $material "projectId")) {
+    throw "package.json projectId must match material-kit.json."
+}
+if ($materialKitId -ne (Get-RequiredText $material "materialKitId")) {
+    throw "package.json materialKitId must match material-kit.json."
+}
 $topic = Get-RequiredText $spec "topic"
 $audience = Get-RequiredText $spec "audience"
 $angle = Get-RequiredText $spec "angle"
@@ -446,8 +466,30 @@ $sources = @()
 if ($spec.PSObject.Properties["sources"]) {
     $sources = @($spec.sources)
 }
+$materialSourceUrls = @(
+    @($material.sourceFacts) |
+        Where-Object {
+            $_.sourceType -eq "web" -and
+            $_.sourceUrl -is [string] -and
+            -not [string]::IsNullOrWhiteSpace($_.sourceUrl)
+        } |
+        ForEach-Object { [string]$_.sourceUrl }
+)
+foreach ($source in $sources) {
+    if ($null -eq $source -or
+        $source.url -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($source.url)) {
+        throw "Every package source requires a URL."
+    }
+    if ($materialSourceUrls -notcontains [string]$source.url) {
+        throw "Package source '$($source.url)' is not present in material-kit.json."
+    }
+}
 
 $normalizedSpec = [ordered]@{
+    schemaVersion = 1
+    projectId = $projectId
+    materialKitId = $materialKitId
     topic = $topic
     audience = $audience
     angle = $angle
@@ -524,6 +566,8 @@ $manifest = [ordered]@{
     schemaVersion = 1
     status = "publish-ready"
     generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+    projectId = $projectId
+    materialKitId = $materialKitId
     topic = $topic
     canvas = [ordered]@{
         width = $CanvasWidth

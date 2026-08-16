@@ -20,21 +20,17 @@ class RednotePublisherSkillTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.package_dir = Path(self.temp_dir.name) / "package"
         self.package_dir.mkdir()
-        shutil.copy2(SKILL / "examples" / "package.example.json", self.package_dir / "package.json")
-        (self.package_dir / "ideas.json").write_text(
-            json.dumps(
-                {
-                    "theme": "coffee",
-                    "audience": "beginners",
-                    "selectedAngle": "repeatable steps",
-                    "selectionReason": "actionable",
-                    "retrievedAt": "2026-08-15",
-                    "candidates": [],
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        for name in (
+            "ideas.example.json",
+            "ideas.example.md",
+            "material-kit.example.json",
+            "material-kit.example.md",
+            "package.example.json",
+        ):
+            target_name = name.replace(".example", "")
+            shutil.copy2(SKILL / "examples" / name, self.package_dir / target_name)
+        self.validate_stage("Ideas", "ideas-validation.json")
+        self.validate_stage("Material", "material-validation.json")
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -74,6 +70,34 @@ class RednotePublisherSkillTests(unittest.TestCase):
             "-OutputPath",
             str(self.package_dir),
         )
+
+    def validate_stage(self, stage: str, output_name: str) -> subprocess.CompletedProcess[str]:
+        result = self.run_script(
+            "Test-RednoteStage.ps1",
+            "-Stage",
+            stage,
+            "-ProjectPath",
+            str(self.package_dir),
+            "-OutputPath",
+            str(self.package_dir / output_name),
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stdout + result.stderr)
+        return result
+
+    def test_validates_ideas_and_material_as_distinct_stages(self) -> None:
+        ideas = json.loads(
+            (self.package_dir / "ideas-validation.json").read_text(encoding="utf-8-sig")
+        )
+        material = json.loads(
+            (self.package_dir / "material-validation.json").read_text(encoding="utf-8-sig")
+        )
+        self.assertTrue(ideas["ok"])
+        self.assertEqual(ideas["stage"], "Ideas")
+        self.assertEqual(ideas["selectedIdeaId"], "idea-01")
+        self.assertTrue(material["ok"])
+        self.assertEqual(material["stage"], "Material")
+        self.assertEqual(material["materialKitId"], "kit-idea-01")
 
     def test_renders_and_validates_publish_ready_package(self) -> None:
         rendered = self.render()
@@ -226,6 +250,77 @@ class RednotePublisherSkillTests(unittest.TestCase):
         self.assertIn("Every package.json slide", validated.stdout)
         self.assertIn("schemaVersion", validated.stdout)
         self.assertIn("card paths", validated.stdout)
+
+    def test_material_stage_rejects_an_unknown_selected_idea(self) -> None:
+        material_path = self.package_dir / "material-kit.json"
+        material = json.loads(material_path.read_text(encoding="utf-8-sig"))
+        material["selectedIdeaId"] = "idea-99"
+        material_path.write_text(json.dumps(material, ensure_ascii=False), encoding="utf-8")
+
+        validated = self.run_script(
+            "Test-RednoteStage.ps1",
+            "-Stage",
+            "Material",
+            "-ProjectPath",
+            str(self.package_dir),
+        )
+
+        self.assertNotEqual(validated.returncode, 0)
+        self.assertIn("selectedIdeaId must match", validated.stdout)
+
+    def test_stage_validator_returns_structured_failure_for_missing_fields(self) -> None:
+        (self.package_dir / "ideas.json").write_text(
+            json.dumps({"schemaVersion": 1}), encoding="utf-8"
+        )
+
+        validated = self.run_script(
+            "Test-RednoteStage.ps1",
+            "-Stage",
+            "Ideas",
+            "-ProjectPath",
+            str(self.package_dir),
+            "-OutputPath",
+            str(self.package_dir / "ideas-validation.json"),
+        )
+
+        self.assertNotEqual(validated.returncode, 0)
+        result = json.loads(
+            (self.package_dir / "ideas-validation.json").read_text(encoding="utf-8-sig")
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["errors"])
+
+    def test_final_validation_rechecks_stages_instead_of_trusting_stale_ok(self) -> None:
+        self.assertEqual(self.render().returncode, 0)
+        ideas = json.loads((self.package_dir / "ideas.json").read_text(encoding="utf-8-sig"))
+        ideas["ideas"] = ideas["ideas"][:1]
+        (self.package_dir / "ideas.json").write_text(
+            json.dumps(ideas, ensure_ascii=False), encoding="utf-8"
+        )
+        (self.package_dir / "ideas-validation.json").write_text(
+            json.dumps({"ok": True}), encoding="utf-8"
+        )
+
+        validated = self.run_script(
+            "Test-RednotePackage.ps1",
+            "-PackagePath",
+            str(self.package_dir),
+        )
+
+        self.assertNotEqual(validated.returncode, 0)
+        self.assertIn("Ideas stage validation failed", validated.stdout)
+        self.assertIn("exactly 5 ideas", validated.stdout)
+
+    def test_renderer_rejects_a_mismatched_material_kit(self) -> None:
+        spec_path = self.package_dir / "package.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8-sig"))
+        spec["materialKitId"] = "kit-wrong"
+        spec_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+
+        rendered = self.render()
+
+        self.assertNotEqual(rendered.returncode, 0)
+        self.assertIn("materialKitId must match", rendered.stderr)
 
 
 if __name__ == "__main__":

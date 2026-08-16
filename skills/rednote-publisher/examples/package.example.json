@@ -1,4 +1,7 @@
 {
+  "schemaVersion": 1,
+  "projectId": "20260816-home-coffee",
+  "materialKitId": "kit-idea-01",
   "topic": "在家做一杯稳定的手冲咖啡",
   "audience": "刚开始学习手冲咖啡的上班族",
   "angle": "用三个可重复的小动作减少每天味道波动",
@@ -31,5 +34,11 @@
     "咖啡记录",
     "实用分享"
   ],
-  "sources": []
+  "sources": [
+    {
+      "title": "Coffee Variables Guide",
+      "url": "https://example.com/coffee-variables",
+      "retrievedAt": "2026-08-16"
+    }
+  ]
 }

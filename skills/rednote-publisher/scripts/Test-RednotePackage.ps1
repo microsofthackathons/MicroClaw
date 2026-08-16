@@ -211,8 +211,22 @@ if (-not (Test-Path -LiteralPath $resolvedPackagePath -PathType Container)) {
 }
 
 $errors = [System.Collections.Generic.List[string]]::new()
+$stageValidator = Join-Path $PSScriptRoot "Test-RednoteStage.ps1"
+foreach ($stage in @("Ideas", "Material")) {
+    $stageOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $stageValidator `
+        -Stage $stage `
+        -ProjectPath $resolvedPackagePath 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        $errors.Add("$stage stage validation failed: $($stageOutput.Trim())")
+    }
+}
 $requiredFiles = @(
     "ideas.json",
+    "ideas.md",
+    "ideas-validation.json",
+    "material-kit.json",
+    "material-kit.md",
+    "material-validation.json",
     "package.json",
     "post.md",
     "cover.png",
@@ -228,6 +242,7 @@ foreach ($relativePath in $requiredFiles) {
 
 $packageSpec = $null
 $ideasSpec = $null
+$materialSpec = $null
 $manifestSpec = $null
 $packageJsonPath = Join-Path $resolvedPackagePath "package.json"
 if (Test-Path -LiteralPath $packageJsonPath -PathType Leaf) {
@@ -244,13 +259,42 @@ $ideasPath = Join-Path $resolvedPackagePath "ideas.json"
 if (Test-Path -LiteralPath $ideasPath -PathType Leaf) {
     try {
         $ideasSpec = Get-Content -LiteralPath $ideasPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if (-not $ideasSpec.PSObject.Properties["selectedAngle"] -or
-            [string]::IsNullOrWhiteSpace([string]$ideasSpec.selectedAngle)) {
-            $errors.Add("ideas.json requires a selectedAngle.")
+        if ($ideasSpec.schemaVersion -ne 1 -or
+            -not (Test-NonEmptyString $ideasSpec.projectId) -or
+            -not (Test-NonEmptyString $ideasSpec.recommendedIdeaId)) {
+            $errors.Add("ideas.json requires schemaVersion, projectId, and recommendedIdeaId.")
         }
     }
     catch {
         $errors.Add("ideas.json is not valid JSON: $($_.Exception.Message)")
+    }
+}
+
+$materialPath = Join-Path $resolvedPackagePath "material-kit.json"
+if (Test-Path -LiteralPath $materialPath -PathType Leaf) {
+    try {
+        $materialSpec = Get-Content -LiteralPath $materialPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        if ($materialSpec.schemaVersion -ne 1) {
+            $errors.Add("material-kit.json schemaVersion must be 1.")
+        }
+        foreach ($field in @("projectId", "materialKitId", "selectedIdeaId")) {
+            if (-not (Test-NonEmptyString $materialSpec.$field)) {
+                $errors.Add("material-kit.json requires a non-empty $field.")
+            }
+        }
+        if ($null -ne $ideasSpec) {
+            if ($materialSpec.projectId -ne $ideasSpec.projectId) {
+                $errors.Add("material-kit.json projectId must match ideas.json.")
+            }
+            $ideaIds = @($ideasSpec.ideas | ForEach-Object { $_.id })
+            if ($ideaIds -notcontains $materialSpec.selectedIdeaId) {
+                $errors.Add("material-kit.json selectedIdeaId must match ideas.json.")
+            }
+        }
+    }
+    catch {
+        $errors.Add("material-kit.json is not valid JSON: $($_.Exception.Message)")
     }
 }
 
@@ -299,6 +343,34 @@ foreach ($image in $imageFiles) {
 
 if ($null -ne $packageSpec) {
     try {
+        if ($packageSpec.schemaVersion -ne 1) {
+            $errors.Add("package.json schemaVersion must be 1.")
+        }
+        foreach ($field in @("projectId", "materialKitId")) {
+            if (-not (Test-NonEmptyString $packageSpec.$field)) {
+                $errors.Add("package.json requires a non-empty $field.")
+            }
+        }
+        if ($null -ne $materialSpec) {
+            if ($packageSpec.projectId -ne $materialSpec.projectId) {
+                $errors.Add("package.json projectId must match material-kit.json.")
+            }
+            if ($packageSpec.materialKitId -ne $materialSpec.materialKitId) {
+                $errors.Add("package.json materialKitId must match material-kit.json.")
+            }
+            $allowedSourceUrls = @(
+                @($materialSpec.sourceFacts) |
+                    Where-Object { $_.sourceType -eq "web" } |
+                    ForEach-Object { $_.sourceUrl }
+            )
+            foreach ($source in @($packageSpec.sources)) {
+                if ($null -eq $source -or
+                    -not (Test-NonEmptyString $source.url) -or
+                    $allowedSourceUrls -notcontains $source.url) {
+                    $errors.Add("Every package source must come from material-kit.json.")
+                }
+            }
+        }
         foreach ($field in @("topic", "audience", "angle", "body", "coverText")) {
             if (-not (Test-NonEmptyString $packageSpec.$field)) {
                 $errors.Add("package.json requires a non-empty $field.")
@@ -333,7 +405,18 @@ if ($null -ne $packageSpec) {
     }
 }
 
-$textFiles = @("ideas.json", "package.json", "post.md", "publish-checklist.md", "sources.md")
+$textFiles = @(
+    "ideas.json",
+    "ideas.md",
+    "ideas-validation.json",
+    "material-kit.json",
+    "material-kit.md",
+    "material-validation.json",
+    "package.json",
+    "post.md",
+    "publish-checklist.md",
+    "sources.md"
+)
 foreach ($relativePath in $textFiles) {
     $candidate = Join-Path $resolvedPackagePath $relativePath
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
@@ -355,6 +438,14 @@ if ($null -ne $manifestSpec) {
         }
         if ($manifestSpec.status -ne "publish-ready") {
             $errors.Add("manifest.json status must be publish-ready.")
+        }
+        if ($null -ne $materialSpec) {
+            if ($manifestSpec.projectId -ne $materialSpec.projectId) {
+                $errors.Add("manifest.json projectId must match material-kit.json.")
+            }
+            if ($manifestSpec.materialKitId -ne $materialSpec.materialKitId) {
+                $errors.Add("manifest.json materialKitId must match material-kit.json.")
+            }
         }
         if ($manifestSpec.canvas.width -ne 1242 -or $manifestSpec.canvas.height -ne 1660) {
             $errors.Add("manifest.json canvas must be 1242x1660.")

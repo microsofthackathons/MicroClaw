@@ -5,7 +5,7 @@
 | Specialist agent | Persona and professional role | Hero scenarios |
 | --- | --- | --- |
 | **Master Archive (归藏大师)** | Meticulous digital archivist organizing local folders, converting files, and summarizing bulk documents | Batch file conversion and processing; smart file and directory cleanup; bulk document summarization and extraction |
-| **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic discovery and angle selection; post and visual-card production; package review and export |
+| **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic-idea discovery; sourced material-kit creation; post and visual-package generation |
 | **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
@@ -53,32 +53,32 @@ Example commands:
 - **Domain expertise:** Rednote (小红书) topic discovery, audience hooks, post writing, visual-card design, and publishing QA.
 - **Main responsibilities:** Connect research, writing, visual production, and validation into a local package ready for human review and upload.
 
-### Scenario 1: Topic discovery to publish-ready Rednote package
+### Scenario 1: Rednote topic-idea discovery
 
-Researches recent audience conversations, selects a defensible angle, writes the post, renders a cover and visual cards, and exports a validated package in one workflow.
-
-Example commands:
-
-- "Find a useful topic for first-time home coffee brewers, then create a complete Rednote post package with sources, copy, cover, visual cards, and hashtags."
-- "Research recent discussion about compact workspaces and turn the strongest practical angle into a publish-ready Rednote package."
-
-### Scenario 2: Source material to Rednote package
-
-Extracts the strongest truthful details from user-provided notes, documents, links, or transcripts and turns them into the same complete visual package without broad topic discovery.
+Researches recent audience conversations and returns five specific topic candidates with hooks, freshness, evidence, and a recommended idea for the next stage.
 
 Example commands:
 
-- "Turn these tea-house visit notes into a Rednote package with title options, a complete post, a cover, four visual cards, and hashtags."
-- "Use this interview transcript to create a Rednote explainer package while preserving every quoted claim and marking facts that need verification."
+- "Find five useful Rednote topics for first-time home coffee brewers, explain why each matters now, and recommend one."
+- "Research recent discussion about compact workspaces and save a shortlist of specific, sourced Rednote angles."
 
-### Scenario 3: Package review, revision, and export
+### Scenario 2: Sourced material-kit creation
 
-Loads the current package, checks factual support and visual consistency, applies revisions, rerenders the assets, and verifies that no placeholders or missing deliverables remain.
+Takes the selected idea and builds a reusable material kit containing factual claims, source links, audience needs, key messages, keywords, an outline, and visual direction.
 
 Example commands:
 
-- "Review the current Rednote package for unsupported claims, weak titles, repeated cards, and unreadable text, then revise and export it again."
-- "Shorten the current post, make the cover more specific, regenerate the visual cards, and verify the final upload checklist."
+- "Build a material kit for the recommended compact-workspace idea, including source facts, keywords, a post outline, and six card concepts."
+- "Turn this interview transcript into a material kit while preserving quotations and marking facts that still need verification."
+
+### Scenario 3: Material kit to publish-ready package
+
+Consumes the material kit to write complete copy and render a validated cover and visual-card set, without returning to broad topic discovery.
+
+Example commands:
+
+- "Use the current material kit to generate the final Rednote post, cover, six visual cards, hashtags, and upload checklist."
+- "Create a publish-ready Rednote package from this material-kit directory and report the exact output path."
 
 ## Intel Analyst (前哨智囊)
 

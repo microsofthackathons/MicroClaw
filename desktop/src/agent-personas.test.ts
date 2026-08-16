@@ -6,6 +6,7 @@ import { getAgentSkills, matchesSkill, resolveSkillFilterNames } from "./agent-c
 import {
   AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
+  CREATIVE_MUSE_LEGACY_PIPELINE_MARKER,
   CREATIVE_MUSE_PIPELINE_SECTION,
   ensureAgentPersonasConfig,
   getAgentPersona,
@@ -223,7 +224,7 @@ describe("agent personas", () => {
       "trend-aware Rednote content producer",
     );
     expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
-      "Rednote Publisher skill",
+      "three distinct durable stages",
     );
     expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Creative Muse",
@@ -245,13 +246,46 @@ describe("agent personas", () => {
     expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
     const migrated = fs.readFileSync(agentsPath, "utf-8");
     expect(migrated).toContain("Keep my editorial rules.");
-    expect(migrated).toContain("## Rednote publishing pipeline");
+    expect(migrated).toContain("## Rednote publishing pipeline v2");
     expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
     expect(
       fs
         .readFileSync(agentsPath, "utf-8")
         .match(new RegExp(CREATIVE_MUSE_PIPELINE_SECTION.split("\n")[0], "g")),
     ).toHaveLength(1);
+  });
+
+  it("replaces the legacy monolithic Creative Muse pipeline with v2", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("creative-muse");
+    if (!persona) throw new Error("Creative Muse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Creative Muse workspace is not configured");
+    fs.mkdirSync(workspace, { recursive: true });
+    const agentsPath = path.join(workspace, "AGENTS.md");
+    fs.writeFileSync(
+      agentsPath,
+      `# Custom guide
+
+## Rednote publishing pipeline
+
+- ${CREATIVE_MUSE_LEGACY_PIPELINE_MARKER}; material skips discovery.
+
+## Custom rules
+
+Keep this section.
+`,
+      "utf-8",
+    );
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
+    const migrated = fs.readFileSync(agentsPath, "utf-8");
+    expect(migrated).toContain("## Rednote publishing pipeline v2");
+    expect(migrated).not.toContain(CREATIVE_MUSE_LEGACY_PIPELINE_MARKER);
+    expect(migrated).toContain("## Custom rules");
+    expect(migrated).toContain("Keep this section.");
   });
 
   it("migrates an installed Growth Hacker to Intel Analyst without losing custom settings", () => {

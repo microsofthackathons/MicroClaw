@@ -91,8 +91,8 @@ describe("agent store", () => {
     expect(store.marketAgents.find((entry) => entry.id === "creative-muse")).toMatchObject({
       name: "Creative Muse",
       description:
-        "A Rednote content studio from topic inspiration to publish-ready visual packages",
-      tags: ["Topic Discovery", "Visual Creation", "Package Export"],
+        "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+      tags: ["Topic Discovery", "Material Kits", "Visual Packages"],
       isAdded: false,
     });
     expect(store.marketAgents.some((entry) => entry.id === "singer")).toBe(false);

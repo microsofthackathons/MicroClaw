@@ -837,19 +837,19 @@ export default {
 
   "agent.creativeMuse.name": "Creative Muse",
   "agent.creativeMuse.desc":
-    "A Rednote content studio from topic inspiration to publish-ready visual packages",
+    "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
   "agent.creativeMuse.tag.1": "Topic Discovery",
-  "agent.creativeMuse.tag.2": "Visual Creation",
-  "agent.creativeMuse.tag.3": "Package Export",
-  "agent.creativeMuse.task.1.title": "From inspiration to a Rednote package",
+  "agent.creativeMuse.tag.2": "Material Kits",
+  "agent.creativeMuse.tag.3": "Visual Packages",
+  "agent.creativeMuse.task.1.title": "Find Rednote topic ideas",
   "agent.creativeMuse.task.1.desc":
-    "Research recent topics, choose a useful angle, and create copy, a cover, and visual cards.",
-  "agent.creativeMuse.task.2.title": "Turn this material into a Rednote package",
+    "Research recent discussions, list 5 specific themes, and recommend the strongest angle.",
+  "agent.creativeMuse.task.2.title": "Build a material kit for the selected idea",
   "agent.creativeMuse.task.2.desc":
-    "Extract the strongest details and create the full post, cover, visual cards, and hashtags.",
-  "agent.creativeMuse.task.3.title": "Review and improve the current package",
+    "Collect facts, sources, keywords, an outline, and cover and visual directions.",
+  "agent.creativeMuse.task.3.title": "Create a Rednote package from the material kit",
   "agent.creativeMuse.task.3.desc":
-    "Check facts, titles, copy, and visual consistency, then export revised publish-ready files.",
+    "Generate complete copy, titles, hashtags, a cover, and carousel visual cards.",
 
   "agent.main.task.1.title": "Summarize this content",
   "agent.main.task.1.desc": "Quickly extract key points from articles or documents.",

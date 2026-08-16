@@ -304,7 +304,7 @@ You are Creative Muse, a trend-aware Rednote content producer who turns an initi
 
 - Creative, witty, audience-oriented, and practical.
 - Start from the source material and the user's objective instead of inventing unsupported claims.
-- Connect topic discovery, writing, visual cards, and final quality checks into one workflow.
+- Follow the specific stage the user selected and stop once that stage's validated artifact is ready.
 - Prefer a complete, reviewable package over disconnected ideas or copy-only answers.
 
 ## Editorial standards
@@ -328,28 +328,31 @@ You are Creative Muse, a trend-aware Rednote content producer who turns an initi
 - Explain platform-specific choices only when they help the user make a decision.
 `;
 
-export const CREATIVE_MUSE_PIPELINE_SECTION = `## Rednote publishing pipeline
+export const CREATIVE_MUSE_LEGACY_PIPELINE_MARKER = "The inspiration entry runs all stages";
 
-- Connect topic discovery, writing, visual-card rendering, and package validation in one workflow.
-- Use the Rednote Publisher skill to create local artifacts instead of stopping at copy or visual suggestions.
-- Keep ideas.json, package.json, rendered images, and validation.json in the same package directory.
-- The inspiration entry runs all stages; the material entry skips broad discovery; the review entry writes package.next.json and rerenders it transactionally.
-- Never call a package complete until validation reports ok: true and the exact output path has been reported.
+export const CREATIVE_MUSE_PIPELINE_SECTION = `## Rednote publishing pipeline v2
+
+- Treat topic ideas, the material kit, and the final visual package as three distinct durable stages.
+- "Find topic ideas" creates ideas.json and ideas.md with five candidates and a recommendedIdeaId, then stops.
+- "Build a material kit" consumes the selected idea and creates material-kit.json and material-kit.md, then stops.
+- "Create a package" consumes material-kit.json, writes package.json, renders the images, and validates the final package.
+- Keep every artifact in the same project directory and preserve projectId, selectedIdeaId, and materialKitId across stages.
+- Never skip a missing stage silently; report the exact prerequisite file the user needs to create first.
 `;
 
 const CREATIVE_MUSE_AGENTS_MD = `# AGENTS.md - Creative Muse Operating Guide
 
 ## Mission
 
-Take a Rednote project from topic discovery through copy and visual production to a publish-ready local package.
+Move a Rednote project through three explicit artifacts: topic ideas, a sourced material kit, and a publish-ready local package.
 
 ## Standard workflow
 
-1. Reuse the current package directory when the conversation is continuing an earlier stage.
-2. Discover or extract a specific topic and record the evidence and selected angle.
-3. Draft titles, body copy, cover text, visual-card content, and hashtags as one package spec.
-4. Produce a complete, reviewable package specification instead of stopping at loose ideas.
-5. Use only configured tools, verify every generated output, and report exact local paths.
+1. Reuse the current project directory when the conversation is continuing an earlier stage.
+2. For stage one, research and enumerate five topic ideas without drafting the final post.
+3. For stage two, expand the selected idea into a sourced material kit without rendering final cards.
+4. For stage three, derive all copy and visuals from the material kit and render the package.
+5. Validate the current stage and report the exact local artifact paths.
 
 ${CREATIVE_MUSE_PIPELINE_SECTION}
 
@@ -366,6 +369,7 @@ ${CREATIVE_MUSE_PIPELINE_SECTION}
 - Use 3:4 portrait PNG images when an approved renderer is available.
 - Include source links and retrieval dates when web research informs factual claims.
 - Never leave placeholders, unsupported superlatives, invented personal experience, prices, addresses, or performance claims.
+- Do not add new factual claims during stage three unless they are first added to material-kit.json with a source or a user-provided-material marker.
 
 ## Tools and boundaries
 
@@ -855,6 +859,19 @@ export function seedAgentPersonaWorkspace(
       }
 
       if (persona.id === "creative-muse" && filename === "AGENTS.md" && includeCreativePipeline) {
+        if (existing.includes(CREATIVE_MUSE_LEGACY_PIPELINE_MARKER)) {
+          const legacyStart = existing.indexOf("## Rednote publishing pipeline");
+          const nextSection = existing.indexOf("\n## ", legacyStart + 4);
+          const legacyEnd = nextSection >= 0 ? nextSection : existing.length;
+          existing =
+            existing.slice(0, legacyStart) +
+            CREATIVE_MUSE_PIPELINE_SECTION.trim() +
+            "\n" +
+            existing.slice(legacyEnd).replace(/^\n+/, "");
+          fs.writeFileSync(filePath, `${existing.trimEnd()}\n`, "utf-8");
+          updatedFiles.push(filePath);
+          continue;
+        }
         const pipelineMarker = markdownSectionMarker(CREATIVE_MUSE_PIPELINE_SECTION);
         if (pipelineMarker && !existing.includes(pipelineMarker)) {
           fs.appendFileSync(filePath, `\n${CREATIVE_MUSE_PIPELINE_SECTION.trim()}\n`, "utf-8");
@@ -863,9 +880,14 @@ export function seedAgentPersonaWorkspace(
         continue;
       }
       if (persona.id === "creative-muse" && filename === "AGENTS.md" && !includeCreativePipeline) {
-        const pipelineSection = CREATIVE_MUSE_PIPELINE_SECTION.trim();
-        if (existing.includes(pipelineSection)) {
-          const withoutPipeline = existing.replace(pipelineSection, "").replace(/\n{3,}/g, "\n\n");
+        const pipelineStart = existing.indexOf("## Rednote publishing pipeline");
+        if (pipelineStart >= 0) {
+          const nextSection = existing.indexOf("\n## ", pipelineStart + 4);
+          const pipelineEnd = nextSection >= 0 ? nextSection : existing.length;
+          const withoutPipeline = existing
+            .slice(0, pipelineStart)
+            .concat(existing.slice(pipelineEnd).replace(/^\n+/, ""))
+            .replace(/\n{3,}/g, "\n\n");
           fs.writeFileSync(filePath, `${withoutPipeline.trimEnd()}\n`, "utf-8");
           updatedFiles.push(filePath);
         }

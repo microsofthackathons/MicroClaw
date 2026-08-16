@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "projectId": "20260816-home-coffee",
+  "materialKitId": "kit-idea-01",
+  "selectedIdeaId": "idea-01",
+  "topic": "在家做一杯稳定的手冲咖啡",
+  "audience": "刚开始学习手冲咖啡的上班族",
+  "angle": "先固定三个基础变量，再逐次调整",
+  "contentGoal": "让读者获得一套当天就能执行的稳定手冲方法",
+  "keyMessages": [
+    "先固定粉量、注水量和水温",
+    "记录研磨度与完成时间",
+    "一次只调整一个变量",
+    "连续七天观察酸甜苦变化"
+  ],
+  "sourceFacts": [
+    {
+      "fact": "同时改变多个冲煮变量会让结果难以比较",
+      "sourceType": "web",
+      "sourceTitle": "Coffee Variables Guide",
+      "sourceUrl": "https://example.com/coffee-variables",
+      "retrievedAt": "2026-08-16"
+    }
+  ],
+  "keywords": ["手冲咖啡", "咖啡新手", "参数记录", "居家咖啡"],
+  "outline": [
+    "为什么新手容易冲得不稳定",
+    "固定三个基础参数",
+    "记录时间与研磨度",
+    "七天练习与复盘"
+  ],
+  "visualDirection": {
+    "coverMood": "温暖、简洁、适合保存",
+    "palette": ["#FFF7F0", "#F06C5B", "#2F2522"],
+    "cardConcepts": [
+      "三个固定变量",
+      "记录表应该写什么",
+      "一次只改一个变量",
+      "七天练习清单"
+    ]
+  }
+}
