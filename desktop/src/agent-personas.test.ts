@@ -14,6 +14,7 @@ import {
   listConfiguredAgents,
   MARKET_SENTINEL_FINANCIAL_BOUNDARY_SECTION,
   MARKET_SENTINEL_OPERATING_BOUNDARY_SECTION,
+  OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION,
   removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
@@ -257,6 +258,33 @@ describe("agent personas", () => {
     );
     expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Market Sentinel",
+    );
+  });
+
+  it("seeds the Office Artisan workspace with its artifact-production context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("office-artisan");
+    if (!persona) throw new Error("Office Artisan persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "office-artisan",
+      name: "Office Artisan",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Office Artisan workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-office-artisan"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "Preserve original files by default",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "Re-open or inspect the generated artifact",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Office Artisan",
     );
   });
 
@@ -723,6 +751,70 @@ Keep this section.
     expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([]);
   });
 
+  it("migrates an installed Painter to Office Artisan and preserves its implicit workspace", () => {
+    const stateDir = createStateDir();
+    const legacyWorkspace = path.join(stateDir, "workspace-painter");
+    fs.mkdirSync(legacyWorkspace);
+    const agentsPath = path.join(legacyWorkspace, "AGENTS.md");
+    const soulPath = path.join(legacyWorkspace, "SOUL.md");
+    fs.writeFileSync(agentsPath, "# Custom production guide\n\nKeep my template rules.\n", "utf-8");
+    fs.writeFileSync(soulPath, "# Custom production persona\n\nKeep my review voice.\n", "utf-8");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "painter",
+            name: "My Document Studio",
+            skills: ["custom-skill"],
+            model: "custom/office-model",
+            default: true,
+            templatePack: "corporate",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "office-artisan", name: "My Document Studio" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "office-artisan")).toMatchObject({
+      name: "My Document Studio",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/office-model",
+      default: true,
+      templatePack: "corporate",
+    });
+    expect(agentList(config).find((entry) => entry.id === "painter")).toMatchObject({
+      name: "My Document Studio",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/office-model",
+      templatePack: "corporate",
+    });
+    expect(agentList(config).find((entry) => entry.id === "painter")).not.toHaveProperty("default");
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([
+      path.join(stateDir, "workspace-main", "IDENTITY.md"),
+      path.join(stateDir, "workspace-main", "SOUL.md"),
+      agentsPath,
+      path.join(legacyWorkspace, "IDENTITY.md"),
+      soulPath,
+    ]);
+    const agents = fs.readFileSync(agentsPath, "utf-8");
+    const soul = fs.readFileSync(soulPath, "utf-8");
+    expect(agents).toContain("Keep my template rules.");
+    expect(agents).toContain(OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION.split("\n")[0]);
+    expect(soul).toContain("Keep my review voice.");
+    expect(soul).toContain(OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION.split("\n")[0]);
+    expect(soul).toContain("## Shared safety rule");
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, "workspace-office-artisan"))).toBe(false);
+  });
+
   it("keeps Singer's implicit workspace when migrating to Creative Muse", () => {
     const stateDir = createStateDir();
     const config = {
@@ -940,6 +1032,25 @@ _Fill this in during your first conversation. Make it yours._
     };
 
     expect(removeConfiguredAgent(config, "market-sentinel").changed).toBe(true);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+  });
+
+  it("removes Office Artisan and its Painter compatibility alias together", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "office-artisan",
+            name: "Office Artisan",
+            workspace: "workspace-painter",
+          },
+          { id: "painter", name: "Office Artisan", workspace: "workspace-painter" },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "office-artisan").changed).toBe(true);
     expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
   });
 

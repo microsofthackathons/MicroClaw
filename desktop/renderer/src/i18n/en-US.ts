@@ -782,17 +782,21 @@ export default {
   "agent.codeGeek.task.3.desc":
     "Trace the first relevant error to its root cause, apply a fix, and verify the command.",
 
-  "agent.painter.name": "Van Gogh",
-  "agent.painter.desc": "Pixel-style illustration & scene creation",
-  "agent.painter.tag.1": "Illustration",
-  "agent.painter.tag.2": "Style Analysis",
-  "agent.painter.tag.3": "Scene Design",
-  "agent.painter.task.1.title": "Generate a cyberpunk cityscape",
-  "agent.painter.task.1.desc": "Create a futuristic cityscape illustration with neon lights.",
-  "agent.painter.task.2.title": "Design a game character portrait",
-  "agent.painter.task.2.desc": "Draw a stylized character concept based on your description.",
-  "agent.painter.task.3.title": "Create pixel emoji stickers",
-  "agent.painter.task.3.desc": "Generate cute retro pixel-style emoji stickers.",
+  "agent.officeArtisan.name": "Office Artisan",
+  "agent.officeArtisan.desc":
+    "Validated Word reports, Excel analysis & PowerPoint presentations from source material",
+  "agent.officeArtisan.tag.1": "Word Reports",
+  "agent.officeArtisan.tag.2": "Excel Analysis",
+  "agent.officeArtisan.tag.3": "Presentation Decks",
+  "agent.officeArtisan.task.1.title": "Turn these materials into a formal Word report",
+  "agent.officeArtisan.task.1.desc":
+    "Create a structured, sourced report in a new file and validate its layout and contents.",
+  "agent.officeArtisan.task.2.title": "Analyze this workbook and create a chart summary",
+  "agent.officeArtisan.task.2.desc":
+    "Preserve raw data, add reproducible calculations and charts, and verify formulas and ranges.",
+  "agent.officeArtisan.task.3.title": "Turn this report into a presentation deck",
+  "agent.officeArtisan.task.3.desc":
+    "Build a concise, source-faithful deck and validate slide order, readability, and overflow.",
 
   "agent.drPulse.name": "Dr. Pulse",
   "agent.drPulse.desc": "Evidence-led Windows diagnostics, guided tuning & scenario preparation",

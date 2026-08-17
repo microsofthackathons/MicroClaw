@@ -43,6 +43,8 @@ describe("agent store", () => {
     agentsList.mockResolvedValueOnce({
       agents: [
         { id: "main", name: "Assistant" },
+        { id: "office-artisan", name: "Office Artisan" },
+        { id: "painter", name: "Office Artisan" },
         { id: "dr-pulse", name: "Dr. Pulse" },
         { id: "master", name: "Dr. Pulse" },
         { id: "market-sentinel", name: "Market Sentinel" },
@@ -56,6 +58,7 @@ describe("agent store", () => {
 
     expect(store.agents.map((agent) => agent.id)).toEqual([
       "main",
+      "office-artisan",
       "dr-pulse",
       "market-sentinel",
       "creative-muse",
@@ -95,6 +98,24 @@ describe("agent store", () => {
       tags: ["App Prototyping", "Code Audits", "Build Diagnostics"],
       isAdded: false,
     });
+  });
+
+  it("presents the Office Artisan validated Office scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "office-artisan")).toMatchObject({
+      name: "Office Artisan",
+      description:
+        "Validated Word reports, Excel analysis & PowerPoint presentations from source material",
+      tags: ["Word Reports", "Excel Analysis", "Presentation Decks"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "office-artisan")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Turn these materials into a formal Word report" }),
+      expect.objectContaining({ title: "Analyze this workbook and create a chart summary" }),
+      expect.objectContaining({ title: "Turn this report into a presentation deck" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "painter")).toBe(false);
   });
 
   it("presents the Intel Analyst research scenarios", () => {
