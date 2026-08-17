@@ -280,6 +280,28 @@ describe("useSessionStore", () => {
     });
   });
 
+  it("keeps historical Leopard sessions visible under Market Sentinel", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:leopard:legacy",
+        title: "Legacy market review",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "market",
+        agentId: "leopard",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:leopard:legacy",
+      agentId: "market-sentinel",
+      title: "Legacy market review",
+    });
+  });
+
   it("removes a persisted reserved warm-up session on load", () => {
     storage["openclaw-sessions"] = JSON.stringify([
       {

@@ -825,18 +825,21 @@ export default {
   "agent.intelAnalyst.task.3.desc":
     "Monitor pricing, product updates, and market activity to surface changes and recommended responses.",
 
-  "agent.leopard.name": "Money Leopard",
-  "agent.leopard.desc": "Stock market analysis & portfolio tracking",
-  "agent.leopard.tag.1": "Stock Analysis",
-  "agent.leopard.tag.2": "Market Review",
-  "agent.leopard.tag.3": "Portfolio Mgmt",
-  "agent.leopard.task.1.title": "Today's market analysis",
-  "agent.leopard.task.1.desc": "Quick overview of market trends and sector movements.",
-  "agent.leopard.task.2.title": "30-day K-line review",
-  "agent.leopard.task.2.desc": "Review recent technical indicators and key support levels.",
-  "agent.leopard.task.3.title": "Position adjustment advice",
-  "agent.leopard.task.3.desc":
-    "Provide risk diversification optimization based on current holdings.",
+  "agent.marketSentinel.name": "Market Sentinel",
+  "agent.marketSentinel.desc":
+    "Sourced A-share briefs, filing tracking & watchlist monitoring without investment advice",
+  "agent.marketSentinel.tag.1": "Market Briefs",
+  "agent.marketSentinel.tag.2": "Filing Tracker",
+  "agent.marketSentinel.tag.3": "Watchlist Signals",
+  "agent.marketSentinel.task.1.title": "Prepare today's A-share market brief",
+  "agent.marketSentinel.task.1.desc":
+    "Summarize sourced index, breadth, turnover, sector, and scheduled-event data with timestamps.",
+  "agent.marketSentinel.task.2.title": "Track earnings and company announcements",
+  "agent.marketSentinel.task.2.desc":
+    "Review official filings, preserve reporting periods and units, and highlight factual changes.",
+  "agent.marketSentinel.task.3.title": "Monitor my watchlist and indicator changes",
+  "agent.marketSentinel.task.3.desc":
+    "Describe price, volume, and formula-based indicator changes without trade or position advice.",
 
   "agent.creativeMuse.name": "Creative Muse",
   "agent.creativeMuse.desc":

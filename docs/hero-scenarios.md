@@ -7,6 +7,7 @@
 | **Master Archive (归藏大师)** | Meticulous digital archivist organizing local folders, converting files, and summarizing bulk documents | Batch file conversion and processing; smart file and directory cleanup; bulk document summarization and extraction |
 | **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic-idea discovery; sourced material-kit creation; post and visual-package generation |
 | **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
+| **Market Sentinel (财经哨兵)** | Restrained financial-information analyst organizing sourced market data without giving investment advice | A-share market briefs; earnings and announcement tracking; watchlist and indicator monitoring |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
 
@@ -114,6 +115,41 @@ Example commands:
 
 - "Track these three competitors over the past week. Summarize pricing changes, product updates, and major announcements with sources and recommended responses."
 - "Review recent competitor launches in this category, identify needs they still do not address, and highlight the strongest opportunity windows."
+
+## Market Sentinel (财经哨兵)
+
+### Persona and professional role
+
+- **Persona and tone:** Evidence-led, timely, restrained, and numerically precise. Organizes financial information without making investment decisions for the user.
+- **Domain expertise:** A-share market summaries, company filings and earnings events, watchlist monitoring, and deterministic technical indicators.
+- **Main responsibilities:** Gather sourced market information, preserve timestamps and units, calculate reproducible indicators, and highlight factual changes without providing buy, sell, target-price, or position-sizing advice.
+
+### Scenario 1: A-share market briefing
+
+Produces a sourced pre-market context brief or post-close review covering available index, turnover, market breadth, sector, fund-flow, and scheduled-event data.
+
+Example commands:
+
+- "Create today's post-close A-share brief with major indexes, turnover, advance/decline breadth, top sector moves, and source timestamps."
+- "Prepare tomorrow's pre-market context using confirmed overnight markets and the official event calendar. Mark unavailable data explicitly."
+
+### Scenario 2: Earnings and announcement tracking
+
+Tracks official company and exchange disclosures, preserving reporting periods, publication dates, currencies, units, and whether figures are preliminary or audited.
+
+Example commands:
+
+- "Track this week's earnings and major announcements for these companies, compare consistent periods, and cite the official filings."
+- "Summarize what changed in this earnings report versus the prior year. Keep facts separate from interpretation."
+
+### Scenario 3: Watchlist and indicator monitoring
+
+Describes watchlist price, volume, volatility, and formula-based indicator changes using explicit periods and frequencies, without converting signals into trade advice.
+
+Example commands:
+
+- "Monitor these A-share symbols for daily price, volume, MA20, MACD, and RSI changes. Include formulas, timestamps, and missing data."
+- "Explain the last 30 trading days of indicator changes for this symbol, but do not recommend a trade or position adjustment."
 
 ## Dr. Pulse (系统神医)
 

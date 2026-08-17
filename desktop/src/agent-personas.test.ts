@@ -12,6 +12,8 @@ import {
   getAgentPersona,
   getAgentWorkspacePath,
   listConfiguredAgents,
+  MARKET_SENTINEL_FINANCIAL_BOUNDARY_SECTION,
+  MARKET_SENTINEL_OPERATING_BOUNDARY_SECTION,
   removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
@@ -228,6 +230,33 @@ describe("agent personas", () => {
     );
     expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Dr. Pulse",
+    );
+  });
+
+  it("seeds the Market Sentinel workspace with its non-advisory market context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("market-sentinel");
+    if (!persona) throw new Error("Market Sentinel persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "market-sentinel",
+      name: "Market Sentinel",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Market Sentinel workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-market-sentinel"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "Do not issue buy, sell, hold",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "Never execute or simulate a trade",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Market Sentinel",
     );
   });
 
@@ -575,6 +604,125 @@ Keep this section.
     });
   });
 
+  it("migrates an installed Leopard to Market Sentinel without losing custom settings", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-market-monitor");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "leopard",
+            name: "My Market Monitor",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/market-model",
+            default: true,
+            dataProvider: "licensed-feed",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "market-sentinel", name: "My Market Monitor" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "My Market Monitor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/market-model",
+      default: true,
+      dataProvider: "licensed-feed",
+    });
+    expect(agentList(config).find((entry) => entry.id === "leopard")).toMatchObject({
+      name: "My Market Monitor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/market-model",
+      dataProvider: "licensed-feed",
+    });
+    expect(agentList(config).find((entry) => entry.id === "leopard")).not.toHaveProperty("default");
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Market Sentinel",
+    );
+  });
+
+  it("keeps Leopard's implicit workspace when migrating to Market Sentinel", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "leopard", name: "Leopard" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "Market Sentinel",
+      workspace: path.join(stateDir, "workspace-leopard"),
+    });
+    expect(agentList(config).find((entry) => entry.id === "leopard")).toMatchObject({
+      name: "Market Sentinel",
+      workspace: path.join(stateDir, "workspace-leopard"),
+    });
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(
+      fs.readFileSync(path.join(stateDir, "workspace-leopard", "IDENTITY.md"), "utf-8"),
+    ).toContain("Name: Market Sentinel");
+    expect(fs.existsSync(path.join(stateDir, "workspace-market-sentinel"))).toBe(false);
+  });
+
+  it("adds mandatory Market Sentinel boundaries to a populated legacy workspace", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "legacy-market-workspace");
+    fs.mkdirSync(customWorkspace);
+    const agentsPath = path.join(customWorkspace, "AGENTS.md");
+    const soulPath = path.join(customWorkspace, "SOUL.md");
+    fs.writeFileSync(
+      agentsPath,
+      "# Custom market guide\n\nKeep my data-provider rules.\n",
+      "utf-8",
+    );
+    fs.writeFileSync(soulPath, "# Custom market persona\n\nKeep my reporting voice.\n", "utf-8");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "leopard", name: "Leopard", workspace: customWorkspace },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([
+      path.join(stateDir, "workspace", "IDENTITY.md"),
+      path.join(stateDir, "workspace", "SOUL.md"),
+      agentsPath,
+      path.join(customWorkspace, "IDENTITY.md"),
+      soulPath,
+    ]);
+
+    const agents = fs.readFileSync(agentsPath, "utf-8");
+    const soul = fs.readFileSync(soulPath, "utf-8");
+    expect(agents).toContain("Keep my data-provider rules.");
+    expect(agents).toContain(MARKET_SENTINEL_OPERATING_BOUNDARY_SECTION.split("\n")[0]);
+    expect(agents).toContain("Ask before creating an external alert");
+    expect(agents).toContain("Never send a report or change a subscription");
+    expect(soul).toContain("Keep my reporting voice.");
+    expect(soul).toContain(MARKET_SENTINEL_FINANCIAL_BOUNDARY_SECTION.split("\n")[0]);
+    expect(soul).toContain("## Shared safety rule");
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([]);
+  });
+
   it("keeps Singer's implicit workspace when migrating to Creative Muse", () => {
     const stateDir = createStateDir();
     const config = {
@@ -773,6 +921,25 @@ _Fill this in during your first conversation. Make it yours._
     };
 
     expect(removeConfiguredAgent(config, "dr-pulse").changed).toBe(true);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+  });
+
+  it("removes Market Sentinel and its Leopard compatibility alias together", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "market-sentinel",
+            name: "Market Sentinel",
+            workspace: "workspace-market-sentinel",
+          },
+          { id: "leopard", name: "Market Sentinel", workspace: "workspace-market-sentinel" },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "market-sentinel").changed).toBe(true);
     expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
   });
 

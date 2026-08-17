@@ -10,6 +10,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     { id: "painter", name: "Van Gogh" },
     { id: "dr-pulse", name: "Dr. Pulse" },
     { id: "intel-analyst", name: "Intel Analyst" },
+    { id: "market-sentinel", name: "Market Sentinel" },
   ];
   const browserAgentsSnapshot = () => ({
     agents: browserAgentRoster.map((agent) => ({ ...agent })),

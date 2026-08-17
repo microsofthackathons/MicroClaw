@@ -159,6 +159,18 @@ describe("agent catalog skills binding", () => {
     expect(canonicalAgentId("master")).toBe("dr-pulse");
   });
 
+  it("replaces Leopard with the dedicated Market Sentinel persona", () => {
+    expect(AGENT_CATALOG.some((agent) => agent.id === "leopard")).toBe(false);
+    expect(AGENT_CATALOG.find((agent) => agent.id === "market-sentinel")).toMatchObject({
+      name: "Market Sentinel",
+      avatar: "market-sentinel-avatar.png",
+      image: "stock.png",
+      workspaceDirName: "workspace-market-sentinel",
+      personaProfile: "market-sentinel",
+    });
+    expect(canonicalAgentId("leopard")).toBe("market-sentinel");
+  });
+
   it("replaces Singer with the dedicated Creative Muse persona", () => {
     expect(AGENT_CATALOG.some((agent) => agent.id === "singer")).toBe(false);
     expect(AGENT_CATALOG.find((agent) => agent.id === "creative-muse")).toMatchObject({

@@ -45,6 +45,8 @@ describe("agent store", () => {
         { id: "main", name: "Assistant" },
         { id: "dr-pulse", name: "Dr. Pulse" },
         { id: "master", name: "Dr. Pulse" },
+        { id: "market-sentinel", name: "Market Sentinel" },
+        { id: "leopard", name: "Market Sentinel" },
         { id: "creative-muse", name: "Creative Muse" },
         { id: "singer", name: "Creative Muse" },
       ],
@@ -52,7 +54,12 @@ describe("agent store", () => {
 
     await store.fetchAgents();
 
-    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "dr-pulse", "creative-muse"]);
+    expect(store.agents.map((agent) => agent.id)).toEqual([
+      "main",
+      "dr-pulse",
+      "market-sentinel",
+      "creative-muse",
+    ]);
   });
 
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
@@ -117,6 +124,24 @@ describe("agent store", () => {
       expect.objectContaining({ title: "Prepare my PC for deep work or a video call" }),
     ]);
     expect(store.marketAgents.some((entry) => entry.id === "master")).toBe(false);
+  });
+
+  it("presents the Market Sentinel non-advisory financial scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "Market Sentinel",
+      description:
+        "Sourced A-share briefs, filing tracking & watchlist monitoring without investment advice",
+      tags: ["Market Briefs", "Filing Tracker", "Watchlist Signals"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "market-sentinel")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Prepare today's A-share market brief" }),
+      expect.objectContaining({ title: "Track earnings and company announcements" }),
+      expect.objectContaining({ title: "Monitor my watchlist and indicator changes" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "leopard")).toBe(false);
   });
 
   it("presents the Creative Muse platform content scenarios", () => {
