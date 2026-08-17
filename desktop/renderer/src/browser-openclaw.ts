@@ -68,6 +68,45 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       generateSnapshot: noopAsync,
       onIntegrityAlert: noopSub,
     },
+    windowsNodeMxc: {
+      getStatus: async () => ({
+        desiredEnabled: false,
+        effectiveEnabled: false,
+        selectedNodeId: "",
+        settingsPath: "",
+        companionPath: "",
+        companionInstalled: false,
+        settingsLoaded: false,
+        settingsFingerprint: null,
+        strictFallbackEffective: false,
+        allowWindowsUiEffective: false,
+        folders: [],
+        nodes: [],
+        selectedNode: null,
+        gatewayPolicyState: "drift" as const,
+        gatewayPolicyReady: false,
+        effectiveToolsReady: false,
+        durableApprovalsPresent: null,
+        probe: {
+          outcome: "error" as const,
+          tier: null,
+          needsDaclAugmentation: false,
+          degraded: false,
+          warnings: [],
+          reason: "Unavailable in browser development",
+        },
+        smoke: null,
+        blockers: ["Unavailable in browser development"],
+        warnings: [],
+        remediation: [],
+      }),
+      setEnabled: async () => {
+        throw new Error("Unavailable in browser development");
+      },
+      runSmoke: async () => {
+        throw new Error("Unavailable in browser development");
+      },
+    },
     sandbox: {
       getStatus: async () => ({
         available: true,

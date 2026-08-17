@@ -305,6 +305,13 @@ contextBridge.exposeInMainWorld("openclaw", {
       }>,
   },
 
+  windowsNodeMxc: {
+    getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
+    setEnabled: (params: { enabled: boolean; nodeId?: string }) =>
+      ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
+    runSmoke: () => ipcRenderer.invoke("windows-node-mxc:run-smoke"),
+  },
+
   // --- Tool Sandbox ---
   sandbox: {
     getStatus: () => ipcRenderer.invoke("sandbox:get-status"),

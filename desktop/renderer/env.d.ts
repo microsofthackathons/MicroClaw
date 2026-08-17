@@ -202,9 +202,15 @@ interface OpenClawAPI {
     refresh(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
-    setAgentSkills(agentId: string, skillIds: string[]): Promise<{ agentId: string; skills: string[] }>;
+    setAgentSkills(
+      agentId: string,
+      skillIds: string[],
+    ): Promise<{ agentId: string; skills: string[] }>;
     getStatus(agentId: string): Promise<SkillsStatus>;
-    setGlobalEnabled(skillKey: string, enabled: boolean): Promise<{ skillKey: string; enabled: boolean }>;
+    setGlobalEnabled(
+      skillKey: string,
+      enabled: boolean,
+    ): Promise<{ skillKey: string; enabled: boolean }>;
     applyAgentConfig(
       agentId: string,
       skillIds: string[],
@@ -222,11 +228,7 @@ interface OpenClawAPI {
   };
   chat: {
     isConnected(): Promise<boolean>;
-    sendMessage(
-      sessionKey: string,
-      message: string,
-      attachments?: ChatAttachment[],
-    ): Promise<void>;
+    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
@@ -310,9 +312,7 @@ interface OpenClawAPI {
     disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
     getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
     listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
-    onGitHubCopilotLoginEvent(
-      callback: (event: GitHubCopilotLoginEvent) => void,
-    ): () => void;
+    onGitHubCopilotLoginEvent(callback: (event: GitHubCopilotLoginEvent) => void): () => void;
   };
   window: {
     minimize(): Promise<void>;
@@ -338,6 +338,74 @@ interface OpenClawAPI {
   };
   logs: {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
+  };
+  windowsNodeMxc: {
+    getStatus(): Promise<{
+      desiredEnabled: boolean;
+      effectiveEnabled: boolean;
+      selectedNodeId: string;
+      settingsPath: string;
+      companionPath: string;
+      companionInstalled: boolean;
+      settingsLoaded: boolean;
+      settingsFingerprint: string | null;
+      strictFallbackEffective: boolean;
+      allowWindowsUiEffective: boolean;
+      folders: Array<{ path: string; access: "ro" | "rw" }>;
+      nodes: Array<{
+        id: string;
+        displayName: string;
+        platform: string;
+        connected: boolean;
+        paired: boolean;
+        remoteIp: string | null;
+        commands: string[];
+      }>;
+      selectedNode: {
+        id: string;
+        displayName: string;
+        platform: string;
+        connected: boolean;
+        paired: boolean;
+        remoteIp: string | null;
+        commands: string[];
+      } | null;
+      gatewayPolicyState: "active" | "locked" | "drift";
+      gatewayPolicyReady: boolean;
+      effectiveToolsReady: boolean;
+      durableApprovalsPresent: boolean | null;
+      probe: {
+        outcome: "supported" | "unsupported" | "error";
+        tier: string | null;
+        needsDaclAugmentation: boolean;
+        degraded: boolean;
+        warnings: string[];
+        reason: string | null;
+      };
+      smoke: {
+        nodeId: string;
+        settingsFingerprint: string;
+        probeTier: string;
+        checkedAt: string;
+        hostname: { outcome: string; reason: string };
+        powershell: { outcome: string; reason: string };
+      } | null;
+      blockers: string[];
+      warnings: string[];
+      remediation: string[];
+    }>;
+    setEnabled(params: {
+      enabled: boolean;
+      nodeId?: string;
+    }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
+    runSmoke(): Promise<{
+      nodeId: string;
+      settingsFingerprint: string;
+      probeTier: string;
+      checkedAt: string;
+      hostname: { outcome: string; reason: string };
+      powershell: { outcome: string; reason: string };
+    }>;
   };
   sandbox: {
     getStatus(): Promise<{
