@@ -9,6 +9,7 @@ import {
   getAgentOwnedSkillIds,
   isKnownSkillId,
   matchesSkill,
+  canonicalAgentId,
   resolveSkillFilterNames,
   sanitizeAgentSkillIds,
   SKILL_MATCH_NAMES,
@@ -144,6 +145,18 @@ describe("agent catalog skills binding", () => {
       workspaceDirName: "workspace-intel-analyst",
       personaProfile: "intel-analyst",
     });
+  });
+
+  it("replaces Master with the dedicated Dr. Pulse persona", () => {
+    expect(AGENT_CATALOG.some((agent) => agent.id === "master")).toBe(false);
+    expect(AGENT_CATALOG.find((agent) => agent.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      avatar: "dr-pulse-avatar.png",
+      image: "Diviner.png",
+      workspaceDirName: "workspace-dr-pulse",
+      personaProfile: "dr-pulse",
+    });
+    expect(canonicalAgentId("master")).toBe("dr-pulse");
   });
 
   it("replaces Singer with the dedicated Creative Muse persona", () => {

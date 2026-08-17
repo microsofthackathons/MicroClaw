@@ -794,17 +794,20 @@ export default {
   "agent.painter.task.3.title": "Create pixel emoji stickers",
   "agent.painter.task.3.desc": "Generate cute retro pixel-style emoji stickers.",
 
-  "agent.master.name": "Life Master",
-  "agent.master.desc": "Life planning, meals & travel arrangements",
-  "agent.master.tag.1": "Life Planning",
-  "agent.master.tag.2": "Meal Suggestions",
-  "agent.master.tag.3": "Travel Plans",
-  "agent.master.task.1.title": "Plan my weekend trip",
-  "agent.master.task.1.desc": "Customize a two-day itinerary based on weather and preferences.",
-  "agent.master.task.2.title": "Recommend healthy recipes",
-  "agent.master.task.2.desc": "Suggest balanced meal plans matching your taste preferences.",
-  "agent.master.task.3.title": "Create a study plan",
-  "agent.master.task.3.desc": "Break down an efficient daily study schedule by goals and time.",
+  "agent.drPulse.name": "Dr. Pulse",
+  "agent.drPulse.desc": "Evidence-led Windows diagnostics, guided tuning & scenario preparation",
+  "agent.drPulse.tag.1": "System Health",
+  "agent.drPulse.tag.2": "Guided Tuning",
+  "agent.drPulse.tag.3": "Scenario Prep",
+  "agent.drPulse.task.1.title": "Diagnose my Windows PC before proposing repairs",
+  "agent.drPulse.task.1.desc":
+    "Run read-only health checks, show the evidence, and prepare a scoped, reversible repair plan.",
+  "agent.drPulse.task.2.title": "Tune this Windows setting or peripheral",
+  "agent.drPulse.task.2.desc":
+    "Translate the request into supported steps, explain impact and rollback, and wait for approval.",
+  "agent.drPulse.task.3.title": "Prepare my PC for deep work or a video call",
+  "agent.drPulse.task.3.desc":
+    "Inspect readiness, propose supported app and system adjustments, and apply only confirmed changes.",
 
   "agent.intelAnalyst.name": "Intel Analyst",
   "agent.intelAnalyst.desc":

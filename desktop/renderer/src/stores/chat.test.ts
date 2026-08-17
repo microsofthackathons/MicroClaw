@@ -610,6 +610,13 @@ describe("useChatStore — draft sessions", () => {
     expect(store.sessionKey).toMatch(/^agent:singer:session-/);
     expect(store.currentSessionAgentId).toBe("creative-muse");
   });
+
+  it("attributes historical Master session keys to Dr. Pulse", () => {
+    const store = useChatStore();
+    store.newSession("master");
+    expect(store.sessionKey).toMatch(/^agent:master:session-/);
+    expect(store.currentSessionAgentId).toBe("dr-pulse");
+  });
 });
 
 describe("useChatStore — attachments", () => {
