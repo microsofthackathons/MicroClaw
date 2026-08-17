@@ -835,18 +835,21 @@ export default {
   "agent.leopard.task.3.desc":
     "Provide risk diversification optimization based on current holdings.",
 
-  "agent.singer.name": "Singer-Songwriter",
-  "agent.singer.desc": "Lyrics, arrangement inspiration & music style analysis",
-  "agent.singer.tag.1": "Lyrics Writing",
-  "agent.singer.tag.2": "Arrangement Ideas",
-  "agent.singer.tag.3": "Style Analysis",
-  "agent.singer.task.1.title": "Write some lyrics for me",
-  "agent.singer.task.1.desc": "Create original lyrics based on theme and emotion.",
-  "agent.singer.task.2.title": "Analyze this song's style",
-  "agent.singer.task.2.desc": "Break down genre, arrangement techniques, and emotional expression.",
-  "agent.singer.task.3.title": "Recommend arrangement inspiration",
-  "agent.singer.task.3.desc":
-    "Suggest reference tracks and sound combinations by style preference.",
+  "agent.creativeMuse.name": "Creative Muse",
+  "agent.creativeMuse.desc":
+    "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+  "agent.creativeMuse.tag.1": "Topic Discovery",
+  "agent.creativeMuse.tag.2": "Material Kits",
+  "agent.creativeMuse.tag.3": "Visual Packages",
+  "agent.creativeMuse.task.1.title": "Find Rednote topic ideas",
+  "agent.creativeMuse.task.1.desc":
+    "Research recent discussions, list 5 specific themes, and recommend the strongest angle.",
+  "agent.creativeMuse.task.2.title": "Build a material kit for the selected idea",
+  "agent.creativeMuse.task.2.desc":
+    "Collect facts, sources, keywords, an outline, and cover and visual directions.",
+  "agent.creativeMuse.task.3.title": "Create a Rednote package from the material kit",
+  "agent.creativeMuse.task.3.desc":
+    "Generate complete copy, titles, hashtags, a cover, and carousel visual cards.",
 
   "agent.main.task.1.title": "Summarize this content",
   "agent.main.task.1.desc": "Quickly extract key points from articles or documents.",

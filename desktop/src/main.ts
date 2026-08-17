@@ -16,8 +16,13 @@ import { minimizeWindow, showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
+  acceptManagedSkillIntegrityChanges,
   generateAndSignSnapshot,
+  captureSkillIntegritySnapshotState,
   getSkillSourceDirs,
+  isManagedSkillTrustedBySnapshot,
+  migrateLegacySkillIntegritySnapshot,
+  restoreSkillIntegritySnapshotState,
   type IntegrityResult,
 } from "./skill-integrity";
 import { ToolSandbox } from "./tool-sandbox";
@@ -91,6 +96,7 @@ import {
   ensureSelectedModelProviderPlugins,
 } from "./model-provider-plugins";
 import {
+  AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
   ensureAgentPersonasConfig,
   getAgentPersona,
@@ -104,7 +110,22 @@ import {
   type AgentRosterConfig,
 } from "./agent-personas";
 import { assertConfigWriteAllowed } from "./config-write-policy";
-import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
+import { AGENT_CATALOG, isAgentOwnedSkillId, sanitizeAgentSkillIds } from "./agent-catalog";
+import {
+  agentOwnedSkillInstallChanged,
+  agentOwnedSkillMatchNames,
+  commitAgentOwnedSkillInstalls,
+  commitAgentOwnedSkillRemovals,
+  disableUnreferencedAgentOwnedSkills,
+  installAgentOwnedSkills,
+  inspectConfiguredAgentOwnedSkills,
+  prepareUnusedAgentOwnedSkillRemoval,
+  reconcileConfiguredAgentOwnedSkills,
+  resolveAgentOwnedSkillBundleRoot,
+  rollbackAgentOwnedSkillInstalls,
+  rollbackAgentOwnedSkillRemovals,
+  setAgentOwnedSkillsEnabled,
+} from "./agent-owned-skills";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import { requiresPostSpawnChannelRestart } from "./post-spawn-restart";
@@ -1131,13 +1152,7 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "adaptive";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -1339,8 +1354,8 @@ function writeConfigTextAtomically(contents: string): void {
 
 function failForExternalGateway(port: number): never {
   const message =
-    `Agent configuration changed, but Gateway port ${port} is owned by another process. ` +
-    "Stop that Gateway and retry so MicroClaw can apply the new roster safely.";
+    `Agent or owned-skill state requires reconciliation, but Gateway port ${port} ` +
+    "is owned by another process. Stop that Gateway and retry so MicroClaw can apply it safely.";
   setGatewayStatus("failed");
   mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
   throw new Error(message);
@@ -1351,22 +1366,19 @@ function seedSpecialistAgentWorkspaces(
   stateDir: string,
   entryPath: string,
   gatewayEnvironment: Record<string, string>,
-): void {
-  try {
-    const seededFiles = seedAgentPersonaWorkspaces(
-      config,
-      stateDir,
-      DECLARE_ACCESS_SECTION,
-      gatewayEnvironment,
-      os.homedir(),
-      path.dirname(entryPath),
-    );
-    if (seededFiles.length > 0) {
-      console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
-    }
-  } catch (err) {
-    console.warn("[seed] Failed to create specialist agent workspace files:", err);
+): string[] {
+  const seededFiles = seedAgentPersonaWorkspaces(
+    config,
+    stateDir,
+    DECLARE_ACCESS_SECTION,
+    gatewayEnvironment,
+    os.homedir(),
+    path.dirname(entryPath),
+  );
+  if (seededFiles.length > 0) {
+    console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
   }
+  return seededFiles;
 }
 
 interface WorkspaceSnapshot {
@@ -1422,6 +1434,32 @@ function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
   }
 }
 
+function captureAgentWorkspaces(
+  config: AgentRosterConfig,
+  stateDir: string,
+  gatewayEnvironment: Record<string, string>,
+  entryPath: string,
+): WorkspaceSnapshot[] {
+  const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
+  return AGENT_PERSONAS.flatMap((persona) => {
+    if (!configuredIds.has(persona.id)) return [];
+    const snapshot = captureAgentWorkspace(
+      config,
+      stateDir,
+      persona,
+      gatewayEnvironment,
+      entryPath,
+    );
+    return snapshot ? [snapshot] : [];
+  });
+}
+
+function restoreAgentWorkspaces(snapshots: readonly WorkspaceSnapshot[]): void {
+  for (const snapshot of [...snapshots].reverse()) {
+    restoreAgentWorkspace(snapshot);
+  }
+}
+
 async function applyGatewayAgentRoster(
   agentId: string,
   shouldExist: boolean,
@@ -1469,11 +1507,11 @@ async function addCatalogAgent(
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
   const result = ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
-  if (!result.changed) {
-    return { agents: listConfiguredAgents(config) };
-  }
-
+  const skillConfigChanged = setAgentOwnedSkillsEnabled(config, agentId, true);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
+    throw new Error(`Cannot add agent "${agentId}" with an externally managed Gateway`);
+  }
 
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
@@ -1484,9 +1522,23 @@ async function addCatalogAgent(
     gatewayEnvironment,
     entryPath,
   );
+  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  const agentSkillBundleRoot = resolveAgentOwnedSkillBundleRoot(
+    app.isPackaged,
+    process.resourcesPath,
+  );
+  let skillInstalls: ReturnType<typeof installAgentOwnedSkills> = [];
   let restartAttempted = false;
 
   try {
+    skillInstalls = installAgentOwnedSkills(agentId, stateDir, agentSkillBundleRoot, {
+      isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot,
+    });
+    const skillRuntimeChanged =
+      skillConfigChanged || skillInstalls.some(agentOwnedSkillInstallChanged);
+    if (!result.changed && !skillRuntimeChanged) {
+      return { agents: listConfiguredAgents(config) };
+    }
     seedAgentPersonaWorkspace(
       config,
       stateDir,
@@ -1497,7 +1549,13 @@ async function addCatalogAgent(
       path.dirname(entryPath),
     );
     persistAgentPersonas(config);
-    const applyResult = await applyGatewayAgentRoster(
+    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
+    if (skillRuntimeChanged) {
+      restartAttempted = true;
+      await restartManagedGatewayAndRequireReady(`Installing agent-owned skills for ${agentId}`);
+      applyResult = await applyGatewayAgentRoster(agentId, true);
+    } else {
+      applyResult = await applyGatewayAgentRoster(
       agentId,
       true,
       managedGateway
@@ -1509,9 +1567,26 @@ async function addCatalogAgent(
           }
         : undefined,
     );
+    }
     if (applyResult === "timed-out") {
       throw new Error(
         `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
+      );
+    }
+    if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
+      acceptManagedSkillIntegrityChanges(
+        skillInstalls
+          .filter(agentOwnedSkillInstallChanged)
+          .map((install) => ({
+            skillName: install.skillId,
+            expectedDirectory: path.join(agentSkillBundleRoot, install.skillId),
+          })),
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillInstalls(skillInstalls);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[agents] Deferred cleanup for agent-owned skill upgrade: ${deferredCleanup.join(", ")}`,
       );
     }
     console.log(`[agents] Added ${agentId} via ${applyResult}`);
@@ -1527,6 +1602,18 @@ async function addCatalogAgent(
       restoreAgentWorkspace(workspaceSnapshot);
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
+    }
+    try {
+      rollbackAgentOwnedSkillInstalls(skillInstalls);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
+      try {
+        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
     }
     if (restartAttempted && managedGateway) {
       try {
@@ -1562,16 +1649,35 @@ async function removeCatalogAgent(
 
   ensureAgentPersonasConfig(config, stateDir);
   const result = removeConfiguredAgent(config, agentId);
-  if (!result.changed) {
-    return { agents: listConfiguredAgents(config) };
+  const skillConfigChanged = disableUnreferencedAgentOwnedSkills(config, agentId);
+  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
+    throw new Error(`Cannot remove agent "${agentId}" with an externally managed Gateway`);
   }
 
-  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
-
+  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  let skillRemovals: ReturnType<typeof prepareUnusedAgentOwnedSkillRemoval> = [];
   let restartAttempted = false;
   try {
+    skillRemovals = prepareUnusedAgentOwnedSkillRemoval(
+      config,
+      agentId,
+      stateDir,
+      resolveAgentOwnedSkillBundleRoot(app.isPackaged, process.resourcesPath),
+      { isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot },
+    );
+    const skillRuntimeChanged = skillConfigChanged || skillRemovals.length > 0;
+    if (!result.changed && !skillRuntimeChanged) {
+      return { agents: listConfiguredAgents(config) };
+    }
     persistAgentPersonas(config);
-    const applyResult = await applyGatewayAgentRoster(
+    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
+    if (skillRuntimeChanged) {
+      restartAttempted = true;
+      await restartManagedGatewayAndRequireReady(`Removing agent-owned skills for ${agentId}`);
+      applyResult = await applyGatewayAgentRoster(agentId, false);
+    } else {
+      applyResult = await applyGatewayAgentRoster(
       agentId,
       false,
       managedGateway
@@ -1583,9 +1689,24 @@ async function removeCatalogAgent(
           }
         : undefined,
     );
+    }
     if (applyResult === "timed-out") {
       throw new Error(
         `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
+      );
+    }
+    if (skillRemovals.length > 0) {
+      acceptManagedSkillIntegrityChanges(
+        skillRemovals.map((removal) => ({
+          skillName: removal.skillId,
+          expectedDirectory: null,
+        })),
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillRemovals(skillRemovals);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[agents] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
       );
     }
     console.log(`[agents] Removed ${agentId} via ${applyResult}`);
@@ -1596,6 +1717,18 @@ async function removeCatalogAgent(
       writeConfigTextAtomically(originalConfigText);
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
+    }
+    try {
+      rollbackAgentOwnedSkillRemovals(skillRemovals);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (skillRemovals.length > 0) {
+      try {
+        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
     }
     if (restartAttempted && managedGateway) {
       try {
@@ -2224,41 +2357,149 @@ async function startGatewayInner(): Promise<void> {
   if (!postSpawnRestartRequired) postSpawnRestartDone = true;
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
-  const agentRosterChanged = preparedPersonas?.changed ?? false;
+  const originalAgentConfigText = fs.existsSync(getConfigPath())
+    ? fs.readFileSync(getConfigPath(), "utf-8")
+    : null;
+  const originalIntegritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  const agentSkillBundleRoot = resolveAgentOwnedSkillBundleRoot(
+    app.isPackaged,
+    process.resourcesPath,
+  );
+  const ownedSkillTrust = {
+    isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot,
+  };
+
+  // Check ownership before any agent-owned skill filesystem mutation. An
+  // externally managed Gateway may observe the shared state directory.
+  const alreadyRunning = await checkExistingGateway(configuredPort);
+  logStartupTiming("gateway-existing-check-complete");
+  const externallyManagedGateway =
+    alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
+  const ownedSkillPlan = preparedPersonas
+    ? inspectConfiguredAgentOwnedSkills(
+        preparedPersonas.config,
+        stateDir,
+        agentSkillBundleRoot,
+        ownedSkillTrust,
+      )
+    : { required: false, reasons: [] };
+  if (externallyManagedGateway && (preparedPersonas?.changed || ownedSkillPlan.required)) {
+    failForExternalGateway(configuredPort);
+  }
+
+  const agentSkillReconciliation =
+    preparedPersonas && !externallyManagedGateway
+      ? reconcileConfiguredAgentOwnedSkills(
+          preparedPersonas.config,
+          stateDir,
+          agentSkillBundleRoot,
+          ownedSkillTrust,
+        )
+      : { installs: [], removals: [], configChanged: false, runtimeChanged: false };
+  const agentConfigurationChanged =
+    (preparedPersonas?.changed ?? false) || agentSkillReconciliation.runtimeChanged;
+  const agentSkillDiskChanged =
+    agentSkillReconciliation.installs.some(
+      (install) => agentOwnedSkillInstallChanged(install) || install.markerCreated,
+    ) || agentSkillReconciliation.removals.length > 0;
+  const agentSkillIntegrityChanged =
+    agentSkillReconciliation.installs.some(agentOwnedSkillInstallChanged) ||
+    agentSkillReconciliation.removals.length > 0;
+  let agentSkillTransactionPending = agentSkillDiskChanged || agentConfigurationChanged;
+  const workspaceSnapshots = preparedPersonas
+    ? captureAgentWorkspaces(preparedPersonas.config, stateDir, gatewayEnvironment, entryPath)
+    : [];
+
+  const rollbackStartupAgentSkills = () => {
+    if (!agentSkillTransactionPending) return;
+    rollbackAgentOwnedSkillInstalls(agentSkillReconciliation.installs);
+    rollbackAgentOwnedSkillRemovals(agentSkillReconciliation.removals);
+    if (originalAgentConfigText !== null) {
+      writeConfigTextAtomically(originalAgentConfigText);
+    }
+    restoreAgentWorkspaces(workspaceSnapshots);
+    restoreSkillIntegritySnapshotState(originalIntegritySnapshot, stateDir);
+    agentSkillTransactionPending = false;
+  };
+
+  const commitStartupAgentSkills = () => {
+    if (!agentSkillTransactionPending) return;
+    if (agentSkillIntegrityChanged) {
+      acceptManagedSkillIntegrityChanges([
+        ...agentSkillReconciliation.installs
+          .filter(agentOwnedSkillInstallChanged)
+          .map((install) => ({
+            skillName: install.skillId,
+            expectedDirectory: path.join(agentSkillBundleRoot, install.skillId),
+          })),
+        ...agentSkillReconciliation.removals.map((removal) => ({
+          skillName: removal.skillId,
+          expectedDirectory: null,
+        })),
+      ]);
+    }
+    const deferredUpgradeCleanup = commitAgentOwnedSkillInstalls(agentSkillReconciliation.installs);
+    if (deferredUpgradeCleanup.length > 0) {
+      console.warn(
+        `[startup] Deferred cleanup for agent-owned skill upgrade: ${deferredUpgradeCleanup.join(", ")}`,
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillRemovals(agentSkillReconciliation.removals);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[startup] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
+      );
+    }
+    agentSkillTransactionPending = false;
+  };
 
   // If gateway is already healthy, just connect WS and return — no new process.
   // Callers that need replacement use restartManagedGateway(), which stops the
   // old process and waits for the port before invoking this function.
-  const alreadyRunning = await checkExistingGateway(configuredPort);
-  logStartupTiming("gateway-existing-check-complete");
   if (
     requiresExternalGatewayStop(
       alreadyRunning,
-      agentRosterChanged,
+      agentConfigurationChanged,
       gatewaySpawnedByUs,
       gatewayProcess !== null,
     )
   ) {
+    rollbackStartupAgentSkills();
     failForExternalGateway(configuredPort);
   }
-  if (preparedPersonas?.changed) {
-    persistAgentPersonas(preparedPersonas.config);
+  try {
+    if (preparedPersonas?.changed || agentSkillReconciliation.configChanged) {
+      persistAgentPersonas(preparedPersonas!.config);
+    }
+    if (preparedPersonas && !externallyManagedGateway) {
+      agentSkillTransactionPending = true;
+      seedSpecialistAgentWorkspaces(
+        preparedPersonas.config,
+        stateDir,
+        entryPath,
+        gatewayEnvironment,
+      );
+    }
+  } catch (error) {
+    rollbackStartupAgentSkills();
+    throw error;
   }
-  if (preparedPersonas) {
-    seedSpecialistAgentWorkspaces(preparedPersonas.config, stateDir, entryPath, gatewayEnvironment);
-  }
-  if (alreadyRunning && !agentRosterChanged) {
-    console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
-    gatewaySpawnedByUs = false;
-    setGatewayStatus("running");
-    connectGatewayWs();
-    startHealthMonitor();
-    return;
-  }
-  if (alreadyRunning) {
-    console.log("[gateway] Agent roster changed — restarting to load canonical configuration");
-    gwClient?.stop();
-  }
+  try {
+    if (alreadyRunning && !agentConfigurationChanged) {
+      commitStartupAgentSkills();
+      console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
+      gatewaySpawnedByUs = false;
+      setGatewayStatus("running");
+      connectGatewayWs();
+      startHealthMonitor();
+      return;
+    }
+    if (alreadyRunning) {
+      console.log(
+        "[gateway] Agent or owned-skill configuration changed — restarting to load canonical configuration",
+      );
+      gwClient?.stop();
+    }
 
   // Kill any old gateway on this port
   stopGatewayProcess();
@@ -2287,6 +2528,7 @@ async function startGatewayInner(): Promise<void> {
       "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
     );
     setGatewayStatus("failed");
+      rollbackStartupAgentSkills();
     return;
   }
   if (!fs.existsSync(entryPath)) {
@@ -2298,6 +2540,7 @@ async function startGatewayInner(): Promise<void> {
       "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
     );
     setGatewayStatus("failed");
+      rollbackStartupAgentSkills();
     return;
   }
 
@@ -2676,8 +2919,12 @@ async function startGatewayInner(): Promise<void> {
     const normalCheck = normalizeDirPath(dirPath).toLowerCase();
     const rwDirs = settingsStore.get("sandboxUserDirsRW");
     const roDirs = settingsStore.get("sandboxUserDirsRO");
-    const alreadyRW = rwDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalCheck);
-    const alreadyRO = roDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalCheck);
+      const alreadyRW = rwDirs.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      const alreadyRO = roDirs.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
     if (alreadyRW || alreadyRO) {
       const access = alreadyRW ? "rw" : "r";
       const dirToGrant = normalizeDirPath(dirPath);
@@ -2794,8 +3041,16 @@ async function startGatewayInner(): Promise<void> {
 
   const ready = await waitForGatewayReady(configuredPort);
   if (ready) {
+      try {
     logStartupTiming("gateway-ready");
+        commitStartupAgentSkills();
     setGatewayStatus("running");
+      } catch (error) {
+        stopGatewayProcess();
+        rollbackStartupAgentSkills();
+        setGatewayStatus("failed");
+        throw error;
+      }
   } else {
     mainWindow?.webContents.send(
       "gateway:log",
@@ -2805,6 +3060,8 @@ async function startGatewayInner(): Promise<void> {
       "gateway:log",
       `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
     );
+      stopGatewayProcess();
+      rollbackStartupAgentSkills();
     setGatewayStatus("timeout");
   }
   // Always connect WS — even on timeout the gateway may start shortly after,
@@ -2813,6 +3070,13 @@ async function startGatewayInner(): Promise<void> {
 
   // Start health monitoring to auto-restart if the gateway goes down
   startHealthMonitor();
+  } catch (error) {
+    if (agentSkillTransactionPending) {
+      stopGatewayProcess();
+      rollbackStartupAgentSkills();
+    }
+    throw error;
+  }
 }
 
 // (end of startGatewayInner)
@@ -3374,9 +3638,11 @@ function registerIpcHandlers(): void {
     // directory but are NOT part of the shipped managed catalog. Reclassify those as
     // custom so they appear under "Custom Skills" instead of the built-in workspace
     // skills. Catalog workspace skills (officecli, excel-xlsx, …) stay managed.
-    const managedWorkspace = managedOnDisk.filter((s) => managedCatalog[s.id] !== undefined);
+    const managedWorkspace = managedOnDisk.filter(
+      (s) => managedCatalog[s.id] !== undefined || isAgentOwnedSkillId(s.id),
+    );
     const userAuthored = managedOnDisk
-      .filter((s) => managedCatalog[s.id] === undefined)
+      .filter((s) => managedCatalog[s.id] === undefined && !isAgentOwnedSkillId(s.id))
       // Reclassified from managed → custom: recompute `enabled` with custom
       // semantics (default on) rather than the managed default (off when not
       // windows-adapted in the catalog).
@@ -4579,8 +4845,7 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      | { width?: number; height?: number; x?: number; y?: number }
-      | undefined;
+      { width?: number; height?: number; x?: number; y?: number } | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);
@@ -5644,6 +5909,9 @@ app.whenReady().then(async () => {
 
   // Skill integrity check — must run BEFORE loading renderer so
   // pendingIntegrityResult is ready when App.vue calls the IPC.
+  if (migrateLegacySkillIntegritySnapshot()) {
+    console.log("Migrated skill integrity snapshot to the current root-aware schema");
+  }
   const integrityResult = verifySkillIntegrity();
   if (!integrityResult.snapshotExists) {
     console.log(

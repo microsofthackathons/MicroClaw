@@ -603,6 +603,13 @@ describe("useChatStore — draft sessions", () => {
     expect(store.sessionKey).toMatch(/^session-/);
     expect(store.currentSessionAgentId).toBe("main");
   });
+
+  it("attributes historical Singer session keys to Creative Muse", () => {
+    const store = useChatStore();
+    store.newSession("singer");
+    expect(store.sessionKey).toMatch(/^agent:singer:session-/);
+    expect(store.currentSessionAgentId).toBe("creative-muse");
+  });
 });
 
 describe("useChatStore — attachments", () => {

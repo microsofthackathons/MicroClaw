@@ -3239,16 +3239,16 @@ class WindowsSetup:
             # on the whitelist via entries.<name>.enabled=false in openclaw.json.
             # An empty allowManaged list with enable=true disables ALL managed/workspace skills.
             if allow_managed is not None:
+                from deployer.skill_catalog import MANAGED_SKILL_CATALOG
+
                 entries = skills_cfg.get("entries", {})
-                # Skills in the whitelist: ensure enabled=true.
-                for name in allow_managed:
+                # The installer owns only its managed catalog. Preserve entries
+                # created by the desktop app or by the user.
+                tracked_names = set(MANAGED_SKILL_CATALOG.keys()) | set(allow_managed)
+                for name in tracked_names:
                     entry = entries.get(name, {})
-                    entry["enabled"] = True
+                    entry["enabled"] = name in allow_managed
                     entries[name] = entry
-                # Skills already tracked in entries that are NOT in the whitelist: disable.
-                for name in list(entries.keys()):
-                    if name not in allow_managed:
-                        entries[name]["enabled"] = False
                 skills_cfg["entries"] = entries
 
             existing["skills"] = skills_cfg

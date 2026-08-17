@@ -38,6 +38,21 @@ describe("agent store", () => {
     expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
   });
 
+  it("hides the Singer compatibility alias from the sidebar", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "creative-muse", name: "Creative Muse" },
+        { id: "singer", name: "Creative Muse" },
+      ],
+    });
+
+    await store.fetchAgents();
+
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "creative-muse"]);
+  });
+
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
     const store = useAgentStore();
     const marketAgent = store.marketAgents.find((entry) => entry.id === "master-archive");
@@ -83,6 +98,19 @@ describe("agent store", () => {
       isAdded: false,
     });
     expect(store.marketAgents.some((entry) => entry.id === "growth-hacker")).toBe(false);
+  });
+
+  it("presents the Creative Muse platform content scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      description:
+        "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+      tags: ["Topic Discovery", "Material Kits", "Visual Packages"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.some((entry) => entry.id === "singer")).toBe(false);
   });
 
   it("keeps the roster unchanged when Add fails", async () => {

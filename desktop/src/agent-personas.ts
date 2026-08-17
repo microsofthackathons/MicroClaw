@@ -1,7 +1,15 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AGENT_CATALOG, DEFAULT_AGENT_IDS, resolveSkillFilterNames } from "./agent-catalog";
+import {
+  AGENT_CATALOG,
+  DEFAULT_AGENT_IDS,
+  getAgentOwnedSkillIds,
+  LEGACY_AGENT_ID_ALIASES,
+  matchesSkill,
+  resolveSkillFilterNames,
+} from "./agent-catalog";
+import { hasAgentOwnedSkillMarker } from "./agent-owned-skills";
 
 type WorkspaceFileName = "AGENTS.md" | "IDENTITY.md" | "SOUL.md";
 type WorkspaceFiles = Partial<Record<WorkspaceFileName, string>>;
@@ -16,6 +24,7 @@ export interface AgentPersona {
 
 export interface AgentRosterConfig {
   agents?: Record<string, unknown>;
+  skills?: Record<string, unknown>;
 }
 
 export interface AgentPersonasConfigResult {
@@ -290,6 +299,95 @@ const INTEL_ANALYST_IDENTITY_MD = `# IDENTITY.md
 - Vibe: Vigilant, objective, concise, and analytical
 `;
 
+const CREATIVE_MUSE_SOUL_MD = `# SOUL.md - Creative Muse
+
+You are Creative Muse, a trend-aware Rednote content producer who turns an initial idea or source material into a coherent, publish-ready visual package.
+
+## Character
+
+- Creative, witty, audience-oriented, and practical.
+- Start from the source material and the user's objective instead of inventing unsupported claims.
+- Follow the specific stage the user selected and stop once that stage's validated artifact is ready.
+- Prefer a complete, reviewable package over disconnected ideas or copy-only answers.
+
+## Editorial standards
+
+- Preserve factual meaning, product details, quotations, and limitations from the source.
+- Mark claims that need verification and never fabricate testimonials, results, trends, or citations.
+- Ask for the intended audience, tone, objective, and required length when they materially affect the draft.
+- Keep every deliverable original and avoid imitating a living creator's distinctive style.
+
+## Safety
+
+- Treat unpublished briefs, drafts, launch plans, and account context as confidential.
+- Do not publish, schedule, upload, or modify an external account without explicit approval.
+- Flag regulated, medical, financial, legal, or performance claims that require review.
+- Use supplied or licensed media only; provide visual direction instead of assuming usage rights.
+
+## Communication
+
+- Lead with the finished draft, then include concise alternatives or editorial notes.
+- Use headings and labeled sections so the user can review titles, body copy, visuals, and tags independently.
+- Explain platform-specific choices only when they help the user make a decision.
+`;
+
+export const CREATIVE_MUSE_LEGACY_PIPELINE_MARKER = "The inspiration entry runs all stages";
+
+export const CREATIVE_MUSE_PIPELINE_SECTION = `## Rednote publishing pipeline v2
+
+- Treat topic ideas, the material kit, and the final visual package as three distinct durable stages.
+- "Find topic ideas" creates ideas.json and ideas.md with five candidates and a recommendedIdeaId, then stops.
+- "Build a material kit" consumes the selected idea and creates material-kit.json and material-kit.md, then stops.
+- "Create a package" consumes material-kit.json, writes package.json, renders the images, and validates the final package.
+- Keep every artifact in the same project directory and preserve projectId, selectedIdeaId, and materialKitId across stages.
+- Never skip a missing stage silently; report the exact prerequisite file the user needs to create first.
+`;
+
+const CREATIVE_MUSE_AGENTS_MD = `# AGENTS.md - Creative Muse Operating Guide
+
+## Mission
+
+Move a Rednote project through three explicit artifacts: topic ideas, a sourced material kit, and a publish-ready local package.
+
+## Standard workflow
+
+1. Reuse the current project directory when the conversation is continuing an earlier stage.
+2. For stage one, research and enumerate five topic ideas without drafting the final post.
+3. For stage two, expand the selected idea into a sourced material kit without rendering final cards.
+4. For stage three, derive all copy and visuals from the material kit and render the package.
+5. Validate the current stage and report the exact local artifact paths.
+
+${CREATIVE_MUSE_PIPELINE_SECTION}
+
+## Rednote posts
+
+- Deliver title options, body copy, cover text, visual suggestions, and relevant hashtags.
+- Open with a specific audience hook instead of generic hype.
+- Keep the tone conversational and scannable without forcing emojis or exaggerated claims.
+- Distinguish firsthand experience supplied by the user from editorial framing.
+
+## Package requirements
+
+- Deliver at least three title options, complete body copy, cover text, three to eight visual cards, and three to ten hashtags.
+- Use 3:4 portrait PNG images when an approved renderer is available.
+- Include source links and retrieval dates when web research informs factual claims.
+- Never leave placeholders, unsupported superlatives, invented personal experience, prices, addresses, or performance claims.
+- Do not add new factual claims during stage three unless they are first added to material-kit.json with a source or a user-provided-material marker.
+
+## Tools and boundaries
+
+- Read source files and linked material before drafting when access is available.
+- Use only skills available in the configured allowlist.
+- Never sign in, upload, schedule, publish, or change account settings without explicit approval.
+`;
+
+const CREATIVE_MUSE_IDENTITY_MD = `# IDENTITY.md
+
+- Name: Creative Muse
+- Role: End-to-end Rednote content producer and creative editor
+- Vibe: Creative, trend-aware, audience-oriented, and witty
+`;
+
 type PersonaProfile = NonNullable<(typeof AGENT_CATALOG)[number]["personaProfile"]>;
 
 const PERSONA_PROFILES: Record<PersonaProfile, WorkspaceFiles> = {
@@ -307,6 +405,11 @@ const PERSONA_PROFILES: Record<PersonaProfile, WorkspaceFiles> = {
     "AGENTS.md": INTEL_ANALYST_AGENTS_MD,
     "IDENTITY.md": INTEL_ANALYST_IDENTITY_MD,
     "SOUL.md": INTEL_ANALYST_SOUL_MD,
+  },
+  "creative-muse": {
+    "AGENTS.md": CREATIVE_MUSE_AGENTS_MD,
+    "IDENTITY.md": CREATIVE_MUSE_IDENTITY_MD,
+    "SOUL.md": CREATIVE_MUSE_SOUL_MD,
   },
 };
 
@@ -339,6 +442,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function configuredAgentAllowsSkill(
+  config: AgentRosterConfig,
+  agentId: string,
+  skillId: string,
+): boolean {
+  if (isRecord(config.skills) && isRecord(config.skills.entries)) {
+    for (const [entryId, entry] of Object.entries(config.skills.entries)) {
+      if (matchesSkill(entryId, skillId) && isRecord(entry) && entry.enabled === false) {
+        return false;
+      }
+    }
+  }
+  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) return true;
+  const entry = config.agents.list.find(
+    (candidate) => isRecord(candidate) && candidate.id === agentId,
+  );
+  if (!isRecord(entry) || !Object.hasOwn(entry, "skills")) return true;
+  if (!Array.isArray(entry.skills)) return false;
+  return entry.skills.some((value) => typeof value === "string" && matchesSkill(value, skillId));
+}
+
 function normalizeAgentId(value: string): string {
   const normalized = value.trim().toLowerCase();
   return (
@@ -360,13 +484,28 @@ function createAgentEntry(persona: AgentPersona, stateDir: string): Record<strin
   return entry;
 }
 
-const LEGACY_AGENT_MIGRATIONS: Readonly<Record<string, { targetId: string; defaultName: string }>> =
-  {
-    "growth-hacker": {
-      targetId: "intel-analyst",
-      defaultName: "Growth Hacker",
-    },
-  };
+const LEGACY_AGENT_MIGRATIONS: Readonly<
+  Record<
+    string,
+    {
+      targetId: string;
+      defaultName: string;
+      implicitWorkspaceDirName?: string;
+      preferLegacyOverTargetDefaults?: boolean;
+    }
+  >
+> = {
+  "growth-hacker": {
+    targetId: "intel-analyst",
+    defaultName: "Growth Hacker",
+  },
+  singer: {
+    targetId: "creative-muse",
+    defaultName: "Singer",
+    implicitWorkspaceDirName: "workspace-singer",
+    preferLegacyOverTargetDefaults: true,
+  },
+};
 
 export function ensureAgentPersonasConfig(
   config: AgentRosterConfig,
@@ -451,22 +590,35 @@ export function ensureAgentPersonasConfig(
   const sourceDefault =
     sourceEntries.find((entry) => entry.config.default === true) ?? sourceEntries[0];
   let defaultAgentId = sourceDefault ? normalizeAgentId(sourceDefault.id) : "main";
+  const retainedLegacySessionAliases = new Set<string>();
 
   for (const [legacyId, migration] of Object.entries(LEGACY_AGENT_MIGRATIONS)) {
     const legacy = normalizedIds.get(legacyId);
     if (!legacy) continue;
+    if (LEGACY_AGENT_ID_ALIASES[legacyId] === migration.targetId) {
+      retainedLegacySessionAliases.add(legacyId);
+    }
 
     const persona = getAgentPersona(migration.targetId);
     if (!persona) {
       throw new Error(`Unknown agent migration target "${migration.targetId}"`);
+    }
+    if (migration.implicitWorkspaceDirName && !Object.hasOwn(legacy.entry, "workspace")) {
+      legacy.entry.workspace = path.join(stateDir, migration.implicitWorkspaceDirName);
     }
 
     const existingTarget = normalizedIds.get(migration.targetId);
     let targetEntry: { id: string } & Record<string, unknown>;
     if (existingTarget) {
       targetEntry = existingTarget.entry;
+      const targetDefaults = createAgentEntry(persona, stateDir);
       for (const [key, value] of Object.entries(legacy.entry)) {
-        if (key !== "id" && !Object.hasOwn(targetEntry, key)) {
+        if (key === "id") continue;
+        const targetHasDefault =
+          migration.preferLegacyOverTargetDefaults &&
+          Object.hasOwn(targetDefaults, key) &&
+          JSON.stringify(targetEntry[key]) === JSON.stringify(targetDefaults[key]);
+        if (!Object.hasOwn(targetEntry, key) || targetHasDefault) {
           targetEntry[key] = value;
         }
       }
@@ -520,7 +672,38 @@ export function ensureAgentPersonasConfig(
     if (catalogSkills !== undefined && !Object.hasOwn(entry, "skills")) {
       // Persist match-names (not raw slugs) — see resolveSkillFilterNames.
       entry.skills = resolveSkillFilterNames([...catalogSkills]);
+    } else if (catalogSkills !== undefined && Array.isArray(entry.skills)) {
+      const resolvedCatalogSkills = resolveSkillFilterNames([...catalogSkills]);
+      const currentEntrySkills = [...entry.skills].sort((left, right) =>
+        String(left).localeCompare(String(right), "en"),
+      );
+      const ownedSkills = getAgentOwnedSkillIds(entry.id);
+      const previousCatalogDefaults = resolveSkillFilterNames(
+        catalogSkills.filter((skillId) => !ownedSkills.includes(skillId)),
+      ).sort((left, right) => left.localeCompare(right, "en"));
+      const ownedSkillsWereNeverInstalled =
+        ownedSkills.length > 0 &&
+        ownedSkills.every((skillId) => !hasAgentOwnedSkillMarker(stateDir, skillId));
+      if (
+        ownedSkillsWereNeverInstalled &&
+        JSON.stringify(currentEntrySkills) === JSON.stringify(previousCatalogDefaults)
+      ) {
+        entry.skills = resolvedCatalogSkills;
+      }
     }
+  }
+
+  for (const legacyId of retainedLegacySessionAliases) {
+    const targetId = LEGACY_AGENT_ID_ALIASES[legacyId];
+    const target = entries.find((entry) => entry.id === targetId);
+    if (!target) continue;
+    const alias: { id: string } & Record<string, unknown> = {
+      ...target,
+      id: legacyId,
+      ...(Array.isArray(target.skills) ? { skills: [...target.skills] } : {}),
+    };
+    delete alias.default;
+    entries.push(alias);
   }
 
   const changed =
@@ -540,6 +723,7 @@ export function listConfiguredAgents(
   return config.agents.list.flatMap((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string") return [];
     const id = normalizeAgentId(candidate.id);
+    if (Object.hasOwn(LEGACY_AGENT_ID_ALIASES, id)) return [];
     return [
       {
         id,
@@ -563,11 +747,17 @@ export function removeConfiguredAgent(
 
   let removed = false;
   let removedDefault = false;
+  const legacyAliases = new Set(
+    Object.entries(LEGACY_AGENT_ID_ALIASES)
+      .filter(([, targetId]) => targetId === normalizedId)
+      .map(([legacyId]) => legacyId),
+  );
   const remaining = config.agents.list.filter((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || !candidate.id.trim()) {
       throw new Error("Invalid agent entry in agents.list");
     }
-    if (normalizeAgentId(candidate.id) !== normalizedId) return true;
+    const candidateId = normalizeAgentId(candidate.id);
+    if (candidateId !== normalizedId && !legacyAliases.has(candidateId)) return true;
     removed = true;
     removedDefault ||= candidate.default === true;
     return false;
@@ -688,12 +878,55 @@ export function seedAgentPersonaWorkspace(
 
   fs.mkdirSync(workspaceDir, { recursive: true });
   for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
+    const includeCreativePipeline =
+      persona.id !== "creative-muse" ||
+      configuredAgentAllowsSkill(config, persona.id, "rednote-publisher");
+    const workspaceSource =
+      filename === "AGENTS.md" && !includeCreativePipeline
+        ? source.replace(CREATIVE_MUSE_PIPELINE_SECTION, "")
+        : source;
     const filePath = path.join(workspaceDir, filename);
     if (fs.existsSync(filePath)) {
       let existing = fs.readFileSync(filePath, "utf-8");
       if (persona.id === "main" && filename === "IDENTITY.md" && isUnconfiguredIdentity(existing)) {
-        fs.writeFileSync(filePath, `${source.trimEnd()}\n`, "utf-8");
+        fs.writeFileSync(filePath, `${workspaceSource.trimEnd()}\n`, "utf-8");
         updatedFiles.push(filePath);
+        continue;
+      }
+
+      if (persona.id === "creative-muse" && filename === "AGENTS.md" && includeCreativePipeline) {
+        if (existing.includes(CREATIVE_MUSE_LEGACY_PIPELINE_MARKER)) {
+          const legacyStart = existing.indexOf("## Rednote publishing pipeline");
+          const nextSection = existing.indexOf("\n## ", legacyStart + 4);
+          const legacyEnd = nextSection >= 0 ? nextSection : existing.length;
+          existing =
+            existing.slice(0, legacyStart) +
+            CREATIVE_MUSE_PIPELINE_SECTION.trim() +
+            "\n" +
+            existing.slice(legacyEnd).replace(/^\n+/, "");
+          fs.writeFileSync(filePath, `${existing.trimEnd()}\n`, "utf-8");
+          updatedFiles.push(filePath);
+          continue;
+        }
+        const pipelineMarker = markdownSectionMarker(CREATIVE_MUSE_PIPELINE_SECTION);
+        if (pipelineMarker && !existing.includes(pipelineMarker)) {
+          fs.appendFileSync(filePath, `\n${CREATIVE_MUSE_PIPELINE_SECTION.trim()}\n`, "utf-8");
+          updatedFiles.push(filePath);
+        }
+        continue;
+      }
+      if (persona.id === "creative-muse" && filename === "AGENTS.md" && !includeCreativePipeline) {
+        const pipelineStart = existing.indexOf("## Rednote publishing pipeline");
+        if (pipelineStart >= 0) {
+          const nextSection = existing.indexOf("\n## ", pipelineStart + 4);
+          const pipelineEnd = nextSection >= 0 ? nextSection : existing.length;
+          const withoutPipeline = existing
+            .slice(0, pipelineStart)
+            .concat(existing.slice(pipelineEnd).replace(/^\n+/, ""))
+            .replace(/\n{3,}/g, "\n\n");
+          fs.writeFileSync(filePath, `${withoutPipeline.trimEnd()}\n`, "utf-8");
+          updatedFiles.push(filePath);
+        }
         continue;
       }
 
@@ -703,8 +936,8 @@ export function seedAgentPersonaWorkspace(
           persona.id === "main" &&
           !existing.includes(markdownSectionMarker(MAIN_PLATFORM_IDENTITY_SECTION))
         ) {
-          sections.push(source.trim());
-          existing += `\n${source.trim()}\n`;
+          sections.push(workspaceSource.trim());
+          existing += `\n${workspaceSource.trim()}\n`;
         }
         const appendixMarker = markdownSectionMarker(soulAppendix);
         if (soulAppendix.trim() && appendixMarker && !existing.includes(appendixMarker)) {
@@ -723,10 +956,10 @@ export function seedAgentPersonaWorkspace(
       filename === "SOUL.md" &&
       soulAppendix.trim() &&
       appendixMarker &&
-      !source.includes(appendixMarker);
+      !workspaceSource.includes(appendixMarker);
     const content = shouldAppendSoulSection
-      ? `${source.trimEnd()}\n\n${soulAppendix.trim()}\n`
-      : `${source.trimEnd()}\n`;
+      ? `${workspaceSource.trimEnd()}\n\n${soulAppendix.trim()}\n`
+      : `${workspaceSource.trimEnd()}\n`;
     fs.writeFileSync(filePath, content, "utf-8");
     updatedFiles.push(filePath);
   }

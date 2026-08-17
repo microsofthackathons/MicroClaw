@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "projectId": "20260816-home-coffee",
+  "theme": "居家手冲咖啡",
+  "audience": "刚开始学习手冲咖啡的上班族",
+  "retrievedAt": "2026-08-16",
+  "recommendedIdeaId": "idea-01",
+  "ideas": [
+    {
+      "id": "idea-01",
+      "title": "新手先固定三个手冲变量",
+      "hook": "不用先买新器材，也能减少每天味道波动",
+      "whyNow": "近期新手讨论集中在参数太多、难以复现",
+      "sourceUrls": ["https://example.com/coffee-variables"]
+    },
+    {
+      "id": "idea-02",
+      "title": "七天手冲记录法",
+      "hook": "用一张表找到适合自己的口味组合",
+      "whyNow": "记录型内容适合收藏和持续实践",
+      "sourceUrls": ["https://example.com/coffee-journal"]
+    },
+    {
+      "id": "idea-03",
+      "title": "手冲苦味排查顺序",
+      "hook": "按顺序调整，避免一次改变所有参数",
+      "whyNow": "苦味和过萃是新手高频问题",
+      "sourceUrls": ["https://example.com/coffee-bitterness"]
+    },
+    {
+      "id": "idea-04",
+      "title": "小空间手冲区布置",
+      "hook": "一块托盘收好每天真正会用的器具",
+      "whyNow": "居家咖啡与小空间收纳讨论持续增长",
+      "sourceUrls": ["https://example.com/coffee-corner"]
+    },
+    {
+      "id": "idea-05",
+      "title": "通勤前五分钟手冲流程",
+      "hook": "把称量和清洁步骤提前，缩短早晨准备时间",
+      "whyNow": "快速、可重复的早餐流程更适合工作日",
+      "sourceUrls": ["https://example.com/quick-pour-over"]
+    }
+  ]
+}

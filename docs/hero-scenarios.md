@@ -5,7 +5,7 @@
 | Specialist agent | Persona and professional role | Hero scenarios |
 | --- | --- | --- |
 | **Master Archive (归藏大师)** | Meticulous digital archivist organizing local folders, converting files, and summarizing bulk documents | Batch file conversion and processing; smart file and directory cleanup; bulk document summarization and extraction |
-| **Creative Muse (灵感创客)** | Witty creative content strategist crafting Rednote posts, video scripts, and multi-platform text | Rednote viral seed posts; short-video storyboards and scripts; multi-platform content adaptation |
+| **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic-idea discovery; sourced material-kit creation; post and visual-package generation |
 | **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
@@ -50,35 +50,35 @@ Example commands:
 ### Persona and professional role
 
 - **Persona and tone:** Creative, trend-aware, audience-oriented, and witty, with a strong understanding of Chinese social platform conventions.
-- **Domain expertise:** Rednote (小红书) seed posts, short-video and live-stream scripts, and multi-platform copy adaptation.
-- **Main responsibilities:** Convert raw ideas, product highlights, or master copy into platform-specific content packages ready for publishing.
+- **Domain expertise:** Rednote (小红书) topic discovery, audience hooks, post writing, visual-card design, and publishing QA.
+- **Main responsibilities:** Connect research, writing, visual production, and validation into a local package ready for human review and upload.
 
-### Scenario 1: Rednote viral seed post creation
+### Scenario 1: Rednote topic-idea discovery
 
-Generates engaging, emoji-rich Rednote copy, title candidates, and structured post outlines from product features, lifestyle experiences, or local store visits.
-
-Example commands:
-
-- "I visited a new zen-style tea house today. Write 5 catchy Rednote titles with emojis, a 300-word review post highlighting key tea drinks, and 5 trending hashtags."
-- "Write a Rednote post for a rose moisturizing cream targeting young professionals, highlighting ingredient safety and texture."
-
-### Scenario 2: Short-video storyboarding and scriptwriting
-
-Transforms concepts or product features into structured short-video or live-stream scripts with visual directions, audio cues, timecodes, and dialogue.
+Researches recent audience conversations and returns five specific topic candidates with hooks, freshness, evidence, and a recommended idea for the next stage.
 
 Example commands:
 
-- "Turn this wireless earbud feature sheet into a 60-second Douyin video script with visual camera directions, sound effects, and spoken dialogue."
-- "Draft an outline for a 5-minute Bilibili tech review video covering smart home gadgets, including a strong 3-second opening hook."
+- "Find five useful Rednote topics for first-time home coffee brewers, explain why each matters now, and recommend one."
+- "Research recent discussion about compact workspaces and save a shortlist of specific, sourced Rednote angles."
 
-### Scenario 3: Multi-platform content repurposing and adaptation
+### Scenario 2: Sourced material-kit creation
 
-Rewrites master copy into versions tailored to the style, length, and audience expectations of specific platforms.
+Takes the selected idea and builds a reusable material kit containing factual claims, source links, audience needs, key messages, keywords, an outline, and visual direction.
 
 Example commands:
 
-- "Take my 1500-word WeChat Official Account article and adapt it into three versions: a Bilibili dynamic post, a Feishu document summary, and a Rednote card note."
-- "Polish this product launch text into three different tones: casual and friendly, geeky and professional, and humorous."
+- "Build a material kit for the recommended compact-workspace idea, including source facts, keywords, a post outline, and six card concepts."
+- "Turn this interview transcript into a material kit while preserving quotations and marking facts that still need verification."
+
+### Scenario 3: Material kit to publish-ready package
+
+Consumes the material kit to write complete copy and render a validated cover and visual-card set, without returning to broad topic discovery.
+
+Example commands:
+
+- "Use the current material kit to generate the final Rednote post, cover, six visual cards, hashtags, and upload checklist."
+- "Create a publish-ready Rednote package from this material-kit directory and report the exact output path."
 
 ## Intel Analyst (前哨智囊)
 

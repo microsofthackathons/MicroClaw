@@ -123,7 +123,7 @@ import imgGeologist from "@/assets/Geologist.png";
 import imgLawyer from "@/assets/Lawyer.png";
 import imgPainter from "@/assets/Painter.png";
 import imgScientist from "@/assets/Scientist.png";
-import imgSinger from "@/assets/Singer.png";
+import imgCreativeMuse from "@/assets/CreativeMuse.png";
 
 const IDENTITY_IMAGES = [
   imgArchaeologist,
@@ -134,7 +134,7 @@ const IDENTITY_IMAGES = [
   imgLawyer,
   imgPainter,
   imgScientist,
-  imgSinger,
+  imgCreativeMuse,
 ];
 
 const CAROUSEL_KEYS = [
