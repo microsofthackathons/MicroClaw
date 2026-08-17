@@ -710,6 +710,37 @@ _Fill this in during your first conversation. Make it yours._
     );
   });
 
+  it("removes Rednote Publisher from untouched non-owner catalog skill sets", () => {
+    const stateDir = createStateDir();
+    const legacyAllSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
+    const expectedSharedSkills = resolveSkillFilterNames(getAgentSkills("main"));
+    const config = {
+      agents: {
+        list: [
+          {
+            id: "main",
+            name: "Assistant",
+            default: true,
+            skills: legacyAllSkills,
+          },
+          {
+            id: "code-geek",
+            name: "Code Geek",
+            skills: legacyAllSkills,
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(agentList(config).find((entry) => entry.id === "main")?.skills).toEqual(
+      expectedSharedSkills,
+    );
+    expect(agentList(config).find((entry) => entry.id === "code-geek")?.skills).toEqual(
+      expectedSharedSkills,
+    );
+  });
+
   it("does not add Rednote Publisher to a customized skill set", () => {
     const stateDir = createStateDir();
     const config = {

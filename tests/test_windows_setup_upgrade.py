@@ -1646,7 +1646,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         written = json.loads(config_path.read_text(encoding="utf-8"))
         entries = written["skills"]["entries"]
         self.assertTrue(entries["officecli"]["enabled"])
-        self.assertFalse(entries["rednote-publisher"]["enabled"])
+        self.assertNotIn("rednote-publisher", entries)
         self.assertFalse(entries["desktop-organizer"]["enabled"])
 
     def test_write_config_preserves_existing_web_search_provider(self):

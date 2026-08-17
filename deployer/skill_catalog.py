@@ -57,7 +57,6 @@ MANAGED_SKILL_CATALOG: dict[str, SkillInfo] = {
     "officecli":                  {"description": "Office 文档 CLI 工具（创建/编辑 .docx/.xlsx/.pptx，无需安装 Office）", "platform": ["windows", "macos", "linux"]},
     "excel-xlsx":                 {"description": "Microsoft Excel 工作簿创建与编辑",                            "platform": ["windows"]},
     "powerpoint-pptx":            {"description": "Microsoft PowerPoint 演示文稿创建与编辑",                     "platform": ["windows"]},
-    "rednote-publisher":          {"description": "小红书选题、图文卡片与可发布内容包生成",                       "platform": ["windows"]},
     "security-practice":          {"description": "AI Agent 行为安全规范（红线/黄线规则、安装审计协议）",         "platform": ["windows"]},
     "word-docx":                  {"description": "Microsoft Word 文档创建与编辑",                               "platform": ["windows"]},
     "desktop-organizer":          {"description": "扫描 Windows 桌面文件与文件夹并分类整理",                     "platform": ["windows"]},

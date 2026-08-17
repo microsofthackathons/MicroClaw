@@ -27,9 +27,12 @@ vi.mock("./path-resolver", () => ({
 }));
 
 import {
+  acceptManagedSkillIntegrityChanges,
+  captureSkillIntegritySnapshotState,
   generateAndSignSnapshot,
-  verifySkillIntegrity,
   getSkillSourceDirs,
+  restoreSkillIntegritySnapshotState,
+  verifySkillIntegrity,
 } from "./skill-integrity";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -37,7 +40,7 @@ function builtinSkillsDir(): string {
   return path.join(tmpHome, ".openclaw-node", "node_modules", "openclaw", "skills");
 }
 function managedSkillsDir(): string {
-  return path.join(tmpHome, ".openclaw", "skills");
+  return path.join(tmpStateDir, "skills");
 }
 
 function writeFile(p: string, content: string): void {
@@ -96,6 +99,82 @@ describe("getSkillSourceDirs", () => {
 
 // ── Happy path: generate → verify ──────────────────────────────────────
 describe("generateAndSignSnapshot + verifySkillIntegrity", () => {
+  it("captures and restores the exact signed snapshot files", () => {
+    seedSkill(builtinSkillsDir(), "alpha", { "SKILL.md": "content" });
+    generateAndSignSnapshot();
+    const original = captureSkillIntegritySnapshotState();
+    expect(original.snapshot).not.toBeNull();
+    expect(original.signature).not.toBeNull();
+
+    seedSkill(managedSkillsDir(), "later", { "SKILL.md": "unrelated change" });
+    generateAndSignSnapshot();
+    restoreSkillIntegritySnapshotState(original);
+
+    const restored = captureSkillIntegritySnapshotState();
+    expect(restored.snapshot).toEqual(original.snapshot);
+    expect(restored.signature).toEqual(original.signature);
+    expect(verifySkillIntegrity().valid).toBe(false);
+  });
+
+  it("restores the absence of snapshot files", () => {
+    const empty = captureSkillIntegritySnapshotState();
+    expect(empty).toEqual({ snapshot: null, signature: null });
+    seedSkill(builtinSkillsDir(), "alpha", { "SKILL.md": "content" });
+    generateAndSignSnapshot();
+
+    restoreSkillIntegritySnapshotState(empty);
+
+    expect(verifySkillIntegrity().snapshotExists).toBe(false);
+  });
+
+  it("accepts changes only for the named managed skill", () => {
+    seedSkill(managedSkillsDir(), "rednote-publisher", { "SKILL.md": "v1" });
+    generateAndSignSnapshot();
+    writeFile(path.join(managedSkillsDir(), "rednote-publisher", "SKILL.md"), "v2");
+
+    acceptManagedSkillIntegrityChanges([
+      {
+        skillName: "rednote-publisher",
+        expectedDirectory: path.join(managedSkillsDir(), "rednote-publisher"),
+      },
+    ]);
+
+    expect(verifySkillIntegrity().valid).toBe(true);
+  });
+
+  it("refuses to rebaseline unrelated skill changes", () => {
+    seedSkill(managedSkillsDir(), "rednote-publisher", { "SKILL.md": "v1" });
+    seedSkill(managedSkillsDir(), "other", { "SKILL.md": "safe" });
+    generateAndSignSnapshot();
+    const baseline = captureSkillIntegritySnapshotState();
+    writeFile(path.join(managedSkillsDir(), "rednote-publisher", "SKILL.md"), "v2");
+    writeFile(path.join(managedSkillsDir(), "other", "SKILL.md"), "tampered");
+
+    expect(() =>
+      acceptManagedSkillIntegrityChanges([
+        {
+          skillName: "rednote-publisher",
+          expectedDirectory: path.join(managedSkillsDir(), "rednote-publisher"),
+        },
+      ]),
+    ).toThrow(/Unrelated skill integrity changes/);
+    expect(captureSkillIntegritySnapshotState()).toEqual(baseline);
+  });
+
+  it("refuses to sign unexpected files inside the controlled skill", () => {
+    const trusted = path.join(tmpHome, "trusted-rednote");
+    seedSkill(managedSkillsDir(), "rednote-publisher", { "SKILL.md": "v1" });
+    seedSkill(trusted, ".", { "SKILL.md": "v1" });
+    generateAndSignSnapshot();
+    writeFile(path.join(managedSkillsDir(), "rednote-publisher", ".injected"), "unapproved");
+
+    expect(() =>
+      acceptManagedSkillIntegrityChanges([
+        { skillName: "rednote-publisher", expectedDirectory: trusted },
+      ]),
+    ).toThrow(/does not match the controlled lifecycle state/);
+  });
+
   it("reports snapshotExists=false when no snapshot has been generated", () => {
     seedSkill(builtinSkillsDir(), "alpha", { "SKILL.md": "content" });
 

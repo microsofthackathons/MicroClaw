@@ -40,6 +40,11 @@ export interface IntegrityResult {
   changes: IntegrityChange[];
 }
 
+export interface SkillIntegritySnapshotState {
+  snapshot: Buffer | null;
+  signature: Buffer | null;
+}
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -94,7 +99,7 @@ export function getSkillSourceDirs(): Array<{ source: string; baseDir: string }>
     },
     {
       source: "managed",
-      baseDir: path.join(homeDir, ".openclaw", "skills"),
+      baseDir: path.join(getOpenClawStateDir(), "skills"),
     },
   ];
 }
@@ -141,6 +146,34 @@ function collectFiles(dir: string, baseDir: string): Map<string, string> {
     }
   }
 
+  return result;
+}
+
+function collectControlledSkillFiles(dir: string, baseDir = dir): Map<string, string> {
+  const result = new Map<string, string>();
+  if (!fs.existsSync(dir)) return result;
+  const rootInfo = fs.lstatSync(dir);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error(`Controlled skill path must be a regular directory: ${dir}`);
+  }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === ".microclaw-agent-skill.json") continue;
+    const fullPath = path.join(dir, entry.name);
+    const info = fs.lstatSync(fullPath);
+    if (info.isSymbolicLink()) {
+      throw new Error(`Controlled skill cannot contain links: ${fullPath}`);
+    }
+    if (info.isDirectory()) {
+      for (const [relativePath, digest] of collectControlledSkillFiles(fullPath, baseDir)) {
+        result.set(relativePath, digest);
+      }
+    } else if (info.isFile()) {
+      const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, "/");
+      result.set(relativePath, hashFile(fullPath));
+    } else {
+      throw new Error(`Controlled skill contains an unsupported entry: ${fullPath}`);
+    }
+  }
   return result;
 }
 
@@ -262,6 +295,77 @@ export function generateAndSignSnapshot(): void {
   fs.writeFileSync(path.join(stateDir, SIGNATURE_FILE), sig);
 }
 
+export interface ControlledManagedSkillChange {
+  skillName: string;
+  expectedDirectory: string | null;
+}
+
+export function acceptManagedSkillIntegrityChanges(
+  controlledChanges: readonly ControlledManagedSkillChange[],
+): void {
+  const controlled = new Map(
+    controlledChanges.map((change) => [change.skillName, change.expectedDirectory]),
+  );
+  const result = verifySkillIntegrity();
+  if (!result.snapshotExists || !result.signatureValid) {
+    throw new Error("Cannot update skill integrity without a valid signed baseline");
+  }
+  const unexpected = result.changes.filter(
+    (change) => change.source !== "managed" || !controlled.has(change.skill),
+  );
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Unrelated skill integrity changes must be reviewed first: ${unexpected
+        .map((change) => `${change.source}/${change.skill}/${change.file}`)
+        .join(", ")}`,
+    );
+  }
+  const managedRoot = getSkillSourceDirs().find((entry) => entry.source === "managed")!.baseDir;
+  for (const [skillName, expectedDirectory] of controlled) {
+    const actualDirectory = path.join(managedRoot, skillName);
+    const actual = collectControlledSkillFiles(actualDirectory);
+    const expected = expectedDirectory
+      ? collectControlledSkillFiles(expectedDirectory)
+      : new Map<string, string>();
+    if (
+      actual.size !== expected.size ||
+      [...expected].some(([relativePath, digest]) => actual.get(relativePath) !== digest)
+    ) {
+      throw new Error(`Managed skill "${skillName}" does not match the controlled lifecycle state`);
+    }
+  }
+  if (result.changes.length > 0) generateAndSignSnapshot();
+}
+
+export function captureSkillIntegritySnapshotState(
+  stateDir = getOpenClawStateDir(),
+): SkillIntegritySnapshotState {
+  const snapshotPath = path.join(stateDir, SNAPSHOT_FILE);
+  const signaturePath = path.join(stateDir, SIGNATURE_FILE);
+  return {
+    snapshot: fs.existsSync(snapshotPath) ? fs.readFileSync(snapshotPath) : null,
+    signature: fs.existsSync(signaturePath) ? fs.readFileSync(signaturePath) : null,
+  };
+}
+
+export function restoreSkillIntegritySnapshotState(
+  state: SkillIntegritySnapshotState,
+  stateDir = getOpenClawStateDir(),
+): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  for (const [filename, contents] of [
+    [SNAPSHOT_FILE, state.snapshot],
+    [SIGNATURE_FILE, state.signature],
+  ] as const) {
+    const target = path.join(stateDir, filename);
+    if (contents === null) {
+      if (fs.existsSync(target)) fs.unlinkSync(target);
+      continue;
+    }
+    fs.writeFileSync(target, contents);
+  }
+}
+
 /**
  * Verify the current on-disk skill files against a previously stored snapshot.
  *
@@ -297,10 +401,16 @@ export function verifySkillIntegrity(): IntegrityResult {
 
   const snapshot: Snapshot = JSON.parse(snapshotBytes.toString("utf-8"));
   const changes: IntegrityChange[] = [];
+  const currentSourceDirectories = new Map(
+    getSkillSourceDirs().map((entry) => [entry.source, entry.baseDir]),
+  );
 
   // Compare snapshot against current disk state
   for (const [sourceName, sourceEntry] of Object.entries(snapshot.sources)) {
-    const baseDir = sourceEntry.base_dir;
+    // Source locations can move across runtime layouts or OPENCLAW_STATE_DIR
+    // changes. Keep the signed file hashes authoritative, but always scan the
+    // currently resolved source directory rather than a stale stored path.
+    const baseDir = currentSourceDirectories.get(sourceName) ?? sourceEntry.base_dir;
 
     // Check every skill recorded in the snapshot
     for (const [skillName, skillEntry] of Object.entries(sourceEntry.skills)) {

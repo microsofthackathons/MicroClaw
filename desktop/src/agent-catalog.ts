@@ -1,9 +1,6 @@
-// The complete universe of skill IDs shipped by MicroClaw: the union of the
-// certified/bundled skills (SKILL_CATALOG) and the managed skills
-// (MANAGED_SKILL_CATALOG), alphabetically sorted. This MUST be kept in sync with
-// `deployer/skill_catalog.py` (SKILL_CATALOG + MANAGED_SKILL_CATALOG) — adding or
-// removing a skill there requires the same change here.
-export const ALL_SKILL_IDS: readonly string[] = [
+// Skills available to every catalog agent. This is the union of the bundled and
+// installer-managed catalogs and MUST stay in sync with deployer/skill_catalog.py.
+export const SHARED_SKILL_IDS: readonly string[] = [
   "1password",
   "blucli",
   "canvas",
@@ -19,7 +16,6 @@ export const ALL_SKILL_IDS: readonly string[] = [
   "openhue",
   "oracle",
   "powerpoint-pptx",
-  "rednote-publisher",
   "security-practice",
   "session-logs",
   "sherpa-onnx-tts",
@@ -29,6 +25,23 @@ export const ALL_SKILL_IDS: readonly string[] = [
   "video-frames",
   "word-docx",
 ];
+
+// Agent-owned skills ship as dormant desktop resources. They are installed into
+// the OpenClaw state directory only when their owning agent is added.
+export const AGENT_OWNED_SKILL_IDS: readonly string[] = ["rednote-publisher"];
+
+export const ALL_SKILL_IDS: readonly string[] = [
+  ...SHARED_SKILL_IDS.slice(0, 15),
+  ...AGENT_OWNED_SKILL_IDS,
+  ...SHARED_SKILL_IDS.slice(15),
+];
+
+function catalogSkills(...agentOwnedSkillIds: string[]): string[] {
+  const owned = new Set(agentOwnedSkillIds);
+  return ALL_SKILL_IDS.filter(
+    (skillId) => SHARED_SKILL_IDS.includes(skillId) || owned.has(skillId),
+  );
+}
 
 export interface AgentCatalogEntry {
   id: string;
@@ -60,7 +73,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.main.task.3.title", descKey: "agent.main.task.3.desc" },
     ],
     installedByDefault: true,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
   },
   {
     id: "master-archive",
@@ -89,7 +102,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
     workspaceDirName: "workspace-master-archive",
     personaProfile: "master-archive",
   },
@@ -107,7 +120,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.codeGeek.task.3.title", descKey: "agent.codeGeek.task.3.desc" },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
     workspaceDirName: "workspace-code-geek",
     personaProfile: "code-geek",
   },
@@ -125,7 +138,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.painter.task.3.title", descKey: "agent.painter.task.3.desc" },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
   },
   {
     id: "master",
@@ -141,7 +154,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.master.task.3.title", descKey: "agent.master.task.3.desc" },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
   },
   {
     id: "intel-analyst",
@@ -166,7 +179,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
     workspaceDirName: "workspace-intel-analyst",
     personaProfile: "intel-analyst",
   },
@@ -184,7 +197,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.leopard.task.3.title", descKey: "agent.leopard.task.3.desc" },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
   },
   {
     id: "creative-muse",
@@ -209,7 +222,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(...AGENT_OWNED_SKILL_IDS),
     workspaceDirName: "workspace-creative-muse",
     personaProfile: "creative-muse",
   },
@@ -268,6 +281,10 @@ export function matchesSkill(storedValue: string, slug: string): boolean {
 export function getAgentSkills(agentId: string): readonly string[] {
   const agent = AGENT_CATALOG.find((entry) => entry.id === agentId);
   return agent ? agent.skills : [];
+}
+
+export function getAgentOwnedSkillIds(agentId: string): readonly string[] {
+  return agentId === "creative-muse" ? AGENT_OWNED_SKILL_IDS : [];
 }
 
 const ALL_SKILL_ID_SET: ReadonlySet<string> = new Set(ALL_SKILL_IDS);

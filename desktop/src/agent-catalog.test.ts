@@ -3,13 +3,16 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_CATALOG,
+  AGENT_OWNED_SKILL_IDS,
   ALL_SKILL_IDS,
   getAgentSkills,
+  getAgentOwnedSkillIds,
   isKnownSkillId,
   matchesSkill,
   resolveSkillFilterNames,
   sanitizeAgentSkillIds,
   SKILL_MATCH_NAMES,
+  SHARED_SKILL_IDS,
 } from "./agent-catalog";
 
 const EXPECTED_SKILL_IDS = [
@@ -88,10 +91,11 @@ describe("agent catalog skills binding", () => {
     expect(new Set(ALL_SKILL_IDS).size).toBe(ALL_SKILL_IDS.length);
   });
 
-  it("binds every agent to the full skill list", () => {
+  it("binds shared skills to every agent and the owned skill only to Creative Muse", () => {
     for (const agent of AGENT_CATALOG) {
-      expect(agent.skills).toEqual(ALL_SKILL_IDS);
+      expect(agent.skills).toEqual(agent.id === "creative-muse" ? ALL_SKILL_IDS : SHARED_SKILL_IDS);
     }
+    expect(AGENT_OWNED_SKILL_IDS).toEqual(["rednote-publisher"]);
   });
 
   it("gives each agent its own skills array instance", () => {
@@ -109,7 +113,7 @@ describe("agent catalog skills binding", () => {
     const [first, second] = AGENT_CATALOG;
     (first.skills as string[]).push("__mutation-probe__");
     try {
-      expect(second.skills).toEqual(ALL_SKILL_IDS);
+      expect(second.skills).toEqual(SHARED_SKILL_IDS);
       expect(ALL_SKILL_IDS).toEqual(EXPECTED_SKILL_IDS);
     } finally {
       (first.skills as string[]).pop();
@@ -117,7 +121,10 @@ describe("agent catalog skills binding", () => {
   });
 
   it("resolves skills for a known agent and returns [] for an unknown one", () => {
-    expect(getAgentSkills("code-geek")).toEqual(ALL_SKILL_IDS);
+    expect(getAgentSkills("code-geek")).toEqual(SHARED_SKILL_IDS);
+    expect(getAgentSkills("creative-muse")).toEqual(ALL_SKILL_IDS);
+    expect(getAgentOwnedSkillIds("creative-muse")).toEqual(["rednote-publisher"]);
+    expect(getAgentOwnedSkillIds("code-geek")).toEqual([]);
     expect(getAgentSkills("does-not-exist")).toEqual([]);
   });
 

@@ -668,10 +668,23 @@ export function ensureAgentPersonasConfig(
     } else if (catalogSkills !== undefined && Array.isArray(entry.skills)) {
       const resolvedCatalogSkills = resolveSkillFilterNames([...catalogSkills]);
       const rednoteSkillName = resolveSkillFilterNames(["rednote-publisher"])[0];
-      const previousDefaultSkills = resolvedCatalogSkills.filter(
+      const legacyAllSkills = resolveSkillFilterNames([
+        ...new Set([...catalogSkills, "rednote-publisher"]),
+      ]).sort((left, right) => left.localeCompare(right, "en"));
+      const currentEntrySkills = [...entry.skills].sort((left, right) =>
+        String(left).localeCompare(String(right), "en"),
+      );
+      const resolvedSkillsSorted = [...resolvedCatalogSkills].sort((left, right) =>
+        left.localeCompare(right, "en"),
+      );
+      const previousCreativeDefaults = resolvedSkillsSorted.filter(
         (skill) => skill !== rednoteSkillName,
       );
-      if (JSON.stringify(entry.skills) === JSON.stringify(previousDefaultSkills)) {
+      if (
+        JSON.stringify(currentEntrySkills) === JSON.stringify(legacyAllSkills) ||
+        (entry.id === "creative-muse" &&
+          JSON.stringify(currentEntrySkills) === JSON.stringify(previousCreativeDefaults))
+      ) {
         entry.skills = resolvedCatalogSkills;
       }
     }
