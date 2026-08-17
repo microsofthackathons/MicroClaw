@@ -302,6 +302,28 @@ describe("useSessionStore", () => {
     });
   });
 
+  it("keeps historical Painter sessions visible under Office Artisan", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:painter:legacy",
+        title: "Legacy design session",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "slides",
+        agentId: "painter",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:painter:legacy",
+      agentId: "office-artisan",
+      title: "Legacy design session",
+    });
+  });
+
   it("removes a persisted reserved warm-up session on load", () => {
     storage["openclaw-sessions"] = JSON.stringify([
       {

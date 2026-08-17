@@ -74,6 +74,14 @@ describe("i18n", () => {
     setLocale("en-US"); // restore
   });
 
+  it("Office Artisan catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.officeArtisan.name")).toBe("Office Artisan");
+    setLocale("zh-CN");
+    expect(t("agent.officeArtisan.name")).toBe("办公巧匠");
+    setLocale("en-US"); // restore
+  });
+
   it("Creative Muse catalog keys exist in both locales", () => {
     setLocale("en-US");
     expect(t("agent.creativeMuse.name")).toBe("Creative Muse");

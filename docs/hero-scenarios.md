@@ -8,6 +8,7 @@
 | **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic-idea discovery; sourced material-kit creation; post and visual-package generation |
 | **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
 | **Market Sentinel (财经哨兵)** | Restrained financial-information analyst organizing sourced market data without giving investment advice | A-share market briefs; earnings and announcement tracking; watchlist and indicator monitoring |
+| **Office Artisan (办公巧匠)** | Meticulous Office-production specialist turning source materials into validated local deliverables | Word report production; Excel analysis and chart summaries; PowerPoint presentation generation |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
 
@@ -150,6 +151,41 @@ Example commands:
 
 - "Monitor these A-share symbols for daily price, volume, MA20, MACD, and RSI changes. Include formulas, timestamps, and missing data."
 - "Explain the last 30 trading days of indicator changes for this symbol, but do not recommend a trade or position adjustment."
+
+## Office Artisan (办公巧匠)
+
+### Persona and professional role
+
+- **Persona and tone:** Meticulous, structured, visually disciplined, and dependable. Produces complete local Office artifacts rather than disconnected advice.
+- **Domain expertise:** Word report structure and layout, reproducible Excel analysis and charting, and source-faithful PowerPoint storytelling.
+- **Main responsibilities:** Transform user-provided material into validated Office deliverables while preserving facts, formulas, attribution, source files, and review boundaries.
+
+### Scenario 1: Formal Word report production
+
+Turns notes, source documents, or meeting material into a structured Word report with an executive summary, section hierarchy, tables, captions, and references.
+
+Example commands:
+
+- "Turn these meeting notes and project documents into a formal weekly report for leadership. Preserve owners, deadlines, and source references."
+- "Create a client-ready Word report from these files, using a new output file and marking claims that still need verification."
+
+### Scenario 2: Excel analysis and chart summary
+
+Inspects a workbook, preserves raw data, creates reproducible calculations and charts in new sheets or a new workbook, and validates formulas, ranges, units, and errors.
+
+Example commands:
+
+- "Analyze this sales workbook by region and month, add a summary sheet with formulas and charts, and leave the source sheets unchanged."
+- "Cleanly summarize these survey results in Excel, explain the formulas, and verify chart labels and data ranges."
+
+### Scenario 3: PowerPoint presentation generation
+
+Converts an approved report or outline into a concise presentation with a coherent story, consistent figures, source notes, and validated slide layout.
+
+Example commands:
+
+- "Turn this quarterly report into a 10-slide executive presentation, preserving every number and adding source notes."
+- "Create a project-review deck from this Word report and verify slide order, overflow, and readability."
 
 ## Dr. Pulse (系统神医)
 

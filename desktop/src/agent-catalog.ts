@@ -62,6 +62,7 @@ export interface AgentCatalogEntry {
     | "dr-pulse"
     | "intel-analyst"
     | "market-sentinel"
+    | "office-artisan"
     | "creative-muse";
 }
 
@@ -132,20 +133,35 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     personaProfile: "code-geek",
   },
   {
-    id: "painter",
-    name: "Painter",
-    nameKey: "agent.painter.name",
-    descKey: "agent.painter.desc",
-    avatar: "painter-avatar.png",
+    id: "office-artisan",
+    name: "Office Artisan",
+    nameKey: "agent.officeArtisan.name",
+    descKey: "agent.officeArtisan.desc",
+    avatar: "office-artisan-avatar.png",
     image: "Painter.png",
-    tagKeys: ["agent.painter.tag.1", "agent.painter.tag.2", "agent.painter.tag.3"],
+    tagKeys: [
+      "agent.officeArtisan.tag.1",
+      "agent.officeArtisan.tag.2",
+      "agent.officeArtisan.tag.3",
+    ],
     taskKeys: [
-      { titleKey: "agent.painter.task.1.title", descKey: "agent.painter.task.1.desc" },
-      { titleKey: "agent.painter.task.2.title", descKey: "agent.painter.task.2.desc" },
-      { titleKey: "agent.painter.task.3.title", descKey: "agent.painter.task.3.desc" },
+      {
+        titleKey: "agent.officeArtisan.task.1.title",
+        descKey: "agent.officeArtisan.task.1.desc",
+      },
+      {
+        titleKey: "agent.officeArtisan.task.2.title",
+        descKey: "agent.officeArtisan.task.2.desc",
+      },
+      {
+        titleKey: "agent.officeArtisan.task.3.title",
+        descKey: "agent.officeArtisan.task.3.desc",
+      },
     ],
     installedByDefault: false,
     skills: catalogSkills(),
+    workspaceDirName: "workspace-office-artisan",
+    personaProfile: "office-artisan",
   },
   {
     id: "dr-pulse",
@@ -315,6 +331,7 @@ export function getAgentOwnedSkillIds(agentId: string): readonly string[] {
 export const LEGACY_AGENT_ID_ALIASES: Readonly<Record<string, string>> = {
   leopard: "market-sentinel",
   master: "dr-pulse",
+  painter: "office-artisan",
   singer: "creative-muse",
 };
 

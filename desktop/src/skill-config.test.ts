@@ -43,11 +43,11 @@ describe("applyAgentSkillsToConfig", () => {
       agents: {
         list: [
           { id: "main", skills: ["keep"] },
-          { id: "painter", skills: [] },
+          { id: "custom-agent", skills: [] },
         ],
       },
     };
-    applyAgentSkillsToConfig(config, "painter", ["excel-xlsx"]);
+    applyAgentSkillsToConfig(config, "custom-agent", ["excel-xlsx"]);
     const list = config.agents!.list as Array<{ id: string; skills: string[] }>;
     expect(list[0].skills).toEqual(["keep"]);
     expect(list[1].skills).toEqual(["Excel / XLSX"]);

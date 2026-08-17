@@ -624,6 +624,13 @@ describe("useChatStore — draft sessions", () => {
     expect(store.sessionKey).toMatch(/^agent:leopard:session-/);
     expect(store.currentSessionAgentId).toBe("market-sentinel");
   });
+
+  it("attributes historical Painter session keys to Office Artisan", () => {
+    const store = useChatStore();
+    store.newSession("painter");
+    expect(store.sessionKey).toMatch(/^agent:painter:session-/);
+    expect(store.currentSessionAgentId).toBe("office-artisan");
+  });
 });
 
 describe("useChatStore — attachments", () => {
