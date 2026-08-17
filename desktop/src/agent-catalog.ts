@@ -56,7 +56,7 @@ export interface AgentCatalogEntry {
   skills: readonly string[];
   ownedSkills?: readonly string[];
   workspaceDirName?: string;
-  personaProfile?: "master-archive" | "code-geek" | "intel-analyst" | "creative-muse";
+  personaProfile?: "master-archive" | "code-geek" | "dr-pulse" | "intel-analyst" | "creative-muse";
 }
 
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
@@ -142,20 +142,22 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     skills: catalogSkills(),
   },
   {
-    id: "master",
-    name: "Master",
-    nameKey: "agent.master.name",
-    descKey: "agent.master.desc",
-    avatar: "master-avatar.png",
+    id: "dr-pulse",
+    name: "Dr. Pulse",
+    nameKey: "agent.drPulse.name",
+    descKey: "agent.drPulse.desc",
+    avatar: "dr-pulse-avatar.png",
     image: "Diviner.png",
-    tagKeys: ["agent.master.tag.1", "agent.master.tag.2", "agent.master.tag.3"],
+    tagKeys: ["agent.drPulse.tag.1", "agent.drPulse.tag.2", "agent.drPulse.tag.3"],
     taskKeys: [
-      { titleKey: "agent.master.task.1.title", descKey: "agent.master.task.1.desc" },
-      { titleKey: "agent.master.task.2.title", descKey: "agent.master.task.2.desc" },
-      { titleKey: "agent.master.task.3.title", descKey: "agent.master.task.3.desc" },
+      { titleKey: "agent.drPulse.task.1.title", descKey: "agent.drPulse.task.1.desc" },
+      { titleKey: "agent.drPulse.task.2.title", descKey: "agent.drPulse.task.2.desc" },
+      { titleKey: "agent.drPulse.task.3.title", descKey: "agent.drPulse.task.3.desc" },
     ],
     installedByDefault: false,
     skills: catalogSkills(),
+    workspaceDirName: "workspace-dr-pulse",
+    personaProfile: "dr-pulse",
   },
   {
     id: "intel-analyst",
@@ -290,6 +292,7 @@ export function getAgentOwnedSkillIds(agentId: string): readonly string[] {
 }
 
 export const LEGACY_AGENT_ID_ALIASES: Readonly<Record<string, string>> = {
+  master: "dr-pulse",
   singer: "creative-muse",
 };
 

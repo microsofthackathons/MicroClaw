@@ -204,6 +204,33 @@ describe("agent personas", () => {
     );
   });
 
+  it("seeds the Dr. Pulse workspace with its safety-first Windows context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("dr-pulse");
+    if (!persona) throw new Error("Dr. Pulse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "dr-pulse",
+      name: "Dr. Pulse",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Dr. Pulse workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-dr-pulse"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "Never run autonomous broad repair",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "explicit confirmation before any system or application change",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Dr. Pulse",
+    );
+  });
+
   it("seeds the Creative Muse workspace with its platform content context", () => {
     const stateDir = createStateDir();
     const config = { agents: {} };
@@ -363,6 +390,189 @@ Keep this section.
     expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Creative Muse",
     );
+  });
+
+  it("migrates an installed Master to Dr. Pulse without losing custom settings or default", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-system-doctor");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "master",
+            name: "My PC Doctor",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/diagnostic-model",
+            default: true,
+            confirmationMode: "always",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "dr-pulse", name: "My PC Doctor" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "My PC Doctor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/diagnostic-model",
+      default: true,
+      confirmationMode: "always",
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "My PC Doctor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/diagnostic-model",
+      confirmationMode: "always",
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).not.toHaveProperty("default");
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Dr. Pulse",
+    );
+    expect(fs.existsSync(path.join(stateDir, "workspace-dr-pulse"))).toBe(false);
+  });
+
+  it("moves an uncustomized Master to the fixed Dr. Pulse workspace", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "master", name: "Master" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+    });
+  });
+
+  it("restores the hidden Master alias whenever Dr. Pulse is configured", () => {
+    const stateDir = createStateDir();
+    const workspace = path.join(stateDir, "workspace-dr-pulse");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "dr-pulse", name: "Dr. Pulse", workspace },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "dr-pulse", name: "Dr. Pulse" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace,
+    });
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+  });
+
+  it("keeps canonical Dr. Pulse settings while filling missing legacy fields", () => {
+    const stateDir = createStateDir();
+    const legacyWorkspace = path.join(stateDir, "custom-master");
+    const drPulsePersona = getAgentPersona("dr-pulse");
+    if (!drPulsePersona) throw new Error("Dr. Pulse persona is not registered");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "dr-pulse",
+            name: "Dr. Pulse",
+            workspace: path.join(stateDir, "workspace-dr-pulse"),
+            skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
+          },
+          {
+            id: "master",
+            name: "My System Specialist",
+            workspace: legacyWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/system-model",
+            default: true,
+          },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).filter((entry) => entry.id === "dr-pulse")).toHaveLength(1);
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+      skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
+      model: "custom/system-model",
+      default: true,
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+      skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
+      model: "custom/system-model",
+    });
+  });
+
+  it("keeps an existing customized Dr. Pulse identity when Master coexists", () => {
+    const stateDir = createStateDir();
+    const drPulseWorkspace = path.join(stateDir, "custom-dr-pulse");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "dr-pulse",
+            name: "Trusted System Doctor",
+            workspace: drPulseWorkspace,
+            skills: ["preferred-skill"],
+          },
+          {
+            id: "master",
+            name: "Legacy Master",
+            workspace: path.join(stateDir, "legacy-master"),
+            skills: ["legacy-skill"],
+            model: "custom/legacy-model",
+            default: true,
+          },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Trusted System Doctor",
+      workspace: drPulseWorkspace,
+      skills: ["preferred-skill"],
+      model: "custom/legacy-model",
+      default: true,
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Trusted System Doctor",
+      workspace: drPulseWorkspace,
+      skills: ["preferred-skill"],
+    });
   });
 
   it("keeps Singer's implicit workspace when migrating to Creative Muse", () => {
@@ -549,6 +759,21 @@ _Fill this in during your first conversation. Make it yours._
     expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
     expect(fs.readFileSync(soulPath, "utf-8")).toBe("custom persona\n");
     expect(removeConfiguredAgent(config, "master-archive").changed).toBe(false);
+  });
+
+  it("removes Dr. Pulse and its Master compatibility alias together", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "dr-pulse", name: "Dr. Pulse", workspace: "workspace-dr-pulse" },
+          { id: "master", name: "Dr. Pulse", workspace: "workspace-dr-pulse" },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "dr-pulse").changed).toBe(true);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
   });
 
   it("does not allow the built-in default agent to be removed", () => {

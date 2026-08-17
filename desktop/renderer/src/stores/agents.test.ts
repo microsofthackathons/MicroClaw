@@ -38,11 +38,13 @@ describe("agent store", () => {
     expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
   });
 
-  it("hides the Singer compatibility alias from the sidebar", async () => {
+  it("hides legacy compatibility aliases from the sidebar", async () => {
     const store = useAgentStore();
     agentsList.mockResolvedValueOnce({
       agents: [
         { id: "main", name: "Assistant" },
+        { id: "dr-pulse", name: "Dr. Pulse" },
+        { id: "master", name: "Dr. Pulse" },
         { id: "creative-muse", name: "Creative Muse" },
         { id: "singer", name: "Creative Muse" },
       ],
@@ -50,7 +52,7 @@ describe("agent store", () => {
 
     await store.fetchAgents();
 
-    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "creative-muse"]);
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "dr-pulse", "creative-muse"]);
   });
 
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
@@ -98,6 +100,23 @@ describe("agent store", () => {
       isAdded: false,
     });
     expect(store.marketAgents.some((entry) => entry.id === "growth-hacker")).toBe(false);
+  });
+
+  it("presents the Dr. Pulse safety-first Windows scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      description: "Evidence-led Windows diagnostics, guided tuning & scenario preparation",
+      tags: ["System Health", "Guided Tuning", "Scenario Prep"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "dr-pulse")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Diagnose my Windows PC before proposing repairs" }),
+      expect.objectContaining({ title: "Tune this Windows setting or peripheral" }),
+      expect.objectContaining({ title: "Prepare my PC for deep work or a video call" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "master")).toBe(false);
   });
 
   it("presents the Creative Muse platform content scenarios", () => {

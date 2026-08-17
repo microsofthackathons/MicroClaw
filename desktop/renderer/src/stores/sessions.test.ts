@@ -258,6 +258,28 @@ describe("useSessionStore", () => {
     });
   });
 
+  it("keeps historical Master sessions visible under Dr. Pulse", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:master:legacy",
+        title: "Legacy system check",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "diagnose",
+        agentId: "master",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:master:legacy",
+      agentId: "dr-pulse",
+      title: "Legacy system check",
+    });
+  });
+
   it("removes a persisted reserved warm-up session on load", () => {
     storage["openclaw-sessions"] = JSON.stringify([
       {
