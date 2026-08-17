@@ -1649,6 +1649,40 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertNotIn("rednote-publisher", entries)
         self.assertFalse(entries["desktop-organizer"]["enabled"])
 
+    def test_write_config_preserves_desktop_owned_and_unknown_skill_entries(self):
+        self.ws.cfg = _Config(
+            {
+                "skills.enable": True,
+                "skills.allowManaged": ["officecli"],
+            }
+        )
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "entries": {
+                            "rednote-publisher": {"enabled": False, "owner": "desktop"},
+                            "user-skill": {"enabled": True},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        entries = json.loads(config_path.read_text(encoding="utf-8"))["skills"]["entries"]
+        self.assertEqual(
+            entries["rednote-publisher"], {"enabled": False, "owner": "desktop"}
+        )
+        self.assertEqual(entries["user-skill"], {"enabled": True})
+
     def test_write_config_preserves_existing_web_search_provider(self):
         config_path = self.home / ".openclaw" / "openclaw.json"
         config_path.parent.mkdir(parents=True)

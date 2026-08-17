@@ -236,6 +236,28 @@ describe("useSessionStore", () => {
     expect(store.sessions[0].key).toBe("loaded");
   });
 
+  it("keeps historical Singer sessions visible under Creative Muse", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:singer:legacy",
+        title: "Legacy draft",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "lyrics",
+        agentId: "singer",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:singer:legacy",
+      agentId: "creative-muse",
+      title: "Legacy draft",
+    });
+  });
+
   it("removes a persisted reserved warm-up session on load", () => {
     storage["openclaw-sessions"] = JSON.stringify([
       {

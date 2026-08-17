@@ -197,6 +197,21 @@ function Get-PngDimensions {
     }
 }
 
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $algorithm.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Test-NonEmptyString {
     param([object]$Value)
     return $Value -is [string] -and -not [string]::IsNullOrWhiteSpace($Value)
@@ -243,6 +258,7 @@ foreach ($relativePath in $requiredFiles) {
 $packageSpec = $null
 $ideasSpec = $null
 $materialSpec = $null
+$materialKitSha256 = $null
 $manifestSpec = $null
 $packageJsonPath = Join-Path $resolvedPackagePath "package.json"
 if (Test-Path -LiteralPath $packageJsonPath -PathType Leaf) {
@@ -273,6 +289,7 @@ if (Test-Path -LiteralPath $ideasPath -PathType Leaf) {
 $materialPath = Join-Path $resolvedPackagePath "material-kit.json"
 if (Test-Path -LiteralPath $materialPath -PathType Leaf) {
     try {
+        $materialKitSha256 = Get-Sha256Hex $materialPath
         $materialSpec = Get-Content -LiteralPath $materialPath -Raw -Encoding UTF8 |
             ConvertFrom-Json
         if ($materialSpec.schemaVersion -ne 1) {
@@ -346,7 +363,7 @@ if ($null -ne $packageSpec) {
         if ($packageSpec.schemaVersion -ne 1) {
             $errors.Add("package.json schemaVersion must be 1.")
         }
-        foreach ($field in @("projectId", "materialKitId")) {
+        foreach ($field in @("projectId", "materialKitId", "materialKitSha256", "selectedIdeaId")) {
             if (-not (Test-NonEmptyString $packageSpec.$field)) {
                 $errors.Add("package.json requires a non-empty $field.")
             }
@@ -358,17 +375,40 @@ if ($null -ne $packageSpec) {
             if ($packageSpec.materialKitId -ne $materialSpec.materialKitId) {
                 $errors.Add("package.json materialKitId must match material-kit.json.")
             }
+            if ($packageSpec.materialKitSha256 -ne $materialKitSha256) {
+                $errors.Add("package.json materialKitSha256 must match material-kit.json.")
+            }
+            if ($packageSpec.selectedIdeaId -ne $materialSpec.selectedIdeaId) {
+                $errors.Add("package.json selectedIdeaId must match material-kit.json.")
+            }
+            foreach ($sharedField in @("topic", "audience", "angle")) {
+                if ($packageSpec.$sharedField -ne $materialSpec.$sharedField) {
+                    $errors.Add("package.json $sharedField must match material-kit.json.")
+                }
+            }
             $allowedSourceUrls = @(
                 @($materialSpec.sourceFacts) |
                     Where-Object { $_.sourceType -eq "web" } |
-                    ForEach-Object { $_.sourceUrl }
+                    ForEach-Object { $_.sourceUrl } |
+                    Sort-Object -Unique
             )
+            $packageSourceUrls = @()
             foreach ($source in @($packageSpec.sources)) {
                 if ($null -eq $source -or
                     -not (Test-NonEmptyString $source.url) -or
                     $allowedSourceUrls -notcontains $source.url) {
                     $errors.Add("Every package source must come from material-kit.json.")
                 }
+                else {
+                    $packageSourceUrls += $source.url
+                }
+            }
+            $packageSourceUrls = @($packageSourceUrls | Sort-Object -Unique)
+            if ((ConvertTo-Json $packageSourceUrls -Compress) -ne
+                (ConvertTo-Json $allowedSourceUrls -Compress)) {
+                $errors.Add(
+                    "package.json sources must include every web source from material-kit.json."
+                )
             }
         }
         foreach ($field in @("topic", "audience", "angle", "body", "coverText")) {
@@ -445,6 +485,20 @@ if ($null -ne $manifestSpec) {
             }
             if ($manifestSpec.materialKitId -ne $materialSpec.materialKitId) {
                 $errors.Add("manifest.json materialKitId must match material-kit.json.")
+            }
+            if ($manifestSpec.materialKitSha256 -ne $materialKitSha256) {
+                $errors.Add("manifest.json materialKitSha256 must match material-kit.json.")
+            }
+            if ($manifestSpec.selectedIdeaId -ne $materialSpec.selectedIdeaId) {
+                $errors.Add("manifest.json selectedIdeaId must match material-kit.json.")
+            }
+            if ($manifestSpec.topic -ne $materialSpec.topic) {
+                $errors.Add("manifest.json topic must match material-kit.json.")
+            }
+            $manifestPalette = ConvertTo-Json @($manifestSpec.palette) -Compress
+            $materialPalette = ConvertTo-Json @($materialSpec.visualDirection.palette) -Compress
+            if ($manifestPalette -ne $materialPalette) {
+                $errors.Add("manifest.json palette must match material-kit.json.")
             }
         }
         if ($manifestSpec.canvas.width -ne 1242 -or $manifestSpec.canvas.height -ne 1660) {

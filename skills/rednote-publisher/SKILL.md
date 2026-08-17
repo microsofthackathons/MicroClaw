@@ -146,7 +146,7 @@ Create UTF-8 JSON with this shape:
   "outline": ["开场钩子", "核心方法", "结尾行动"],
   "visualDirection": {
     "coverMood": "封面氛围",
-    "palette": ["#FFF7F0", "#F06C5B"],
+    "palette": ["#FFF7F0", "#F06C5B", "#2F2522", "#7B6861"],
     "cardConcepts": ["卡片一方向", "卡片二方向", "卡片三方向"]
   }
 }
@@ -155,6 +155,8 @@ Create UTF-8 JSON with this shape:
 Every web-derived factual claim needs a URL and retrieval date. User-supplied facts use `sourceType: "user-material"` and may omit the URL.
 
 Do not download or reuse third-party images merely because they appear in search results. Actual photo assets must be user-provided or clearly licensed; otherwise the material kit should contain executable visual directions for the local card renderer.
+
+Palette order is semantic: background, accent, text, then muted text. The renderer uses these approved colors directly; a fifth color may be reserved for later decorative use.
 
 ## `package.json`
 
@@ -187,6 +189,8 @@ Create UTF-8 JSON with this shape:
 Requirements:
 
 - `projectId` and `materialKitId` must match `material-kit.json`.
+- `topic`, `audience`, and `angle` must exactly match the approved material kit.
+- Include every web source from `material-kit.json`; the renderer records the material-kit SHA-256 and selected idea in the normalized package and manifest.
 - 3-5 title options.
 - Complete body copy; do not leave an outline.
 - 3-8 slides. Each card must add new information instead of repeating the cover.

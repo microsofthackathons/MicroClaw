@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import struct
@@ -62,6 +63,28 @@ class RednotePublisherSkillTests(unittest.TestCase):
             raise AssertionError(f"{path} is not a PNG")
         return struct.unpack(">II", header[16:24])
 
+    @staticmethod
+    def png_origin_rgb(path: Path) -> tuple[int, int, int]:
+        png = path.read_bytes()
+        offset = 8
+        color_type = None
+        compressed = bytearray()
+        while offset < len(png):
+            length = struct.unpack(">I", png[offset : offset + 4])[0]
+            chunk_type = png[offset + 4 : offset + 8]
+            data = png[offset + 8 : offset + 8 + length]
+            if chunk_type == b"IHDR":
+                color_type = data[9]
+            elif chunk_type == b"IDAT":
+                compressed.extend(data)
+            elif chunk_type == b"IEND":
+                break
+            offset += 12 + length
+        if color_type not in (2, 6):
+            raise AssertionError(f"Unexpected PNG color type: {color_type}")
+        scanlines = zlib.decompress(bytes(compressed))
+        return tuple(scanlines[1:4])
+
     def render(self) -> subprocess.CompletedProcess[str]:
         return self.run_script(
             "New-RednotePackage.ps1",
@@ -122,6 +145,32 @@ class RednotePublisherSkillTests(unittest.TestCase):
         )
         self.assertIn(
             "小红书发布包", (self.package_dir / "post.md").read_text(encoding="utf-8-sig")
+        )
+        material_hash = hashlib.sha256(
+            (self.package_dir / "material-kit.json").read_bytes()
+        ).hexdigest()
+        package = json.loads(
+            (self.package_dir / "package.json").read_text(encoding="utf-8-sig")
+        )
+        manifest = json.loads(
+            (self.package_dir / "manifest.json").read_text(encoding="utf-8-sig")
+        )
+        material = json.loads(
+            (self.package_dir / "material-kit.json").read_text(encoding="utf-8-sig")
+        )
+        self.assertEqual(package["materialKitSha256"], material_hash)
+        self.assertEqual(manifest["materialKitSha256"], material_hash)
+        self.assertEqual(manifest["palette"], material["visualDirection"]["palette"])
+        expected_background = tuple(
+            bytes.fromhex(material["visualDirection"]["palette"][0].lstrip("#"))
+        )
+        actual_background = self.png_origin_rgb(self.package_dir / "cover.png")
+        self.assertLessEqual(
+            max(
+                abs(actual - expected)
+                for actual, expected in zip(actual_background, expected_background)
+            ),
+            1,
         )
 
     def test_requires_force_before_replacing_generated_outputs(self) -> None:
@@ -321,6 +370,56 @@ class RednotePublisherSkillTests(unittest.TestCase):
 
         self.assertNotEqual(rendered.returncode, 0)
         self.assertIn("materialKitId must match", rendered.stderr)
+
+    def test_renderer_requires_shared_material_fields_and_complete_sources(self) -> None:
+        spec_path = self.package_dir / "package.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8-sig"))
+        spec["angle"] = "A different angle"
+        spec_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+
+        rendered = self.render()
+
+        self.assertNotEqual(rendered.returncode, 0)
+        self.assertIn("angle must match material-kit.json", rendered.stderr)
+
+        spec["angle"] = json.loads(
+            (self.package_dir / "material-kit.json").read_text(encoding="utf-8-sig")
+        )["angle"]
+        spec_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        material_path = self.package_dir / "material-kit.json"
+        material = json.loads(material_path.read_text(encoding="utf-8-sig"))
+        material["sourceFacts"].append(
+            {
+                "fact": "A second sourced fact",
+                "sourceType": "web",
+                "sourceTitle": "Second Source",
+                "sourceUrl": "https://example.com/second-source",
+                "retrievedAt": "2026-08-16",
+            }
+        )
+        material_path.write_text(json.dumps(material, ensure_ascii=False), encoding="utf-8")
+
+        rendered = self.render()
+
+        self.assertNotEqual(rendered.returncode, 0)
+        self.assertIn("sources must include every web source", rendered.stderr)
+
+    def test_validation_rejects_material_changes_after_render(self) -> None:
+        self.assertEqual(self.render().returncode, 0)
+        material_path = self.package_dir / "material-kit.json"
+        material = json.loads(material_path.read_text(encoding="utf-8-sig"))
+        material["topic"] = "Changed after approval"
+        material_path.write_text(json.dumps(material, ensure_ascii=False), encoding="utf-8")
+
+        validated = self.run_script(
+            "Test-RednotePackage.ps1",
+            "-PackagePath",
+            str(self.package_dir),
+        )
+
+        self.assertNotEqual(validated.returncode, 0)
+        self.assertIn("materialKitSha256 must match", validated.stdout)
+        self.assertIn("topic must match material-kit.json", validated.stdout)
 
 
 if __name__ == "__main__":

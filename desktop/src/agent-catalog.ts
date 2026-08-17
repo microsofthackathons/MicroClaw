@@ -54,6 +54,7 @@ export interface AgentCatalogEntry {
   taskKeys: Array<{ titleKey: string; descKey: string }>;
   installedByDefault: boolean;
   skills: readonly string[];
+  ownedSkills?: readonly string[];
   workspaceDirName?: string;
   personaProfile?: "master-archive" | "code-geek" | "intel-analyst" | "creative-muse";
 }
@@ -223,6 +224,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     ],
     installedByDefault: false,
     skills: catalogSkills(...AGENT_OWNED_SKILL_IDS),
+    ownedSkills: AGENT_OWNED_SKILL_IDS,
     workspaceDirName: "workspace-creative-muse",
     personaProfile: "creative-muse",
   },
@@ -284,16 +286,29 @@ export function getAgentSkills(agentId: string): readonly string[] {
 }
 
 export function getAgentOwnedSkillIds(agentId: string): readonly string[] {
-  return agentId === "creative-muse" ? AGENT_OWNED_SKILL_IDS : [];
+  return AGENT_CATALOG.find((entry) => entry.id === agentId)?.ownedSkills ?? [];
+}
+
+export const LEGACY_AGENT_ID_ALIASES: Readonly<Record<string, string>> = {
+  singer: "creative-muse",
+};
+
+export function canonicalAgentId(agentId: string): string {
+  return LEGACY_AGENT_ID_ALIASES[agentId] ?? agentId;
 }
 
 const ALL_SKILL_ID_SET: ReadonlySet<string> = new Set(ALL_SKILL_IDS);
+const AGENT_OWNED_SKILL_ID_SET: ReadonlySet<string> = new Set(AGENT_OWNED_SKILL_IDS);
 
 /**
  * Returns true when the given id is one of the known catalog skill ids.
  */
 export function isKnownSkillId(skillId: string): boolean {
   return ALL_SKILL_ID_SET.has(skillId);
+}
+
+export function isAgentOwnedSkillId(skillId: string): boolean {
+  return AGENT_OWNED_SKILL_ID_SET.has(skillId);
 }
 
 /**

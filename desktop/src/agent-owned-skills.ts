@@ -8,7 +8,7 @@ import {
   resolveSkillFilterNames,
 } from "./agent-catalog";
 
-const OWNERSHIP_MARKER = ".microclaw-agent-skill.json";
+export const AGENT_OWNED_SKILL_MARKER = ".microclaw-agent-skill.json";
 
 interface SkillOwnershipMarker {
   schemaVersion: 1;
@@ -22,6 +22,8 @@ export interface AgentOwnedSkillInstall {
   destination: string;
   created: boolean;
   markerCreated: boolean;
+  upgraded: boolean;
+  backup?: string;
 }
 
 export interface AgentOwnedSkillRemoval {
@@ -35,6 +37,15 @@ export interface AgentOwnedSkillReconciliation {
   removals: AgentOwnedSkillRemoval[];
   configChanged: boolean;
   runtimeChanged: boolean;
+}
+
+export interface AgentOwnedSkillReconciliationPlan {
+  required: boolean;
+  reasons: string[];
+}
+
+interface AgentOwnedSkillTrust {
+  isTrustedInstalledSkill?: (skillId: string, destination: string) => boolean;
 }
 
 type AgentSkillsConfig = {
@@ -65,7 +76,7 @@ function collectFileHashes(directory: string, root = directory): Map<string, str
   const hashes = new Map<string, string>();
   assertPlainDirectoryTree(directory);
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name === OWNERSHIP_MARKER) continue;
+    if (entry.name === AGENT_OWNED_SKILL_MARKER) continue;
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       for (const [relativePath, digest] of collectFileHashes(entryPath, root)) {
@@ -110,7 +121,7 @@ function copyDirectory(source: string, destination: string): void {
 }
 
 function readOwnershipMarker(destination: string): SkillOwnershipMarker | null {
-  const markerPath = path.join(destination, OWNERSHIP_MARKER);
+  const markerPath = path.join(destination, AGENT_OWNED_SKILL_MARKER);
   if (!fs.existsSync(markerPath)) return null;
   try {
     const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8")) as SkillOwnershipMarker;
@@ -123,6 +134,57 @@ function readOwnershipMarker(destination: string): SkillOwnershipMarker | null {
   } catch {
     return null;
   }
+}
+
+function writeOwnershipMarker(
+  destination: string,
+  agentId: string,
+  skillId: string,
+  sourceDigest: string,
+): void {
+  const marker: SkillOwnershipMarker = {
+    schemaVersion: 1,
+    agentId,
+    skillId,
+    sourceDigest,
+  };
+  fs.writeFileSync(
+    path.join(destination, AGENT_OWNED_SKILL_MARKER),
+    `${JSON.stringify(marker, null, 2)}\n`,
+    "utf-8",
+  );
+}
+
+function createQuarantinePath(
+  stateDirectory: string,
+  skillId: string,
+  operation: "upgrade" | "remove",
+): string {
+  const quarantineRoot = path.join(stateDirectory, ".agent-skill-quarantine");
+  fs.mkdirSync(quarantineRoot, { recursive: true });
+  return path.join(quarantineRoot, `${skillId}-${operation}-${process.pid}-${Date.now()}`);
+}
+
+function installPackagedSkill(
+  source: string,
+  destination: string,
+  agentId: string,
+  skillId: string,
+  sourceDigest: string,
+): void {
+  const staging = `${destination}.install-${process.pid}-${Date.now()}`;
+  if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+  try {
+    copyDirectory(source, staging);
+    writeOwnershipMarker(staging, agentId, skillId, sourceDigest);
+    fs.renameSync(staging, destination);
+  } finally {
+    if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+export function hasAgentOwnedSkillMarker(stateDirectory: string, skillId: string): boolean {
+  return fs.existsSync(path.join(stateDirectory, "skills", skillId, AGENT_OWNED_SKILL_MARKER));
 }
 
 function configReferencesSkill(config: AgentSkillsConfig, skillId: string): boolean {
@@ -154,7 +216,7 @@ export function installAgentOwnedSkills(
   agentId: string,
   stateDirectory: string,
   bundleRoot: string,
-  options: { preserveModified?: boolean } = {},
+  options: { preserveModified?: boolean } & AgentOwnedSkillTrust = {},
 ): AgentOwnedSkillInstall[] {
   const installed: AgentOwnedSkillInstall[] = [];
   try {
@@ -167,21 +229,50 @@ export function installAgentOwnedSkills(
       if (sourceHashes.size === 0) {
         throw new Error(`Agent skill package is empty: ${source}`);
       }
+      const sourceDigest = manifestDigest(sourceHashes);
 
       const skillsDirectory = path.join(stateDirectory, "skills");
       fs.mkdirSync(skillsDirectory, { recursive: true });
       const destination = path.join(skillsDirectory, skillId);
       if (fs.existsSync(destination)) {
         const destinationHashes = collectFileHashes(destination);
-        const sourceDigest = manifestDigest(sourceHashes);
+        const destinationDigest = manifestDigest(destinationHashes);
         const existingMarker = readOwnershipMarker(destination);
         if (!manifestsEqual(sourceHashes, destinationHashes)) {
+          const cleanOwnedVersion =
+            existingMarker?.agentId === agentId &&
+            existingMarker.skillId === skillId &&
+            existingMarker.sourceDigest === destinationDigest &&
+            options.isTrustedInstalledSkill?.(skillId, destination) === true;
+          if (cleanOwnedVersion) {
+            const backup = createQuarantinePath(stateDirectory, skillId, "upgrade");
+            fs.renameSync(destination, backup);
+            try {
+              installPackagedSkill(source, destination, agentId, skillId, sourceDigest);
+            } catch (error) {
+              if (fs.existsSync(destination)) {
+                fs.rmSync(destination, { recursive: true, force: true });
+              }
+              fs.renameSync(backup, destination);
+              throw error;
+            }
+            installed.push({
+              skillId,
+              destination,
+              created: false,
+              markerCreated: false,
+              upgraded: true,
+              backup,
+            });
+            continue;
+          }
           if (options.preserveModified) {
             installed.push({
               skillId,
               destination,
               created: false,
               markerCreated: false,
+              upgraded: false,
             });
             continue;
           }
@@ -199,17 +290,7 @@ export function installAgentOwnedSkills(
             throw new Error(`Existing skill "${skillId}" has conflicting ownership metadata`);
           }
         } else {
-          const marker: SkillOwnershipMarker = {
-            schemaVersion: 1,
-            agentId,
-            skillId,
-            sourceDigest,
-          };
-          fs.writeFileSync(
-            path.join(destination, OWNERSHIP_MARKER),
-            `${JSON.stringify(marker, null, 2)}\n`,
-            "utf-8",
-          );
+          writeOwnershipMarker(destination, agentId, skillId, sourceDigest);
           markerCreated = true;
         }
         installed.push({
@@ -217,34 +298,18 @@ export function installAgentOwnedSkills(
           destination,
           created: false,
           markerCreated,
+          upgraded: false,
         });
         continue;
       }
 
-      const staging = `${destination}.install-${process.pid}-${Date.now()}`;
-      if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
-      try {
-        copyDirectory(source, staging);
-        const marker: SkillOwnershipMarker = {
-          schemaVersion: 1,
-          agentId,
-          skillId,
-          sourceDigest: manifestDigest(sourceHashes),
-        };
-        fs.writeFileSync(
-          path.join(staging, OWNERSHIP_MARKER),
-          `${JSON.stringify(marker, null, 2)}\n`,
-          "utf-8",
-        );
-        fs.renameSync(staging, destination);
-      } finally {
-        if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
-      }
+      installPackagedSkill(source, destination, agentId, skillId, sourceDigest);
       installed.push({
         skillId,
         destination,
         created: true,
         markerCreated: false,
+        upgraded: false,
       });
     }
     return installed;
@@ -256,13 +321,43 @@ export function installAgentOwnedSkills(
 
 export function rollbackAgentOwnedSkillInstalls(installs: AgentOwnedSkillInstall[]): void {
   for (const install of [...installs].reverse()) {
-    if (install.created && fs.existsSync(install.destination)) {
+    if (install.upgraded && install.backup) {
+      if (fs.existsSync(install.destination)) {
+        fs.rmSync(install.destination, { recursive: true, force: true });
+      }
+      if (fs.existsSync(install.backup)) {
+        fs.renameSync(install.backup, install.destination);
+      }
+    } else if (install.created && fs.existsSync(install.destination)) {
       fs.rmSync(install.destination, { recursive: true, force: true });
     } else if (install.markerCreated) {
-      const markerPath = path.join(install.destination, OWNERSHIP_MARKER);
+      const markerPath = path.join(install.destination, AGENT_OWNED_SKILL_MARKER);
       if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
     }
   }
+}
+
+export function commitAgentOwnedSkillInstalls(installs: AgentOwnedSkillInstall[]): string[] {
+  const deferredCleanup: string[] = [];
+  for (const install of installs) {
+    if (!install.upgraded || !install.backup) continue;
+    try {
+      if (fs.existsSync(install.backup)) {
+        fs.rmSync(install.backup, { recursive: true, force: true });
+      }
+      const quarantineRoot = path.dirname(install.backup);
+      if (fs.existsSync(quarantineRoot) && fs.readdirSync(quarantineRoot).length === 0) {
+        fs.rmdirSync(quarantineRoot);
+      }
+    } catch {
+      deferredCleanup.push(install.backup);
+    }
+  }
+  return deferredCleanup;
+}
+
+export function agentOwnedSkillInstallChanged(install: AgentOwnedSkillInstall): boolean {
+  return install.created || install.upgraded;
 }
 
 export function setAgentOwnedSkillsEnabled(
@@ -286,11 +381,27 @@ export function setAgentOwnedSkillsEnabled(
   return changed;
 }
 
+function ensureAgentOwnedSkillsDefaultEnabled(config: AgentSkillsConfig, agentId: string): boolean {
+  const ownedSkillIds = getAgentOwnedSkillIds(agentId);
+  if (ownedSkillIds.length === 0) return false;
+  let changed = false;
+  for (const skillId of ownedSkillIds) {
+    const existing = config.skills?.entries?.[skillId];
+    if (existing?.enabled === false || existing?.enabled === true) continue;
+    config.skills ??= {};
+    config.skills.entries ??= {};
+    config.skills.entries[skillId] = { ...(existing ?? {}), enabled: true };
+    changed = true;
+  }
+  return changed;
+}
+
 export function prepareUnusedAgentOwnedSkillRemoval(
   config: AgentSkillsConfig,
   agentId: string,
   stateDirectory: string,
   bundleRoot?: string,
+  trust: AgentOwnedSkillTrust = {},
 ): AgentOwnedSkillRemoval[] {
   const removals: AgentOwnedSkillRemoval[] = [];
   try {
@@ -308,11 +419,14 @@ export function prepareUnusedAgentOwnedSkillRemoval(
         }
       }
       const currentDigest = manifestDigest(collectFileHashes(destination));
-      if (!trustedSourceDigest || currentDigest !== trustedSourceDigest) continue;
+      const cleanCurrentPackage =
+        trustedSourceDigest !== null && currentDigest === trustedSourceDigest;
+      const cleanPriorPackage =
+        marker.sourceDigest === currentDigest &&
+        trust.isTrustedInstalledSkill?.(skillId, destination) === true;
+      if (!cleanCurrentPackage && !cleanPriorPackage) continue;
 
-      const quarantineRoot = path.join(stateDirectory, ".agent-skill-quarantine");
-      fs.mkdirSync(quarantineRoot, { recursive: true });
-      const quarantine = path.join(quarantineRoot, `${skillId}-${process.pid}-${Date.now()}`);
+      const quarantine = createQuarantinePath(stateDirectory, skillId, "remove");
       fs.renameSync(destination, quarantine);
       removals.push({ skillId, destination, quarantine });
     }
@@ -378,6 +492,7 @@ export function reconcileConfiguredAgentOwnedSkills(
   config: AgentSkillsConfig,
   stateDirectory: string,
   bundleRoot: string,
+  trust: AgentOwnedSkillTrust = {},
 ): AgentOwnedSkillReconciliation {
   const installs: AgentOwnedSkillInstall[] = [];
   const removals: AgentOwnedSkillRemoval[] = [];
@@ -400,12 +515,19 @@ export function reconcileConfiguredAgentOwnedSkills(
         installs.push(
           ...installAgentOwnedSkills(agent.id, stateDirectory, bundleRoot, {
             preserveModified: true,
+            ...trust,
           }),
         );
-        configChanged = setAgentOwnedSkillsEnabled(config, agent.id, true) || configChanged;
+        configChanged = ensureAgentOwnedSkillsDefaultEnabled(config, agent.id) || configChanged;
       } else {
         removals.push(
-          ...prepareUnusedAgentOwnedSkillRemoval(config, agent.id, stateDirectory, bundleRoot),
+          ...prepareUnusedAgentOwnedSkillRemoval(
+            config,
+            agent.id,
+            stateDirectory,
+            bundleRoot,
+            trust,
+          ),
         );
         configChanged = disableUnreferencedAgentOwnedSkills(config, agent.id) || configChanged;
       }
@@ -415,11 +537,97 @@ export function reconcileConfiguredAgentOwnedSkills(
       removals,
       configChanged,
       runtimeChanged:
-        configChanged || installs.some((install) => install.created) || removals.length > 0,
+        configChanged || installs.some(agentOwnedSkillInstallChanged) || removals.length > 0,
     };
   } catch (error) {
     rollbackAgentOwnedSkillInstalls(installs);
     rollbackAgentOwnedSkillRemovals(removals);
     throw error;
   }
+}
+
+export function inspectConfiguredAgentOwnedSkills(
+  config: AgentSkillsConfig,
+  stateDirectory: string,
+  bundleRoot: string,
+  trust: AgentOwnedSkillTrust = {},
+): AgentOwnedSkillReconciliationPlan {
+  const reasons: string[] = [];
+  const configuredAgentIds = new Set(
+    Array.isArray(config.agents?.list)
+      ? config.agents.list.flatMap((candidate) =>
+          typeof candidate === "object" &&
+          candidate !== null &&
+          typeof (candidate as { id?: unknown }).id === "string"
+            ? [(candidate as { id: string }).id]
+            : [],
+        )
+      : [],
+  );
+
+  for (const agent of AGENT_CATALOG) {
+    const ownedSkillIds = getAgentOwnedSkillIds(agent.id);
+    if (ownedSkillIds.length === 0) continue;
+    for (const skillId of ownedSkillIds) {
+      const source = path.join(bundleRoot, skillId);
+      if (!fs.existsSync(source)) {
+        throw new Error(`Agent skill package is missing: ${source}`);
+      }
+      const destination = path.join(stateDirectory, "skills", skillId);
+      if (configuredAgentIds.has(agent.id)) {
+        const enabled = config.skills?.entries?.[skillId]?.enabled;
+        if (enabled !== true && enabled !== false) {
+          reasons.push(`configure ${skillId}`);
+        }
+        if (!fs.existsSync(destination)) {
+          reasons.push(`install ${skillId}`);
+          continue;
+        }
+        const sourceDigest = manifestDigest(collectFileHashes(source));
+        const destinationDigest = manifestDigest(collectFileHashes(destination));
+        const marker = readOwnershipMarker(destination);
+        if (sourceDigest === destinationDigest) {
+          if (!marker) {
+            reasons.push(`adopt ${skillId}`);
+          } else if (
+            marker.agentId !== agent.id ||
+            marker.skillId !== skillId ||
+            marker.sourceDigest !== sourceDigest
+          ) {
+            throw new Error(`Existing skill "${skillId}" has conflicting ownership metadata`);
+          }
+          continue;
+        }
+        if (
+          marker?.agentId === agent.id &&
+          marker.skillId === skillId &&
+          marker.sourceDigest === destinationDigest &&
+          trust.isTrustedInstalledSkill?.(skillId, destination) === true
+        ) {
+          reasons.push(`upgrade ${skillId}`);
+        }
+        continue;
+      }
+
+      if (configReferencesSkill(config, skillId)) continue;
+      const enabled = config.skills?.entries?.[skillId]?.enabled;
+      if (enabled !== undefined && enabled !== false) {
+        reasons.push(`disable ${skillId}`);
+      }
+      if (!fs.existsSync(destination)) continue;
+      const marker = readOwnershipMarker(destination);
+      if (!marker || marker.agentId !== agent.id || marker.skillId !== skillId) continue;
+      const currentDigest = manifestDigest(collectFileHashes(destination));
+      const sourceDigest = manifestDigest(collectFileHashes(source));
+      if (
+        currentDigest === sourceDigest ||
+        (marker.sourceDigest === currentDigest &&
+          trust.isTrustedInstalledSkill?.(skillId, destination) === true)
+      ) {
+        reasons.push(`remove ${skillId}`);
+      }
+    }
+  }
+
+  return { required: reasons.length > 0, reasons };
 }

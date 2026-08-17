@@ -28,6 +28,21 @@ $KnownOutputs = @(
     "validation.json"
 )
 
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $algorithm.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-RequiredText {
     param(
         [object]$Object,
@@ -254,20 +269,28 @@ function Draw-TextBlock {
     }
 }
 
-function Get-Palette {
-    param([string]$Seed)
+function Get-MaterialPalette {
+    param($VisualDirection)
 
-    $palettes = @(
-        @{ Background = "#FFF7F0"; Accent = "#F06C5B"; Text = "#2F2522"; Muted = "#7B6861" },
-        @{ Background = "#F3F7F1"; Accent = "#719D73"; Text = "#243127"; Muted = "#627064" },
-        @{ Background = "#F5F3FA"; Accent = "#8A75B6"; Text = "#2E2938"; Muted = "#6F6879" },
-        @{ Background = "#F2F7FA"; Accent = "#5B91B2"; Text = "#23323B"; Muted = "#64737C" }
-    )
-    $checksum = 0
-    foreach ($character in $Seed.ToCharArray()) {
-        $checksum += [int][char]$character
+    $colors = @($VisualDirection.palette)
+    if ($colors.Count -lt 2 -or $colors.Count -gt 5) {
+        throw "material-kit.json visualDirection.palette must contain 2-5 colors."
     }
-    return $palettes[$checksum % $palettes.Count]
+    foreach ($color in $colors) {
+        if ($color -isnot [string] -or $color -notmatch "^#[0-9A-Fa-f]{6}$") {
+            throw "material-kit.json palette colors must use #RRGGBB."
+        }
+    }
+    return @{
+        Background = $colors[0]
+        Accent = $colors[1]
+        Text = if ($colors.Count -ge 3) { $colors[2] } else { $colors[1] }
+        Muted = if ($colors.Count -ge 4) { $colors[3] } elseif ($colors.Count -ge 3) {
+            $colors[2]
+        } else {
+            $colors[1]
+        }
+    }
 }
 
 function Convert-ToColor {
@@ -397,6 +420,7 @@ if (-not (Test-Path -LiteralPath $materialPath -PathType Leaf)) {
 }
 Assert-NoLinkedPath $materialPath
 $material = Get-Content -LiteralPath $materialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$materialKitSha256 = Get-Sha256Hex $materialPath
 if ($spec.schemaVersion -ne 1) {
     throw "package.json schemaVersion must be 1."
 }
@@ -414,6 +438,14 @@ if ($materialKitId -ne (Get-RequiredText $material "materialKitId")) {
 $topic = Get-RequiredText $spec "topic"
 $audience = Get-RequiredText $spec "audience"
 $angle = Get-RequiredText $spec "angle"
+foreach ($sharedField in @("topic", "audience", "angle")) {
+    $materialValue = Get-RequiredText $material $sharedField
+    $packageValue = Get-RequiredText $spec $sharedField
+    if ($packageValue -ne $materialValue) {
+        throw "package.json $sharedField must match material-kit.json."
+    }
+}
+$selectedIdeaId = Get-RequiredText $material "selectedIdeaId"
 $body = Get-RequiredText $spec "body"
 $coverText = Get-RequiredText $spec "coverText"
 $coverSubtitle = ""
@@ -462,19 +494,28 @@ try {
 $cardsDirectory = Join-Path $resolvedOutputPath "cards"
 New-Item -ItemType Directory -Path $cardsDirectory -Force | Out-Null
 
-$sources = @()
-if ($spec.PSObject.Properties["sources"]) {
-    $sources = @($spec.sources)
-}
-$materialSourceUrls = @(
+$materialSources = @(
     @($material.sourceFacts) |
         Where-Object {
             $_.sourceType -eq "web" -and
             $_.sourceUrl -is [string] -and
             -not [string]::IsNullOrWhiteSpace($_.sourceUrl)
         } |
-        ForEach-Object { [string]$_.sourceUrl }
+        ForEach-Object {
+            [ordered]@{
+                title = Get-RequiredText $_ "sourceTitle"
+                url = Get-RequiredText $_ "sourceUrl"
+                retrievedAt = Get-RequiredText $_ "retrievedAt"
+            }
+        }
 )
+$sources = if ($spec.PSObject.Properties["sources"] -and @($spec.sources).Count -gt 0) {
+    @($spec.sources)
+} else {
+    $materialSources
+}
+$materialSourceUrls = @($materialSources | ForEach-Object { [string]$_.url } | Sort-Object -Unique)
+$packageSourceUrls = @()
 foreach ($source in $sources) {
     if ($null -eq $source -or
         $source.url -isnot [string] -or
@@ -484,12 +525,20 @@ foreach ($source in $sources) {
     if ($materialSourceUrls -notcontains [string]$source.url) {
         throw "Package source '$($source.url)' is not present in material-kit.json."
     }
+    $packageSourceUrls += [string]$source.url
+}
+$packageSourceUrls = @($packageSourceUrls | Sort-Object -Unique)
+if ((ConvertTo-Json $packageSourceUrls -Compress) -ne
+    (ConvertTo-Json $materialSourceUrls -Compress)) {
+    throw "package.json sources must include every web source from material-kit.json."
 }
 
 $normalizedSpec = [ordered]@{
     schemaVersion = 1
     projectId = $projectId
     materialKitId = $materialKitId
+    materialKitSha256 = $materialKitSha256
+    selectedIdeaId = $selectedIdeaId
     topic = $topic
     audience = $audience
     angle = $angle
@@ -510,7 +559,7 @@ $normalizedSpec = [ordered]@{
 $packageJsonPath = Join-Path $resolvedOutputPath "package.json"
 $normalizedSpec | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $packageJsonPath -Encoding UTF8
 
-$palette = Get-Palette $topic
+$palette = Get-MaterialPalette $material.visualDirection
 $coverPath = Join-Path $resolvedOutputPath "cover.png"
 Save-Cover $coverPath $topic $coverText $coverSubtitle $palette
 
@@ -568,7 +617,10 @@ $manifest = [ordered]@{
     generatedAt = (Get-Date).ToUniversalTime().ToString("o")
     projectId = $projectId
     materialKitId = $materialKitId
+    materialKitSha256 = $materialKitSha256
+    selectedIdeaId = $selectedIdeaId
     topic = $topic
+    palette = @($material.visualDirection.palette)
     canvas = [ordered]@{
         width = $CanvasWidth
         height = $CanvasHeight

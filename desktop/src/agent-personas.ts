@@ -4,9 +4,12 @@ import * as path from "path";
 import {
   AGENT_CATALOG,
   DEFAULT_AGENT_IDS,
+  getAgentOwnedSkillIds,
+  LEGACY_AGENT_ID_ALIASES,
   matchesSkill,
   resolveSkillFilterNames,
 } from "./agent-catalog";
+import { hasAgentOwnedSkillMarker } from "./agent-owned-skills";
 
 type WorkspaceFileName = "AGENTS.md" | "IDENTITY.md" | "SOUL.md";
 type WorkspaceFiles = Partial<Record<WorkspaceFileName, string>>;
@@ -587,10 +590,14 @@ export function ensureAgentPersonasConfig(
   const sourceDefault =
     sourceEntries.find((entry) => entry.config.default === true) ?? sourceEntries[0];
   let defaultAgentId = sourceDefault ? normalizeAgentId(sourceDefault.id) : "main";
+  const retainedLegacySessionAliases = new Set<string>();
 
   for (const [legacyId, migration] of Object.entries(LEGACY_AGENT_MIGRATIONS)) {
     const legacy = normalizedIds.get(legacyId);
     if (!legacy) continue;
+    if (LEGACY_AGENT_ID_ALIASES[legacyId] === migration.targetId) {
+      retainedLegacySessionAliases.add(legacyId);
+    }
 
     const persona = getAgentPersona(migration.targetId);
     if (!persona) {
@@ -667,27 +674,36 @@ export function ensureAgentPersonasConfig(
       entry.skills = resolveSkillFilterNames([...catalogSkills]);
     } else if (catalogSkills !== undefined && Array.isArray(entry.skills)) {
       const resolvedCatalogSkills = resolveSkillFilterNames([...catalogSkills]);
-      const rednoteSkillName = resolveSkillFilterNames(["rednote-publisher"])[0];
-      const legacyAllSkills = resolveSkillFilterNames([
-        ...new Set([...catalogSkills, "rednote-publisher"]),
-      ]).sort((left, right) => left.localeCompare(right, "en"));
       const currentEntrySkills = [...entry.skills].sort((left, right) =>
         String(left).localeCompare(String(right), "en"),
       );
-      const resolvedSkillsSorted = [...resolvedCatalogSkills].sort((left, right) =>
-        left.localeCompare(right, "en"),
-      );
-      const previousCreativeDefaults = resolvedSkillsSorted.filter(
-        (skill) => skill !== rednoteSkillName,
-      );
+      const ownedSkills = getAgentOwnedSkillIds(entry.id);
+      const previousCatalogDefaults = resolveSkillFilterNames(
+        catalogSkills.filter((skillId) => !ownedSkills.includes(skillId)),
+      ).sort((left, right) => left.localeCompare(right, "en"));
+      const ownedSkillsWereNeverInstalled =
+        ownedSkills.length > 0 &&
+        ownedSkills.every((skillId) => !hasAgentOwnedSkillMarker(stateDir, skillId));
       if (
-        JSON.stringify(currentEntrySkills) === JSON.stringify(legacyAllSkills) ||
-        (entry.id === "creative-muse" &&
-          JSON.stringify(currentEntrySkills) === JSON.stringify(previousCreativeDefaults))
+        ownedSkillsWereNeverInstalled &&
+        JSON.stringify(currentEntrySkills) === JSON.stringify(previousCatalogDefaults)
       ) {
         entry.skills = resolvedCatalogSkills;
       }
     }
+  }
+
+  for (const legacyId of retainedLegacySessionAliases) {
+    const targetId = LEGACY_AGENT_ID_ALIASES[legacyId];
+    const target = entries.find((entry) => entry.id === targetId);
+    if (!target) continue;
+    const alias: { id: string } & Record<string, unknown> = {
+      ...target,
+      id: legacyId,
+      ...(Array.isArray(target.skills) ? { skills: [...target.skills] } : {}),
+    };
+    delete alias.default;
+    entries.push(alias);
   }
 
   const changed =
@@ -707,6 +723,7 @@ export function listConfiguredAgents(
   return config.agents.list.flatMap((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string") return [];
     const id = normalizeAgentId(candidate.id);
+    if (Object.hasOwn(LEGACY_AGENT_ID_ALIASES, id)) return [];
     return [
       {
         id,
@@ -730,11 +747,17 @@ export function removeConfiguredAgent(
 
   let removed = false;
   let removedDefault = false;
+  const legacyAliases = new Set(
+    Object.entries(LEGACY_AGENT_ID_ALIASES)
+      .filter(([, targetId]) => targetId === normalizedId)
+      .map(([legacyId]) => legacyId),
+  );
   const remaining = config.agents.list.filter((candidate) => {
     if (!isRecord(candidate) || typeof candidate.id !== "string" || !candidate.id.trim()) {
       throw new Error("Invalid agent entry in agents.list");
     }
-    if (normalizeAgentId(candidate.id) !== normalizedId) return true;
+    const candidateId = normalizeAgentId(candidate.id);
+    if (candidateId !== normalizedId && !legacyAliases.has(candidateId)) return true;
     removed = true;
     removedDefault ||= candidate.default === true;
     return false;

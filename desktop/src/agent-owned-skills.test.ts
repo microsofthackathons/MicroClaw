@@ -4,9 +4,11 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   agentOwnedSkillMatchNames,
+  commitAgentOwnedSkillInstalls,
   commitAgentOwnedSkillRemovals,
   disableUnreferencedAgentOwnedSkills,
   installAgentOwnedSkills,
+  inspectConfiguredAgentOwnedSkills,
   prepareUnusedAgentOwnedSkillRemoval,
   reconcileConfiguredAgentOwnedSkills,
   resolveAgentOwnedSkillBundleRoot,
@@ -72,6 +74,7 @@ describe("agent-owned skills", () => {
         destination: path.join(state, "skills", "rednote-publisher"),
         created: true,
         markerCreated: false,
+        upgraded: false,
       },
     ]);
     expect(
@@ -261,7 +264,9 @@ describe("agent-owned skills", () => {
     expect(reconciliation.installs[0]).toMatchObject({
       created: false,
       markerCreated: false,
+      upgraded: false,
     });
+
     expect(reconciliation.runtimeChanged).toBe(false);
     expect(
       fs.readFileSync(path.join(state, "skills", "rednote-publisher", "SKILL.md"), "utf-8"),
@@ -276,6 +281,39 @@ describe("agent-owned skills", () => {
         "creative-muse",
       ),
     ).toBe(false);
+  });
+
+  it("atomically upgrades a signed clean prior version and supports rollback", () => {
+    const root = tempDirectory();
+    const bundle = path.join(root, "bundle");
+    const state = path.join(root, "state");
+    seedBundle(bundle, "version one");
+    installAgentOwnedSkills("creative-muse", state, bundle);
+    seedBundle(bundle, "version two");
+
+    const installs = installAgentOwnedSkills("creative-muse", state, bundle, {
+      isTrustedInstalledSkill: () => true,
+    });
+
+    expect(installs[0]).toMatchObject({
+      created: false,
+      markerCreated: false,
+      upgraded: true,
+    });
+    expect(
+      fs.readFileSync(path.join(state, "skills", "rednote-publisher", "SKILL.md"), "utf-8"),
+    ).toBe("version two");
+
+    rollbackAgentOwnedSkillInstalls(installs);
+    expect(
+      fs.readFileSync(path.join(state, "skills", "rednote-publisher", "SKILL.md"), "utf-8"),
+    ).toBe("version one");
+
+    const committed = installAgentOwnedSkills("creative-muse", state, bundle, {
+      isTrustedInstalledSkill: () => true,
+    });
+    expect(commitAgentOwnedSkillInstalls(committed)).toEqual([]);
+    expect(fs.existsSync(committed[0].backup!)).toBe(false);
   });
 
   it("preserves a user-modified owned skill during startup reconciliation", () => {
@@ -303,7 +341,7 @@ describe("agent-owned skills", () => {
     expect(fs.readFileSync(path.join(destination, "SKILL.md"), "utf-8")).toBe("user changes");
   });
 
-  it("reconciles an existing Creative Muse installation during startup", () => {
+  it("preserves an explicit global disable during startup reconciliation", () => {
     const root = tempDirectory();
     const bundle = path.join(root, "bundle");
     const state = path.join(root, "state");
@@ -318,11 +356,32 @@ describe("agent-owned skills", () => {
     const reconciliation = reconcileConfiguredAgentOwnedSkills(config, state, bundle);
 
     expect(reconciliation.runtimeChanged).toBe(true);
-    expect(reconciliation.configChanged).toBe(true);
+    expect(reconciliation.configChanged).toBe(false);
     expect(reconciliation.installs).toHaveLength(1);
     expect(reconciliation.removals).toEqual([]);
-    expect(config.skills.entries["rednote-publisher"].enabled).toBe(true);
+    expect(config.skills.entries["rednote-publisher"].enabled).toBe(false);
     expect(fs.existsSync(path.join(state, "skills", "rednote-publisher"))).toBe(true);
+  });
+
+  it("reports required reconciliation without mutating files or config", () => {
+    const root = tempDirectory();
+    const bundle = path.join(root, "bundle");
+    const state = path.join(root, "state");
+    seedBundle(bundle);
+    const config = {
+      agents: {
+        list: [{ id: "creative-muse", skills: ["Rednote Publisher"] }],
+      },
+    };
+
+    const plan = inspectConfiguredAgentOwnedSkills(config, state, bundle);
+
+    expect(plan.required).toBe(true);
+    expect(plan.reasons).toEqual(
+      expect.arrayContaining(["configure rednote-publisher", "install rednote-publisher"]),
+    );
+    expect(config).not.toHaveProperty("skills");
+    expect(fs.existsSync(path.join(state, "skills", "rednote-publisher"))).toBe(false);
   });
 
   it("preserves a markerless legacy skill while disabling it", () => {

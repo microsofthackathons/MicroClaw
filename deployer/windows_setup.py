@@ -3242,9 +3242,9 @@ class WindowsSetup:
                 from deployer.skill_catalog import MANAGED_SKILL_CATALOG
 
                 entries = skills_cfg.get("entries", {})
-                tracked_names = (
-                    set(entries.keys()) | set(MANAGED_SKILL_CATALOG.keys()) | set(allow_managed)
-                )
+                # The installer owns only its managed catalog. Preserve entries
+                # created by the desktop app or by the user.
+                tracked_names = set(MANAGED_SKILL_CATALOG.keys()) | set(allow_managed)
                 for name in tracked_names:
                     entry = entries.get(name, {})
                     entry["enabled"] = name in allow_managed

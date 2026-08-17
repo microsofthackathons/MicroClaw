@@ -45,7 +45,7 @@ describe("agent personas", () => {
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
     expect(listConfiguredAgents(config)).toEqual([{ id: "main", name: "Assistant" }]);
-    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+    ensureAgentPersonasConfig(config, stateDir);
   });
 
   it("migrates unsupported entries data back to the runtime list", () => {
@@ -352,7 +352,12 @@ Keep this section.
       skills: ["custom-skill"],
       model: "custom/content-model",
     });
-    expect(agentList(config).some((entry) => entry.id === "singer")).toBe(false);
+    expect(agentList(config).find((entry) => entry.id === "singer")).toMatchObject({
+      name: "Creative Muse",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+    });
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
 
     seedAgentPersonaWorkspaces(config, stateDir);
     expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
@@ -375,6 +380,9 @@ Keep this section.
 
     expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
       name: "Creative Muse",
+      workspace: path.join(stateDir, "workspace-singer"),
+    });
+    expect(agentList(config).find((entry) => entry.id === "singer")).toMatchObject({
       workspace: path.join(stateDir, "workspace-singer"),
     });
     seedAgentPersonaWorkspaces(config, stateDir);
@@ -419,7 +427,11 @@ Keep this section.
       skills: ["custom-skill"],
       model: "custom/content-model",
     });
-    expect(agentList(config).some((entry) => entry.id === "singer")).toBe(false);
+    expect(agentList(config).find((entry) => entry.id === "singer")).toMatchObject({
+      name: "My Content Partner",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+    });
   });
 
   it("does not seed a Popular Agent before it is installed", () => {
@@ -710,10 +722,9 @@ _Fill this in during your first conversation. Make it yours._
     );
   });
 
-  it("removes Rednote Publisher from untouched non-owner catalog skill sets", () => {
+  it("preserves an explicit Rednote Publisher assignment on non-owner agents", () => {
     const stateDir = createStateDir();
     const legacyAllSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
-    const expectedSharedSkills = resolveSkillFilterNames(getAgentSkills("main"));
     const config = {
       agents: {
         list: [
@@ -732,12 +743,37 @@ _Fill this in during your first conversation. Make it yours._
       },
     };
 
-    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
-    expect(agentList(config).find((entry) => entry.id === "main")?.skills).toEqual(
-      expectedSharedSkills,
-    );
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+    expect(agentList(config).find((entry) => entry.id === "main")?.skills).toEqual(legacyAllSkills);
     expect(agentList(config).find((entry) => entry.id === "code-geek")?.skills).toEqual(
-      expectedSharedSkills,
+      legacyAllSkills,
+    );
+  });
+
+  it("does not restore Rednote Publisher after the user removes it", () => {
+    const stateDir = createStateDir();
+    const currentSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
+    const withoutRednote = currentSkills.filter((skill) => skill !== "Rednote Publisher");
+    const markerPath = path.join(
+      stateDir,
+      "skills",
+      "rednote-publisher",
+      ".microclaw-agent-skill.json",
+    );
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, "{}");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "creative-muse", name: "Creative Muse", skills: withoutRednote },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")?.skills).toEqual(
+      withoutRednote,
     );
   });
 

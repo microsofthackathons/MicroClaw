@@ -38,6 +38,21 @@ describe("agent store", () => {
     expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
   });
 
+  it("hides the Singer compatibility alias from the sidebar", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "creative-muse", name: "Creative Muse" },
+        { id: "singer", name: "Creative Muse" },
+      ],
+    });
+
+    await store.fetchAgents();
+
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "creative-muse"]);
+  });
+
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
     const store = useAgentStore();
     const marketAgent = store.marketAgents.find((entry) => entry.id === "master-archive");

@@ -17,7 +17,6 @@ import {
 } from "crypto";
 import fs from "fs";
 import path from "path";
-import { app } from "electron";
 import { getOpenClawStateDir, resolveBuiltinSkillsDir } from "./path-resolver";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +58,7 @@ interface SkillEntry {
 
 interface SourceEntry {
   base_dir: string;
+  root_id?: string;
   skills: { [skillName: string]: SkillEntry };
 }
 
@@ -77,6 +77,7 @@ const SNAPSHOT_FILE = "skills_snapshot.json";
 const SIGNATURE_FILE = "skills_snapshot.sig";
 const PUBLIC_KEY_FILE = "skills_signing_key.pub";
 const PRIVATE_KEY_FILE = "skills_signing_key.pem";
+const SNAPSHOT_VERSION = 2;
 
 const EXCLUDED_NAMES = new Set([
   "node_modules",
@@ -90,16 +91,21 @@ const EXCLUDED_NAMES = new Set([
 // Path helpers
 // ---------------------------------------------------------------------------
 
-export function getSkillSourceDirs(): Array<{ source: string; baseDir: string }> {
-  const homeDir = app.getPath("home");
+export function getSkillSourceDirs(): Array<{
+  source: string;
+  baseDir: string;
+  rootId: "builtin-runtime" | "openclaw-state";
+}> {
   return [
     {
       source: "builtin",
       baseDir: resolveBuiltinSkillsDir(),
+      rootId: "builtin-runtime",
     },
     {
       source: "managed",
       baseDir: path.join(getOpenClawStateDir(), "skills"),
+      rootId: "openclaw-state",
     },
   ];
 }
@@ -237,6 +243,57 @@ function verifySignature(publicKeyDer: Buffer, data: Buffer, signature: Buffer):
   return verify(null, data, keyObj, signature);
 }
 
+type VerifiedSnapshotRead =
+  | { status: "missing" }
+  | { status: "invalid" }
+  | { status: "valid"; snapshot: Snapshot };
+
+function readVerifiedSnapshot(stateDir = getOpenClawStateDir()): VerifiedSnapshotRead {
+  const snapshotPath = path.join(stateDir, SNAPSHOT_FILE);
+  if (!fs.existsSync(snapshotPath)) return { status: "missing" };
+
+  const signaturePath = path.join(stateDir, SIGNATURE_FILE);
+  const publicKeyPath = path.join(stateDir, PUBLIC_KEY_FILE);
+  if (!fs.existsSync(signaturePath) || !fs.existsSync(publicKeyPath)) {
+    return { status: "invalid" };
+  }
+
+  const snapshotBytes = fs.readFileSync(snapshotPath);
+  if (
+    !verifySignature(fs.readFileSync(publicKeyPath), snapshotBytes, fs.readFileSync(signaturePath))
+  ) {
+    return { status: "invalid" };
+  }
+
+  try {
+    const snapshot = JSON.parse(snapshotBytes.toString("utf-8")) as Snapshot;
+    if (
+      (snapshot.version !== 1 && snapshot.version !== SNAPSHOT_VERSION) ||
+      typeof snapshot.sources !== "object" ||
+      snapshot.sources === null
+    ) {
+      return { status: "invalid" };
+    }
+    return { status: "valid", snapshot };
+  } catch {
+    return { status: "invalid" };
+  }
+}
+
+function sourceBaseDirectory(
+  snapshot: Snapshot,
+  sourceName: string,
+  sourceEntry: SourceEntry,
+  resolveLegacyCurrentRoot = false,
+): string | null {
+  const current = getSkillSourceDirs().find((entry) => entry.source === sourceName);
+  if (snapshot.version === 1) {
+    return resolveLegacyCurrentRoot && current ? current.baseDir : sourceEntry.base_dir;
+  }
+  if (!current || sourceEntry.root_id !== current.rootId) return null;
+  return current.baseDir;
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot building
 // ---------------------------------------------------------------------------
@@ -244,8 +301,8 @@ function verifySignature(publicKeyDer: Buffer, data: Buffer, signature: Buffer):
 function buildSnapshot(signingKeyId: string): Snapshot {
   const sources: Snapshot["sources"] = {};
 
-  for (const { source, baseDir } of getSkillSourceDirs()) {
-    const sourceEntry: SourceEntry = { base_dir: baseDir, skills: {} };
+  for (const { source, baseDir, rootId } of getSkillSourceDirs()) {
+    const sourceEntry: SourceEntry = { base_dir: baseDir, root_id: rootId, skills: {} };
 
     if (fs.existsSync(baseDir)) {
       const skillDirs = fs.readdirSync(baseDir, { withFileTypes: true });
@@ -266,7 +323,7 @@ function buildSnapshot(signingKeyId: string): Snapshot {
   }
 
   return {
-    version: 1,
+    version: SNAPSHOT_VERSION,
     created_at: new Date().toISOString(),
     signing_key_id: signingKeyId,
     sources,
@@ -374,43 +431,30 @@ export function restoreSkillIntegritySnapshotState(
  * - If the snapshot signature is invalid, returns `signatureValid: false`.
  * - Otherwise, computes file-level diffs (modified / added / removed).
  */
-export function verifySkillIntegrity(): IntegrityResult {
-  const stateDir = getOpenClawStateDir();
-  const snapshotPath = path.join(stateDir, SNAPSHOT_FILE);
-  const sigPath = path.join(stateDir, SIGNATURE_FILE);
-  const pubPath = path.join(stateDir, PUBLIC_KEY_FILE);
-
-  // No snapshot yet — first launch
-  if (!fs.existsSync(snapshotPath)) {
-    return { valid: true, signatureValid: true, snapshotExists: false, changes: [] };
-  }
-
-  // Read snapshot and verify signature
-  const snapshotBytes = fs.readFileSync(snapshotPath);
-  const sigBytes = fs.existsSync(sigPath) ? fs.readFileSync(sigPath) : null;
-  const pubKeyDer = fs.existsSync(pubPath) ? fs.readFileSync(pubPath) : null;
-
-  if (!sigBytes || !pubKeyDer) {
-    return { valid: false, signatureValid: false, snapshotExists: true, changes: [] };
-  }
-
-  const sigOk = verifySignature(pubKeyDer, snapshotBytes, sigBytes);
-  if (!sigOk) {
-    return { valid: false, signatureValid: false, snapshotExists: true, changes: [] };
-  }
-
-  const snapshot: Snapshot = JSON.parse(snapshotBytes.toString("utf-8"));
+function verifySnapshotIntegrity(
+  snapshot: Snapshot,
+  resolveLegacyCurrentRoots = false,
+): IntegrityResult {
   const changes: IntegrityChange[] = [];
-  const currentSourceDirectories = new Map(
-    getSkillSourceDirs().map((entry) => [entry.source, entry.baseDir]),
-  );
 
   // Compare snapshot against current disk state
   for (const [sourceName, sourceEntry] of Object.entries(snapshot.sources)) {
-    // Source locations can move across runtime layouts or OPENCLAW_STATE_DIR
-    // changes. Keep the signed file hashes authoritative, but always scan the
-    // currently resolved source directory rather than a stale stored path.
-    const baseDir = currentSourceDirectories.get(sourceName) ?? sourceEntry.base_dir;
+    const baseDir = sourceBaseDirectory(
+      snapshot,
+      sourceName,
+      sourceEntry,
+      resolveLegacyCurrentRoots,
+    );
+    if (!baseDir) {
+      changes.push({
+        skill: "(snapshot)",
+        source: sourceName,
+        file: "root_id",
+        type: "modified",
+        expected: sourceEntry.root_id,
+      });
+      continue;
+    }
 
     // Check every skill recorded in the snapshot
     for (const [skillName, skillEntry] of Object.entries(sourceEntry.skills)) {
@@ -487,4 +531,51 @@ export function verifySkillIntegrity(): IntegrityResult {
     snapshotExists: true,
     changes,
   };
+}
+
+export function verifySkillIntegrity(): IntegrityResult {
+  const verified = readVerifiedSnapshot();
+  if (verified.status === "missing") {
+    return { valid: true, signatureValid: true, snapshotExists: false, changes: [] };
+  }
+  if (verified.status === "invalid") {
+    return { valid: false, signatureValid: false, snapshotExists: true, changes: [] };
+  }
+  return verifySnapshotIntegrity(verified.snapshot);
+}
+
+export function migrateLegacySkillIntegritySnapshot(): boolean {
+  const verified = readVerifiedSnapshot();
+  if (verified.status !== "valid" || verified.snapshot.version !== 1) return false;
+  const storedRootResult = verifySnapshotIntegrity(verified.snapshot);
+  const currentRootResult = storedRootResult.valid
+    ? storedRootResult
+    : verifySnapshotIntegrity(verified.snapshot, true);
+  if (currentRootResult.valid) {
+    generateAndSignSnapshot();
+    return true;
+  }
+  return false;
+}
+
+export function isManagedSkillTrustedBySnapshot(
+  skillName: string,
+  expectedDirectory: string,
+): boolean {
+  const verified = readVerifiedSnapshot();
+  if (verified.status !== "valid") return false;
+  const skill = verified.snapshot.sources.managed?.skills?.[skillName];
+  if (!skill) return false;
+
+  let actual: Map<string, string>;
+  try {
+    actual = collectControlledSkillFiles(expectedDirectory);
+  } catch {
+    return false;
+  }
+  const expectedEntries = Object.entries(skill.files);
+  return (
+    actual.size === expectedEntries.length &&
+    expectedEntries.every(([relativePath, digest]) => actual.get(relativePath) === digest)
+  );
 }

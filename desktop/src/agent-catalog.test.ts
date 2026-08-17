@@ -153,6 +153,7 @@ describe("agent catalog skills binding", () => {
       image: "CreativeMuse.png",
       workspaceDirName: "workspace-creative-muse",
       personaProfile: "creative-muse",
+      ownedSkills: ["rednote-publisher"],
     });
   });
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createPrivateKey, sign } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -31,6 +32,8 @@ import {
   captureSkillIntegritySnapshotState,
   generateAndSignSnapshot,
   getSkillSourceDirs,
+  isManagedSkillTrustedBySnapshot,
+  migrateLegacySkillIntegritySnapshot,
   restoreSkillIntegritySnapshotState,
   verifySkillIntegrity,
 } from "./skill-integrity";
@@ -52,6 +55,23 @@ function seedSkill(baseDir: string, skillName: string, files: Record<string, str
   for (const [rel, content] of Object.entries(files)) {
     writeFile(path.join(baseDir, skillName, rel), content);
   }
+}
+
+function rewriteSnapshotAsLegacy(): void {
+  const snapshotPath = path.join(tmpStateDir, "skills_snapshot.json");
+  const signaturePath = path.join(tmpStateDir, "skills_snapshot.sig");
+  const legacy = JSON.parse(fs.readFileSync(snapshotPath, "utf-8"));
+  legacy.version = 1;
+  delete legacy.sources.builtin.root_id;
+  delete legacy.sources.managed.root_id;
+  const legacyBytes = Buffer.from(JSON.stringify(legacy, null, 2), "utf-8");
+  const privateKey = createPrivateKey({
+    key: fs.readFileSync(path.join(tmpStateDir, "skills_signing_key.pem")),
+    format: "der",
+    type: "pkcs8",
+  });
+  fs.writeFileSync(snapshotPath, legacyBytes);
+  fs.writeFileSync(signaturePath, sign(null, legacyBytes, privateKey));
 }
 
 // ── Setup / teardown ───────────────────────────────────────────────────
@@ -193,6 +213,68 @@ describe("generateAndSignSnapshot + verifySkillIntegrity", () => {
     expect(fs.existsSync(path.join(tmpStateDir, "skills_snapshot.sig"))).toBe(true);
     expect(fs.existsSync(path.join(tmpStateDir, "skills_signing_key.pub"))).toBe(true);
     expect(fs.existsSync(path.join(tmpStateDir, "skills_signing_key.pem"))).toBe(true);
+  });
+
+  it("writes root-aware version 2 snapshots", () => {
+    seedSkill(builtinSkillsDir(), "alpha", { "SKILL.md": "hello" });
+    generateAndSignSnapshot();
+
+    const snapshot = JSON.parse(
+      fs.readFileSync(path.join(tmpStateDir, "skills_snapshot.json"), "utf-8"),
+    );
+
+    expect(snapshot.version).toBe(2);
+    expect(snapshot.sources.builtin.root_id).toBe("builtin-runtime");
+    expect(snapshot.sources.managed.root_id).toBe("openclaw-state");
+  });
+
+  it("explicitly migrates a valid legacy snapshot", () => {
+    seedSkill(builtinSkillsDir(), "alpha", { "SKILL.md": "hello" });
+    seedSkill(managedSkillsDir(), "beta", { "SKILL.md": "managed" });
+    generateAndSignSnapshot();
+    const snapshotPath = path.join(tmpStateDir, "skills_snapshot.json");
+    rewriteSnapshotAsLegacy();
+
+    expect(migrateLegacySkillIntegritySnapshot()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(snapshotPath, "utf-8")).version).toBe(2);
+    expect(verifySkillIntegrity().valid).toBe(true);
+  });
+
+  it("migrates a legacy snapshot after the builtin root relocates", () => {
+    seedSkill(builtinSkillsDir(), "alpha", { "SKILL.md": "hello" });
+    generateAndSignSnapshot();
+    rewriteSnapshotAsLegacy();
+
+    const relocated = path.join(
+      tmpHome,
+      ".openclaw-node",
+      "lib",
+      "node_modules",
+      "openclaw",
+      "skills",
+    );
+    seedSkill(relocated, "alpha", { "SKILL.md": "hello" });
+    fs.rmSync(path.join(tmpHome, ".openclaw-node", "node_modules"), {
+      recursive: true,
+      force: true,
+    });
+
+    expect(migrateLegacySkillIntegritySnapshot()).toBe(true);
+    expect(verifySkillIntegrity()).toMatchObject({
+      valid: true,
+      signatureValid: true,
+      snapshotExists: true,
+    });
+  });
+
+  it("trusts only exact managed skill contents from the signed snapshot", () => {
+    const skillDirectory = path.join(managedSkillsDir(), "rednote-publisher");
+    seedSkill(managedSkillsDir(), "rednote-publisher", { "SKILL.md": "v1" });
+    generateAndSignSnapshot();
+
+    expect(isManagedSkillTrustedBySnapshot("rednote-publisher", skillDirectory)).toBe(true);
+    writeFile(path.join(skillDirectory, ".injected"), "unexpected");
+    expect(isManagedSkillTrustedBySnapshot("rednote-publisher", skillDirectory)).toBe(false);
   });
 
   it("verifies cleanly immediately after generating", () => {
