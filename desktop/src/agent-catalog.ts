@@ -56,7 +56,13 @@ export interface AgentCatalogEntry {
   skills: readonly string[];
   ownedSkills?: readonly string[];
   workspaceDirName?: string;
-  personaProfile?: "master-archive" | "code-geek" | "dr-pulse" | "intel-analyst" | "creative-muse";
+  personaProfile?:
+    | "master-archive"
+    | "code-geek"
+    | "dr-pulse"
+    | "intel-analyst"
+    | "market-sentinel"
+    | "creative-muse";
 }
 
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
@@ -187,20 +193,35 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     personaProfile: "intel-analyst",
   },
   {
-    id: "leopard",
-    name: "Leopard",
-    nameKey: "agent.leopard.name",
-    descKey: "agent.leopard.desc",
-    avatar: "leopard-avatar.png",
+    id: "market-sentinel",
+    name: "Market Sentinel",
+    nameKey: "agent.marketSentinel.name",
+    descKey: "agent.marketSentinel.desc",
+    avatar: "market-sentinel-avatar.png",
     image: "stock.png",
-    tagKeys: ["agent.leopard.tag.1", "agent.leopard.tag.2", "agent.leopard.tag.3"],
+    tagKeys: [
+      "agent.marketSentinel.tag.1",
+      "agent.marketSentinel.tag.2",
+      "agent.marketSentinel.tag.3",
+    ],
     taskKeys: [
-      { titleKey: "agent.leopard.task.1.title", descKey: "agent.leopard.task.1.desc" },
-      { titleKey: "agent.leopard.task.2.title", descKey: "agent.leopard.task.2.desc" },
-      { titleKey: "agent.leopard.task.3.title", descKey: "agent.leopard.task.3.desc" },
+      {
+        titleKey: "agent.marketSentinel.task.1.title",
+        descKey: "agent.marketSentinel.task.1.desc",
+      },
+      {
+        titleKey: "agent.marketSentinel.task.2.title",
+        descKey: "agent.marketSentinel.task.2.desc",
+      },
+      {
+        titleKey: "agent.marketSentinel.task.3.title",
+        descKey: "agent.marketSentinel.task.3.desc",
+      },
     ],
     installedByDefault: false,
     skills: catalogSkills(),
+    workspaceDirName: "workspace-market-sentinel",
+    personaProfile: "market-sentinel",
   },
   {
     id: "creative-muse",
@@ -292,6 +313,7 @@ export function getAgentOwnedSkillIds(agentId: string): readonly string[] {
 }
 
 export const LEGACY_AGENT_ID_ALIASES: Readonly<Record<string, string>> = {
+  leopard: "market-sentinel",
   master: "dr-pulse",
   singer: "creative-muse",
 };

@@ -53,17 +53,32 @@ describe("applyAgentSkillsToConfig", () => {
     expect(list[1].skills).toEqual(["Excel / XLSX"]);
   });
 
+  it("synchronizes a canonical agent's legacy session aliases", () => {
+    const config: MutableSkillsConfig = {
+      agents: {
+        list: [
+          { id: "main", skills: ["keep"] },
+          { id: "market-sentinel", skills: ["stale-canonical"] },
+          { id: "leopard", skills: ["stale-alias"] },
+        ],
+      },
+    };
+
+    applyAgentSkillsToConfig(config, "market-sentinel", ["healthcheck"]);
+
+    const list = config.agents!.list as Array<{ id: string; skills: string[] }>;
+    expect(list.find((entry) => entry.id === "market-sentinel")?.skills).toEqual(["healthcheck"]);
+    expect(list.find((entry) => entry.id === "leopard")?.skills).toEqual(["healthcheck"]);
+    expect(list.find((entry) => entry.id === "main")?.skills).toEqual(["keep"]);
+  });
+
   it("throws when the agent list is missing", () => {
-    expect(() => applyAgentSkillsToConfig({}, "main", [])).toThrow(
-      /No configured agents/,
-    );
+    expect(() => applyAgentSkillsToConfig({}, "main", [])).toThrow(/No configured agents/);
   });
 
   it("throws when the agent id is not present", () => {
     const config: MutableSkillsConfig = { agents: { list: [{ id: "main" }] } };
-    expect(() => applyAgentSkillsToConfig(config, "ghost", [])).toThrow(
-      /Unknown agent "ghost"/,
-    );
+    expect(() => applyAgentSkillsToConfig(config, "ghost", [])).toThrow(/Unknown agent "ghost"/);
   });
 });
 

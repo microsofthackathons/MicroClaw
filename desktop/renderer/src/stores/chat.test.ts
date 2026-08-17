@@ -617,6 +617,13 @@ describe("useChatStore — draft sessions", () => {
     expect(store.sessionKey).toMatch(/^agent:master:session-/);
     expect(store.currentSessionAgentId).toBe("dr-pulse");
   });
+
+  it("attributes historical Leopard session keys to Market Sentinel", () => {
+    const store = useChatStore();
+    store.newSession("leopard");
+    expect(store.sessionKey).toMatch(/^agent:leopard:session-/);
+    expect(store.currentSessionAgentId).toBe("market-sentinel");
+  });
 });
 
 describe("useChatStore — attachments", () => {
