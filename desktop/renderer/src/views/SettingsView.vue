@@ -385,6 +385,7 @@
               filterable
               style="width: 320px"
               :placeholder="t('settings.windowsNodeMxcSelectNode')"
+              @change="selectWindowsNodeMxc"
             >
               <el-option
                 v-for="node in windowsNodeMxcStatus?.nodes ?? []"
@@ -999,6 +1000,7 @@ import {
   type PrivacyControls,
   type PrivacyLevel,
 } from "@/utils/privacy-settings";
+import { getAutomaticWindowsNodeMxcSelection } from "@/utils/windows-node-mxc-selection";
 
 const route = useRoute();
 const gateway = useGatewayStore();
@@ -1099,20 +1101,63 @@ const windowsNodeMxcSelectedNodeId = ref("");
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcRefreshing = ref(false);
 const windowsNodeMxcSmokeRunning = ref(false);
+let windowsNodeMxcPendingNodeId: string | null = null;
 
-async function loadWindowsNodeMxcStatus() {
+function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
+  windowsNodeMxcStatus.value = status;
+  const pendingNodeId = windowsNodeMxcPendingNodeId;
+  if (pendingNodeId && status.nodes.some((node) => node.id === pendingNodeId)) {
+    windowsNodeMxcSelectedNodeId.value = pendingNodeId;
+  } else {
+    windowsNodeMxcSelectedNodeId.value = status.selectedNodeId;
+  }
+}
+
+async function loadWindowsNodeMxcStatus(allowAutomaticSelection = true) {
   windowsNodeMxcRefreshing.value = true;
   try {
     const status = await window.openclaw.windowsNodeMxc.getStatus();
-    windowsNodeMxcStatus.value = status;
-    if (status.selectedNodeId || !windowsNodeMxcSelectedNodeId.value) {
-      windowsNodeMxcSelectedNodeId.value = status.selectedNodeId;
+    updateWindowsNodeMxcStatus(status);
+    if (allowAutomaticSelection && !windowsNodeMxcApplying.value) {
+      const automaticNodeId = getAutomaticWindowsNodeMxcSelection(status);
+      if (automaticNodeId) {
+        windowsNodeMxcSelectedNodeId.value = automaticNodeId;
+        await applyWindowsNodeMxcSelection(automaticNodeId);
+      }
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   } finally {
     windowsNodeMxcRefreshing.value = false;
   }
+}
+
+async function applyWindowsNodeMxcSelection(nodeId: string) {
+  const status = windowsNodeMxcStatus.value;
+  if (!status?.desiredEnabled || status.selectedNodeId === nodeId) return;
+
+  windowsNodeMxcPendingNodeId = nodeId;
+  windowsNodeMxcApplying.value = true;
+  try {
+    const updated = await window.openclaw.windowsNodeMxc.setEnabled({
+      enabled: true,
+      nodeId,
+    });
+    updateWindowsNodeMxcStatus(updated);
+    await loadSandboxStatus();
+  } catch (error) {
+    windowsNodeMxcPendingNodeId = null;
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await loadWindowsNodeMxcStatus(false);
+  } finally {
+    windowsNodeMxcPendingNodeId = null;
+    windowsNodeMxcApplying.value = false;
+  }
+}
+
+async function selectWindowsNodeMxc(nodeId: string) {
+  windowsNodeMxcSelectedNodeId.value = nodeId;
+  await applyWindowsNodeMxcSelection(nodeId);
 }
 
 async function toggleWindowsNodeMxc(enabled: boolean) {
@@ -1122,10 +1167,11 @@ async function toggleWindowsNodeMxc(enabled: boolean) {
   }
   windowsNodeMxcApplying.value = true;
   try {
-    windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
+    const status = await window.openclaw.windowsNodeMxc.setEnabled({
       enabled,
       nodeId: windowsNodeMxcSelectedNodeId.value,
     });
+    updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
