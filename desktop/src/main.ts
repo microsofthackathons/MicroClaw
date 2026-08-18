@@ -2074,7 +2074,8 @@ function startHealthMonitor(): void {
       ) {
         return;
       }
-      if (status.gatewayPolicyState !== "locked" || !status.effectiveToolsReady) {
+      const effectiveToolsDrifted = gwClient?.connected && !status.effectiveToolsReady;
+      if (status.gatewayPolicyState !== "locked" || effectiveToolsDrifted) {
         const message = `Windows Node + MXC readiness drifted; stopping managed Gateway: ${status.blockers.join("; ")}`;
         console.error(`[windows-node-mxc] ${message}`);
         mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
