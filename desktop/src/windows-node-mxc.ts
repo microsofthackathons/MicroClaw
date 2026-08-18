@@ -382,6 +382,26 @@ export function validateEffectiveToolNames(
   return { ready: blockers.length === 0, blockers, warnings: [] };
 }
 
+export function classifyMissingEffectiveToolSession(
+  agentId: string,
+  expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift">,
+): WindowsNodeReadiness {
+  if (expectedState === "locked") {
+    return {
+      ready: true,
+      blockers: [],
+      warnings: [
+        `Agent "${agentId}" has no persisted session; the locked config applies before its first session is created`,
+      ],
+    };
+  }
+  return {
+    ready: false,
+    blockers: [`Agent "${agentId}" has no persisted session for tools.effective`],
+    warnings: [],
+  };
+}
+
 export function extractEffectiveToolNames(payload: unknown): string[] {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("tools.effective returned a non-object payload");

@@ -13,6 +13,7 @@ import {
   type WindowsNodeRecord,
   classifyMxcProbe,
   classifyMxcSmoke,
+  classifyMissingEffectiveToolSession,
   extractEffectiveToolNames,
   getWindowsNodeMxcGatewayPolicyState,
   getMxcTierWarning,
@@ -192,10 +193,7 @@ export async function inspectWindowsNodeMxc(
           agentIds.map(async (agentId) => {
             const sessionKey = sessionKeys.get(agentId);
             if (!sessionKey) {
-              return {
-                ready: false,
-                blockers: [`Agent "${agentId}" has no persisted session for tools.effective`],
-              };
+              return classifyMissingEffectiveToolSession(agentId, expectedToolsState);
             }
             const result = await options.gateway!.request("tools.effective", {
               agentId,
@@ -208,11 +206,13 @@ export async function inspectWindowsNodeMxc(
             return {
               ready: check.ready,
               blockers: check.blockers.map((blocker) => `Agent "${agentId}": ${blocker}`),
+              warnings: [],
             };
           }),
         );
         effectiveToolsReady = effectiveChecks.every((check) => check.ready);
         blockers.push(...effectiveChecks.flatMap((check) => check.blockers));
+        warnings.push(...effectiveChecks.flatMap((check) => check.warnings));
       } catch (error) {
         blockers.push(`Could not verify effective Gateway tools: ${messageOf(error)}`);
       }

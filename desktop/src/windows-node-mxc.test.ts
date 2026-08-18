@@ -6,6 +6,7 @@ import {
   canonicalizeApprovedCwd,
   classifyMxcProbe,
   classifyMxcSmoke,
+  classifyMissingEffectiveToolSession,
   extractEffectiveToolNames,
   getMxcTierWarning,
   getWindowsNodeMxcGatewayPolicyState,
@@ -148,6 +149,18 @@ describe("Windows Node MXC Gateway policy", () => {
       ["main", "global"],
       ["coder", "agent:coder:work"],
     ]);
+  });
+
+  it("allows missing sessions only while the Gateway remains locked", () => {
+    expect(classifyMissingEffectiveToolSession("unused", "locked")).toMatchObject({
+      ready: true,
+      blockers: [],
+      warnings: [expect.stringContaining("locked config applies")],
+    });
+    expect(classifyMissingEffectiveToolSession("unused", "active")).toMatchObject({
+      ready: false,
+      blockers: [expect.stringContaining("no persisted session")],
+    });
   });
 });
 
