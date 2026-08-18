@@ -18,6 +18,7 @@ import {
   validateWindowsNodeMxcGatewayPolicy,
   validateWindowsNodeMxcSettings,
 } from "./windows-node-mxc";
+import { validateBundledCwdAttestation } from "./windows-node-mxc-service";
 
 const strictSettings = {
   EnableNodeMode: true,
@@ -36,6 +37,36 @@ const strictSettings = {
   SystemRunAllowWindowsUi: true,
   SandboxClipboard: 0,
 };
+
+describe("bundled Windows Node CWD attestation", () => {
+  it("requires every exact fail-closed contract property", () => {
+    expect(
+      validateBundledCwdAttestation({
+        payload: {
+          contract: "microclaw.windows-cwd.v1",
+          approvedRootOnly: true,
+          canonicalFinalPath: true,
+          rejectsReparseComponents: true,
+          durableApprovalBindsCwd: true,
+          launchTimeRevalidation: true,
+          omittedCwdUsesIsolatedScratch: true,
+          hostFallbackAbsent: true,
+        },
+      }),
+    ).toEqual({ ready: true, blockers: [] });
+  });
+
+  it("rejects a command-name-only or incomplete attestation", () => {
+    const result = validateBundledCwdAttestation({
+      contract: "microclaw.windows-cwd.v1",
+      approvedRootOnly: true,
+    });
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain(
+      "Bundled node CWD attestation is missing or invalid: launchTimeRevalidation",
+    );
+  });
+});
 
 describe("Windows Node MXC Gateway policy", () => {
   it("exposes only exec and pins it to one stable node", () => {

@@ -287,8 +287,9 @@ export default {
     "Ask for confirmation before the agent reads files that match these patterns.",
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "Security sandbox",
-  "settings.windowsNodeMxc": "Experimental Windows Node + MXC",
-  "settings.windowsNodeMxcExperimental": "Security framework #202 proof of concept",
+  "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
+  "settings.windowsNodeMxcExperimental":
+    "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
   "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
   "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
   "settings.windowsNodeMxcEffective": "Effective state",

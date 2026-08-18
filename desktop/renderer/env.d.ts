@@ -406,6 +406,21 @@ interface OpenClawAPI {
       hostname: { outcome: string; reason: string };
       powershell: { outcome: string; reason: string };
     }>;
+    respondApproval(params: {
+      requestId: string;
+      decision: "deny" | "allow-once" | "allow-always";
+    }): Promise<void>;
+    onApprovalRequest(
+      callback: (
+        request: {
+          id: string;
+          executable: string;
+          arguments: string[];
+          agent: string | null;
+          canonicalCwd: string;
+        } | null,
+      ) => void,
+    ): () => void;
   };
   sandbox: {
     getStatus(): Promise<{

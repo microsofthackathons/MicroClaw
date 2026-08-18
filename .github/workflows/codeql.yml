@@ -56,6 +56,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Initializes the CodeQL tools for scanning.
       - name: Initialize CodeQL
@@ -70,18 +72,21 @@ jobs:
           # For more details on CodeQL's query packs, refer to: https://docs.github.com/en/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/configuring-code-scanning#using-queries-in-ql-packs
           # queries: security-extended,security-and-quality
 
-      # Build step for C# (compiled language) — requires .NET 9 SDK
+      # Build step for C# (compiled language) — requires .NET 9 and 10 SDKs
       - name: Setup .NET SDK
         if: matrix.language == 'csharp'
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: |
+            9.0.x
+            10.0.x
 
       - name: Build C# project
         if: matrix.language == 'csharp'
         shell: pwsh
         run: |
           dotnet build appcontainer/AppContainerLauncher.csproj
+          dotnet build windows-node-host/MicroClaw.WindowsNodeHost.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

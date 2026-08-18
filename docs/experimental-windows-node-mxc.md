@@ -1,108 +1,100 @@
-# Experimental Windows Node + MXC sandbox
+# Experimental bundled Windows Node + MXC sandbox
 
-This branch contains a proof of concept for the security framework tracked by
-[issue #202](https://github.com/microsofthackathons/MicroClaw/issues/202). It is independent of
-the Docker sandbox experiment and does not replace MicroClaw's existing AppContainer mode.
+This branch implements the Windows execution-host experiment for
+[security framework issue #202](https://github.com/microsofthackathons/MicroClaw/issues/202).
+It remains independent of the Docker and direct-MXC experiments.
 
-## Boundary
-
-MicroClaw and its managed OpenClaw Gateway remain on the host. Agent-controlled commands use
-the normal Gateway WebSocket route to one explicitly selected local Windows node:
+## Architecture and boundary
 
 ```text
-agent exec -> managed Gateway -> node.invoke system.run -> Windows Node V2 approval -> MXC
+MicroClaw Electron
+  -> app-owned loopback OpenClaw Gateway
+  -> bundled MicroClaw Windows Node Host
+  -> attended V2-style approval over a per-launch named pipe
+  -> official @microsoft/mxc-sdk@0.7.0 wxc-exec.exe
+  -> MXC-contained child process
 ```
 
-Local MCP is not used. The Gateway agent policy is an explicit `allow: ["exec"]` allowlist,
-with code mode disabled and `exec.host` pinned to the selected stable node ID. This removes
-Gateway-host `read`, `write`, `edit`, `apply_patch`, `process`, browser, plugin, MCP, and other
-tool schemas from the agent path. MicroClaw verifies the session-scoped `tools.effective`
-inventory before considering the mode effective.
+OpenClaw Companion, its tray UI, setup code, and local MCP endpoint are not used. The helper has a
+separate device identity under MicroClaw's user-data directory and accepts only loopback WebSocket
+Gateway endpoints. The Gateway credential is sent once over the helper's stdin; it is never placed
+in argv, renderer state, logs, prompts, or contained-child environments.
+The managed Gateway PID is also passed in bootstrap metadata. Before every credential-bearing
+handshake or reconnect, the helper verifies that this exact process still owns the IPv4 loopback
+listener; MicroClaw stops and recreates the helper for each Gateway generation.
 
-The mode is mutually exclusive with MicroClaw AppContainer. Enabling it first installs a locked
-policy with a non-tool sentinel allowlist (an empty OpenClaw allowlist is unrestricted). Direct
-operator diagnostics can still inspect the node and run the explicit smoke, but channel and chat
-agents have no execution surface. The branch generates and schema-validates the intended exec-only
-policy, but does not activate it: pinned Gateway APIs cannot atomically quarantine channel and
-scheduled ingress while a newly started active Gateway is attested. Agent roster changes are
-blocked while the mode is desired.
+The helper advertises only `system.run`, `system.run.prepare`, `system.which`, and
+`system.run.cwd-policy`. It contains no host command runner and cannot fall back when MXC is absent
+or fails. Network, clipboard, input injection, MCP, screen, camera, canvas, browser, location, and
+speech capabilities are absent. `allowWindowsUi=true` is required for PowerShell compatibility with
+MXC 0.7; it does not activate any UI capture or input capability.
 
-When the mode is desired but any proof fails, chat execution is denied rather than falling back
-to the host. An already-running external Gateway is never reused for this mode.
+Gateway-native file/process tools remain removed from the agent surface. The policy pins `exec` to
+the app-owned node and denies the runtime/filesystem/plugin groups. An empty OpenClaw allowlist is
+unrestricted, so the pre-attestation state uses a non-tool lock sentinel.
 
-## Required Windows Companion state
+## CWD and durable approval contract
 
-The integration targets `openclaw/openclaw-windows-node` commit
-`fc9add75eda78daf548d80a55ffb64e63b159961`. That build has no remote sandbox-settings API, so
-the operator must configure its Sandbox page and MicroClaw reads the effective local settings
-from `%APPDATA%\OpenClawTray\settings.json`.
+The exact attestation contract is `microclaw.windows-cwd.v1`. A supplied CWD must:
 
-Required settings:
+- be an existing local drive-qualified directory;
+- reject UNC, device, NT object-manager, junction, symlink, and other reparse components;
+- resolve to the same final case-insensitive Windows path;
+- be equal to or below one canonical global RO/RW root;
+- not overlap a protected credential, OpenClaw state, SSH, cloud, or browser-profile root.
 
-- node mode and system tools enabled;
-- MXC enabled and host fallback blocked when MXC is unavailable;
-- outbound network disabled and clipboard set to `None`;
-- local MCP, canvas, screen, camera, location, browser proxy, STT, and TTS disabled;
-- `Allow Windows UI APIs` enabled for PowerShell/pwsh compatibility with MXC 0.7.
+CWD inherits the matched root's access; it never creates a grant. Omitted CWD binds approval to
+`isolated-scratch:v1` and launches in a per-run writable scratch directory. Durable entries use
+schema 2 and bind canonical executable path, executable SHA-256, exact argv, and canonical CWD (or
+the scratch semantic). Legacy or CWD-unbound entries never match. Policy, executable identity,
+reparse state, root membership, and the exact CWD binding are revalidated immediately before
+launch. Delete-denying directory handles retain every approved-root/CWD path component through MXC
+completion, preventing a validated directory from being replaced by a junction during launch.
 
-`Allow Windows UI APIs` is a compatibility relaxation. It does not enable screen capture,
-input injection, canvas, camera, microphone, browser, location, or speech capabilities.
-Windows Node continues to force input injection off and to deny its settings directory,
-SSH roots, browser profiles, PowerShell history, and other sensitive roots.
+Approval presentation is owned by MicroClaw Security settings. The helper connects to a random
+per-launch Windows named pipe, displays executable, exact argv, agent, and canonical CWD, and
+supports Deny, Allow once, and Allow always. If the attended IPC is absent or times out, execution
+is denied. Responses are bound to the exact request ID. The approved executable is held under a
+read-only handle that denies write/delete sharing from pre-approval hashing through MXC completion.
+Runs are serialized, so attended approvals cannot overlap, and each contained child inherits
+`TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
 
-For an unpackaged release, MicroClaw detects:
+## Packaging and provenance
 
-```text
-%LOCALAPPDATA%\OpenClawTray\OpenClaw.Tray.WinUI.exe
-%LOCALAPPDATA%\OpenClawTray\tools\mxc\<x64|arm64>\wxc-exec.exe
-```
+`openclaw/openclaw-windows-node` is pinned as a submodule at
+`fc9add75eda78daf548d80a55ffb64e63b159961`. The headless project references its plain
+`OpenClaw.Shared` transport/identity/MXC contracts without importing Companion WinUI code.
+MicroClaw's stricter command capability, CWD policy, approval identity, and no-fallback runner live
+in `windows-node-host/`.
 
-Custom/dev/MSIX layouts must launch MicroClaw with `OPENCLAW_TRAY_DATA_DIR` and
-`OPENCLAW_WXC_EXEC` pointing at the matching pinned installation. MicroClaw does not install,
-elevate, or make host-wide changes.
+`@microsoft/mxc-sdk` is lockfile-pinned to `0.7.0`. Resource staging validates the official
+architecture-specific `wxc-exec.exe` SHA-256 before copying the complete matching x64/ARM64 runtime
+layout unchanged. Package architecture is mandatory rather than inferred from the build machine,
+and a runtime manifest is checked again by the app. Development resources, portable/NSIS extra
+resources, and MSIX preparation all use the same staging script. `wxc-host-prep.exe` is packaged but
+never invoked automatically.
 
-## Readiness
+## Readiness and current activation boundary
 
-The Security page reports desired/effective state, connection and pairing, declared commands,
-strict fallback state, effective folder grants, MXC tier, DACL augmentation, durable approval
-state, and smoke results.
+Readiness requires the exact CWD attestation payload, selected app-owned node identity, connected
+and paired node state, strict locked/effective Gateway tools, MXC tier, contained `hostname.exe`,
+contained PowerShell, and denied-access proof. `appcontainer-dacl` is accepted with a degraded
+containment warning.
 
-`wxc-exec --probe` is necessary but not sufficient. The explicit smoke invokes contained
-`hostname.exe` through `cmd.exe`, then contained Windows PowerShell, through the selected node.
-`0xC0000142`, DLL initialization failures, access-denied results, timeouts, approval failures,
-and sandbox-unavailable results are classified as unusable. `appcontainer-dacl` is accepted
-with a prominent degraded-containment warning.
+Local validation proved that MicroClaw automatically approved only the pending pairing request
+matching the app-owned device identity, `clientId=node-host`, and `role=node`. With the pinned
+OpenClaw 2026.7.1-1 Gateway, the subsequent node authentication repeatedly remained at
+`auth_validated` until the Gateway handshake deadline elapsed, even after helper startup was
+sequenced behind Gateway agent warm-up. Readiness therefore stopped the Gateway and retained the
+diagnostic lock; no command was exposed or executed through an unauthenticated node.
 
-No environment is supplied to smoke commands, and Windows Node rejects custom command
-environments while MXC is active. The smoke must be repeated when the selected node, relevant
-Windows Companion settings, or MXC tier changes.
+The build remains fail-closed in diagnostic lock until those proofs pass. The pinned OpenClaw
+Gateway does not provide an atomic way to quarantine channel/scheduled ingress while an active
+exec-only configuration starts and is attested. Consequently, this branch still refuses the final
+locked-to-active transition rather than expose a startup race. This is the remaining cross-project
+activation blocker. The node handshake timeout is an additional pinned-Gateway integration blocker;
+neither is bypassed by prompt instructions or optimistic post-start checks.
 
-## Upstream blocker
-
-The pinned Windows Node validates `cwd` only as a nonblank string. It does not canonicalize it
-through reparse points, restrict it to configured folder grants, or include it in durable
-approval identity. MXC also grants an otherwise-unlisted explicit cwd read-only access. A
-durable executable+argv approval can therefore be reused with another cwd.
-
-MicroClaw cannot safely repair this at the Gateway config layer because it cannot intercept or
-rewrite the node's approved `system.run` payload. This proof of concept consequently remains
-fail-closed unless the selected node declares `system.run.cwd-policy`, representing an upstream
-implementation that:
-
-1. resolves cwd to a canonical local path and rejects network/reparse escapes;
-2. requires it to be inside one configured RO/RW folder and preserves that access level;
-3. binds canonical cwd into durable approval identity;
-4. revalidates cwd and the folder grant immediately before process launch; and
-5. rejects durable approval for cwd/relative-path-sensitive commands until those guarantees
-   are available.
-
-Even after that declaration exists, activation requires an upstream Gateway
-quarantine/attestation mechanism that keeps channel and scheduled ingress disabled until the
-active `tools.effective` inventory and all mutable Windows Node/MXC state have been verified.
-Without an atomic mechanism, an active Gateway could accept work between startup and the
-verification RPC. This branch therefore never transitions the managed Gateway from locked to
-active.
-
-The smaller acceptable upstream patch is to reject `AllowAlways` whenever caller-supplied cwd
-is nonempty, but approved-root canonicalization is still required before this MicroClaw mode
-can become effective.
+No elevation or host-wide `prepare-system-drive` / `prepare-null-device` action is performed. If a
+live DACL-tier smoke requires those changes, MicroClaw reports the requirement for explicit user
+consent.

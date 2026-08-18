@@ -11,6 +11,14 @@ win:
       arch:
         - x64
   icon: assets/microclaw.ico
+  signExts:
+    - "!mxc-diagnostic-console.exe"
+    - "!winhttp-proxy-shim.exe"
+    - "!wxc-exec.exe"
+    - "!wxc-host-prep.exe"
+    - "!wxc-test-proxy.exe"
+    - "!wxc-windows-sandbox-daemon.exe"
+    - "!wxc-windows-sandbox-guest.exe"
 
 appx:
   artifactName: MicroClawDesktop-${version}-${arch}.msix
@@ -43,6 +51,8 @@ extraResources:
     to: openclaw/
   - from: resources/openclaw.asar
     to: openclaw.asar
+  - from: resources/windows-node/
+    to: windows-node/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js

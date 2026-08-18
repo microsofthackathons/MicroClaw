@@ -53,6 +53,8 @@ jobs:
               - 'plugins/**'
             csharp:
               - 'appcontainer/**'
+              - 'windows-node-host/**'
+              - 'windows-node-host.Tests/**'
               - 'MicroClaw.sln'
             python:
               - 'deployer/**'
@@ -114,7 +116,7 @@ jobs:
         working-directory: desktop/renderer
         run: npm run test
 
-  # ── C# / .NET 9 ────────────────────────────────────────────────
+  # ── C# / .NET 9 and 10 ─────────────────────────────────────────
   security-and-build-csharp:
     name: C# - Audit & Build
     needs: changes
@@ -124,14 +126,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Setup .NET 9 SDK
+      - name: Setup .NET 9 and 10 SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: |
+            9.0.x
+            10.0.x
 
       - name: Restore NuGet packages
-        run: dotnet restore appcontainer/AppContainerLauncher.csproj
+        run: |
+          dotnet restore appcontainer/AppContainerLauncher.csproj
+          dotnet restore windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
       # Security: check for known vulnerable NuGet packages
       - name: Check for vulnerable NuGet packages
@@ -143,11 +151,20 @@ jobs:
             Write-Host "::error::Vulnerable NuGet packages detected!"
             exit 1
           }
+          $output = dotnet list windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj package --vulnerable --include-transitive --no-restore 2>&1
+          Write-Host $output
+          if ($output -match "has the following vulnerable packages") {
+            Write-Host "::error::Vulnerable NuGet packages detected!"
+            exit 1
+          }
           Write-Host "No vulnerable NuGet packages found."
 
       # Build
       - name: Build AppContainerLauncher
         run: dotnet build appcontainer/AppContainerLauncher.csproj -c Release --no-restore
+
+      - name: Test bundled Windows Node host
+        run: dotnet test windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -c Release --no-restore -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
   # ── Python ──────────────────────────────────────────────────────
   security-check-python:

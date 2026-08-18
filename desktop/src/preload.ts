@@ -310,6 +310,15 @@ contextBridge.exposeInMainWorld("openclaw", {
     setEnabled: (params: { enabled: boolean; nodeId?: string }) =>
       ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     runSmoke: () => ipcRenderer.invoke("windows-node-mxc:run-smoke"),
+    respondApproval: (params: {
+      requestId: string;
+      decision: "deny" | "allow-once" | "allow-always";
+    }) => ipcRenderer.invoke("windows-node-mxc:approval-respond", params),
+    onApprovalRequest: (callback: (request: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: unknown) => callback(request);
+      ipcRenderer.on("windows-node-mxc:approval-request", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-request", handler);
+    },
   },
 
   // --- Tool Sandbox ---

@@ -270,8 +270,9 @@ export default {
   "settings.sensitiveFilesDesc": "智能体读取匹配以下模式的文件前，需要用户确认。",
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "安全沙箱",
-  "settings.windowsNodeMxc": "实验性 Windows Node + MXC",
-  "settings.windowsNodeMxcExperimental": "安全框架议题 #202 概念验证",
+  "settings.windowsNodeMxc": "实验性内置 Windows Node + MXC",
+  "settings.windowsNodeMxcExperimental":
+    "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
   "settings.windowsNodeMxcSelectedNode": "已选择的本地 Windows 节点",
   "settings.windowsNodeMxcSelectNode": "请选择一个已配对的 Windows 节点",
   "settings.windowsNodeMxcEffective": "实际状态",

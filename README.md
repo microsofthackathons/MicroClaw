@@ -311,6 +311,7 @@ download-update path.
 - Node.js 22+
 - Python 3.10+ — install build deps with `pip install -r requirements.txt` (includes PyInstaller)
 - .NET 9 SDK (for the AppContainer launcher)
+- .NET 10 SDK (for the bundled Windows Node host)
 - npm dependencies installed (`cd desktop && npm install`)
 
 ---

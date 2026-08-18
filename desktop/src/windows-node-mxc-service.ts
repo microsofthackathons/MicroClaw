@@ -25,6 +25,7 @@ import {
   validateWindowsNodeMxcSettings,
   type WindowsNodeMxcGatewayPolicyState,
 } from "./windows-node-mxc";
+import type { BundledWindowsNodeHostStatus } from "./bundled-windows-node-host";
 
 const WINDOWS_NODE_SETTINGS_FILENAME = "settings.json";
 const HOSTNAME_MARKER = "MICROCLAW_MXC_HOSTNAME_OK";
@@ -80,6 +81,8 @@ export interface InspectWindowsNodeMxcOptions {
   localAppData?: string;
   userProfile?: string;
   environment?: NodeJS.ProcessEnv;
+  bundledHost?: BundledWindowsNodeHostStatus;
+  bundledFolders?: WindowsNodeMxcFolder[];
 }
 
 export function resolveWindowsNodeSettingsPath(
@@ -112,18 +115,42 @@ export async function inspectWindowsNodeMxc(
   const localAppData = options.localAppData ?? environment.LOCALAPPDATA ?? "";
   const userProfile = options.userProfile ?? environment.USERPROFILE ?? os.homedir();
   const selectedNodeId = options.selectedNodeId.trim();
-  const settingsPath = resolveWindowsNodeSettingsPath(environment, appData);
-  const companionPath = resolveWindowsCompanionPath(localAppData);
-  const wxcExecPath = resolveWxcExecPath(environment, localAppData);
+  const bundled = options.bundledHost;
+  const settingsPath = bundled
+    ? "MicroClaw-managed policy"
+    : resolveWindowsNodeSettingsPath(environment, appData);
+  const companionPath = bundled ? bundled.hostPath : resolveWindowsCompanionPath(localAppData);
+  const wxcExecPath = bundled ? bundled.wxcExecPath : resolveWxcExecPath(environment, localAppData);
   const blockers: string[] = [];
   const warnings: string[] = [];
   const remediation: string[] = [];
 
-  const settings = await readWindowsNodeSettings(settingsPath);
+  const settings = bundled
+    ? ({
+        EnableNodeMode: true,
+        NodeSystemRunEnabled: true,
+        NodeCanvasEnabled: false,
+        NodeScreenEnabled: false,
+        NodeCameraEnabled: false,
+        NodeLocationEnabled: false,
+        NodeBrowserProxyEnabled: false,
+        NodeSttEnabled: false,
+        NodeTtsEnabled: false,
+        EnableMcpServer: false,
+        SystemRunSandboxEnabled: true,
+        SystemRunBlockHostFallbackWhenMxcUnavailable: true,
+        SystemRunAllowWindowsUi: true,
+        SystemRunAllowOutbound: false,
+        SandboxClipboard: 0,
+      } satisfies WindowsNodeMxcSettings)
+    : await readWindowsNodeSettings(settingsPath);
   const settingsCheck = validateWindowsNodeMxcSettings(settings);
   blockers.push(...settingsCheck.blockers);
   warnings.push(...settingsCheck.warnings);
-  if (!settings) {
+  if (bundled && !bundled.processRunning) {
+    blockers.push(bundled.lastError ?? "Bundled MicroClaw Windows node host is not running");
+    remediation.push("Restart MicroClaw so it can start its app-owned Windows node host.");
+  } else if (!settings) {
     remediation.push(
       `Install and launch OpenClaw Windows Companion, then configure its Sandbox page. Expected settings: ${settingsPath}`,
     );
@@ -134,11 +161,23 @@ export async function inspectWindowsNodeMxc(
   }
 
   const settingsFingerprint = settings ? fingerprintSecuritySettings(settings) : null;
-  const folders = settings ? listConfiguredSandboxFolders(settings, userProfile) : [];
-  const companionInstalled = fs.existsSync(companionPath);
+  const folders = bundled
+    ? (options.bundledFolders ?? [])
+    : settings
+      ? listConfiguredSandboxFolders(settings, userProfile)
+      : [];
+  const companionInstalled = bundled ? fs.existsSync(companionPath) : fs.existsSync(companionPath);
   if (!companionInstalled) {
-    blockers.push("OpenClaw Windows Companion is not installed at the supported per-user path");
-    remediation.push(`Install the pinned Windows Companion build at ${companionPath}`);
+    blockers.push(
+      bundled
+        ? "Bundled MicroClaw Windows node host is missing"
+        : "OpenClaw Windows Companion is not installed at the supported per-user path",
+    );
+    remediation.push(
+      bundled
+        ? "Repair or reinstall MicroClaw's bundled Windows node resources."
+        : `Install the pinned Windows Companion build at ${companionPath}`,
+    );
   }
 
   const probe = await runMxcProbe(wxcExecPath);
@@ -180,6 +219,21 @@ export async function inspectWindowsNodeMxc(
       nodes = extractNodeRecords(payload);
       selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
       blockers.push(...validateSelectedWindowsNode(selectedNode).blockers);
+      if (bundled && selectedNode?.connected) {
+        try {
+          const attestation = await options.gateway.request("node.invoke", {
+            nodeId: selectedNodeId,
+            command: WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+            params: {},
+            timeoutMs: 15_000,
+            idempotencyKey: randomUUID(),
+          });
+          const attestationCheck = validateBundledCwdAttestation(attestation);
+          if (!attestationCheck.ready) blockers.push(...attestationCheck.blockers);
+        } catch (error) {
+          blockers.push(`Bundled node CWD attestation failed: ${messageOf(error)}`);
+        }
+      }
     } catch (error) {
       blockers.push(`Could not list Gateway nodes: ${messageOf(error)}`);
     }
@@ -221,14 +275,18 @@ export async function inspectWindowsNodeMxc(
         const approvals = await options.gateway.request("exec.approvals.node.get", {
           nodeId: selectedNodeId,
         });
-        durableApprovalsPresent = hasDurableApprovals(approvals);
+        durableApprovalsPresent = bundled ? false : hasDurableApprovals(approvals);
         if (durableApprovalsPresent) {
           blockers.push(
             "Selected node has durable exec approvals, which the pinned Windows Node does not bind to cwd",
           );
         }
       } catch (error) {
-        blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
+        if (bundled) {
+          durableApprovalsPresent = false;
+        } else {
+          blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
+        }
       }
     }
   }
@@ -254,7 +312,9 @@ export async function inspectWindowsNodeMxc(
       "A current contained hostname.exe and PowerShell child-process smoke proof is required",
     );
     remediation.push(
-      "Run the contained child-process check from MicroClaw Security settings and approve each command once in Windows Companion.",
+      bundled
+        ? "Run the contained child-process check from MicroClaw Security settings and approve each command in MicroClaw."
+        : "Run the contained child-process check from MicroClaw Security settings and approve each command once in Windows Companion.",
     );
   }
 
@@ -284,6 +344,38 @@ export async function inspectWindowsNodeMxc(
     warnings: [...new Set(warnings)],
     remediation: [...new Set(remediation)],
   };
+}
+
+export function validateBundledCwdAttestation(value: unknown): {
+  ready: boolean;
+  blockers: string[];
+} {
+  const record = findAttestationRecord(value);
+  const expected = {
+    contract: "microclaw.windows-cwd.v1",
+    approvedRootOnly: true,
+    canonicalFinalPath: true,
+    rejectsReparseComponents: true,
+    durableApprovalBindsCwd: true,
+    launchTimeRevalidation: true,
+    omittedCwdUsesIsolatedScratch: true,
+    hostFallbackAbsent: true,
+  };
+  const blockers = Object.entries(expected)
+    .filter(([key, expectedValue]) => record?.[key] !== expectedValue)
+    .map(([key]) => `Bundled node CWD attestation is missing or invalid: ${key}`);
+  return { ready: blockers.length === 0, blockers };
+}
+
+function findAttestationRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.contract === "microclaw.windows-cwd.v1") return record;
+  for (const key of ["payload", "result", "data"]) {
+    const nested = findAttestationRecord(record[key]);
+    if (nested) return nested;
+  }
+  return null;
 }
 
 export async function runWindowsNodeMxcSmoke(

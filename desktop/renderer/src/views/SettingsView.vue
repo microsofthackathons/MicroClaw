@@ -25,7 +25,7 @@
       <div v-if="activeSection === 'general'" class="section">
         <div class="section-label">{{ t("settings.application") }}</div>
         <div class="card-group">
-          <div class="card-row">
+          <div v-show="false" class="card-row">
             <label class="row-label" for="settings-language-select">
               {{ t("settings.language") }}
             </label>
@@ -1102,6 +1102,8 @@ const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcRefreshing = ref(false);
 const windowsNodeMxcSmokeRunning = ref(false);
 let windowsNodeMxcPendingNodeId: string | null = null;
+let windowsNodeMxcApprovalUnsubscribe: (() => void) | null = null;
+let activeWindowsNodeMxcApprovalId: string | null = null;
 
 function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
   windowsNodeMxcStatus.value = status;
@@ -1161,10 +1163,6 @@ async function selectWindowsNodeMxc(nodeId: string) {
 }
 
 async function toggleWindowsNodeMxc(enabled: boolean) {
-  if (enabled && !windowsNodeMxcSelectedNodeId.value) {
-    ElMessage.error(t("settings.windowsNodeMxcSelectNode"));
-    return;
-  }
   windowsNodeMxcApplying.value = true;
   try {
     const status = await window.openclaw.windowsNodeMxc.setEnabled({
@@ -1812,6 +1810,61 @@ watch(showProviderSetup, (visible, wasVisible) => {
 
 onMounted(async () => {
   window.addEventListener("focus", handleSettingsWindowFocus);
+  const subscribeApproval = window.openclaw.windowsNodeMxc.onApprovalRequest;
+  if (typeof subscribeApproval === "function") {
+    windowsNodeMxcApprovalUnsubscribe = subscribeApproval(async (request) => {
+      if (!request) {
+        if (activeWindowsNodeMxcApprovalId) {
+          activeWindowsNodeMxcApprovalId = null;
+          ElMessageBox.close();
+        }
+        return;
+      }
+      activeWindowsNodeMxcApprovalId = request.id;
+      const command = [request.executable, ...request.arguments].join(" ");
+      let decision: "deny" | "allow-once" | "allow-always" = "deny";
+      try {
+        await ElMessageBox.confirm(
+          `${command}\n\nAgent: ${request.agent ?? "unknown"}\nCWD: ${request.canonicalCwd}`,
+          "Allow contained MXC command?",
+          {
+            confirmButtonText: "Allow once",
+            cancelButtonText: "Deny",
+            distinguishCancelAndClose: true,
+            type: "warning",
+          },
+        );
+        decision = "allow-once";
+        try {
+          await ElMessageBox.confirm(
+            "Remember this exact executable, argv, and canonical CWD for future contained runs?",
+            "Durable approval",
+            {
+              confirmButtonText: "Allow always",
+              cancelButtonText: "Allow once",
+              distinguishCancelAndClose: true,
+              type: "warning",
+            },
+          );
+          decision = "allow-always";
+        } catch {
+          decision = "allow-once";
+        }
+      } catch {
+        decision = "deny";
+      }
+      if (activeWindowsNodeMxcApprovalId !== request.id) return;
+      activeWindowsNodeMxcApprovalId = null;
+      try {
+        await window.openclaw.windowsNodeMxc.respondApproval({
+          requestId: request.id,
+          decision,
+        });
+      } catch (error) {
+        ElMessage.error(error instanceof Error ? error.message : String(error));
+      }
+    });
+  }
 
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
@@ -1845,6 +1898,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
+  windowsNodeMxcApprovalUnsubscribe?.();
   copilotModelsGeneration += 1;
 });
 

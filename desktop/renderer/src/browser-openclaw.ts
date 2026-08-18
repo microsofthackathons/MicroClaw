@@ -106,6 +106,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       runSmoke: async () => {
         throw new Error("Unavailable in browser development");
       },
+      respondApproval: async () => {
+        throw new Error("Unavailable in browser development");
+      },
+      onApprovalRequest: noopSub,
     },
     sandbox: {
       getStatus: async () => ({

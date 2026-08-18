@@ -127,6 +127,11 @@ import {
   type StoredWindowsNodeMxcSmoke,
   type WindowsNodeMxcRuntimeStatus,
 } from "./windows-node-mxc-service";
+import {
+  BundledWindowsNodeHost,
+  type BundledApprovalRequest,
+  type BundledWindowsNodeFolder,
+} from "./bundled-windows-node-host";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -268,8 +273,17 @@ let gwClient: GatewayClient | null = null;
 let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
+const bundledWindowsNodeHost = new BundledWindowsNodeHost();
+let bundledWindowsNodeStartup: Promise<void> | null = null;
+let bundledWindowsNodeGeneration = 0;
 let gatewayStatus: GatewayStatus = "stopped";
 const appStartupStartedAt = Date.now();
+
+function stopBundledWindowsNodeHost(): void {
+  bundledWindowsNodeGeneration++;
+  bundledWindowsNodeStartup = null;
+  bundledWindowsNodeHost.stop();
+}
 
 function logStartupTiming(phase: string): void {
   console.log(`[startup-timing] ${phase} +${Date.now() - appStartupStartedAt}ms`);
@@ -740,6 +754,7 @@ function isWindowsNodeMxcDesired(): boolean {
 }
 
 async function getWindowsNodeMxcStatus(): Promise<WindowsNodeMxcRuntimeStatus> {
+  const bundledFolders = getBundledWindowsNodeFolders();
   return inspectWindowsNodeMxc({
     desiredEnabled: isWindowsNodeMxcDesired(),
     selectedNodeId: settingsStore.get("windowsNodeMxcNodeId"),
@@ -747,7 +762,22 @@ async function getWindowsNodeMxcStatus(): Promise<WindowsNodeMxcRuntimeStatus> {
     gateway: gwClient,
     managedGateway: gatewaySpawnedByUs && isManagedGatewayProcessAlive(),
     storedSmoke: settingsStore.get("windowsNodeMxcSmoke") ?? null,
+    bundledHost: bundledWindowsNodeHost.status(),
+    bundledFolders,
   });
+}
+
+function getBundledWindowsNodeFolders(): BundledWindowsNodeFolder[] {
+  return [
+    ...settingsStore.get("sandboxUserDirsRO").map((folderPath) => ({
+      path: folderPath,
+      access: "ro" as const,
+    })),
+    ...settingsStore.get("sandboxUserDirsRW").map((folderPath) => ({
+      path: folderPath,
+      access: "rw" as const,
+    })),
+  ];
 }
 
 async function requireEffectiveWindowsNodeMxc(): Promise<void> {
@@ -1846,6 +1876,7 @@ async function waitForGatewayReady(
 
 /** Kill the managed gateway and any listener still holding gatewayPort. */
 function stopGatewayProcess(): void {
+  stopBundledWindowsNodeHost();
   const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
   gatewaySpawnedByUs = false;
@@ -1956,6 +1987,7 @@ function terminateGatewayProcessTree(pid: number): void {
 }
 
 async function stopGatewayForSecurityTransition(port: number): Promise<void> {
+  stopBundledWindowsNodeHost();
   const managedPid =
     gatewaySpawnedByUs && isManagedGatewayProcessAlive() ? gatewayProcess?.pid : undefined;
   const listenerPids = getGatewayListenerPids(port);
@@ -2042,7 +2074,7 @@ async function restartManagedGatewayAndRequireReady(reason: string): Promise<voi
 // Health monitor — auto-restart gateway if it goes down
 // ---------------------------------------------------------------------------
 function isManagedGatewayProcessAlive(): boolean {
-  return gatewayProcess !== null && !gatewayProcess.killed;
+  return gatewayProcess !== null && gatewayProcess.exitCode === null && !gatewayProcess.killed;
 }
 
 function startHealthMonitor(): void {
@@ -2079,6 +2111,7 @@ function startHealthMonitor(): void {
         const message = `Windows Node + MXC readiness drifted; stopping managed Gateway: ${status.blockers.join("; ")}`;
         console.error(`[windows-node-mxc] ${message}`);
         mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
+        stopBundledWindowsNodeHost();
         gwClient?.stop();
         gatewayProcess = null;
         gatewaySpawnedByUs = false;
@@ -2374,7 +2407,19 @@ async function startGatewayInner(): Promise<void> {
   // Read config to get token and configured port
   let config = readConfig();
   if (isWindowsNodeMxcDesired()) {
-    const nodeId = settingsStore.get("windowsNodeMxcNodeId");
+    const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+    if (settingsStore.get("windowsNodeMxcNodeId") !== nodeId) {
+      const pinned = applyWindowsNodeMxcGatewayPolicy(
+        config,
+        nodeId,
+        settingsStore.get("windowsNodeMxcToolBackups"),
+        "locked",
+      );
+      config = pinned.config;
+      settingsStore.set("windowsNodeMxcToolBackups", pinned.backups);
+      settingsStore.set("windowsNodeMxcNodeId", nodeId);
+      writeConfigTextAtomically(JSON.stringify(config, null, 2));
+    }
     const policyState = getWindowsNodeMxcGatewayPolicyState(config, nodeId);
     if (policyState === "active") {
       const locked = applyWindowsNodeMxcGatewayPolicy(
@@ -2517,7 +2562,7 @@ async function startGatewayInner(): Promise<void> {
   }
 
   console.log(
-    `Launching gateway: stateDir=${stateDir} token=${gatewayToken ? gatewayToken.slice(0, 8) + "..." : "(empty)"}`,
+    `Launching gateway: stateDir=${stateDir} auth=${gatewayToken ? "configured" : "missing"}`,
   );
   console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
 
@@ -2699,6 +2744,7 @@ async function startGatewayInner(): Promise<void> {
     safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
     safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
     if (gatewayProcess === child) {
+      stopBundledWindowsNodeHost();
       gatewayProcess = null;
       gatewaySpawnedByUs = false;
       setGatewayStatus("failed");
@@ -2709,6 +2755,7 @@ async function startGatewayInner(): Promise<void> {
     console.log(`[gateway] exited: code=${code} signal=${signal}`);
     safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
     if (gatewayProcess === child) {
+      stopBundledWindowsNodeHost();
       gatewayProcess = null;
       gatewaySpawnedByUs = false;
     }
@@ -3058,6 +3105,7 @@ function _extractText(message: unknown): string | null {
 let wsAuthRestartInProgress = false;
 
 function connectGatewayWs(): void {
+  stopBundledWindowsNodeHost();
   gwClient?.stop();
   gatewayModelCatalogRequest = null;
 
@@ -3067,6 +3115,62 @@ function connectGatewayWs(): void {
     onConnected: () => {
       console.log("[gateway-ws] connected");
       wsAuthRestartInProgress = false;
+      if (isWindowsNodeMxcDesired()) {
+        const gateway = gwClient;
+        if (gateway && !bundledWindowsNodeStartup) {
+          const gatewayGeneration = gatewayProcess;
+          if (!gatewayGeneration?.pid) {
+            console.error("[bundled-windows-node] managed Gateway process identity is unavailable");
+            return;
+          }
+          const startOptions = {
+            gatewayUrl: `ws://127.0.0.1:${gatewayPort}`,
+            gatewayToken,
+            gatewayProcessId: gatewayGeneration.pid,
+            folders: getBundledWindowsNodeFolders(),
+            onApproval: (approval: BundledApprovalRequest | null) =>
+              mainWindow?.webContents.send("windows-node-mxc:approval-request", approval),
+          };
+          const hostGeneration = ++bundledWindowsNodeGeneration;
+          bundledWindowsNodeHost.stop();
+          const assertCurrentGatewayGeneration = () => {
+            if (
+              bundledWindowsNodeGeneration !== hostGeneration ||
+              gwClient !== gateway ||
+              !gateway.connected ||
+              !gatewayGeneration ||
+              gatewayProcess !== gatewayGeneration ||
+              gatewayGeneration.exitCode !== null ||
+              gatewayGeneration.killed
+            ) {
+              throw new Error("Managed Gateway generation changed before Windows node startup");
+            }
+          };
+          const startup = gateway
+            .warmUpAgent()
+            .then(() => {
+              assertCurrentGatewayGeneration();
+              return bundledWindowsNodeHost.start(startOptions);
+            })
+            .then(() => {
+              assertCurrentGatewayGeneration();
+              return bundledWindowsNodeHost.ensurePaired(gateway);
+            })
+            .catch((error) => {
+              if (bundledWindowsNodeGeneration === hostGeneration) {
+                bundledWindowsNodeHost.stop();
+              }
+              throw error;
+            })
+            .finally(() => {
+              if (bundledWindowsNodeStartup === startup) bundledWindowsNodeStartup = null;
+            });
+          bundledWindowsNodeStartup = startup;
+          void startup.catch((error) => {
+            console.error("[bundled-windows-node] start failed:", error);
+          });
+        }
+      }
       // Sync the status indicator — fixes "timeout" showing while WS is actually connected
       if (gatewayStatus !== "running") {
         setGatewayStatus("running");
@@ -3102,6 +3206,7 @@ function connectGatewayWs(): void {
     },
     onDisconnected: (reason) => {
       console.log(`[gateway-ws] disconnected: ${reason}`);
+      stopBundledWindowsNodeHost();
       mainWindow?.webContents.send("gateway:ws-disconnected", reason);
     },
     onAuthError: (message) => {
@@ -4811,7 +4916,7 @@ function registerIpcHandlers(): void {
       const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
 
       if (enabled) {
-        const nodeId = typeof params.nodeId === "string" ? params.nodeId.trim() : "";
+        const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
         const applied = applyWindowsNodeMxcGatewayPolicy(
           config,
           nodeId,
@@ -4833,6 +4938,7 @@ function registerIpcHandlers(): void {
         toolSandbox?.setEnabled(false);
         writeConfigTextAtomically(JSON.stringify(applied.config, null, 2));
       } else {
+        stopBundledWindowsNodeHost();
         const restored = restoreWindowsNodeMxcGatewayPolicy(
           config,
           settingsStore.get("windowsNodeMxcToolBackups"),
@@ -4903,6 +5009,33 @@ function registerIpcHandlers(): void {
     settingsStore.set("windowsNodeMxcSmoke", smoke);
     return smoke;
   });
+
+  ipcMain.handle(
+    "windows-node-mxc:approval-respond",
+    (
+      _event,
+      params: {
+        requestId?: unknown;
+        decision?: unknown;
+      },
+    ) => {
+      const requestId = params?.requestId;
+      const decision = params?.decision;
+      if (typeof requestId !== "string" || requestId.length === 0) {
+        throw new Error("Invalid Windows node approval request ID");
+      }
+      if (
+        typeof decision !== "string" ||
+        !["deny", "allow-once", "allow-always"].includes(decision)
+      ) {
+        throw new Error("Invalid Windows node approval decision");
+      }
+      bundledWindowsNodeHost.respond(
+        requestId,
+        decision as "deny" | "allow-once" | "allow-always",
+      );
+    },
+  );
 
   // --- Updates ---
   ipcMain.handle("updates:check", () => {

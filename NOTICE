@@ -10,6 +10,19 @@ included below or can be found in the respective project repositories.
 - Source: https://github.com/openclaw
 - License: See OpenClaw repository for license details
 
+## OpenClaw Windows Node
+- Source: https://github.com/openclaw/openclaw-windows-node
+- Revision: fc9add75eda78daf548d80a55ffb64e63b159961
+- Copyright: Copyright (c) 2025 Scott Hanselman
+- License: MIT License
+- Use: architecture and protocol baseline for MicroClaw's minimal headless Windows node host
+
+## Microsoft MXC SDK and Windows runtime
+- Source: https://github.com/microsoft/mxc
+- Package: @microsoft/mxc-sdk@0.7.0
+- License: MIT License
+- The official architecture-specific wxc-exec.exe and sibling runtime files are packaged unchanged.
+
 ## Electron
 - Source: https://github.com/electron/electron
 - License: MIT License

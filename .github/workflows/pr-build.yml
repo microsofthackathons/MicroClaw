@@ -3,6 +3,7 @@
 # Runs the end-to-end packaging script (build.ps1) on every PR.
 # Verifies that the entire pipeline still produces:
 #   - AppContainerLauncher.exe (.NET 9)
+#   - bundled Windows Node host (.NET 10) + official MXC runtime
 #   - desktop\release\win-unpacked\ (electron-builder)
 #   - dist\microclaw-portable.zip
 #   - dist\MicroClawInstaller\ + dist\MicroClawInstaller.zip (PyInstaller)
@@ -134,8 +135,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      # Toolchain (Node 22, .NET 9 SDK, Python 3.12+) is pre-installed on
+      # Toolchain (Node 22, .NET 9/10 SDKs, Python 3.12+) is pre-installed on
       # the self-hosted runner. We only verify versions here; installing
       # via actions/setup-* is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues).
@@ -150,9 +153,10 @@ jobs:
             ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
           if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.7.1-1" }
           Write-Host "node $node"
-          $dotnet = & dotnet --version
-          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
-          Write-Host "dotnet $dotnet"
+          $sdks = & dotnet --list-sdks
+          if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }
+          if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
+          Write-Host $sdks
 
       # Resolve a Python 3.12+ interpreter for the NetworkService account.
       - name: Setup Python 3.12+
