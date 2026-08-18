@@ -2,8 +2,16 @@ import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 export const WINDOWS_NODE_MXC_MODE = "windows-node-mxc";
-export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = ["system.run", "system.run.prepare"] as const;
+export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
+  "system.run",
+  "system.run.prepare",
+  "system.which",
+] as const;
 export const WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND = "system.run.cwd-policy";
+export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
+  ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
+  WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+] as const;
 export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = ["exec"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
@@ -99,6 +107,7 @@ type AgentEntry = {
 };
 
 type AgentToolsBackup = Record<string, unknown | null>;
+const GATEWAY_NODES_BACKUP_KEY = "$microclaw.gateway.nodes";
 
 export interface WindowsNodeMxcPolicyApplication {
   config: Record<string, unknown>;
@@ -170,6 +179,23 @@ export function applyWindowsNodeMxcGatewayPolicy(
 
   agents.list = list;
   config.agents = agents;
+  const gateway =
+    config.gateway && typeof config.gateway === "object" && !Array.isArray(config.gateway)
+      ? (config.gateway as Record<string, unknown>)
+      : {};
+  if (!Object.hasOwn(backups, GATEWAY_NODES_BACKUP_KEY)) {
+    backups[GATEWAY_NODES_BACKUP_KEY] = Object.hasOwn(gateway, "nodes")
+      ? structuredClone(gateway.nodes)
+      : null;
+  }
+  const nodes =
+    gateway.nodes && typeof gateway.nodes === "object" && !Array.isArray(gateway.nodes)
+      ? (gateway.nodes as Record<string, unknown>)
+      : {};
+  nodes.allowCommands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
+  nodes.denyCommands = [];
+  gateway.nodes = nodes;
+  config.gateway = gateway;
   return { config, backups, agentIds };
 }
 
@@ -189,6 +215,21 @@ export function restoreWindowsNodeMxcGatewayPolicy(
     const previous = backups[id];
     if (previous === null) delete entry.tools;
     else entry.tools = structuredClone(previous);
+  }
+  if (Object.hasOwn(backups, GATEWAY_NODES_BACKUP_KEY)) {
+    const gateway =
+      config.gateway && typeof config.gateway === "object" && !Array.isArray(config.gateway)
+        ? (config.gateway as Record<string, unknown>)
+        : {};
+    const previous = backups[GATEWAY_NODES_BACKUP_KEY];
+    if (previous === null) {
+      delete gateway.nodes;
+      if (Object.keys(gateway).length === 0) delete config.gateway;
+      else config.gateway = gateway;
+    } else {
+      gateway.nodes = structuredClone(previous);
+      config.gateway = gateway;
+    }
   }
   return config;
 }
@@ -239,6 +280,22 @@ export function validateWindowsNodeMxcGatewayPolicy(
   const globalDeny = globalTools && Array.isArray(globalTools.deny) ? globalTools.deny : [];
   if (globalDeny.some((value) => value === "exec" || value === "group:runtime")) {
     blockers.push("Global Gateway tool policy blocks node exec");
+  }
+  const gateway =
+    root.gateway && typeof root.gateway === "object" && !Array.isArray(root.gateway)
+      ? (root.gateway as Record<string, unknown>)
+      : null;
+  const nodes =
+    gateway?.nodes && typeof gateway.nodes === "object" && !Array.isArray(gateway.nodes)
+      ? (gateway.nodes as Record<string, unknown>)
+      : null;
+  const allowCommands = Array.isArray(nodes?.allowCommands) ? nodes.allowCommands : [];
+  const denyCommands = Array.isArray(nodes?.denyCommands) ? nodes.denyCommands : [];
+  if (!isDeepStrictEqual(allowCommands, [...WINDOWS_NODE_MXC_NODE_COMMANDS])) {
+    blockers.push("Gateway node command allowlist drifted from the bundled system-only surface");
+  }
+  if (!isDeepStrictEqual(denyCommands, [])) {
+    blockers.push("Gateway node command denylist conflicts with the bundled system-only surface");
   }
 
   return { ready: blockers.length === 0, blockers, warnings };
@@ -340,7 +397,10 @@ export function normalizeWindowsNodeRecord(value: unknown): WindowsNodeRecord | 
   };
 }
 
-export function validateSelectedWindowsNode(node: WindowsNodeRecord | null): WindowsNodeReadiness {
+export function validateSelectedWindowsNode(
+  node: WindowsNodeRecord | null,
+  trustedBundledNodeId = "",
+): WindowsNodeReadiness {
   const blockers: string[] = [];
   const warnings: string[] = [];
   if (!node) {
@@ -351,7 +411,9 @@ export function validateSelectedWindowsNode(node: WindowsNodeRecord | null): Win
   if (node.platform !== "win32" && node.platform !== "windows") {
     blockers.push("The selected node is not a Windows node");
   }
-  if (!node.remoteIp || !isLoopbackAddress(node.remoteIp)) {
+  const appOwnedLocalIdentity =
+    trustedBundledNodeId.length > 0 && node.id.toLowerCase() === trustedBundledNodeId.toLowerCase();
+  if ((!node.remoteIp || !isLoopbackAddress(node.remoteIp)) && !appOwnedLocalIdentity) {
     blockers.push("The selected node is not proven to be local to this MicroClaw Gateway");
   }
   for (const command of WINDOWS_NODE_MXC_REQUIRED_COMMANDS) {
@@ -362,6 +424,11 @@ export function validateSelectedWindowsNode(node: WindowsNodeRecord | null): Win
     blockers.push(
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
+  }
+  const allowedCommands = new Set<string>(WINDOWS_NODE_MXC_NODE_COMMANDS);
+  const unexpectedCommands = node.commands.filter((command) => !allowedCommands.has(command));
+  if (unexpectedCommands.length > 0) {
+    blockers.push(`Selected node declares unexpected commands: ${unexpectedCommands.join(", ")}`);
   }
   return { ready: blockers.length === 0, blockers, warnings };
 }

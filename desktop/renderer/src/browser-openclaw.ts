@@ -83,9 +83,13 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         folders: [],
         nodes: [],
         selectedNode: null,
+        helperRevision: undefined,
+        mxcRuntimeVersion: undefined,
+        cwdPolicyContract: undefined,
         gatewayPolicyState: "drift" as const,
         gatewayPolicyReady: false,
         effectiveToolsReady: false,
+        effectiveToolsState: "unverified" as const,
         durableApprovalsPresent: null,
         probe: {
           outcome: "error" as const,

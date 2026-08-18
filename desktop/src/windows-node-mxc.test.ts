@@ -18,7 +18,12 @@ import {
   validateWindowsNodeMxcGatewayPolicy,
   validateWindowsNodeMxcSettings,
 } from "./windows-node-mxc";
-import { validateBundledCwdAttestation } from "./windows-node-mxc-service";
+import {
+  classifyDeniedCwdSmoke,
+  isCurrentWindowsNodeMxcSmoke,
+  shouldStopManagedGatewayForWindowsNodeMxc,
+  validateBundledCwdAttestation,
+} from "./windows-node-mxc-service";
 
 const strictSettings = {
   EnableNodeMode: true,
@@ -54,6 +59,45 @@ describe("bundled Windows Node CWD attestation", () => {
         },
       }),
     ).toEqual({ ready: true, blockers: [] });
+  });
+
+  describe("Windows Node MXC diagnostic lifecycle", () => {
+    it("keeps an unverified locked diagnostic Gateway alive but stops actual drift", () => {
+      expect(
+        shouldStopManagedGatewayForWindowsNodeMxc({
+          effectiveEnabled: false,
+          effectiveToolsState: "unverified",
+          gatewayPolicyState: "locked",
+        }),
+      ).toBe(false);
+      expect(
+        shouldStopManagedGatewayForWindowsNodeMxc({
+          effectiveEnabled: false,
+          effectiveToolsState: "drift",
+          gatewayPolicyState: "locked",
+        }),
+      ).toBe(true);
+      expect(
+        shouldStopManagedGatewayForWindowsNodeMxc({
+          effectiveEnabled: true,
+          effectiveToolsState: "verified",
+          gatewayPolicyState: "active",
+        }),
+      ).toBe(true);
+    });
+
+    it("rejects legacy smoke records without the denied-root proof", () => {
+      expect(
+        isCurrentWindowsNodeMxcSmoke({
+          nodeId: "node-1",
+          settingsFingerprint: "settings",
+          probeTier: "appcontainer-dacl",
+          checkedAt: "2026-08-18T00:00:00.000Z",
+          hostname: { outcome: "passed", reason: "ok" },
+          powershell: { outcome: "passed", reason: "ok" },
+        }),
+      ).toBe(false);
+    });
   });
 
   it("rejects a command-name-only or incomplete attestation", () => {
@@ -315,6 +359,16 @@ describe("MXC probe and smoke classification", () => {
       ).outcome,
     ).toBe("sandbox-unavailable");
   });
+
+  it("requires an explicit typed denial for a protected or unapproved CWD", () => {
+    expect(classifyDeniedCwdSmoke("cwd-sensitive-root: protected")).toMatchObject({
+      outcome: "passed",
+    });
+    expect(classifyDeniedCwdSmoke("cwd-outside-approved-roots: denied")).toMatchObject({
+      outcome: "passed",
+    });
+    expect(classifyDeniedCwdSmoke("approval timed out")).toMatchObject({ outcome: "failed" });
+  });
 });
 
 describe("selected node readiness", () => {
@@ -334,7 +388,7 @@ describe("selected node readiness", () => {
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
 
-    node!.commands.push("system.run.cwd-policy");
+    node!.commands.push("system.which", "system.run.cwd-policy");
     expect(validateSelectedWindowsNode(node).ready).toBe(true);
   });
 });

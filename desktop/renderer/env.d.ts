@@ -370,9 +370,13 @@ interface OpenClawAPI {
         remoteIp: string | null;
         commands: string[];
       } | null;
+      helperRevision?: string;
+      mxcRuntimeVersion?: string;
+      cwdPolicyContract?: string;
       gatewayPolicyState: "active" | "locked" | "drift";
       gatewayPolicyReady: boolean;
       effectiveToolsReady: boolean;
+      effectiveToolsState: "unverified" | "verified" | "drift";
       durableApprovalsPresent: boolean | null;
       probe: {
         outcome: "supported" | "unsupported" | "error";
@@ -389,6 +393,7 @@ interface OpenClawAPI {
         checkedAt: string;
         hostname: { outcome: string; reason: string };
         powershell: { outcome: string; reason: string };
+        deniedOutsideRoot: { outcome: string; reason: string };
       } | null;
       blockers: string[];
       warnings: string[];
@@ -405,6 +410,7 @@ interface OpenClawAPI {
       checkedAt: string;
       hostname: { outcome: string; reason: string };
       powershell: { outcome: string; reason: string };
+      deniedOutsideRoot: { outcome: string; reason: string };
     }>;
     respondApproval(params: {
       requestId: string;

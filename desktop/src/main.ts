@@ -124,6 +124,7 @@ import {
 import {
   inspectWindowsNodeMxc,
   runWindowsNodeMxcSmoke,
+  shouldStopManagedGatewayForWindowsNodeMxc,
   type StoredWindowsNodeMxcSmoke,
   type WindowsNodeMxcRuntimeStatus,
 } from "./windows-node-mxc-service";
@@ -1222,7 +1223,13 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -2096,6 +2103,9 @@ function startHealthMonitor(): void {
       return;
     }
     if (isWindowsNodeMxcDesired()) {
+      // Pairing and warm-up intentionally run while the Gateway remains locked.
+      // Avoid competing control-plane requests until that startup transaction settles.
+      if (bundledWindowsNodeStartup) return;
       const inspectedProcess = gatewayProcess;
       const status = await getWindowsNodeMxcStatus();
       if (
@@ -2106,8 +2116,7 @@ function startHealthMonitor(): void {
       ) {
         return;
       }
-      const effectiveToolsDrifted = gwClient?.connected && !status.effectiveToolsReady;
-      if (status.gatewayPolicyState !== "locked" || effectiveToolsDrifted) {
+      if (shouldStopManagedGatewayForWindowsNodeMxc(status)) {
         const message = `Windows Node + MXC readiness drifted; stopping managed Gateway: ${status.blockers.join("; ")}`;
         console.error(`[windows-node-mxc] ${message}`);
         mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
@@ -2408,33 +2417,23 @@ async function startGatewayInner(): Promise<void> {
   let config = readConfig();
   if (isWindowsNodeMxcDesired()) {
     const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-    if (settingsStore.get("windowsNodeMxcNodeId") !== nodeId) {
-      const pinned = applyWindowsNodeMxcGatewayPolicy(
-        config,
-        nodeId,
-        settingsStore.get("windowsNodeMxcToolBackups"),
-        "locked",
-      );
-      config = pinned.config;
-      settingsStore.set("windowsNodeMxcToolBackups", pinned.backups);
-      settingsStore.set("windowsNodeMxcNodeId", nodeId);
-      writeConfigTextAtomically(JSON.stringify(config, null, 2));
-    }
     const policyState = getWindowsNodeMxcGatewayPolicyState(config, nodeId);
     if (policyState === "active") {
-      const locked = applyWindowsNodeMxcGatewayPolicy(
-        config,
-        nodeId,
-        settingsStore.get("windowsNodeMxcToolBackups"),
-        "locked",
-      );
-      config = locked.config;
-      writeConfigTextAtomically(JSON.stringify(config, null, 2));
       settingsStore.delete("windowsNodeMxcSmoke");
-      console.warn(
-        "[windows-node-mxc] Downgraded unsupported active policy to diagnostic-only locked policy",
-      );
+      console.warn("[windows-node-mxc] Relocked active policy for fresh startup attestation");
     }
+    const pinned = applyWindowsNodeMxcGatewayPolicy(
+      config,
+      nodeId,
+      settingsStore.get("windowsNodeMxcToolBackups"),
+      "locked",
+    );
+    if (JSON.stringify(config) !== JSON.stringify(pinned.config)) {
+      writeConfigTextAtomically(JSON.stringify(pinned.config, null, 2));
+    }
+    config = pinned.config;
+    settingsStore.set("windowsNodeMxcToolBackups", pinned.backups);
+    settingsStore.set("windowsNodeMxcNodeId", nodeId);
     const policy = validateWindowsNodeMxcGatewayPolicy(config, nodeId, "locked");
     if (!policy.ready) {
       const message = `Windows Node + MXC Gateway policy drift: ${policy.blockers.join("; ")}`;
@@ -3146,8 +3145,7 @@ function connectGatewayWs(): void {
               throw new Error("Managed Gateway generation changed before Windows node startup");
             }
           };
-          const startup = gateway
-            .warmUpAgent()
+          const startup = Promise.resolve()
             .then(() => {
               assertCurrentGatewayGeneration();
               return bundledWindowsNodeHost.start(startOptions);
@@ -3155,6 +3153,10 @@ function connectGatewayWs(): void {
             .then(() => {
               assertCurrentGatewayGeneration();
               return bundledWindowsNodeHost.ensurePaired(gateway);
+            })
+            .then(() => {
+              assertCurrentGatewayGeneration();
+              return gateway.warmUpAgent().then(() => undefined);
             })
             .catch((error) => {
               if (bundledWindowsNodeGeneration === hostGeneration) {
@@ -4997,6 +4999,9 @@ function registerIpcHandlers(): void {
     if (!status.gatewayPolicyReady) {
       throw new Error("Gateway exec-only node policy is not effective");
     }
+    if (status.gatewayPolicyState !== "locked" || status.effectiveToolsState !== "verified") {
+      throw new Error("Locked Gateway effective tools must be verified before the MXC smoke");
+    }
     if (status.durableApprovalsPresent) {
       throw new Error("Remove durable approvals before running the cwd-sensitive MXC mode proof");
     }
@@ -5007,6 +5012,13 @@ function registerIpcHandlers(): void {
       status.probe.tier,
     );
     settingsStore.set("windowsNodeMxcSmoke", smoke);
+    if (
+      smoke.deniedOutsideRoot.outcome !== "passed" ||
+      smoke.hostname.outcome !== "passed" ||
+      smoke.powershell.outcome !== "passed"
+    ) {
+      return smoke;
+    }
     return smoke;
   });
 
@@ -5030,10 +5042,7 @@ function registerIpcHandlers(): void {
       ) {
         throw new Error("Invalid Windows node approval decision");
       }
-      bundledWindowsNodeHost.respond(
-        requestId,
-        decision as "deny" | "allow-once" | "allow-always",
-      );
+      bundledWindowsNodeHost.respond(requestId, decision as "deny" | "allow-once" | "allow-always");
     },
   );
 
@@ -5068,7 +5077,8 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      { width?: number; height?: number; x?: number; y?: number } | undefined;
+      | { width?: number; height?: number; x?: number; y?: number }
+      | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);

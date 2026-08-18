@@ -379,21 +379,13 @@
           </div>
           <div class="card-row">
             <span class="row-label">{{ t("settings.windowsNodeMxcSelectedNode") }}</span>
-            <el-select
-              v-model="windowsNodeMxcSelectedNodeId"
-              :disabled="windowsNodeMxcApplying"
-              filterable
-              style="width: 320px"
-              :placeholder="t('settings.windowsNodeMxcSelectNode')"
-              @change="selectWindowsNodeMxc"
-            >
-              <el-option
-                v-for="node in windowsNodeMxcStatus?.nodes ?? []"
-                :key="node.id"
-                :label="`${node.displayName} (${node.connected ? 'online' : 'offline'})`"
-                :value="node.id"
-              />
-            </el-select>
+            <span class="row-value">
+              {{
+                windowsNodeMxcStatus?.selectedNode
+                  ? `${windowsNodeMxcStatus.selectedNode.displayName} (${windowsNodeMxcStatus.selectedNode.connected ? "online" : "offline"})`
+                  : "app-owned node unavailable"
+              }}
+            </span>
           </div>
           <template v-if="windowsNodeMxcStatus">
             <div class="card-row">
@@ -423,6 +415,20 @@
                   · DACL augmentation required
                 </template>
               </span>
+            </div>
+            <div class="card-row">
+              <span class="row-label">Bundled helper</span>
+              <span class="row-value">{{
+                windowsNodeMxcStatus.helperRevision
+                  ? windowsNodeMxcStatus.helperRevision.slice(0, 12)
+                  : "unavailable"
+              }}</span>
+            </div>
+            <div class="card-row">
+              <span class="row-label">MXC runtime / CWD policy</span>
+              <span class="row-value">{{
+                `${windowsNodeMxcStatus.mxcRuntimeVersion ?? "unavailable"} / ${windowsNodeMxcStatus.cwdPolicyContract ?? "unavailable"}`
+              }}</span>
             </div>
             <div class="card-row">
               <span class="row-label">{{ t("settings.windowsNodeMxcStrictFallback") }}</span>
@@ -465,7 +471,7 @@
               <span class="row-value">
                 {{
                   windowsNodeMxcStatus.smoke
-                    ? `${windowsNodeMxcStatus.smoke.hostname.outcome} / ${windowsNodeMxcStatus.smoke.powershell.outcome}`
+                    ? `${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome} / ${windowsNodeMxcStatus.smoke.hostname.outcome} / ${windowsNodeMxcStatus.smoke.powershell.outcome}`
                     : t("settings.windowsNodeMxcNotRun")
                 }}
               </span>
@@ -1000,8 +1006,6 @@ import {
   type PrivacyControls,
   type PrivacyLevel,
 } from "@/utils/privacy-settings";
-import { getAutomaticWindowsNodeMxcSelection } from "@/utils/windows-node-mxc-selection";
-
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -1097,36 +1101,21 @@ const capsRestarting = ref(false);
 const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
-const windowsNodeMxcSelectedNodeId = ref("");
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcRefreshing = ref(false);
 const windowsNodeMxcSmokeRunning = ref(false);
-let windowsNodeMxcPendingNodeId: string | null = null;
 let windowsNodeMxcApprovalUnsubscribe: (() => void) | null = null;
 let activeWindowsNodeMxcApprovalId: string | null = null;
 
 function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
   windowsNodeMxcStatus.value = status;
-  const pendingNodeId = windowsNodeMxcPendingNodeId;
-  if (pendingNodeId && status.nodes.some((node) => node.id === pendingNodeId)) {
-    windowsNodeMxcSelectedNodeId.value = pendingNodeId;
-  } else {
-    windowsNodeMxcSelectedNodeId.value = status.selectedNodeId;
-  }
 }
 
-async function loadWindowsNodeMxcStatus(allowAutomaticSelection = true) {
+async function loadWindowsNodeMxcStatus() {
   windowsNodeMxcRefreshing.value = true;
   try {
     const status = await window.openclaw.windowsNodeMxc.getStatus();
     updateWindowsNodeMxcStatus(status);
-    if (allowAutomaticSelection && !windowsNodeMxcApplying.value) {
-      const automaticNodeId = getAutomaticWindowsNodeMxcSelection(status);
-      if (automaticNodeId) {
-        windowsNodeMxcSelectedNodeId.value = automaticNodeId;
-        await applyWindowsNodeMxcSelection(automaticNodeId);
-      }
-    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   } finally {
@@ -1134,41 +1123,10 @@ async function loadWindowsNodeMxcStatus(allowAutomaticSelection = true) {
   }
 }
 
-async function applyWindowsNodeMxcSelection(nodeId: string) {
-  const status = windowsNodeMxcStatus.value;
-  if (!status?.desiredEnabled || status.selectedNodeId === nodeId) return;
-
-  windowsNodeMxcPendingNodeId = nodeId;
-  windowsNodeMxcApplying.value = true;
-  try {
-    const updated = await window.openclaw.windowsNodeMxc.setEnabled({
-      enabled: true,
-      nodeId,
-    });
-    updateWindowsNodeMxcStatus(updated);
-    await loadSandboxStatus();
-  } catch (error) {
-    windowsNodeMxcPendingNodeId = null;
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-    await loadWindowsNodeMxcStatus(false);
-  } finally {
-    windowsNodeMxcPendingNodeId = null;
-    windowsNodeMxcApplying.value = false;
-  }
-}
-
-async function selectWindowsNodeMxc(nodeId: string) {
-  windowsNodeMxcSelectedNodeId.value = nodeId;
-  await applyWindowsNodeMxcSelection(nodeId);
-}
-
 async function toggleWindowsNodeMxc(enabled: boolean) {
   windowsNodeMxcApplying.value = true;
   try {
-    const status = await window.openclaw.windowsNodeMxc.setEnabled({
-      enabled,
-      nodeId: windowsNodeMxcSelectedNodeId.value,
-    });
+    const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
     updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();
   } catch (error) {
@@ -1183,10 +1141,16 @@ async function runWindowsNodeMxcSmoke() {
   windowsNodeMxcSmokeRunning.value = true;
   try {
     const smoke = await window.openclaw.windowsNodeMxc.runSmoke();
-    if (smoke.hostname.outcome === "passed" && smoke.powershell.outcome === "passed") {
+    if (
+      smoke.deniedOutsideRoot.outcome === "passed" &&
+      smoke.hostname.outcome === "passed" &&
+      smoke.powershell.outcome === "passed"
+    ) {
       ElMessage.success(t("settings.windowsNodeMxcSmokePassed"));
     } else {
-      ElMessage.error(`${smoke.hostname.reason}; ${smoke.powershell.reason}`);
+      ElMessage.error(
+        `${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+      );
     }
     await loadWindowsNodeMxcStatus();
   } catch (error) {

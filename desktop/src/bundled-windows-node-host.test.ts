@@ -7,6 +7,7 @@ import {
   assertLoopbackGateway,
   createBundledWindowsNodeEnvironment,
   findBundledDevicePairRequest,
+  findBundledNodePairRequest,
 } from "./bundled-windows-node-host";
 
 describe("bundled Windows node host", () => {
@@ -93,6 +94,41 @@ describe("bundled Windows node host", () => {
     expect(
       findBundledDevicePairRequest({ pending: [{ ...request, remoteIp: "203.0.113.10" }] }, nodeId),
     ).toBeNull();
+  });
+
+  it("approves only the exact app-owned system-only node surface", () => {
+    const nodeId = "d".repeat(64);
+    const commands = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    expect(
+      findBundledNodePairRequest(
+        {
+          pending: [
+            {
+              requestId: "remote",
+              nodeId,
+              platform: "windows",
+              remoteIp: "192.168.1.10",
+              commands,
+            },
+            {
+              requestId: "extra-command",
+              nodeId,
+              platform: "windows",
+              remoteIp: "127.0.0.1",
+              commands: [...commands, "device.info"],
+            },
+            {
+              requestId: "owned",
+              nodeId: nodeId.toUpperCase(),
+              platform: "windows",
+              remoteIp: "::1",
+              commands,
+            },
+          ],
+        },
+        nodeId,
+      ),
+    ).toBe("owned");
   });
 
   it("binds approval responses to the exact pending request", () => {

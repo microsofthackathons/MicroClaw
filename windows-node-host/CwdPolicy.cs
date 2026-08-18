@@ -12,14 +12,14 @@ public static class CwdPolicyContract
 }
 
 public sealed record CwdPolicyAttestation(
-    string Contract,
-    bool ApprovedRootOnly,
-    bool CanonicalFinalPath,
-    bool RejectsReparseComponents,
-    bool DurableApprovalBindsCwd,
-    bool LaunchTimeRevalidation,
-    bool OmittedCwdUsesIsolatedScratch,
-    bool HostFallbackAbsent)
+    [property: JsonPropertyName("contract")] string Contract,
+    [property: JsonPropertyName("approvedRootOnly")] bool ApprovedRootOnly,
+    [property: JsonPropertyName("canonicalFinalPath")] bool CanonicalFinalPath,
+    [property: JsonPropertyName("rejectsReparseComponents")] bool RejectsReparseComponents,
+    [property: JsonPropertyName("durableApprovalBindsCwd")] bool DurableApprovalBindsCwd,
+    [property: JsonPropertyName("launchTimeRevalidation")] bool LaunchTimeRevalidation,
+    [property: JsonPropertyName("omittedCwdUsesIsolatedScratch")] bool OmittedCwdUsesIsolatedScratch,
+    [property: JsonPropertyName("hostFallbackAbsent")] bool HostFallbackAbsent)
 {
     public static readonly CwdPolicyAttestation Current = new(
         CwdPolicyContract.Version,

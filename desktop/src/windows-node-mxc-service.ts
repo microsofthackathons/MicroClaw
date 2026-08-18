@@ -43,6 +43,7 @@ export interface StoredWindowsNodeMxcSmoke {
   checkedAt: string;
   hostname: MxcSmokeResult;
   powershell: MxcSmokeResult;
+  deniedOutsideRoot: MxcSmokeResult;
 }
 
 export interface WindowsNodeMxcRuntimeStatus {
@@ -59,9 +60,13 @@ export interface WindowsNodeMxcRuntimeStatus {
   folders: WindowsNodeMxcFolder[];
   nodes: WindowsNodeRecord[];
   selectedNode: WindowsNodeRecord | null;
+  helperRevision?: string;
+  mxcRuntimeVersion?: string;
+  cwdPolicyContract?: string;
   gatewayPolicyState: WindowsNodeMxcGatewayPolicyState;
   gatewayPolicyReady: boolean;
   effectiveToolsReady: boolean;
+  effectiveToolsState: "unverified" | "verified" | "drift";
   durableApprovalsPresent: boolean | null;
   probe: MxcProbeResult;
   smoke: StoredWindowsNodeMxcSmoke | null;
@@ -192,21 +197,28 @@ export async function inspectWindowsNodeMxc(
   warnings.push(...probe.warnings);
 
   const gatewayPolicyState = getWindowsNodeMxcGatewayPolicyState(options.config, selectedNodeId);
-  const gatewayPolicyReady = gatewayPolicyState === "locked";
+  const gatewayPolicyReady = gatewayPolicyState !== "drift";
   if (gatewayPolicyState === "drift") {
     blockers.push("Gateway agent tool policy drifted from the diagnostic-only locked MXC policy");
-  } else if (gatewayPolicyState === "active") {
-    blockers.push("Active Gateway execution is unsupported without atomic ingress quarantine");
-  } else {
+  } else if (gatewayPolicyState === "locked") {
     blockers.push("Gateway agent execution remains diagnostic-only and locked");
+  } else {
+    blockers.push(
+      "Active Gateway policy is unsupported until ingress can be quarantined atomically",
+    );
   }
 
   let nodes: WindowsNodeRecord[] = [];
   let selectedNode: WindowsNodeRecord | null = null;
   let effectiveToolsReady = false;
+  let effectiveToolsState: WindowsNodeMxcRuntimeStatus["effectiveToolsState"] = "unverified";
   let durableApprovalsPresent: boolean | null = null;
   if (!selectedNodeId) {
-    blockers.push("Select one paired local Windows node by stable node ID");
+    blockers.push(
+      bundled
+        ? "The app-owned Windows node identity is unavailable"
+        : "Select one paired local Windows node by stable node ID",
+    );
   }
   if (options.desiredEnabled && !options.managedGateway) {
     blockers.push("Windows Node + MXC mode requires a freshly started MicroClaw managed Gateway");
@@ -217,8 +229,13 @@ export async function inspectWindowsNodeMxc(
     try {
       const payload = await options.gateway.request<unknown>("node.list", {});
       nodes = extractNodeRecords(payload);
+      if (bundled?.nodeId) {
+        nodes = nodes.map((node) =>
+          node.id === bundled.nodeId ? { ...node, displayName: bundled.displayName } : node,
+        );
+      }
       selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
-      blockers.push(...validateSelectedWindowsNode(selectedNode).blockers);
+      blockers.push(...validateSelectedWindowsNode(selectedNode, bundled?.nodeId ?? "").blockers);
       if (bundled && selectedNode?.connected) {
         try {
           const attestation = await options.gateway.request("node.invoke", {
@@ -265,6 +282,7 @@ export async function inspectWindowsNodeMxc(
           }),
         );
         effectiveToolsReady = effectiveChecks.every((check) => check.ready);
+        effectiveToolsState = effectiveToolsReady ? "verified" : "drift";
         blockers.push(...effectiveChecks.flatMap((check) => check.blockers));
         warnings.push(...effectiveChecks.flatMap((check) => check.warnings));
       } catch (error) {
@@ -302,12 +320,18 @@ export async function inspectWindowsNodeMxc(
 
   const smoke =
     options.storedSmoke &&
+    isCurrentWindowsNodeMxcSmoke(options.storedSmoke) &&
     options.storedSmoke.nodeId === selectedNodeId &&
     options.storedSmoke.settingsFingerprint === settingsFingerprint &&
     options.storedSmoke.probeTier === probe.tier
       ? options.storedSmoke
       : null;
-  if (!smoke || smoke.hostname.outcome !== "passed" || smoke.powershell.outcome !== "passed") {
+  if (
+    !smoke ||
+    smoke.hostname.outcome !== "passed" ||
+    smoke.powershell.outcome !== "passed" ||
+    smoke.deniedOutsideRoot.outcome !== "passed"
+  ) {
     blockers.push(
       "A current contained hostname.exe and PowerShell child-process smoke proof is required",
     );
@@ -316,11 +340,18 @@ export async function inspectWindowsNodeMxc(
         ? "Run the contained child-process check from MicroClaw Security settings and approve each command in MicroClaw."
         : "Run the contained child-process check from MicroClaw Security settings and approve each command once in Windows Companion.",
     );
+  } else if (bundled && gatewayPolicyState === "locked") {
+    blockers.push(
+      "The pinned Gateway cannot quarantine channel and scheduled ingress during an active-policy restart",
+    );
+    remediation.push(
+      "Keep diagnostic lock enabled until the Gateway provides atomic ingress quarantine or the bundled helper gains an independently attested activation gate.",
+    );
   }
 
   return {
     desiredEnabled: options.desiredEnabled,
-    effectiveEnabled: options.desiredEnabled && blockers.length === 0,
+    effectiveEnabled: false,
     selectedNodeId,
     settingsPath,
     companionPath,
@@ -334,9 +365,13 @@ export async function inspectWindowsNodeMxc(
     folders,
     nodes,
     selectedNode,
+    helperRevision: bundled?.helperRevision,
+    mxcRuntimeVersion: bundled?.runtimeVersion,
+    cwdPolicyContract: bundled?.cwdPolicyContract,
     gatewayPolicyState,
     gatewayPolicyReady,
     effectiveToolsReady,
+    effectiveToolsState,
     durableApprovalsPresent,
     probe,
     smoke,
@@ -344,6 +379,28 @@ export async function inspectWindowsNodeMxc(
     warnings: [...new Set(warnings)],
     remediation: [...new Set(remediation)],
   };
+}
+
+export function shouldStopManagedGatewayForWindowsNodeMxc(
+  status: Pick<
+    WindowsNodeMxcRuntimeStatus,
+    "effectiveEnabled" | "effectiveToolsState" | "gatewayPolicyState"
+  >,
+): boolean {
+  return status.gatewayPolicyState !== "locked" || status.effectiveToolsState === "drift";
+}
+
+export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWindowsNodeMxcSmoke {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.nodeId === "string" &&
+    typeof value.settingsFingerprint === "string" &&
+    typeof value.probeTier === "string" &&
+    typeof value.checkedAt === "string" &&
+    isMxcSmokeResult(value.hostname) &&
+    isMxcSmokeResult(value.powershell) &&
+    isMxcSmokeResult(value.deniedOutsideRoot)
+  );
 }
 
 export function validateBundledCwdAttestation(value: unknown): {
@@ -389,6 +446,7 @@ export async function runWindowsNodeMxcSmoke(
   if (!settingsFingerprint) throw new Error("Strict Windows Companion settings are not loaded");
   if (!probeTier) throw new Error("A supported MXC tier is required");
 
+  const deniedOutsideRoot = await invokeDeniedCwdSmoke(gateway, nodeId);
   const hostname = await invokeSmoke(
     gateway,
     nodeId,
@@ -397,7 +455,7 @@ export async function runWindowsNodeMxcSmoke(
       "/d",
       "/s",
       "/c",
-      `"C:\\Windows\\System32\\hostname.exe" && echo ${HOSTNAME_MARKER}`,
+      `C:\\Windows\\System32\\hostname.exe && echo ${HOSTNAME_MARKER}`,
     ],
     HOSTNAME_MARKER,
   );
@@ -427,6 +485,49 @@ export async function runWindowsNodeMxcSmoke(
     checkedAt: new Date().toISOString(),
     hostname,
     powershell,
+    deniedOutsideRoot,
+  };
+}
+
+async function invokeDeniedCwdSmoke(
+  gateway: WindowsNodeMxcGateway,
+  nodeId: string,
+): Promise<MxcSmokeResult> {
+  try {
+    await gateway.request("node.invoke", {
+      nodeId,
+      command: "system.run",
+      params: {
+        command: ["C:\\Windows\\System32\\hostname.exe"],
+        cwd: "C:\\Windows",
+        timeoutMs: 15_000,
+      },
+      timeoutMs: 20_000,
+      idempotencyKey: randomUUID(),
+    });
+    return {
+      outcome: "failed",
+      reason: "The bundled node unexpectedly accepted a protected CWD outside approved roots",
+    };
+  } catch (error) {
+    return classifyDeniedCwdSmoke(messageOf(error));
+  }
+}
+
+export function classifyDeniedCwdSmoke(message: string): MxcSmokeResult {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("cwd-sensitive-root") ||
+    normalized.includes("cwd-outside-approved-root")
+  ) {
+    return {
+      outcome: "passed",
+      reason: "The bundled node denied a protected CWD outside approved roots",
+    };
+  }
+  return {
+    outcome: "failed",
+    reason: `Unapproved-CWD proof failed with an unexpected result: ${message}`,
   };
 }
 
@@ -576,6 +677,14 @@ async function runMxcProbe(wxcExecPath: string): Promise<MxcProbeResult> {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isMxcSmokeResult(value: unknown): value is MxcSmokeResult {
+  return isRecord(value) && typeof value.outcome === "string" && typeof value.reason === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export const WINDOWS_NODE_MXC_DIAGNOSTIC_COMMANDS = [

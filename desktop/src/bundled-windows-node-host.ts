@@ -5,10 +5,11 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
-const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
+export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 const MXC_WXC_EXEC_SHA256 = {
   x64: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
   arm64: "e430d0e4f44f616e91db684f8d825a6dc93e06a1262b8d00bcaac7522a317aab",
@@ -26,6 +27,8 @@ export interface BundledWindowsNodeHostStatus {
   wxcExecPath: string;
   runtimeVersion: "0.7.0";
   cwdPolicyContract: typeof BUNDLED_WINDOWS_NODE_CWD_CONTRACT;
+  displayName: typeof BUNDLED_WINDOWS_NODE_DISPLAY_NAME;
+  helperRevision: typeof BUNDLED_WINDOWS_NODE_REVISION;
   pendingApproval: BundledApprovalRequest | null;
   lastError: string | null;
   nodeId: string | null;
@@ -173,10 +176,9 @@ export class BundledWindowsNodeHost {
     }
     const nodeId = this.ensureIdentityNodeId();
     let approved = false;
-    let connectedObservations = 0;
-    const deadline = Date.now() + 90_000;
+    const deadline = Date.now() + 5 * 60_000;
 
-    for (let attempt = 0; attempt < 30 && Date.now() < deadline; attempt++) {
+    while (Date.now() < deadline) {
       if (this.process !== expectedProcess || expectedProcess.exitCode !== null) {
         throw new Error("Bundled Windows node generation changed during pairing");
       }
@@ -189,23 +191,24 @@ export class BundledWindowsNodeHost {
             approved = true;
           }
         }
+        const nodePairing = await gateway.request<unknown>("node.pair.list", {});
+        const nodePairRequestId = findBundledNodePairRequest(nodePairing, nodeId);
+        if (nodePairRequestId) {
+          await gateway.request("node.pair.approve", { requestId: nodePairRequestId });
+          approved = true;
+        }
 
         const nodes = await gateway.request<unknown>("node.list", {});
         const connected = findBundledNode(nodes, nodeId);
         if (connected?.connected) {
-          connectedObservations++;
-          if (connectedObservations >= 2) {
-            if (connected.displayName !== BUNDLED_WINDOWS_NODE_DISPLAY_NAME) {
-              await gateway.request("node.rename", {
-                nodeId,
-                displayName: BUNDLED_WINDOWS_NODE_DISPLAY_NAME,
-              });
-            }
-            this.lastError = null;
-            return;
+          if (connected.displayName !== BUNDLED_WINDOWS_NODE_DISPLAY_NAME) {
+            await gateway.request("node.rename", {
+              nodeId,
+              displayName: BUNDLED_WINDOWS_NODE_DISPLAY_NAME,
+            });
           }
-        } else {
-          connectedObservations = 0;
+          this.lastError = null;
+          return;
         }
       } catch (error) {
         if (!isGatewayRequestTimeout(error)) throw error;
@@ -214,8 +217,8 @@ export class BundledWindowsNodeHost {
     }
 
     const message = approved
-      ? "App-owned Windows node did not reconnect after automatic pairing"
-      : "App-owned Windows node did not present an exact loopback pairing request";
+      ? "App-owned Windows node did not reconnect after automatic pairing or reapproval"
+      : "App-owned Windows node did not remain connected with its existing pairing";
     this.lastError = message;
     if (this.process === expectedProcess) this.stop();
     throw new Error(message);
@@ -267,6 +270,8 @@ export class BundledWindowsNodeHost {
       wxcExecPath: this.wxcExecPath,
       runtimeVersion: "0.7.0",
       cwdPolicyContract: BUNDLED_WINDOWS_NODE_CWD_CONTRACT,
+      displayName: BUNDLED_WINDOWS_NODE_DISPLAY_NAME,
+      helperRevision: BUNDLED_WINDOWS_NODE_REVISION,
       pendingApproval: this.pendingApproval?.request ?? null,
       lastError: this.lastError,
       nodeId: this.tryReadNodeId(),
@@ -307,6 +312,31 @@ export function findBundledDevicePairRequest(payload: unknown, nodeId: string): 
   return requestId || null;
 }
 
+export function findBundledNodePairRequest(payload: unknown, nodeId: string): string | null {
+  const pending = getRecordArray(payload, "pending");
+  const matches = pending.filter((entry) => {
+    const candidateId = stringField(entry, "nodeId") || stringField(entry, "deviceId");
+    const platform = stringField(entry, "platform").toLowerCase();
+    const remoteIp = stringField(entry, "remoteIp");
+    return (
+      candidateId.toLowerCase() === nodeId.toLowerCase() &&
+      (!platform || platform === "windows" || platform === "win32") &&
+      (!remoteIp || isLoopbackAddress(remoteIp)) &&
+      hasExactBundledCommands(stringArrayField(entry, "commands"))
+    );
+  });
+  if (matches.length > 1) {
+    throw new Error(
+      "Multiple node reapproval requests claimed the app-owned Windows node identity",
+    );
+  }
+  const requestId = matches.length === 1 ? stringField(matches[0], "requestId") : "";
+  if (matches.length === 1 && !requestId) {
+    throw new Error("App-owned Windows node reapproval request is missing its request ID");
+  }
+  return requestId || null;
+}
+
 export function assertApprovalResponseMatches(pendingRequestId: string, responseRequestId: string) {
   if (!pendingRequestId || pendingRequestId !== responseRequestId) {
     throw new Error("Bundled Windows node approval response does not match the pending request");
@@ -316,7 +346,7 @@ export function assertApprovalResponseMatches(pendingRequestId: string, response
 function findBundledNode(
   payload: unknown,
   nodeId: string,
-): { connected: boolean; displayName: string } | null {
+): { connected: boolean; displayName: string; commands: string[] } | null {
   const nodes = Array.isArray(payload)
     ? records(payload)
     : getRecordArray(payload, "nodes", "paired");
@@ -331,6 +361,7 @@ function findBundledNode(
       match.isConnected === true ||
       stringField(match, "status").toLowerCase() === "connected",
     displayName: stringField(match, "displayName") || stringField(match, "name"),
+    commands: stringArrayField(match, "commands"),
   };
 }
 
@@ -353,6 +384,24 @@ function records(values: unknown[]): Record<string, unknown>[] {
 function stringField(record: Record<string, unknown>, key: string): string {
   const value = record[key];
   return typeof value === "string" ? value.trim() : "";
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+    : [];
+}
+
+function hasExactBundledCommands(commands: string[]): boolean {
+  return (
+    commands.length === WINDOWS_NODE_MXC_NODE_COMMANDS.length &&
+    [...commands]
+      .sort()
+      .every((command, index) => command === [...WINDOWS_NODE_MXC_NODE_COMMANDS].sort()[index])
+  );
 }
 
 function isLoopbackAddress(value: string): boolean {

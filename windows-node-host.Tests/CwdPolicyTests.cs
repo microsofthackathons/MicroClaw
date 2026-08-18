@@ -182,6 +182,24 @@ public sealed class CwdPolicyTests : IDisposable
     }
 
     [Fact]
+    public void AttestationUsesTheVersionedCamelCaseWireContract()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(CwdPolicyAttestation.Current));
+        var root = document.RootElement;
+
+        Assert.Equal("microclaw.windows-cwd.v1", root.GetProperty("contract").GetString());
+        Assert.True(root.GetProperty("approvedRootOnly").GetBoolean());
+        Assert.True(root.GetProperty("canonicalFinalPath").GetBoolean());
+        Assert.True(root.GetProperty("rejectsReparseComponents").GetBoolean());
+        Assert.True(root.GetProperty("durableApprovalBindsCwd").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeRevalidation").GetBoolean());
+        Assert.True(root.GetProperty("omittedCwdUsesIsolatedScratch").GetBoolean());
+        Assert.True(root.GetProperty("hostFallbackAbsent").GetBoolean());
+        Assert.False(root.TryGetProperty("Contract", out _));
+    }
+
+    [Fact]
     public async Task LoadsElectronPolicyWithNamedFolderAccess()
     {
         var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");

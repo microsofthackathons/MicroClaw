@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenClaw.Shared;
 using OpenClaw.Shared.Mxc;
 
@@ -305,7 +306,12 @@ internal sealed class ProcessEnvironmentOverride : IDisposable
 }
 
 internal enum ApprovalDecision { Deny, AllowOnce, AllowAlways }
-internal sealed record ApprovalRequest(string Id, string Executable, IReadOnlyList<string> Arguments, string? Agent, string CanonicalCwd);
+internal sealed record ApprovalRequest(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("executable")] string Executable,
+    [property: JsonPropertyName("arguments")] IReadOnlyList<string> Arguments,
+    [property: JsonPropertyName("agent")] string? Agent,
+    [property: JsonPropertyName("canonicalCwd")] string CanonicalCwd);
 
 internal static class ApprovalPipeClient
 {
@@ -335,6 +341,7 @@ internal static class ApprovalPipeClient
 
     private sealed class ApprovalResponse
     {
+        [JsonPropertyName("decision")]
         public string Decision { get; init; } = "deny";
     }
 }

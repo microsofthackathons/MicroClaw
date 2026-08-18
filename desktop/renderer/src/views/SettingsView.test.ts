@@ -1,7 +1,6 @@
 import { createPinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent } from "vue";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import SettingsView from "./SettingsView.vue";
@@ -44,6 +43,7 @@ describe("SettingsView", () => {
     gatewayPolicyState: "locked",
     gatewayPolicyReady: true,
     effectiveToolsReady: true,
+    effectiveToolsState: "verified",
     strictFallbackEffective: false,
     allowWindowsUiEffective: false,
     folders: [],
@@ -153,77 +153,19 @@ describe("SettingsView", () => {
     expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
   });
 
-  it("persists a changed node immediately while MXC mode is enabled", async () => {
+  it("shows the deterministic app-owned node without a manual selector", async () => {
     routeState.section = "security";
-    const NodeSelectStub = defineComponent({
-      emits: ["change"],
-      template: `<button class="node-select" @click="$emit('change', 'node-local')" />`,
-    });
+    getWindowsNodeMxcStatus.mockResolvedValueOnce(status("node-local"));
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [createPinia()],
-        stubs: { "el-select": NodeSelectStub },
       },
     });
 
     await flushPromises();
-    await wrapper.find(".node-select").trigger("click");
-    await flushPromises();
 
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
-      enabled: true,
-      nodeId: "node-local",
-    });
-  });
-
-  it("automatically replaces the diagnostic sentinel for exactly one eligible node", async () => {
-    routeState.section = "security";
-    getWindowsNodeMxcStatus.mockResolvedValueOnce(
-      status("diagnostic-unpaired-local-node", [localNode]),
-    );
-
-    shallowMount(SettingsView, {
-      global: {
-        plugins: [createPinia()],
-      },
-    });
-    await flushPromises();
-
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
-      enabled: true,
-      nodeId: "node-local",
-    });
-  });
-
-  it("keeps a pending valid selection when a refresh returns the old sentinel", async () => {
-    routeState.section = "security";
-    let resolveSelection!: (value: WindowsNodeMxcStatus) => void;
-    setWindowsNodeMxcEnabled.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveSelection = resolve;
-      }),
-    );
-    const NodeSelectStub = defineComponent({
-      props: { modelValue: { type: String, default: "" } },
-      emits: ["change"],
-      template: `<button class="node-select" :data-value="modelValue" @click="$emit('change', 'node-local')" />`,
-    });
-    const wrapper = shallowMount(SettingsView, {
-      global: {
-        plugins: [createPinia()],
-        stubs: { "el-select": NodeSelectStub },
-      },
-    });
-    await flushPromises();
-
-    await wrapper.find(".node-select").trigger("click");
-    window.dispatchEvent(new Event("focus"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await wrapper.vm.$nextTick();
-
-    expect(wrapper.find(".node-select").attributes("data-value")).toBe("node-local");
-
-    resolveSelection(status("node-local"));
-    await flushPromises();
+    expect(wrapper.find(".mxc-card").text()).toContain("Local Windows node (online)");
+    expect(wrapper.find(".mxc-card").find("el-select").exists()).toBe(false);
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 });

@@ -31,7 +31,10 @@ MXC 0.7; it does not activate any UI capture or input capability.
 
 Gateway-native file/process tools remain removed from the agent surface. The policy pins `exec` to
 the app-owned node and denies the runtime/filesystem/plugin groups. An empty OpenClaw allowlist is
-unrestricted, so the pre-attestation state uses a non-tool lock sentinel.
+unrestricted, so the pre-attestation state uses a non-tool lock sentinel. The Gateway node-command
+policy allowlists exactly the four bundled commands above. MicroClaw pairs/reapproves only the exact
+app-owned device identity and does not expose manual node selection, even if another Windows
+Companion is connected.
 
 ## CWD and durable approval contract
 
@@ -74,26 +77,32 @@ and a runtime manifest is checked again by the app. Development resources, porta
 resources, and MSIX preparation all use the same staging script. `wxc-host-prep.exe` is packaged but
 never invoked automatically.
 
-## Readiness and current activation boundary
+## Readiness and activation transaction
 
 Readiness requires the exact CWD attestation payload, selected app-owned node identity, connected
 and paired node state, strict locked/effective Gateway tools, MXC tier, contained `hostname.exe`,
 contained PowerShell, and denied-access proof. `appcontainer-dacl` is accepted with a degraded
 containment warning.
 
-Local validation proved that MicroClaw automatically approved only the pending pairing request
-matching the app-owned device identity, `clientId=node-host`, and `role=node`. With the pinned
-OpenClaw 2026.7.1-1 Gateway, the subsequent node authentication repeatedly remained at
-`auth_validated` until the Gateway handshake deadline elapsed, even after helper startup was
-sequenced behind Gateway agent warm-up. Readiness therefore stopped the Gateway and retained the
-diagnostic lock; no command was exposed or executed through an unauthenticated node.
+The pinned OpenClaw 2026.7.1-1 Gateway can block its event loop for more than a minute during
+startup. Pairing therefore remains generation-bound and locked for up to five minutes while the
+helper reconnects; timeout or a Gateway-generation change stops the helper. Transient inability to
+query effective tools is recorded as unverified and does not kill an otherwise statically locked
+Gateway; confirmed drift still stops it.
 
-The build remains fail-closed in diagnostic lock until those proofs pass. The pinned OpenClaw
-Gateway does not provide an atomic way to quarantine channel/scheduled ingress while an active
-exec-only configuration starts and is attested. Consequently, this branch still refuses the final
-locked-to-active transition rather than expose a startup race. This is the remaining cross-project
-activation blocker. The node handshake timeout is an additional pinned-Gateway integration blocker;
-neither is bypassed by prompt instructions or optimistic post-start checks.
+Local non-elevated proof reached the exact app-owned node, validated
+`microclaw.windows-cwd.v1`, verified an empty locked effective-tool surface, and proved that
+`C:\Windows` is rejected as a protected/unapproved CWD. The attended one-time approval reached
+official MXC for `cmd.exe`, but the contained child failed with `Access is denied` on this
+`appcontainer-dacl` machine. PowerShell therefore did not run. The mode remains diagnostic-only and
+host fallback remains impossible.
+
+The pinned Gateway also has no atomic way to quarantine channel and scheduled ingress while an
+active exec-only policy starts and is attested. Starting active and checking afterward would expose
+a pre-attestation execution window, so MicroClaw deliberately does not perform that transition.
+Unlocking requires either an upstream atomic ingress-quarantine primitive or an independently
+attested activation gate in the bundled helper. Until then, even a fully passing smoke remains
+diagnostic-only.
 
 No elevation or host-wide `prepare-system-drive` / `prepare-null-device` action is performed. If a
 live DACL-tier smoke requires those changes, MicroClaw reports the requirement for explicit user
