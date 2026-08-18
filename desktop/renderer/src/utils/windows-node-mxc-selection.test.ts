@@ -10,7 +10,7 @@ const localNode: WindowsNodeMxcSelectableNode = {
   platform: "windows",
   connected: true,
   paired: true,
-  remoteIp: null,
+  remoteIp: "127.0.0.1",
 };
 
 describe("Windows Node MXC selection", () => {
@@ -47,6 +47,7 @@ describe("Windows Node MXC selection", () => {
       { ...localNode, connected: false },
       { ...localNode, paired: false },
       { ...localNode, platform: "linux" },
+      { ...localNode, remoteIp: null },
       { ...localNode, remoteIp: "192.0.2.10" },
     ]) {
       expect(

@@ -23,7 +23,7 @@ describe("SettingsView", () => {
     platform: "windows",
     connected: true,
     paired: true,
-    remoteIp: null,
+    remoteIp: "127.0.0.1",
     commands: ["system.run", "system.run.prepare"],
   };
 

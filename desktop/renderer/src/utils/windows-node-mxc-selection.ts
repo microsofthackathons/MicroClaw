@@ -16,9 +16,7 @@ export interface WindowsNodeMxcSelectionStatus {
 
 function isLocalNode(node: WindowsNodeMxcSelectableNode): boolean {
   const remoteIp = node.remoteIp?.trim().toLowerCase();
-  return (
-    !remoteIp || remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1"
-  );
+  return remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1";
 }
 
 export function getAutomaticWindowsNodeMxcSelection(
