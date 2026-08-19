@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,6 +10,9 @@ import {
   createBundledWindowsNodeEnvironment,
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
+  replaceFileWithRetry,
+  revokeActivationLeaseFile,
+  sensitiveWindowsRoots,
   validateApprovalRequest,
 } from "./bundled-windows-node-host";
 
@@ -19,6 +23,38 @@ describe("bundled Windows node host", () => {
 
   it("pins the reviewed MXC target-only host-prep patch", () => {
     expect(MXC_HOST_PREP_PATCH_REVISION).toBe("695c2b89c6142090a098ec4484f49aff8157f0b3");
+  });
+
+  it("protects both helper state and the resolved OpenClaw state root", () => {
+    const roots = sensitiveWindowsRoots(
+      "C:\\Users\\Alice\\AppData\\Roaming\\MicroClaw\\windows-node",
+      "D:\\OpenClawState",
+    );
+
+    expect(roots).toContain("C:\\Users\\Alice\\AppData\\Roaming\\MicroClaw\\windows-node");
+    expect(roots).toContain("D:\\OpenClawState");
+    expect(roots).toContain(path.join(os.homedir(), ".gnupg"));
+    expect(roots).toContain(path.join(os.homedir(), ".config", "gcloud"));
+    expect(roots).toContain(
+      path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles"),
+    );
+    expect(roots).toContain(
+      path.join(
+        process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+        "Microsoft",
+        "Windows",
+        "PowerShell",
+        "PSReadLine",
+      ),
+    );
+    expect(roots).toContain(
+      path.join(
+        process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"),
+        "BraveSoftware",
+        "Brave-Browser",
+        "User Data",
+      ),
+    );
   });
 
   it.each(["ws://127.0.0.1:18789", "ws://localhost:18789", "wss://[::1]:18789"])(
@@ -180,6 +216,77 @@ describe("bundled Windows node host", () => {
     expect(environment.TEMP).toBe(String.raw`C:\MicroClaw\scratch`);
     expect(environment).not.toHaveProperty("APPDATA");
     expect(environment).not.toHaveProperty("USERPROFILE");
+  });
+
+  it("retries a transient Windows atomic replacement without weakening failures", async () => {
+    const attempts: string[] = [];
+    const waits: number[] = [];
+    const rename = async (source: string, destination: string) => {
+      attempts.push(`${source}->${destination}`);
+      if (attempts.length < 3) {
+        throw Object.assign(new Error("destination is briefly locked"), { code: "EPERM" });
+      }
+    };
+
+    await replaceFileWithRetry("lease.tmp", "lease.json", rename, async (milliseconds) => {
+      waits.push(milliseconds);
+    });
+
+    expect(attempts).toHaveLength(3);
+    expect(waits).toEqual([20, 40]);
+
+    const permanent = Object.assign(new Error("invalid replacement"), { code: "EINVAL" });
+    await expect(
+      replaceFileWithRetry(
+        "lease.tmp",
+        "lease.json",
+        async () => {
+          throw permanent;
+        },
+        async () => undefined,
+      ),
+    ).rejects.toBe(permanent);
+  });
+
+  it("stops a pending replacement retry when its activation generation is revoked", async () => {
+    let currentGeneration = true;
+    let renameAttempts = 0;
+
+    await expect(
+      replaceFileWithRetry(
+        "lease.tmp",
+        "lease.json",
+        () => {
+          renameAttempts += 1;
+          throw Object.assign(new Error("destination is briefly locked"), { code: "EPERM" });
+        },
+        async () => {
+          currentGeneration = false;
+        },
+        () => {
+          if (!currentGeneration) throw new Error("activation generation revoked");
+        },
+      ),
+    ).rejects.toThrow("activation generation revoked");
+    expect(renameAttempts).toBe(1);
+  });
+
+  it("terminates the bundled host when activation lease deletion fails", () => {
+    const deletionError = Object.assign(new Error("lease is locked"), { code: "EPERM" });
+    let terminated = false;
+
+    expect(
+      revokeActivationLeaseFile(
+        "activation-lease.json",
+        () => {
+          terminated = true;
+        },
+        () => {
+          throw deletionError;
+        },
+      ),
+    ).toBe(deletionError);
+    expect(terminated).toBe(true);
   });
 
   it("requires an explicit non-conflicting package architecture", () => {

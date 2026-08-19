@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyWindowsNodeMxcGatewayPolicy,
+  assertWindowsNodeMxcFolderPolicyMutable,
   buildWindowsNodeMxcLockedToolPolicy,
   buildWindowsNodeMxcToolPolicy,
   canonicalizeApprovedCwd,
@@ -11,13 +12,16 @@ import {
   getMxcTierWarning,
   getWindowsNodeMxcGatewayPolicyState,
   isWindowsNodeMxcIngressReleased,
+  isWindowsNodeMxcFolderConfigured,
   listAgentSessionKeys,
   normalizeWindowsNodeMxcGatewayApproval,
   normalizeWindowsNodeRecord,
+  planWindowsNodeMxcFolderUpsert,
   restoreWindowsNodeMxcGatewayPolicy,
   validateEffectiveToolNames,
   validateSelectedWindowsNode,
   validateWindowsNodeMxcGatewayPolicy,
+  validateWindowsNodeMxcFolderPath,
   validateWindowsNodeMxcSettings,
 } from "./windows-node-mxc";
 import {
@@ -183,10 +187,8 @@ describe("Gateway node exec approval bridge", () => {
 
   it("never invents allow-always when the Gateway does not advertise it", () => {
     expect(
-      normalizeWindowsNodeMxcGatewayApproval(
-        { ...payload, allowedDecisions: undefined },
-        nodeId,
-      )?.allowedDecisions,
+      normalizeWindowsNodeMxcGatewayApproval({ ...payload, allowedDecisions: undefined }, nodeId)
+        ?.allowedDecisions,
     ).toEqual(["allow-once", "deny"]);
   });
 });
@@ -596,6 +598,129 @@ describe("Windows cwd policy", () => {
     );
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("sensitive");
+  });
+});
+
+describe("Windows Node MXC global folder policy", () => {
+  const realpath = (candidate: string) => candidate;
+  const noReparse = () => false;
+
+  it("canonicalizes empty-list RO and RW additions", () => {
+    expect(planWindowsNodeMxcFolderUpsert({ rw: [], ro: [] }, "C:\\Data\\", "ro")).toEqual({
+      ok: true,
+      removedChildren: [],
+      dirs: { rw: [], ro: ["C:\\Data"] },
+    });
+    expect(planWindowsNodeMxcFolderUpsert({ rw: [], ro: [] }, "C:\\Work", "rw")).toEqual({
+      ok: true,
+      removedChildren: [],
+      dirs: { rw: ["C:\\Work"], ro: [] },
+    });
+  });
+
+  it("deduplicates case-insensitively and changes equal-path access", () => {
+    expect(
+      planWindowsNodeMxcFolderUpsert({ rw: ["C:\\Data"], ro: [] }, "c:\\data", "rw"),
+    ).toMatchObject({ ok: false, reason: "duplicate" });
+    expect(planWindowsNodeMxcFolderUpsert({ rw: [], ro: ["C:\\Data"] }, "c:\\data", "rw")).toEqual({
+      ok: true,
+      removedChildren: [],
+      dirs: { rw: ["c:\\data"], ro: [] },
+    });
+    expect(isWindowsNodeMxcFolderConfigured({ rw: ["C:\\Data"], ro: [] }, "c:\\DATA")).toBe(true);
+  });
+
+  it("keeps only unambiguous nested access", () => {
+    expect(
+      planWindowsNodeMxcFolderUpsert({ rw: [], ro: ["C:\\Data"] }, "C:\\Data\\Child", "ro"),
+    ).toMatchObject({ ok: false, reason: "parent-covers", parentDir: "C:\\Data" });
+    expect(
+      planWindowsNodeMxcFolderUpsert({ rw: ["C:\\Data"], ro: [] }, "C:\\Data\\Child", "ro"),
+    ).toMatchObject({ ok: false, reason: "parent-rw-covers", parentDir: "C:\\Data" });
+    expect(
+      planWindowsNodeMxcFolderUpsert(
+        { rw: ["C:\\Data\\RwChild"], ro: ["C:\\Data\\RoChild"] },
+        "C:\\Data",
+        "ro",
+      ),
+    ).toEqual({
+      ok: true,
+      removedChildren: ["C:\\Data\\RoChild"],
+      dirs: { rw: ["C:\\Data\\RwChild"], ro: ["C:\\Data"] },
+    });
+    expect(
+      planWindowsNodeMxcFolderUpsert(
+        { rw: ["C:\\Data\\RwChild"], ro: ["C:\\Data\\RoChild"] },
+        "C:\\Data",
+        "rw",
+      ),
+    ).toEqual({
+      ok: true,
+      removedChildren: ["C:\\Data\\RwChild", "C:\\Data\\RoChild"],
+      dirs: { rw: ["C:\\Data"], ro: [] },
+    });
+  });
+
+  it("downgrades a nested RW root to its inherited RO access", () => {
+    const result = planWindowsNodeMxcFolderUpsert(
+      { rw: ["C:\\Data\\Child"], ro: ["C:\\Data"] },
+      "C:\\Data\\Child",
+      "ro",
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      inheritsFromParent: true,
+      dirs: { rw: [], ro: ["C:\\Data"] },
+    });
+  });
+
+  it("rejects UNC, device, reparse, and sensitive roots", () => {
+    for (const candidate of [
+      "\\\\server\\share",
+      "\\\\?\\C:\\Data",
+      "\\??\\C:\\Data",
+      "\\Device\\HarddiskVolume1",
+    ]) {
+      expect(validateWindowsNodeMxcFolderPath(candidate, realpath, noReparse, [])).toMatchObject({
+        ok: false,
+        reason: "path-nonlocal",
+      });
+    }
+    expect(
+      validateWindowsNodeMxcFolderPath(
+        "C:\\Data\\Junction",
+        realpath,
+        (candidate) => candidate.toLowerCase() === "c:\\data\\junction",
+        [],
+      ),
+    ).toMatchObject({ ok: false, reason: "path-reparse-point" });
+    expect(
+      validateWindowsNodeMxcFolderPath("C:\\Users\\Alice", realpath, noReparse, [
+        "C:\\Users\\Alice\\.ssh",
+      ]),
+    ).toMatchObject({ ok: false, reason: "path-sensitive" });
+    expect(
+      validateWindowsNodeMxcFolderPath("C:\\Users\\Alice\\.ssh\\Keys", realpath, noReparse, [
+        "C:\\Users\\Alice\\.ssh",
+      ]),
+    ).toMatchObject({ ok: false, reason: "path-sensitive" });
+  });
+
+  it("blocks mutation whenever MXC is selected", () => {
+    expect(() => assertWindowsNodeMxcFolderPolicyMutable(true)).toThrow(
+      "Disable Windows Node + MXC mode",
+    );
+    expect(() => assertWindowsNodeMxcFolderPolicyMutable(false)).not.toThrow();
+  });
+
+  it("blocks mutation during security transitions and concurrent folder edits", () => {
+    expect(() => assertWindowsNodeMxcFolderPolicyMutable(false, true, false)).toThrow(
+      "security-mode transition",
+    );
+    expect(() => assertWindowsNodeMxcFolderPolicyMutable(false, false, true)).toThrow(
+      "already in progress",
+    );
   });
 });
 

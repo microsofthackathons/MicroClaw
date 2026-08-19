@@ -598,6 +598,111 @@ public sealed class CwdPolicyTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("ro", false, "declare-access-outside-approved-roots")]
+    [InlineData("rw", true, "declare-access-exceeds-approved-root")]
+    public async Task InvalidDeclarationStopsBeforePromptOrDurableApproval(
+        string access,
+        bool useApprovedRoot,
+        string expectedCode)
+    {
+        var outside = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))).FullName;
+        var approvalsPath = Path.Combine(_root, Guid.NewGuid().ToString("N"), "approvals.json");
+        try
+        {
+            var requested = useApprovedRoot ? _root : outside;
+            var rawCommand = $"# [declare-access]{access}:{requested}[/declare-access]\necho denied";
+            var capability = new BundledSystemCapability(
+                Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]),
+                "missing-approval-pipe-" + Guid.NewGuid().ToString("N"),
+                approvalsPath,
+                new ActivationLeaseGuard(
+                    Path.Combine(_root, "missing-lease.json"),
+                    Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                    "unused-generation",
+                    "unused-fingerprint"));
+
+            var response = await capability.ExecuteAsync(
+                new NodeInvokeRequest
+                {
+                    Command = "system.run",
+                    Args = Parse(JsonSerializer.Serialize(new
+                    {
+                        command = new[] { "cmd.exe", "/d", "/s", "/c", rawCommand },
+                        rawCommand,
+                    })),
+                },
+                TestContext.Current.CancellationToken);
+
+            Assert.False(response.Ok);
+            Assert.Contains(expectedCode, response.Error);
+            Assert.False(File.Exists(approvalsPath));
+        }
+        finally
+        {
+            Directory.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public async Task DeclarationPolicyErrorsProvideLocalizedSettingsRemediation()
+    {
+        var outside = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))).FullName;
+        try
+        {
+            var english = await PrepareDeclared(
+                Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]), "en-US"),
+                "rw",
+                _root);
+            var chinese = await PrepareDeclared(
+                Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]), "zh-CN"),
+                "ro",
+                outside);
+
+            Assert.Contains("Open Settings > Security", english.Error);
+            Assert.Contains("change it to Read/write", english.Error);
+            Assert.Contains("设置 > 安全", chinese.Error);
+            Assert.Contains("添加为只读或读写", chinese.Error);
+        }
+        finally
+        {
+            Directory.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public void OmittedDeclarationCannotExpandMxcFilesystemPolicy()
+    {
+        var readOnly = Directory.CreateDirectory(Path.Combine(_root, "readonly")).FullName;
+        var readWrite = Directory.CreateDirectory(Path.Combine(_root, "readwrite")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "outside")).FullName;
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch")).FullName;
+        var policy = Policy(
+        [
+            new ApprovedRoot(readOnly, FolderAccess.ReadOnly),
+            new ApprovedRoot(readWrite, FolderAccess.ReadWrite),
+        ]);
+
+        var config = BundledSystemCapability.BuildMxcConfig(
+            policy,
+            Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            ["/d", "/s", "/c", $"type \"{outside}\\secret.txt\""],
+            scratch,
+            scratch,
+            30_000);
+
+        var filesystem = Assert.IsType<OpenClaw.Shared.Mxc.MxcFilesystem>(config.Filesystem);
+        var readonlyPaths = Assert.IsType<string[]>(filesystem.ReadonlyPaths);
+        var readwritePaths = Assert.IsType<string[]>(filesystem.ReadwritePaths);
+        Assert.Equal([readOnly], readonlyPaths);
+        Assert.Equal([readWrite, scratch], readwritePaths);
+        Assert.DoesNotContain(
+            readonlyPaths.Concat(readwritePaths),
+            item => string.Equals(item, outside, StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public async Task DeclaredDesktopCommandReachesAttendedPromptAndDenyStopsExecution()
     {
@@ -792,7 +897,7 @@ public sealed class CwdPolicyTests : IDisposable
             StrictNoHostFallback = true,
         };
 
-    private BundledSystemCapability Capability(HostPolicy policy) =>
+    private BundledSystemCapability Capability(HostPolicy policy, string uiLocale = "en-US") =>
         new(
             policy,
             string.Empty,
@@ -801,7 +906,8 @@ public sealed class CwdPolicyTests : IDisposable
                 Path.Combine(_root, "unused-lease.json"),
                 Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
                 "unused-generation",
-                "unused-fingerprint"));
+                "unused-fingerprint"),
+            uiLocale);
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 

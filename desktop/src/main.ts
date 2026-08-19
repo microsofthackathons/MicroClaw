@@ -120,10 +120,14 @@ import {
   WINDOWS_NODE_MXC_MODE,
   WINDOWS_NODE_MXC_NODE_COMMANDS,
   applyWindowsNodeMxcGatewayPolicy,
+  assertWindowsNodeMxcFolderPolicyMutable,
   getWindowsNodeMxcGatewayPolicyState,
+  isWindowsNodeMxcFolderConfigured,
   isWindowsNodeMxcIngressReleased,
   normalizeWindowsNodeMxcGatewayApproval,
+  planWindowsNodeMxcFolderUpsert,
   restoreWindowsNodeMxcGatewayPolicy,
+  validateWindowsNodeMxcFolderPath,
   validateWindowsNodeMxcGatewayPolicy,
   type WindowsNodeMxcApprovalDecision,
   type WindowsNodeMxcGatewayApproval,
@@ -137,6 +141,7 @@ import {
 } from "./windows-node-mxc-service";
 import {
   BundledWindowsNodeHost,
+  sensitiveWindowsRoots,
   type BundledApprovalRequest,
   type BundledWindowsNodeFolder,
 } from "./bundled-windows-node-host";
@@ -287,6 +292,8 @@ let bundledWindowsNodeGeneration = 0;
 let gatewayGenerationId = "";
 let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcActivationInProgress = false;
+let windowsNodeMxcSecurityTransitionInProgress = false;
+let windowsNodeMxcFolderPolicyMutationInProgress = false;
 let pendingWindowsNodeMxcGatewayApproval: {
   request: WindowsNodeMxcGatewayApproval;
   gatewayGeneration: string;
@@ -295,6 +302,23 @@ let windowsNodeMxcFailClosedPromise: Promise<void> | null = null;
 // This gate covers MicroClaw-owned ingress. Independently configured upstream Gateway ingress is
 // outside this experimental mode's accepted boundary and must not share the app-owned Gateway.
 let gatewayStatus: GatewayStatus = "stopped";
+
+function beginWindowsNodeMxcLifecycleOperation(): void {
+  if (windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Another Windows Node + MXC lifecycle operation is already in progress");
+  }
+  if (gatewayRestarting || gatewayRestartPromise || gatewayStartInProgress) {
+    throw new Error("Wait for the managed Gateway startup or restart to finish");
+  }
+  if (windowsNodeMxcFolderPolicyMutationInProgress) {
+    throw new Error("Wait for the approved folder policy change to finish");
+  }
+  windowsNodeMxcSecurityTransitionInProgress = true;
+}
+
+function endWindowsNodeMxcLifecycleOperation(): void {
+  windowsNodeMxcSecurityTransitionInProgress = false;
+}
 const appStartupStartedAt = Date.now();
 
 function stopBundledWindowsNodeHost(): void {
@@ -983,25 +1007,26 @@ async function activateWindowsNodeMxc(): Promise<WindowsNodeMxcRuntimeStatus> {
   if (windowsNodeMxcActivationInProgress) {
     throw new Error("Windows Node + MXC activation is already in progress");
   }
-  const lockedStatus = await getWindowsNodeMxcStatus();
-  assertWindowsNodeMxcBaseReady(lockedStatus, "locked", true);
-  const config = readConfig();
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error("OpenClaw configuration is unavailable");
-  }
-  const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
-  const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-  const activePolicy = applyWindowsNodeMxcGatewayPolicy(
-    config,
-    nodeId,
-    settingsStore.get("windowsNodeMxcToolBackups"),
-    "active",
-  );
-
+  beginWindowsNodeMxcLifecycleOperation();
   windowsNodeMxcActivationInProgress = true;
   windowsNodeMxcIngressGeneration = null;
   mainWindow?.webContents.send("gateway:ws-disconnected", "MXC activation attestation");
   try {
+    const lockedStatus = await getWindowsNodeMxcStatus();
+    assertWindowsNodeMxcBaseReady(lockedStatus, "locked", true);
+    const config = readConfig();
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+    const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+    const activePolicy = applyWindowsNodeMxcGatewayPolicy(
+      config,
+      nodeId,
+      settingsStore.get("windowsNodeMxcToolBackups"),
+      "active",
+    );
+
     await stopGatewayForSecurityTransition(configuredPort);
     settingsStore.delete("windowsNodeMxcSmoke");
     settingsStore.set("windowsNodeMxcToolBackups", activePolicy.backups);
@@ -1042,6 +1067,8 @@ async function activateWindowsNodeMxc(): Promise<WindowsNodeMxcRuntimeStatus> {
       `Activation transaction failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     throw error;
+  } finally {
+    endWindowsNodeMxcLifecycleOperation();
   }
 }
 
@@ -2335,6 +2362,9 @@ async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
 }
 
 async function restartManagedGateway(reason: string): Promise<void> {
+  if (windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Gateway restart is blocked during a Windows Node + MXC lifecycle operation");
+  }
   if (gatewayRestartPromise) return gatewayRestartPromise;
   const restart = (async () => {
     gatewayRestarting = true;
@@ -2492,7 +2522,13 @@ function startHealthMonitor(): void {
 
 /** Check gateway health & reconnect if needed (called on window-show / focus) */
 async function ensureGatewayConnected(): Promise<void> {
-  if (gatewayRestarting || gatewayStatus === "starting") return;
+  if (
+    windowsNodeMxcSecurityTransitionInProgress ||
+    gatewayRestarting ||
+    gatewayStatus === "starting"
+  ) {
+    return;
+  }
   if (!gatewayPort) return;
 
   const alive = await checkExistingGateway(gatewayPort);
@@ -3458,6 +3494,8 @@ function connectGatewayWs(): void {
             gatewayToken,
             gatewayProcessId: gatewayGeneration.pid,
             gatewayGeneration: gatewayGenerationId,
+            uiLocale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
+            openClawStateRoot: getOpenClawStateDir(),
             folders: getBundledWindowsNodeFolders(),
             onApproval: (approval: BundledApprovalRequest | null) =>
               mainWindow?.webContents.send(
@@ -3595,12 +3633,15 @@ function connectGatewayWs(): void {
           evt.payload,
           settingsStore.get("windowsNodeMxcNodeId"),
         );
-        if (!approval || !isWindowsNodeMxcIngressReleased(
-          true,
-          gatewayGenerationId,
-          windowsNodeMxcIngressGeneration,
-          windowsNodeMxcActivationInProgress,
-        )) {
+        if (
+          !approval ||
+          !isWindowsNodeMxcIngressReleased(
+            true,
+            gatewayGenerationId,
+            windowsNodeMxcIngressGeneration,
+            windowsNodeMxcActivationInProgress,
+          )
+        ) {
           const id =
             evt.payload && typeof evt.payload === "object" && !Array.isArray(evt.payload)
               ? (evt.payload as Record<string, unknown>).id
@@ -5327,79 +5368,89 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "windows-node-mxc:set-enabled",
     async (_event, params: { enabled: boolean; nodeId?: string }) => {
-      const enabled = params?.enabled === true;
-      if (gwClient?.connected && (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())) {
-        throw new Error(
-          "Windows Node + MXC mode requires MicroClaw's managed Gateway; stop the external Gateway first",
-        );
-      }
-      const config = readConfig();
-      if (!config || typeof config !== "object" || Array.isArray(config)) {
-        throw new Error("OpenClaw configuration is unavailable");
-      }
-
-      const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
-      windowsNodeMxcIngressGeneration = null;
-      windowsNodeMxcActivationInProgress = false;
-      bundledWindowsNodeHost.revokeActivationLease();
-
-      if (enabled) {
-        const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-        const applied = applyWindowsNodeMxcGatewayPolicy(
-          config,
-          nodeId,
-          settingsStore.get("windowsNodeMxcToolBackups"),
-          "locked",
-        );
-        await stopGatewayForSecurityTransition(configuredPort);
-        if (!isWindowsNodeMxcDesired()) {
-          settingsStore.set(
-            "windowsNodeMxcPreviousSandboxEnabled",
-            settingsStore.get("sandboxEnabled"),
+      beginWindowsNodeMxcLifecycleOperation();
+      try {
+        const enabled = params?.enabled === true;
+        if (gwClient?.connected && (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())) {
+          throw new Error(
+            "Windows Node + MXC mode requires MicroClaw's managed Gateway; stop the external Gateway first",
           );
         }
-        settingsStore.set("windowsNodeMxcToolBackups", applied.backups);
-        settingsStore.set("windowsNodeMxcNodeId", nodeId);
-        settingsStore.set("securityMode", WINDOWS_NODE_MXC_MODE);
-        settingsStore.set("sandboxEnabled", false);
-        settingsStore.delete("windowsNodeMxcSmoke");
-        toolSandbox?.setEnabled(false);
-        writeConfigTextAtomically(JSON.stringify(applied.config, null, 2));
-      } else {
-        stopBundledWindowsNodeHost();
-        const restored = restoreWindowsNodeMxcGatewayPolicy(
-          config,
-          settingsStore.get("windowsNodeMxcToolBackups"),
-        );
-        await stopGatewayForSecurityTransition(configuredPort);
-        settingsStore.set(
-          "sandboxEnabled",
-          settingsStore.get("windowsNodeMxcPreviousSandboxEnabled"),
-        );
-        writeConfigTextAtomically(JSON.stringify(restored, null, 2));
-        settingsStore.set("windowsNodeMxcToolBackups", {});
-        settingsStore.delete("windowsNodeMxcSmoke");
-        settingsStore.set("securityMode", "appcontainer");
-      }
+        const config = readConfig();
+        if (!config || typeof config !== "object" || Array.isArray(config)) {
+          throw new Error("OpenClaw configuration is unavailable");
+        }
 
-      const transitionReason = `Applying ${
-        enabled ? "Windows Node + MXC" : "AppContainer"
-      } security mode`;
-      mainWindow?.webContents.send("gateway:log", `[start] ${transitionReason}`);
-      await startGateway();
-      if (gatewayStatus !== "running") {
-        throw new Error(
-          `Gateway did not become ready after security-mode transition (status: ${gatewayStatus})`,
-        );
+        const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcActivationInProgress = false;
+        bundledWindowsNodeHost.revokeActivationLease();
+
+        if (enabled) {
+          const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+          const applied = applyWindowsNodeMxcGatewayPolicy(
+            config,
+            nodeId,
+            settingsStore.get("windowsNodeMxcToolBackups"),
+            "locked",
+          );
+          await stopGatewayForSecurityTransition(configuredPort);
+          if (!isWindowsNodeMxcDesired()) {
+            settingsStore.set(
+              "windowsNodeMxcPreviousSandboxEnabled",
+              settingsStore.get("sandboxEnabled"),
+            );
+          }
+          settingsStore.set("windowsNodeMxcToolBackups", applied.backups);
+          settingsStore.set("windowsNodeMxcNodeId", nodeId);
+          settingsStore.set("securityMode", WINDOWS_NODE_MXC_MODE);
+          settingsStore.set("sandboxEnabled", false);
+          settingsStore.delete("windowsNodeMxcSmoke");
+          toolSandbox?.setEnabled(false);
+          writeConfigTextAtomically(JSON.stringify(applied.config, null, 2));
+        } else {
+          stopBundledWindowsNodeHost();
+          const restored = restoreWindowsNodeMxcGatewayPolicy(
+            config,
+            settingsStore.get("windowsNodeMxcToolBackups"),
+          );
+          await stopGatewayForSecurityTransition(configuredPort);
+          settingsStore.set(
+            "sandboxEnabled",
+            settingsStore.get("windowsNodeMxcPreviousSandboxEnabled"),
+          );
+          writeConfigTextAtomically(JSON.stringify(restored, null, 2));
+          settingsStore.set("windowsNodeMxcToolBackups", {});
+          settingsStore.delete("windowsNodeMxcSmoke");
+          settingsStore.set("securityMode", "appcontainer");
+        }
+
+        const transitionReason = `Applying ${
+          enabled ? "Windows Node + MXC" : "AppContainer"
+        } security mode`;
+        mainWindow?.webContents.send("gateway:log", `[start] ${transitionReason}`);
+        await startGateway();
+        if (gatewayStatus !== "running") {
+          throw new Error(
+            `Gateway did not become ready after security-mode transition (status: ${gatewayStatus})`,
+          );
+        }
+        return getWindowsNodeMxcStatus();
+      } finally {
+        endWindowsNodeMxcLifecycleOperation();
       }
-      return getWindowsNodeMxcStatus();
     },
   );
 
   ipcMain.handle("windows-node-mxc:run-smoke", async () => {
-    const status = await getWindowsNodeMxcStatus();
-    assertWindowsNodeMxcBaseReady(status, "locked", false);
-    return runCurrentWindowsNodeMxcSmoke(status);
+    beginWindowsNodeMxcLifecycleOperation();
+    try {
+      const status = await getWindowsNodeMxcStatus();
+      assertWindowsNodeMxcBaseReady(status, "locked", false);
+      return await runCurrentWindowsNodeMxcSmoke(status);
+    } finally {
+      endWindowsNodeMxcLifecycleOperation();
+    }
   });
 
   ipcMain.handle("windows-node-mxc:activate", () => activateWindowsNodeMxc());
@@ -5641,9 +5692,196 @@ function registerIpcHandlers(): void {
 
   // --- Sandbox directory permissions ---
   const assertSandboxFolderPolicyMutable = () => {
-    if (isWindowsNodeMxcDesired()) {
-      throw new Error("Disable Windows Node + MXC mode before changing its approved folder policy");
+    assertWindowsNodeMxcFolderPolicyMutable(
+      isWindowsNodeMxcDesired(),
+      windowsNodeMxcSecurityTransitionInProgress,
+      windowsNodeMxcFolderPolicyMutationInProgress,
+    );
+  };
+
+  const beginSandboxFolderPolicyMutation = () => {
+    assertSandboxFolderPolicyMutable();
+    windowsNodeMxcFolderPolicyMutationInProgress = true;
+  };
+
+  const endSandboxFolderPolicyMutation = () => {
+    windowsNodeMxcFolderPolicyMutationInProgress = false;
+  };
+
+  const currentSandboxUserDirs = () => ({
+    rw: settingsStore.get("sandboxUserDirsRW"),
+    ro: settingsStore.get("sandboxUserDirsRO"),
+  });
+
+  const getReparsePathComponents = (dir: string): Set<string> => {
+    const normalized = path.win32.normalize(dir);
+    const parsed = path.win32.parse(normalized);
+    const components: string[] = [];
+    let current = parsed.root;
+    for (const component of normalized.slice(parsed.root.length).split("\\").filter(Boolean)) {
+      current = path.win32.join(current, component);
+      components.push(current);
     }
+    if (components.length === 0) return new Set();
+
+    const powershellPath = path.join(
+      process.env.SystemRoot ?? "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const script =
+      "& { foreach ($candidate in $args) { try { [Console]::Out.WriteLine([int][System.IO.File]::GetAttributes($candidate)) } catch { exit 2 } } }";
+    try {
+      const output = execFileSync(
+        powershellPath,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, ...components],
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 10_000,
+        },
+      );
+      const attributes = output
+        .trim()
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((value) => Number.parseInt(value, 10));
+      if (
+        attributes.length !== components.length ||
+        attributes.some((value) => !Number.isInteger(value))
+      ) {
+        throw new Error("Unexpected Windows file-attribute response");
+      }
+      return new Set(
+        components
+          .filter((_component, index) => (attributes[index] & 0x400) !== 0)
+          .map((component) => normalizeDirPath(component).toLowerCase()),
+      );
+    } catch (error) {
+      console.warn(
+        `[windows-node-mxc] Could not verify reparse attributes for "${dir}"; rejecting the folder:`,
+        error,
+      );
+      return new Set(components.map((component) => normalizeDirPath(component).toLowerCase()));
+    }
+  };
+
+  const validateSandboxUserDir = (dir: string) => {
+    let reparseComponents: Set<string> | null = null;
+    return validateWindowsNodeMxcFolderPath(
+      dir,
+      (candidate) => fs.realpathSync.native(candidate),
+      (candidate) => {
+        reparseComponents ??= getReparsePathComponents(dir);
+        return (
+          fs.lstatSync(candidate).isSymbolicLink() ||
+          reparseComponents.has(normalizeDirPath(candidate).toLowerCase())
+        );
+      },
+      sensitiveWindowsRoots(
+        path.join(app.getPath("userData"), "windows-node"),
+        getOpenClawStateDir(),
+      ),
+    );
+  };
+
+  const applySandboxUserDir = async (
+    dir: string,
+    access: "rw" | "ro",
+    strictWindowsNodeMxcPolicy: boolean,
+  ) => {
+    const current = currentSandboxUserDirs();
+    let canonicalDir = normalizeDirPath(dir);
+    if (strictWindowsNodeMxcPolicy) {
+      const validation = validateSandboxUserDir(dir);
+      if (!validation.ok || !validation.canonicalPath) {
+        return {
+          ok: false,
+          reason: validation.reason,
+          removedChildren: [] as string[],
+          dirs: current,
+        };
+      }
+      canonicalDir = validation.canonicalPath;
+    }
+
+    const plan = planWindowsNodeMxcFolderUpsert(current, canonicalDir, access);
+    if (!plan.ok) return plan;
+
+    if (toolSandbox) {
+      let aclUpdated: boolean;
+      if (plan.inheritsFromParent) {
+        const launcherPath = toolSandbox.getStatus().launcherPath;
+        if (launcherPath) {
+          await unshieldIfNeeded(launcherPath, "MicroClaw", canonicalDir).catch(() => {});
+        }
+        aclUpdated = await toolSandbox.revokeDirAsync(canonicalDir);
+        if (aclUpdated && _appContainerSid) {
+          try {
+            const icaclsPath = path.join(
+              process.env.SystemRoot ?? "C:\\Windows",
+              "System32",
+              "icacls.exe",
+            );
+            const output = execFileSync(icaclsPath, [canonicalDir], {
+              windowsHide: true,
+              timeout: 3_000,
+              encoding: "utf8",
+            });
+            aclUpdated = !hasExplicitSidAce(output, _appContainerSid);
+          } catch {
+            aclUpdated = false;
+          }
+        }
+        if (aclUpdated) {
+          const inheritedAcl = await toolSandbox.checkAcl(
+            canonicalDir,
+            access === "rw" ? "rw" : "r",
+          );
+          aclUpdated = inheritedAcl?.sufficient === true;
+        }
+      } else {
+        aclUpdated =
+          (await grantAndVerifyAcl(canonicalDir, access === "rw" ? "rw" : "r")) !== "failed";
+      }
+      if (!aclUpdated) {
+        return {
+          ok: false,
+          reason: "acl-failed" as const,
+          removedChildren: [] as string[],
+          dirs: current,
+        };
+      }
+    }
+
+    for (const child of plan.removedChildren) {
+      if (toolSandbox) {
+        await revokeWithUnshield(child).catch(() => false);
+      }
+      removeFromGrantHistory(child);
+    }
+
+    settingsStore.set("sandboxUserDirsRW", plan.dirs.rw);
+    settingsStore.set("sandboxUserDirsRO", plan.dirs.ro);
+    if (toolSandbox) {
+      for (const existing of current.rw) toolSandbox.removeDirRW(existing);
+      for (const existing of current.ro) toolSandbox.removeDirRO(existing);
+      for (const configured of plan.dirs.rw) toolSandbox.addDirRW(configured);
+      for (const configured of plan.dirs.ro) toolSandbox.addDirRO(configured);
+    }
+    if (plan.inheritsFromParent) removeFromGrantHistory(canonicalDir);
+    else addToGrantHistory(canonicalDir);
+
+    if (access === "ro" && toolSandbox) {
+      for (const childRw of plan.dirs.rw.filter((child) => isSubdirectoryOf(canonicalDir, child))) {
+        if (fs.existsSync(childRw)) await grantAndVerifyAcl(childRw, "rw");
+      }
+    }
+
+    notifySandboxDirsChanged();
+    return plan;
   };
 
   // --- Sandbox capabilities ---
@@ -5682,293 +5920,164 @@ function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle("sandbox:add-user-dir", async (_event, params: { access: "rw" | "ro" }) => {
-    assertSandboxFolderPolicyMutable();
-    if (!mainWindow) return { ok: false, dirs: { rw: [], ro: [] } };
-    const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ["openDirectory"],
-    });
-    if (result.canceled || result.filePaths.length === 0) {
-      return {
-        ok: false,
-        dirs: {
-          rw: settingsStore.get("sandboxUserDirsRW"),
-          ro: settingsStore.get("sandboxUserDirsRO"),
-        },
-      };
-    }
-    const dir = result.filePaths[0];
-    const key = params.access === "rw" ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
-    const otherKey = params.access === "rw" ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
-    const current = settingsStore.get(key);
-    const other = settingsStore.get(otherKey);
-    // Already in the same list — no-op
-    if (current.includes(dir)) {
-      return {
-        ok: false,
-        dirs: {
-          rw: settingsStore.get("sandboxUserDirsRW"),
-          ro: settingsStore.get("sandboxUserDirsRO"),
-        },
-      };
-    }
-
-    // ── Parent/child hierarchy checks ──
-
-    // Check if a parent directory already has the SAME access level.
-    // If so, the child is already covered by inheritance — no need to add.
-    for (const existingDir of current) {
-      if (isSubdirectoryOf(existingDir, dir)) {
-        console.log(
-          `[sandbox] Skipping "${dir}" — parent "${existingDir}" already has ${params.access} access`,
-        );
-        return {
-          ok: false,
-          reason: "parent-covers" as const,
-          parentDir: existingDir,
-          parentAccess: params.access,
-          dirs: {
-            rw: settingsStore.get("sandboxUserDirsRW"),
-            ro: settingsStore.get("sandboxUserDirsRO"),
-          },
-        };
-      }
-    }
-
-    // Check if a parent directory already has RW access and we're adding RO.
-    // Parent RW → child inherits Modify ACE → explicit RO on child is ineffective
-    // for shell commands running inside AppContainer.
-    if (params.access === "ro") {
-      const rwDirs = settingsStore.get("sandboxUserDirsRW");
-      for (const rwDir of rwDirs) {
-        if (isSubdirectoryOf(rwDir, dir)) {
-          console.log(
-            `[sandbox] Skipping RO for "${dir}" — parent "${rwDir}" already has RW (inherited ACL makes RO ineffective)`,
-          );
+  ipcMain.handle(
+    "sandbox:add-user-dir",
+    async (_event, params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        if (!mainWindow) return { ok: false, dirs: currentSandboxUserDirs() };
+        const result = await dialog.showOpenDialog(mainWindow, {
+          properties: ["openDirectory"],
+        });
+        if (result.canceled || result.filePaths.length === 0) {
           return {
             ok: false,
-            reason: "parent-rw-covers" as const,
-            parentDir: rwDir,
             dirs: {
               rw: settingsStore.get("sandboxUserDirsRW"),
               ro: settingsStore.get("sandboxUserDirsRO"),
             },
           };
         }
-      }
-    }
-
-    // Try to grant ACL first — only update settings if successful
-    let grantOk = true;
-    if (toolSandbox) {
-      const access = params.access === "rw" ? "rw" : ("r" as const);
-      const result = await grantAndVerifyAcl(dir, access);
-      if (result === "failed") {
-        grantOk = false;
-      } else {
-        addToGrantHistory(dir);
-      }
-    }
-    const removedChildren: string[] = [];
-    if (grantOk) {
-      // ACL granted — update settings
-      if (other.includes(dir)) {
-        settingsStore.set(
-          otherKey,
-          other.filter((d: string) => d !== dir),
+        return applySandboxUserDir(
+          result.filePaths[0],
+          params.access,
+          params.policy === "windows-node-mxc",
         );
-        if (toolSandbox) {
-          if (params.access === "rw") toolSandbox.removeDirRO(dir);
-          else toolSandbox.removeDirRW(dir);
-        }
+      } finally {
+        endSandboxFolderPolicyMutation();
       }
-      current.push(dir);
-      settingsStore.set(key, current);
-      if (toolSandbox) {
-        if (params.access === "rw") toolSandbox.addDirRW(dir);
-        else toolSandbox.addDirRO(dir);
+    },
+  );
+
+  ipcMain.handle(
+    "sandbox:set-user-dir-access",
+    async (_event, params: { dir: string; access: "rw" | "ro" }) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        const current = currentSandboxUserDirs();
+        if (!isWindowsNodeMxcFolderConfigured(current, params.dir)) {
+          return {
+            ok: false,
+            reason: "folder-not-configured" as const,
+            removedChildren: [] as string[],
+            dirs: current,
+          };
+        }
+        return applySandboxUserDir(params.dir, params.access, true);
+      } finally {
+        endSandboxFolderPolicyMutation();
       }
-
-      // When adding a parent dir, auto-remove child dirs that are redundant:
-      //   - Adding parent RW → remove child RW entries (covered) AND child RO
-      //     entries (parent RW makes child RO ineffective via inherited ACL).
-      //   - Adding parent RO → remove child RO entries (covered by inheritance).
-      //     Keep child RW entries (they provide higher access than parent).
-      const rwDirs = settingsStore.get("sandboxUserDirsRW");
-      const roDirs = settingsStore.get("sandboxUserDirsRO");
-
-      if (params.access === "rw") {
-        // Parent RW → remove all children (both RW and RO are redundant)
-        const childRW = rwDirs.filter((d: string) => d !== dir && isSubdirectoryOf(dir, d));
-        const childRO = roDirs.filter((d: string) => isSubdirectoryOf(dir, d));
-        for (const child of [...childRW, ...childRO]) {
-          removedChildren.push(child);
-          // Revoke the child's explicit ACE (parent's inherited ACE will cover it)
-          if (toolSandbox) {
-            await revokeWithUnshield(child).catch(() => {});
-            if (childRW.includes(child)) toolSandbox.removeDirRW(child);
-            else toolSandbox.removeDirRO(child);
-          }
-          removeFromGrantHistory(child);
-        }
-        if (childRW.length > 0) {
-          settingsStore.set(
-            "sandboxUserDirsRW",
-            rwDirs.filter((d: string) => !childRW.includes(d)),
-          );
-        }
-        if (childRO.length > 0) {
-          settingsStore.set(
-            "sandboxUserDirsRO",
-            roDirs.filter((d: string) => !childRO.includes(d)),
-          );
-        }
-      } else {
-        // Parent RO → remove child RO entries (covered), keep child RW
-        const childRO = roDirs.filter((d: string) => d !== dir && isSubdirectoryOf(dir, d));
-        for (const child of childRO) {
-          removedChildren.push(child);
-          if (toolSandbox) {
-            await revokeWithUnshield(child).catch(() => {});
-            toolSandbox.removeDirRO(child);
-          }
-          removeFromGrantHistory(child);
-        }
-        if (childRO.length > 0) {
-          settingsStore.set(
-            "sandboxUserDirsRO",
-            roDirs.filter((d: string) => !childRO.includes(d)),
-          );
-        }
-
-        // Re-grant any child RW dirs so their explicit ACE takes precedence
-        // over the parent's inherited RO ACE.
-        const childRW = rwDirs.filter((d: string) => isSubdirectoryOf(dir, d));
-        if (toolSandbox) {
-          for (const childDir of childRW) {
-            if (fs.existsSync(childDir)) {
-              console.log(`[sandbox] Re-granting child RW dir after parent RO grant: ${childDir}`);
-              await grantAndVerifyAcl(normalizeDirPath(childDir), "rw");
-            }
-          }
-        }
-      }
-
-      if (removedChildren.length > 0) {
-        console.log(
-          `[sandbox] Auto-removed ${removedChildren.length} child dir(s) covered by parent "${dir}": ${removedChildren.join(", ")}`,
-        );
-      }
-
-      notifySandboxDirsChanged();
-    } else {
-      console.warn(`[sandbox] Grant failed for "${dir}" — not adding to settings`);
-    }
-    return {
-      ok: grantOk,
-      removedChildren: grantOk ? removedChildren : undefined,
-      dirs: {
-        rw: settingsStore.get("sandboxUserDirsRW"),
-        ro: settingsStore.get("sandboxUserDirsRO"),
-      },
-    };
-  });
+    },
+  );
 
   ipcMain.handle(
     "sandbox:remove-user-dir",
     async (_event, params: { dir: string; access: "rw" | "ro" }) => {
-      assertSandboxFolderPolicyMutable();
-      const key = params.access === "rw" ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
-      const normalTarget = normalizeDirPath(params.dir).toLowerCase();
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        const key = params.access === "rw" ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+        const normalTarget = normalizeDirPath(params.dir).toLowerCase();
 
-      // Try to revoke ACL first — only remove from settings if successful
-      let revokeOk = true;
-      if (toolSandbox) {
-        console.log(`[sandbox] Revoking ACL for: ${params.dir}`);
-        let ok = await revokeWithUnshield(params.dir);
+        // Try to revoke ACL first — only remove from settings if successful
+        let revokeOk = true;
+        if (toolSandbox) {
+          console.log(`[sandbox] Revoking ACL for: ${params.dir}`);
+          let ok = await revokeWithUnshield(params.dir);
 
-        // Verify ACL was actually removed (revoke can succeed but ACE persist)
-        if (ok && _appContainerSid) {
-          try {
-            const { execSync } = require("child_process");
-            const output = execSync(`icacls "${normalizeDirPath(params.dir)}"`, {
-              windowsHide: true,
-              timeout: 3000,
-              encoding: "utf-8",
-            }) as string;
-            if (output.includes(_appContainerSid)) {
-              // Check if all remaining ACEs for the SID are inherited (marked
-              // with (I) by icacls). If only inherited ACEs remain, the revoke
-              // of the explicit ACE succeeded — the inherited ones come from a
-              // parent directory's grant and are expected.
-              const hasExplicitAce = hasExplicitSidAce(output, _appContainerSid);
-              if (!hasExplicitAce) {
-                console.log(`[sandbox] Remaining ACL for ${params.dir} is inherited — revoke OK`);
-              } else {
-                console.warn(
-                  `[sandbox] Revoke returned success but explicit SID still in ACL for: ${params.dir} — retrying elevated`,
-                );
-                ok = await toolSandbox.revokeDirElevated(params.dir);
-                // Check again
-                const output2 = execSync(`icacls "${normalizeDirPath(params.dir)}"`, {
-                  windowsHide: true,
-                  timeout: 3000,
-                  encoding: "utf-8",
-                }) as string;
-                if (output2.includes(_appContainerSid)) {
-                  const hasExplicit2 = hasExplicitSidAce(output2, _appContainerSid);
-                  if (!hasExplicit2) {
-                    console.log(
-                      `[sandbox] Remaining ACL for ${params.dir} is inherited — revoke OK (post-elevated)`,
-                    );
-                  } else {
-                    console.error(
-                      `[sandbox] Explicit ACL still present after elevated revoke for: ${params.dir}`,
-                    );
-                    ok = false;
+          // Verify ACL was actually removed (revoke can succeed but ACE persist)
+          if (ok && _appContainerSid) {
+            try {
+              const { execSync } = require("child_process");
+              const output = execSync(`icacls "${normalizeDirPath(params.dir)}"`, {
+                windowsHide: true,
+                timeout: 3000,
+                encoding: "utf-8",
+              }) as string;
+              if (output.includes(_appContainerSid)) {
+                // Check if all remaining ACEs for the SID are inherited (marked
+                // with (I) by icacls). If only inherited ACEs remain, the revoke
+                // of the explicit ACE succeeded — the inherited ones come from a
+                // parent directory's grant and are expected.
+                const hasExplicitAce = hasExplicitSidAce(output, _appContainerSid);
+                if (!hasExplicitAce) {
+                  console.log(`[sandbox] Remaining ACL for ${params.dir} is inherited — revoke OK`);
+                } else {
+                  console.warn(
+                    `[sandbox] Revoke returned success but explicit SID still in ACL for: ${params.dir} — retrying elevated`,
+                  );
+                  ok = await toolSandbox.revokeDirElevated(params.dir);
+                  // Check again
+                  const output2 = execSync(`icacls "${normalizeDirPath(params.dir)}"`, {
+                    windowsHide: true,
+                    timeout: 3000,
+                    encoding: "utf-8",
+                  }) as string;
+                  if (output2.includes(_appContainerSid)) {
+                    const hasExplicit2 = hasExplicitSidAce(output2, _appContainerSid);
+                    if (!hasExplicit2) {
+                      console.log(
+                        `[sandbox] Remaining ACL for ${params.dir} is inherited — revoke OK (post-elevated)`,
+                      );
+                    } else {
+                      console.error(
+                        `[sandbox] Explicit ACL still present after elevated revoke for: ${params.dir}`,
+                      );
+                      ok = false;
+                    }
                   }
                 }
               }
-            }
-          } catch {}
+            } catch {}
+          }
+
+          console.log(`[sandbox] Revoke result: ${ok}`);
+          if (ok) {
+            removeFromGrantHistory(params.dir);
+          } else {
+            revokeOk = false;
+          }
         }
 
-        console.log(`[sandbox] Revoke result: ${ok}`);
-        if (ok) {
-          removeFromGrantHistory(params.dir);
+        if (revokeOk) {
+          // ACL revoked — remove from settings
+          const current = settingsStore
+            .get(key)
+            .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalTarget);
+          settingsStore.set(key, current);
+          if (toolSandbox) {
+            if (params.access === "rw") toolSandbox.removeDirRW(params.dir);
+            else toolSandbox.removeDirRO(params.dir);
+          }
+
+          // Re-grant ACLs for any child dirs that are still in settings.
+          // When a parent dir is revoked, children lose inherited ACEs (and
+          // RevokeProtectedChildren may remove explicit ACEs from protected children).
+          await regrantChildDirsInSettings(params.dir);
+
+          notifySandboxDirsChanged();
         } else {
-          revokeOk = false;
-        }
-      }
-
-      if (revokeOk) {
-        // ACL revoked — remove from settings
-        const current = settingsStore
-          .get(key)
-          .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalTarget);
-        settingsStore.set(key, current);
-        if (toolSandbox) {
-          if (params.access === "rw") toolSandbox.removeDirRW(params.dir);
-          else toolSandbox.removeDirRO(params.dir);
+          console.warn(`[sandbox] Revoke failed for "${params.dir}" — keeping in settings`);
         }
 
-        // Re-grant ACLs for any child dirs that are still in settings.
-        // When a parent dir is revoked, children lose inherited ACEs (and
-        // RevokeProtectedChildren may remove explicit ACEs from protected children).
-        await regrantChildDirsInSettings(params.dir);
-
-        notifySandboxDirsChanged();
-      } else {
-        console.warn(`[sandbox] Revoke failed for "${params.dir}" — keeping in settings`);
+        return {
+          ok: revokeOk,
+          dirs: {
+            rw: settingsStore.get("sandboxUserDirsRW"),
+            ro: settingsStore.get("sandboxUserDirsRO"),
+          },
+        };
+      } finally {
+        endSandboxFolderPolicyMutation();
       }
-
-      return {
-        ok: revokeOk,
-        dirs: {
-          rw: settingsStore.get("sandboxUserDirsRW"),
-          ro: settingsStore.get("sandboxUserDirsRO"),
-        },
-      };
     },
   );
 
@@ -6064,70 +6173,204 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "sandbox:repair-acl",
     async (_event, params: { dir: string; access: "rw" | "ro" }) => {
-      assertSandboxFolderPolicyMutable();
-      if (!toolSandbox) return { ok: false };
-      const access = params.access === "rw" ? "rw" : ("r" as const);
-      const result = await grantAndVerifyAcl(params.dir, access);
-      const ok = result !== "failed";
-      if (ok) addToGrantHistory(params.dir);
-      return { ok };
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (!toolSandbox) return { ok: false };
+        const access = params.access === "rw" ? "rw" : ("r" as const);
+        const result = await grantAndVerifyAcl(params.dir, access);
+        const ok = result !== "failed";
+        if (ok) addToGrantHistory(params.dir);
+        return { ok };
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
     },
   );
 
   // Revoke a stale ACL entry found by scan-acl.
   // Also removes from settings lists + grant history to prevent re-grant.
   ipcMain.handle("sandbox:revoke-stale-acl", async (_event, dir: string) => {
-    assertSandboxFolderPolicyMutable();
-    if (!toolSandbox) return { ok: false };
-    const ok = await revokeWithUnshield(dir);
-    if (ok) {
-      removeFromGrantHistory(dir);
-      // Also remove from settings dirs to prevent re-grant
-      const normalDir = normalizeDirPath(dir).toLowerCase();
-      for (const key of ["sandboxUserDirsRW", "sandboxUserDirsRO"] as const) {
-        const dirs = settingsStore.get(key);
-        const filtered = dirs.filter(
-          (d: string) => normalizeDirPath(d).toLowerCase() !== normalDir,
-        );
-        if (filtered.length !== dirs.length) {
-          settingsStore.set(key, filtered);
-          if (toolSandbox) {
+    beginSandboxFolderPolicyMutation();
+    try {
+      if (!toolSandbox) return { ok: false };
+      const ok = await revokeWithUnshield(dir);
+      if (ok) {
+        removeFromGrantHistory(dir);
+        // Also remove from settings dirs to prevent re-grant
+        const normalDir = normalizeDirPath(dir).toLowerCase();
+        for (const key of ["sandboxUserDirsRW", "sandboxUserDirsRO"] as const) {
+          const dirs = settingsStore.get(key);
+          const filtered = dirs.filter(
+            (d: string) => normalizeDirPath(d).toLowerCase() !== normalDir,
+          );
+          if (filtered.length !== dirs.length) {
+            settingsStore.set(key, filtered);
             if (key === "sandboxUserDirsRW") toolSandbox.removeDirRW(dir);
             else toolSandbox.removeDirRO(dir);
           }
         }
+        notifySandboxDirsChanged();
       }
-      notifySandboxDirsChanged();
+      return { ok };
+    } finally {
+      endSandboxFolderPolicyMutation();
     }
-    return { ok };
   });
 
   // Handle renderer responses to in-app permission dialogs.
   ipcMain.handle(
     "sandbox:permission-respond",
     async (_event, requestId: string, decision: string) => {
-      assertSandboxFolderPolicyMutable();
-      const pending = pendingPermissionRequests.get(requestId);
-      if (!pending) return;
-      pendingPermissionRequests.delete(requestId);
-      const { type, msg } = pending;
+      beginSandboxFolderPolicyMutation();
+      try {
+        const pending = pendingPermissionRequests.get(requestId);
+        if (!pending) return;
+        pendingPermissionRequests.delete(requestId);
+        const { type, msg } = pending;
 
-      if (type === "file") {
-        const { id, roDir, responseFile } = msg;
-        const reqPath = msg.filePath;
-        console.log(`[sandbox] File permission decision: ${decision} for ${reqPath}`);
+        if (type === "file") {
+          const { id, roDir, responseFile } = msg;
+          const reqPath = msg.filePath;
+          console.log(`[sandbox] File permission decision: ${decision} for ${reqPath}`);
 
-        const finishFilePermission = async () => {
+          const finishFilePermission = async () => {
+            if (decision === "grant-ro" || decision === "grant-rw") {
+              const isRW = decision === "grant-rw";
+              const normalDir = normalizeDirPath(roDir).toLowerCase();
+              const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+              const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
+              const otherDirs = settingsStore.get(otherKey);
+              const otherIdx = otherDirs.findIndex(
+                (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
+              );
+              let dirToAdd = normalizeDirPath(roDir);
+              if (otherIdx >= 0) {
+                dirToAdd = otherDirs[otherIdx];
+                otherDirs.splice(otherIdx, 1);
+                settingsStore.set(otherKey, otherDirs);
+                if (toolSandbox) {
+                  if (isRW) toolSandbox.removeDirRO(dirToAdd);
+                  else toolSandbox.removeDirRW(dirToAdd);
+                }
+              }
+              const targetDirs = settingsStore.get(targetKey);
+              if (
+                !targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)
+              ) {
+                targetDirs.push(dirToAdd);
+                settingsStore.set(targetKey, targetDirs);
+              }
+              if (toolSandbox) {
+                if (isRW) toolSandbox.addDirRW(dirToAdd);
+                else toolSandbox.addDirRO(dirToAdd);
+                // Grant ACL BEFORE writing response file — gateway retries the write
+                // immediately after picking up the response, so ACL must be in place.
+                const access = isRW ? "rw" : "r";
+                const t0 = Date.now();
+                console.log(
+                  `[sandbox:respond] file: starting grant for ${dirToAdd} access=${access}`,
+                );
+                const granted = await grantAndVerifyAcl(dirToAdd, access);
+                console.log(
+                  `[sandbox:respond] file: grant result=${granted} elapsed=${Date.now() - t0}ms`,
+                );
+                if (granted === "failed") {
+                  // ACL grant itself failed — rollback settings, write "timeout"
+                  console.warn(
+                    `[sandbox:respond] file: FAILED — rolling back settings for ${dirToAdd}`,
+                  );
+                  mainWindow?.webContents.send("sandbox:permission-completed", {
+                    requestId,
+                    result: "failed",
+                    dir: dirToAdd,
+                    access,
+                  });
+                  const rollbackDirs = settingsStore
+                    .get(targetKey)
+                    .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
+                  settingsStore.set(targetKey, rollbackDirs);
+                  if (isRW) toolSandbox.removeDirRW(dirToAdd);
+                  else toolSandbox.removeDirRO(dirToAdd);
+                  if (otherIdx >= 0) {
+                    const restoredOther = settingsStore.get(otherKey);
+                    restoredOther.push(dirToAdd);
+                    settingsStore.set(otherKey, restoredOther);
+                    if (isRW) toolSandbox.addDirRO(dirToAdd);
+                    else toolSandbox.addDirRW(dirToAdd);
+                  }
+                  notifySandboxDirsChanged();
+                  mainWindow?.webContents.send("sandbox:acl-timeout", {
+                    dir: dirToAdd,
+                    access,
+                  });
+                  try {
+                    fs.writeFileSync(
+                      responseFile,
+                      JSON.stringify({ id, decision: "timeout" }),
+                      "utf-8",
+                    );
+                  } catch (err: any) {
+                    console.error(`[sandbox] Failed to write timeout response: ${err.message}`);
+                  }
+                  pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+                  return;
+                }
+                if (granted === "grant-ok-verify-timeout") {
+                  // ACL set on disk but verification timed out — keep settings, proceed optimistically
+                  console.log(
+                    `[sandbox:respond] file: OPTIMISTIC — grant OK but verify timed out, keeping settings for ${dirToAdd}`,
+                  );
+                  mainWindow?.webContents.send("sandbox:acl-propagation-pending", {
+                    dir: dirToAdd,
+                    access,
+                  });
+                  mainWindow?.webContents.send("sandbox:permission-completed", {
+                    requestId,
+                    result: "verify-timeout",
+                    dir: dirToAdd,
+                    access,
+                  });
+                } else {
+                  // Fully verified
+                  mainWindow?.webContents.send("sandbox:permission-completed", {
+                    requestId,
+                    result: "verified",
+                    dir: dirToAdd,
+                    access,
+                  });
+                }
+                addToGrantHistory(dirToAdd);
+              }
+              console.log(`[sandbox] Added "${dirToAdd}" to ${isRW ? "RW" : "RO"} permissions`);
+              // Silently clean up child dirs now covered by this parent grant
+              await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
+              notifySandboxDirsChanged();
+            }
+            // Write response file AFTER ACL is granted — unblocks gateway's Atomics.wait
+            try {
+              fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+            } catch (err: any) {
+              console.error(`[sandbox] Failed to write file permission response: ${err.message}`);
+            }
+            pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+          };
+          await finishFilePermission().catch(() => {
+            pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+          });
+        } else if (type === "shell") {
+          const { id, deniedPath, dirPath, responseFile } = msg;
+          console.log(`[sandbox] Shell permission decision: ${decision} for ${deniedPath}`);
+
           if (decision === "grant-ro" || decision === "grant-rw") {
             const isRW = decision === "grant-rw";
-            const normalDir = normalizeDirPath(roDir).toLowerCase();
+            const normalDir = normalizeDirPath(dirPath).toLowerCase();
             const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
             const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
             const otherDirs = settingsStore.get(otherKey);
             const otherIdx = otherDirs.findIndex(
               (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
             );
-            let dirToAdd = normalizeDirPath(roDir);
+            let dirToAdd = normalizeDirPath(dirPath);
             if (otherIdx >= 0) {
               dirToAdd = otherDirs[otherIdx];
               otherDirs.splice(otherIdx, 1);
@@ -6145,28 +6388,20 @@ function registerIpcHandlers(): void {
             if (toolSandbox) {
               if (isRW) toolSandbox.addDirRW(dirToAdd);
               else toolSandbox.addDirRO(dirToAdd);
-              // Grant ACL BEFORE writing response file — gateway retries the write
-              // immediately after picking up the response, so ACL must be in place.
               const access = isRW ? "rw" : "r";
               const t0 = Date.now();
               console.log(
-                `[sandbox:respond] file: starting grant for ${dirToAdd} access=${access}`,
+                `[sandbox:respond] shell: starting grant for ${dirToAdd} access=${access}`,
               );
-              const granted = await grantAndVerifyAcl(dirToAdd, access);
+              const granted = await grantAndVerifyAcl(dirToAdd, access as "rw" | "r");
               console.log(
-                `[sandbox:respond] file: grant result=${granted} elapsed=${Date.now() - t0}ms`,
+                `[sandbox:respond] shell: grant result=${granted} elapsed=${Date.now() - t0}ms`,
               );
               if (granted === "failed") {
                 // ACL grant itself failed — rollback settings, write "timeout"
                 console.warn(
-                  `[sandbox:respond] file: FAILED — rolling back settings for ${dirToAdd}`,
+                  `[sandbox:respond] shell: FAILED — rolling back settings for ${dirToAdd}`,
                 );
-                mainWindow?.webContents.send("sandbox:permission-completed", {
-                  requestId,
-                  result: "failed",
-                  dir: dirToAdd,
-                  access,
-                });
                 const rollbackDirs = settingsStore
                   .get(targetKey)
                   .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
@@ -6191,289 +6426,177 @@ function registerIpcHandlers(): void {
                     JSON.stringify({ id, decision: "timeout" }),
                     "utf-8",
                   );
-                } catch (err: any) {
-                  console.error(`[sandbox] Failed to write timeout response: ${err.message}`);
-                }
-                pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+                } catch {}
                 return;
               }
               if (granted === "grant-ok-verify-timeout") {
-                // ACL set on disk but verification timed out — keep settings, proceed optimistically
                 console.log(
-                  `[sandbox:respond] file: OPTIMISTIC — grant OK but verify timed out, keeping settings for ${dirToAdd}`,
+                  `[sandbox:respond] shell: OPTIMISTIC — grant OK but verify timed out, keeping settings for ${dirToAdd}`,
                 );
                 mainWindow?.webContents.send("sandbox:acl-propagation-pending", {
                   dir: dirToAdd,
                   access,
                 });
-                mainWindow?.webContents.send("sandbox:permission-completed", {
-                  requestId,
-                  result: "verify-timeout",
-                  dir: dirToAdd,
-                  access,
-                });
-              } else {
-                // Fully verified
-                mainWindow?.webContents.send("sandbox:permission-completed", {
-                  requestId,
-                  result: "verified",
-                  dir: dirToAdd,
-                  access,
-                });
               }
-              addToGrantHistory(dirToAdd);
             }
-            console.log(`[sandbox] Added "${dirToAdd}" to ${isRW ? "RW" : "RO"} permissions`);
+            console.log(`[sandbox] Granted ${isRW ? "RW" : "RO"} to "${dirToAdd}" for shell retry`);
+            addToGrantHistory(dirToAdd);
             // Silently clean up child dirs now covered by this parent grant
             await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
             notifySandboxDirsChanged();
           }
-          // Write response file AFTER ACL is granted — unblocks gateway's Atomics.wait
           try {
             fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
           } catch (err: any) {
-            console.error(`[sandbox] Failed to write file permission response: ${err.message}`);
+            console.error(`[sandbox] Failed to write shell permission response: ${err.message}`);
           }
-          pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
-        };
-        finishFilePermission().catch(() => {
-          pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
-        });
-      } else if (type === "shell") {
-        const { id, deniedPath, dirPath, responseFile } = msg;
-        console.log(`[sandbox] Shell permission decision: ${decision} for ${deniedPath}`);
+        } else if (type === "shell-async") {
+          const { deniedPath, dirPath, responseFile: asyncResponseFile } = msg;
+          console.log(`[sandbox] Async shell permission decision: ${decision} for ${deniedPath}`);
 
-        if (decision === "grant-ro" || decision === "grant-rw") {
-          const isRW = decision === "grant-rw";
-          const normalDir = normalizeDirPath(dirPath).toLowerCase();
-          const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
-          const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
-          const otherDirs = settingsStore.get(otherKey);
-          const otherIdx = otherDirs.findIndex(
-            (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
-          );
-          let dirToAdd = normalizeDirPath(dirPath);
-          if (otherIdx >= 0) {
-            dirToAdd = otherDirs[otherIdx];
-            otherDirs.splice(otherIdx, 1);
-            settingsStore.set(otherKey, otherDirs);
-            if (toolSandbox) {
-              if (isRW) toolSandbox.removeDirRO(dirToAdd);
-              else toolSandbox.removeDirRW(dirToAdd);
-            }
-          }
-          const targetDirs = settingsStore.get(targetKey);
-          if (!targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)) {
-            targetDirs.push(dirToAdd);
-            settingsStore.set(targetKey, targetDirs);
-          }
-          if (toolSandbox) {
-            if (isRW) toolSandbox.addDirRW(dirToAdd);
-            else toolSandbox.addDirRO(dirToAdd);
-            const access = isRW ? "rw" : "r";
-            const t0 = Date.now();
-            console.log(`[sandbox:respond] shell: starting grant for ${dirToAdd} access=${access}`);
-            const granted = await grantAndVerifyAcl(dirToAdd, access as "rw" | "r");
-            console.log(
-              `[sandbox:respond] shell: grant result=${granted} elapsed=${Date.now() - t0}ms`,
+          if (decision === "grant-ro" || decision === "grant-rw") {
+            const isRW = decision === "grant-rw";
+            const normalDir = normalizeDirPath(dirPath).toLowerCase();
+            const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+            const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
+            const otherDirs = settingsStore.get(otherKey);
+            const otherIdx = otherDirs.findIndex(
+              (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
             );
-            if (granted === "failed") {
-              // ACL grant itself failed — rollback settings, write "timeout"
-              console.warn(
-                `[sandbox:respond] shell: FAILED — rolling back settings for ${dirToAdd}`,
-              );
-              const rollbackDirs = settingsStore
-                .get(targetKey)
-                .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
-              settingsStore.set(targetKey, rollbackDirs);
-              if (isRW) toolSandbox.removeDirRW(dirToAdd);
-              else toolSandbox.removeDirRO(dirToAdd);
-              if (otherIdx >= 0) {
-                const restoredOther = settingsStore.get(otherKey);
-                restoredOther.push(dirToAdd);
-                settingsStore.set(otherKey, restoredOther);
-                if (isRW) toolSandbox.addDirRO(dirToAdd);
-                else toolSandbox.addDirRW(dirToAdd);
+            let dirToAdd = normalizeDirPath(dirPath);
+            if (otherIdx >= 0) {
+              dirToAdd = otherDirs[otherIdx];
+              otherDirs.splice(otherIdx, 1);
+              settingsStore.set(otherKey, otherDirs);
+              if (toolSandbox) {
+                if (isRW) toolSandbox.removeDirRO(dirToAdd);
+                else toolSandbox.removeDirRW(dirToAdd);
               }
-              notifySandboxDirsChanged();
-              mainWindow?.webContents.send("sandbox:acl-timeout", {
-                dir: dirToAdd,
-                access,
-              });
-              try {
-                fs.writeFileSync(
-                  responseFile,
-                  JSON.stringify({ id, decision: "timeout" }),
-                  "utf-8",
-                );
-              } catch {}
-              return;
             }
-            if (granted === "grant-ok-verify-timeout") {
-              console.log(
-                `[sandbox:respond] shell: OPTIMISTIC — grant OK but verify timed out, keeping settings for ${dirToAdd}`,
-              );
-              mainWindow?.webContents.send("sandbox:acl-propagation-pending", {
-                dir: dirToAdd,
-                access,
-              });
+            const targetDirs = settingsStore.get(targetKey);
+            if (!targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)) {
+              targetDirs.push(dirToAdd);
+              settingsStore.set(targetKey, targetDirs);
             }
-          }
-          console.log(`[sandbox] Granted ${isRW ? "RW" : "RO"} to "${dirToAdd}" for shell retry`);
-          addToGrantHistory(dirToAdd);
-          // Silently clean up child dirs now covered by this parent grant
-          await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
-          notifySandboxDirsChanged();
-        }
-        try {
-          fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
-        } catch (err: any) {
-          console.error(`[sandbox] Failed to write shell permission response: ${err.message}`);
-        }
-      } else if (type === "shell-async") {
-        const { deniedPath, dirPath, responseFile: asyncResponseFile } = msg;
-        console.log(`[sandbox] Async shell permission decision: ${decision} for ${deniedPath}`);
-
-        if (decision === "grant-ro" || decision === "grant-rw") {
-          const isRW = decision === "grant-rw";
-          const normalDir = normalizeDirPath(dirPath).toLowerCase();
-          const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
-          const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
-          const otherDirs = settingsStore.get(otherKey);
-          const otherIdx = otherDirs.findIndex(
-            (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
-          );
-          let dirToAdd = normalizeDirPath(dirPath);
-          if (otherIdx >= 0) {
-            dirToAdd = otherDirs[otherIdx];
-            otherDirs.splice(otherIdx, 1);
-            settingsStore.set(otherKey, otherDirs);
             if (toolSandbox) {
-              if (isRW) toolSandbox.removeDirRO(dirToAdd);
-              else toolSandbox.removeDirRW(dirToAdd);
-            }
-          }
-          const targetDirs = settingsStore.get(targetKey);
-          if (!targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)) {
-            targetDirs.push(dirToAdd);
-            settingsStore.set(targetKey, targetDirs);
-          }
-          if (toolSandbox) {
-            if (isRW) toolSandbox.addDirRW(dirToAdd);
-            else toolSandbox.addDirRO(dirToAdd);
-            const access = isRW ? "rw" : "r";
-            toolSandbox
-              .grantDirAsync(dirToAdd, access)
-              .then((ok) => {
-                if (!ok) return toolSandbox!.grantDirElevated(dirToAdd, access);
-                return true;
-              })
-              .then(() => {
-                addToGrantHistory(dirToAdd);
-                // Shield sensitive subdirs after grant
-                const lp = toolSandbox!.getStatus().launcherPath;
-                if (lp) return shieldIfNeeded(lp, "MicroClaw", dirToAdd).catch(() => {});
-              })
-              .then(() => {
-                console.log(`[sandbox] Async: granted ${isRW ? "RW" : "RO"} to "${dirToAdd}"`);
-                // Silently clean up child dirs now covered by this parent grant
-                silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro").catch(() => {});
-                notifySandboxDirsChanged();
-                // Write response file AFTER ACL is granted — unblocks any sync poll
-                if (asyncResponseFile) {
-                  try {
-                    fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision }), "utf-8");
-                  } catch {}
-                }
-                // Nudge the model to retry — user granted permission but the original
-                // command already failed, so the model doesn't know to try again.
-                if (activeChatSession && gwClient?.connected) {
-                  const lang = settingsStore.get("language") ?? "en-US";
-                  const accessLabel = mainT(lang, isRW ? "perm.accessRW" : "perm.accessRO");
-                  const retryMsg = mainT(lang, "perm.retryNudge")
-                    .replace("{dir}", dirToAdd)
-                    .replace("{access}", accessLabel);
-                  gwClient.sendChat(activeChatSession, retryMsg).catch(() => {});
-                }
-              })
-              .catch(() => {
-                // ACL grant failed — rollback settings and write deny response
-                console.error(`[sandbox] Async ACL grant failed for ${dirToAdd} — rolling back`);
-                const rollbackDirs = settingsStore
-                  .get(targetKey)
-                  .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
-                settingsStore.set(targetKey, rollbackDirs);
-                if (toolSandbox) {
-                  if (isRW) toolSandbox.removeDirRW(dirToAdd);
-                  else toolSandbox.removeDirRO(dirToAdd);
-                  // Restore the 'other' list if we removed it during RO↔RW upgrade
-                  if (otherIdx >= 0) {
-                    const restoredOther = settingsStore.get(otherKey);
-                    restoredOther.push(dirToAdd);
-                    settingsStore.set(otherKey, restoredOther);
-                    if (isRW) toolSandbox.addDirRO(dirToAdd);
-                    else toolSandbox.addDirRW(dirToAdd);
+              if (isRW) toolSandbox.addDirRW(dirToAdd);
+              else toolSandbox.addDirRO(dirToAdd);
+              const access = isRW ? "rw" : "r";
+              await toolSandbox
+                .grantDirAsync(dirToAdd, access)
+                .then((ok) => {
+                  if (!ok) return toolSandbox!.grantDirElevated(dirToAdd, access);
+                  return true;
+                })
+                .then(() => {
+                  addToGrantHistory(dirToAdd);
+                  // Shield sensitive subdirs after grant
+                  const lp = toolSandbox!.getStatus().launcherPath;
+                  if (lp) return shieldIfNeeded(lp, "MicroClaw", dirToAdd).catch(() => {});
+                })
+                .then(async () => {
+                  console.log(`[sandbox] Async: granted ${isRW ? "RW" : "RO"} to "${dirToAdd}"`);
+                  // Silently clean up child dirs now covered by this parent grant
+                  await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
+                  notifySandboxDirsChanged();
+                  // Write response file AFTER ACL is granted — unblocks any sync poll
+                  if (asyncResponseFile) {
+                    try {
+                      fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision }), "utf-8");
+                    } catch {}
                   }
-                }
-                notifySandboxDirsChanged();
-                if (asyncResponseFile) {
-                  try {
-                    fs.writeFileSync(
-                      asyncResponseFile,
-                      JSON.stringify({ decision: "deny" }),
-                      "utf-8",
-                    );
-                  } catch {}
-                }
-              });
+                  // Nudge the model to retry — user granted permission but the original
+                  // command already failed, so the model doesn't know to try again.
+                  if (activeChatSession && gwClient?.connected) {
+                    const lang = settingsStore.get("language") ?? "en-US";
+                    const accessLabel = mainT(lang, isRW ? "perm.accessRW" : "perm.accessRO");
+                    const retryMsg = mainT(lang, "perm.retryNudge")
+                      .replace("{dir}", dirToAdd)
+                      .replace("{access}", accessLabel);
+                    gwClient.sendChat(activeChatSession, retryMsg).catch(() => {});
+                  }
+                })
+                .catch(() => {
+                  // ACL grant failed — rollback settings and write deny response
+                  console.error(`[sandbox] Async ACL grant failed for ${dirToAdd} — rolling back`);
+                  const rollbackDirs = settingsStore
+                    .get(targetKey)
+                    .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
+                  settingsStore.set(targetKey, rollbackDirs);
+                  if (toolSandbox) {
+                    if (isRW) toolSandbox.removeDirRW(dirToAdd);
+                    else toolSandbox.removeDirRO(dirToAdd);
+                    // Restore the 'other' list if we removed it during RO↔RW upgrade
+                    if (otherIdx >= 0) {
+                      const restoredOther = settingsStore.get(otherKey);
+                      restoredOther.push(dirToAdd);
+                      settingsStore.set(otherKey, restoredOther);
+                      if (isRW) toolSandbox.addDirRO(dirToAdd);
+                      else toolSandbox.addDirRW(dirToAdd);
+                    }
+                  }
+                  notifySandboxDirsChanged();
+                  if (asyncResponseFile) {
+                    try {
+                      fs.writeFileSync(
+                        asyncResponseFile,
+                        JSON.stringify({ decision: "deny" }),
+                        "utf-8",
+                      );
+                    } catch {}
+                  }
+                });
+            } else {
+              // No sandbox — write response immediately
+              if (asyncResponseFile) {
+                try {
+                  fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision }), "utf-8");
+                } catch {}
+              }
+            }
           } else {
-            // No sandbox — write response immediately
+            // Denied — write response to unblock any sync poll
             if (asyncResponseFile) {
               try {
-                fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision }), "utf-8");
+                fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision: "deny" }), "utf-8");
               } catch {}
             }
           }
-        } else {
-          // Denied — write response to unblock any sync poll
-          if (asyncResponseFile) {
-            try {
-              fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision: "deny" }), "utf-8");
-            } catch {}
-          }
-        }
-      } else if (type === "app-approval") {
-        const { id, app, responseFile } = msg;
-        const appLower = (app || "").toLowerCase();
-        console.log(`[sandbox] App approval decision: ${decision} for ${appLower}`);
+        } else if (type === "app-approval") {
+          const { id, app, responseFile } = msg;
+          const appLower = (app || "").toLowerCase();
+          console.log(`[sandbox] App approval decision: ${decision} for ${appLower}`);
 
-        if (decision === "deny") {
-          // Add to session deny list
-          if (!sessionDeniedApps.has(activeChatSession)) {
-            sessionDeniedApps.set(activeChatSession, new Set());
+          if (decision === "deny") {
+            // Add to session deny list
+            if (!sessionDeniedApps.has(activeChatSession)) {
+              sessionDeniedApps.set(activeChatSession, new Set());
+            }
+            sessionDeniedApps.get(activeChatSession)!.add(appLower);
+            if (sessionDeniedApps.size > 20) {
+              const oldest = sessionDeniedApps.keys().next().value!;
+              sessionDeniedApps.delete(oldest);
+            }
+          } else if (decision === "allow-always") {
+            const current = settingsStore.get("sandboxExternalApps");
+            if (!current.includes(appLower)) {
+              current.push(appLower);
+              settingsStore.set("sandboxExternalApps", current);
+              toolSandbox?.setExternalApps(current);
+              writeExternalAppsFile(current);
+              console.log(`[sandbox] Added "${appLower}" to permanent whitelist`);
+            }
           }
-          sessionDeniedApps.get(activeChatSession)!.add(appLower);
-          if (sessionDeniedApps.size > 20) {
-            const oldest = sessionDeniedApps.keys().next().value!;
-            sessionDeniedApps.delete(oldest);
+          // Write response file to unblock the gateway's Atomics.wait loop
+          try {
+            fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+          } catch (err: any) {
+            console.error(`[sandbox] Failed to write approval response: ${err.message}`);
           }
-        } else if (decision === "allow-always") {
-          const current = settingsStore.get("sandboxExternalApps");
-          if (!current.includes(appLower)) {
-            current.push(appLower);
-            settingsStore.set("sandboxExternalApps", current);
-            toolSandbox?.setExternalApps(current);
-            writeExternalAppsFile(current);
-            console.log(`[sandbox] Added "${appLower}" to permanent whitelist`);
-          }
+          pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
         }
-        // Write response file to unblock the gateway's Atomics.wait loop
-        try {
-          fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
-        } catch (err: any) {
-          console.error(`[sandbox] Failed to write approval response: ${err.message}`);
-        }
-        pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+      } finally {
+        endSandboxFolderPolicyMutation();
       }
     },
   );

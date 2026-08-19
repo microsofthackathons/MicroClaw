@@ -474,15 +474,96 @@
                 }}
               </span>
             </div>
-            <div class="card-row">
+            <div
+              class="card-row no-border mxc-folder-policy"
+              style="flex-direction: column; align-items: stretch"
+            >
               <span class="row-label">{{ t("settings.windowsNodeMxcFolders") }}</span>
-              <span class="row-value">{{
-                windowsNodeMxcStatus.folders.length
-                  ? windowsNodeMxcStatus.folders
-                      .map((folder) => `${folder.access.toUpperCase()}: ${folder.path}`)
-                      .join("; ")
-                  : "none"
-              }}</span>
+              <div class="mxc-folder-policy-hint">
+                {{ t("settings.windowsNodeMxcFoldersHint") }}
+              </div>
+              <div
+                v-if="windowsNodeMxcStatus.desiredEnabled"
+                class="mxc-alert mxc-alert-warning mxc-folder-policy-locked"
+              >
+                {{ t("settings.windowsNodeMxcFoldersLocked") }}
+              </div>
+              <div class="dir-section">
+                <div class="mxc-folder-policy-heading">
+                  <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
+                  <el-button
+                    data-testid="mxc-add-rw"
+                    size="small"
+                    type="primary"
+                    plain
+                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    @click="addWindowsNodeMxcFolder('rw')"
+                  >
+                    {{ t("settings.sandboxAddDir") }}
+                  </el-button>
+                </div>
+                <div v-for="dir in sandboxUserDirs.rw" :key="'mxc-rw-' + dir" class="dir-item">
+                  <span class="dir-path" :title="dir">{{ dir }}</span>
+                  <span class="dir-badge dir-badge-rw">RW</span>
+                  <el-button
+                    data-testid="mxc-change-ro"
+                    text
+                    size="small"
+                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    @click="changeWindowsNodeMxcFolderAccess(dir, 'ro')"
+                  >
+                    {{ t("settings.windowsNodeMxcChangeToRo") }}
+                  </el-button>
+                  <button
+                    class="tag-remove"
+                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    @click="removeWindowsNodeMxcFolder(dir, 'rw')"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <div v-if="sandboxUserDirs.rw.length === 0" class="dir-empty">
+                  {{ t("settings.sandboxNoDirs") }}
+                </div>
+              </div>
+              <div class="dir-section" style="margin-top: 10px">
+                <div class="mxc-folder-policy-heading">
+                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
+                  <el-button
+                    data-testid="mxc-add-ro"
+                    size="small"
+                    type="primary"
+                    plain
+                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    @click="addWindowsNodeMxcFolder('ro')"
+                  >
+                    {{ t("settings.sandboxAddDir") }}
+                  </el-button>
+                </div>
+                <div v-for="dir in sandboxUserDirs.ro" :key="'mxc-ro-' + dir" class="dir-item">
+                  <span class="dir-path" :title="dir">{{ dir }}</span>
+                  <span class="dir-badge dir-badge-ro">RO</span>
+                  <el-button
+                    data-testid="mxc-change-rw"
+                    text
+                    size="small"
+                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    @click="changeWindowsNodeMxcFolderAccess(dir, 'rw')"
+                  >
+                    {{ t("settings.windowsNodeMxcChangeToRw") }}
+                  </el-button>
+                  <button
+                    class="tag-remove"
+                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    @click="removeWindowsNodeMxcFolder(dir, 'ro')"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <div v-if="sandboxUserDirs.ro.length === 0" class="dir-empty">
+                  {{ t("settings.sandboxNoDirs") }}
+                </div>
+              </div>
             </div>
             <div class="card-row">
               <span class="row-label">{{ t("settings.windowsNodeMxcSmoke") }}</span>
@@ -656,7 +737,13 @@
                   "
                 >
                   <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <el-button size="small" type="primary" plain @click="addSandboxDir('rw')">
+                  <el-button
+                    data-testid="sandbox-add-rw"
+                    size="small"
+                    type="primary"
+                    plain
+                    @click="addSandboxDir('rw')"
+                  >
                     {{ t("settings.sandboxAddDir") }}
                   </el-button>
                 </div>
@@ -695,7 +782,13 @@
                   "
                 >
                   <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <el-button size="small" type="primary" plain @click="addSandboxDir('ro')">
+                  <el-button
+                    data-testid="sandbox-add-ro"
+                    size="small"
+                    type="primary"
+                    plain
+                    @click="addSandboxDir('ro')"
+                  >
                     {{ t("settings.sandboxAddDir") }}
                   </el-button>
                 </div>
@@ -1317,8 +1410,11 @@ async function _applyExternalApps() {
   }
 }
 
-async function addSandboxDir(access: "rw" | "ro") {
-  const result = await window.openclaw.sandbox.addUserDir({ access });
+async function addSandboxDir(access: "rw" | "ro", policy?: "windows-node-mxc") {
+  const result = await window.openclaw.sandbox.addUserDir({
+    access,
+    ...(policy ? { policy } : {}),
+  });
   if (result.reason === "parent-covers") {
     const accessLabel =
       result.parentAccess === "rw" ? t("settings.sandboxDirsRW") : t("settings.sandboxDirsRO");
@@ -1331,6 +1427,10 @@ async function addSandboxDir(access: "rw" | "ro") {
     ElMessage.warning(t("settings.sandboxParentRWCovers", { parentDir: result.parentDir || "" }));
     return;
   }
+  if (result.reason && policy === "windows-node-mxc") {
+    showWindowsNodeMxcFolderPolicyError(result.reason);
+    return;
+  }
   if (result.ok) {
     sandboxUserDirs.rw = result.dirs.rw;
     sandboxUserDirs.ro = result.dirs.ro;
@@ -1339,6 +1439,57 @@ async function addSandboxDir(access: "rw" | "ro") {
         t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
       );
     }
+  }
+}
+
+function showWindowsNodeMxcFolderPolicyError(reason: string) {
+  const keyByReason: Record<string, string> = {
+    duplicate: "settings.windowsNodeMxcFolderDuplicate",
+    "path-nonlocal": "settings.windowsNodeMxcFolderNonlocal",
+    "path-not-found": "settings.windowsNodeMxcFolderMissing",
+    "path-reparse-point": "settings.windowsNodeMxcFolderReparse",
+    "path-sensitive": "settings.windowsNodeMxcFolderSensitive",
+    "acl-failed": "settings.windowsNodeMxcFolderAclFailed",
+    "folder-not-configured": "settings.windowsNodeMxcFolderNotConfigured",
+  };
+  ElMessage.error(t(keyByReason[reason] ?? "settings.windowsNodeMxcFolderMutationFailed"));
+}
+
+async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
+  try {
+    await addSandboxDir(access, "windows-node-mxc");
+    await loadWindowsNodeMxcStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro") {
+  try {
+    const result = await window.openclaw.sandbox.setUserDirAccess({ dir, access });
+    sandboxUserDirs.rw = result.dirs.rw;
+    sandboxUserDirs.ro = result.dirs.ro;
+    if (!result.ok) {
+      showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
+      return;
+    }
+    if (result.removedChildren?.length) {
+      ElMessage.info(
+        t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
+      );
+    }
+    await loadWindowsNodeMxcStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function removeWindowsNodeMxcFolder(dir: string, access: "rw" | "ro") {
+  try {
+    await removeSandboxDir(dir, access);
+    await loadWindowsNodeMxcStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -2794,6 +2945,33 @@ async function clearChatHistory() {
 }
 .mxc-state-blocked {
   color: var(--settings-action-danger);
+}
+.mxc-folder-policy {
+  gap: 8px;
+}
+.mxc-folder-policy-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mxc-folder-policy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.mxc-folder-policy-locked {
+  margin-top: 0;
+}
+.mxc-folder-policy .dir-item {
+  gap: 8px;
+}
+.mxc-folder-policy .dir-path {
+  flex: 1;
+}
+.mxc-folder-policy .tag-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 .mxc-actions {
   justify-content: flex-end;

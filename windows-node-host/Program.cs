@@ -93,7 +93,8 @@ internal static class Program
                     bootstrap.ActivationLeasePath,
                     bootstrap.ActivationLeaseSecret,
                     bootstrap.GatewayGeneration,
-                    bootstrap.PolicyFingerprint)));
+                    bootstrap.PolicyFingerprint),
+                bootstrap.UiLocale));
             await client.ConnectAsync();
             await Task.Delay(Timeout.InfiniteTimeSpan);
             return 0;
@@ -119,6 +120,7 @@ internal sealed class HostBootstrap
     public string ActivationLeaseSecret { get; init; } = string.Empty;
     public string GatewayGeneration { get; init; } = string.Empty;
     public string PolicyFingerprint { get; init; } = string.Empty;
+    public string UiLocale { get; init; } = "en-US";
 }
 
 internal sealed class StderrLogger : IOpenClawLogger

@@ -302,7 +302,25 @@ export default {
   "settings.windowsNodeMxcDisabled": "Disabled",
   "settings.windowsNodeMxcCommands": "Declared node commands",
   "settings.windowsNodeMxcConnection": "Connection / pairing",
-  "settings.windowsNodeMxcFolders": "Effective folder grants",
+  "settings.windowsNodeMxcFolders": "Global MXC approved folders",
+  "settings.windowsNodeMxcFoldersHint":
+    "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
+  "settings.windowsNodeMxcFoldersLocked":
+    "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
+  "settings.windowsNodeMxcChangeToRo": "Change to read-only",
+  "settings.windowsNodeMxcChangeToRw": "Change to read/write",
+  "settings.windowsNodeMxcFolderDuplicate": "This folder is already configured with that access.",
+  "settings.windowsNodeMxcFolderNonlocal":
+    "Only existing local drive folders are allowed; UNC and device paths are denied.",
+  "settings.windowsNodeMxcFolderMissing": "The selected folder no longer exists.",
+  "settings.windowsNodeMxcFolderReparse":
+    "Folders containing junctions, symbolic links, or other reparse points are denied.",
+  "settings.windowsNodeMxcFolderSensitive":
+    "This folder overlaps a protected credentials, browser, SSH, cloud, or MicroClaw state root.",
+  "settings.windowsNodeMxcFolderAclFailed":
+    "Windows could not apply and verify the folder access policy.",
+  "settings.windowsNodeMxcFolderNotConfigured": "This folder is no longer configured.",
+  "settings.windowsNodeMxcFolderMutationFailed": "Could not update the approved folder policy.",
   "settings.windowsNodeMxcSmoke": "Contained child-process smoke",
   "settings.windowsNodeMxcNotRun": "Not run",
   "settings.windowsNodeMxcRefresh": "Refresh readiness",

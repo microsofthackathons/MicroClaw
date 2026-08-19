@@ -16,6 +16,10 @@ describe("SettingsView", () => {
   const getWindowsNodeMxcStatus = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
   const activateWindowsNodeMxc = vi.fn();
+  const addUserDir = vi.fn();
+  const removeUserDir = vi.fn();
+  const setUserDirAccess = vi.fn();
+  const getUserDirs = vi.fn();
 
   const localNode = {
     id: "node-local",
@@ -76,6 +80,10 @@ describe("SettingsView", () => {
       .mockReset()
       .mockImplementation(async ({ nodeId }: { nodeId: string }) => status(nodeId));
     activateWindowsNodeMxc.mockReset();
+    addUserDir.mockReset().mockResolvedValue({ ok: false, dirs: { rw: [], ro: [] } });
+    removeUserDir.mockReset().mockResolvedValue({ ok: true, dirs: { rw: [], ro: [] } });
+    setUserDirAccess.mockReset().mockResolvedValue({ ok: true, dirs: { rw: [], ro: [] } });
+    getUserDirs.mockReset().mockResolvedValue({ rw: [], ro: [] });
     window.openclaw = {
       config: {
         read: vi.fn().mockResolvedValue(null),
@@ -108,7 +116,10 @@ describe("SettingsView", () => {
         }),
         getExternalApps: vi.fn().mockResolvedValue([]),
         getCapabilities: vi.fn().mockResolvedValue([]),
-        getUserDirs: vi.fn().mockResolvedValue({ rw: [], ro: [] }),
+        getUserDirs,
+        addUserDir,
+        removeUserDir,
+        setUserDirAccess,
       },
     } as unknown as typeof window.openclaw;
     exportGatewayLogs.mockReset().mockResolvedValue({
@@ -218,5 +229,142 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(activateWindowsNodeMxc).toHaveBeenCalledOnce();
+  });
+
+  it("shows empty global RO and RW folder lists while MXC is disabled", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      desiredEnabled: false,
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    await flushPromises();
+
+    const policy = wrapper.find(".mxc-folder-policy");
+    expect(policy.text()).toContain("Global MXC approved folders");
+    expect(policy.text()).toContain("global capability ceiling");
+    expect(policy.findAll(".dir-empty")).toHaveLength(2);
+    expect(policy.find('[data-testid="mxc-add-rw"]').attributes("disabled")).toBe("false");
+    expect(policy.text()).not.toContain("Disable Windows Node + MXC");
+  });
+
+  it("adds RO and RW roots through the shared trusted picker API", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      desiredEnabled: false,
+    });
+    addUserDir
+      .mockResolvedValueOnce({
+        ok: true,
+        removedChildren: [],
+        dirs: { rw: ["C:\\Work"], ro: [] },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        removedChildren: [],
+        dirs: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
+      });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-add-rw"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="mxc-add-ro"]').trigger("click");
+    await flushPromises();
+
+    expect(addUserDir).toHaveBeenNthCalledWith(1, {
+      access: "rw",
+      policy: "windows-node-mxc",
+    });
+    expect(addUserDir).toHaveBeenNthCalledWith(2, {
+      access: "ro",
+      policy: "windows-node-mxc",
+    });
+    expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Work");
+    expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Docs");
+  });
+
+  it("keeps the legacy AppContainer picker outside the MXC validation context", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      desiredEnabled: false,
+    });
+    addUserDir.mockResolvedValue({
+      ok: true,
+      removedChildren: [],
+      dirs: { rw: ["C:\\Legacy"], ro: [] },
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="sandbox-add-rw"]').trigger("click");
+    await flushPromises();
+
+    expect(addUserDir).toHaveBeenCalledWith({ access: "rw" });
+  });
+
+  it("changes and removes roots through the shared folder settings API", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      desiredEnabled: false,
+    });
+    getUserDirs.mockResolvedValue({
+      rw: ["C:\\Work"],
+      ro: ["C:\\Docs"],
+    });
+    setUserDirAccess.mockResolvedValue({
+      ok: true,
+      removedChildren: [],
+      dirs: { rw: [], ro: ["C:\\Docs", "C:\\Work"] },
+    });
+    removeUserDir.mockResolvedValue({
+      ok: true,
+      dirs: { rw: [], ro: ["C:\\Work"] },
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-change-ro"]').trigger("click");
+    await flushPromises();
+    expect(setUserDirAccess).toHaveBeenCalledWith({ dir: "C:\\Work", access: "ro" });
+
+    const removeButtons = wrapper.findAll(".mxc-folder-policy .tag-remove");
+    await removeButtons[0].trigger("click");
+    await flushPromises();
+    expect(removeUserDir).toHaveBeenCalled();
+  });
+
+  it("locks every folder mutation control while MXC is active", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce(status("node-local"));
+    getUserDirs.mockResolvedValue({
+      rw: ["C:\\Work"],
+      ro: ["C:\\Docs"],
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    const policy = wrapper.find(".mxc-folder-policy");
+    expect(policy.text()).toContain("Disable Windows Node + MXC");
+    expect(policy.find('[data-testid="mxc-add-rw"]').attributes("disabled")).toBe("true");
+    expect(policy.find('[data-testid="mxc-change-ro"]').attributes("disabled")).toBe("true");
+    expect(policy.find(".tag-remove").attributes("disabled")).toBe("");
+    expect(addUserDir).not.toHaveBeenCalled();
+    expect(setUserDirAccess).not.toHaveBeenCalled();
+    expect(removeUserDir).not.toHaveBeenCalled();
   });
 });

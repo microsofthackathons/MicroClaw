@@ -144,6 +144,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       getUserDirs: async () => ({ rw: [], ro: [] }),
       addUserDir: async () => ({ ok: false, reason: "browser-dev", dirs: { rw: [], ro: [] } }),
       removeUserDir: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
+      setUserDirAccess: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
       onPermissionRequest: noopSub,
       respondPermission: noopAsync,
       onAclTimeout: noopSub,

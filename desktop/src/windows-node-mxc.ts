@@ -49,6 +49,38 @@ export interface WindowsNodeMxcFolder {
   access: SandboxFolderAccess;
 }
 
+export interface WindowsNodeMxcFolderLists {
+  rw: string[];
+  ro: string[];
+}
+
+export type WindowsNodeMxcFolderPolicyReason =
+  | "duplicate"
+  | "parent-covers"
+  | "parent-rw-covers"
+  | "path-nonlocal"
+  | "path-not-found"
+  | "path-reparse-point"
+  | "path-sensitive"
+  | "acl-failed"
+  | "folder-not-configured";
+
+export interface WindowsNodeMxcFolderPathResult {
+  ok: boolean;
+  canonicalPath: string | null;
+  reason?: WindowsNodeMxcFolderPolicyReason;
+}
+
+export interface WindowsNodeMxcFolderPlan {
+  ok: boolean;
+  reason?: WindowsNodeMxcFolderPolicyReason;
+  parentDir?: string;
+  parentAccess?: SandboxFolderAccess;
+  inheritsFromParent?: boolean;
+  removedChildren: string[];
+  dirs: WindowsNodeMxcFolderLists;
+}
+
 export type WindowsNodeMxcApprovalDecision = "deny" | "allow-once" | "allow-always";
 
 export interface WindowsNodeMxcGatewayApproval {
@@ -76,10 +108,7 @@ function parseGatewayDeclaredAccess(
 ): WindowsNodeMxcGatewayApproval["declaredAccess"] | null {
   if (!DECLARED_ACCESS_MARKER_PATTERN.test(commandPreview)) return [];
 
-  const declarations = new Map<
-    string,
-    WindowsNodeMxcGatewayApproval["declaredAccess"][number]
-  >();
+  const declarations = new Map<string, WindowsNodeMxcGatewayApproval["declaredAccess"][number]>();
   let remaining = commandPreview;
   let matched = false;
   while (true) {
@@ -141,16 +170,14 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const nodeId = typeof request.nodeId === "string" ? request.nodeId : "";
   const argv = plan.argv;
   const commandText = typeof plan.commandText === "string" ? plan.commandText.trim() : "";
-  const commandPreview =
-    typeof plan.commandPreview === "string" ? plan.commandPreview.trim() : "";
+  const commandPreview = typeof plan.commandPreview === "string" ? plan.commandPreview.trim() : "";
   const declaredAccess = parseGatewayDeclaredAccess(commandPreview);
   const hasCanonicalCwd =
     Object.hasOwn(plan, "cwd") &&
     (plan.cwd === null || (typeof plan.cwd === "string" && plan.cwd.trim().length > 0));
   const hasCanonicalAgent =
     Object.hasOwn(plan, "agentId") &&
-    (plan.agentId === null ||
-      (typeof plan.agentId === "string" && plan.agentId.trim().length > 0));
+    (plan.agentId === null || (typeof plan.agentId === "string" && plan.agentId.trim().length > 0));
   const hasCanonicalSession =
     Object.hasOwn(plan, "sessionKey") &&
     typeof plan.sessionKey === "string" &&
@@ -961,6 +988,191 @@ export function canonicalizeApprovedCwd(
   };
 }
 
+export function assertWindowsNodeMxcFolderPolicyMutable(
+  desiredEnabled: boolean,
+  securityTransitionInProgress = false,
+  folderMutationInProgress = false,
+): void {
+  if (desiredEnabled) {
+    throw new Error("Disable Windows Node + MXC mode before changing its approved folder policy");
+  }
+  if (securityTransitionInProgress) {
+    throw new Error(
+      "Wait for the Windows Node + MXC security-mode transition before changing its approved folder policy",
+    );
+  }
+  if (folderMutationInProgress) {
+    throw new Error("Another approved folder policy change is already in progress");
+  }
+}
+
+export function validateWindowsNodeMxcFolderPath(
+  candidate: string,
+  realpath: (candidate: string) => string,
+  isReparsePoint: (candidate: string) => boolean,
+  sensitiveRoots: string[],
+): WindowsNodeMxcFolderPathResult {
+  const normalizedInput = normalizeWindowsPathPreservingCase(candidate);
+  if (
+    !/^[a-z]:\\/i.test(normalizedInput) ||
+    normalizedInput.startsWith("\\\\") ||
+    normalizedInput.startsWith("\\\\?\\") ||
+    normalizedInput.startsWith("\\??\\") ||
+    normalizedInput.toLowerCase().startsWith("\\device\\")
+  ) {
+    return { ok: false, canonicalPath: null, reason: "path-nonlocal" };
+  }
+
+  const parsed = path.win32.parse(normalizedInput);
+  let current = parsed.root;
+  try {
+    for (const component of normalizedInput.slice(parsed.root.length).split("\\").filter(Boolean)) {
+      current = path.win32.join(current, component);
+      if (isReparsePoint(current)) {
+        return { ok: false, canonicalPath: null, reason: "path-reparse-point" };
+      }
+    }
+  } catch {
+    return { ok: false, canonicalPath: null, reason: "path-not-found" };
+  }
+
+  let canonicalPath: string;
+  try {
+    canonicalPath = normalizeWindowsPathPreservingCase(realpath(normalizedInput));
+  } catch {
+    return { ok: false, canonicalPath: null, reason: "path-not-found" };
+  }
+  if (normalizeWindowsPath(canonicalPath) !== normalizeWindowsPath(normalizedInput)) {
+    return { ok: false, canonicalPath: null, reason: "path-reparse-point" };
+  }
+
+  const canonicalKey = normalizeWindowsPath(canonicalPath);
+  for (const sensitiveRoot of sensitiveRoots) {
+    let canonicalSensitive: string;
+    try {
+      canonicalSensitive = normalizeWindowsPath(realpath(path.win32.normalize(sensitiveRoot)));
+    } catch {
+      canonicalSensitive = normalizeWindowsPath(sensitiveRoot);
+    }
+    if (
+      isWithinWindowsRoot(canonicalKey, canonicalSensitive) ||
+      isWithinWindowsRoot(canonicalSensitive, canonicalKey)
+    ) {
+      return { ok: false, canonicalPath, reason: "path-sensitive" };
+    }
+  }
+
+  return { ok: true, canonicalPath };
+}
+
+export function planWindowsNodeMxcFolderUpsert(
+  current: WindowsNodeMxcFolderLists,
+  canonicalPath: string,
+  access: SandboxFolderAccess,
+): WindowsNodeMxcFolderPlan {
+  const rw = dedupeWindowsPaths(current.rw);
+  const ro = dedupeWindowsPaths(current.ro);
+  const target = access === "rw" ? rw : ro;
+  const opposite = access === "rw" ? ro : rw;
+  const normalizedCandidate = normalizeWindowsPathPreservingCase(canonicalPath);
+  const candidateKey = normalizeWindowsPath(normalizedCandidate);
+  const equal = (value: string) => normalizeWindowsPath(value) === candidateKey;
+  const properParent = (value: string) => {
+    const key = normalizeWindowsPath(value);
+    return key !== candidateKey && isWithinWindowsRoot(candidateKey, key);
+  };
+
+  if (target.some(equal)) {
+    return {
+      ok: false,
+      reason: "duplicate",
+      removedChildren: [],
+      dirs: { rw, ro },
+    };
+  }
+
+  const sameAccessParent = target.find(properParent);
+  if (sameAccessParent) {
+    if (opposite.some(equal)) {
+      return {
+        ok: true,
+        inheritsFromParent: true,
+        removedChildren: [],
+        dirs:
+          access === "rw"
+            ? { rw, ro: ro.filter((value) => !equal(value)) }
+            : { rw: rw.filter((value) => !equal(value)), ro },
+      };
+    }
+    return {
+      ok: false,
+      reason: "parent-covers",
+      parentDir: sameAccessParent,
+      parentAccess: access,
+      removedChildren: [],
+      dirs: { rw, ro },
+    };
+  }
+
+  if (access === "ro") {
+    const rwParent = rw.find(properParent);
+    if (rwParent) {
+      return {
+        ok: false,
+        reason: "parent-rw-covers",
+        parentDir: rwParent,
+        parentAccess: "rw",
+        removedChildren: [],
+        dirs: { rw, ro },
+      };
+    }
+  }
+
+  const nextRw = rw.filter((value) => !equal(value));
+  const nextRo = ro.filter((value) => !equal(value));
+  const isChild = (value: string) => {
+    const key = normalizeWindowsPath(value);
+    return key !== candidateKey && isWithinWindowsRoot(key, candidateKey);
+  };
+  const removedChildren: string[] = [];
+
+  if (access === "rw") {
+    removedChildren.push(...nextRw.filter(isChild), ...nextRo.filter(isChild));
+    nextRw.splice(
+      0,
+      nextRw.length,
+      ...nextRw.filter((value) => !isChild(value)),
+      normalizedCandidate,
+    );
+    nextRo.splice(0, nextRo.length, ...nextRo.filter((value) => !isChild(value)));
+  } else {
+    removedChildren.push(...nextRo.filter(isChild));
+    nextRo.splice(
+      0,
+      nextRo.length,
+      ...nextRo.filter((value) => !isChild(value)),
+      normalizedCandidate,
+    );
+  }
+
+  return {
+    ok: true,
+    removedChildren,
+    dirs: {
+      rw: nextRw.sort(compareWindowsPaths),
+      ro: nextRo.sort(compareWindowsPaths),
+    },
+  };
+}
+
+export function isWindowsNodeMxcFolderConfigured(
+  current: WindowsNodeMxcFolderLists,
+  candidate: string,
+): boolean {
+  const key = normalizeWindowsPath(candidate);
+  return [...current.rw, ...current.ro].some((value) => normalizeWindowsPath(value) === key);
+}
+
 export function listConfiguredSandboxFolders(
   settings: WindowsNodeMxcSettings,
   userProfile: string,
@@ -992,15 +1204,32 @@ function probeError(reason: string): MxcProbeResult {
 }
 
 function normalizeWindowsPath(value: string): string {
-  const parsed = path.win32.parse(value);
+  return normalizeWindowsPathPreservingCase(value).toLowerCase();
+}
+
+function normalizeWindowsPathPreservingCase(value: string): string {
   const normalized = path.win32.normalize(value);
+  const parsed = path.win32.parse(normalized);
   const withoutTrailing =
     normalized.length > parsed.root.length ? normalized.replace(/[\\]+$/, "") : normalized;
-  return withoutTrailing.toLowerCase();
+  return withoutTrailing;
 }
 
 function isWithinWindowsRoot(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(`${root}\\`);
+}
+
+function dedupeWindowsPaths(values: string[]): string[] {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const key = normalizeWindowsPath(value);
+    if (!unique.has(key)) unique.set(key, normalizeWindowsPathPreservingCase(value));
+  }
+  return [...unique.values()].sort(compareWindowsPaths);
+}
+
+function compareWindowsPaths(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
 }
 
 function isLoopbackAddress(value: string): boolean {

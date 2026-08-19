@@ -80,9 +80,7 @@ describe("i18n", () => {
     expect(t("perm.mxcDesc")).toBe("AI wants to run this command inside the MXC sandbox.");
     expect(t("perm.mxcAccessLabel")).toBe("Declared folder use");
     expect(t("perm.mxcAccessRw")).toBe("Read and write");
-    expect(t("perm.mxcScopeOnce")).toContain(
-      "approval does not grant or change folder access",
-    );
+    expect(t("perm.mxcScopeOnce")).toContain("approval does not grant or change folder access");
     expect(t("perm.mxcScopeOnce")).not.toContain("requested");
     expect(t("perm.mxcDesc")).not.toContain("outside");
 
@@ -92,6 +90,21 @@ describe("i18n", () => {
     expect(t("perm.mxcAccessRw")).toBe("读写");
     expect(t("perm.mxcScopeOnce")).toContain("批准不会授予或更改文件夹访问权限");
     expect(t("perm.mxcDesc")).not.toContain("沙箱外");
+    setLocale("en-US");
+  });
+
+  it("localizes the global MXC folder policy and remediation", () => {
+    setLocale("en-US");
+    expect(t("settings.windowsNodeMxcFolders")).toBe("Global MXC approved folders");
+    expect(t("settings.windowsNodeMxcFoldersHint")).toContain("global capability ceiling");
+    expect(t("settings.windowsNodeMxcFoldersHint")).toContain("never grant access");
+    expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("Disable Windows Node + MXC");
+
+    setLocale("zh-CN");
+    expect(t("settings.windowsNodeMxcFolders")).toBe("MXC 全局批准文件夹");
+    expect(t("settings.windowsNodeMxcFoldersHint")).toContain("全局能力上限");
+    expect(t("settings.windowsNodeMxcFoldersHint")).toContain("绝不会授予访问权限");
+    expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("请先禁用 Windows Node + MXC");
     setLocale("en-US");
   });
 });

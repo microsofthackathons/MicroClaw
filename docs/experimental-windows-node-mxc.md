@@ -56,6 +56,13 @@ launch. Delete-denying directory handles retain every approved-root/CWD path com
 completion, preventing a validated directory from being replaced by a junction during launch.
 Approved-folder changes are rejected while the mode is enabled because the helper binds the
 canonical folder policy at generation startup. Disable and reactivate the mode to change that policy.
+Settings > Security presents this policy as separate global Read-only and Read/write lists. Folder
+selection uses Electron's native directory picker. Equal paths are deduplicated, redundant nested
+grants are rejected or collapsed, and a narrower RW root under a broader RO root remains explicit.
+Changing access or removing a root updates the same `sandboxUserDirsRO`/`sandboxUserDirsRW` settings
+used by the existing AppContainer sandbox; MXC does not maintain a second permission store. UNC,
+device-namespace, missing, reparse, final-target-changing, and protected credential/state/browser
+roots are rejected before the policy changes.
 
 Approval presentation is owned by MicroClaw Security settings. The helper connects to a random
 per-launch Windows named pipe, displays executable, exact argv, agent, and canonical CWD, and
@@ -76,6 +83,10 @@ localized declared folder use and clean command text, and explains that approval
 command itself inside MXC. `Allow always` persists the exact command, canonical CWD, and declaration
 identity without changing configured folder grants. Replay must contain that exact Gateway-approved
 plan; mismatched plan argv or command text is denied before the node prompt.
+An unlisted declaration, or an RW declaration covered only by RO policy, is rejected before the
+command-approval prompt with localized remediation to change Settings > Security and retry. Omitting
+declaration metadata never expands the MXC policy: only the configured global roots are emitted, and
+an operation outside them receives the container's normal access-denied result.
 
 ## Packaging and provenance
 

@@ -285,7 +285,22 @@ export default {
   "settings.windowsNodeMxcDisabled": "未启用",
   "settings.windowsNodeMxcCommands": "节点声明的命令",
   "settings.windowsNodeMxcConnection": "连接 / 配对",
-  "settings.windowsNodeMxcFolders": "实际文件夹授权",
+  "settings.windowsNodeMxcFolders": "MXC 全局批准文件夹",
+  "settings.windowsNodeMxcFoldersHint":
+    "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。",
+  "settings.windowsNodeMxcFoldersLocked":
+    "请先禁用 Windows Node + MXC，再添加、更改或移除批准的文件夹。",
+  "settings.windowsNodeMxcChangeToRo": "改为只读",
+  "settings.windowsNodeMxcChangeToRw": "改为读写",
+  "settings.windowsNodeMxcFolderDuplicate": "此文件夹已配置相同的访问级别。",
+  "settings.windowsNodeMxcFolderNonlocal": "仅允许现有的本地磁盘文件夹；UNC 和设备路径会被拒绝。",
+  "settings.windowsNodeMxcFolderMissing": "所选文件夹已不存在。",
+  "settings.windowsNodeMxcFolderReparse": "包含联接、符号链接或其他重解析点的文件夹会被拒绝。",
+  "settings.windowsNodeMxcFolderSensitive":
+    "此文件夹与受保护的凭据、浏览器、SSH、云配置或 MicroClaw 状态根目录重叠。",
+  "settings.windowsNodeMxcFolderAclFailed": "Windows 无法应用并验证文件夹访问策略。",
+  "settings.windowsNodeMxcFolderNotConfigured": "此文件夹已不在配置中。",
+  "settings.windowsNodeMxcFolderMutationFailed": "无法更新批准的文件夹策略。",
   "settings.windowsNodeMxcSmoke": "受控子进程冒烟测试",
   "settings.windowsNodeMxcNotRun": "尚未运行",
   "settings.windowsNodeMxcRefresh": "刷新就绪状态",

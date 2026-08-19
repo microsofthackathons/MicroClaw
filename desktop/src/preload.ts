@@ -347,7 +347,7 @@ contextBridge.exposeInMainWorld("openclaw", {
       }>,
     getUserDirs: () =>
       ipcRenderer.invoke("sandbox:get-user-dirs") as Promise<{ rw: string[]; ro: string[] }>,
-    addUserDir: (params: { access: "rw" | "ro" }) =>
+    addUserDir: (params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }) =>
       ipcRenderer.invoke("sandbox:add-user-dir", params) as Promise<{
         ok: boolean;
         reason?: string;
@@ -359,6 +359,15 @@ contextBridge.exposeInMainWorld("openclaw", {
     removeUserDir: (params: { dir: string; access: "rw" | "ro" }) =>
       ipcRenderer.invoke("sandbox:remove-user-dir", params) as Promise<{
         ok: boolean;
+        dirs: { rw: string[]; ro: string[] };
+      }>,
+    setUserDirAccess: (params: { dir: string; access: "rw" | "ro" }) =>
+      ipcRenderer.invoke("sandbox:set-user-dir-access", params) as Promise<{
+        ok: boolean;
+        reason?: string;
+        parentDir?: string;
+        parentAccess?: string;
+        removedChildren?: string[];
         dirs: { rw: string[]; ro: string[] };
       }>,
     onPermissionRequest: (

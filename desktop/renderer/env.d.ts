@@ -464,7 +464,7 @@ interface OpenClawAPI {
     ): Promise<{ ok: boolean; caps: string[]; needsRestart: boolean }>;
     provision(): Promise<boolean>;
     getUserDirs(): Promise<{ rw: string[]; ro: string[] }>;
-    addUserDir(params: { access: "rw" | "ro" }): Promise<{
+    addUserDir(params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }): Promise<{
       ok: boolean;
       reason?: string;
       parentDir?: string;
@@ -476,6 +476,14 @@ interface OpenClawAPI {
       dir: string;
       access: "rw" | "ro";
     }): Promise<{ ok: boolean; dirs: { rw: string[]; ro: string[] } }>;
+    setUserDirAccess(params: { dir: string; access: "rw" | "ro" }): Promise<{
+      ok: boolean;
+      reason?: string;
+      parentDir?: string;
+      parentAccess?: string;
+      removedChildren?: string[];
+      dirs: { rw: string[]; ro: string[] };
+    }>;
     onPermissionRequest(
       callback: (data: {
         requestId: string;

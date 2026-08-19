@@ -68,6 +68,8 @@ interface StartOptions {
   gatewayToken: string;
   gatewayProcessId: number;
   gatewayGeneration: string;
+  uiLocale: string;
+  openClawStateRoot: string;
   folders: BundledWindowsNodeFolder[];
   onApproval: (approval: BundledApprovalRequest | null) => void;
 }
@@ -122,7 +124,7 @@ export class BundledWindowsNodeHost {
         path: folder.path,
         access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
       })),
-      deniedRoots: sensitiveWindowsRoots(stateRoot),
+      deniedRoots: sensitiveWindowsRoots(stateRoot, options.openClawStateRoot),
       wxcExecPath: this.wxcExecPath,
       networkAllowed: false,
       allowWindowsUi: true,
@@ -208,6 +210,7 @@ export class BundledWindowsNodeHost {
         activationLeaseSecret: activationLeaseSecret.toString("base64"),
         gatewayGeneration: options.gatewayGeneration,
         policyFingerprint,
+        uiLocale: options.uiLocale,
       })}\n`,
     );
   }
@@ -250,7 +253,7 @@ export class BundledWindowsNodeHost {
       )
       .digest("hex");
     const epoch = this.activationLeaseEpoch;
-    const update = this.activationLeaseWriteQueue.then(async () => {
+    const assertCurrentGeneration = () => {
       if (
         epoch !== this.activationLeaseEpoch ||
         this.process !== expectedProcess ||
@@ -259,7 +262,15 @@ export class BundledWindowsNodeHost {
       ) {
         throw new Error("Bundled Windows node activation generation changed before lease update");
       }
-      await writeJsonAtomically(leasePath, { ...lease, signature });
+    };
+    const update = this.activationLeaseWriteQueue.then(async () => {
+      assertCurrentGeneration();
+      await writeJsonAtomically(
+        leasePath,
+        { ...lease, signature },
+        (source, destination) => fs.renameSync(source, destination),
+        assertCurrentGeneration,
+      );
       if (
         epoch !== this.activationLeaseEpoch ||
         this.process !== expectedProcess ||
@@ -278,14 +289,20 @@ export class BundledWindowsNodeHost {
 
   revokeActivationLease(): void {
     this.activationLeaseEpoch += 1;
+    this.activationLease = null;
     if (this.activationLeasePath) {
-      try {
-        fs.rmSync(this.activationLeasePath, { force: true });
-      } catch {
-        // An expired or generation-mismatched lease still fails closed in the host.
+      const revocationError = revokeActivationLeaseFile(this.activationLeasePath, () => {
+        const child = this.process;
+        if (child?.pid && child.exitCode === null && !child.kill("SIGKILL")) {
+          throw new Error(`Could not terminate bundled Windows node process ${child.pid}`);
+        }
+      });
+      if (revocationError) {
+        this.lastError =
+          "Activation lease could not be deleted, so the bundled Windows node was terminated";
+        console.error(`[windows-node] ${this.lastError}:`, revocationError);
       }
     }
-    this.activationLease = null;
   }
 
   async ensurePaired(gateway: BundledWindowsNodeGateway): Promise<void> {
@@ -617,21 +634,76 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   }
 }
 
-async function writeJsonAtomically(filePath: string, value: unknown): Promise<void> {
-  await writeTextAtomically(filePath, JSON.stringify(value, null, 2));
+async function writeJsonAtomically(
+  filePath: string,
+  value: unknown,
+  rename?: (source: string, destination: string) => Promise<void> | void,
+  beforeReplaceAttempt?: () => void,
+): Promise<void> {
+  await writeTextAtomically(filePath, JSON.stringify(value, null, 2), rename, beforeReplaceAttempt);
 }
 
-async function writeTextAtomically(filePath: string, contents: string): Promise<void> {
+async function writeTextAtomically(
+  filePath: string,
+  contents: string,
+  rename?: (source: string, destination: string) => Promise<void> | void,
+  beforeReplaceAttempt?: () => void,
+): Promise<void> {
   const temporary = `${filePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
   try {
     await fs.promises.writeFile(temporary, contents, {
       encoding: "utf8",
       mode: 0o600,
     });
-    await fs.promises.rename(temporary, filePath);
+    await replaceFileWithRetry(
+      temporary,
+      filePath,
+      rename ?? fs.promises.rename,
+      delay,
+      beforeReplaceAttempt,
+    );
   } finally {
     await fs.promises.rm(temporary, { force: true });
   }
+}
+
+export async function replaceFileWithRetry(
+  source: string,
+  destination: string,
+  rename: (source: string, destination: string) => Promise<void> | void = fs.promises.rename,
+  wait: (milliseconds: number) => Promise<void> = delay,
+  beforeAttempt: () => void = () => undefined,
+): Promise<void> {
+  const attempts = 5;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      beforeAttempt();
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      if (attempt === attempts || !isTransientWindowsReplaceError(error)) throw error;
+      await wait(attempt * 20);
+    }
+  }
+}
+
+export function revokeActivationLeaseFile(
+  leasePath: string,
+  terminateHost: () => void,
+  remove: (leasePath: string) => void = (target) => fs.rmSync(target, { force: true }),
+): Error | null {
+  try {
+    remove(leasePath);
+    return null;
+  } catch (error) {
+    terminateHost();
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+function isTransientWindowsReplaceError(error: unknown): boolean {
+  if (!(error instanceof Error) || !("code" in error)) return false;
+  return ["EACCES", "EBUSY", "EPERM"].includes(String(error.code));
 }
 
 export function createBundledWindowsNodeEnvironment(
@@ -654,21 +726,30 @@ export function createBundledWindowsNodeEnvironment(
   };
 }
 
-function sensitiveWindowsRoots(stateRoot: string): string[] {
+export function sensitiveWindowsRoots(...stateRoots: string[]): string[] {
   const home = os.homedir();
   const appData = process.env.APPDATA ?? path.join(home, "AppData", "Roaming");
   const localAppData = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
-  return [
+  const roots = [
     path.join(home, ".ssh"),
+    path.join(home, ".gnupg"),
     path.join(home, ".aws"),
     path.join(home, ".azure"),
     path.join(home, ".kube"),
+    path.join(home, ".config", "gcloud"),
     path.join(appData, "openclaw"),
     path.join(appData, "Microsoft", "Credentials"),
+    path.join(appData, "Mozilla", "Firefox", "Profiles"),
+    path.join(appData, "Microsoft", "Windows", "PowerShell", "PSReadLine"),
     path.join(localAppData, "Google", "Chrome", "User Data"),
     path.join(localAppData, "Microsoft", "Edge", "User Data"),
-    stateRoot,
+    path.join(localAppData, "BraveSoftware", "Brave-Browser", "User Data"),
+    ...stateRoots,
   ];
+  return roots.filter(
+    (root, index) =>
+      roots.findIndex((candidate) => candidate.toLowerCase() === root.toLowerCase()) === index,
+  );
 }
 
 export function validateApprovalRequest(value: unknown): BundledApprovalRequest {

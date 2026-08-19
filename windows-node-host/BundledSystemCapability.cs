@@ -14,7 +14,8 @@ internal sealed class BundledSystemCapability(
     HostPolicy policy,
     string approvalPipeName,
     string approvalsPath,
-    ActivationLeaseGuard activationLease) : INodeCapability
+    ActivationLeaseGuard activationLease,
+    string uiLocale = "en-US") : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private static readonly string[] SupportedCommands =
@@ -52,7 +53,7 @@ internal sealed class BundledSystemCapability(
         }
         catch (HostPolicyException ex)
         {
-            return Error($"{ex.Code}: {ex.Message}");
+            return Error($"{ex.Code}: {LocalizePolicyError(ex, uiLocale)}");
         }
         catch (OperationCanceledException)
         {
@@ -188,50 +189,13 @@ internal sealed class BundledSystemCapability(
             currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
             activationLease.Revalidate(validatedActivation, request.Argv);
             var launchCwd = string.IsNullOrEmpty(currentCwd.LaunchPath) ? scratch : currentCwd.LaunchPath;
-            var readOnly = policy.ApprovedRoots
-                .Where(root => root.Access == FolderAccess.ReadOnly)
-                .Select(root => root.Path)
-                .ToArray();
-            var readWrite = policy.ApprovedRoots
-                .Where(root => root.Access == FolderAccess.ReadWrite)
-                .Select(root => root.Path)
-                .Append(scratch)
-                .ToArray();
-            var config = new MxcConfig
-            {
-                Version = "0.7.0-alpha",
-                ContainerId = Guid.NewGuid().ToString("N"),
-                Process = new MxcProcess
-                {
-                    CommandLine = WindowsCommandLine.Join([currentExecutable, .. exactArgs]),
-                    Cwd = launchCwd,
-                    TimeoutMs = request.TimeoutMs,
-                },
-                ProcessContainer = new MxcProcessContainer
-                {
-                    LeastPrivilege = false,
-                    Capabilities = [],
-                    Ui = new MxcBaseProcessUi
-                    {
-                        Isolation = "desktop",
-                        DesktopSystemControl = false,
-                        SystemSettings = "none",
-                        Ime = false,
-                    },
-                },
-                Filesystem = new MxcFilesystem
-                {
-                    ReadonlyPaths = readOnly,
-                    ReadwritePaths = readWrite,
-                },
-                Network = new MxcNetwork
-                {
-                    DefaultPolicy = "block",
-                    EnforcementMode = "capabilities",
-                },
-                Ui = new MxcUi { Disable = false, Clipboard = "none", Injection = false },
-                Lifecycle = new MxcLifecycle { DestroyOnExit = true, PreservePolicy = false },
-            };
+            var config = BuildMxcConfig(
+                policy,
+                currentExecutable,
+                exactArgs,
+                launchCwd,
+                scratch,
+                request.TimeoutMs);
             using var environment = ProcessEnvironmentOverride.Apply(
                 new Dictionary<string, string>
                 {
@@ -259,6 +223,60 @@ internal sealed class BundledSystemCapability(
         {
             try { Directory.Delete(scratch, recursive: true); } catch { }
         }
+    }
+
+    internal static MxcConfig BuildMxcConfig(
+        HostPolicy policy,
+        string executable,
+        IReadOnlyList<string> arguments,
+        string launchCwd,
+        string scratch,
+        int timeoutMs)
+    {
+        var readOnly = policy.ApprovedRoots
+            .Where(root => root.Access == FolderAccess.ReadOnly)
+            .Select(root => root.Path)
+            .ToArray();
+        var readWrite = policy.ApprovedRoots
+            .Where(root => root.Access == FolderAccess.ReadWrite)
+            .Select(root => root.Path)
+            .Append(scratch)
+            .ToArray();
+        return new MxcConfig
+        {
+            Version = "0.7.0-alpha",
+            ContainerId = Guid.NewGuid().ToString("N"),
+            Process = new MxcProcess
+            {
+                CommandLine = WindowsCommandLine.Join([executable, .. arguments]),
+                Cwd = launchCwd,
+                TimeoutMs = timeoutMs,
+            },
+            ProcessContainer = new MxcProcessContainer
+            {
+                LeastPrivilege = false,
+                Capabilities = [],
+                Ui = new MxcBaseProcessUi
+                {
+                    Isolation = "desktop",
+                    DesktopSystemControl = false,
+                    SystemSettings = "none",
+                    Ime = false,
+                },
+            },
+            Filesystem = new MxcFilesystem
+            {
+                ReadonlyPaths = readOnly,
+                ReadwritePaths = readWrite,
+            },
+            Network = new MxcNetwork
+            {
+                DefaultPolicy = "block",
+                EnforcementMode = "capabilities",
+            },
+            Ui = new MxcUi { Disable = false, Clipboard = "none", Injection = false },
+            Lifecycle = new MxcLifecycle { DestroyOnExit = true, PreservePolicy = false },
+        };
     }
 
     private RunRequest ParseRun(JsonElement args)
@@ -407,6 +425,20 @@ internal sealed class BundledSystemCapability(
 
     private static NodeInvokeResponse Success(object payload) => new() { Ok = true, Payload = payload };
     private static NodeInvokeResponse Error(string error) => new() { Ok = false, Error = error };
+    private static string LocalizePolicyError(HostPolicyException error, string locale)
+    {
+        var chinese = locale.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+        return error.Code switch
+        {
+            "declare-access-outside-approved-roots" => chinese
+                ? "此文件夹未获 MXC 策略允许。请前往“设置 > 安全”，将该文件夹添加为只读或读写，然后重试。"
+                : "This folder is not allowed by the MXC policy. Open Settings > Security, add it as Read-only or Read/write, then retry.",
+            "declare-access-exceeds-approved-root" => chinese
+                ? "此文件夹配置为只读，但命令声明需要读写。请前往“设置 > 安全”，将其改为读写，然后重试。"
+                : "This folder is configured Read-only, but the command declares Read/write. Open Settings > Security, change it to Read/write, then retry.",
+            _ => error.Message,
+        };
+    }
     private sealed record RunRequest(
         string[] Argv,
         string? Cwd,
