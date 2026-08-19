@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Win32.SafeHandles;
@@ -19,7 +20,12 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("durableApprovalBindsCwd")] bool DurableApprovalBindsCwd,
     [property: JsonPropertyName("launchTimeRevalidation")] bool LaunchTimeRevalidation,
     [property: JsonPropertyName("omittedCwdUsesIsolatedScratch")] bool OmittedCwdUsesIsolatedScratch,
-    [property: JsonPropertyName("hostFallbackAbsent")] bool HostFallbackAbsent)
+    [property: JsonPropertyName("hostFallbackAbsent")] bool HostFallbackAbsent,
+    [property: JsonPropertyName("activationLeaseContract")] string ActivationLeaseContract,
+    [property: JsonPropertyName("generationBoundActivation")] bool GenerationBoundActivation,
+    [property: JsonPropertyName("policyBoundActivation")] bool PolicyBoundActivation,
+    [property: JsonPropertyName("launchTimeLeaseRevalidation")] bool LaunchTimeLeaseRevalidation,
+    [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent)
 {
     public static readonly CwdPolicyAttestation Current = new(
         CwdPolicyContract.Version,
@@ -29,7 +35,12 @@ public sealed record CwdPolicyAttestation(
         DurableApprovalBindsCwd: true,
         LaunchTimeRevalidation: true,
         OmittedCwdUsesIsolatedScratch: true,
-        HostFallbackAbsent: true);
+        HostFallbackAbsent: true,
+        ActivationLeaseContract: global::MicroClaw.WindowsNodeHost.ActivationLeaseContract.Version,
+        GenerationBoundActivation: true,
+        PolicyBoundActivation: true,
+        LaunchTimeLeaseRevalidation: true,
+        DurableApprovalsPresent: false);
 }
 
 public enum FolderAccess
@@ -61,7 +72,23 @@ public sealed class HostPolicy
 
     public static async Task<HostPolicy> LoadAsync(string path)
     {
-        var json = await File.ReadAllTextAsync(path);
+        var json = await File.ReadAllBytesAsync(path);
+        return Parse(json);
+    }
+
+    public static async Task<HostPolicy> LoadVerifiedAsync(string path, string expectedSha256)
+    {
+        var json = await File.ReadAllBytesAsync(path);
+        var actualSha256 = Convert.ToHexString(SHA256.HashData(json)).ToLowerInvariant();
+        if (!string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal))
+            throw new HostPolicyException(
+                "policy-fingerprint-mismatch",
+                "The loaded sandbox policy does not match MicroClaw's activation fingerprint.");
+        return Parse(json);
+    }
+
+    private static HostPolicy Parse(ReadOnlySpan<byte> json)
+    {
         HostPolicyInput input;
         try
         {

@@ -12,7 +12,8 @@ namespace MicroClaw.WindowsNodeHost;
 internal sealed class BundledSystemCapability(
     HostPolicy policy,
     string approvalPipeName,
-    string approvalsPath) : INodeCapability
+    string approvalsPath,
+    ActivationLeaseGuard activationLease) : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private static readonly string[] SupportedCommands =
@@ -37,7 +38,11 @@ internal sealed class BundledSystemCapability(
         {
             return request.Command switch
             {
-                "system.run.cwd-policy" => Success(CwdPolicyAttestation.Current),
+                "system.run.cwd-policy" => Success(
+                    CwdPolicyAttestation.Current with
+                    {
+                        DurableApprovalsPresent = DurableApprovalIdentity.Load(approvalsPath).Count > 0,
+                    }),
                 "system.which" => Success(new { bins = ResolveBins(request.Args) }),
                 "system.run.prepare" => Success(Prepare(request.Args)),
                 "system.run" => await RunAsync(request.Args, cancellationToken),
@@ -91,6 +96,7 @@ internal sealed class BundledSystemCapability(
     {
         var request = ParseRun(args);
         var cwd = policy.ResolveCwd(request.Cwd);
+        var validatedActivation = activationLease.Validate(request.Argv);
         var executable = ResolveExecutable(request.Argv[0])
             ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
         var exactArgs = request.Argv.Skip(1).ToArray();
@@ -140,6 +146,7 @@ internal sealed class BundledSystemCapability(
                     .Append(currentCwd.LaunchPath)
                     .Append(scratch));
             currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
+            activationLease.Revalidate(validatedActivation, request.Argv);
             var launchCwd = string.IsNullOrEmpty(currentCwd.LaunchPath) ? scratch : currentCwd.LaunchPath;
             var readOnly = policy.ApprovedRoots
                 .Where(root => root.Access == FolderAccess.ReadOnly)

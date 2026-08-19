@@ -64,7 +64,9 @@ internal static class Program
             if (string.IsNullOrWhiteSpace(bootstrap.GatewayToken))
                 throw new HostPolicyException("gateway-token-missing", "The app-owned Gateway credential is missing.");
 
-            var policy = await HostPolicy.LoadAsync(bootstrap.PolicyPath);
+            var policy = await HostPolicy.LoadVerifiedAsync(
+                bootstrap.PolicyPath,
+                bootstrap.PolicyFingerprint);
             SecureStateDirectory.Ensure(bootstrap.IdentityDirectory);
             using var client = new WindowsNodeClient(
                 gatewayUrl: gatewayUri.ToString(),
@@ -86,7 +88,12 @@ internal static class Program
             client.RegisterCapability(new BundledSystemCapability(
                 policy,
                 bootstrap.ApprovalPipeName,
-                bootstrap.ApprovalsPath));
+                bootstrap.ApprovalsPath,
+                new ActivationLeaseGuard(
+                    bootstrap.ActivationLeasePath,
+                    bootstrap.ActivationLeaseSecret,
+                    bootstrap.GatewayGeneration,
+                    bootstrap.PolicyFingerprint)));
             await client.ConnectAsync();
             await Task.Delay(Timeout.InfiniteTimeSpan);
             return 0;
@@ -108,6 +115,10 @@ internal sealed class HostBootstrap
     public string IdentityDirectory { get; init; } = string.Empty;
     public string ApprovalPipeName { get; init; } = string.Empty;
     public string ApprovalsPath { get; init; } = string.Empty;
+    public string ActivationLeasePath { get; init; } = string.Empty;
+    public string ActivationLeaseSecret { get; init; } = string.Empty;
+    public string GatewayGeneration { get; init; } = string.Empty;
+    public string PolicyFingerprint { get; init; } = string.Empty;
 }
 
 internal sealed class StderrLogger : IOpenClawLogger

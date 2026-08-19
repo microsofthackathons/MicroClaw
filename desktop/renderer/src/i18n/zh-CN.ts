@@ -291,6 +291,10 @@ export default {
   "settings.windowsNodeMxcRefresh": "刷新就绪状态",
   "settings.windowsNodeMxcRunSmoke": "运行受控冒烟测试",
   "settings.windowsNodeMxcSmokePassed": "受控 hostname.exe 和 PowerShell 检查已通过",
+  "settings.windowsNodeMxcActivationLease": "激活租约",
+  "settings.windowsNodeMxcGatewayGeneration": "网关代次",
+  "settings.windowsNodeMxcActivate": "激活已验证路由",
+  "settings.windowsNodeMxcActivated": "Windows Node + MXC 路由已为当前网关代次激活",
   "settings.windowsNodeMxcCompatibility":
     "MXC 0.7 下 PowerShell 需要“允许 Windows UI API”。这是兼容性放宽，并不启用屏幕、输入或其他 UI 能力。AppContainer 与此模式互斥。",
   "settings.windowsNodeMxcDegraded":

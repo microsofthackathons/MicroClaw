@@ -28,6 +28,20 @@ export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
 
 export type WindowsNodeMxcGatewayPolicyState = "active" | "locked" | "drift";
 
+export function isWindowsNodeMxcIngressReleased(
+  desired: boolean,
+  gatewayGeneration: string,
+  releasedGeneration: string | null,
+  activationInProgress: boolean,
+): boolean {
+  return (
+    !desired ||
+    (!activationInProgress &&
+      gatewayGeneration.length > 0 &&
+      releasedGeneration === gatewayGeneration)
+  );
+}
+
 export type SandboxFolderAccess = "ro" | "rw";
 
 export interface WindowsNodeMxcFolder {
@@ -108,6 +122,12 @@ type AgentEntry = {
 
 type AgentToolsBackup = Record<string, unknown | null>;
 const GATEWAY_NODES_BACKUP_KEY = "$microclaw.gateway.nodes";
+const INGRESS_BACKUP_KEYS = {
+  channels: "$microclaw.ingress.channels",
+  cron: "$microclaw.ingress.cron",
+  hooks: "$microclaw.ingress.hooks",
+  plugins: "$microclaw.ingress.plugins",
+} as const;
 
 export interface WindowsNodeMxcPolicyApplication {
   config: Record<string, unknown>;
@@ -196,6 +216,37 @@ export function applyWindowsNodeMxcGatewayPolicy(
   nodes.denyCommands = [];
   gateway.nodes = nodes;
   config.gateway = gateway;
+  for (const [field, backupKey] of Object.entries(INGRESS_BACKUP_KEYS)) {
+    if (!Object.hasOwn(backups, backupKey)) {
+      backups[backupKey] = Object.hasOwn(config, field) ? structuredClone(config[field]) : null;
+    }
+  }
+  const channels = asRecord(config.channels);
+  config.channels = Object.fromEntries(
+    Object.entries(channels).map(([channelId, value]) => [
+      channelId,
+      { ...asRecord(value), enabled: false },
+    ]),
+  );
+  const hooks = asRecord(config.hooks);
+  config.hooks = {
+    ...hooks,
+    enabled: false,
+    internal: { ...asRecord(hooks.internal), enabled: false },
+  };
+  config.cron = { ...asRecord(config.cron), enabled: false };
+  const plugins = asRecord(config.plugins);
+  const pluginEntries = asRecord(plugins.entries);
+  config.plugins = {
+    ...plugins,
+    enabled: false,
+    entries: Object.fromEntries(
+      Object.entries(pluginEntries).map(([pluginId, value]) => [
+        pluginId,
+        { ...asRecord(value), enabled: false },
+      ]),
+    ),
+  };
   return { config, backups, agentIds };
 }
 
@@ -230,6 +281,12 @@ export function restoreWindowsNodeMxcGatewayPolicy(
       gateway.nodes = structuredClone(previous);
       config.gateway = gateway;
     }
+  }
+  for (const [field, backupKey] of Object.entries(INGRESS_BACKUP_KEYS)) {
+    if (!Object.hasOwn(backups, backupKey)) continue;
+    const previous = backups[backupKey];
+    if (previous === null) delete config[field];
+    else config[field] = structuredClone(previous);
   }
   return config;
 }
@@ -297,8 +354,34 @@ export function validateWindowsNodeMxcGatewayPolicy(
   if (!isDeepStrictEqual(denyCommands, [])) {
     blockers.push("Gateway node command denylist conflicts with the bundled system-only surface");
   }
+  const cron = asRecord(root.cron);
+  if (cron.enabled !== false) blockers.push("Gateway cron ingress must remain disabled");
+  const hooks = asRecord(root.hooks);
+  if (hooks.enabled !== false) blockers.push("Gateway webhook ingress must remain disabled");
+  if (asRecord(hooks.internal).enabled !== false) {
+    blockers.push("Gateway internal-hook ingress must remain disabled");
+  }
+  const channels = asRecord(root.channels);
+  for (const [channelId, value] of Object.entries(channels)) {
+    if (asRecord(value).enabled !== false) {
+      blockers.push(`Gateway channel "${channelId}" must remain disabled`);
+    }
+  }
+  const plugins = asRecord(root.plugins);
+  if (plugins.enabled !== false) blockers.push("Gateway plugins must remain disabled");
+  for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
+    if (asRecord(value).enabled !== false) {
+      blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
+    }
+  }
 
   return { ready: blockers.length === 0, blockers, warnings };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 export function getWindowsNodeMxcGatewayPolicyState(
@@ -463,9 +546,11 @@ export function classifyMissingEffectiveToolSession(
     };
   }
   return {
-    ready: false,
-    blockers: [`Agent "${agentId}" has no persisted session for tools.effective`],
-    warnings: [],
+    ready: true,
+    blockers: [],
+    warnings: [
+      `Agent "${agentId}" has no persisted session; the exact active config applies before its first session is created`,
+    ],
   };
 }
 
@@ -516,6 +601,7 @@ export async function listAgentSessionKeys(
 
   const wanted = new Set(agentIds);
   const result = new Map<string, string>();
+  let globalSessionKey = "";
   for (const value of sessions) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const session = value as Record<string, unknown>;
@@ -526,12 +612,21 @@ export async function listAgentSessionKeys(
           ? session.sessionKey.trim()
           : "";
     if (!key) continue;
+    if (key === "global") globalSessionKey = key;
     const keyAgentId = /^agent:([^:]+):/i.exec(key)?.[1];
     const agentId =
       typeof session.agentId === "string" && session.agentId.trim()
         ? session.agentId.trim()
         : keyAgentId || (key === "global" ? "main" : "");
     if (wanted.has(agentId) && !result.has(agentId)) result.set(agentId, key);
+  }
+  // Pinned OpenClaw explicitly permits an operator tools.effective request to override
+  // the agent on the trusted global session, so one persisted global session can attest
+  // configured agents that have not yet created their own transcript.
+  if (globalSessionKey) {
+    for (const agentId of agentIds) {
+      if (!result.has(agentId)) result.set(agentId, globalSessionKey);
+    }
   }
   return result;
 }

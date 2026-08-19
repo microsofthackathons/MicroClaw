@@ -11,19 +11,12 @@
     "src/core/wxc_common/src/filesystem_dacl.rs",
     "src/host/wxc_host_prep/src/system_drive/mod.rs"
   ],
-  "includedOperations": [
-    "prepare-system-drive",
-    "unprepare-system-drive"
-  ],
-  "excludedOperations": [
-    "prepare-null-device",
-    "verify-null-device",
-    "dump-null-device"
-  ],
+  "includedOperations": ["prepare-system-drive", "unprepare-system-drive"],
+  "excludedOperations": ["prepare-null-device", "verify-null-device", "dump-null-device"],
   "buildRuntime": ".NET 10.0.10 self-contained single-file",
   "unsignedArtifactSha256": {
-    "win-x64": "452332016eaf13e09fa28e542b03e3c0c992648d693ffc9781e1e1aa15a431c6",
-    "win-arm64": "ee1d647f60a724fad500190ff93ca189fa481fbcecc49d9c352de4cf2654dd23"
+    "win-x64": "661cada5d4d32db4255e0c39d982ff7329d3a2bbc93acaf091eb5fed3c9ea205",
+    "win-arm64": "f6d9c09311906c60746c9a9f8e463c92deaf06c86ca564b7cfa8a64fe6f6e5bd"
   },
   "artifactOwnership": "Built and packaged by MicroClaw; not an official or Microsoft-signed MXC binary"
 }

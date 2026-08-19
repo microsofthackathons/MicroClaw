@@ -310,6 +310,7 @@ contextBridge.exposeInMainWorld("openclaw", {
     setEnabled: (params: { enabled: boolean; nodeId?: string }) =>
       ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     runSmoke: () => ipcRenderer.invoke("windows-node-mxc:run-smoke"),
+    activate: () => ipcRenderer.invoke("windows-node-mxc:activate"),
     respondApproval: (params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";

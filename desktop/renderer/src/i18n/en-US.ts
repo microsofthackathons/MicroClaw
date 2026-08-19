@@ -308,6 +308,11 @@ export default {
   "settings.windowsNodeMxcRefresh": "Refresh readiness",
   "settings.windowsNodeMxcRunSmoke": "Run contained smoke",
   "settings.windowsNodeMxcSmokePassed": "Contained hostname.exe and PowerShell checks passed",
+  "settings.windowsNodeMxcActivationLease": "Activation lease",
+  "settings.windowsNodeMxcGatewayGeneration": "Gateway generation",
+  "settings.windowsNodeMxcActivate": "Activate verified route",
+  "settings.windowsNodeMxcActivated":
+    "Windows Node + MXC route activated for this Gateway generation",
   "settings.windowsNodeMxcCompatibility":
     "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. AppContainer and this mode are mutually exclusive.",
   "settings.windowsNodeMxcDegraded":

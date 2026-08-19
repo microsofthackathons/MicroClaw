@@ -4,10 +4,11 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
+export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
@@ -37,6 +38,17 @@ export interface BundledWindowsNodeHostStatus {
   pendingApproval: BundledApprovalRequest | null;
   lastError: string | null;
   nodeId: string | null;
+  gatewayGeneration: string | null;
+  policyFingerprint: string | null;
+  activationLease: BundledWindowsNodeActivationLease | null;
+}
+
+export interface BundledWindowsNodeActivationLease {
+  contract: typeof BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT;
+  mode: "diagnostic" | "active";
+  gatewayGeneration: string;
+  policyFingerprint: string;
+  expiresAtUnixMs: number;
 }
 
 export interface BundledApprovalRequest {
@@ -51,6 +63,7 @@ interface StartOptions {
   gatewayUrl: string;
   gatewayToken: string;
   gatewayProcessId: number;
+  gatewayGeneration: string;
   folders: BundledWindowsNodeFolder[];
   onApproval: (approval: BundledApprovalRequest | null) => void;
 }
@@ -69,6 +82,13 @@ export class BundledWindowsNodeHost {
   } | null = null;
   private lastError: string | null = null;
   private startOptions: StartOptions | null = null;
+  private activationLeaseSecret: Buffer | null = null;
+  private activationLeasePath: string | null = null;
+  private gatewayGeneration: string | null = null;
+  private policyFingerprint: string | null = null;
+  private activationLease: BundledWindowsNodeActivationLease | null = null;
+  private activationLeaseEpoch = 0;
+  private activationLeaseWriteQueue: Promise<void> = Promise.resolve();
   private readonly resourceRoot = resolveBundledWindowsNodeResourceRoot();
   private readonly hostPath = path.join(
     this.resourceRoot,
@@ -89,10 +109,11 @@ export class BundledWindowsNodeHost {
     const identityDirectory = path.join(stateRoot, "identity");
     const approvalsPath = path.join(stateRoot, "approvals-v2.json");
     const policyPath = path.join(stateRoot, "policy.json");
+    const activationLeasePath = path.join(stateRoot, "activation-lease.json");
     const scratchRoot = path.join(stateRoot, "scratch");
     await fs.promises.mkdir(stateRoot, { recursive: true });
     await fs.promises.mkdir(scratchRoot, { recursive: true });
-    await writeJsonAtomically(policyPath, {
+    const policy = {
       approvedRoots: options.folders.map((folder) => ({
         path: folder.path,
         access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
@@ -104,7 +125,17 @@ export class BundledWindowsNodeHost {
       clipboard: "none",
       inputInjection: false,
       strictNoHostFallback: true,
-    });
+    };
+    const policyJson = JSON.stringify(policy, null, 2);
+    await writeTextAtomically(policyPath, policyJson);
+    await fs.promises.rm(activationLeasePath, { force: true });
+    const activationLeaseSecret = randomBytes(32);
+    const policyFingerprint = createHash("sha256").update(policyJson, "utf8").digest("hex");
+    this.activationLeaseSecret = activationLeaseSecret;
+    this.activationLeasePath = activationLeasePath;
+    this.gatewayGeneration = options.gatewayGeneration;
+    this.policyFingerprint = policyFingerprint;
+    this.activationLease = null;
 
     const pipeName = `microclaw-node-approval-${process.pid}-${randomBytes(12).toString("hex")}`;
     this.approvalServer = net.createServer((socket) => {
@@ -169,8 +200,88 @@ export class BundledWindowsNodeHost {
         identityDirectory,
         approvalPipeName: pipeName,
         approvalsPath,
+        activationLeasePath,
+        activationLeaseSecret: activationLeaseSecret.toString("base64"),
+        gatewayGeneration: options.gatewayGeneration,
+        policyFingerprint,
       })}\n`,
     );
+  }
+
+  async setActivationLease(
+    mode: "diagnostic" | "active",
+    ttlMs: number,
+  ): Promise<BundledWindowsNodeActivationLease> {
+    const expectedProcess = this.process;
+    if (!expectedProcess || expectedProcess.exitCode !== null) {
+      throw new Error("Bundled Windows node process is not running");
+    }
+    const secret = this.activationLeaseSecret;
+    const leasePath = this.activationLeasePath;
+    const gatewayGeneration = this.gatewayGeneration;
+    const policyFingerprint = this.policyFingerprint;
+    if (!secret || !leasePath || !gatewayGeneration || !policyFingerprint) {
+      throw new Error("Bundled Windows node activation state is unavailable");
+    }
+    if (!Number.isFinite(ttlMs) || ttlMs < 5_000 || ttlMs > 5 * 60_000) {
+      throw new Error("Activation lease lifetime must be between 5 seconds and 5 minutes");
+    }
+    const lease: BundledWindowsNodeActivationLease = {
+      contract: BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT,
+      mode,
+      gatewayGeneration,
+      policyFingerprint,
+      expiresAtUnixMs: Date.now() + Math.floor(ttlMs),
+    };
+    const signature = createHmac("sha256", secret)
+      .update(
+        [
+          lease.contract,
+          lease.mode,
+          lease.gatewayGeneration,
+          lease.policyFingerprint,
+          String(lease.expiresAtUnixMs),
+        ].join("\n"),
+        "utf8",
+      )
+      .digest("hex");
+    const epoch = this.activationLeaseEpoch;
+    const update = this.activationLeaseWriteQueue.then(async () => {
+      if (
+        epoch !== this.activationLeaseEpoch ||
+        this.process !== expectedProcess ||
+        expectedProcess.exitCode !== null ||
+        this.activationLeasePath !== leasePath
+      ) {
+        throw new Error("Bundled Windows node activation generation changed before lease update");
+      }
+      await writeJsonAtomically(leasePath, { ...lease, signature });
+      if (
+        epoch !== this.activationLeaseEpoch ||
+        this.process !== expectedProcess ||
+        expectedProcess.exitCode !== null ||
+        this.activationLeasePath !== leasePath
+      ) {
+        await fs.promises.rm(leasePath, { force: true });
+        throw new Error("Bundled Windows node activation generation changed during lease update");
+      }
+      this.activationLease = lease;
+    });
+    this.activationLeaseWriteQueue = update.catch(() => undefined);
+    await update;
+    return lease;
+  }
+
+  revokeActivationLease(): void {
+    this.activationLeaseEpoch += 1;
+    if (this.activationLeasePath) {
+      try {
+        fs.rmSync(this.activationLeasePath, { force: true });
+      } catch {
+        // An expired or generation-mismatched lease still fails closed in the host.
+      }
+    }
+    this.activationLease = null;
   }
 
   async ensurePaired(gateway: BundledWindowsNodeGateway): Promise<void> {
@@ -254,6 +365,7 @@ export class BundledWindowsNodeHost {
   }
 
   stop(): void {
+    this.revokeActivationLease();
     if (this.pendingApproval) {
       clearTimeout(this.pendingApproval.timer);
       this.pendingApproval.socket.end('{"decision":"deny"}\n');
@@ -265,6 +377,10 @@ export class BundledWindowsNodeHost {
     if (this.process?.pid && this.process.exitCode === null) this.process.kill();
     this.process = null;
     this.startOptions = null;
+    this.activationLeaseSecret = null;
+    this.activationLeasePath = null;
+    this.gatewayGeneration = null;
+    this.policyFingerprint = null;
   }
 
   status(): BundledWindowsNodeHostStatus {
@@ -280,6 +396,12 @@ export class BundledWindowsNodeHost {
       pendingApproval: this.pendingApproval?.request ?? null,
       lastError: this.lastError,
       nodeId: this.tryReadNodeId(),
+      gatewayGeneration: this.gatewayGeneration,
+      policyFingerprint: this.policyFingerprint,
+      activationLease:
+        this.activationLease && this.activationLease.expiresAtUnixMs > Date.now()
+          ? { ...this.activationLease }
+          : null,
     };
   }
 
@@ -492,12 +614,20 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
 }
 
 async function writeJsonAtomically(filePath: string, value: unknown): Promise<void> {
-  const temporary = `${filePath}.${process.pid}.tmp`;
-  await fs.promises.writeFile(temporary, JSON.stringify(value, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await fs.promises.rename(temporary, filePath);
+  await writeTextAtomically(filePath, JSON.stringify(value, null, 2));
+}
+
+async function writeTextAtomically(filePath: string, contents: string): Promise<void> {
+  const temporary = `${filePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, contents, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.promises.rename(temporary, filePath);
+  } finally {
+    await fs.promises.rm(temporary, { force: true });
+  }
 }
 
 export function createBundledWindowsNodeEnvironment(

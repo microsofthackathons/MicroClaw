@@ -10,6 +10,7 @@ import {
   extractEffectiveToolNames,
   getMxcTierWarning,
   getWindowsNodeMxcGatewayPolicyState,
+  isWindowsNodeMxcIngressReleased,
   listAgentSessionKeys,
   normalizeWindowsNodeRecord,
   restoreWindowsNodeMxcGatewayPolicy,
@@ -20,7 +21,9 @@ import {
 } from "./windows-node-mxc";
 import {
   classifyDeniedCwdSmoke,
+  isCurrentBundledActivationLease,
   isCurrentWindowsNodeMxcSmoke,
+  selectCurrentWindowsNodeMxcSmoke,
   shouldStopManagedGatewayForWindowsNodeMxc,
   validateBundledCwdAttestation,
 } from "./windows-node-mxc-service";
@@ -56,9 +59,14 @@ describe("bundled Windows Node CWD attestation", () => {
           launchTimeRevalidation: true,
           omittedCwdUsesIsolatedScratch: true,
           hostFallbackAbsent: true,
+          activationLeaseContract: "microclaw.windows-activation.v1",
+          generationBoundActivation: true,
+          policyBoundActivation: true,
+          launchTimeLeaseRevalidation: true,
+          durableApprovalsPresent: true,
         },
       }),
-    ).toEqual({ ready: true, blockers: [] });
+    ).toEqual({ ready: true, blockers: [], durableApprovalsPresent: true });
   });
 
   describe("Windows Node MXC diagnostic lifecycle", () => {
@@ -83,6 +91,13 @@ describe("bundled Windows Node CWD attestation", () => {
           effectiveToolsState: "verified",
           gatewayPolicyState: "active",
         }),
+      ).toBe(false);
+      expect(
+        shouldStopManagedGatewayForWindowsNodeMxc({
+          effectiveEnabled: false,
+          effectiveToolsState: "verified",
+          gatewayPolicyState: "active",
+        }),
       ).toBe(true);
     });
 
@@ -96,6 +111,76 @@ describe("bundled Windows Node CWD attestation", () => {
           hostname: { outcome: "passed", reason: "ok" },
           powershell: { outcome: "passed", reason: "ok" },
         }),
+      ).toBe(false);
+    });
+
+    it("binds smoke proof and ingress release to the exact Gateway generation", () => {
+      const smoke = {
+        gatewayGeneration: "generation-1",
+        nodeId: "node-1",
+        settingsFingerprint: "settings-1",
+        probeTier: "appcontainer-dacl",
+        checkedAt: new Date().toISOString(),
+        hostname: { outcome: "passed" as const, reason: "ok" },
+        powershell: { outcome: "passed" as const, reason: "ok" },
+        deniedOutsideRoot: { outcome: "passed" as const, reason: "denied" },
+      };
+
+      expect(
+        selectCurrentWindowsNodeMxcSmoke(
+          smoke,
+          "generation-1",
+          "node-1",
+          "settings-1",
+          "appcontainer-dacl",
+        ),
+      ).toBe(smoke);
+      expect(
+        selectCurrentWindowsNodeMxcSmoke(
+          smoke,
+          "generation-2",
+          "node-1",
+          "settings-1",
+          "appcontainer-dacl",
+        ),
+      ).toBeNull();
+      expect(isWindowsNodeMxcIngressReleased(true, "generation-1", "generation-1", false)).toBe(
+        true,
+      );
+      expect(isWindowsNodeMxcIngressReleased(true, "generation-2", "generation-1", false)).toBe(
+        false,
+      );
+      expect(isWindowsNodeMxcIngressReleased(true, "generation-1", "generation-1", true)).toBe(
+        false,
+      );
+      expect(isWindowsNodeMxcIngressReleased(false, "", null, false)).toBe(true);
+    });
+
+    it("requires an unexpired activation lease for the exact generation and policy", () => {
+      const lease = {
+        contract: "microclaw.windows-activation.v1" as const,
+        mode: "active" as const,
+        gatewayGeneration: "generation-1",
+        policyFingerprint: "policy-1",
+        expiresAtUnixMs: Date.now() + 60_000,
+      };
+
+      expect(isCurrentBundledActivationLease(lease, "active", "generation-1", "policy-1")).toBe(
+        true,
+      );
+      expect(isCurrentBundledActivationLease(lease, "active", "generation-2", "policy-1")).toBe(
+        false,
+      );
+      expect(isCurrentBundledActivationLease(lease, "active", "generation-1", "policy-2")).toBe(
+        false,
+      );
+      expect(
+        isCurrentBundledActivationLease(
+          { ...lease, expiresAtUnixMs: Date.now() - 1 },
+          "active",
+          "generation-1",
+          "policy-1",
+        ),
       ).toBe(false);
     });
   });
@@ -152,6 +237,54 @@ describe("Windows Node MXC Gateway policy", () => {
     ]);
     expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123").ready).toBe(true);
     expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
+  });
+
+  it("disables and restores every MicroClaw-managed external ingress surface", () => {
+    const source = {
+      agents: { list: [{ id: "main" }] },
+      channels: { discord: { enabled: true, token: "preserved" } },
+      hooks: { enabled: true, token: "preserved", internal: { enabled: true } },
+      cron: { enabled: true, maxConcurrentRuns: 2 },
+      plugins: {
+        enabled: true,
+        allow: ["openclaw-weixin"],
+        entries: { "openclaw-weixin": { enabled: true } },
+      },
+    };
+
+    const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "locked");
+
+    expect(applied.config).toMatchObject({
+      channels: { discord: { enabled: false, token: "preserved" } },
+      hooks: { enabled: false, token: "preserved", internal: { enabled: false } },
+      cron: { enabled: false, maxConcurrentRuns: 2 },
+      plugins: {
+        enabled: false,
+        allow: ["openclaw-weixin"],
+        entries: { "openclaw-weixin": { enabled: false } },
+      },
+    });
+    expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123", "locked").ready).toBe(
+      true,
+    );
+    expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
+  });
+
+  it("fails closed when channels, hooks, cron, or plugins are re-enabled", () => {
+    const source = { agents: { list: [{ id: "main" }] } };
+    const baseline = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "active").config;
+    const drifts = [
+      { ...baseline, cron: { enabled: true } },
+      { ...baseline, hooks: { enabled: true, internal: { enabled: false } } },
+      { ...baseline, hooks: { enabled: false, internal: { enabled: true } } },
+      { ...baseline, channels: { discord: { enabled: true } } },
+      { ...baseline, plugins: { enabled: true, entries: {} } },
+      { ...baseline, plugins: { enabled: false, entries: { channel: { enabled: true } } } },
+    ];
+
+    for (const drift of drifts) {
+      expect(validateWindowsNodeMxcGatewayPolicy(drift, "node-123", "active").ready).toBe(false);
+    }
   });
 
   it("uses an empty locked tool inventory until all readiness proofs pass", () => {
@@ -211,7 +344,7 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(() => extractEffectiveToolNames({ tools: [] })).toThrow("groups inventory");
   });
 
-  it("uses actual persisted session keys for each configured agent", async () => {
+  it("uses persisted agent sessions and the trusted global session for unsurfaced agents", async () => {
     const request = async (method: string) => {
       expect(method).toBe("sessions.list");
       return {
@@ -223,18 +356,20 @@ describe("Windows Node MXC Gateway policy", () => {
     expect([...keys]).toEqual([
       ["main", "global"],
       ["coder", "agent:coder:work"],
+      ["unused", "global"],
     ]);
   });
 
-  it("allows missing sessions only while the Gateway remains locked", () => {
+  it("uses exact static policy for agents without a persisted runtime session", () => {
     expect(classifyMissingEffectiveToolSession("unused", "locked")).toMatchObject({
       ready: true,
       blockers: [],
       warnings: [expect.stringContaining("locked config applies")],
     });
     expect(classifyMissingEffectiveToolSession("unused", "active")).toMatchObject({
-      ready: false,
-      blockers: [expect.stringContaining("no persisted session")],
+      ready: true,
+      blockers: [],
+      warnings: [expect.stringContaining("exact active config applies")],
     });
   });
 });

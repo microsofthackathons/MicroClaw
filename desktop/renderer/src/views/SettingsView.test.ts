@@ -15,6 +15,7 @@ describe("SettingsView", () => {
   const exportGatewayLogs = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
+  const activateWindowsNodeMxc = vi.fn();
 
   const localNode = {
     id: "node-local",
@@ -40,6 +41,11 @@ describe("SettingsView", () => {
     settingsFingerprint: "settings",
     nodes,
     selectedNode: nodes.find((node) => node.id === selectedNodeId) ?? null,
+    cwdAttestationReady: true,
+    activationLeaseContract: "microclaw.windows-activation.v1",
+    gatewayGeneration: "generation-1",
+    activationLeaseMode: null,
+    activationLeaseExpiresAt: null,
     gatewayPolicyState: "locked",
     gatewayPolicyReady: true,
     effectiveToolsReady: true,
@@ -69,6 +75,7 @@ describe("SettingsView", () => {
     setWindowsNodeMxcEnabled
       .mockReset()
       .mockImplementation(async ({ nodeId }: { nodeId: string }) => status(nodeId));
+    activateWindowsNodeMxc.mockReset();
     window.openclaw = {
       config: {
         read: vi.fn().mockResolvedValue(null),
@@ -90,6 +97,7 @@ describe("SettingsView", () => {
         getStatus: getWindowsNodeMxcStatus,
         setEnabled: setWindowsNodeMxcEnabled,
         runSmoke: vi.fn(),
+        activate: activateWindowsNodeMxc,
       },
       sandbox: {
         getStatus: vi.fn().mockResolvedValue({
@@ -167,5 +175,48 @@ describe("SettingsView", () => {
     expect(wrapper.find(".mxc-card").text()).toContain("Local Windows node (online)");
     expect(wrapper.find(".mxc-card").find("el-select").exists()).toBe(false);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+  });
+
+  it("activates only after the locked-generation smoke proof is ready", async () => {
+    routeState.section = "security";
+    const passed = { outcome: "passed" as const, reason: "ok" };
+    const lockedReady = {
+      ...status("node-local"),
+      strictFallbackEffective: true,
+      allowWindowsUiEffective: true,
+      smoke: {
+        gatewayGeneration: "generation-1",
+        nodeId: "node-local",
+        settingsFingerprint: "settings",
+        probeTier: "appcontainer-dacl",
+        checkedAt: new Date().toISOString(),
+        hostname: passed,
+        powershell: passed,
+        deniedOutsideRoot: passed,
+      },
+    };
+    getWindowsNodeMxcStatus.mockResolvedValueOnce(lockedReady);
+    activateWindowsNodeMxc.mockResolvedValueOnce({
+      ...lockedReady,
+      effectiveEnabled: true,
+      gatewayPolicyState: "active",
+      activationLeaseMode: "active",
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [createPinia()],
+      },
+    });
+
+    await flushPromises();
+    const activateButton = wrapper
+      .findAll("el-button")
+      .find((button) => button.text() === "Activate verified route");
+    expect(activateButton?.attributes("disabled")).toBe("false");
+
+    await activateButton!.trigger("click");
+    await flushPromises();
+
+    expect(activateWindowsNodeMxc).toHaveBeenCalledOnce();
   });
 });

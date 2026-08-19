@@ -431,6 +431,24 @@
               }}</span>
             </div>
             <div class="card-row">
+              <span class="row-label">{{ t("settings.windowsNodeMxcActivationLease") }}</span>
+              <span class="row-value">
+                {{
+                  `${windowsNodeMxcStatus.activationLeaseMode ?? "none"} / ${
+                    windowsNodeMxcStatus.activationLeaseContract ?? "unavailable"
+                  }`
+                }}
+              </span>
+            </div>
+            <div class="card-row">
+              <span class="row-label">{{ t("settings.windowsNodeMxcGatewayGeneration") }}</span>
+              <span class="row-value">{{
+                windowsNodeMxcStatus.gatewayGeneration
+                  ? windowsNodeMxcStatus.gatewayGeneration.slice(0, 12)
+                  : "unavailable"
+              }}</span>
+            </div>
+            <div class="card-row">
               <span class="row-label">{{ t("settings.windowsNodeMxcStrictFallback") }}</span>
               <span class="row-value">{{
                 windowsNodeMxcStatus.strictFallbackEffective
@@ -484,11 +502,27 @@
             <el-button
               type="primary"
               plain
-              :disabled="!windowsNodeMxcStatus?.desiredEnabled"
+              :disabled="
+                !windowsNodeMxcStatus?.desiredEnabled ||
+                windowsNodeMxcStatus?.gatewayPolicyState !== 'locked'
+              "
               :loading="windowsNodeMxcSmokeRunning"
               @click="runWindowsNodeMxcSmoke"
             >
               {{ t("settings.windowsNodeMxcRunSmoke") }}
+            </el-button>
+            <el-button
+              type="primary"
+              :disabled="
+                windowsNodeMxcStatus?.gatewayPolicyState !== 'locked' ||
+                windowsNodeMxcStatus?.smoke?.deniedOutsideRoot.outcome !== 'passed' ||
+                windowsNodeMxcStatus?.smoke?.hostname.outcome !== 'passed' ||
+                windowsNodeMxcStatus?.smoke?.powershell.outcome !== 'passed'
+              "
+              :loading="windowsNodeMxcActivating"
+              @click="activateWindowsNodeMxc"
+            >
+              {{ t("settings.windowsNodeMxcActivate") }}
             </el-button>
           </div>
         </div>
@@ -1104,6 +1138,7 @@ const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcRefreshing = ref(false);
 const windowsNodeMxcSmokeRunning = ref(false);
+const windowsNodeMxcActivating = ref(false);
 let windowsNodeMxcApprovalUnsubscribe: (() => void) | null = null;
 let activeWindowsNodeMxcApprovalId: string | null = null;
 
@@ -1152,11 +1187,26 @@ async function runWindowsNodeMxcSmoke() {
         `${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
       );
     }
+
     await loadWindowsNodeMxcStatus();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   } finally {
     windowsNodeMxcSmokeRunning.value = false;
+  }
+}
+
+async function activateWindowsNodeMxc() {
+  windowsNodeMxcActivating.value = true;
+  try {
+    const status = await window.openclaw.windowsNodeMxc.activate();
+    updateWindowsNodeMxcStatus(status);
+    ElMessage.success(t("settings.windowsNodeMxcActivated"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await loadWindowsNodeMxcStatus();
+  } finally {
+    windowsNodeMxcActivating.value = false;
   }
 }
 

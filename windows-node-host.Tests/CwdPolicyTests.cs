@@ -1,6 +1,8 @@
 using MicroClaw.WindowsNodeHost;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using Xunit;
 
 namespace MicroClaw.WindowsNodeHost.Tests;
@@ -179,6 +181,11 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(attestation.LaunchTimeRevalidation);
         Assert.True(attestation.OmittedCwdUsesIsolatedScratch);
         Assert.True(attestation.HostFallbackAbsent);
+        Assert.Equal("microclaw.windows-activation.v1", attestation.ActivationLeaseContract);
+        Assert.True(attestation.GenerationBoundActivation);
+        Assert.True(attestation.PolicyBoundActivation);
+        Assert.True(attestation.LaunchTimeLeaseRevalidation);
+        Assert.False(attestation.DurableApprovalsPresent);
     }
 
     [Fact]
@@ -196,7 +203,149 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(root.GetProperty("launchTimeRevalidation").GetBoolean());
         Assert.True(root.GetProperty("omittedCwdUsesIsolatedScratch").GetBoolean());
         Assert.True(root.GetProperty("hostFallbackAbsent").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-activation.v1",
+            root.GetProperty("activationLeaseContract").GetString());
+        Assert.True(root.GetProperty("generationBoundActivation").GetBoolean());
+        Assert.True(root.GetProperty("policyBoundActivation").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeLeaseRevalidation").GetBoolean());
+        Assert.False(root.GetProperty("durableApprovalsPresent").GetBoolean());
         Assert.False(root.TryGetProperty("Contract", out _));
+    }
+
+    [Fact]
+    public async Task LoadedPolicyMustMatchTheBootstrapFingerprint()
+    {
+        var policyPath = Path.Combine(_root, "verified-policy.json");
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            approvedRoots = new[] { new { path = _root, access = "ReadOnly" } },
+            deniedRoots = Array.Empty<string>(),
+            wxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            networkAllowed = false,
+            allowWindowsUi = true,
+            clipboard = "none",
+            inputInjection = false,
+            strictNoHostFallback = true,
+        });
+        await File.WriteAllTextAsync(policyPath, json, TestContext.Current.CancellationToken);
+        var fingerprint = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+
+        var policy = await HostPolicy.LoadVerifiedAsync(policyPath, fingerprint);
+
+        Assert.True(policy.StrictNoHostFallback);
+        await File.AppendAllTextAsync(policyPath, " ", TestContext.Current.CancellationToken);
+        var error = await Assert.ThrowsAsync<HostPolicyException>(
+            () => HostPolicy.LoadVerifiedAsync(policyPath, fingerprint));
+        Assert.Equal("policy-fingerprint-mismatch", error.Code);
+    }
+
+    [Fact]
+    public async Task ActivationLeaseIsGenerationPolicyExpiryAndSignatureBound()
+    {
+        var leasePath = Path.Combine(_root, "activation.json");
+        var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds();
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Active,
+            "gateway-1",
+            "policy-1",
+            expiresAt);
+        var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
+        var argv = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+
+        var validated = guard.Validate(argv);
+
+        Assert.Equal(ActivationLeaseMode.Active, validated.Mode);
+        Assert.Equal(
+            "activation-lease-generation",
+            Assert.Throws<HostPolicyException>(
+                () => new ActivationLeaseGuard(leasePath, secret, "gateway-2", "policy-1").Validate(argv)).Code);
+        Assert.Equal(
+            "activation-lease-policy",
+            Assert.Throws<HostPolicyException>(
+                () => new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-2").Validate(argv)).Code);
+        await File.AppendAllTextAsync(leasePath, " ", TestContext.Current.CancellationToken);
+        var record = System.Text.Json.JsonSerializer.Deserialize<ActivationLeaseRecord>(
+            await File.ReadAllTextAsync(leasePath, TestContext.Current.CancellationToken),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+            })!;
+        await File.WriteAllTextAsync(
+            leasePath,
+            System.Text.Json.JsonSerializer.Serialize(record with { Signature = new string('0', 64) }),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(
+            "activation-lease-signature",
+            Assert.Throws<HostPolicyException>(() => guard.Validate(argv)).Code);
+    }
+
+    [Fact]
+    public async Task DiagnosticLeasePermitsOnlyTheFixedSmokesAndRevalidatesBeforeLaunch()
+    {
+        var leasePath = Path.Combine(_root, "diagnostic-activation.json");
+        var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds();
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            "gateway-1",
+            "policy-1",
+            expiresAt);
+        var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
+        var smoke = new[]
+        {
+            @"C:\Windows\System32\cmd.exe",
+            "/d",
+            "/s",
+            "/c",
+            @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
+        };
+        var validated = guard.Validate(smoke);
+
+        Assert.Equal(
+            "activation-lease-diagnostic-scope",
+            Assert.Throws<HostPolicyException>(
+                () => guard.Validate([Path.Combine(Environment.SystemDirectory, "hostname.exe")])).Code);
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Active,
+            "gateway-1",
+            "policy-1",
+            expiresAt);
+        Assert.Equal(
+            "activation-lease-changed",
+            Assert.Throws<HostPolicyException>(() => guard.Revalidate(validated, smoke)).Code);
+    }
+
+    [Fact]
+    public async Task MissingAndExpiredActivationLeasesFailClosed()
+    {
+        var leasePath = Path.Combine(_root, "expired-activation.json");
+        var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
+        var argv = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+
+        Assert.Equal(
+            "activation-lease-unavailable",
+            Assert.Throws<HostPolicyException>(() => guard.Validate(argv)).Code);
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Active,
+            "gateway-1",
+            "policy-1",
+            DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds());
+        Assert.Equal(
+            "activation-lease-expired",
+            Assert.Throws<HostPolicyException>(() => guard.Validate(argv)).Code);
     }
 
     [Fact]
@@ -323,4 +472,29 @@ public sealed class CwdPolicyTests : IDisposable
             AllowWindowsUi = true,
             StrictNoHostFallback = true,
         };
+
+    private static Task WriteActivationLease(
+        string path,
+        string secret,
+        ActivationLeaseMode mode,
+        string gatewayGeneration,
+        string policyFingerprint,
+        long expiresAtUnixMs)
+    {
+        var record = new ActivationLeaseRecord(
+            ActivationLeaseContract.Version,
+            mode,
+            gatewayGeneration,
+            policyFingerprint,
+            expiresAtUnixMs,
+            ActivationLeaseGuard.ComputeSignature(
+                secret,
+                mode,
+                gatewayGeneration,
+                policyFingerprint,
+                expiresAtUnixMs));
+        var options = new System.Text.Json.JsonSerializerOptions();
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        return File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(record, options));
+    }
 }

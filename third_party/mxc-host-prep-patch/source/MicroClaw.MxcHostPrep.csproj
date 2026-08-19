@@ -14,6 +14,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Version>0.7.0</Version>
     <InformationalVersion>0.7.0-microclaw-pr649.695c2b89</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Company>MicroClaw</Company>
     <Product>MicroClaw MXC host-preparation patch</Product>
     <Description>MicroClaw-built target-only system-drive preparation helper derived from microsoft/mxc PR 649</Description>

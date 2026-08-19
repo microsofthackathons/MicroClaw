@@ -36,8 +36,8 @@ const expectedOfficialWxcHostPrepSha256 = {
   arm64: "3ef702332286a39153fc259310b5021e3de3c191751d7522684f6475f73af5ef",
 };
 const expectedPatchedHostPrepSha256 = {
-  x64: "452332016eaf13e09fa28e542b03e3c0c992648d693ffc9781e1e1aa15a431c6",
-  arm64: "ee1d647f60a724fad500190ff93ca189fa481fbcecc49d9c352de4cf2654dd23",
+  x64: "661cada5d4d32db4255e0c39d982ff7329d3a2bbc93acaf091eb5fed3c9ea205",
+  arm64: "f6d9c09311906c60746c9a9f8e463c92deaf06c86ca564b7cfa8a64fe6f6e5bd",
 };
 const expectedWindowsNodeRevision = "fc9add75eda78daf548d80a55ffb64e63b159961";
 const expectedMxcHostPrepPatchRevision = "695c2b89c6142090a098ec4484f49aff8157f0b3";

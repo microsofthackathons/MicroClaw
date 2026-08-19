@@ -86,6 +86,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         helperRevision: undefined,
         mxcRuntimeVersion: undefined,
         cwdPolicyContract: undefined,
+        cwdAttestationReady: false,
+        activationLeaseContract: undefined,
+        gatewayGeneration: "",
+        activationLeaseMode: null,
+        activationLeaseExpiresAt: null,
         gatewayPolicyState: "drift" as const,
         gatewayPolicyReady: false,
         effectiveToolsReady: false,
@@ -108,6 +113,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         throw new Error("Unavailable in browser development");
       },
       runSmoke: async () => {
+        throw new Error("Unavailable in browser development");
+      },
+      activate: async () => {
         throw new Error("Unavailable in browser development");
       },
       respondApproval: async () => {

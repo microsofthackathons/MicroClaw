@@ -181,6 +181,7 @@ type Pending = {
 export type GatewayClientOptions = {
   port: number;
   token: string;
+  beforeChatSend?: () => Promise<void>;
   onEvent?: (evt: GatewayEventFrame) => void;
   onConnected?: (hello: Record<string, unknown>) => void;
   onDisconnected?: (reason: string) => void;
@@ -279,8 +280,13 @@ export class GatewayClient {
   }
 
   /** Send a chat message (server maintains history). */
-  sendChat(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<unknown> {
-    return this.request("chat.send", {
+  async sendChat(
+    sessionKey: string,
+    message: string,
+    attachments?: ChatAttachment[],
+  ): Promise<unknown> {
+    await this.opts?.beforeChatSend?.();
+    return await this.request("chat.send", {
       sessionKey,
       message,
       deliver: false,

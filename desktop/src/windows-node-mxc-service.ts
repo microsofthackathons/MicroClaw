@@ -25,7 +25,10 @@ import {
   validateWindowsNodeMxcSettings,
   type WindowsNodeMxcGatewayPolicyState,
 } from "./windows-node-mxc";
-import type { BundledWindowsNodeHostStatus } from "./bundled-windows-node-host";
+import type {
+  BundledWindowsNodeActivationLease,
+  BundledWindowsNodeHostStatus,
+} from "./bundled-windows-node-host";
 
 const WINDOWS_NODE_SETTINGS_FILENAME = "settings.json";
 const HOSTNAME_MARKER = "MICROCLAW_MXC_HOSTNAME_OK";
@@ -37,6 +40,7 @@ export interface WindowsNodeMxcGateway {
 }
 
 export interface StoredWindowsNodeMxcSmoke {
+  gatewayGeneration: string;
   nodeId: string;
   settingsFingerprint: string;
   probeTier: string;
@@ -63,6 +67,11 @@ export interface WindowsNodeMxcRuntimeStatus {
   helperRevision?: string;
   mxcRuntimeVersion?: string;
   cwdPolicyContract?: string;
+  cwdAttestationReady: boolean;
+  activationLeaseContract?: string;
+  gatewayGeneration: string;
+  activationLeaseMode: "diagnostic" | "active" | null;
+  activationLeaseExpiresAt: string | null;
   gatewayPolicyState: WindowsNodeMxcGatewayPolicyState;
   gatewayPolicyReady: boolean;
   effectiveToolsReady: boolean;
@@ -81,6 +90,7 @@ export interface InspectWindowsNodeMxcOptions {
   config: unknown;
   gateway: WindowsNodeMxcGateway | null;
   managedGateway: boolean;
+  gatewayGeneration: string;
   storedSmoke?: StoredWindowsNodeMxcSmoke | null;
   appData?: string;
   localAppData?: string;
@@ -202,10 +212,6 @@ export async function inspectWindowsNodeMxc(
     blockers.push("Gateway agent tool policy drifted from the diagnostic-only locked MXC policy");
   } else if (gatewayPolicyState === "locked") {
     blockers.push("Gateway agent execution remains diagnostic-only and locked");
-  } else {
-    blockers.push(
-      "Active Gateway policy is unsupported until ingress can be quarantined atomically",
-    );
   }
 
   let nodes: WindowsNodeRecord[] = [];
@@ -213,6 +219,7 @@ export async function inspectWindowsNodeMxc(
   let effectiveToolsReady = false;
   let effectiveToolsState: WindowsNodeMxcRuntimeStatus["effectiveToolsState"] = "unverified";
   let durableApprovalsPresent: boolean | null = null;
+  let cwdAttestationReady = false;
   if (!selectedNodeId) {
     blockers.push(
       bundled
@@ -242,10 +249,12 @@ export async function inspectWindowsNodeMxc(
             nodeId: selectedNodeId,
             command: WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
             params: {},
-            timeoutMs: 15_000,
+            timeoutMs: 30_000,
             idempotencyKey: randomUUID(),
           });
           const attestationCheck = validateBundledCwdAttestation(attestation);
+          cwdAttestationReady = attestationCheck.ready;
+          durableApprovalsPresent = attestationCheck.durableApprovalsPresent;
           if (!attestationCheck.ready) blockers.push(...attestationCheck.blockers);
         } catch (error) {
           blockers.push(`Bundled node CWD attestation failed: ${messageOf(error)}`);
@@ -289,21 +298,19 @@ export async function inspectWindowsNodeMxc(
         blockers.push(`Could not verify effective Gateway tools: ${messageOf(error)}`);
       }
 
-      try {
-        const approvals = await options.gateway.request("exec.approvals.node.get", {
-          nodeId: selectedNodeId,
-        });
-        durableApprovalsPresent = bundled ? false : hasDurableApprovals(approvals);
+      if (!bundled) {
+        try {
+          const approvals = await options.gateway.request("exec.approvals.node.get", {
+            nodeId: selectedNodeId,
+          });
+          durableApprovalsPresent = hasDurableApprovals(approvals);
+        } catch (error) {
+          blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
+        }
         if (durableApprovalsPresent) {
           blockers.push(
             "Selected node has durable exec approvals, which the pinned Windows Node does not bind to cwd",
           );
-        }
-      } catch (error) {
-        if (bundled) {
-          durableApprovalsPresent = false;
-        } else {
-          blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
         }
       }
     }
@@ -318,14 +325,13 @@ export async function inspectWindowsNodeMxc(
     );
   }
 
-  const smoke =
-    options.storedSmoke &&
-    isCurrentWindowsNodeMxcSmoke(options.storedSmoke) &&
-    options.storedSmoke.nodeId === selectedNodeId &&
-    options.storedSmoke.settingsFingerprint === settingsFingerprint &&
-    options.storedSmoke.probeTier === probe.tier
-      ? options.storedSmoke
-      : null;
+  const smoke = selectCurrentWindowsNodeMxcSmoke(
+    options.storedSmoke,
+    options.gatewayGeneration,
+    selectedNodeId,
+    settingsFingerprint,
+    probe.tier,
+  );
   if (
     !smoke ||
     smoke.hostname.outcome !== "passed" ||
@@ -341,17 +347,36 @@ export async function inspectWindowsNodeMxc(
         : "Run the contained child-process check from MicroClaw Security settings and approve each command once in Windows Companion.",
     );
   } else if (bundled && gatewayPolicyState === "locked") {
-    blockers.push(
-      "The pinned Gateway cannot quarantine channel and scheduled ingress during an active-policy restart",
-    );
-    remediation.push(
-      "Keep diagnostic lock enabled until the Gateway provides atomic ingress quarantine or the bundled helper gains an independently attested activation gate.",
-    );
+    remediation.push("Activate the verified MXC route from MicroClaw Security settings.");
   }
+
+  const activationLease = bundled?.activationLease ?? null;
+  if (gatewayPolicyState === "active") {
+    if (
+      !isCurrentBundledActivationLease(
+        activationLease,
+        "active",
+        options.gatewayGeneration,
+        bundled?.policyFingerprint ?? null,
+      )
+    ) {
+      blockers.push(
+        "The bundled node does not hold an active generation- and policy-bound activation lease",
+      );
+    }
+  } else if (activationLease?.mode === "active") {
+    blockers.push("The bundled node retained an active lease while the Gateway policy is locked");
+  }
+
+  const effectiveEnabled =
+    options.desiredEnabled &&
+    gatewayPolicyState === "active" &&
+    effectiveToolsReady &&
+    blockers.length === 0;
 
   return {
     desiredEnabled: options.desiredEnabled,
-    effectiveEnabled: false,
+    effectiveEnabled,
     selectedNodeId,
     settingsPath,
     companionPath,
@@ -368,6 +393,13 @@ export async function inspectWindowsNodeMxc(
     helperRevision: bundled?.helperRevision,
     mxcRuntimeVersion: bundled?.runtimeVersion,
     cwdPolicyContract: bundled?.cwdPolicyContract,
+    cwdAttestationReady,
+    activationLeaseContract: bundled ? "microclaw.windows-activation.v1" : undefined,
+    gatewayGeneration: options.gatewayGeneration,
+    activationLeaseMode: activationLease?.mode ?? null,
+    activationLeaseExpiresAt: activationLease
+      ? new Date(activationLease.expiresAtUnixMs).toISOString()
+      : null,
     gatewayPolicyState,
     gatewayPolicyReady,
     effectiveToolsReady,
@@ -387,12 +419,14 @@ export function shouldStopManagedGatewayForWindowsNodeMxc(
     "effectiveEnabled" | "effectiveToolsState" | "gatewayPolicyState"
   >,
 ): boolean {
-  return status.gatewayPolicyState !== "locked" || status.effectiveToolsState === "drift";
+  if (status.gatewayPolicyState === "drift" || status.effectiveToolsState === "drift") return true;
+  return status.gatewayPolicyState === "active" && !status.effectiveEnabled;
 }
 
 export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWindowsNodeMxcSmoke {
   if (!isRecord(value)) return false;
   return (
+    typeof value.gatewayGeneration === "string" &&
     typeof value.nodeId === "string" &&
     typeof value.settingsFingerprint === "string" &&
     typeof value.probeTier === "string" &&
@@ -403,9 +437,41 @@ export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWin
   );
 }
 
+export function selectCurrentWindowsNodeMxcSmoke(
+  value: unknown,
+  gatewayGeneration: string,
+  nodeId: string,
+  settingsFingerprint: string | null,
+  probeTier: string | null | undefined,
+): StoredWindowsNodeMxcSmoke | null {
+  return isCurrentWindowsNodeMxcSmoke(value) &&
+    value.gatewayGeneration === gatewayGeneration &&
+    value.nodeId === nodeId &&
+    value.settingsFingerprint === settingsFingerprint &&
+    value.probeTier === probeTier
+    ? value
+    : null;
+}
+
+export function isCurrentBundledActivationLease(
+  lease: BundledWindowsNodeActivationLease | null,
+  mode: BundledWindowsNodeActivationLease["mode"],
+  gatewayGeneration: string,
+  policyFingerprint: string | null,
+): boolean {
+  return (
+    lease !== null &&
+    lease.mode === mode &&
+    lease.gatewayGeneration === gatewayGeneration &&
+    lease.policyFingerprint === policyFingerprint &&
+    lease.expiresAtUnixMs > Date.now()
+  );
+}
+
 export function validateBundledCwdAttestation(value: unknown): {
   ready: boolean;
   blockers: string[];
+  durableApprovalsPresent: boolean | null;
 } {
   const record = findAttestationRecord(value);
   const expected = {
@@ -417,11 +483,20 @@ export function validateBundledCwdAttestation(value: unknown): {
     launchTimeRevalidation: true,
     omittedCwdUsesIsolatedScratch: true,
     hostFallbackAbsent: true,
+    activationLeaseContract: "microclaw.windows-activation.v1",
+    generationBoundActivation: true,
+    policyBoundActivation: true,
+    launchTimeLeaseRevalidation: true,
   };
   const blockers = Object.entries(expected)
     .filter(([key, expectedValue]) => record?.[key] !== expectedValue)
     .map(([key]) => `Bundled node CWD attestation is missing or invalid: ${key}`);
-  return { ready: blockers.length === 0, blockers };
+  const durableApprovalsPresent =
+    typeof record?.durableApprovalsPresent === "boolean" ? record.durableApprovalsPresent : null;
+  if (durableApprovalsPresent === null) {
+    blockers.push("Bundled node CWD attestation is missing or invalid: durableApprovalsPresent");
+  }
+  return { ready: blockers.length === 0, blockers, durableApprovalsPresent };
 }
 
 function findAttestationRecord(value: unknown): Record<string, unknown> | null {
@@ -437,6 +512,7 @@ function findAttestationRecord(value: unknown): Record<string, unknown> | null {
 
 export async function runWindowsNodeMxcSmoke(
   gateway: WindowsNodeMxcGateway,
+  gatewayGeneration: string,
   nodeId: string,
   settingsFingerprint: string,
   probeTier: string,
@@ -479,6 +555,7 @@ export async function runWindowsNodeMxcSmoke(
     );
   }
   return {
+    gatewayGeneration,
     nodeId: nodeId.trim(),
     settingsFingerprint,
     probeTier,

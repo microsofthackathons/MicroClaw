@@ -373,6 +373,11 @@ interface OpenClawAPI {
       helperRevision?: string;
       mxcRuntimeVersion?: string;
       cwdPolicyContract?: string;
+      cwdAttestationReady: boolean;
+      activationLeaseContract?: string;
+      gatewayGeneration: string;
+      activationLeaseMode: "diagnostic" | "active" | null;
+      activationLeaseExpiresAt: string | null;
       gatewayPolicyState: "active" | "locked" | "drift";
       gatewayPolicyReady: boolean;
       effectiveToolsReady: boolean;
@@ -387,6 +392,7 @@ interface OpenClawAPI {
         reason: string | null;
       };
       smoke: {
+        gatewayGeneration: string;
         nodeId: string;
         settingsFingerprint: string;
         probeTier: string;
@@ -404,6 +410,7 @@ interface OpenClawAPI {
       nodeId?: string;
     }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
     runSmoke(): Promise<{
+      gatewayGeneration: string;
       nodeId: string;
       settingsFingerprint: string;
       probeTier: string;
@@ -412,6 +419,7 @@ interface OpenClawAPI {
       powershell: { outcome: string; reason: string };
       deniedOutsideRoot: { outcome: string; reason: string };
     }>;
+    activate(): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
     respondApproval(params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";

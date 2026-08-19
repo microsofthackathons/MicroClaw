@@ -53,6 +53,8 @@ the scratch semantic). Legacy or CWD-unbound entries never match. Policy, execut
 reparse state, root membership, and the exact CWD binding are revalidated immediately before
 launch. Delete-denying directory handles retain every approved-root/CWD path component through MXC
 completion, preventing a validated directory from being replaced by a junction during launch.
+Approved-folder changes are rejected while the mode is enabled because the helper binds the
+canonical folder policy at generation startup. Disable and reactivate the mode to change that policy.
 
 Approval presentation is owned by MicroClaw Security settings. The helper connects to a random
 per-launch Windows named pipe, displays executable, exact argv, agent, and canonical CWD, and
@@ -94,14 +96,45 @@ Staging pins the .NET runtime, checks architecture-specific hashes for both offi
 the unsigned MicroClaw-built helper, and records origin, operations, revision, and hashes in
 `RUNTIME.json`. Electron's `afterSign` hook replaces only the helper's manifest hash with the final
 signed package hash; this avoids both excluding the MicroClaw-owned executable from product signing
-and rejecting the package because Authenticode changed its bytes.
+and rejecting the package because Authenticode changed its bytes. The helper build disables
+repository-HEAD suffixes in its informational version so its pinned unsigned hash remains
+reproducible across MicroClaw commits.
 
 ## Readiness and activation transaction
 
-Readiness requires the exact CWD attestation payload, selected app-owned node identity, connected
-and paired node state, strict locked/effective Gateway tools, MXC tier, contained `hostname.exe`,
-contained PowerShell, and denied-access proof. `appcontainer-dacl` is accepted with a degraded
-containment warning.
+The helper also enforces `microclaw.windows-activation.v1`: an HMAC-SHA256 lease bound to the exact
+Gateway generation, helper policy fingerprint, mode, and expiry. Its per-generation key is delivered
+only through inherited stdin. A diagnostic lease admits only the fixed denied-CWD, `hostname.exe`,
+and PowerShell smoke declarations. An active lease admits the normal attended `system.run` path.
+The helper checks the lease before approval and again immediately before MXC launch.
+
+MicroClaw starts every Gateway generation locked, with no effective agent tools. Readiness requires
+the exact CWD/activation attestation payload, selected app-owned node identity, paired and connected
+state, strict no-fallback settings, current-generation effective tools, MXC tier, contained
+`hostname.exe`, contained PowerShell, and denied-access proof. `appcontainer-dacl` is accepted with a
+prominent degraded-containment warning.
+
+Every MicroClaw-owned `chat.send` path, including startup warm-up and generated session titles,
+passes through the same current-generation active-ingress gate. Locked or attesting startup skips
+warm-up without queuing or replaying it; warm-up can run only after final activation release.
+
+Activation is a fail-closed transaction:
+
+1. Attest the locked generation and its smoke record.
+2. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
+3. Write an active policy that exposes only node-pinned `exec` and disables configured channels,
+   webhooks, internal hooks, cron, plugin loading, and plugin entries.
+4. Start a new managed loopback Gateway generation and pair the exact bundled node.
+5. Verify the node declaration, CWD contract, strict helper policy, and effective `exec`-only tool
+   inventory.
+6. Repeat all contained smokes for the active generation under a diagnostic lease.
+7. Issue an active lease, perform a final attestation, then release MicroClaw chat ingress.
+
+Any restart, disconnect, timeout, policy/tool drift, missing or expired lease, helper failure, or
+attestation error revokes the lease, clears the smoke proof, rewrites the locked policy, and stops
+the managed Gateway. Configuration and restart operations that could invalidate an active
+transaction are rejected while this mode is enabled. External channel, hook, cron, and plugin
+inventory APIs return no active ingress.
 
 The pinned OpenClaw 2026.7.1-1 Gateway can block its event loop for more than a minute during
 startup. Pairing therefore remains generation-bound and locked for up to five minutes while the
@@ -109,22 +142,23 @@ helper reconnects; timeout or a Gateway-generation change stops the helper. Tran
 query effective tools is recorded as unverified and does not kill an otherwise statically locked
 Gateway; confirmed drift still stops it.
 
-Local non-elevated proof reached the exact app-owned node, validated
-`microclaw.windows-cwd.v1`, verified an empty locked effective-tool surface, and proved that
-`C:\Windows` is rejected as a protected/unapproved CWD. The attended one-time approval reached
-official MXC for `cmd.exe`, but the contained child failed with `Access is denied` on this
-`appcontainer-dacl` machine. PowerShell therefore did not run. The mode remains diagnostic-only and
-host fallback remains impossible.
+After explicit consent, the MicroClaw-built system-drive helper and the official MXC null-device
+helper both completed successfully. Non-elevated probing reports `appcontainer-dacl` with no host-
+preparation warning. Live locked-generation proof reached the exact bundled node and official
+`wxc-exec.exe`; protected `C:\Windows` CWD denial, `cmd.exe -> hostname.exe`, and PowerShell child
+execution all passed with attended allow-once approvals and no durable approval or host fallback.
+The active transaction also passed end to end: MicroClaw reported chat disconnected before release,
+started a new Gateway generation, re-attested the exact node and `exec`-only tool surface, repeated
+all three smokes, issued and renewed the generation-bound active lease, then reported chat connected.
+The active config had channels, webhooks, internal hooks, cron, plugins, and every plugin entry
+disabled; channel and cron inventories were empty, and a direct Gateway restart request was rejected.
 
-The pinned Gateway also has no atomic way to quarantine channel and scheduled ingress while an
-active exec-only policy starts and is attested. Starting active and checking afterward would expose
-a pre-attestation execution window, so MicroClaw deliberately does not perform that transition.
-Unlocking requires either an upstream atomic ingress-quarantine primitive or an independently
-attested activation gate in the bundled helper. Until then, even a fully passing smoke remains
-diagnostic-only.
+The accepted product boundary is MicroClaw-controlled ingress. The activation lease prevents
+MicroClaw's helper from executing before MicroClaw releases the verified generation, and the
+managed configuration disables MicroClaw-known external ingress. The pinned upstream Gateway does
+not provide an atomic quarantine for ingress independently configured outside MicroClaw. Such
+upstream ingress is explicitly out of scope and must not share this app-owned Gateway.
 
-No elevation or host-wide `prepare-system-drive` / `prepare-null-device` action is performed by
-build, staging, or validation. The next live step requires fresh explicit consent for two narrow
-operations: use the MicroClaw-built helper for `prepare-system-drive --target C:\`, and use the
-unchanged official helper only for `prepare-null-device --json`. MicroClaw, Electron, Gateway, the
-node host, and any shell remain non-elevated.
+MicroClaw never elevates Electron, the Gateway, the node host, a shell, or arbitrary commands. Host
+preparation is not automatic; any future preparation or rollback requires a separate, explicit
+consent for the narrowly scoped helper operation.
