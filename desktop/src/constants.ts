@@ -94,7 +94,7 @@ export const EXCHANGE_RATE_CACHE_TTL_MS = 12 * 60 * 60 * 1_000;
 export const USD_TO_CNY_FALLBACK_RATE = 7.2;
 
 /** Public manifest used by the P0 manual update checker. */
-export const UPDATE_MANIFEST_URL = "https://microclaw.microsoftol.com/releases/latest.json";
+export const UPDATE_MANIFEST_URL = "https://microclaw.microsoft.com/releases/latest.json";
 
 // ── WebSocket reconnect back-off ────────────────────────────────────────
 
