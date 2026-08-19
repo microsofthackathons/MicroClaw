@@ -24,6 +24,42 @@ describe("PermissionDialog", () => {
     ]);
   });
 
+  it("shows only decisions advertised by a Gateway approval", () => {
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        request: {
+          requestId: "gateway-request",
+          type: "app-approval",
+          app: "OpenClaw Gateway node command",
+          command: "Set-Content test.txt ok",
+          allowedDecisions: ["deny", "allow-once"],
+        },
+      },
+    });
+
+    expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
+      "Deny",
+      "Allow once",
+    ]);
+  });
+
+  it("shows the complete approval command and declared access", () => {
+    const command = `${"x".repeat(350)}\n\nDeclared access:\nRW C:\\Users\\test\\Desktop`;
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        request: {
+          requestId: "gateway-request",
+          type: "app-approval",
+          app: "OpenClaw Gateway node command",
+          command,
+          allowedDecisions: ["deny", "allow-once"],
+        },
+      },
+    });
+
+    expect(wrapper.find(".perm-command-code").text()).toBe(command);
+  });
+
   it("keeps high-risk actions visible without optional semantic color tokens", () => {
     const globalStyles = readFileSync(resolve(process.cwd(), "src/styles/global.css"), "utf8");
 

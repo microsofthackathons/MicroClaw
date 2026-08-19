@@ -57,6 +57,10 @@ export interface BundledApprovalRequest {
   arguments: string[];
   agent: string | null;
   canonicalCwd: string;
+  declaredAccess: Array<{
+    access: "ro" | "rw";
+    path: string;
+  }>;
 }
 
 interface StartOptions {
@@ -667,14 +671,21 @@ function sensitiveWindowsRoots(stateRoot: string): string[] {
   ];
 }
 
-function validateApprovalRequest(value: unknown): BundledApprovalRequest {
+export function validateApprovalRequest(value: unknown): BundledApprovalRequest {
   const request = value as Partial<BundledApprovalRequest>;
   if (
     typeof request.id !== "string" ||
     typeof request.executable !== "string" ||
     !Array.isArray(request.arguments) ||
     request.arguments.some((argument) => typeof argument !== "string") ||
-    typeof request.canonicalCwd !== "string"
+    typeof request.canonicalCwd !== "string" ||
+    !Array.isArray(request.declaredAccess) ||
+    request.declaredAccess.some(
+      (declaration) =>
+        !declaration ||
+        (declaration.access !== "ro" && declaration.access !== "rw") ||
+        typeof declaration.path !== "string",
+    )
   ) {
     throw new Error("Malformed bundled Windows node approval request");
   }
@@ -684,5 +695,6 @@ function validateApprovalRequest(value: unknown): BundledApprovalRequest {
     arguments: request.arguments,
     agent: typeof request.agent === "string" ? request.agent : null,
     canonicalCwd: request.canonicalCwd,
+    declaredAccess: request.declaredAccess,
   };
 }

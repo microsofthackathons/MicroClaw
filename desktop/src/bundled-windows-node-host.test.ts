@@ -9,6 +9,7 @@ import {
   createBundledWindowsNodeEnvironment,
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
+  validateApprovalRequest,
 } from "./bundled-windows-node-host";
 
 describe("bundled Windows node host", () => {
@@ -139,6 +140,32 @@ describe("bundled Windows node host", () => {
   it("binds approval responses to the exact pending request", () => {
     expect(() => assertApprovalResponseMatches("request-1", "request-1")).not.toThrow();
     expect(() => assertApprovalResponseMatches("request-1", "request-2")).toThrow(/does not match/);
+  });
+
+  it("accepts canonical declared access in an attended approval request", () => {
+    expect(
+      validateApprovalRequest({
+        id: "request-1",
+        executable: String.raw`C:\Windows\System32\cmd.exe`,
+        arguments: ["/c", "echo hello"],
+        agent: "main",
+        canonicalCwd: "isolated-scratch:v1",
+        declaredAccess: [{ access: "rw", path: String.raw`C:\Users\test\Desktop` }],
+      }).declaredAccess,
+    ).toEqual([{ access: "rw", path: String.raw`C:\Users\test\Desktop` }]);
+  });
+
+  it("rejects malformed declared access before surfacing an approval", () => {
+    expect(() =>
+      validateApprovalRequest({
+        id: "request-1",
+        executable: String.raw`C:\Windows\System32\cmd.exe`,
+        arguments: [],
+        agent: null,
+        canonicalCwd: "isolated-scratch:v1",
+        declaredAccess: [{ access: "write", path: String.raw`C:\Users\test\Desktop` }],
+      }),
+    ).toThrow(/Malformed/);
   });
 
   it("uses a controlled system-only helper environment", () => {

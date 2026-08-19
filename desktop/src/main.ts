@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as http from "http";
 import * as net from "net";
 import * as os from "os";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "crypto";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
@@ -121,8 +122,11 @@ import {
   applyWindowsNodeMxcGatewayPolicy,
   getWindowsNodeMxcGatewayPolicyState,
   isWindowsNodeMxcIngressReleased,
+  normalizeWindowsNodeMxcGatewayApproval,
   restoreWindowsNodeMxcGatewayPolicy,
   validateWindowsNodeMxcGatewayPolicy,
+  type WindowsNodeMxcApprovalDecision,
+  type WindowsNodeMxcGatewayApproval,
 } from "./windows-node-mxc";
 import {
   inspectWindowsNodeMxc,
@@ -283,6 +287,10 @@ let bundledWindowsNodeGeneration = 0;
 let gatewayGenerationId = "";
 let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcActivationInProgress = false;
+let pendingWindowsNodeMxcGatewayApproval: {
+  request: WindowsNodeMxcGatewayApproval;
+  gatewayGeneration: string;
+} | null = null;
 let windowsNodeMxcFailClosedPromise: Promise<void> | null = null;
 // This gate covers MicroClaw-owned ingress. Independently configured upstream Gateway ingress is
 // outside this experimental mode's accepted boundary and must not share the app-owned Gateway.
@@ -2235,6 +2243,8 @@ function terminateGatewayProcessTree(pid: number): void {
 }
 
 async function stopGatewayForSecurityTransition(port: number): Promise<void> {
+  pendingWindowsNodeMxcGatewayApproval = null;
+  mainWindow?.webContents.send("windows-node-mxc:approval-request", null);
   stopBundledWindowsNodeHost();
   const managedPid =
     gatewaySpawnedByUs && isManagedGatewayProcessAlive() ? gatewayProcess?.pid : undefined;
@@ -2978,7 +2988,24 @@ async function startGatewayInner(): Promise<void> {
     console.log(`[sandbox] Preload: ${preloadForward}`);
   }
 
+  const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
+  const approvalCompatPath = app.isPackaged
+    ? path.join(process.resourcesPath, "openclaw-approval-replay-compat.mjs")
+    : path.join(__dirname, "..", "src", "openclaw-approval-replay-compat.mjs");
+  if (windowsNodeMxcDesired) {
+    if (!fs.existsSync(approvalCompatPath)) {
+      const msg = `[error] Windows Node + MXC approval compatibility preload is missing: ${approvalCompatPath}`;
+      console.error(msg);
+      mainWindow?.webContents.send("gateway:log", msg);
+      setGatewayStatus("failed");
+      return;
+    }
+    gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+    gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
+  }
+
   const gwArgs = [
+    ...(windowsNodeMxcDesired ? ["--import", pathToFileURL(approvalCompatPath).href] : []),
     entryPath,
     "gateway",
     "run",
@@ -3433,7 +3460,16 @@ function connectGatewayWs(): void {
             gatewayGeneration: gatewayGenerationId,
             folders: getBundledWindowsNodeFolders(),
             onApproval: (approval: BundledApprovalRequest | null) =>
-              mainWindow?.webContents.send("windows-node-mxc:approval-request", approval),
+              mainWindow?.webContents.send(
+                "windows-node-mxc:approval-request",
+                approval
+                  ? {
+                      ...approval,
+                      approvalLayer: "node",
+                      allowedDecisions: ["deny", "allow-once", "allow-always"],
+                    }
+                  : null,
+              ),
           };
           const hostGeneration = ++bundledWindowsNodeGeneration;
           bundledWindowsNodeHost.stop();
@@ -3554,6 +3590,50 @@ function connectGatewayWs(): void {
       }
     },
     onEvent: (evt) => {
+      if (evt.event === "exec.approval.requested" && isWindowsNodeMxcDesired()) {
+        const approval = normalizeWindowsNodeMxcGatewayApproval(
+          evt.payload,
+          settingsStore.get("windowsNodeMxcNodeId"),
+        );
+        if (!approval || !isWindowsNodeMxcIngressReleased(
+          true,
+          gatewayGenerationId,
+          windowsNodeMxcIngressGeneration,
+          windowsNodeMxcActivationInProgress,
+        )) {
+          const id =
+            evt.payload && typeof evt.payload === "object" && !Array.isArray(evt.payload)
+              ? (evt.payload as Record<string, unknown>).id
+              : null;
+          if (typeof id === "string" && id) {
+            void gwClient?.request("exec.approval.resolve", { id, decision: "deny" });
+          }
+          return;
+        }
+        pendingWindowsNodeMxcGatewayApproval = {
+          request: approval,
+          gatewayGeneration: gatewayGenerationId,
+        };
+        mainWindow?.webContents.send("windows-node-mxc:approval-request", {
+          ...approval,
+          executable: "OpenClaw Gateway node exec approval",
+          arguments: [approval.command],
+          declaredAccess: [],
+          approvalLayer: "gateway",
+        });
+        return;
+      }
+      if (evt.event === "exec.approval.resolved") {
+        const id =
+          evt.payload && typeof evt.payload === "object" && !Array.isArray(evt.payload)
+            ? (evt.payload as Record<string, unknown>).id
+            : null;
+        if (id === pendingWindowsNodeMxcGatewayApproval?.request.id) {
+          pendingWindowsNodeMxcGatewayApproval = null;
+          mainWindow?.webContents.send("windows-node-mxc:approval-request", null);
+        }
+        return;
+      }
       if (evt.event === "agent") {
         const p = evt.payload as Record<string, unknown> | undefined;
         if (p && p.stream === "tool") {
@@ -5328,7 +5408,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "windows-node-mxc:approval-respond",
-    (
+    async (
       _event,
       params: {
         requestId?: unknown;
@@ -5346,7 +5426,26 @@ function registerIpcHandlers(): void {
       ) {
         throw new Error("Invalid Windows node approval decision");
       }
-      bundledWindowsNodeHost.respond(requestId, decision as "deny" | "allow-once" | "allow-always");
+      const normalizedDecision = decision as WindowsNodeMxcApprovalDecision;
+      const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
+      if (gatewayApproval?.request.id === requestId) {
+        if (gatewayApproval.gatewayGeneration !== gatewayGenerationId) {
+          throw new Error("The Gateway approval belongs to a stale security generation");
+        }
+        if (!gatewayApproval.request.allowedDecisions.includes(normalizedDecision)) {
+          throw new Error("The requested Gateway approval decision is unavailable");
+        }
+        if (normalizedDecision !== "deny") await requireEffectiveWindowsNodeMxc();
+        if (!gwClient?.connected) throw new Error("The managed Gateway is not connected");
+        await gwClient.request("exec.approval.resolve", {
+          id: requestId,
+          decision: normalizedDecision,
+        });
+        pendingWindowsNodeMxcGatewayApproval = null;
+        mainWindow?.webContents.send("windows-node-mxc:approval-request", null);
+        return;
+      }
+      bundledWindowsNodeHost.respond(requestId, normalizedDecision);
     },
   );
 

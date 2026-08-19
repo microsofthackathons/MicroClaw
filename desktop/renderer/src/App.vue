@@ -231,16 +231,31 @@ interface PermissionRequestData {
   dirPath: string;
   command?: string;
   accessNeeded?: string;
+  app?: string;
+  source?: "sandbox" | "windows-node-mxc";
+  allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
 }
 const permissionQueue = ref<PermissionRequestData[]>([]);
 const currentPermission = computed(() =>
   permissionQueue.value.length > 0 ? permissionQueue.value[0] : null,
 );
 
-function handlePermissionResponse(decision: string) {
+async function handlePermissionResponse(decision: string) {
   const req = permissionQueue.value[0];
   if (!req) return;
-  window.openclaw.sandbox.respondPermission(req.requestId, decision);
+  if (req.source === "windows-node-mxc") {
+    try {
+      await window.openclaw.windowsNodeMxc.respondApproval({
+        requestId: req.requestId,
+        decision: decision as "deny" | "allow-once" | "allow-always",
+      });
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : String(error));
+      return;
+    }
+  } else {
+    window.openclaw.sandbox.respondPermission(req.requestId, decision);
+  }
   // Show immediate permission decision in exec panel
   if (decision === "deny") {
     chatStore.completeToolCall(req.requestId, t("perm.denied"), true);
@@ -327,6 +342,7 @@ let unsubChatEvent: (() => void) | null = null;
 let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
 let unsubPermission: (() => void) | null = null;
+let unsubWindowsNodeMxcApproval: (() => void) | null = null;
 let unsubAclTimeout: (() => void) | null = null;
 let unsubAclIneffective: (() => void) | null = null;
 let unsubPermCompleted: (() => void) | null = null;
@@ -388,13 +404,42 @@ onMounted(async () => {
 
   // Listen for sandbox permission requests
   unsubPermission = window.openclaw.sandbox.onPermissionRequest((data: PermissionRequestData) => {
-    permissionQueue.value.push(data);
+    permissionQueue.value.push({ ...data, source: "sandbox" });
     // Add a pending entry to the exec panel so user sees what's waiting for permission
     if (chatStore.streaming) {
       const path = data.targetPath || data.dirPath;
       const access = data.accessNeeded === "ro" ? "Read" : "Write";
       const label = `${access} permission: ${path}`;
       chatStore.addPendingToolCall(data.requestId, label);
+    }
+  });
+
+  unsubWindowsNodeMxcApproval = window.openclaw.windowsNodeMxc.onApprovalRequest((request) => {
+    if (!request) {
+      permissionQueue.value = permissionQueue.value.filter(
+        (pending) => pending.source !== "windows-node-mxc",
+      );
+      return;
+    }
+    const declaredAccess = request.declaredAccess
+      .map((declaration) => `${declaration.access.toUpperCase()}: ${declaration.path}`)
+      .join("\n");
+    const command = [request.executable, ...request.arguments].join(" ");
+    permissionQueue.value.push({
+      requestId: request.id,
+      type: "app-approval",
+      targetPath: request.executable,
+      dirPath: request.canonicalCwd,
+      command: declaredAccess ? `${command}\n\nDeclared access:\n${declaredAccess}` : command,
+      app:
+        request.approvalLayer === "gateway"
+          ? "OpenClaw Gateway node command"
+          : "Contained Windows Node / MXC command",
+      source: "windows-node-mxc",
+      allowedDecisions: request.allowedDecisions,
+    });
+    if (chatStore.streaming) {
+      chatStore.addPendingToolCall(request.id, "Contained MXC command approval");
     }
   });
 
@@ -553,6 +598,7 @@ onUnmounted(() => {
   unsubToolEvent?.();
   unsubIntegrityAlert?.();
   unsubPermission?.();
+  unsubWindowsNodeMxcApproval?.();
   unsubAclTimeout?.();
   unsubAclIneffective?.();
   unsubPermCompleted?.();

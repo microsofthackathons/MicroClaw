@@ -26,7 +26,7 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
 } from "./constants";
-import { buildGatewayConnectParams } from "./gateway-protocol";
+import { buildGatewayConnectParams, GATEWAY_OPERATOR_SCOPES } from "./gateway-protocol";
 import type { ChatAttachment } from "./chat-attachments";
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -252,7 +252,11 @@ export class GatewayClient {
 
   // ── Public API ──
 
-  async request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  async request<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs = WS_REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("gateway not connected");
     }
@@ -262,9 +266,9 @@ export class GatewayClient {
       // Auto-reject after timeout to prevent hung promises
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
-          reject(new Error(`request '${method}' timed out after ${WS_REQUEST_TIMEOUT_MS}ms`));
+          reject(new Error(`request '${method}' timed out after ${timeoutMs}ms`));
         }
-      }, WS_REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => {
           clearTimeout(timer);
@@ -596,7 +600,7 @@ export class GatewayClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const role = "operator";
-    const scopes = ["operator.admin", "operator.read", "operator.write"];
+    const scopes = [...GATEWAY_OPERATOR_SCOPES];
     const clientId = "gateway-client";
     const clientMode = "backend";
     const nonce = this.connectNonce ?? "";

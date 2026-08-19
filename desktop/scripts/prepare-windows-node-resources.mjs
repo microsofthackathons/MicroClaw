@@ -119,6 +119,8 @@ const publish = spawnSync(
     "-p:DebugType=None",
     "-p:ImportDirectoryBuildProps=false",
     "-p:ImportDirectoryBuildTargets=false",
+    "-p:DisableGitVersionTask=true",
+    "-m:1",
   ],
   { stdio: "inherit" },
 );

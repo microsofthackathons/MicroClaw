@@ -12,6 +12,7 @@ import {
   getWindowsNodeMxcGatewayPolicyState,
   isWindowsNodeMxcIngressReleased,
   listAgentSessionKeys,
+  normalizeWindowsNodeMxcGatewayApproval,
   normalizeWindowsNodeRecord,
   restoreWindowsNodeMxcGatewayPolicy,
   validateEffectiveToolNames,
@@ -45,6 +46,88 @@ const strictSettings = {
   SystemRunAllowWindowsUi: true,
   SandboxClipboard: 0,
 };
+
+describe("Gateway node exec approval bridge", () => {
+  const nodeId = "a".repeat(64);
+  const payload = {
+    id: "approval-1",
+    allowedDecisions: ["allow-once", "deny"],
+    request: {
+      host: "node",
+      nodeId,
+      systemRunPlan: {
+        argv: ["powershell.exe", "-Command", "Set-Content test.txt ok"],
+        cwd: null,
+        commandText: 'powershell.exe -Command "Set-Content test.txt ok"',
+        commandPreview: "Set-Content test.txt ok",
+        agentId: "main",
+        sessionKey: "agent:main:approval-regression",
+      },
+    },
+  };
+
+  it("accepts only a canonical approval for the selected node", () => {
+    expect(normalizeWindowsNodeMxcGatewayApproval(payload, nodeId)).toEqual({
+      id: "approval-1",
+      command: "Set-Content test.txt ok",
+      canonicalCwd: "isolated-scratch:v1",
+      agent: "main",
+      allowedDecisions: ["allow-once", "deny"],
+    });
+  });
+
+  it("rejects another node, host execution, and a malformed canonical plan", () => {
+    expect(normalizeWindowsNodeMxcGatewayApproval(payload, "b".repeat(64))).toBeNull();
+    expect(
+      normalizeWindowsNodeMxcGatewayApproval(
+        { ...payload, request: { ...payload.request, host: "gateway" } },
+        nodeId,
+      ),
+    ).toBeNull();
+    expect(
+      normalizeWindowsNodeMxcGatewayApproval(
+        {
+          ...payload,
+          request: {
+            ...payload.request,
+            systemRunPlan: { ...payload.request.systemRunPlan, argv: [] },
+          },
+        },
+        nodeId,
+      ),
+    ).toBeNull();
+    for (const invalidPlan of [
+      { ...payload.request.systemRunPlan, argv: ["powershell.exe", 1] },
+      { ...payload.request.systemRunPlan, commandText: undefined },
+      { ...payload.request.systemRunPlan, cwd: undefined },
+      { ...payload.request.systemRunPlan, agentId: undefined },
+      { ...payload.request.systemRunPlan, sessionKey: undefined },
+    ]) {
+      expect(
+        normalizeWindowsNodeMxcGatewayApproval(
+          {
+            ...payload,
+            request: {
+              ...payload.request,
+              command: "unrelated fallback",
+              systemRunPlan: invalidPlan,
+            },
+          },
+          nodeId,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("never invents allow-always when the Gateway does not advertise it", () => {
+    expect(
+      normalizeWindowsNodeMxcGatewayApproval(
+        { ...payload, allowedDecisions: undefined },
+        nodeId,
+      )?.allowedDecisions,
+    ).toEqual(["allow-once", "deny"]);
+  });
+});
 
 describe("bundled Windows Node CWD attestation", () => {
   it("requires every exact fail-closed contract property", () => {

@@ -49,6 +49,8 @@ nsis:
 extraResources:
   - from: dist/github-copilot-auth-worker.js
     to: github-copilot-auth-worker.js
+  - from: src/openclaw-approval-replay-compat.mjs
+    to: openclaw-approval-replay-compat.mjs
   - from: resources/node.exe
     to: node.exe
   - from: resources/openclaw/

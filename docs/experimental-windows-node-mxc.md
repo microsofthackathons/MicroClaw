@@ -64,6 +64,13 @@ read-only handle that denies write/delete sharing from pre-approval hashing thro
 Runs are serialized, so attended approvals cannot overlap, and each contained child inherits
 `TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
 
+Optional `[declare-access]ro:<path>;rw:<path>[/declare-access]` metadata is accepted only on leading
+metadata lines (with an optional `#`, `REM`, or `::` comment prefix). It can describe only canonical
+paths already covered by the global folder policy and cannot upgrade RO to RW. The helper removes
+the metadata line from the executable shell payload, binds approval to the cleaned argv, and carries
+the original declaration only as the approved plan's display preview. Replay must contain that exact
+Gateway-approved plan; mismatched plan argv or command text is denied before the node prompt.
+
 ## Packaging and provenance
 
 `openclaw/openclaw-windows-node` is pinned as a submodule at
@@ -141,6 +148,23 @@ startup. Pairing therefore remains generation-bound and locked for up to five mi
 helper reconnects; timeout or a Gateway-generation change stops the helper. Transient inability to
 query effective tools is recorded as unverified and does not kill an otherwise statically locked
 Gateway; confirmed drift still stops it.
+
+OpenClaw 2026.7.1-1 also binds a node approval request to a persisted operator device but omits that
+identity when replaying the approved `node.invoke system.run`, causing
+`approval id not valid for this device`. Upstream fixed the defect in
+[openclaw/openclaw#103886](https://github.com/openclaw/openclaw/pull/103886), commit
+`7a38f140a2cf2c99dd08f92db3ea1b291d5b10c4`. MXC mode enables a MicroClaw-owned Node load hook that
+backports only that replay-identity change in memory. The installed OpenClaw package is not modified.
+The hook requires OpenClaw `2026.7.1-1` and SHA-256
+`6eed85ef8b377cffa593578227758443b37fc98f87c74848f9ddb4ad8db46bb5` for the affected compiled
+module; any version, hash, or source-shape mismatch prevents the managed Gateway from starting.
+
+The same pinned Gateway binds approval registration and replay to the prepared plan's exact argv,
+CWD, agent, and session. The bundled host therefore returns the canonical
+`{ plan: { argv, commandText, cwd, agentId, sessionKey } }` response and copies `sessionKey` from the
+inner `system.run.prepare` parameters, not the node envelope. Dropping it makes registration fall
+back to the chat session while replay normalizes the plan to `null`, which the Gateway correctly
+rejects as `approval id does not match request`.
 
 After explicit consent, the MicroClaw-built system-drive helper and the official MXC null-device
 helper both completed successfully. Non-elevated probing reports `appcontainer-dacl` with no host-

@@ -17,6 +17,7 @@ interface PermissionRequest {
   callerStack?: string;
   app?: string;
   accessNeeded?: string;
+  allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
 }
 
 const props = defineProps<{
@@ -84,12 +85,16 @@ const descriptionHtml = computed(() => {
 
 const commandHtml = computed(() => {
   if (!props.request?.command) return "";
-  const raw = props.request.command;
-  const truncated = raw.length > 300 ? raw.slice(0, 297) + "\u2026" : raw;
-  return escapeHtml(truncated);
+  return escapeHtml(props.request.command);
 });
 
 const isAppApproval = computed(() => props.request?.type === "app-approval");
+const allowsOnce = computed(
+  () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
+);
+const allowsAlways = computed(
+  () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always"),
+);
 const isShellRequest = computed(
   () => props.request?.type === "shell" || props.request?.type === "shell-async",
 );
@@ -186,10 +191,18 @@ function respond(decision: string) {
             {{ t("perm.deny") }}
           </button>
           <template v-if="isAppApproval">
-            <button class="perm-btn perm-btn-filled" @click="respond('allow-once')">
+            <button
+              v-if="allowsOnce"
+              class="perm-btn perm-btn-filled"
+              @click="respond('allow-once')"
+            >
               {{ t("perm.allowOnce") }}
             </button>
-            <button class="perm-btn perm-btn-filled" @click="respond('allow-always')">
+            <button
+              v-if="allowsAlways"
+              class="perm-btn perm-btn-filled"
+              @click="respond('allow-always')"
+            >
               {{ t("perm.allowAlways") }}
             </button>
           </template>

@@ -432,6 +432,12 @@ interface OpenClawAPI {
           arguments: string[];
           agent: string | null;
           canonicalCwd: string;
+          approvalLayer: "gateway" | "node";
+          allowedDecisions: Array<"deny" | "allow-once" | "allow-always">;
+          declaredAccess: Array<{
+            access: "ro" | "rw";
+            path: string;
+          }>;
         } | null,
       ) => void,
     ): () => void;

@@ -49,6 +49,89 @@ export interface WindowsNodeMxcFolder {
   access: SandboxFolderAccess;
 }
 
+export type WindowsNodeMxcApprovalDecision = "deny" | "allow-once" | "allow-always";
+
+export interface WindowsNodeMxcGatewayApproval {
+  id: string;
+  command: string;
+  canonicalCwd: string;
+  agent: string | null;
+  allowedDecisions: WindowsNodeMxcApprovalDecision[];
+}
+
+export function normalizeWindowsNodeMxcGatewayApproval(
+  payload: unknown,
+  selectedNodeId: string,
+): WindowsNodeMxcGatewayApproval | null {
+  const envelope = asRecord(payload);
+  const request = asRecord(envelope.request);
+  const plan = asRecord(request.systemRunPlan);
+  const id = typeof envelope.id === "string" ? envelope.id.trim() : "";
+  const host = typeof request.host === "string" ? request.host : "";
+  const nodeId = typeof request.nodeId === "string" ? request.nodeId : "";
+  const argv = plan.argv;
+  const commandText = typeof plan.commandText === "string" ? plan.commandText.trim() : "";
+  const commandPreview =
+    typeof plan.commandPreview === "string" ? plan.commandPreview.trim() : "";
+  const hasCanonicalCwd =
+    Object.hasOwn(plan, "cwd") &&
+    (plan.cwd === null || (typeof plan.cwd === "string" && plan.cwd.trim().length > 0));
+  const hasCanonicalAgent =
+    Object.hasOwn(plan, "agentId") &&
+    (plan.agentId === null ||
+      (typeof plan.agentId === "string" && plan.agentId.trim().length > 0));
+  const hasCanonicalSession =
+    Object.hasOwn(plan, "sessionKey") &&
+    typeof plan.sessionKey === "string" &&
+    plan.sessionKey.trim().length > 0;
+  const hasCanonicalPreview =
+    !Object.hasOwn(plan, "commandPreview") ||
+    plan.commandPreview === null ||
+    typeof plan.commandPreview === "string";
+  const command =
+    commandPreview || commandText;
+  if (
+    !id ||
+    host !== "node" ||
+    nodeId.toLowerCase() !== selectedNodeId.trim().toLowerCase() ||
+    !Array.isArray(argv) ||
+    argv.length === 0 ||
+    !argv.every((value) => typeof value === "string" && value.length > 0) ||
+    !commandText ||
+    !hasCanonicalCwd ||
+    !hasCanonicalAgent ||
+    !hasCanonicalSession ||
+    !hasCanonicalPreview
+  ) {
+    return null;
+  }
+
+  const advertised = Array.isArray(envelope.allowedDecisions)
+    ? envelope.allowedDecisions
+    : Array.isArray(request.allowedDecisions)
+      ? request.allowedDecisions
+      : [];
+  const allowed = advertised.filter(
+    (decision): decision is WindowsNodeMxcApprovalDecision =>
+      decision === "deny" || decision === "allow-once" || decision === "allow-always",
+  );
+  if (!allowed.includes("deny")) allowed.push("deny");
+  if (!allowed.includes("allow-once") && !allowed.includes("allow-always")) {
+    allowed.unshift("allow-once");
+  }
+
+  return {
+    id,
+    command,
+    canonicalCwd:
+      typeof plan.cwd === "string" && plan.cwd.trim() ? plan.cwd : CWD_POLICY_SCRATCH_BINDING,
+    agent: typeof plan.agentId === "string" && plan.agentId.trim() ? plan.agentId : null,
+    allowedDecisions: [...new Set(allowed)],
+  };
+}
+
+const CWD_POLICY_SCRATCH_BINDING = "isolated-scratch:v1";
+
 export interface WindowsNodeMxcSettings {
   EnableNodeMode?: boolean;
   NodeSystemRunEnabled?: boolean;

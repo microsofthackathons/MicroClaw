@@ -18,5 +18,6 @@
     <ProjectReference
       Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
       AdditionalProperties="ImportDirectoryBuildProps=false;ImportDirectoryBuildTargets=false" />
+    <InternalsVisibleTo Include="MicroClaw.WindowsNodeHost.Tests" />
   </ItemGroup>
 </Project>

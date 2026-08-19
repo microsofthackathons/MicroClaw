@@ -33,10 +33,12 @@ import type {
 const WINDOWS_NODE_SETTINGS_FILENAME = "settings.json";
 const HOSTNAME_MARKER = "MICROCLAW_MXC_HOSTNAME_OK";
 const POWERSHELL_MARKER = "MICROCLAW_MXC_POWERSHELL_OK";
+const ATTENDED_SMOKE_GATEWAY_TIMEOUT_MS = 90_000;
+const ATTENDED_SMOKE_CLIENT_TIMEOUT_MS = 95_000;
 
 export interface WindowsNodeMxcGateway {
   connected: boolean;
-  request<T = unknown>(method: string, params?: unknown): Promise<T>;
+  request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
 }
 
 export interface StoredWindowsNodeMxcSmoke {
@@ -615,18 +617,22 @@ async function invokeSmoke(
   marker: string,
 ): Promise<MxcSmokeResult> {
   try {
-    const result = await gateway.request("node.invoke", {
-      nodeId,
-      command: "system.run",
-      params: {
-        command,
-        timeoutMs: 15_000,
-        agentId: "main",
-        sessionKey: "agent:main:main",
+    const result = await gateway.request(
+      "node.invoke",
+      {
+        nodeId,
+        command: "system.run",
+        params: {
+          command,
+          timeoutMs: 15_000,
+          agentId: "main",
+          sessionKey: "agent:main:main",
+        },
+        timeoutMs: ATTENDED_SMOKE_GATEWAY_TIMEOUT_MS,
+        idempotencyKey: randomUUID(),
       },
-      timeoutMs: 60_000,
-      idempotencyKey: randomUUID(),
-    });
+      ATTENDED_SMOKE_CLIENT_TIMEOUT_MS,
+    );
     return classifyMxcSmoke(result, marker);
   } catch (error) {
     return classifyMxcSmoke({ error: messageOf(error) }, marker);
