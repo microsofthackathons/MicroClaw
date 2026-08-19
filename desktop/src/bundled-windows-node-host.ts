@@ -10,9 +10,14 @@ import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
+export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
 const MXC_WXC_EXEC_SHA256 = {
   x64: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
   arm64: "e430d0e4f44f616e91db684f8d825a6dc93e06a1262b8d00bcaac7522a317aab",
+} as const;
+const MXC_OFFICIAL_HOST_PREP_SHA256 = {
+  x64: "531fb3cdb4b0c964908fd71b71d40961417afb399cbab72f92a25e95309a6416",
+  arm64: "3ef702332286a39153fc259310b5021e3de3c191751d7522684f6475f73af5ef",
 } as const;
 
 export interface BundledWindowsNodeFolder {
@@ -440,18 +445,49 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   if (process.arch !== "x64" && process.arch !== "arm64") {
     throw new Error(`Bundled Windows node does not support architecture ${process.arch}`);
   }
-  const manifestPath = path.join(path.dirname(path.dirname(hostPath)), "RUNTIME.json");
+  const resourceRoot = path.dirname(path.dirname(hostPath));
+  const patchedHostPrepPath = path.join(resourceRoot, "host-prep", "microclaw-mxc-host-prep.exe");
+  const officialHostPrepPath = path.join(path.dirname(wxcExecPath), "wxc-host-prep.exe");
+  if (!fs.existsSync(patchedHostPrepPath)) {
+    throw new Error(`MicroClaw MXC host-prep patch is missing: ${patchedHostPrepPath}`);
+  }
+  if (!fs.existsSync(officialHostPrepPath)) {
+    throw new Error(`Official MXC host-prep runtime is missing: ${officialHostPrepPath}`);
+  }
+  const manifestPath = path.join(resourceRoot, "RUNTIME.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
   if (
     manifest.architecture !== process.arch ||
     manifest.mxcVersion !== "0.7.0" ||
-    manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION
+    manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION ||
+    manifest.mxcHostPrepPatchRevision !== MXC_HOST_PREP_PATCH_REVISION ||
+    manifest.microclawHostPrepOrigin !== "microclaw-built" ||
+    JSON.stringify(manifest.microclawHostPrepOperations) !==
+      JSON.stringify(["prepare-system-drive", "unprepare-system-drive"])
   ) {
     throw new Error("Bundled Windows node runtime manifest does not match this application");
   }
   const actualHash = createHash("sha256").update(fs.readFileSync(wxcExecPath)).digest("hex");
   if (actualHash !== MXC_WXC_EXEC_SHA256[process.arch]) {
     throw new Error(`Pinned MXC runtime hash mismatch: ${actualHash}`);
+  }
+  const officialHostPrepHash = createHash("sha256")
+    .update(fs.readFileSync(officialHostPrepPath))
+    .digest("hex");
+  if (
+    officialHostPrepHash !== MXC_OFFICIAL_HOST_PREP_SHA256[process.arch] ||
+    manifest.officialWxcHostPrepSha256 !== officialHostPrepHash
+  ) {
+    throw new Error(`Official MXC host-prep hash mismatch: ${officialHostPrepHash}`);
+  }
+  const patchedHostPrepHash = createHash("sha256")
+    .update(fs.readFileSync(patchedHostPrepPath))
+    .digest("hex");
+  if (
+    typeof manifest.microclawHostPrepSha256 !== "string" ||
+    manifest.microclawHostPrepSha256 !== patchedHostPrepHash
+  ) {
+    throw new Error(`MicroClaw MXC host-prep hash mismatch: ${patchedHostPrepHash}`);
   }
 }
 

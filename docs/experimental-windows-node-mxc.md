@@ -74,8 +74,27 @@ in `windows-node-host/`.
 architecture-specific `wxc-exec.exe` SHA-256 before copying the complete matching x64/ARM64 runtime
 layout unchanged. Package architecture is mandatory rather than inferred from the build machine,
 and a runtime manifest is checked again by the app. Development resources, portable/NSIS extra
-resources, and MSIX preparation all use the same staging script. `wxc-host-prep.exe` is packaged but
-never invoked automatically.
+resources, and MSIX preparation all use the same staging script.
+
+MXC 0.7.0's official `wxc-host-prep.exe` is affected by
+[`microsoft/mxc#648`](https://github.com/microsoft/mxc/issues/648): its
+`prepare-system-drive` path writes the merged root DACL with `SetNamedSecurityInfoW`, which can
+normalize existing descendant ACLs across the volume. MicroClaw therefore must not use that binary
+for system-drive preparation. The official MXC directory remains byte-for-byte unchanged, including
+that helper because its separate null-device operation is unaffected.
+
+For system-drive preparation only, MicroClaw builds `microclaw-mxc-host-prep.exe` from the minimal
+managed-code port in `third_party/mxc-host-prep-patch/`. It is pinned to draft upstream PR
+[`microsoft/mxc#649`](https://github.com/microsoft/mxc/pull/649), commit
+`695c2b89c6142090a098ec4484f49aff8157f0b3`. Prepare and precise unprepare write only the named root
+with `SetFileSecurityW`; runtime MXC grants still use the official implementation and behavior.
+The derived helper supports no null-device or other MXC operation. It is a MicroClaw-built artifact,
+not an official or Microsoft-signed MXC binary, and remains eligible for MicroClaw product signing.
+Staging pins the .NET runtime, checks architecture-specific hashes for both official binaries and
+the unsigned MicroClaw-built helper, and records origin, operations, revision, and hashes in
+`RUNTIME.json`. Electron's `afterSign` hook replaces only the helper's manifest hash with the final
+signed package hash; this avoids both excluding the MicroClaw-owned executable from product signing
+and rejecting the package because Authenticode changed its bytes.
 
 ## Readiness and activation transaction
 
@@ -104,6 +123,8 @@ Unlocking requires either an upstream atomic ingress-quarantine primitive or an 
 attested activation gate in the bundled helper. Until then, even a fully passing smoke remains
 diagnostic-only.
 
-No elevation or host-wide `prepare-system-drive` / `prepare-null-device` action is performed. If a
-live DACL-tier smoke requires those changes, MicroClaw reports the requirement for explicit user
-consent.
+No elevation or host-wide `prepare-system-drive` / `prepare-null-device` action is performed by
+build, staging, or validation. The next live step requires fresh explicit consent for two narrow
+operations: use the MicroClaw-built helper for `prepare-system-drive --target C:\`, and use the
+unchanged official helper only for `prepare-null-device --json`. MicroClaw, Electron, Gateway, the
+node host, and any shell remain non-elevated.

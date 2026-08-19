@@ -23,6 +23,17 @@ included below or can be found in the respective project repositories.
 - License: MIT License
 - The official architecture-specific wxc-exec.exe and sibling runtime files are packaged unchanged.
 
+## MicroClaw MXC system-drive host-preparation patch
+- Source: https://github.com/microsoft/mxc
+- Issue: https://github.com/microsoft/mxc/issues/648
+- Pull request: https://github.com/microsoft/mxc/pull/649
+- Revision: 695c2b89c6142090a098ec4484f49aff8157f0b3
+- Copyright: Copyright (c) Microsoft Corporation
+- License: MIT License
+- Use: minimal C# port of target-only system-drive prepare/unprepare behavior
+- Artifact: microclaw-mxc-host-prep.exe is built and optionally signed by MicroClaw; it is not an
+  official or Microsoft-signed MXC binary. Official MXC runtime files remain unchanged.
+
 ## Electron
 - Source: https://github.com/electron/electron
 - License: MIT License

@@ -1,0 +1,29 @@
+{
+  "name": "MicroClaw MXC system-drive host-preparation patch",
+  "upstreamRepository": "https://github.com/microsoft/mxc",
+  "upstreamIssue": "https://github.com/microsoft/mxc/issues/648",
+  "upstreamPullRequest": "https://github.com/microsoft/mxc/pull/649",
+  "upstreamRevision": "695c2b89c6142090a098ec4484f49aff8157f0b3",
+  "upstreamVersionBaseline": "0.7.0",
+  "license": "MIT",
+  "sourceForm": "Minimal C# port of the target-only system-drive prepare/unprepare behavior",
+  "upstreamSourceFiles": [
+    "src/core/wxc_common/src/filesystem_dacl.rs",
+    "src/host/wxc_host_prep/src/system_drive/mod.rs"
+  ],
+  "includedOperations": [
+    "prepare-system-drive",
+    "unprepare-system-drive"
+  ],
+  "excludedOperations": [
+    "prepare-null-device",
+    "verify-null-device",
+    "dump-null-device"
+  ],
+  "buildRuntime": ".NET 10.0.10 self-contained single-file",
+  "unsignedArtifactSha256": {
+    "win-x64": "452332016eaf13e09fa28e542b03e3c0c992648d693ffc9781e1e1aa15a431c6",
+    "win-arm64": "ee1d647f60a724fad500190ff93ca189fa481fbcecc49d9c352de4cf2654dd23"
+  },
+  "artifactOwnership": "Built and packaged by MicroClaw; not an official or Microsoft-signed MXC binary"
+}

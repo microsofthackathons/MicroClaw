@@ -55,7 +55,8 @@ jobs:
               - 'appcontainer/**'
               - 'windows-node-host/**'
               - 'windows-node-host.Tests/**'
-              - 'MicroClaw.sln'
+              - 'mxc-host-prep.Tests/**'
+              - 'third_party/mxc-host-prep-patch/**'
             python:
               - 'deployer/**'
               - 'requirements.txt'
@@ -140,6 +141,7 @@ jobs:
         run: |
           dotnet restore appcontainer/AppContainerLauncher.csproj
           dotnet restore windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
+          dotnet restore mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
       # Security: check for known vulnerable NuGet packages
       - name: Check for vulnerable NuGet packages
@@ -157,6 +159,12 @@ jobs:
             Write-Host "::error::Vulnerable NuGet packages detected!"
             exit 1
           }
+          $output = dotnet list mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj package --vulnerable --include-transitive --no-restore 2>&1
+          Write-Host $output
+          if ($output -match "has the following vulnerable packages") {
+            Write-Host "::error::Vulnerable NuGet packages detected!"
+            exit 1
+          }
           Write-Host "No vulnerable NuGet packages found."
 
       # Build
@@ -165,6 +173,9 @@ jobs:
 
       - name: Test bundled Windows Node host
         run: dotnet test windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -c Release --no-restore -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
+
+      - name: Test MicroClaw MXC host-prep patch
+        run: dotnet test mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj -c Release --no-restore -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
   # ── Python ──────────────────────────────────────────────────────
   security-check-python:

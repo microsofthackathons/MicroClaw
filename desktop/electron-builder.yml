@@ -5,6 +5,8 @@ copyright: Copyright © 2026 MicroClaw
 directories:
   output: release
 
+afterSign: scripts/update-signed-windows-node-manifest.mjs
+
 win:
   target:
     - target: nsis
@@ -12,6 +14,8 @@ win:
         - x64
   icon: assets/microclaw.ico
   signExts:
+    # These are unmodified third-party MXC binaries. MicroClaw-owned helpers,
+    # including microclaw-mxc-host-prep.exe, remain eligible for product signing.
     - "!mxc-diagnostic-console.exe"
     - "!winhttp-proxy-shim.exe"
     - "!wxc-exec.exe"

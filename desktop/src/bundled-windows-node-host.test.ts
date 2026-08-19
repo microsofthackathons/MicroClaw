@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BUNDLED_WINDOWS_NODE_CWD_CONTRACT,
+  MXC_HOST_PREP_PATCH_REVISION,
   assertApprovalResponseMatches,
   assertLoopbackGateway,
   createBundledWindowsNodeEnvironment,
@@ -13,6 +14,10 @@ import {
 describe("bundled Windows node host", () => {
   it("uses the exact CWD policy contract", () => {
     expect(BUNDLED_WINDOWS_NODE_CWD_CONTRACT).toBe("microclaw.windows-cwd.v1");
+  });
+
+  it("pins the reviewed MXC target-only host-prep patch", () => {
+    expect(MXC_HOST_PREP_PATCH_REVISION).toBe("695c2b89c6142090a098ec4484f49aff8157f0b3");
   });
 
   it.each(["ws://127.0.0.1:18789", "ws://localhost:18789", "wss://[::1]:18789"])(

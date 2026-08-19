@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RuntimeFrameworkVersion>10.0.10</RuntimeFrameworkVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>microclaw-mxc-host-prep</AssemblyName>
+    <RootNamespace>MicroClaw.MxcHostPrep</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.7.0</Version>
+    <InformationalVersion>0.7.0-microclaw-pr649.695c2b89</InformationalVersion>
+    <Company>MicroClaw</Company>
+    <Product>MicroClaw MXC host-preparation patch</Product>
+    <Description>MicroClaw-built target-only system-drive preparation helper derived from microsoft/mxc PR 649</Description>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(SelfContained)' == ''">
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="MicroClaw.MxcHostPrep.Tests" />
+  </ItemGroup>
+</Project>
