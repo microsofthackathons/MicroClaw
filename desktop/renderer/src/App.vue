@@ -226,7 +226,7 @@ const integrityLoading = ref(false);
 // ── Permission dialog state (queue of pending requests) ──
 interface PermissionRequestData {
   requestId: string;
-  type: "file" | "shell" | "shell-async" | "app-approval";
+  type: "file" | "shell" | "shell-async" | "app-approval" | "mxc-approval";
   targetPath: string;
   dirPath: string;
   command?: string;
@@ -234,6 +234,7 @@ interface PermissionRequestData {
   app?: string;
   source?: "sandbox" | "windows-node-mxc";
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
+  declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
 }
 const permissionQueue = ref<PermissionRequestData[]>([]);
 const currentPermission = computed(() =>
@@ -421,20 +422,15 @@ onMounted(async () => {
       );
       return;
     }
-    const declaredAccess = request.declaredAccess
-      .map((declaration) => `${declaration.access.toUpperCase()}: ${declaration.path}`)
-      .join("\n");
-    const command = [request.executable, ...request.arguments].join(" ");
+    const command =
+      request.commandText ?? [request.executable, ...request.arguments].join(" ");
     permissionQueue.value.push({
       requestId: request.id,
-      type: "app-approval",
+      type: "mxc-approval",
       targetPath: request.executable,
       dirPath: request.canonicalCwd,
-      command: declaredAccess ? `${command}\n\nDeclared access:\n${declaredAccess}` : command,
-      app:
-        request.approvalLayer === "gateway"
-          ? "OpenClaw Gateway node command"
-          : "Contained Windows Node / MXC command",
+      command,
+      declaredAccess: request.declaredAccess,
       source: "windows-node-mxc",
       allowedDecisions: request.allowedDecisions,
     });

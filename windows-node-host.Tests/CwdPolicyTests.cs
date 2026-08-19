@@ -122,12 +122,26 @@ public sealed class CwdPolicyTests : IDisposable
         var executable = Path.Combine(Environment.SystemDirectory, "hostname.exe");
         var first = WindowsPathCanonicalizer.CanonicalizeDirectory(_root);
         var second = Directory.CreateDirectory(Path.Combine(_root, "second")).FullName;
-        var approval = DurableApprovalIdentity.Create(executable, ["--example"], first);
+        var readAccess = new[]
+        {
+            new DurableApprovalAccess("ro", Path.Combine(_root, "documents")),
+        };
+        var writeAccess = new[]
+        {
+            new DurableApprovalAccess("rw", Path.Combine(_root, "documents")),
+        };
+        var approval = DurableApprovalIdentity.Create(executable, ["--example"], first, readAccess);
 
-        Assert.True(DurableApprovalIdentity.Matches(approval, executable, ["--example"], first));
-        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--other"], first));
-        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--example"], second));
-        Assert.False(DurableApprovalIdentity.Matches(approval with { SchemaVersion = 1, CwdBinding = "" }, executable, ["--example"], first));
+        Assert.True(DurableApprovalIdentity.Matches(approval, executable, ["--example"], first, readAccess));
+        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--other"], first, readAccess));
+        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--example"], second, readAccess));
+        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--example"], first, writeAccess));
+        Assert.False(DurableApprovalIdentity.Matches(
+            approval with { SchemaVersion = 2 },
+            executable,
+            ["--example"],
+            first,
+            readAccess));
     }
 
     [Fact]
@@ -180,6 +194,7 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(attestation.CanonicalFinalPath);
         Assert.True(attestation.RejectsReparseComponents);
         Assert.True(attestation.DurableApprovalBindsCwd);
+        Assert.True(attestation.DurableApprovalBindsDeclaredAccess);
         Assert.True(attestation.LaunchTimeRevalidation);
         Assert.True(attestation.OmittedCwdUsesIsolatedScratch);
         Assert.True(attestation.HostFallbackAbsent);
@@ -202,6 +217,7 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(root.GetProperty("canonicalFinalPath").GetBoolean());
         Assert.True(root.GetProperty("rejectsReparseComponents").GetBoolean());
         Assert.True(root.GetProperty("durableApprovalBindsCwd").GetBoolean());
+        Assert.True(root.GetProperty("durableApprovalBindsDeclaredAccess").GetBoolean());
         Assert.True(root.GetProperty("launchTimeRevalidation").GetBoolean());
         Assert.True(root.GetProperty("omittedCwdUsesIsolatedScratch").GetBoolean());
         Assert.True(root.GetProperty("hostFallbackAbsent").GetBoolean());
@@ -502,7 +518,7 @@ public sealed class CwdPolicyTests : IDisposable
     {
         var child = Directory.CreateDirectory(Path.Combine(_root, "child")).FullName;
         var policy = Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]);
-        var rawCommand = $"# [declare-access]ro:{_root};rw:{child}[/declare-access]\necho hello";
+        var rawCommand = $"# [declare-access]ro:{_root}\\.;rw:{child}\\.[/declare-access]\necho hello";
         var capability = Capability(policy);
 
         var response = await capability.ExecuteAsync(
@@ -528,7 +544,8 @@ public sealed class CwdPolicyTests : IDisposable
             item.GetProperty("access").GetString() == "rw"
             && string.Equals(item.GetProperty("path").GetString(), child, StringComparison.OrdinalIgnoreCase));
         var plan = payload.GetProperty("plan");
-        Assert.Equal(rawCommand, plan.GetProperty("commandPreview").GetString());
+        var expectedPreview = $"# [declare-access]ro:{_root};rw:{child}[/declare-access]\necho hello";
+        Assert.Equal(expectedPreview, plan.GetProperty("commandPreview").GetString());
         Assert.Equal(
             "echo hello",
             plan.GetProperty("argv").EnumerateArray().Last().GetString());
@@ -740,13 +757,23 @@ public sealed class CwdPolicyTests : IDisposable
         var first = Directory.CreateDirectory(Path.Combine(_root, "first-cwd")).FullName;
         var second = Directory.CreateDirectory(Path.Combine(_root, "second-cwd")).FullName;
         var executable = Path.Combine(Environment.SystemDirectory, "hostname.exe");
-        var approval = DurableApprovalIdentity.Create(executable, [], first);
+        var access = new[]
+        {
+            new DurableApprovalAccess("rw", Path.Combine(_root, "Desktop")),
+        };
+        var approval = DurableApprovalIdentity.Create(executable, [], first, access);
 
         DurableApprovalFile.Add(approvalsPath, approval);
         var loaded = Assert.Single(DurableApprovalIdentity.Load(approvalsPath));
 
-        Assert.True(DurableApprovalIdentity.Matches(loaded, executable, [], first));
-        Assert.False(DurableApprovalIdentity.Matches(loaded, executable, [], second));
+        Assert.True(DurableApprovalIdentity.Matches(loaded, executable, [], first, access));
+        Assert.False(DurableApprovalIdentity.Matches(loaded, executable, [], second, access));
+        Assert.False(DurableApprovalIdentity.Matches(
+            loaded,
+            executable,
+            [],
+            first,
+            [new DurableApprovalAccess("ro", Path.Combine(_root, "Desktop"))]));
     }
 
     public void Dispose()

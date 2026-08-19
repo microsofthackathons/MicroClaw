@@ -54,9 +54,79 @@ export type WindowsNodeMxcApprovalDecision = "deny" | "allow-once" | "allow-alwa
 export interface WindowsNodeMxcGatewayApproval {
   id: string;
   command: string;
+  executable: string;
+  arguments: string[];
   canonicalCwd: string;
   agent: string | null;
+  declaredAccess: Array<{
+    access: SandboxFolderAccess;
+    path: string;
+  }>;
   allowedDecisions: WindowsNodeMxcApprovalDecision[];
+}
+
+const DECLARED_ACCESS_TAG_PATTERN = /\[declare-access\]([\s\S]*?)\[\/declare-access\]/i;
+const LEADING_DECLARED_ACCESS_PATTERN =
+  /^[ \t]*(?:(?:#|::|REM\b)[ \t]*)?\[declare-access\]([\s\S]*?)\[\/declare-access\][ \t]*(?:\r\n|\n|\r|$)/i;
+const DECLARED_ACCESS_MARKER_PATTERN = /\[\/?declare-access\]/i;
+const ABSOLUTE_LOCAL_PATH_PATTERN = /^[a-z]:\\/i;
+
+function parseGatewayDeclaredAccess(
+  commandPreview: string,
+): WindowsNodeMxcGatewayApproval["declaredAccess"] | null {
+  if (!DECLARED_ACCESS_MARKER_PATTERN.test(commandPreview)) return [];
+
+  const declarations = new Map<
+    string,
+    WindowsNodeMxcGatewayApproval["declaredAccess"][number]
+  >();
+  let remaining = commandPreview;
+  let matched = false;
+  while (true) {
+    const match = LEADING_DECLARED_ACCESS_PATTERN.exec(remaining);
+    if (!match) break;
+    matched = true;
+    const entries = match[1].split(";").map((entry) => entry.trim());
+    if (entries.length === 0 || entries.some((entry) => !entry)) return null;
+    for (const entry of entries) {
+      const separator = entry.indexOf(":");
+      if (separator <= 0 || separator === entry.length - 1) return null;
+      const access = entry.slice(0, separator).trim().toLowerCase();
+      const requestedPath = entry.slice(separator + 1).trim();
+      if (
+        (access !== "ro" && access !== "rw") ||
+        !ABSOLUTE_LOCAL_PATH_PATTERN.test(requestedPath)
+      ) {
+        return null;
+      }
+      const key = requestedPath.toLowerCase();
+      const existing = declarations.get(key);
+      if (!existing || (existing.access === "ro" && access === "rw")) {
+        declarations.set(key, { access, path: requestedPath });
+      }
+    }
+    remaining = remaining.slice(match[0].length);
+  }
+
+  if (
+    !matched ||
+    !remaining.trim() ||
+    DECLARED_ACCESS_TAG_PATTERN.test(remaining) ||
+    DECLARED_ACCESS_MARKER_PATTERN.test(remaining)
+  ) {
+    return null;
+  }
+  return [...declarations.values()].sort((left, right) =>
+    left.path.localeCompare(right.path, undefined, { sensitivity: "base" }),
+  );
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => typeof entry === "string" && entry.length > 0)
+  );
 }
 
 export function normalizeWindowsNodeMxcGatewayApproval(
@@ -73,6 +143,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const commandText = typeof plan.commandText === "string" ? plan.commandText.trim() : "";
   const commandPreview =
     typeof plan.commandPreview === "string" ? plan.commandPreview.trim() : "";
+  const declaredAccess = parseGatewayDeclaredAccess(commandPreview);
   const hasCanonicalCwd =
     Object.hasOwn(plan, "cwd") &&
     (plan.cwd === null || (typeof plan.cwd === "string" && plan.cwd.trim().length > 0));
@@ -88,20 +159,17 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     !Object.hasOwn(plan, "commandPreview") ||
     plan.commandPreview === null ||
     typeof plan.commandPreview === "string";
-  const command =
-    commandPreview || commandText;
   if (
     !id ||
     host !== "node" ||
     nodeId.toLowerCase() !== selectedNodeId.trim().toLowerCase() ||
-    !Array.isArray(argv) ||
-    argv.length === 0 ||
-    !argv.every((value) => typeof value === "string" && value.length > 0) ||
+    !isNonEmptyStringArray(argv) ||
     !commandText ||
     !hasCanonicalCwd ||
     !hasCanonicalAgent ||
     !hasCanonicalSession ||
-    !hasCanonicalPreview
+    !hasCanonicalPreview ||
+    declaredAccess === null
   ) {
     return null;
   }
@@ -122,10 +190,13 @@ export function normalizeWindowsNodeMxcGatewayApproval(
 
   return {
     id,
-    command,
+    command: commandText,
+    executable: argv[0],
+    arguments: argv.slice(1),
     canonicalCwd:
       typeof plan.cwd === "string" && plan.cwd.trim() ? plan.cwd : CWD_POLICY_SCRATCH_BINDING,
     agent: typeof plan.agentId === "string" && plan.agentId.trim() ? plan.agentId : null,
+    declaredAccess,
     allowedDecisions: [...new Set(allowed)],
   };
 }

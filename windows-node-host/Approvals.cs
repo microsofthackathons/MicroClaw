@@ -9,22 +9,27 @@ public sealed record DurableApproval(
     string ExecutablePath,
     IReadOnlyList<string> Arguments,
     string CwdBinding,
+    IReadOnlyList<DurableApprovalAccess> DeclaredAccess,
     string ExecutableSha256);
+
+public sealed record DurableApprovalAccess(string Access, string Path);
 
 public static class DurableApprovalIdentity
 {
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     public static DurableApproval Create(
         string executablePath,
         IReadOnlyList<string> arguments,
-        string cwdBinding) =>
-        Create(executablePath, arguments, cwdBinding, executableContent: null);
+        string cwdBinding,
+        IReadOnlyList<DurableApprovalAccess>? declaredAccess = null) =>
+        Create(executablePath, arguments, cwdBinding, declaredAccess ?? [], executableContent: null);
 
     internal static DurableApproval Create(
         string executablePath,
         IReadOnlyList<string> arguments,
         string cwdBinding,
+        IReadOnlyList<DurableApprovalAccess> declaredAccess,
         Stream? executableContent)
     {
         var canonicalExecutable = WindowsPathCanonicalizer.CanonicalizeFile(executablePath);
@@ -47,6 +52,10 @@ public static class DurableApprovalIdentity
             canonicalExecutable,
             arguments.ToArray(),
             cwdBinding,
+            declaredAccess
+                .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
+                .Select(entry => new DurableApprovalAccess(entry.Access.ToLowerInvariant(), entry.Path))
+                .ToArray(),
             executableSha256);
     }
 
@@ -54,16 +63,23 @@ public static class DurableApprovalIdentity
         DurableApproval approval,
         string executablePath,
         IReadOnlyList<string> arguments,
-        string cwdBinding) =>
-        Matches(approval, Create(executablePath, arguments, cwdBinding));
+        string cwdBinding,
+        IReadOnlyList<DurableApprovalAccess>? declaredAccess = null) =>
+        Matches(approval, Create(executablePath, arguments, cwdBinding, declaredAccess));
 
     public static bool Matches(DurableApproval approval, DurableApproval current)
     {
-        if (approval.SchemaVersion != SchemaVersion || string.IsNullOrWhiteSpace(approval.CwdBinding))
+        if (approval.SchemaVersion != SchemaVersion
+            || string.IsNullOrWhiteSpace(approval.CwdBinding)
+            || approval.DeclaredAccess is null)
             return false;
         return string.Equals(approval.ExecutablePath, current.ExecutablePath, StringComparison.OrdinalIgnoreCase)
             && approval.Arguments.SequenceEqual(current.Arguments, StringComparer.Ordinal)
             && string.Equals(approval.CwdBinding, current.CwdBinding, StringComparison.OrdinalIgnoreCase)
+            && approval.DeclaredAccess.Count == current.DeclaredAccess.Count
+            && approval.DeclaredAccess.Zip(current.DeclaredAccess).All(pair =>
+                string.Equals(pair.First.Access, pair.Second.Access, StringComparison.Ordinal)
+                && string.Equals(pair.First.Path, pair.Second.Path, StringComparison.OrdinalIgnoreCase))
             && CryptographicOperations.FixedTimeEquals(
                 Encoding.ASCII.GetBytes(approval.ExecutableSha256),
                 Encoding.ASCII.GetBytes(current.ExecutableSha256));
@@ -74,7 +90,10 @@ public static class DurableApprovalIdentity
         if (!File.Exists(path))
             return [];
         var entries = JsonSerializer.Deserialize<List<DurableApproval>>(File.ReadAllText(path)) ?? [];
-        return entries.Where(entry => entry.SchemaVersion == SchemaVersion && !string.IsNullOrWhiteSpace(entry.CwdBinding)).ToArray();
+        return entries.Where(entry =>
+            entry.SchemaVersion == SchemaVersion
+            && !string.IsNullOrWhiteSpace(entry.CwdBinding)
+            && entry.DeclaredAccess is not null).ToArray();
     }
 }
 
@@ -121,8 +140,16 @@ public sealed class ExecutableApprovalLease : IDisposable
         }
     }
 
-    public DurableApproval Capture(IReadOnlyList<string> arguments, string cwdBinding) =>
-        DurableApprovalIdentity.Create(CanonicalPath, arguments, cwdBinding, _stream);
+    public DurableApproval Capture(
+        IReadOnlyList<string> arguments,
+        string cwdBinding,
+        IReadOnlyList<DurableApprovalAccess>? declaredAccess = null) =>
+        DurableApprovalIdentity.Create(
+            CanonicalPath,
+            arguments,
+            cwdBinding,
+            declaredAccess ?? [],
+            _stream);
 
     public void Dispose() => _stream.Dispose();
 }

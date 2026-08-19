@@ -48,8 +48,9 @@ The exact attestation contract is `microclaw.windows-cwd.v1`. A supplied CWD mus
 
 CWD inherits the matched root's access; it never creates a grant. Omitted CWD binds approval to
 `isolated-scratch:v1` and launches in a per-run writable scratch directory. Durable entries use
-schema 2 and bind canonical executable path, executable SHA-256, exact argv, and canonical CWD (or
-the scratch semantic). Legacy or CWD-unbound entries never match. Policy, executable identity,
+schema 3 and bind canonical executable path, executable SHA-256, exact argv, canonical CWD (or
+the scratch semantic), and the normalized declared-access set. Legacy, CWD-unbound, or
+declared-access-unbound entries never match. Policy, executable identity,
 reparse state, root membership, and the exact CWD binding are revalidated immediately before
 launch. Delete-denying directory handles retain every approved-root/CWD path component through MXC
 completion, preventing a validated directory from being replaced by a junction during launch.
@@ -68,8 +69,13 @@ Optional `[declare-access]ro:<path>;rw:<path>[/declare-access]` metadata is acce
 metadata lines (with an optional `#`, `REM`, or `::` comment prefix). It can describe only canonical
 paths already covered by the global folder policy and cannot upgrade RO to RW. The helper removes
 the metadata line from the executable shell payload, binds approval to the cleaned argv, and carries
-the original declaration only as the approved plan's display preview. Replay must contain that exact
-Gateway-approved plan; mismatched plan argv or command text is denied before the node prompt.
+a canonical declaration only in the approved plan's display preview. Every configured approved root
+is passed into every MXC invocation as a global RO/RW grant; declaration metadata validates and
+communicates intended use but never grants or changes access. MicroClaw renders it as separate
+localized declared folder use and clean command text, and explains that approval authorizes the
+command itself inside MXC. `Allow always` persists the exact command, canonical CWD, and declaration
+identity without changing configured folder grants. Replay must contain that exact Gateway-approved
+plan; mismatched plan argv or command text is denied before the node prompt.
 
 ## Packaging and provenance
 

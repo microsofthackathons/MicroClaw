@@ -69,6 +69,7 @@ internal sealed class BundledSystemCapability(
         var run = ParseRun(request.Args);
         var cwd = policy.ResolveCwd(run.Cwd);
         var commandText = WindowsCommandLine.Join(run.Argv);
+        var commandPreview = BuildApprovalCommandPreview(run, commandText);
         return new
         {
             cmdText = commandText,
@@ -77,9 +78,7 @@ internal sealed class BundledSystemCapability(
                 argv = run.Argv,
                 cwd = string.IsNullOrEmpty(cwd.LaunchPath) ? null : cwd.LaunchPath,
                 commandText,
-                commandPreview = string.Equals(run.CommandPreview, commandText, StringComparison.Ordinal)
-                    ? null
-                    : run.CommandPreview,
+                commandPreview,
                 agentId = run.AgentId,
                 sessionKey = run.SessionKey,
             },
@@ -88,6 +87,22 @@ internal sealed class BundledSystemCapability(
             contract = CwdPolicyContract.Version,
             declaredAccess = run.DeclaredAccess,
         };
+    }
+
+    private static string? BuildApprovalCommandPreview(RunRequest run, string commandText)
+    {
+        if (run.DeclaredAccess.Count == 0)
+            return string.Equals(run.CommandPreview, commandText, StringComparison.Ordinal)
+                ? null
+                : run.CommandPreview;
+        if (string.IsNullOrWhiteSpace(run.RawCommand))
+            throw new HostPolicyException(
+                "declare-access-command-empty",
+                "Declared access requires a clean executable command.");
+        var declaration = string.Join(
+            ';',
+            run.DeclaredAccess.Select(entry => $"{entry.Access}:{entry.Path}"));
+        return $"# [declare-access]{declaration}[/declare-access]\n{run.RawCommand}";
     }
 
     private async Task<NodeInvokeResponse> RunAsync(
@@ -115,9 +130,15 @@ internal sealed class BundledSystemCapability(
         var executable = ResolveExecutable(request.Argv[0])
             ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
         var exactArgs = request.Argv.Skip(1).ToArray();
+        var declaredApprovalAccess = request.DeclaredAccess
+            .Select(entry => new DurableApprovalAccess(entry.Access, entry.Path))
+            .ToArray();
         using var executableLease = ExecutableApprovalLease.Acquire(executable);
         executable = executableLease.CanonicalPath;
-        var approvedIdentity = executableLease.Capture(exactArgs, cwd.ApprovalBinding);
+        var approvedIdentity = executableLease.Capture(
+            exactArgs,
+            cwd.ApprovalBinding,
+            declaredApprovalAccess);
 
         var durable = DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, approvedIdentity));
@@ -146,9 +167,12 @@ internal sealed class BundledSystemCapability(
         // Re-resolve every security input immediately before process creation.
         var currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
         var currentExecutable = WindowsPathCanonicalizer.CanonicalizeFile(executable);
-        var currentIdentity = executableLease.Capture(exactArgs, currentCwd.ApprovalBinding);
+        var currentIdentity = executableLease.Capture(
+            exactArgs,
+            currentCwd.ApprovalBinding,
+            declaredApprovalAccess);
         if (!DurableApprovalIdentity.Matches(approvedIdentity, currentIdentity))
-            return Error("approval-changed-before-launch: The executable, arguments, or CWD changed after approval.");
+            return Error("approval-changed-before-launch: The executable, arguments, CWD, or declared access changed after approval.");
         if (requireDurableRecheck && !DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, currentIdentity)))
             return Error("approval-changed-before-launch: The durable approval is no longer current.");

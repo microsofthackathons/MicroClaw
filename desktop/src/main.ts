@@ -3616,9 +3616,7 @@ function connectGatewayWs(): void {
         };
         mainWindow?.webContents.send("windows-node-mxc:approval-request", {
           ...approval,
-          executable: "OpenClaw Gateway node exec approval",
-          arguments: [approval.command],
-          declaredAccess: [],
+          commandText: approval.command,
           approvalLayer: "gateway",
         });
         return;

@@ -10,7 +10,7 @@ const AUTO_DENY_SECONDS = 60;
 
 interface PermissionRequest {
   requestId: string;
-  type: "file" | "shell" | "shell-async" | "app-approval";
+  type: "file" | "shell" | "shell-async" | "app-approval" | "mxc-approval";
   targetPath?: string;
   dirPath?: string;
   command?: string;
@@ -18,6 +18,7 @@ interface PermissionRequest {
   app?: string;
   accessNeeded?: string;
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
+  declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
 }
 
 const props = defineProps<{
@@ -69,6 +70,7 @@ function escapeHtml(s: string): string {
 
 const descriptionHtml = computed(() => {
   if (!props.request) return "";
+  if (props.request.type === "mxc-approval") return "";
   if (props.request.type === "app-approval") {
     const appName = `<strong>${escapeHtml(props.request.app || "")}</strong>`;
     return t("perm.appDesc", { app: appName });
@@ -84,42 +86,55 @@ const descriptionHtml = computed(() => {
 });
 
 const commandHtml = computed(() => {
-  if (!props.request?.command) return "";
+  if (!props.request?.command || props.request.type === "mxc-approval") return "";
   return escapeHtml(props.request.command);
 });
 
-const isAppApproval = computed(() => props.request?.type === "app-approval");
+const isMxcApproval = computed(() => props.request?.type === "mxc-approval");
+const isAttendedApproval = computed(
+  () => props.request?.type === "app-approval" || isMxcApproval.value,
+);
+const declaredAccess = computed(() => props.request?.declaredAccess ?? []);
 const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
 );
 const allowsAlways = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always"),
 );
+const mxcScopeText = computed(() => {
+  if (declaredAccess.value.length > 0) {
+    return allowsAlways.value ? t("perm.mxcScope") : t("perm.mxcScopeOnce");
+  }
+  return allowsAlways.value ? t("perm.mxcScopeNoAccess") : t("perm.mxcScopeNoAccessOnce");
+});
 const isShellRequest = computed(
   () => props.request?.type === "shell" || props.request?.type === "shell-async",
 );
 const isReadOnly = computed(() => props.request?.accessNeeded === "ro");
 const riskLevel = computed<"low" | "medium" | "high">(() => {
   if (!props.request) return "low";
-  if (props.request.type === "app-approval") return "high";
+  if (isAttendedApproval.value) return "high";
   if (isShellRequest.value) return isReadOnly.value ? "medium" : "high";
   return isReadOnly.value ? "low" : "medium";
 });
 const isModal = computed(() => riskLevel.value !== "low");
 const dialogIcon = computed(() => {
   if (!props.request) return "📁";
+  if (isMxcApproval.value) return "🛡";
   if (props.request.type === "app-approval") return "🚀";
   if (isShellRequest.value) return "⌨";
   return isReadOnly.value ? "📁" : "✎";
 });
 const dialogTitle = computed(() => {
   if (!props.request) return t("perm.title");
+  if (isMxcApproval.value) return t("perm.titleMxc");
   if (props.request.type === "app-approval") return t("perm.titleApp");
   if (isShellRequest.value) return t("perm.titleCommand");
   return isReadOnly.value ? t("perm.titleRead") : t("perm.titleWrite");
 });
 const riskHint = computed(() => {
   if (!props.request) return "";
+  if (isMxcApproval.value) return t("perm.riskMxc");
   if (props.request.type === "app-approval") return t("perm.riskApp");
   if (isShellRequest.value)
     return isReadOnly.value ? t("perm.riskCommandRO") : t("perm.riskCommandRW");
@@ -168,11 +183,34 @@ function respond(decision: string) {
             </svg>
           </button>
         </div>
-        <div class="perm-body" v-html="descriptionHtml"></div>
-        <div v-if="commandHtml" class="perm-command">
-          <div class="perm-command-label">{{ t("perm.commandLabel") }}</div>
-          <code class="perm-command-code" v-html="commandHtml"></code>
+        <div v-if="isMxcApproval" class="perm-body">{{ t("perm.mxcDesc") }}</div>
+        <div v-else class="perm-body" v-html="descriptionHtml"></div>
+        <div v-if="isMxcApproval && declaredAccess.length > 0" class="perm-mxc-detail">
+          <div class="perm-command-label">{{ t("perm.mxcAccessLabel") }}</div>
+          <div
+            v-for="declaration in declaredAccess"
+            :key="`${declaration.access}:${declaration.path}`"
+            class="perm-mxc-access"
+          >
+            <span>
+              {{
+                declaration.access === "ro" ? t("perm.mxcAccessRo") : t("perm.mxcAccessRw")
+              }}
+              —
+            </span>
+            <code>{{ declaration.path }}</code>
+          </div>
         </div>
+        <div v-if="request.command" class="perm-command">
+          <div class="perm-command-label">{{ t("perm.commandLabel") }}</div>
+          <code v-if="isMxcApproval" class="perm-command-code">{{ request.command }}</code>
+          <code v-else class="perm-command-code" v-html="commandHtml"></code>
+        </div>
+        <div v-if="isMxcApproval && request.dirPath" class="perm-mxc-detail">
+          <div class="perm-command-label">{{ t("perm.mxcCwdLabel") }}</div>
+          <code class="perm-mxc-value">{{ request.dirPath }}</code>
+        </div>
+        <div v-if="isMxcApproval" class="perm-body perm-mxc-scope">{{ mxcScopeText }}</div>
         <div v-if="SHOW_CALLER_STACK && request?.callerStack" class="perm-command">
           <div class="perm-command-label">{{ t("perm.callerLabel") }}</div>
           <code class="perm-command-code perm-stack">{{ request.callerStack }}</code>
@@ -190,7 +228,7 @@ function respond(decision: string) {
           <button class="perm-btn perm-btn-outline" @click="respond('deny')">
             {{ t("perm.deny") }}
           </button>
-          <template v-if="isAppApproval">
+          <template v-if="isAttendedApproval">
             <button
               v-if="allowsOnce"
               class="perm-btn perm-btn-filled"
@@ -349,6 +387,37 @@ html.dark .perm-overlay--modal {
 
 .perm-command {
   margin-bottom: 16px;
+}
+
+.perm-mxc-detail {
+  margin-bottom: 16px;
+}
+
+.perm-mxc-access {
+  display: grid;
+  grid-template-columns: minmax(100px, auto) 1fr;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.perm-mxc-access span {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.perm-mxc-access code,
+.perm-mxc-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+}
+
+.perm-mxc-scope {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .perm-command-label {

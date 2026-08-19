@@ -604,6 +604,7 @@ export default {
   "perm.titleWrite": "File access permission",
   "perm.titleCommand": "Command approval required",
   "perm.titleApp": "External app approval required",
+  "perm.titleMxc": "MXC sandbox command approval",
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
@@ -615,11 +616,25 @@ export default {
   "perm.shellDescRO": "Allow read permission to {dir}",
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
+  "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
+  "perm.mxcAccessLabel": "Declared folder use",
+  "perm.mxcAccessRo": "Read only",
+  "perm.mxcAccessRw": "Read and write",
+  "perm.mxcCwdLabel": "Canonical working directory",
+  "perm.mxcScope":
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Always allow” remembers this exact command, canonical working directory, and declaration identity.",
+  "perm.mxcScopeOnce":
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access.",
+  "perm.mxcScopeNoAccess":
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown. “Always allow” remembers this exact command and canonical working directory.",
+  "perm.mxcScopeNoAccessOnce":
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",
   "perm.riskCommandRW": "High risk: this command may change files or system state.",
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
+  "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Always allow",
   "perm.callerLabel": "Caller",

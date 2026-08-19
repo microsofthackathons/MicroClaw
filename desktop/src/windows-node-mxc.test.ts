@@ -69,11 +69,73 @@ describe("Gateway node exec approval bridge", () => {
   it("accepts only a canonical approval for the selected node", () => {
     expect(normalizeWindowsNodeMxcGatewayApproval(payload, nodeId)).toEqual({
       id: "approval-1",
-      command: "Set-Content test.txt ok",
+      command: 'powershell.exe -Command "Set-Content test.txt ok"',
+      executable: "powershell.exe",
+      arguments: ["-Command", "Set-Content test.txt ok"],
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
+      declaredAccess: [],
       allowedDecisions: ["allow-once", "deny"],
     });
+  });
+
+  it("separates normalized RO and RW declarations from the clean command", () => {
+    const approval = normalizeWindowsNodeMxcGatewayApproval(
+      {
+        ...payload,
+        request: {
+          ...payload.request,
+          systemRunPlan: {
+            ...payload.request.systemRunPlan,
+            commandPreview: [
+              String.raw`# [declare-access]rw:C:\Users\test\Desktop[/declare-access]`,
+              String.raw`REM [declare-access]ro:C:\Users\test\Documents[/declare-access]`,
+              "Set-Content test.txt ok",
+            ].join("\n"),
+          },
+        },
+      },
+      nodeId,
+    );
+
+    expect(approval).toEqual({
+      id: "approval-1",
+      command: 'powershell.exe -Command "Set-Content test.txt ok"',
+      executable: "powershell.exe",
+      arguments: ["-Command", "Set-Content test.txt ok"],
+      canonicalCwd: "isolated-scratch:v1",
+      agent: "main",
+      declaredAccess: [
+        { access: "rw", path: String.raw`C:\Users\test\Desktop` },
+        { access: "ro", path: String.raw`C:\Users\test\Documents` },
+      ],
+      allowedDecisions: ["allow-once", "deny"],
+    });
+    expect(approval?.command).not.toContain("declare-access");
+  });
+
+  it.each([
+    "# [declare-access]rw:C:\\Users\\test\\Desktop",
+    "# [declare-access]write:C:\\Users\\test\\Desktop[/declare-access]\necho test",
+    "# [declare-access]rw:relative[/declare-access]\necho test",
+    "echo before\n# [declare-access]rw:C:\\Users\\test\\Desktop[/declare-access]\necho test",
+    "# [declare-access]rw:C:\\Users\\test\\Desktop[/declare-access]",
+  ])("rejects malformed declared-access previews: %s", (commandPreview) => {
+    expect(
+      normalizeWindowsNodeMxcGatewayApproval(
+        {
+          ...payload,
+          request: {
+            ...payload.request,
+            systemRunPlan: {
+              ...payload.request.systemRunPlan,
+              commandPreview,
+            },
+          },
+        },
+        nodeId,
+      ),
+    ).toBeNull();
   });
 
   it("rejects another node, host execution, and a malformed canonical plan", () => {
@@ -139,6 +201,7 @@ describe("bundled Windows Node CWD attestation", () => {
           canonicalFinalPath: true,
           rejectsReparseComponents: true,
           durableApprovalBindsCwd: true,
+          durableApprovalBindsDeclaredAccess: true,
           launchTimeRevalidation: true,
           omittedCwdUsesIsolatedScratch: true,
           hostFallbackAbsent: true,

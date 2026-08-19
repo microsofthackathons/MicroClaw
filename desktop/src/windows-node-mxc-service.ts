@@ -482,6 +482,7 @@ export function validateBundledCwdAttestation(value: unknown): {
     canonicalFinalPath: true,
     rejectsReparseComponents: true,
     durableApprovalBindsCwd: true,
+    durableApprovalBindsDeclaredAccess: true,
     launchTimeRevalidation: true,
     omittedCwdUsesIsolatedScratch: true,
     hostFallbackAbsent: true,

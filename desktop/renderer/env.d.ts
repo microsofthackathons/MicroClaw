@@ -430,6 +430,7 @@ interface OpenClawAPI {
           id: string;
           executable: string;
           arguments: string[];
+          commandText?: string;
           agent: string | null;
           canonicalCwd: string;
           approvalLayer: "gateway" | "node";

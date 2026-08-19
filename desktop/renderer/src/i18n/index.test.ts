@@ -74,4 +74,24 @@ describe("i18n", () => {
     expect(t("agentCatalog.customAgents")).toBe("自定义智能体");
     setLocale("en-US");
   });
+
+  it("localizes MXC-contained approval wording without outside-sandbox language", () => {
+    setLocale("en-US");
+    expect(t("perm.mxcDesc")).toBe("AI wants to run this command inside the MXC sandbox.");
+    expect(t("perm.mxcAccessLabel")).toBe("Declared folder use");
+    expect(t("perm.mxcAccessRw")).toBe("Read and write");
+    expect(t("perm.mxcScopeOnce")).toContain(
+      "approval does not grant or change folder access",
+    );
+    expect(t("perm.mxcScopeOnce")).not.toContain("requested");
+    expect(t("perm.mxcDesc")).not.toContain("outside");
+
+    setLocale("zh-CN");
+    expect(t("perm.mxcDesc")).toBe("AI 助手想在 MXC 沙箱内运行此命令。");
+    expect(t("perm.mxcAccessLabel")).toBe("声明的文件夹用途");
+    expect(t("perm.mxcAccessRw")).toBe("读写");
+    expect(t("perm.mxcScopeOnce")).toContain("批准不会授予或更改文件夹访问权限");
+    expect(t("perm.mxcDesc")).not.toContain("沙箱外");
+    setLocale("en-US");
+  });
 });
