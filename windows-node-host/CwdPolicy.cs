@@ -26,6 +26,11 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("generationBoundActivation")] bool GenerationBoundActivation,
     [property: JsonPropertyName("policyBoundActivation")] bool PolicyBoundActivation,
     [property: JsonPropertyName("launchTimeLeaseRevalidation")] bool LaunchTimeLeaseRevalidation,
+    [property: JsonPropertyName("approvalProofContract")] string ApprovalProofContract,
+    [property: JsonPropertyName("activeRunsRequireApprovalProof")] bool ActiveRunsRequireApprovalProof,
+    [property: JsonPropertyName("approvalProofBindsPreparedPlan")] bool ApprovalProofBindsPreparedPlan,
+    [property: JsonPropertyName("approvalProofBindsActivation")] bool ApprovalProofBindsActivation,
+    [property: JsonPropertyName("approvalProofOneUse")] bool ApprovalProofOneUse,
     [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent)
 {
     public static readonly CwdPolicyAttestation Current = new(
@@ -42,6 +47,11 @@ public sealed record CwdPolicyAttestation(
         GenerationBoundActivation: true,
         PolicyBoundActivation: true,
         LaunchTimeLeaseRevalidation: true,
+        ApprovalProofContract: global::MicroClaw.WindowsNodeHost.ApprovalProofContract.Version,
+        ActiveRunsRequireApprovalProof: true,
+        ApprovalProofBindsPreparedPlan: true,
+        ApprovalProofBindsActivation: true,
+        ApprovalProofOneUse: true,
         DurableApprovalsPresent: false);
 }
 

@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BUNDLED_WINDOWS_NODE_CWD_CONTRACT,
+  BundledWindowsNodeHost,
   MXC_HOST_PREP_PATCH_REVISION,
   assertApprovalResponseMatches,
   assertLoopbackGateway,
@@ -16,6 +17,13 @@ import {
   validateApprovalRequest,
 } from "./bundled-windows-node-host";
 
+vi.mock("electron", () => ({
+  app: {
+    isPackaged: false,
+    getPath: () => String.raw`C:\Users\Alice\AppData\Roaming\MicroClaw`,
+  },
+}));
+
 describe("bundled Windows node host", () => {
   it("uses the exact CWD policy contract", () => {
     expect(BUNDLED_WINDOWS_NODE_CWD_CONTRACT).toBe("microclaw.windows-cwd.v1");
@@ -23,6 +31,33 @@ describe("bundled Windows node host", () => {
 
   it("pins the reviewed MXC target-only host-prep patch", () => {
     expect(MXC_HOST_PREP_PATCH_REVISION).toBe("695c2b89c6142090a098ec4484f49aff8157f0b3");
+  });
+
+  it("creates a fresh 256-bit proof context bound to policy and node identity", () => {
+    const host = Object.create(BundledWindowsNodeHost.prototype) as BundledWindowsNodeHost;
+    const folders = [
+      { path: String.raw`C:\Users\Alice\Documents`, access: "ro" as const },
+      { path: String.raw`C:\Users\Alice\Desktop`, access: "rw" as const },
+    ];
+    const first = host.createApprovalProofContext(
+      "generation-1",
+      "a".repeat(64),
+      folders,
+      String.raw`C:\Users\Alice\AppData\Roaming\openclaw`,
+    );
+    const second = host.createApprovalProofContext(
+      "generation-1",
+      "a".repeat(64),
+      folders,
+      String.raw`C:\Users\Alice\AppData\Roaming\openclaw`,
+    );
+
+    expect(Buffer.from(first.secretBase64, "base64")).toHaveLength(32);
+    expect(first.gatewayGeneration).toBe("generation-1");
+    expect(first.nodeId).toBe("a".repeat(64));
+    expect(first.policyFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.secretBase64).not.toBe(second.secretBase64);
+    expect(first.policyFingerprint).toBe(second.policyFingerprint);
   });
 
   it("protects both helper state and the resolved OpenClaw state root", () => {

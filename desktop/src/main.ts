@@ -143,6 +143,7 @@ import {
   BundledWindowsNodeHost,
   sensitiveWindowsRoots,
   type BundledApprovalRequest,
+  type BundledWindowsNodeApprovalProofContext,
   type BundledWindowsNodeFolder,
 } from "./bundled-windows-node-host";
 
@@ -290,6 +291,7 @@ const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
 let gatewayGenerationId = "";
+let windowsNodeMxcApprovalProofContext: BundledWindowsNodeApprovalProofContext | null = null;
 let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcSecurityTransitionInProgress = false;
@@ -2160,6 +2162,7 @@ async function waitForGatewayReady(
 /** Kill the managed gateway and any listener still holding gatewayPort. */
 function stopGatewayProcess(): void {
   stopBundledWindowsNodeHost();
+  windowsNodeMxcApprovalProofContext = null;
   const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
   gatewaySpawnedByUs = false;
@@ -2288,6 +2291,7 @@ async function stopGatewayForSecurityTransition(port: number): Promise<void> {
     );
   }
 
+  windowsNodeMxcApprovalProofContext = null;
   if (!managedPid) {
     gwClient?.stop();
     setGatewayStatus("stopped");
@@ -2917,6 +2921,16 @@ async function startGatewayInner(): Promise<void> {
   // Spawn gateway as a hidden background process — logs are forwarded
   // to the renderer via the gateway:log IPC channel (visible in Settings).
 
+  const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
+  const nextGatewayGenerationId = randomUUID();
+  const nextApprovalProofContext = windowsNodeMxcDesired
+    ? bundledWindowsNodeHost.createApprovalProofContext(
+        nextGatewayGenerationId,
+        settingsStore.get("windowsNodeMxcNodeId"),
+        getBundledWindowsNodeFolders(),
+        stateDir,
+      )
+    : null;
   const gwEnv: Record<string, string> = {
     ...gatewayEnvironment,
     OPENCLAW_STATE_DIR: stateDir,
@@ -3024,7 +3038,6 @@ async function startGatewayInner(): Promise<void> {
     console.log(`[sandbox] Preload: ${preloadForward}`);
   }
 
-  const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
   const approvalCompatPath = app.isPackaged
     ? path.join(process.resourcesPath, "openclaw-approval-replay-compat.mjs")
     : path.join(__dirname, "..", "src", "openclaw-approval-replay-compat.mjs");
@@ -3038,6 +3051,15 @@ async function startGatewayInner(): Promise<void> {
     }
     gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
     gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
+    if (!nextApprovalProofContext) {
+      throw new Error("Windows Node + MXC approval proof context is unavailable");
+    }
+    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_SECRET = nextApprovalProofContext.secretBase64;
+    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION =
+      nextApprovalProofContext.gatewayGeneration;
+    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT =
+      nextApprovalProofContext.policyFingerprint;
+    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID = nextApprovalProofContext.nodeId;
   }
 
   const gwArgs = [
@@ -3067,7 +3089,8 @@ async function startGatewayInner(): Promise<void> {
   });
 
   gatewayProcess = child;
-  gatewayGenerationId = randomUUID();
+  gatewayGenerationId = nextGatewayGenerationId;
+  windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
   windowsNodeMxcIngressGeneration = null;
   gatewaySpawnedByUs = true;
   // Only allow post-spawn restart on the very first gateway launch.
@@ -3106,6 +3129,7 @@ async function startGatewayInner(): Promise<void> {
     safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
     if (gatewayProcess === child) {
       windowsNodeMxcIngressGeneration = null;
+      windowsNodeMxcApprovalProofContext = null;
       bundledWindowsNodeHost.revokeActivationLease();
       stopBundledWindowsNodeHost();
       gatewayProcess = null;
@@ -3119,6 +3143,7 @@ async function startGatewayInner(): Promise<void> {
     safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
     if (gatewayProcess === child) {
       windowsNodeMxcIngressGeneration = null;
+      windowsNodeMxcApprovalProofContext = null;
       bundledWindowsNodeHost.revokeActivationLease();
       stopBundledWindowsNodeHost();
       gatewayProcess = null;
@@ -3489,6 +3514,20 @@ function connectGatewayWs(): void {
             console.error("[bundled-windows-node] managed Gateway process identity is unavailable");
             return;
           }
+          const approvalProof = windowsNodeMxcApprovalProofContext;
+          if (
+            !approvalProof ||
+            approvalProof.gatewayGeneration !== gatewayGenerationId ||
+            approvalProof.nodeId !== settingsStore.get("windowsNodeMxcNodeId").toLowerCase()
+          ) {
+            console.error(
+              "[bundled-windows-node] approval proof context is unavailable for this Gateway generation",
+            );
+            void failClosedWindowsNodeMxc(
+              "Bundled node approval proof context did not match the managed Gateway generation",
+            );
+            return;
+          }
           const startOptions = {
             gatewayUrl: `ws://127.0.0.1:${gatewayPort}`,
             gatewayToken,
@@ -3497,6 +3536,7 @@ function connectGatewayWs(): void {
             uiLocale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
             openClawStateRoot: getOpenClawStateDir(),
             folders: getBundledWindowsNodeFolders(),
+            approvalProof,
             onApproval: (approval: BundledApprovalRequest | null) =>
               mainWindow?.webContents.send(
                 "windows-node-mxc:approval-request",

@@ -15,7 +15,8 @@ internal sealed class BundledSystemCapability(
     string approvalPipeName,
     string approvalsPath,
     ActivationLeaseGuard activationLease,
-    string uiLocale = "en-US") : INodeCapability
+    string uiLocale = "en-US",
+    ApprovalProofVerifier? approvalProof = null) : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private static readonly string[] SupportedCommands =
@@ -128,6 +129,15 @@ internal sealed class BundledSystemCapability(
         var request = ParseRun(args);
         var cwd = policy.ResolveCwd(request.Cwd);
         var validatedActivation = activationLease.Validate(request.Argv);
+        var activeGatewayApproval = validatedActivation.Mode is ActivationLeaseMode.Active;
+        if (activeGatewayApproval)
+        {
+            if (approvalProof is null)
+                throw new HostPolicyException(
+                    "approval-proof-unavailable",
+                    "The active Gateway approval proof verifier is unavailable.");
+            approvalProof.ValidateAndConsume(args);
+        }
         var executable = ResolveExecutable(request.Argv[0])
             ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
         var exactArgs = request.Argv.Skip(1).ToArray();
@@ -141,10 +151,10 @@ internal sealed class BundledSystemCapability(
             cwd.ApprovalBinding,
             declaredApprovalAccess);
 
-        var durable = DurableApprovalIdentity.Load(approvalsPath)
+        var durable = !activeGatewayApproval && DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, approvedIdentity));
         var requireDurableRecheck = durable;
-        if (!durable)
+        if (!activeGatewayApproval && !durable)
         {
             var decision = await ApprovalPipeClient.RequestAsync(
                 approvalPipeName,

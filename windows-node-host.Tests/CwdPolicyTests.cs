@@ -2,6 +2,7 @@ using MicroClaw.WindowsNodeHost;
 using OpenClaw.Shared;
 using System.Net;
 using System.Net.Sockets;
+using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -202,6 +203,11 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(attestation.GenerationBoundActivation);
         Assert.True(attestation.PolicyBoundActivation);
         Assert.True(attestation.LaunchTimeLeaseRevalidation);
+        Assert.Equal("microclaw.windows-node-approval.v1", attestation.ApprovalProofContract);
+        Assert.True(attestation.ActiveRunsRequireApprovalProof);
+        Assert.True(attestation.ApprovalProofOneUse);
+        Assert.True(attestation.ApprovalProofBindsPreparedPlan);
+        Assert.True(attestation.ApprovalProofBindsActivation);
         Assert.False(attestation.DurableApprovalsPresent);
     }
 
@@ -227,6 +233,13 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(root.GetProperty("generationBoundActivation").GetBoolean());
         Assert.True(root.GetProperty("policyBoundActivation").GetBoolean());
         Assert.True(root.GetProperty("launchTimeLeaseRevalidation").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-node-approval.v1",
+            root.GetProperty("approvalProofContract").GetString());
+        Assert.True(root.GetProperty("activeRunsRequireApprovalProof").GetBoolean());
+        Assert.True(root.GetProperty("approvalProofOneUse").GetBoolean());
+        Assert.True(root.GetProperty("approvalProofBindsPreparedPlan").GetBoolean());
+        Assert.True(root.GetProperty("approvalProofBindsActivation").GetBoolean());
         Assert.False(root.GetProperty("durableApprovalsPresent").GetBoolean());
         Assert.False(root.TryGetProperty("Contract", out _));
     }
@@ -704,7 +717,7 @@ public sealed class CwdPolicyTests : IDisposable
     }
 
     [Fact]
-    public async Task DeclaredDesktopCommandReachesAttendedPromptAndDenyStopsExecution()
+    public async Task DiagnosticDeclaredCommandRetainsAttendedPromptAndDenyStopsExecution()
     {
         var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
         var leasePath = Path.Combine(_root, "active-lease.json");
@@ -715,7 +728,7 @@ public sealed class CwdPolicyTests : IDisposable
         await WriteActivationLease(
             leasePath,
             secret,
-            ActivationLeaseMode.Active,
+            ActivationLeaseMode.Diagnostic,
             generation,
             fingerprint,
             DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
@@ -732,9 +745,17 @@ public sealed class CwdPolicyTests : IDisposable
             pipeName,
             approvalsPath,
             new ActivationLeaseGuard(leasePath, secret, generation, fingerprint));
-        var rawCommand = $"# [declare-access]rw:{desktop}[/declare-access]\necho test";
-        var command = new[] { Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", "echo test" };
+        var command = new[]
+        {
+            @"C:\Windows\System32\cmd.exe",
+            "/d",
+            "/s",
+            "/c",
+            @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
+        };
         var commandText = WindowsCommandLine.Join(command);
+        var commandPreview =
+            $"# [declare-access]rw:{desktop}[/declare-access]\n{command[^1]}";
 
         var response = await capability.ExecuteAsync(
             new NodeInvokeRequest
@@ -750,13 +771,14 @@ public sealed class CwdPolicyTests : IDisposable
                     {
                         argv = command,
                         commandText,
-                        commandPreview = rawCommand,
+                        commandPreview,
                         agentId = "main",
                         sessionKey = "agent:main:approval-regression",
                     },
                 })),
             },
             TestContext.Current.CancellationToken);
+        Assert.True(server.IsConnected, response.Error);
         var approval = await observedRequest;
 
         Assert.False(response.Ok);
@@ -764,7 +786,66 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Equal(1, approval.GetProperty("declaredAccess").GetArrayLength());
         Assert.Equal("rw", approval.GetProperty("declaredAccess")[0].GetProperty("access").GetString());
         Assert.Equal(desktop, approval.GetProperty("declaredAccess")[0].GetProperty("path").GetString(), ignoreCase: true);
-        Assert.Equal("echo test", approval.GetProperty("arguments").EnumerateArray().Last().GetString());
+        Assert.Equal(
+            @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
+            approval.GetProperty("arguments").EnumerateArray().Last().GetString());
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task ActiveDirectInvokeWithoutGatewayProofFailsBeforeNodePrompt()
+    {
+        var leasePath = Path.Combine(_root, "active-proof-lease.json");
+        var approvalsPath = Path.Combine(_root, "active-proof-approvals.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "active-proof-generation";
+        var fingerprint = new string('a', 64);
+        var nodeId = new string('b', 64);
+        await WriteActivationLease(
+            leasePath,
+            leaseSecret,
+            ActivationLeaseMode.Active,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-approval-test-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var commandText = WindowsCommandLine.Join(command);
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            approvalProof: new ApprovalProofVerifier(
+                proofSecret,
+                generation,
+                fingerprint,
+                nodeId));
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    rawCommand = commandText,
+                    agentId = "main",
+                    sessionKey = "agent:main:direct-invoke",
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Ok);
+        Assert.Contains("approval-proof-required", response.Error);
+        Assert.False(server.IsConnected);
         Assert.False(File.Exists(approvalsPath));
     }
 

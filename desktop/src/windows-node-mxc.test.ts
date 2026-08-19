@@ -211,11 +211,51 @@ describe("bundled Windows Node CWD attestation", () => {
           generationBoundActivation: true,
           policyBoundActivation: true,
           launchTimeLeaseRevalidation: true,
+          approvalProofContract: "microclaw.windows-node-approval.v1",
+          activeRunsRequireApprovalProof: true,
+          approvalProofOneUse: true,
+          approvalProofBindsPreparedPlan: true,
+          approvalProofBindsActivation: true,
           durableApprovalsPresent: true,
         },
       }),
     ).toEqual({ ready: true, blockers: [], durableApprovalsPresent: true });
   });
+
+   it.each([
+     "activeRunsRequireApprovalProof",
+     "approvalProofOneUse",
+     "approvalProofBindsPreparedPlan",
+     "approvalProofBindsActivation",
+   ])("fails closed when %s is not attested", (property) => {
+     const payload = {
+       contract: "microclaw.windows-cwd.v1",
+       approvedRootOnly: true,
+       canonicalFinalPath: true,
+       rejectsReparseComponents: true,
+       durableApprovalBindsCwd: true,
+       durableApprovalBindsDeclaredAccess: true,
+       launchTimeRevalidation: true,
+       omittedCwdUsesIsolatedScratch: true,
+       hostFallbackAbsent: true,
+       activationLeaseContract: "microclaw.windows-activation.v1",
+       generationBoundActivation: true,
+       policyBoundActivation: true,
+       launchTimeLeaseRevalidation: true,
+       approvalProofContract: "microclaw.windows-node-approval.v1",
+       activeRunsRequireApprovalProof: true,
+       approvalProofOneUse: true,
+       approvalProofBindsPreparedPlan: true,
+       approvalProofBindsActivation: true,
+       durableApprovalsPresent: false,
+     };
+
+     expect(
+       validateBundledCwdAttestation({
+         payload: { ...payload, [property]: false },
+       }).ready,
+     ).toBe(false);
+   });
 
   describe("Windows Node MXC diagnostic lifecycle", () => {
     it("keeps an unverified locked diagnostic Gateway alive but stops actual drift", () => {

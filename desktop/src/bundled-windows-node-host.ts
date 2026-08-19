@@ -9,6 +9,8 @@ import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
+export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT =
+  "microclaw.windows-node-approval.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
@@ -51,6 +53,14 @@ export interface BundledWindowsNodeActivationLease {
   expiresAtUnixMs: number;
 }
 
+export interface BundledWindowsNodeApprovalProofContext {
+  contract: typeof BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT;
+  secretBase64: string;
+  gatewayGeneration: string;
+  policyFingerprint: string;
+  nodeId: string;
+}
+
 export interface BundledApprovalRequest {
   id: string;
   executable: string;
@@ -71,6 +81,7 @@ interface StartOptions {
   uiLocale: string;
   openClawStateRoot: string;
   folders: BundledWindowsNodeFolder[];
+  approvalProof: BundledWindowsNodeApprovalProofContext;
   onApproval: (approval: BundledApprovalRequest | null) => void;
 }
 
@@ -103,6 +114,24 @@ export class BundledWindowsNodeHost {
   );
   private readonly wxcExecPath = path.join(this.resourceRoot, "mxc", "wxc-exec.exe");
 
+  createApprovalProofContext(
+    gatewayGeneration: string,
+    nodeId: string,
+    folders: BundledWindowsNodeFolder[],
+    openClawStateRoot: string,
+  ): BundledWindowsNodeApprovalProofContext {
+    if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
+    if (!/^[a-f0-9]{64}$/i.test(nodeId)) throw new Error("Bundled Windows node ID is invalid");
+    const policyJson = this.buildPolicyJson(folders, openClawStateRoot);
+    return {
+      contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
+      secretBase64: randomBytes(32).toString("base64"),
+      gatewayGeneration,
+      policyFingerprint: createHash("sha256").update(policyJson, "utf8").digest("hex"),
+      nodeId: nodeId.toLowerCase(),
+    };
+  }
+
   async start(options: StartOptions): Promise<void> {
     if (this.process && this.process.exitCode === null) return;
     this.stop();
@@ -119,24 +148,20 @@ export class BundledWindowsNodeHost {
     const scratchRoot = path.join(stateRoot, "scratch");
     await fs.promises.mkdir(stateRoot, { recursive: true });
     await fs.promises.mkdir(scratchRoot, { recursive: true });
-    const policy = {
-      approvedRoots: options.folders.map((folder) => ({
-        path: folder.path,
-        access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
-      })),
-      deniedRoots: sensitiveWindowsRoots(stateRoot, options.openClawStateRoot),
-      wxcExecPath: this.wxcExecPath,
-      networkAllowed: false,
-      allowWindowsUi: true,
-      clipboard: "none",
-      inputInjection: false,
-      strictNoHostFallback: true,
-    };
-    const policyJson = JSON.stringify(policy, null, 2);
+    const policyJson = this.buildPolicyJson(options.folders, options.openClawStateRoot);
     await writeTextAtomically(policyPath, policyJson);
     await fs.promises.rm(activationLeasePath, { force: true });
     const activationLeaseSecret = randomBytes(32);
     const policyFingerprint = createHash("sha256").update(policyJson, "utf8").digest("hex");
+    if (
+      options.approvalProof.contract !== BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT ||
+      options.approvalProof.gatewayGeneration !== options.gatewayGeneration ||
+      options.approvalProof.policyFingerprint !== policyFingerprint ||
+      !/^[a-f0-9]{64}$/i.test(options.approvalProof.nodeId) ||
+      Buffer.from(options.approvalProof.secretBase64, "base64").length !== 32
+    ) {
+      throw new Error("Bundled Windows node approval proof context does not match this generation");
+    }
     this.activationLeaseSecret = activationLeaseSecret;
     this.activationLeasePath = activationLeasePath;
     this.gatewayGeneration = options.gatewayGeneration;
@@ -210,8 +235,34 @@ export class BundledWindowsNodeHost {
         activationLeaseSecret: activationLeaseSecret.toString("base64"),
         gatewayGeneration: options.gatewayGeneration,
         policyFingerprint,
+        approvalProofSecret: options.approvalProof.secretBase64,
+        nodeId: options.approvalProof.nodeId,
         uiLocale: options.uiLocale,
       })}\n`,
+    );
+  }
+
+  private buildPolicyJson(
+    folders: BundledWindowsNodeFolder[],
+    openClawStateRoot: string,
+  ): string {
+    const stateRoot = path.join(app.getPath("userData"), "windows-node");
+    return JSON.stringify(
+      {
+        approvedRoots: folders.map((folder) => ({
+          path: folder.path,
+          access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
+        })),
+        deniedRoots: sensitiveWindowsRoots(stateRoot, openClawStateRoot),
+        wxcExecPath: this.wxcExecPath,
+        networkAllowed: false,
+        allowWindowsUi: true,
+        clipboard: "none",
+        inputInjection: false,
+        strictNoHostFallback: true,
+      },
+      null,
+      2,
     );
   }
 

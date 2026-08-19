@@ -490,6 +490,11 @@ export function validateBundledCwdAttestation(value: unknown): {
     generationBoundActivation: true,
     policyBoundActivation: true,
     launchTimeLeaseRevalidation: true,
+    approvalProofContract: "microclaw.windows-node-approval.v1",
+    activeRunsRequireApprovalProof: true,
+    approvalProofOneUse: true,
+    approvalProofBindsPreparedPlan: true,
+    approvalProofBindsActivation: true,
   };
   const blockers = Object.entries(expected)
     .filter(([key, expectedValue]) => record?.[key] !== expectedValue)
