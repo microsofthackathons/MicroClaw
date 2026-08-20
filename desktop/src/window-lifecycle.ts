@@ -1,5 +1,9 @@
 export interface AppWindow {
   isDestroyed(): boolean;
+  webContents: {
+    isDestroyed(): boolean;
+    send(channel: string, ...args: unknown[]): void;
+  };
   isMinimized(): boolean;
   minimize(): void;
   hide(): void;
@@ -7,6 +11,21 @@ export interface AppWindow {
   setSkipTaskbar(skip: boolean): void;
   show(): void;
   focus(): void;
+}
+
+export function sendToWindow(
+  window: Pick<AppWindow, "isDestroyed" | "webContents"> | null,
+  channel: string,
+  ...args: unknown[]
+): boolean {
+  try {
+    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false;
+    window.webContents.send(channel, ...args);
+    return true;
+  } catch {
+    // The window can be destroyed between the lifecycle checks and send().
+    return false;
+  }
 }
 
 export function showAndFocusWindow(window: AppWindow | null): void {

@@ -14,7 +14,7 @@ import {
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
 import { createTray, destroyTray, updateTrayMenu } from "./tray";
-import { minimizeWindow, showAndFocusWindow } from "./window-lifecycle";
+import { minimizeWindow, sendToWindow, showAndFocusWindow } from "./window-lifecycle";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
@@ -3638,7 +3638,7 @@ function connectGatewayWs(): void {
         windowsNodeMxcIngressGeneration === gatewayGenerationId;
       windowsNodeMxcIngressGeneration = null;
       stopBundledWindowsNodeHost();
-      mainWindow?.webContents.send("gateway:ws-disconnected", reason);
+      sendToWindow(mainWindow, "gateway:ws-disconnected", reason);
       if (activeGeneration && !windowsNodeMxcActivationInProgress && !gatewayRestarting) {
         void failClosedWindowsNodeMxc(
           `Managed Gateway disconnected: ${reason || "unknown reason"}`,
