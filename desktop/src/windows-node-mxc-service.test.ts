@@ -54,7 +54,10 @@ describe("Windows Node MXC readiness smoke", () => {
       if (call.command === "system.run.prepare") {
         const command = call.params.command as string[];
         const kind = command[0].toLowerCase().endsWith("\\cmd.exe") ? "hostname" : "powershell";
-        return { payload: { plan: preparedPlan(kind) } };
+        const wirePlan: Record<string, unknown> = { ...preparedPlan(kind) };
+        delete wirePlan.cwd;
+        delete wirePlan.commandPreview;
+        return { payload: { plan: wirePlan } };
       }
       if (call.command === WINDOWS_NODE_MXC_READINESS_COMMAND) {
         const kind = call.params.probeKind as "hostname" | "powershell";
@@ -95,6 +98,7 @@ describe("Windows Node MXC readiness smoke", () => {
       expect(params.agentId).toBe(WINDOWS_NODE_MXC_READINESS_AGENT_ID);
       expect(params.sessionKey).toBe(windowsNodeMxcReadinessSessionKey(transitionId));
       expect(params.cwd).toBeNull();
+      expect(params.systemRunPlan).toMatchObject({ cwd: null, commandPreview: null });
       expect(params).toHaveProperty("microclawReadinessProof");
       expect(params).not.toHaveProperty("approved");
       expect(params).not.toHaveProperty("approvalDecision");

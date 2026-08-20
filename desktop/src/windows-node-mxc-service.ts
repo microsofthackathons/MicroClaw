@@ -724,9 +724,11 @@ async function invokeInternalReadinessProbe(
     if (
       Array.isArray(record.argv) &&
       record.argv.every((entry) => typeof entry === "string") &&
-      (record.cwd === null || typeof record.cwd === "string") &&
+      (record.cwd === undefined || record.cwd === null || typeof record.cwd === "string") &&
       typeof record.commandText === "string" &&
-      (record.commandPreview === null || typeof record.commandPreview === "string") &&
+      (record.commandPreview === undefined ||
+        record.commandPreview === null ||
+        typeof record.commandPreview === "string") &&
       (record.agentId === null || typeof record.agentId === "string") &&
       typeof record.sessionKey === "string" &&
       typeof record.executablePath === "string" &&
@@ -734,7 +736,11 @@ async function invokeInternalReadinessProbe(
       typeof record.cwdBinding === "string" &&
       Array.isArray(record.declaredAccess)
     ) {
-      return record as unknown as WindowsNodeMxcReadinessPlan;
+      return {
+        ...record,
+        cwd: record.cwd ?? null,
+        commandPreview: record.commandPreview ?? null,
+      } as unknown as WindowsNodeMxcReadinessPlan;
     }
     for (const key of ["plan", "payload", "result", "data"]) {
       const nested = findReadinessPlan(record[key]);
