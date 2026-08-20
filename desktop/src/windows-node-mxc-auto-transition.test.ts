@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runWindowsNodeMxcAutomaticTransition } from "./windows-node-mxc-auto-transition";
 
 describe("automatic Windows Node + MXC transition", () => {
-  it("keeps ingress closed until both attended generations verify", async () => {
+  it("keeps ingress closed until both internally probed generations verify", async () => {
     const calls: string[] = [];
     const status = await runWindowsNodeMxcAutomaticTransition({
       setPhase: (phase) => calls.push(`phase:${phase}`),

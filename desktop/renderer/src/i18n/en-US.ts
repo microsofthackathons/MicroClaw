@@ -308,7 +308,7 @@ export default {
   "settings.windowsNodeMxcFoldersLocked":
     "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
   "settings.windowsNodeMxcFoldersStaged":
-    "Changes are staged only. Applying them pauses protected chat, revokes current authorization, restarts and re-attests both generations, and requires attended contained smokes.",
+    "Changes are staged only. Applying them pauses protected chat, revokes current authorization, then restarts, re-attests, and runs exact internal contained probes in both generations.",
   "settings.windowsNodeMxcApplyFolders": "Apply changes and reactivate",
   "settings.windowsNodeMxcApplyFoldersWarning":
     "Agent execution and chat will pause. Current command approvals may be invalidated. MicroClaw will stay locked if any policy, restart, attestation, smoke, or activation step is canceled or fails.",
@@ -322,9 +322,11 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.validating": "Validating policy",
   "settings.windowsNodeMxcLifecyclePhase.persisting": "Applying policy",
   "settings.windowsNodeMxcLifecyclePhase.starting-locked": "Starting locked generation",
-  "settings.windowsNodeMxcLifecyclePhase.smoking-locked": "Testing locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-locked":
+    "Running internal probes in locked generation",
   "settings.windowsNodeMxcLifecyclePhase.starting-active": "Starting active generation",
-  "settings.windowsNodeMxcLifecyclePhase.smoking-active": "Testing active generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-active":
+    "Running internal probes in active generation",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
   "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting standard security mode",
   "settings.windowsNodeMxcLifecyclePhase.active": "Active",

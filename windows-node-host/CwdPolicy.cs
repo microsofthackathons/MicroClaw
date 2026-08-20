@@ -33,6 +33,11 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("approvalProofBindsExecutableContent")] bool ApprovalProofBindsExecutableContent,
     [property: JsonPropertyName("approvalProofBindsActivation")] bool ApprovalProofBindsActivation,
     [property: JsonPropertyName("approvalProofOneUse")] bool ApprovalProofOneUse,
+    [property: JsonPropertyName("readinessProofContract")] string ReadinessProofContract,
+    [property: JsonPropertyName("readinessProofBindsTransition")] bool ReadinessProofBindsTransition,
+    [property: JsonPropertyName("readinessProofBindsPreparedPlan")] bool ReadinessProofBindsPreparedPlan,
+    [property: JsonPropertyName("readinessProofExactBuiltInsOnly")] bool ReadinessProofExactBuiltInsOnly,
+    [property: JsonPropertyName("readinessProofOneUse")] bool ReadinessProofOneUse,
     [property: JsonPropertyName("durableApprovalStoreProtected")] bool DurableApprovalStoreProtected,
     [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent)
 {
@@ -57,6 +62,11 @@ public sealed record CwdPolicyAttestation(
         ApprovalProofBindsExecutableContent: true,
         ApprovalProofBindsActivation: true,
         ApprovalProofOneUse: true,
+        ReadinessProofContract: global::MicroClaw.WindowsNodeHost.ReadinessProbeContract.Version,
+        ReadinessProofBindsTransition: true,
+        ReadinessProofBindsPreparedPlan: true,
+        ReadinessProofExactBuiltInsOnly: true,
+        ReadinessProofOneUse: true,
         DurableApprovalStoreProtected: true,
         DurableApprovalsPresent: false);
 }

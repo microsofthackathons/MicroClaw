@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 export const WINDOWS_NODE_MXC_MODE = "windows-node-mxc";
 export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
   "system.run",
+  "system.run.readiness",
   "system.run.prepare",
   "system.which",
 ] as const;

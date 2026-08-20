@@ -37,25 +37,6 @@ public sealed class ActivationLeaseGuard(
     string expectedGatewayGeneration,
     string expectedPolicyFingerprint)
 {
-    private static readonly string[] HostnameSmoke =
-    [
-        @"C:\Windows\System32\cmd.exe",
-        "/d",
-        "/s",
-        "/c",
-        @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
-    ];
-
-    private static readonly string[] PowerShellSmoke =
-    [
-        @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "[Console]::Out.Write('MICROCLAW_MXC_POWERSHELL_OK')",
-    ];
-
     private readonly byte[] _secret = DecodeSecret(secretBase64);
 
     public ValidatedActivationLease Validate(IReadOnlyList<string> argv)
@@ -128,8 +109,8 @@ public sealed class ActivationLeaseGuard(
                 "The activation lease signature is invalid.");
 
         if (lease.Mode is ActivationLeaseMode.Diagnostic
-            && !Matches(argv, HostnameSmoke)
-            && !Matches(argv, PowerShellSmoke))
+            && !ReadinessProbeContract.Probes.Values.Any(expected =>
+                ReadinessProbeContract.Matches(argv, expected)))
         {
             throw new HostPolicyException(
                 "activation-lease-diagnostic-scope",
@@ -184,15 +165,6 @@ public sealed class ActivationLeaseGuard(
             expiresAtUnixMs.ToString(System.Globalization.CultureInfo.InvariantCulture));
         return HMACSHA256.HashData(secret, Encoding.UTF8.GetBytes(payload));
     }
-
-    private static bool Matches(IReadOnlyList<string> actual, IReadOnlyList<string> expected) =>
-        actual.Count == expected.Count
-        && actual.Select((value, index) =>
-                string.Equals(
-                    value,
-                    expected[index],
-                    index == 0 ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            .All(matches => matches);
 
     private static byte[] DecodeSecret(string secretBase64)
     {

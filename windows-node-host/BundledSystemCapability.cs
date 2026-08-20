@@ -16,12 +16,14 @@ internal sealed class BundledSystemCapability(
     string approvalsPath,
     ActivationLeaseGuard activationLease,
     string uiLocale = "en-US",
-    ApprovalProofVerifier? approvalProof = null) : INodeCapability
+    ApprovalProofVerifier? approvalProof = null,
+    ReadinessProofVerifier? readinessProof = null) : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private static readonly string[] SupportedCommands =
     [
         "system.run",
+        ReadinessProbeContract.Command,
         "system.run.prepare",
         "system.which",
         "system.run.cwd-policy",
@@ -49,6 +51,7 @@ internal sealed class BundledSystemCapability(
                 "system.which" => Success(new { bins = ResolveBins(request.Args) }),
                 "system.run.prepare" => Success(Prepare(request)),
                 "system.run" => await RunAsync(request, cancellationToken),
+                ReadinessProbeContract.Command => await RunReadinessAsync(request, cancellationToken),
                 _ => Error("Unsupported bundled node command."),
             };
         }
@@ -125,11 +128,22 @@ internal sealed class BundledSystemCapability(
     private async Task<NodeInvokeResponse> RunAsync(
         NodeInvokeRequest request,
         CancellationToken cancellationToken)
+        => await RunSerializedAsync(request.Args, readiness: false, cancellationToken);
+
+    private async Task<NodeInvokeResponse> RunReadinessAsync(
+        NodeInvokeRequest request,
+        CancellationToken cancellationToken)
+        => await RunSerializedAsync(request.Args, readiness: true, cancellationToken);
+
+    private async Task<NodeInvokeResponse> RunSerializedAsync(
+        JsonElement args,
+        bool readiness,
+        CancellationToken cancellationToken)
     {
         await _runGate.WaitAsync(cancellationToken);
         try
         {
-            return await RunExclusiveAsync(request.Args, cancellationToken);
+            return await RunExclusiveAsync(args, readiness, cancellationToken);
         }
         finally
         {
@@ -139,6 +153,7 @@ internal sealed class BundledSystemCapability(
 
     private async Task<NodeInvokeResponse> RunExclusiveAsync(
         JsonElement args,
+        bool readiness,
         CancellationToken cancellationToken)
     {
         var request = ParseRun(args);
@@ -157,7 +172,22 @@ internal sealed class BundledSystemCapability(
             exactArgs,
             cwd.ApprovalBinding,
             declaredApprovalAccess);
-        if (activeGatewayApproval)
+        ValidatedReadinessProof? validatedReadiness = null;
+        if (readiness)
+        {
+            if (validatedActivation.Mode is not ActivationLeaseMode.Diagnostic)
+                throw new HostPolicyException(
+                    "readiness-lease-mode-invalid",
+                    "Internal readiness probes require a diagnostic activation lease.");
+            if (readinessProof is null)
+                throw new HostPolicyException(
+                    "readiness-proof-unavailable",
+                    "The internal readiness proof verifier is unavailable.");
+            validatedReadiness = readinessProof.ValidateAndConsume(args, approvedIdentity);
+            Console.Error.WriteLine(
+                $"[readiness-probe] authorized internal fixed probe kind={validatedReadiness.ProbeKind} transition={validatedReadiness.TransitionId} generation={validatedActivation.GatewayGeneration}");
+        }
+        else if (activeGatewayApproval)
         {
             if (approvalProof is null)
                 throw new HostPolicyException(
@@ -166,10 +196,10 @@ internal sealed class BundledSystemCapability(
             approvalProof.ValidateAndConsume(args, approvedIdentity);
         }
 
-        var durable = !activeGatewayApproval && DurableApprovalIdentity.Load(approvalsPath)
+        var durable = !readiness && !activeGatewayApproval && DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, approvedIdentity));
         var requireDurableRecheck = durable;
-        if (!activeGatewayApproval && !durable)
+        if (!readiness && !activeGatewayApproval && !durable)
         {
             var decision = await ApprovalPipeClient.RequestAsync(
                 approvalPipeName,
@@ -233,6 +263,9 @@ internal sealed class BundledSystemCapability(
                     4 * 1024 * 1024,
                     4 * 1024 * 1024)
                 .RunAsync(config, cancellationToken, workingDirectory: launchCwd);
+            if (validatedReadiness is not null)
+                Console.Error.WriteLine(
+                    $"[readiness-probe] completed internal fixed probe kind={validatedReadiness.ProbeKind} exitCode={result.ExitCode} timedOut={result.TimedOut}");
             return Success(new
             {
                 stdout = result.Output ?? string.Empty,

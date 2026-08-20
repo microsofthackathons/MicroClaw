@@ -29,6 +29,16 @@ import type {
   BundledWindowsNodeActivationLease,
   BundledWindowsNodeHostStatus,
 } from "./bundled-windows-node-host";
+import {
+  WINDOWS_NODE_MXC_READINESS_AGENT_ID,
+  WINDOWS_NODE_MXC_READINESS_COMMAND,
+  WINDOWS_NODE_MXC_READINESS_PROBES,
+  createWindowsNodeMxcReadinessProofMinter,
+  windowsNodeMxcReadinessSessionKey,
+  type WindowsNodeMxcReadinessPlan,
+  type WindowsNodeMxcReadinessProbeKind,
+  type WindowsNodeMxcReadinessProofContext,
+} from "./windows-node-mxc-readiness-proof";
 
 const WINDOWS_NODE_SETTINGS_FILENAME = "settings.json";
 const HOSTNAME_MARKER = "MICROCLAW_MXC_HOSTNAME_OK";
@@ -68,6 +78,11 @@ export interface StoredWindowsNodeMxcSmoke {
   hostname: MxcSmokeResult;
   powershell: MxcSmokeResult;
   deniedOutsideRoot: MxcSmokeResult;
+}
+
+export interface WindowsNodeMxcReadinessAuthorization {
+  transitionId: string;
+  proofContext: WindowsNodeMxcReadinessProofContext;
 }
 
 export interface WindowsNodeMxcRuntimeStatus {
@@ -363,7 +378,7 @@ export async function inspectWindowsNodeMxc(
     );
     remediation.push(
       bundled
-        ? "Run the contained child-process check from MicroClaw Security settings and approve each command in MicroClaw."
+        ? "Retry automatic readiness. MicroClaw authorizes only its fixed internal probes; normal commands still require approval."
         : "Run the contained child-process check from MicroClaw Security settings and approve each command once in Windows Companion.",
     );
   } else if (bundled && gatewayPolicyState === "locked") {
@@ -516,6 +531,11 @@ export function validateBundledCwdAttestation(value: unknown): {
     approvalProofBindsExecutableContent: true,
     approvalProofBindsActivation: true,
     durableApprovalStoreProtected: true,
+    readinessProofContract: "microclaw.windows-node-readiness.v1",
+    readinessProofBindsTransition: true,
+    readinessProofBindsPreparedPlan: true,
+    readinessProofExactBuiltInsOnly: true,
+    readinessProofOneUse: true,
   };
   const blockers = Object.entries(expected)
     .filter(([key, expectedValue]) => record?.[key] !== expectedValue)
@@ -545,42 +565,42 @@ export async function runWindowsNodeMxcSmoke(
   nodeId: string,
   settingsFingerprint: string,
   probeTier: string,
+  authorization: WindowsNodeMxcReadinessAuthorization,
 ): Promise<StoredWindowsNodeMxcSmoke> {
   if (!gateway.connected) throw new Error("MicroClaw managed Gateway is not connected");
   if (!nodeId.trim()) throw new Error("A stable Windows node ID is required");
   if (!settingsFingerprint) throw new Error("Strict Windows Companion settings are not loaded");
   if (!probeTier) throw new Error("A supported MXC tier is required");
+  if (
+    authorization.transitionId !== authorization.proofContext.readinessTransitionId ||
+    gatewayGeneration !== authorization.proofContext.gatewayGeneration ||
+    nodeId.toLowerCase() !== authorization.proofContext.nodeId.toLowerCase()
+  ) {
+    throw new Error("Internal readiness authorization does not match this lifecycle generation");
+  }
+  const minter = createWindowsNodeMxcReadinessProofMinter(authorization.proofContext);
 
   const deniedOutsideRoot = await invokeDeniedCwdSmoke(gateway, nodeId);
-  const hostname = await invokeSmoke(
+  const hostname = await invokeInternalReadinessProbe(
     gateway,
     nodeId,
-    [
-      "C:\\Windows\\System32\\cmd.exe",
-      "/d",
-      "/s",
-      "/c",
-      `C:\\Windows\\System32\\hostname.exe && echo ${HOSTNAME_MARKER}`,
-    ],
+    "hostname",
     HOSTNAME_MARKER,
+    authorization.transitionId,
+    minter,
   );
   let powershell: MxcSmokeResult = {
     outcome: "failed",
     reason: "PowerShell smoke was not run because hostname.exe did not pass",
   };
   if (hostname.outcome === "passed") {
-    powershell = await invokeSmoke(
+    powershell = await invokeInternalReadinessProbe(
       gateway,
       nodeId,
-      [
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `[Console]::Out.Write('${POWERSHELL_MARKER}')`,
-      ],
+      "powershell",
       POWERSHELL_MARKER,
+      authorization.transitionId,
+      minter,
     );
   }
   return {
@@ -637,23 +657,56 @@ export function classifyDeniedCwdSmoke(message: string): MxcSmokeResult {
   };
 }
 
-async function invokeSmoke(
+async function invokeInternalReadinessProbe(
   gateway: WindowsNodeMxcGateway,
   nodeId: string,
-  command: string[],
+  probeKind: WindowsNodeMxcReadinessProbeKind,
   marker: string,
+  transitionId: string,
+  minter: ReturnType<typeof createWindowsNodeMxcReadinessProofMinter>,
 ): Promise<MxcSmokeResult> {
+  const command = [...WINDOWS_NODE_MXC_READINESS_PROBES[probeKind]];
+  const sessionKey = windowsNodeMxcReadinessSessionKey(transitionId);
   try {
+    const prepared = await gateway.request(
+      "node.invoke",
+      {
+        nodeId,
+        command: "system.run.prepare",
+        params: {
+          command,
+          timeoutMs: 15_000,
+          agentId: WINDOWS_NODE_MXC_READINESS_AGENT_ID,
+          sessionKey,
+        },
+        timeoutMs: 20_000,
+        idempotencyKey: randomUUID(),
+      },
+      25_000,
+    );
+    const plan = findReadinessPlan(prepared);
+    if (!plan) {
+      throw new Error(`The bundled node did not return an exact ${probeKind} readiness plan`);
+    }
+    const proof = minter.mint({ transitionId, nodeId, probeKind, plan });
+    console.info(
+      `[windows-node-mxc] Running internal fixed readiness probe kind=${probeKind} transition=${transitionId} generation=${proof.gatewayGeneration}`,
+    );
     const result = await gateway.request(
       "node.invoke",
       {
         nodeId,
-        command: "system.run",
+        command: WINDOWS_NODE_MXC_READINESS_COMMAND,
         params: {
           command,
+          cwd: null,
+          rawCommand: plan.commandText,
           timeoutMs: 15_000,
-          agentId: "main",
-          sessionKey: "agent:main:main",
+          agentId: WINDOWS_NODE_MXC_READINESS_AGENT_ID,
+          sessionKey,
+          systemRunPlan: plan,
+          probeKind,
+          microclawReadinessProof: proof,
         },
         timeoutMs: ATTENDED_SMOKE_GATEWAY_TIMEOUT_MS,
         idempotencyKey: randomUUID(),
@@ -663,6 +716,31 @@ async function invokeSmoke(
     return classifyMxcSmoke(result, marker);
   } catch (error) {
     return classifyMxcSmoke({ error: messageOf(error) }, marker);
+  }
+
+  function findReadinessPlan(value: unknown): WindowsNodeMxcReadinessPlan | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (
+      Array.isArray(record.argv) &&
+      record.argv.every((entry) => typeof entry === "string") &&
+      (record.cwd === null || typeof record.cwd === "string") &&
+      typeof record.commandText === "string" &&
+      (record.commandPreview === null || typeof record.commandPreview === "string") &&
+      (record.agentId === null || typeof record.agentId === "string") &&
+      typeof record.sessionKey === "string" &&
+      typeof record.executablePath === "string" &&
+      typeof record.executableSha256 === "string" &&
+      typeof record.cwdBinding === "string" &&
+      Array.isArray(record.declaredAccess)
+    ) {
+      return record as unknown as WindowsNodeMxcReadinessPlan;
+    }
+    for (const key of ["plan", "payload", "result", "data"]) {
+      const nested = findReadinessPlan(record[key]);
+      if (nested) return nested;
+    }
+    return null;
   }
 }
 

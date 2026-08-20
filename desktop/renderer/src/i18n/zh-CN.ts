@@ -291,7 +291,7 @@ export default {
   "settings.windowsNodeMxcFoldersLocked":
     "请先禁用 Windows Node + MXC，再添加、更改或移除批准的文件夹。",
   "settings.windowsNodeMxcFoldersStaged":
-    "更改仅处于暂存状态。应用时将暂停受保护聊天、撤销当前授权、重启并重新证明两个代际，并要求由用户确认的受控冒烟测试。",
+    "更改仅处于暂存状态。应用时将暂停受保护聊天、撤销当前授权，然后重启、重新证明两个代际，并在两个代际中运行精确的内部受控探针。",
   "settings.windowsNodeMxcApplyFolders": "应用更改并重新激活",
   "settings.windowsNodeMxcApplyFoldersWarning":
     "代理执行和聊天将暂停，当前命令批准可能失效。如果策略、重启、证明、冒烟测试或激活的任一步骤被取消或失败，MicroClaw 将保持锁定。",
@@ -304,9 +304,9 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.validating": "正在验证策略",
   "settings.windowsNodeMxcLifecyclePhase.persisting": "正在应用策略",
   "settings.windowsNodeMxcLifecyclePhase.starting-locked": "正在启动锁定代际",
-  "settings.windowsNodeMxcLifecyclePhase.smoking-locked": "正在测试锁定代际",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-locked": "正在锁定代际中运行内部探针",
   "settings.windowsNodeMxcLifecyclePhase.starting-active": "正在启动活动代际",
-  "settings.windowsNodeMxcLifecyclePhase.smoking-active": "正在测试活动代际",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-active": "正在活动代际中运行内部探针",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "正在验证活动路由",
   "settings.windowsNodeMxcLifecyclePhase.starting-standard": "正在启动标准安全模式",
   "settings.windowsNodeMxcLifecyclePhase.active": "活动",

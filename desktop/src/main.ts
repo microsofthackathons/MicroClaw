@@ -320,6 +320,7 @@ let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
 let windowsNodeMxcSecurityTransitionInProgress = false;
+let windowsNodeMxcReadinessTransitionId: string | null = null;
 let windowsNodeMxcFolderPolicyMutationInProgress = false;
 let windowsNodeMxcLifecycleState: WindowsNodeMxcFolderTransactionPhase = "idle";
 let windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
@@ -374,10 +375,12 @@ function beginWindowsNodeMxcLifecycleOperation(): void {
     throw new Error("Wait for the current Windows Node + MXC approval response to finish");
   }
   windowsNodeMxcSecurityTransitionInProgress = true;
+  windowsNodeMxcReadinessTransitionId = randomUUID();
 }
 
 function endWindowsNodeMxcLifecycleOperation(): void {
   windowsNodeMxcSecurityTransitionInProgress = false;
+  windowsNodeMxcReadinessTransitionId = null;
 }
 
 async function withWindowsNodeMxcApprovalResolution<T>(operation: () => Promise<T>): Promise<T> {
@@ -1273,6 +1276,17 @@ async function runCurrentWindowsNodeMxcSmoke(
     throw new Error("Current MXC settings and containment tier are required");
   }
   const expectedGeneration = gatewayGenerationId;
+  const transitionId = windowsNodeMxcReadinessTransitionId;
+  const proofContext = windowsNodeMxcApprovalProofContext;
+  if (
+    !windowsNodeMxcSecurityTransitionInProgress ||
+    !transitionId ||
+    !proofContext ||
+    proofContext.gatewayGeneration !== expectedGeneration ||
+    proofContext.readinessTransitionId !== transitionId
+  ) {
+    throw new Error("Internal MXC readiness authorization is unavailable for this transition");
+  }
   await bundledWindowsNodeHost.setActivationLease("diagnostic", 120_000);
   try {
     const smoke = await runWindowsNodeMxcSmoke(
@@ -1281,6 +1295,7 @@ async function runCurrentWindowsNodeMxcSmoke(
       status.selectedNodeId,
       status.settingsFingerprint,
       status.probe.tier,
+      { transitionId, proofContext },
     );
     if (gatewayGenerationId !== expectedGeneration || !gwClient.connected) {
       throw new Error("Managed Gateway generation changed during contained smokes");
@@ -1329,10 +1344,7 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       return waitForWindowsNodeMxcBaseReady(lockedGeneration, "locked", false);
     },
     smokeLockedGeneration: async (lockedStatus) => {
-      assertWindowsNodeMxcSmokePassed(
-        await runCurrentWindowsNodeMxcSmoke(lockedStatus),
-        "Locked",
-      );
+      assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(lockedStatus), "Locked");
     },
     startActiveGeneration: async () => {
       const config = readConfig();
@@ -1357,10 +1369,7 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       return waitForWindowsNodeMxcBaseReady(activeGeneration, "active", false);
     },
     smokeActiveGeneration: async (activeStatus) => {
-      assertWindowsNodeMxcSmokePassed(
-        await runCurrentWindowsNodeMxcSmoke(activeStatus),
-        "Active",
-      );
+      assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(activeStatus), "Active");
     },
     mintActivationLease: async () => {
       await bundledWindowsNodeHost.setActivationLease("active", 120_000);
@@ -2770,7 +2779,7 @@ function startHealthMonitor(): void {
       return;
     }
     if (isWindowsNodeMxcDesired()) {
-      // Pairing and attended smokes are part of one activation transaction.
+      // Pairing and internal proof-bound smokes are part of one activation transaction.
       // Avoid a competing health attestation until that transaction settles.
       if (windowsNodeMxcActivationInProgress || bundledWindowsNodeStartup) return;
       const inspectedProcess = gatewayProcess;
@@ -3101,9 +3110,7 @@ async function startGateway(): Promise<void> {
   }
 }
 
-async function startGatewayWithWindowsNodeMxcPolicy(
-  policy: "active" | "locked",
-): Promise<void> {
+async function startGatewayWithWindowsNodeMxcPolicy(policy: "active" | "locked"): Promise<void> {
   if (windowsNodeMxcGatewayStartPolicyOverride !== null) {
     throw new Error("A managed Gateway policy override is already in progress");
   }
@@ -3297,6 +3304,7 @@ async function startGatewayInner(): Promise<void> {
         settingsStore.get("windowsNodeMxcNodeId"),
         getBundledWindowsNodeFolders(),
         stateDir,
+        windowsNodeMxcReadinessTransitionId ?? randomUUID(),
       )
     : null;
   const gwEnv: Record<string, string> = {
@@ -6435,9 +6443,7 @@ function registerIpcHandlers(): void {
       [...next.rw, ...next.ro].map((dir) => normalizeDirPath(dir).toLowerCase()),
     );
     const nextGrantHistory = [
-      ...currentGrantHistory.filter((dir) =>
-        nextKeys.has(normalizeDirPath(dir).toLowerCase()),
-      ),
+      ...currentGrantHistory.filter((dir) => nextKeys.has(normalizeDirPath(dir).toLowerCase())),
       ...[...next.rw, ...next.ro].filter(
         (dir) =>
           !currentGrantHistory.some(
@@ -6588,11 +6594,7 @@ function registerIpcHandlers(): void {
                 }
                 if (aclRollbackSucceeded) {
                   try {
-                    persistWindowsNodeMxcFolderPolicy(
-                      old,
-                      next,
-                      "Previous folder policy restored",
-                    );
+                    persistWindowsNodeMxcFolderPolicy(old, next, "Previous folder policy restored");
                   } catch (rollbackError) {
                     rollbackErrors.push(rollbackError);
                   }

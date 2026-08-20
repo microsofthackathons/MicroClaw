@@ -10,7 +10,7 @@ It remains independent of the Docker and direct-MXC experiments.
 MicroClaw Electron
   -> app-owned loopback OpenClaw Gateway
   -> bundled MicroClaw Windows Node Host
-  -> attended V2-style approval over a per-launch named pipe
+  -> exact proof-only startup probes or attended normal-command approval
   -> official @microsoft/mxc-sdk@0.7.0 wxc-exec.exe
   -> MXC-contained child process
 ```
@@ -23,16 +23,16 @@ The managed Gateway PID is also passed in bootstrap metadata. Before every crede
 handshake or reconnect, the helper verifies that this exact process still owns the IPv4 loopback
 listener; MicroClaw stops and recreates the helper for each Gateway generation.
 
-The helper advertises only `system.run`, `system.run.prepare`, `system.which`, and
-`system.run.cwd-policy`. It contains no host command runner and cannot fall back when MXC is absent
-or fails. Network, clipboard, input injection, MCP, screen, camera, canvas, browser, location, and
-speech capabilities are absent. `allowWindowsUi=true` is required for PowerShell compatibility with
-MXC 0.7; it does not activate any UI capture or input capability.
+The helper advertises only `system.run`, proof-only `system.run.readiness`, `system.run.prepare`,
+`system.which`, and `system.run.cwd-policy`. It contains no host command runner and cannot fall back
+when MXC is absent or fails. Network, clipboard, input injection, MCP, screen, camera, canvas,
+browser, location, and speech capabilities are absent. `allowWindowsUi=true` is required for
+PowerShell compatibility with MXC 0.7; it does not activate any UI capture or input capability.
 
 Gateway-native file/process tools remain removed from the agent surface. The policy pins `exec` to
 the app-owned node and denies the runtime/filesystem/plugin groups. An empty OpenClaw allowlist is
 unrestricted, so the pre-attestation state uses a non-tool lock sentinel. The Gateway node-command
-policy allowlists exactly the four bundled commands above. MicroClaw pairs/reapproves only the exact
+policy allowlists exactly the five bundled commands above. MicroClaw pairs/reapproves only the exact
 app-owned device identity and does not expose manual node selection, even if another Windows
 Companion is connected.
 
@@ -61,11 +61,12 @@ and reactivate** performs one serialized fail-closed transaction: lock ingress, 
 approvals, revoke proof/lease state, validate the complete draft, stop the exact generation, apply
 and atomically persist the same `sandboxUserDirsRO`/`sandboxUserDirsRW` policy, attest and smoke a
 locked generation, attest and smoke a fresh active generation, mint its lease, verify the effective
-route, then release ingress. The smokes remain attended. Cancellation, denial, or any failure leaves
-execution locked and retains the attempted draft and previous policy for explicit retry or revert;
-MicroClaw never silently restores old active execution. Folder preparation that requires elevation
-fails locked without opening an elevation prompt. UNC, device-namespace, missing, reparse,
-final-target-changing, and protected credential/state/browser roots are rejected before persistence.
+route, then release ingress. The fixed smokes use internal one-use readiness proofs and never enter
+the user approval queue. Cancellation or any failure leaves execution locked and retains the
+attempted draft and previous policy for explicit retry or revert; MicroClaw never silently restores
+old active execution. Folder preparation that requires elevation fails locked without opening an
+elevation prompt. UNC, device-namespace, missing, reparse, final-target-changing, and protected
+credential/state/browser roots are rejected before persistence.
 
 The normal active route has one visible Gateway/MicroClaw prompt. It displays executable, exact argv,
 agent/session scope, canonical CWD, and declared folder use, and offers Deny, Allow once, and eligible
@@ -74,9 +75,12 @@ authority to the Gateway or node. The Gateway then mints a fresh 15-second, one-
 to the exact generation, node, policy fingerprint, prepared plan, executable path/content hash, CWD,
 declarations, agent, and session. The node silently accepts only that proof after recapturing the
 held executable identity. Direct `node.invoke`, malformed, stale, replayed, or concurrent reuse is
-denied. Diagnostic smokes use the per-launch named-pipe prompt and expose only Deny and Allow once.
-If attended IPC is absent or times out, execution is denied. Each contained child inherits
-`TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
+denied. Fixed readiness commands use a separate HMAC contract bound to the transition ID, Gateway
+generation, node, policy, probe kind, exact prepared executable path/content hash, argv, isolated
+scratch CWD, empty declarations, short expiry, and one-use consumption. Only
+`system.run.readiness` accepts that proof; ordinary `system.run`, including identical hostname or
+PowerShell argv after startup, still requires the normal visible approval. Each contained child
+inherits `TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
 
 Optional `[declare-access]ro:<path>;rw:<path>[/declare-access]` metadata is accepted only on leading
 metadata lines (with an optional `#`, `REM`, or `::` comment prefix). It can describe only canonical
@@ -142,19 +146,20 @@ reproducible across MicroClaw commits.
 
 The helper also enforces `microclaw.windows-activation.v1`: an HMAC-SHA256 lease bound to the exact
 Gateway generation, helper policy fingerprint, mode, and expiry. Its per-generation key is delivered
-only through inherited stdin. A diagnostic lease admits only the fixed denied-CWD, `hostname.exe`,
-and PowerShell smoke declarations. An active lease admits the normal attended `system.run` path.
-The helper checks the lease before approval and again immediately before MXC launch.
+only through inherited stdin. A diagnostic lease admits only the fixed `hostname.exe` and PowerShell
+probe declarations; the denied-CWD check fails at canonical CWD policy before launch. An active
+lease admits the normal attended `system.run` path. The helper checks the lease before authorization
+and again immediately before MXC launch.
 
 MicroClaw remembers the selected security mode. When Windows Node + MXC is off, startup follows the
 normal Gateway/chat-ready path without starting the bundled node. When it is on, the loading screen
 remains visible while MicroClaw automatically starts every Gateway generation locked and runs the
-same secure readiness and activation sequence. The contained checks remain attended: MicroClaw
-never answers their permission prompts automatically. Readiness requires
-the exact CWD/activation attestation payload, selected app-owned node identity, paired and connected
-state, strict no-fallback settings, current-generation effective tools, MXC tier, contained
-`hostname.exe`, contained PowerShell, and denied-access proof. `appcontainer-dacl` is accepted with a
-prominent degraded-containment warning.
+same secure readiness and activation sequence. Fixed readiness probes are internally authorized by
+the current serialized lifecycle and produce no permission dialog; this authority cannot be used by
+agent commands. Readiness requires the exact CWD/activation attestation payload, selected app-owned
+node identity, paired and connected state, strict no-fallback settings, current-generation effective
+tools, MXC tier, contained `hostname.exe`, contained PowerShell, and denied-access proof.
+`appcontainer-dacl` is accepted with a prominent degraded-containment warning.
 
 Every MicroClaw-owned `chat.send` path, including startup warm-up and generated session titles,
 passes through the same current-generation active-ingress gate. Locked or attesting startup skips
@@ -210,7 +215,8 @@ After explicit consent, the MicroClaw-built system-drive helper and the official
 helper both completed successfully. Non-elevated probing reports `appcontainer-dacl` with no host-
 preparation warning. Live locked-generation proof reached the exact bundled node and official
 `wxc-exec.exe`; protected `C:\Windows` CWD denial, `cmd.exe -> hostname.exe`, and PowerShell child
-execution all passed with attended allow-once approvals and no durable approval or host fallback.
+execution all pass under transition-bound internal one-use proofs with no durable approval, user
+prompt, or host fallback. Ordinary agent execution retains the visible approval contract.
 The active transaction also passed end to end: MicroClaw reported chat disconnected before release,
 started a new Gateway generation, re-attested the exact node and `exec`-only tool surface, repeated
 all three smokes, issued and renewed the generation-bound active lease, then reported chat connected.

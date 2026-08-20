@@ -313,6 +313,11 @@ describe("bundled Windows Node CWD attestation", () => {
           approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
           approvalProofBindsExecutableContent: true,
           approvalProofBindsActivation: true,
+          readinessProofContract: "microclaw.windows-node-readiness.v1",
+          readinessProofBindsTransition: true,
+          readinessProofBindsPreparedPlan: true,
+          readinessProofExactBuiltInsOnly: true,
+          readinessProofOneUse: true,
           durableApprovalStoreProtected: true,
           durableApprovalsPresent: true,
         },
@@ -326,6 +331,10 @@ describe("bundled Windows Node CWD attestation", () => {
     "approvalProofBindsPreparedPlan",
     "approvalProofBindsExecutableContent",
     "approvalProofBindsActivation",
+    "readinessProofBindsTransition",
+    "readinessProofBindsPreparedPlan",
+    "readinessProofExactBuiltInsOnly",
+    "readinessProofOneUse",
     "durableApprovalStoreProtected",
   ])("fails closed when %s is not attested", (property) => {
     const payload = {
@@ -349,6 +358,11 @@ describe("bundled Windows Node CWD attestation", () => {
       approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
       approvalProofBindsExecutableContent: true,
       approvalProofBindsActivation: true,
+      readinessProofContract: "microclaw.windows-node-readiness.v1",
+      readinessProofBindsTransition: true,
+      readinessProofBindsPreparedPlan: true,
+      readinessProofExactBuiltInsOnly: true,
+      readinessProofOneUse: true,
       durableApprovalStoreProtected: true,
       durableApprovalsPresent: false,
     };
@@ -966,7 +980,7 @@ describe("selected node readiness", () => {
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
 
-    node!.commands.push("system.which", "system.run.cwd-policy");
+    node!.commands.push("system.run.readiness", "system.which", "system.run.cwd-policy");
     expect(validateSelectedWindowsNode(node).ready).toBe(true);
   });
 });

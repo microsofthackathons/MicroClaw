@@ -108,7 +108,13 @@ internal static class Program
                     bootstrap.ApprovalProofSecret,
                     bootstrap.GatewayGeneration,
                     bootstrap.PolicyFingerprint,
-                    bootstrap.NodeId)));
+                    bootstrap.NodeId),
+                new ReadinessProofVerifier(
+                    bootstrap.ApprovalProofSecret,
+                    bootstrap.GatewayGeneration,
+                    bootstrap.PolicyFingerprint,
+                    bootstrap.NodeId,
+                    bootstrap.ReadinessTransitionId)));
             var connect = client.ConnectAsync();
             if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)
                 return 0;
@@ -141,6 +147,7 @@ internal sealed class HostBootstrap
     public string PolicyFingerprint { get; init; } = string.Empty;
     public string ApprovalProofSecret { get; init; } = string.Empty;
     public string NodeId { get; init; } = string.Empty;
+    public string ReadinessTransitionId { get; init; } = string.Empty;
     public string UiLocale { get; init; } = "en-US";
 }
 

@@ -25,8 +25,11 @@ describe("GatewayLoading MXC lifecycle", () => {
       },
     });
 
-    expect(wrapper.find(".loading-status").text()).toContain("Testing locked generation");
+    expect(wrapper.find(".loading-status").text()).toContain(
+      "Running internal probes in locked generation",
+    );
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
+    expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
   });
 
   it("shows fail-closed recovery without labeling MXC failure as a Gateway outage", async () => {
@@ -37,13 +40,13 @@ describe("GatewayLoading MXC lifecycle", () => {
         warming: false,
         mxcDesired: true,
         mxcPhase: "locked",
-        mxcDetail: "Attended PowerShell check was denied",
+        mxcDetail: "Internal PowerShell probe failed to start",
       },
     });
 
     expect(wrapper.find(".loading-status").text()).toContain("MXC readiness failed");
     expect(wrapper.find(".loading-error-detail").text()).toBe(
-      "Attended PowerShell check was denied",
+      "Internal PowerShell probe failed to start",
     );
     expect(wrapper.findAll(".loading-retry")).toHaveLength(2);
 

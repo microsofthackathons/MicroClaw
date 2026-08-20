@@ -208,6 +208,11 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(attestation.ApprovalProofOneUse);
         Assert.True(attestation.ApprovalProofBindsPreparedPlan);
         Assert.True(attestation.ApprovalProofBindsActivation);
+        Assert.Equal("microclaw.windows-node-readiness.v1", attestation.ReadinessProofContract);
+        Assert.True(attestation.ReadinessProofBindsTransition);
+        Assert.True(attestation.ReadinessProofBindsPreparedPlan);
+        Assert.True(attestation.ReadinessProofExactBuiltInsOnly);
+        Assert.True(attestation.ReadinessProofOneUse);
         Assert.False(attestation.DurableApprovalsPresent);
     }
 
@@ -244,6 +249,13 @@ public sealed class CwdPolicyTests : IDisposable
             root.GetProperty("approvalProofPlanContract").GetString());
         Assert.True(root.GetProperty("approvalProofBindsExecutableContent").GetBoolean());
         Assert.True(root.GetProperty("approvalProofBindsActivation").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-node-readiness.v1",
+            root.GetProperty("readinessProofContract").GetString());
+        Assert.True(root.GetProperty("readinessProofBindsTransition").GetBoolean());
+        Assert.True(root.GetProperty("readinessProofBindsPreparedPlan").GetBoolean());
+        Assert.True(root.GetProperty("readinessProofExactBuiltInsOnly").GetBoolean());
+        Assert.True(root.GetProperty("readinessProofOneUse").GetBoolean());
         Assert.True(root.GetProperty("durableApprovalStoreProtected").GetBoolean());
         Assert.False(root.GetProperty("durableApprovalsPresent").GetBoolean());
         Assert.False(root.TryGetProperty("Contract", out _));
@@ -803,6 +815,120 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Equal(
             @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
             approval.GetProperty("arguments").EnumerateArray().Last().GetString());
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task NormalCommandIdenticalToReadinessProbeStillRequiresAttendedApproval()
+    {
+        var leasePath = Path.Combine(_root, "normal-readiness-lease.json");
+        var approvalsPath = Path.Combine(_root, "normal-readiness-approvals.json");
+        var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "normal-readiness-generation";
+        const string fingerprint = "normal-readiness-policy";
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-normal-readiness-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        var observedRequest = ReadApprovalAndRespond(server, "deny");
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint));
+        var command = ReadinessProbeContract.Probes["hostname"];
+        var commandText = WindowsCommandLine.Join(command);
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    rawCommand = commandText,
+                    agentId = "main",
+                    sessionKey = "agent:main:normal-command",
+                })),
+            },
+            TestContext.Current.CancellationToken);
+        var approval = await observedRequest;
+
+        Assert.False(response.Ok);
+        Assert.Contains("approval-denied", response.Error);
+        Assert.Equal(command[0], approval.GetProperty("executable").GetString(), ignoreCase: true);
+        Assert.Equal("main", approval.GetProperty("agent").GetString());
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task DirectReadinessCommandWithoutLifecycleProofFailsBeforeAttendedPrompt()
+    {
+        var leasePath = Path.Combine(_root, "direct-readiness-lease.json");
+        var approvalsPath = Path.Combine(_root, "direct-readiness-approvals.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "direct-readiness-generation";
+        var fingerprint = new string('a', 64);
+        var nodeId = new string('b', 64);
+        var transitionId = Guid.NewGuid().ToString();
+        await WriteActivationLease(
+            leasePath,
+            leaseSecret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-direct-readiness-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        var command = ReadinessProbeContract.Probes["hostname"];
+        var commandText = WindowsCommandLine.Join(command);
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            readinessProof: new ReadinessProofVerifier(
+                proofSecret,
+                generation,
+                fingerprint,
+                nodeId,
+                transitionId));
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = ReadinessProbeContract.Command,
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    cwd = (string?)null,
+                    rawCommand = commandText,
+                    agentId = ReadinessProbeContract.AgentId,
+                    sessionKey = ReadinessProbeContract.SessionKey(transitionId),
+                    probeKind = "hostname",
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Ok);
+        Assert.Contains("readiness-proof-required", response.Error);
+        Assert.False(server.IsConnected);
         Assert.False(File.Exists(approvalsPath));
     }
 

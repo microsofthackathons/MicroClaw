@@ -58,6 +58,7 @@ export interface BundledWindowsNodeApprovalProofContext {
   gatewayGeneration: string;
   policyFingerprint: string;
   nodeId: string;
+  readinessTransitionId: string;
 }
 
 export interface BundledApprovalRequest {
@@ -118,9 +119,13 @@ export class BundledWindowsNodeHost {
     nodeId: string,
     folders: BundledWindowsNodeFolder[],
     openClawStateRoot: string,
+    readinessTransitionId: string,
   ): BundledWindowsNodeApprovalProofContext {
     if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
     if (!/^[a-f0-9]{64}$/i.test(nodeId)) throw new Error("Bundled Windows node ID is invalid");
+    if (!isUuid(readinessTransitionId)) {
+      throw new Error("Bundled Windows node readiness transition ID is invalid");
+    }
     const policyJson = this.buildPolicyJson(folders, openClawStateRoot);
     return {
       contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
@@ -128,6 +133,7 @@ export class BundledWindowsNodeHost {
       gatewayGeneration,
       policyFingerprint: createHash("sha256").update(policyJson, "utf8").digest("hex"),
       nodeId: nodeId.toLowerCase(),
+      readinessTransitionId: readinessTransitionId.toLowerCase(),
     };
   }
 
@@ -157,6 +163,7 @@ export class BundledWindowsNodeHost {
       options.approvalProof.gatewayGeneration !== options.gatewayGeneration ||
       options.approvalProof.policyFingerprint !== policyFingerprint ||
       !/^[a-f0-9]{64}$/i.test(options.approvalProof.nodeId) ||
+      !isUuid(options.approvalProof.readinessTransitionId) ||
       Buffer.from(options.approvalProof.secretBase64, "base64").length !== 32
     ) {
       throw new Error("Bundled Windows node approval proof context does not match this generation");
@@ -235,6 +242,7 @@ export class BundledWindowsNodeHost {
       policyFingerprint,
       approvalProofSecret: options.approvalProof.secretBase64,
       nodeId: options.approvalProof.nodeId,
+      readinessTransitionId: options.approvalProof.readinessTransitionId,
       uiLocale: options.uiLocale,
     });
   }
@@ -488,6 +496,10 @@ export class BundledWindowsNodeHost {
       return null;
     }
   }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export function endBundledWindowsNodeBootstrap(

@@ -32,7 +32,13 @@ describe("SettingsView", () => {
     connected: true,
     paired: true,
     remoteIp: "127.0.0.1",
-    commands: ["system.run", "system.run.prepare"],
+    commands: [
+      "system.run",
+      "system.run.readiness",
+      "system.run.prepare",
+      "system.which",
+      "system.run.cwd-policy",
+    ],
   };
 
   afterEach(() => {

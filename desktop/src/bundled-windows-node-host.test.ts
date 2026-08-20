@@ -87,18 +87,9 @@ describe("bundled Windows node host", () => {
       .mockReturnValueOnce([1234])
       .mockReturnValue([1234, 2001]);
 
-    terminateBundledWindowsNodeProcessTree(
-      1234,
-      run as never,
-      (pid) => alive.has(pid),
-      listTree,
-    );
+    terminateBundledWindowsNodeProcessTree(1234, run as never, (pid) => alive.has(pid), listTree);
 
-    expect(run).toHaveBeenCalledWith(
-      "taskkill",
-      ["/pid", "2001", "/T", "/F"],
-      expect.any(Object),
-    );
+    expect(run).toHaveBeenCalledWith("taskkill", ["/pid", "2001", "/T", "/F"], expect.any(Object));
     expect(alive.size).toBe(0);
   });
 
@@ -116,11 +107,7 @@ describe("bundled Windows node host", () => {
       () => [1234, 2001],
     );
 
-    expect(run).toHaveBeenCalledWith(
-      "taskkill",
-      ["/pid", "2001", "/T", "/F"],
-      expect.any(Object),
-    );
+    expect(run).toHaveBeenCalledWith("taskkill", ["/pid", "2001", "/T", "/F"], expect.any(Object));
     expect(alive.size).toBe(0);
   });
 
@@ -135,18 +122,21 @@ describe("bundled Windows node host", () => {
       "a".repeat(64),
       folders,
       String.raw`C:\Users\Alice\AppData\Roaming\openclaw`,
+      "12345678-1234-4234-8234-123456789abc",
     );
     const second = host.createApprovalProofContext(
       "generation-1",
       "a".repeat(64),
       folders,
       String.raw`C:\Users\Alice\AppData\Roaming\openclaw`,
+      "12345678-1234-4234-8234-123456789abc",
     );
 
     expect(Buffer.from(first.secretBase64, "base64")).toHaveLength(32);
     expect(first.gatewayGeneration).toBe("generation-1");
     expect(first.nodeId).toBe("a".repeat(64));
     expect(first.policyFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.readinessTransitionId).toBe("12345678-1234-4234-8234-123456789abc");
     expect(first.secretBase64).not.toBe(second.secretBase64);
     expect(first.policyFingerprint).toBe(second.policyFingerprint);
   });
@@ -162,7 +152,12 @@ describe("bundled Windows node host", () => {
     expect(roots).toContain(path.join(os.homedir(), ".gnupg"));
     expect(roots).toContain(path.join(os.homedir(), ".config", "gcloud"));
     expect(roots).toContain(
-      path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles"),
+      path.join(
+        process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+        "Mozilla",
+        "Firefox",
+        "Profiles",
+      ),
     );
     expect(roots).toContain(
       path.join(
@@ -266,7 +261,13 @@ describe("bundled Windows node host", () => {
 
   it("approves only the exact app-owned system-only node surface", () => {
     const nodeId = "d".repeat(64);
-    const commands = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const commands = [
+      "system.run",
+      "system.run.readiness",
+      "system.run.prepare",
+      "system.which",
+      "system.run.cwd-policy",
+    ];
     expect(
       findBundledNodePairRequest(
         {
