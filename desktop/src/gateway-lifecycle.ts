@@ -27,6 +27,13 @@ export function requiresExternalGatewayStop(
   return alreadyRunning && rosterChanged && !(spawnedByUs && hasManagedProcess);
 }
 
+export function isGatewayServiceReady(
+  clientConnected: boolean,
+  postSpawnRestartDone: boolean,
+): boolean {
+  return clientConnected && postSpawnRestartDone;
+}
+
 export async function waitForAgentRosterReload(
   dependencies: AgentRosterReloadDependencies,
 ): Promise<boolean> {

@@ -11,6 +11,7 @@ import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import {
   applyAgentRosterReload,
   hardRestartGateway,
+  isGatewayServiceReady,
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
 import { createTray, destroyTray, updateTrayMenu } from "./tray";
@@ -3628,6 +3629,7 @@ function connectGatewayWs(): void {
       ) {
         mainWindow?.webContents.send("gateway:ws-connected", mainSessionKey || null);
       }
+      sendToWindow(mainWindow, "gateway:service-ready");
       signalPostInstallReady();
     },
     onDisconnected: (reason) => {
@@ -4002,6 +4004,9 @@ function registerIpcHandlers(): void {
   // direct access to the gateway auth token.  All gateway communication
   // flows through main-process IPC handlers (chat:send-message, etc.).
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
+  ipcMain.handle("gateway:is-service-ready", () =>
+    isGatewayServiceReady(gwClient?.connected ?? false, postSpawnRestartDone),
+  );
   ipcMain.handle("gateway:restart", async (_event, _options?: { hard?: boolean }) => {
     assertWindowsNodeMxcConfigurationMutable();
     try {

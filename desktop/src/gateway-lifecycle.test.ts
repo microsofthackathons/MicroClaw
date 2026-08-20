@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyAgentRosterReload,
   hardRestartGateway,
+  isGatewayServiceReady,
   requiresExternalGatewayStop,
   waitForAgentRosterReload,
 } from "./gateway-lifecycle";
@@ -9,6 +10,14 @@ import {
 describe("requiresExternalGatewayStop", () => {
   it("protects an unowned listener when the roster must be reloaded", () => {
     expect(requiresExternalGatewayStop(true, true, false, false)).toBe(true);
+  });
+
+  describe("isGatewayServiceReady", () => {
+    it("reports general UI readiness independently from protected chat ingress", () => {
+      expect(isGatewayServiceReady(true, true)).toBe(true);
+      expect(isGatewayServiceReady(false, true)).toBe(false);
+      expect(isGatewayServiceReady(true, false)).toBe(false);
+    });
   });
 
   it("allows a managed Gateway to restart for a roster change", () => {

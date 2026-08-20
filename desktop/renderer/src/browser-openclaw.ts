@@ -22,6 +22,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     gateway: {
       getStatus: async () => "running",
       getPort: async () => 18789,
+      isServiceReady: async () => true,
       warmUpAgent: async () => ({ outcome: "skipped", transcriptDeleted: true }),
       restart: noopAsync,
       onStatus: noopSub,
@@ -31,6 +32,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       },
       onWsConnected: noopSub,
       onWsDisconnected: noopSub,
+      onServiceReady: noopSub,
     },
     config: {
       getStateDir: async () => "",

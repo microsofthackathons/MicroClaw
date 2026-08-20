@@ -172,6 +172,7 @@ interface OpenClawAPI {
   gateway: {
     getPort(): Promise<number>;
     getStatus(): Promise<string>;
+    isServiceReady(): Promise<boolean>;
     restart(): Promise<void>;
     warmUpAgent(): Promise<{
       outcome: "skipped" | "delta" | "terminal" | "timeout" | "error" | "disconnected";
@@ -181,6 +182,7 @@ interface OpenClawAPI {
     onLog(callback: (msg: string) => void): () => void;
     onWsConnected(callback: (mainSessionKey: string | null) => void): () => void;
     onWsDisconnected(callback: (reason: string) => void): () => void;
+    onServiceReady(callback: () => void): () => void;
   };
   config: {
     getStateDir(): Promise<string>;

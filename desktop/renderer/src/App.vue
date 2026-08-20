@@ -158,6 +158,7 @@ import { useSessionStore } from "@/stores/sessions";
 import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
 import { runStartupWarmup } from "@/startup-warmup";
+import { watchStartupServiceReadiness } from "@/startup-service-readiness";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -339,6 +340,7 @@ let unsubStatus: (() => void) | null = null;
 let unsubLog: (() => void) | null = null;
 let unsubWsConnected: (() => void) | null = null;
 let unsubWsDisconnected: (() => void) | null = null;
+let unsubServiceReady: (() => void) | null = null;
 let unsubChatEvent: (() => void) | null = null;
 let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
@@ -532,6 +534,12 @@ onMounted(async () => {
   unsubWsDisconnected = window.openclaw.gateway.onWsDisconnected(() => {
     chatStore.wsConnected = false;
   });
+  unsubServiceReady = watchStartupServiceReadiness({
+    isServiceReady: window.openclaw.gateway.isServiceReady,
+    onServiceReady: window.openclaw.gateway.onServiceReady,
+    completeStartup: warmThenMarkConnected,
+    onError: (error) => console.warn("[renderer] service readiness unavailable:", error),
+  });
 
   // Chat events (delta, final, aborted, error)
   unsubChatEvent = window.openclaw.chat.onEvent((payload) => {
@@ -590,6 +598,7 @@ onUnmounted(() => {
   unsubLog?.();
   unsubWsConnected?.();
   unsubWsDisconnected?.();
+  unsubServiceReady?.();
   unsubChatEvent?.();
   unsubToolEvent?.();
   unsubIntegrityAlert?.();

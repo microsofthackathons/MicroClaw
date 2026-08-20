@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("openclaw", {
   gateway: {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),
     getStatus: () => ipcRenderer.invoke("gateway:get-status"),
+    isServiceReady: () => ipcRenderer.invoke("gateway:is-service-ready"),
     restart: (options?: { hard?: boolean }) => ipcRenderer.invoke("gateway:restart", options),
     warmUpAgent: () => ipcRenderer.invoke("gateway:warm-up-agent"),
     onStatus: (callback: (status: string) => void) => {
@@ -32,6 +33,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       const handler = (_event: any, reason: string) => callback(reason);
       ipcRenderer.on("gateway:ws-disconnected", handler);
       return () => ipcRenderer.removeListener("gateway:ws-disconnected", handler);
+    },
+    onServiceReady: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on("gateway:service-ready", handler);
+      return () => ipcRenderer.removeListener("gateway:service-ready", handler);
     },
   },
 
