@@ -6,6 +6,7 @@ import {
   isAgentWarmupEvent,
   normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
+  shouldHandleGatewayDisconnect,
   type GatewayEventFrame,
 } from "./gateway-client";
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
@@ -59,6 +60,13 @@ describe("extractMainSessionKey", () => {
         snapshot: { sessionDefaults: { mainSessionKey: "global" } },
       }),
     ).toBe("global");
+  });
+
+  describe("Gateway disconnect lifecycle", () => {
+    it("ignores a socket close callback after the client was intentionally stopped", () => {
+      expect(shouldHandleGatewayDisconnect(true)).toBe(false);
+      expect(shouldHandleGatewayDisconnect(false)).toBe(true);
+    });
   });
 
   it("returns null for a malformed Gateway hello snapshot", () => {

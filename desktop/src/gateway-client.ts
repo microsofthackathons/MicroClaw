@@ -196,8 +196,13 @@ export function extractMainSessionKey(hello: Record<string, unknown>): string | 
   if (!sessionDefaults || typeof sessionDefaults !== "object" || Array.isArray(sessionDefaults)) {
     return null;
   }
+
   const key = (sessionDefaults as Record<string, unknown>).mainSessionKey;
   return typeof key === "string" && key.length > 0 ? key : null;
+}
+
+export function shouldHandleGatewayDisconnect(clientStopped: boolean): boolean {
+  return !clientStopped;
 }
 
 // ── Client ──────────────────────────────────────────────────────────────
@@ -567,6 +572,7 @@ export class GatewayClient {
     this.ws.on("close", (_code, reason) => {
       this._connected = false;
       this.ws = null;
+      if (!shouldHandleGatewayDisconnect(this.closed)) return;
       this.agentWarmupWaiter?.("disconnected");
       this.rejectSessionTitleWaiters("disconnected");
       this.flushPending("disconnected");

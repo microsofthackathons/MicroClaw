@@ -22,9 +22,10 @@ export function sendToWindow(
     if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false;
     window.webContents.send(channel, ...args);
     return true;
-  } catch {
+  } catch (error) {
     // The window can be destroyed between the lifecycle checks and send().
-    return false;
+    if (error instanceof Error && error.message === "Object has been destroyed") return false;
+    throw error;
   }
 }
 

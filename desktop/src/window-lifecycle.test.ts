@@ -51,6 +51,13 @@ describe("sendToWindow", () => {
     expect(sendToWindow(window, "gateway:ws-disconnected", "closed")).toBe(false);
     expect(calls).toEqual([]);
   });
+
+  it("does not swallow unrelated renderer send failures", () => {
+    const error = new Error("IPC serialization failed");
+    const { window } = createWindow({ sendError: error });
+
+    expect(() => sendToWindow(window, "gateway:ws-disconnected", "closed")).toThrow(error);
+  });
 });
 
 describe("showAndFocusWindow", () => {
