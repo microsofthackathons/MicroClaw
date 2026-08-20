@@ -315,8 +315,6 @@ contextBridge.exposeInMainWorld("openclaw", {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
     setEnabled: (params: { enabled: boolean; nodeId?: string }) =>
       ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
-    runSmoke: () => ipcRenderer.invoke("windows-node-mxc:run-smoke"),
-    activate: () => ipcRenderer.invoke("windows-node-mxc:activate"),
     validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
       ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),
     applyFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
@@ -326,6 +324,7 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke", id),
     revokeAllDurableApprovals: () =>
       ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke-all"),
+    getPendingApproval: () => ipcRenderer.invoke("windows-node-mxc:approval-current"),
     respondApproval: (params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";

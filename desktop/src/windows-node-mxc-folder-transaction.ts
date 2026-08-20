@@ -8,8 +8,10 @@ export type WindowsNodeMxcFolderTransactionPhase =
   | "starting-active"
   | "smoking-active"
   | "verifying-active"
+  | "starting-standard"
   | "active"
-  | "locked";
+  | "locked"
+  | "failed";
 
 export interface WindowsNodeMxcFolderPolicy {
   rw: string[];

@@ -326,8 +326,10 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.starting-active": "Starting active generation",
   "settings.windowsNodeMxcLifecyclePhase.smoking-active": "Testing active generation",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
+  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting standard security mode",
   "settings.windowsNodeMxcLifecyclePhase.active": "Active",
   "settings.windowsNodeMxcLifecyclePhase.locked": "Locked",
+  "settings.windowsNodeMxcLifecyclePhase.failed": "Transition failed",
   "settings.windowsNodeMxcChangeToRo": "Change to read-only",
   "settings.windowsNodeMxcChangeToRw": "Change to read/write",
   "settings.windowsNodeMxcFolderDuplicate": "This folder is already configured with that access.",
@@ -358,14 +360,8 @@ export default {
   "settings.windowsNodeMxcApprovalNever": "never",
   "settings.windowsNodeMxcSmoke": "Contained child-process smoke",
   "settings.windowsNodeMxcNotRun": "Not run",
-  "settings.windowsNodeMxcRefresh": "Refresh readiness",
-  "settings.windowsNodeMxcRunSmoke": "Run contained smoke",
-  "settings.windowsNodeMxcSmokePassed": "Contained hostname.exe and PowerShell checks passed",
   "settings.windowsNodeMxcActivationLease": "Activation lease",
   "settings.windowsNodeMxcGatewayGeneration": "Gateway generation",
-  "settings.windowsNodeMxcActivate": "Activate verified route",
-  "settings.windowsNodeMxcActivated":
-    "Windows Node + MXC route activated for this Gateway generation",
   "settings.windowsNodeMxcCompatibility":
     "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. AppContainer and this mode are mutually exclusive.",
   "settings.windowsNodeMxcDegraded":
@@ -517,6 +513,8 @@ export default {
 
   // ── GatewayLoading ──
   "gateway.retry": "Retry",
+  "gateway.disableMxc": "Turn off Windows Node + MXC",
+  "gateway.mxcFailed": "MXC readiness failed. Execution remains safely locked.",
   "gateway.ready": "Ready",
   "gateway.starting": "Starting services…",
   "gateway.connecting": "Connecting…",

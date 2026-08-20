@@ -146,7 +146,11 @@ only through inherited stdin. A diagnostic lease admits only the fixed denied-CW
 and PowerShell smoke declarations. An active lease admits the normal attended `system.run` path.
 The helper checks the lease before approval and again immediately before MXC launch.
 
-MicroClaw starts every Gateway generation locked, with no effective agent tools. Readiness requires
+MicroClaw remembers the selected security mode. When Windows Node + MXC is off, startup follows the
+normal Gateway/chat-ready path without starting the bundled node. When it is on, the loading screen
+remains visible while MicroClaw automatically starts every Gateway generation locked and runs the
+same secure readiness and activation sequence. The contained checks remain attended: MicroClaw
+never answers their permission prompts automatically. Readiness requires
 the exact CWD/activation attestation payload, selected app-owned node identity, paired and connected
 state, strict no-fallback settings, current-generation effective tools, MXC tier, contained
 `hostname.exe`, contained PowerShell, and denied-access proof. `appcontainer-dacl` is accepted with a
@@ -156,7 +160,7 @@ Every MicroClaw-owned `chat.send` path, including startup warm-up and generated 
 passes through the same current-generation active-ingress gate. Locked or attesting startup skips
 warm-up without queuing or replaying it; warm-up can run only after final activation release.
 
-Activation is a fail-closed transaction:
+Activation is an automatic fail-closed transaction:
 
 1. Attest the locked generation and its smoke record.
 2. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
@@ -172,7 +176,12 @@ Any restart, disconnect, timeout, policy/tool drift, missing or expired lease, h
 attestation error revokes the lease, clears the smoke proof, rewrites the locked policy, and stops
 the managed Gateway. Configuration and restart operations that could invalidate an active
 transaction are rejected while this mode is enabled. External channel, hook, cron, and plugin
-inventory APIs return no active ingress.
+entry points remain disabled, and inventory APIs return no active ingress. The loading screen shows
+the failed MXC phase and recovery detail;
+the user may retry the same serialized transaction or turn MXC off. Toggling either direction
+returns to loading immediately, rejects chat during the transition, and releases ingress only after
+the selected route is ready. Security settings retain read-only proof and lifecycle details, but no
+longer expose separate refresh, smoke, or activation buttons.
 
 The pinned OpenClaw 2026.7.1-1 Gateway can block its event loop for more than a minute during
 startup. Pairing therefore remains generation-bound and locked for up to five minutes while the

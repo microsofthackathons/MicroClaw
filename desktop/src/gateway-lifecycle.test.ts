@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyAgentRosterReload,
   hardRestartGateway,
+  isApplicationServiceReadyState,
   isGatewayServiceReady,
   requiresExternalGatewayStop,
   waitForAgentRosterReload,
@@ -17,6 +18,18 @@ describe("requiresExternalGatewayStop", () => {
       expect(isGatewayServiceReady(true, true)).toBe(true);
       expect(isGatewayServiceReady(false, true)).toBe(false);
       expect(isGatewayServiceReady(true, false)).toBe(false);
+    });
+
+    describe("isApplicationServiceReadyState", () => {
+      it("releases remembered OFF startup when the Gateway is connected", () => {
+        expect(isApplicationServiceReadyState(true, true, false, true)).toBe(true);
+      });
+
+      it("keeps remembered ON startup and toggles gated until protected ingress releases", () => {
+        expect(isApplicationServiceReadyState(true, true, true, false)).toBe(false);
+        expect(isApplicationServiceReadyState(true, true, false, false)).toBe(false);
+        expect(isApplicationServiceReadyState(true, true, false, true)).toBe(true);
+      });
     });
   });
 

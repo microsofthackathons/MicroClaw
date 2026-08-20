@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
+import { useChatStore } from "@/stores/chat";
 import SettingsView from "./SettingsView.vue";
 
 const routeState = vi.hoisted(() => ({ section: "skills" }));
@@ -16,7 +17,6 @@ describe("SettingsView", () => {
   const exportGatewayLogs = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
-  const activateWindowsNodeMxc = vi.fn();
   const addUserDir = vi.fn();
   const stageUserDir = vi.fn();
   const removeUserDir = vi.fn();
@@ -93,8 +93,10 @@ describe("SettingsView", () => {
     getWindowsNodeMxcStatus.mockReset().mockResolvedValue(status("diagnostic-unpaired-local-node"));
     setWindowsNodeMxcEnabled
       .mockReset()
-      .mockImplementation(async ({ nodeId }: { nodeId: string }) => status(nodeId));
-    activateWindowsNodeMxc.mockReset();
+      .mockImplementation(async ({ enabled }: { enabled: boolean }) => ({
+        ...status("node-local"),
+        desiredEnabled: enabled,
+      }));
     addUserDir.mockReset().mockResolvedValue({ ok: false, dirs: { rw: [], ro: [] } });
     stageUserDir.mockReset().mockResolvedValue({
       ok: false,
@@ -126,8 +128,6 @@ describe("SettingsView", () => {
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
         setEnabled: setWindowsNodeMxcEnabled,
-        runSmoke: vi.fn(),
-        activate: activateWindowsNodeMxc,
         validateFolderPolicy,
         applyFolderPolicy,
         listDurableApprovals: vi.fn().mockResolvedValue([]),
@@ -219,31 +219,8 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
-  it("activates only after the locked-generation smoke proof is ready", async () => {
+  it("does not expose manual readiness or activation actions", async () => {
     routeState.section = "security";
-    const passed = { outcome: "passed" as const, reason: "ok" };
-    const lockedReady = {
-      ...status("node-local"),
-      strictFallbackEffective: true,
-      allowWindowsUiEffective: true,
-      smoke: {
-        gatewayGeneration: "generation-1",
-        nodeId: "node-local",
-        settingsFingerprint: "settings",
-        probeTier: "appcontainer-dacl",
-        checkedAt: new Date().toISOString(),
-        hostname: passed,
-        powershell: passed,
-        deniedOutsideRoot: passed,
-      },
-    };
-    getWindowsNodeMxcStatus.mockResolvedValueOnce(lockedReady);
-    activateWindowsNodeMxc.mockResolvedValueOnce({
-      ...lockedReady,
-      effectiveEnabled: true,
-      gatewayPolicyState: "active",
-      activationLeaseMode: "active",
-    });
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [createPinia()],
@@ -251,15 +228,36 @@ describe("SettingsView", () => {
     });
 
     await flushPromises();
-    const activateButton = wrapper
-      .findAll("el-button")
-      .find((button) => button.text() === "Activate verified route");
-    expect(activateButton?.attributes("disabled")).toBe("false");
+    const text = wrapper.find(".mxc-card").text();
+    expect(text).not.toContain("Refresh readiness");
+    expect(text).not.toContain("Run contained smoke");
+    expect(text).not.toContain("Activate verified route");
+  });
 
-    await activateButton!.trigger("click");
+  it("returns to the loading gate before toggling either security mode", async () => {
+    routeState.section = "security";
+    const pinia = createPinia();
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          "el-switch": {
+            template: '<button data-testid="mxc-toggle" @click="$emit(\'change\', false)" />',
+          },
+        },
+      },
+    });
     await flushPromises();
+    const gateway = useGatewayStore(pinia);
+    const chat = useChatStore(pinia);
+    gateway.markReady();
+    chat.wsConnected = true;
 
-    expect(activateWindowsNodeMxc).toHaveBeenCalledOnce();
+    await wrapper.find('[data-testid="mxc-toggle"]').trigger("click");
+
+    expect(gateway.ready).toBe(false);
+    expect(chat.wsConnected).toBe(false);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: false });
   });
 
   it("shows empty global RO and RW folder lists while MXC is disabled", async () => {

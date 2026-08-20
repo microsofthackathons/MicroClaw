@@ -691,36 +691,6 @@
               </div>
             </div>
           </template>
-          <div class="card-row no-border mxc-actions">
-            <el-button :loading="windowsNodeMxcRefreshing" @click="loadWindowsNodeMxcStatus">
-              {{ t("settings.windowsNodeMxcRefresh") }}
-            </el-button>
-            <el-button
-              type="primary"
-              plain
-              :disabled="
-                !windowsNodeMxcStatus?.desiredEnabled ||
-                windowsNodeMxcStatus?.gatewayPolicyState !== 'locked'
-              "
-              :loading="windowsNodeMxcSmokeRunning"
-              @click="runWindowsNodeMxcSmoke"
-            >
-              {{ t("settings.windowsNodeMxcRunSmoke") }}
-            </el-button>
-            <el-button
-              type="primary"
-              :disabled="
-                windowsNodeMxcStatus?.gatewayPolicyState !== 'locked' ||
-                windowsNodeMxcStatus?.smoke?.deniedOutsideRoot.outcome !== 'passed' ||
-                windowsNodeMxcStatus?.smoke?.hostname.outcome !== 'passed' ||
-                windowsNodeMxcStatus?.smoke?.powershell.outcome !== 'passed'
-              "
-              :loading="windowsNodeMxcActivating"
-              @click="activateWindowsNodeMxc"
-            >
-              {{ t("settings.windowsNodeMxcActivate") }}
-            </el-button>
-          </div>
         </div>
         <div class="section-footer">{{ t("settings.windowsNodeMxcCompatibility") }}</div>
 
@@ -1346,11 +1316,7 @@ const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcApplying = ref(false);
-const windowsNodeMxcRefreshing = ref(false);
-const windowsNodeMxcSmokeRunning = ref(false);
-const windowsNodeMxcActivating = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
-let removeWindowsNodeMxcLifecycleListener: (() => void) | null = null;
 
 const windowsNodeMxcFolderDraftDirty = computed(
   () => policyIdentity(windowsNodeMxcFolderDraft) !== policyIdentity(windowsNodeMxcFolderBaseline),
@@ -1388,19 +1354,18 @@ function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
 }
 
 async function loadWindowsNodeMxcStatus() {
-  windowsNodeMxcRefreshing.value = true;
   try {
     const status = await window.openclaw.windowsNodeMxc.getStatus();
     updateWindowsNodeMxcStatus(status);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
-  } finally {
-    windowsNodeMxcRefreshing.value = false;
   }
 }
 
 async function toggleWindowsNodeMxc(enabled: boolean) {
   windowsNodeMxcApplying.value = true;
+  gateway.resetReady();
+  chatStore.wsConnected = false;
   try {
     const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
     updateWindowsNodeMxcStatus(status);
@@ -1410,44 +1375,6 @@ async function toggleWindowsNodeMxc(enabled: boolean) {
     await loadWindowsNodeMxcStatus();
   } finally {
     windowsNodeMxcApplying.value = false;
-  }
-}
-
-async function runWindowsNodeMxcSmoke() {
-  windowsNodeMxcSmokeRunning.value = true;
-  try {
-    const smoke = await window.openclaw.windowsNodeMxc.runSmoke();
-    if (
-      smoke.deniedOutsideRoot.outcome === "passed" &&
-      smoke.hostname.outcome === "passed" &&
-      smoke.powershell.outcome === "passed"
-    ) {
-      ElMessage.success(t("settings.windowsNodeMxcSmokePassed"));
-    } else {
-      ElMessage.error(
-        `${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
-      );
-    }
-
-    await loadWindowsNodeMxcStatus();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  } finally {
-    windowsNodeMxcSmokeRunning.value = false;
-  }
-}
-
-async function activateWindowsNodeMxc() {
-  windowsNodeMxcActivating.value = true;
-  try {
-    const status = await window.openclaw.windowsNodeMxc.activate();
-    updateWindowsNodeMxcStatus(status);
-    ElMessage.success(t("settings.windowsNodeMxcActivated"));
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-    await loadWindowsNodeMxcStatus();
-  } finally {
-    windowsNodeMxcActivating.value = false;
   }
 }
 
@@ -2219,13 +2146,6 @@ watch(showProviderSetup, (visible, wasVisible) => {
 
 onMounted(async () => {
   window.addEventListener("focus", handleSettingsWindowFocus);
-  removeWindowsNodeMxcLifecycleListener = window.openclaw.windowsNodeMxc.onLifecycleState(
-    (state) => {
-      if (windowsNodeMxcStatus.value) {
-        windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
-      }
-    },
-  );
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
@@ -2258,7 +2178,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
-  removeWindowsNodeMxcLifecycleListener?.();
   copilotModelsGeneration += 1;
 });
 

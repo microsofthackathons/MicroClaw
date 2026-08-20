@@ -34,6 +34,19 @@ export function isGatewayServiceReady(
   return clientConnected && postSpawnRestartDone;
 }
 
+export function isApplicationServiceReadyState(
+  clientConnected: boolean,
+  postSpawnRestartDone: boolean,
+  securityTransitionInProgress: boolean,
+  protectedIngressReady: boolean,
+): boolean {
+  return (
+    isGatewayServiceReady(clientConnected, postSpawnRestartDone) &&
+    !securityTransitionInProgress &&
+    protectedIngressReady
+  );
+}
+
 export async function waitForAgentRosterReload(
   dependencies: AgentRosterReloadDependencies,
 ): Promise<boolean> {

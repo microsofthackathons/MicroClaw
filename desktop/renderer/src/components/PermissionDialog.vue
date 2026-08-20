@@ -263,7 +263,7 @@ function respond(decision: string) {
   right: 0;
   display: flex;
   justify-content: center;
-  z-index: 200;
+  z-index: 10001;
   pointer-events: none;
   padding: 12px 28px 18px;
   background: transparent;

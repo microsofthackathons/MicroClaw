@@ -308,8 +308,10 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.starting-active": "正在启动活动代际",
   "settings.windowsNodeMxcLifecyclePhase.smoking-active": "正在测试活动代际",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "正在验证活动路由",
+  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "正在启动标准安全模式",
   "settings.windowsNodeMxcLifecyclePhase.active": "活动",
   "settings.windowsNodeMxcLifecyclePhase.locked": "锁定",
+  "settings.windowsNodeMxcLifecyclePhase.failed": "转换失败",
   "settings.windowsNodeMxcChangeToRo": "改为只读",
   "settings.windowsNodeMxcChangeToRw": "改为读写",
   "settings.windowsNodeMxcFolderDuplicate": "此文件夹已配置相同的访问级别。",
@@ -337,13 +339,8 @@ export default {
   "settings.windowsNodeMxcApprovalNever": "从未",
   "settings.windowsNodeMxcSmoke": "受控子进程冒烟测试",
   "settings.windowsNodeMxcNotRun": "尚未运行",
-  "settings.windowsNodeMxcRefresh": "刷新就绪状态",
-  "settings.windowsNodeMxcRunSmoke": "运行受控冒烟测试",
-  "settings.windowsNodeMxcSmokePassed": "受控 hostname.exe 和 PowerShell 检查已通过",
   "settings.windowsNodeMxcActivationLease": "激活租约",
   "settings.windowsNodeMxcGatewayGeneration": "网关代次",
-  "settings.windowsNodeMxcActivate": "激活已验证路由",
-  "settings.windowsNodeMxcActivated": "Windows Node + MXC 路由已为当前网关代次激活",
   "settings.windowsNodeMxcCompatibility":
     "MXC 0.7 下 PowerShell 需要“允许 Windows UI API”。这是兼容性放宽，并不启用屏幕、输入或其他 UI 能力。AppContainer 与此模式互斥。",
   "settings.windowsNodeMxcDegraded":
@@ -489,6 +486,8 @@ export default {
 
   // ── GatewayLoading ──
   "gateway.retry": "重试",
+  "gateway.disableMxc": "关闭 Windows Node + MXC",
+  "gateway.mxcFailed": "MXC 就绪检查失败，执行仍保持安全锁定。",
   "gateway.ready": "准备就绪",
   "gateway.starting": "正在启动服务…",
   "gateway.connecting": "正在连接…",

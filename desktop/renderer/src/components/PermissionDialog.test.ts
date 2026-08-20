@@ -122,4 +122,13 @@ describe("PermissionDialog", () => {
       "--danger: var(--smtc-status-danger-foreground, #ef4444);",
     );
   });
+
+  it("renders attended prompts above the startup loading gate", () => {
+    const component = readFileSync(
+      resolve(process.cwd(), "src/components/PermissionDialog.vue"),
+      "utf8",
+    );
+
+    expect(component).toContain("z-index: 10001;");
+  });
 });

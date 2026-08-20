@@ -356,8 +356,10 @@ interface OpenClawAPI {
           | "starting-active"
           | "smoking-active"
           | "verifying-active"
+          | "starting-standard"
           | "active"
-          | "locked";
+          | "locked"
+          | "failed";
         detail: string | null;
         updatedAt: string;
       };
@@ -453,17 +455,6 @@ interface OpenClawAPI {
       enabled: boolean;
       nodeId?: string;
     }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
-    runSmoke(): Promise<{
-      gatewayGeneration: string;
-      nodeId: string;
-      settingsFingerprint: string;
-      probeTier: string;
-      checkedAt: string;
-      hostname: { outcome: string; reason: string };
-      powershell: { outcome: string; reason: string };
-      deniedOutsideRoot: { outcome: string; reason: string };
-    }>;
-    activate(): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
     validateFolderPolicy(draft: {
       rw: string[];
       ro: string[];
@@ -481,6 +472,20 @@ interface OpenClawAPI {
       Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
     >;
     revokeAllDurableApprovals(): Promise<[]>;
+    getPendingApproval(): Promise<{
+      id: string;
+      executable: string;
+      arguments: string[];
+      commandText?: string;
+      agent: string | null;
+      canonicalCwd: string;
+      approvalLayer: "gateway" | "node";
+      allowedDecisions: Array<"deny" | "allow-once" | "allow-always">;
+      declaredAccess: Array<{
+        access: "ro" | "rw";
+        path: string;
+      }>;
+    } | null>;
     respondApproval(params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";

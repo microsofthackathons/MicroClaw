@@ -7,6 +7,7 @@ export const useGatewayStore = defineStore("gateway", () => {
   const logs = ref<string[]>([]);
   /** Once true the loading gate in App.vue stays hidden. Reset on explicit gateway restart. */
   const ready = ref(false);
+  const readinessEpoch = ref(0);
   /** True while the connected gateway pre-warms the agent behind the loading gate. */
   const warming = ref(false);
   /** WeChat plugin login status — shared across Sidebar & PluginsView. */
@@ -27,7 +28,8 @@ export const useGatewayStore = defineStore("gateway", () => {
   }
 
   /** Called when the first WS connection succeeds (hides loading screen). */
-  function markReady() {
+  function markReady(expectedEpoch = readinessEpoch.value) {
+    if (expectedEpoch !== readinessEpoch.value) return;
     if (ready.value) return;
     warming.value = false;
     ready.value = true;
@@ -46,6 +48,7 @@ export const useGatewayStore = defineStore("gateway", () => {
 
   /** Reset the loading gate so the GatewayLoading overlay reappears. */
   function resetReady() {
+    readinessEpoch.value += 1;
     ready.value = false;
     warming.value = false;
     lastError.value = "";
@@ -67,6 +70,7 @@ export const useGatewayStore = defineStore("gateway", () => {
     logs,
     addLog,
     ready,
+    readinessEpoch,
     warming,
     markReady,
     beginWarming,

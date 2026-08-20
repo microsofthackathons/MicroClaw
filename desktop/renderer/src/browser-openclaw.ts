@@ -121,12 +121,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       setEnabled: async () => {
         throw new Error("Unavailable in browser development");
       },
-      runSmoke: async () => {
-        throw new Error("Unavailable in browser development");
-      },
-      activate: async () => {
-        throw new Error("Unavailable in browser development");
-      },
       validateFolderPolicy: async (draft) => draft,
       applyFolderPolicy: async () => {
         throw new Error("Unavailable in browser development");
@@ -134,6 +128,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       listDurableApprovals: async () => [],
       revokeDurableApproval: async () => [],
       revokeAllDurableApprovals: async () => [],
+      getPendingApproval: async () => null,
       respondApproval: async () => {
         throw new Error("Unavailable in browser development");
       },
