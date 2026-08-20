@@ -13,6 +13,7 @@ import {
   findBundledNodePairRequest,
   replaceFileWithRetry,
   revokeActivationLeaseFile,
+  terminateBundledWindowsNodeProcessTree,
   sensitiveWindowsRoots,
   validateApprovalRequest,
 } from "./bundled-windows-node-host";
@@ -31,6 +32,83 @@ describe("bundled Windows node host", () => {
 
   it("pins the reviewed MXC target-only host-prep patch", () => {
     expect(MXC_HOST_PREP_PATCH_REVISION).toBe("695c2b89c6142090a098ec4484f49aff8157f0b3");
+  });
+
+  it("terminates the exact bundled node process tree and verifies exit", () => {
+    const run = vi.fn();
+    const alive = vi.fn().mockReturnValue(false);
+    const listTree = vi.fn().mockReturnValue([1234, 2001, 2002]);
+
+    terminateBundledWindowsNodeProcessTree(1234, run as never, alive, listTree);
+
+    if (process.platform === "win32") {
+      expect(run).toHaveBeenCalledWith(
+        "taskkill",
+        ["/pid", "1234", "/T", "/F"],
+        expect.objectContaining({ windowsHide: true }),
+      );
+    }
+    expect(alive).toHaveBeenCalledWith(2001);
+    expect(alive).toHaveBeenCalledWith(2002);
+  });
+
+  it("fails closed when the bundled node process tree remains alive", () => {
+    expect(() =>
+      terminateBundledWindowsNodeProcessTree(
+        1234,
+        vi.fn() as never,
+        (pid) => pid === 2001,
+        () => [1234, 2001],
+      ),
+    ).toThrow(/live processes: 2001/);
+  });
+
+  it("terminates descendants discovered after the root kill", () => {
+    const alive = new Set([1234, 2001]);
+    const run = vi.fn((_file: string, args: readonly string[]) => {
+      alive.delete(Number(args[1]));
+      return Buffer.alloc(0);
+    });
+    const listTree = vi
+      .fn<(rootPids: readonly number[]) => number[]>()
+      .mockReturnValueOnce([1234])
+      .mockReturnValue([1234, 2001]);
+
+    terminateBundledWindowsNodeProcessTree(
+      1234,
+      run as never,
+      (pid) => alive.has(pid),
+      listTree,
+    );
+
+    expect(run).toHaveBeenCalledWith(
+      "taskkill",
+      ["/pid", "2001", "/T", "/F"],
+      expect.any(Object),
+    );
+    expect(alive.size).toBe(0);
+  });
+
+  it("terminates descendants even when the root host already exited", () => {
+    const alive = new Set([2001]);
+    const run = vi.fn((_file: string, args: readonly string[]) => {
+      alive.delete(Number(args[1]));
+      return Buffer.alloc(0);
+    });
+
+    terminateBundledWindowsNodeProcessTree(
+      1234,
+      run as never,
+      (pid) => alive.has(pid),
+      () => [1234, 2001],
+    );
+
+    expect(run).toHaveBeenCalledWith(
+      "taskkill",
+      ["/pid", "2001", "/T", "/F"],
+      expect.any(Object),
+    );
+    expect(alive.size).toBe(0);
   });
 
   it("creates a fresh 256-bit proof context bound to policy and node identity", () => {

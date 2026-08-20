@@ -239,7 +239,12 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(root.GetProperty("activeRunsRequireApprovalProof").GetBoolean());
         Assert.True(root.GetProperty("approvalProofOneUse").GetBoolean());
         Assert.True(root.GetProperty("approvalProofBindsPreparedPlan").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-node-approval-plan.v2",
+            root.GetProperty("approvalProofPlanContract").GetString());
+        Assert.True(root.GetProperty("approvalProofBindsExecutableContent").GetBoolean());
         Assert.True(root.GetProperty("approvalProofBindsActivation").GetBoolean());
+        Assert.True(root.GetProperty("durableApprovalStoreProtected").GetBoolean());
         Assert.False(root.GetProperty("durableApprovalsPresent").GetBoolean());
         Assert.False(root.TryGetProperty("Contract", out _));
     }
@@ -523,6 +528,12 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Equal("echo hello", plan.GetProperty("commandPreview").GetString());
         Assert.Equal("main", plan.GetProperty("agentId").GetString());
         Assert.Equal("agent:main:approval-regression", plan.GetProperty("sessionKey").GetString());
+        var executablePath = plan.GetProperty("executablePath").GetString();
+        Assert.NotNull(executablePath);
+        Assert.True(Path.IsPathFullyQualified(executablePath));
+        Assert.Matches("^[a-f0-9]{64}$", plan.GetProperty("executableSha256").GetString());
+        Assert.Equal("isolated-scratch:v1", plan.GetProperty("cwdBinding").GetString());
+        Assert.Empty(plan.GetProperty("declaredAccess").EnumerateArray());
         Assert.Equal(plan.GetProperty("commandText").GetString(), payload.GetProperty("cmdText").GetString());
     }
 
@@ -557,6 +568,9 @@ public sealed class CwdPolicyTests : IDisposable
             item.GetProperty("access").GetString() == "rw"
             && string.Equals(item.GetProperty("path").GetString(), child, StringComparison.OrdinalIgnoreCase));
         var plan = payload.GetProperty("plan");
+        Assert.Equal(
+            access.Select(item => item.GetRawText()),
+            plan.GetProperty("declaredAccess").EnumerateArray().Select(item => item.GetRawText()));
         var expectedPreview = $"# [declare-access]ro:{_root};rw:{child}[/declare-access]\necho hello";
         Assert.Equal(expectedPreview, plan.GetProperty("commandPreview").GetString());
         Assert.Equal(

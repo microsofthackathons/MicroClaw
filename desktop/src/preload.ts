@@ -317,6 +317,15 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     runSmoke: () => ipcRenderer.invoke("windows-node-mxc:run-smoke"),
     activate: () => ipcRenderer.invoke("windows-node-mxc:activate"),
+    validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),
+    applyFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      ipcRenderer.invoke("windows-node-mxc:apply-folder-policy", draft),
+    listDurableApprovals: () => ipcRenderer.invoke("windows-node-mxc:durable-approvals:list"),
+    revokeDurableApproval: (id: string) =>
+      ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke", id),
+    revokeAllDurableApprovals: () =>
+      ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke-all"),
     respondApproval: (params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
@@ -325,6 +334,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       const handler = (_event: Electron.IpcRendererEvent, request: unknown) => callback(request);
       ipcRenderer.on("windows-node-mxc:approval-request", handler);
       return () => ipcRenderer.removeListener("windows-node-mxc:approval-request", handler);
+    },
+    onLifecycleState: (callback: (state: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state);
+      ipcRenderer.on("windows-node-mxc:lifecycle-state", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:lifecycle-state", handler);
     },
   },
 
@@ -356,6 +370,16 @@ contextBridge.exposeInMainWorld("openclaw", {
     addUserDir: (params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }) =>
       ipcRenderer.invoke("sandbox:add-user-dir", params) as Promise<{
         ok: boolean;
+        reason?: string;
+        parentDir?: string;
+        parentAccess?: string;
+        removedChildren?: string[];
+        dirs: { rw: string[]; ro: string[] };
+      }>,
+    stageUserDir: (params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }) =>
+      ipcRenderer.invoke("sandbox:stage-user-dir", params) as Promise<{
+        ok: boolean;
+        canceled?: boolean;
         reason?: string;
         parentDir?: string;
         parentAccess?: string;

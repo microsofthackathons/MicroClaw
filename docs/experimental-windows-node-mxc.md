@@ -47,29 +47,35 @@ The exact attestation contract is `microclaw.windows-cwd.v1`. A supplied CWD mus
 - not overlap a protected credential, OpenClaw state, SSH, cloud, or browser-profile root.
 
 CWD inherits the matched root's access; it never creates a grant. Omitted CWD binds approval to
-`isolated-scratch:v1` and launches in a per-run writable scratch directory. Durable entries use
-schema 3 and bind canonical executable path, executable SHA-256, exact argv, canonical CWD (or
-the scratch semantic), and the normalized declared-access set. Legacy, CWD-unbound, or
-declared-access-unbound entries never match. Policy, executable identity,
-reparse state, root membership, and the exact CWD binding are revalidated immediately before
-launch. Delete-denying directory handles retain every approved-root/CWD path component through MXC
-completion, preventing a validated directory from being replaced by a junction during launch.
-Approved-folder changes are rejected while the mode is enabled because the helper binds the
-canonical folder policy at generation startup. Disable and reactivate the mode to change that policy.
-Settings > Security presents this policy as separate global Read-only and Read/write lists. Folder
-selection uses Electron's native directory picker. Equal paths are deduplicated, redundant nested
-grants are rejected or collapsed, and a narrower RW root under a broader RO root remains explicit.
-Changing access or removing a root updates the same `sandboxUserDirsRO`/`sandboxUserDirsRW` settings
-used by the existing AppContainer sandbox; MXC does not maintain a second permission store. UNC,
-device-namespace, missing, reparse, final-target-changing, and protected credential/state/browser
-roots are rejected before the policy changes.
+`isolated-scratch:v1` and launches in a per-run writable scratch directory. The node re-hashes the
+executable through its held handle; policy, reparse state, root membership, exact CWD binding, and
+declared access are revalidated immediately before launch. Delete-denying directory handles retain
+every approved-root/CWD path component through MXC completion, preventing a validated directory
+from being replaced by a junction during launch.
 
-Approval presentation is owned by MicroClaw Security settings. The helper connects to a random
-per-launch Windows named pipe, displays executable, exact argv, agent, and canonical CWD, and
-supports Deny, Allow once, and Allow always. If the attended IPC is absent or times out, execution
-is denied. Responses are bound to the exact request ID. The approved executable is held under a
-read-only handle that denies write/delete sharing from pre-approval hashing through MXC completion.
-Runs are serialized, so attended approvals cannot overlap, and each contained child inherits
+Settings > Security presents this global policy as separate Read-only and Read/write lists. Folder
+selection uses Electron's trusted native directory picker. Equal paths are deduplicated, redundant
+nested grants are collapsed, and a narrower RW root under a broader RO root remains explicit. While
+MXC is enabled, edits remain a renderer draft and cannot mutate live ACLs or settings. **Apply changes
+and reactivate** performs one serialized fail-closed transaction: lock ingress, reject pending
+approvals, revoke proof/lease state, validate the complete draft, stop the exact generation, apply
+and atomically persist the same `sandboxUserDirsRO`/`sandboxUserDirsRW` policy, attest and smoke a
+locked generation, attest and smoke a fresh active generation, mint its lease, verify the effective
+route, then release ingress. The smokes remain attended. Cancellation, denial, or any failure leaves
+execution locked and retains the attempted draft and previous policy for explicit retry or revert;
+MicroClaw never silently restores old active execution. Folder preparation that requires elevation
+fails locked without opening an elevation prompt. UNC, device-namespace, missing, reparse,
+final-target-changing, and protected credential/state/browser roots are rejected before persistence.
+
+The normal active route has one visible Gateway/MicroClaw prompt. It displays executable, exact argv,
+agent/session scope, canonical CWD, and declared folder use, and offers Deny, Allow once, and eligible
+Allow always. MicroClaw resolves both allow choices upstream as one-use; it never delegates durable
+authority to the Gateway or node. The Gateway then mints a fresh 15-second, one-use HMAC proof bound
+to the exact generation, node, policy fingerprint, prepared plan, executable path/content hash, CWD,
+declarations, agent, and session. The node silently accepts only that proof after recapturing the
+held executable identity. Direct `node.invoke`, malformed, stale, replayed, or concurrent reuse is
+denied. Diagnostic smokes use the per-launch named-pipe prompt and expose only Deny and Allow once.
+If attended IPC is absent or times out, execution is denied. Each contained child inherits
 `TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
 
 Optional `[declare-access]ro:<path>;rw:<path>[/declare-access]` metadata is accepted only on leading
@@ -80,9 +86,14 @@ a canonical declaration only in the approved plan's display preview. Every confi
 is passed into every MXC invocation as a global RO/RW grant; declaration metadata validates and
 communicates intended use but never grants or changes access. MicroClaw renders it as separate
 localized declared folder use and clean command text, and explains that approval authorizes the
-command itself inside MXC. `Allow always` persists the exact command, canonical CWD, and declaration
-identity without changing configured folder grants. Replay must contain that exact Gateway-approved
-plan; mismatched plan argv or command text is denied before the node prompt.
+command itself inside MXC. `Allow always` stores a versioned MicroClaw-owned exact record under the
+protected Windows-node state directory: canonical executable path and SHA-256, exact argv and
+command, canonical CWD or scratch semantic, normalized declarations, agent/session, policy
+fingerprint, and plan contract. Writes are atomic and replace exact duplicates. Legacy, malformed,
+unbound, policy-stale, hash-stale, path-stale, or scope-mismatched records authorize nothing.
+Security settings shows creation/last-use details and supports individual or complete revocation. A
+valid exact match suppresses the visible prompt but still receives a fresh one-use Gateway proof and
+full node launch-time revalidation. It never changes configured folder grants.
 An unlisted declaration, or an RW declaration covered only by RO policy, is rejected before the
 command-approval prompt with localized remediation to change Settings > Security and retry. Omitting
 declaration metadata never expands the MXC policy: only the configured global roots are emitted, and
@@ -94,7 +105,10 @@ an operation outside them receives the container's normal access-denied result.
 `fc9add75eda78daf548d80a55ffb64e63b159961`. The headless project references its plain
 `OpenClaw.Shared` transport/identity/MXC contracts without importing Companion WinUI code.
 MicroClaw's stricter command capability, CWD policy, approval identity, and no-fallback runner live
-in `windows-node-host/`.
+in `windows-node-host/`. The bundled host binds itself and every inherited MXC child to a
+kill-on-close Windows Job, so a host crash or forced stop cannot leave an agent-controlled
+`wxc-exec` or contained descendant running. Electron keeps the bootstrap pipe open as an
+owner-lifetime signal; an Electron exit closes the pipe, exits the host, and closes the Job.
 
 `@microsoft/mxc-sdk` is lockfile-pinned to `0.7.0`. Resource staging validates the official
 architecture-specific `wxc-exec.exe` SHA-256 before copying the complete matching x64/ARM64 runtime

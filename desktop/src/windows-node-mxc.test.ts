@@ -15,9 +15,11 @@ import {
   isWindowsNodeMxcFolderConfigured,
   listAgentSessionKeys,
   normalizeWindowsNodeMxcGatewayApproval,
+  normalizeWindowsNodeMxcFolderPolicy,
   normalizeWindowsNodeRecord,
   planWindowsNodeMxcFolderUpsert,
   restoreWindowsNodeMxcGatewayPolicy,
+  selectWindowsNodeMxcGatewayStartPolicy,
   validateEffectiveToolNames,
   validateSelectedWindowsNode,
   validateWindowsNodeMxcGatewayPolicy,
@@ -26,6 +28,7 @@ import {
 } from "./windows-node-mxc";
 import {
   classifyDeniedCwdSmoke,
+  isCurrentBundledWindowsNodeApprovalCallback,
   isCurrentBundledActivationLease,
   isCurrentWindowsNodeMxcSmoke,
   selectCurrentWindowsNodeMxcSmoke,
@@ -55,7 +58,7 @@ describe("Gateway node exec approval bridge", () => {
   const nodeId = "a".repeat(64);
   const payload = {
     id: "approval-1",
-    allowedDecisions: ["allow-once", "deny"],
+    allowedDecisions: ["allow-once", "deny", "allow-always"],
     request: {
       host: "node",
       nodeId,
@@ -66,6 +69,10 @@ describe("Gateway node exec approval bridge", () => {
         commandPreview: "Set-Content test.txt ok",
         agentId: "main",
         sessionKey: "agent:main:approval-regression",
+        executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        executableSha256: "c".repeat(64),
+        cwdBinding: "isolated-scratch:v1",
+        declaredAccess: [],
       },
     },
   };
@@ -76,10 +83,13 @@ describe("Gateway node exec approval bridge", () => {
       command: 'powershell.exe -Command "Set-Content test.txt ok"',
       executable: "powershell.exe",
       arguments: ["-Command", "Set-Content test.txt ok"],
+      executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      executableSha256: "c".repeat(64),
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
+      sessionKey: "agent:main:approval-regression",
       declaredAccess: [],
-      allowedDecisions: ["allow-once", "deny"],
+      allowedDecisions: ["allow-once", "deny", "allow-always"],
     });
   });
 
@@ -96,6 +106,10 @@ describe("Gateway node exec approval bridge", () => {
               String.raw`REM [declare-access]ro:C:\Users\test\Documents[/declare-access]`,
               "Set-Content test.txt ok",
             ].join("\n"),
+            declaredAccess: [
+              { access: "rw", path: String.raw`C:\Users\test\Desktop` },
+              { access: "ro", path: String.raw`C:\Users\test\Documents` },
+            ],
           },
         },
       },
@@ -107,15 +121,38 @@ describe("Gateway node exec approval bridge", () => {
       command: 'powershell.exe -Command "Set-Content test.txt ok"',
       executable: "powershell.exe",
       arguments: ["-Command", "Set-Content test.txt ok"],
+      executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      executableSha256: "c".repeat(64),
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
+      sessionKey: "agent:main:approval-regression",
       declaredAccess: [
         { access: "rw", path: String.raw`C:\Users\test\Desktop` },
         { access: "ro", path: String.raw`C:\Users\test\Documents` },
       ],
-      allowedDecisions: ["allow-once", "deny"],
+      allowedDecisions: ["allow-once", "deny", "allow-always"],
     });
     expect(approval?.command).not.toContain("declare-access");
+  });
+
+  it("rejects a prompt whose displayed declarations differ from the signed plan", () => {
+    expect(
+      normalizeWindowsNodeMxcGatewayApproval(
+        {
+          ...payload,
+          request: {
+            ...payload.request,
+            systemRunPlan: {
+              ...payload.request.systemRunPlan,
+              commandPreview:
+                "# [declare-access]ro:C:\\Users\\test\\Documents[/declare-access]\necho ok",
+              declaredAccess: [{ access: "rw", path: "C:\\Users\\test\\Documents" }],
+            },
+          },
+        },
+        nodeId,
+      ),
+    ).toBeNull();
   });
 
   it.each([
@@ -168,6 +205,9 @@ describe("Gateway node exec approval bridge", () => {
       { ...payload.request.systemRunPlan, cwd: undefined },
       { ...payload.request.systemRunPlan, agentId: undefined },
       { ...payload.request.systemRunPlan, sessionKey: undefined },
+      { ...payload.request.systemRunPlan, executablePath: undefined },
+      { ...payload.request.systemRunPlan, executableSha256: undefined },
+      { ...payload.request.systemRunPlan, cwdBinding: undefined },
     ]) {
       expect(
         normalizeWindowsNodeMxcGatewayApproval(
@@ -185,15 +225,70 @@ describe("Gateway node exec approval bridge", () => {
     }
   });
 
-  it("never invents allow-always when the Gateway does not advertise it", () => {
+  it("offers MicroClaw-owned exact allow-always for every fully bound plan", () => {
     expect(
       normalizeWindowsNodeMxcGatewayApproval({ ...payload, allowedDecisions: undefined }, nodeId)
         ?.allowedDecisions,
-    ).toEqual(["allow-once", "deny"]);
+    ).toEqual(["allow-once", "deny", "allow-always"]);
+  });
+
+  it("accepts the pinned Gateway event envelope with decisions inside the request", () => {
+    expect(
+      normalizeWindowsNodeMxcGatewayApproval(
+        {
+          id: "approval-pinned-shape",
+          createdAtMs: 1_777_000_000_000,
+          expiresAtMs: 1_777_000_120_000,
+          request: {
+            command: 'powershell.exe -Command "Set-Content test.txt ok"',
+            systemRunBinding: {
+              argv: payload.request.systemRunPlan.argv,
+              cwd: null,
+              agentId: "main",
+              sessionKey: "agent:main:approval-regression",
+              envHash: null,
+            },
+            systemRunPlan: payload.request.systemRunPlan,
+            cwd: null,
+            nodeId,
+            host: "node",
+            security: "full",
+            ask: "always",
+            allowedDecisions: ["allow-once", "allow-always", "deny"],
+            agentId: "main",
+            sessionKey: "agent:main:approval-regression",
+          },
+        },
+        nodeId,
+      )?.allowedDecisions,
+    ).toEqual(["allow-once", "allow-always", "deny"]);
   });
 });
 
 describe("bundled Windows Node CWD attestation", () => {
+  it("ignores approval callbacks from replaced host or Gateway generations", () => {
+    const current = {
+      expectedHostGeneration: 4,
+      currentHostGeneration: 4,
+      gatewayConnected: true,
+      gatewayMatches: true,
+      gatewayProcessMatches: true,
+      expectedGatewayGeneration: "gateway-4",
+      currentGatewayGeneration: "gateway-4",
+    };
+
+    expect(isCurrentBundledWindowsNodeApprovalCallback(current)).toBe(true);
+    for (const stale of [
+      { currentHostGeneration: 5 },
+      { gatewayConnected: false },
+      { gatewayMatches: false },
+      { gatewayProcessMatches: false },
+      { currentGatewayGeneration: "gateway-5" },
+    ]) {
+      expect(isCurrentBundledWindowsNodeApprovalCallback({ ...current, ...stale })).toBe(false);
+    }
+  });
+
   it("requires every exact fail-closed contract property", () => {
     expect(
       validateBundledCwdAttestation({
@@ -215,47 +310,55 @@ describe("bundled Windows Node CWD attestation", () => {
           activeRunsRequireApprovalProof: true,
           approvalProofOneUse: true,
           approvalProofBindsPreparedPlan: true,
+          approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
+          approvalProofBindsExecutableContent: true,
           approvalProofBindsActivation: true,
+          durableApprovalStoreProtected: true,
           durableApprovalsPresent: true,
         },
       }),
     ).toEqual({ ready: true, blockers: [], durableApprovalsPresent: true });
   });
 
-   it.each([
-     "activeRunsRequireApprovalProof",
-     "approvalProofOneUse",
-     "approvalProofBindsPreparedPlan",
-     "approvalProofBindsActivation",
-   ])("fails closed when %s is not attested", (property) => {
-     const payload = {
-       contract: "microclaw.windows-cwd.v1",
-       approvedRootOnly: true,
-       canonicalFinalPath: true,
-       rejectsReparseComponents: true,
-       durableApprovalBindsCwd: true,
-       durableApprovalBindsDeclaredAccess: true,
-       launchTimeRevalidation: true,
-       omittedCwdUsesIsolatedScratch: true,
-       hostFallbackAbsent: true,
-       activationLeaseContract: "microclaw.windows-activation.v1",
-       generationBoundActivation: true,
-       policyBoundActivation: true,
-       launchTimeLeaseRevalidation: true,
-       approvalProofContract: "microclaw.windows-node-approval.v1",
-       activeRunsRequireApprovalProof: true,
-       approvalProofOneUse: true,
-       approvalProofBindsPreparedPlan: true,
-       approvalProofBindsActivation: true,
-       durableApprovalsPresent: false,
-     };
+  it.each([
+    "activeRunsRequireApprovalProof",
+    "approvalProofOneUse",
+    "approvalProofBindsPreparedPlan",
+    "approvalProofBindsExecutableContent",
+    "approvalProofBindsActivation",
+    "durableApprovalStoreProtected",
+  ])("fails closed when %s is not attested", (property) => {
+    const payload = {
+      contract: "microclaw.windows-cwd.v1",
+      approvedRootOnly: true,
+      canonicalFinalPath: true,
+      rejectsReparseComponents: true,
+      durableApprovalBindsCwd: true,
+      durableApprovalBindsDeclaredAccess: true,
+      launchTimeRevalidation: true,
+      omittedCwdUsesIsolatedScratch: true,
+      hostFallbackAbsent: true,
+      activationLeaseContract: "microclaw.windows-activation.v1",
+      generationBoundActivation: true,
+      policyBoundActivation: true,
+      launchTimeLeaseRevalidation: true,
+      approvalProofContract: "microclaw.windows-node-approval.v1",
+      activeRunsRequireApprovalProof: true,
+      approvalProofOneUse: true,
+      approvalProofBindsPreparedPlan: true,
+      approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
+      approvalProofBindsExecutableContent: true,
+      approvalProofBindsActivation: true,
+      durableApprovalStoreProtected: true,
+      durableApprovalsPresent: false,
+    };
 
-     expect(
-       validateBundledCwdAttestation({
-         payload: { ...payload, [property]: false },
-       }).ready,
-     ).toBe(false);
-   });
+    expect(
+      validateBundledCwdAttestation({
+        payload: { ...payload, [property]: false },
+      }).ready,
+    ).toBe(false);
+  });
 
   describe("Windows Node MXC diagnostic lifecycle", () => {
     it("keeps an unverified locked diagnostic Gateway alive but stops actual drift", () => {
@@ -386,6 +489,13 @@ describe("bundled Windows Node CWD attestation", () => {
 });
 
 describe("Windows Node MXC Gateway policy", () => {
+  it("gives an explicit Gateway-start policy precedence over activation state", () => {
+    expect(selectWindowsNodeMxcGatewayStartPolicy("locked", true)).toBe("locked");
+    expect(selectWindowsNodeMxcGatewayStartPolicy("active", false)).toBe("active");
+    expect(selectWindowsNodeMxcGatewayStartPolicy(null, true)).toBe("active");
+    expect(selectWindowsNodeMxcGatewayStartPolicy(null, false)).toBe("locked");
+  });
+
   it("exposes only exec and pins it to one stable node", () => {
     expect(buildWindowsNodeMxcToolPolicy("node-123")).toEqual({
       profile: "full",
@@ -761,6 +871,28 @@ describe("Windows Node MXC global folder policy", () => {
     expect(() => assertWindowsNodeMxcFolderPolicyMutable(false, false, true)).toThrow(
       "already in progress",
     );
+  });
+
+  it("normalizes a complete policy deterministically and rejects equal access conflicts", () => {
+    const validate = (candidate: string) => ({ ok: true, canonicalPath: candidate });
+    expect(
+      normalizeWindowsNodeMxcFolderPolicy(
+        {
+          rw: ["C:\\Data\\Write", "C:\\All"],
+          ro: ["C:\\Data", "C:\\All\\Read", "c:\\data"],
+        },
+        validate,
+      ),
+    ).toEqual({
+      ok: true,
+      dirs: {
+        rw: ["C:\\All", "C:\\Data\\Write"],
+        ro: ["c:\\data"],
+      },
+    });
+    expect(
+      normalizeWindowsNodeMxcFolderPolicy({ rw: ["C:\\Data"], ro: ["c:\\data"] }, validate),
+    ).toMatchObject({ ok: false, reason: "duplicate", path: "C:\\Data" });
   });
 });
 

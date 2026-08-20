@@ -5,6 +5,8 @@ namespace MicroClaw.WindowsNodeHost;
 
 internal static class Program
 {
+    private static ProcessTreeJob? processTreeJob;
+
     private static async Task<int> Main(string[] args)
     {
         if (args is ["--attestation"])
@@ -46,7 +48,9 @@ internal static class Program
 
         try
         {
+            processTreeJob = ProcessTreeJob.CreateForCurrentProcess();
             var bootstrapJson = await Console.In.ReadLineAsync();
+            var ownerLifetime = WaitForOwnerLifetimeEndAsync();
             var bootstrap = JsonSerializer.Deserialize<HostBootstrap>(
                 bootstrapJson ?? string.Empty,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
@@ -68,6 +72,11 @@ internal static class Program
                 bootstrap.PolicyPath,
                 bootstrap.PolicyFingerprint);
             SecureStateDirectory.Ensure(bootstrap.IdentityDirectory);
+            var approvalDirectory = Path.GetDirectoryName(bootstrap.ApprovalsPath)
+                ?? throw new HostPolicyException(
+                    "approval-path-invalid",
+                    "The durable approval store has no parent directory.");
+            SecureStateDirectory.Ensure(approvalDirectory);
             using var client = new WindowsNodeClient(
                 gatewayUrl: gatewayUri.ToString(),
                 token: bootstrap.GatewayToken,
@@ -100,14 +109,25 @@ internal static class Program
                     bootstrap.GatewayGeneration,
                     bootstrap.PolicyFingerprint,
                     bootstrap.NodeId)));
-            await client.ConnectAsync();
-            await Task.Delay(Timeout.InfiniteTimeSpan);
+            var connect = client.ConnectAsync();
+            if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)
+                return 0;
+            await connect;
+            await ownerLifetime;
             return 0;
         }
         catch (HostPolicyException ex)
         {
             Console.Error.WriteLine($"{ex.Code}: {ex.Message}");
             return 2;
+        }
+    }
+
+    private static async Task WaitForOwnerLifetimeEndAsync()
+    {
+        var buffer = new char[1];
+        while (await Console.In.ReadAsync(buffer) > 0)
+        {
         }
     }
 }

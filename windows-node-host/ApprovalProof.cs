@@ -8,7 +8,7 @@ namespace MicroClaw.WindowsNodeHost;
 internal static class ApprovalProofContract
 {
     public const string Version = "microclaw.windows-node-approval.v1";
-    public const string PlanVersion = "microclaw.windows-node-approval-plan.v1";
+    public const string PlanVersion = "microclaw.windows-node-approval-plan.v2";
     public const int MaximumLifetimeMs = 30_000;
     public const int MaximumClockSkewMs = 5_000;
 }
@@ -74,7 +74,7 @@ internal sealed class ApprovalProofVerifier
         _nowUnixMs = nowUnixMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
-    public ValidatedApprovalProof ValidateAndConsume(JsonElement args)
+    public ValidatedApprovalProof ValidateAndConsume(JsonElement args, DurableApproval currentIdentity)
     {
         if (!args.TryGetProperty("microclawApprovalProof", out var proofElement)
             || proofElement.ValueKind != JsonValueKind.Object)
@@ -134,7 +134,7 @@ internal sealed class ApprovalProofVerifier
                 "approval-proof-stale",
                 "The Gateway approval proof is expired or outside its allowed lifetime.");
 
-        var planSha256 = ComputePlanSha256(args);
+        var planSha256 = ComputePlanSha256(args, currentIdentity);
         if (!FixedTimeHexEquals(proof.PlanSha256, planSha256))
             throw new HostPolicyException(
                 "approval-proof-plan-mismatch",
@@ -173,7 +173,7 @@ internal sealed class ApprovalProofVerifier
             proof.ExpiresAtUnixMs);
     }
 
-    public static string ComputePlanSha256(JsonElement args)
+    public static string ComputePlanSha256(JsonElement args, DurableApproval currentIdentity)
     {
         if (!args.TryGetProperty("systemRunPlan", out var plan)
             || plan.ValueKind != JsonValueKind.Object)
@@ -198,6 +198,10 @@ internal sealed class ApprovalProofVerifier
         var commandPreview = ReadNullableString(plan, "commandPreview", required: false);
         var agentId = ReadNullableString(plan, "agentId", required: true);
         var sessionKey = ReadRequiredString(plan, "sessionKey");
+        var executablePath = ReadRequiredString(plan, "executablePath");
+        var executableSha256 = ReadRequiredString(plan, "executableSha256").ToLowerInvariant();
+        var cwdBinding = ReadRequiredString(plan, "cwdBinding");
+        var declaredAccess = ReadDeclaredAccess(plan);
         if (!string.Equals(ReadNullableString(args, "cwd", required: false), cwd, StringComparison.Ordinal)
             || !string.Equals(ReadNullableString(args, "agentId", required: false), agentId, StringComparison.Ordinal)
             || !string.Equals(ReadRequiredString(args, "sessionKey"), sessionKey, StringComparison.Ordinal)
@@ -205,6 +209,16 @@ internal sealed class ApprovalProofVerifier
             throw new HostPolicyException(
                 "approval-proof-plan-mismatch",
                 "The approved command context changed before node execution.");
+        if (!string.Equals(executablePath, currentIdentity.ExecutablePath, StringComparison.OrdinalIgnoreCase)
+            || !FixedTimeHexEquals(executableSha256, currentIdentity.ExecutableSha256)
+            || !string.Equals(cwdBinding, currentIdentity.CwdBinding, StringComparison.OrdinalIgnoreCase)
+            || declaredAccess.Count != currentIdentity.DeclaredAccess.Count
+            || !declaredAccess.Zip(currentIdentity.DeclaredAccess).All(pair =>
+                string.Equals(pair.First.Access, pair.Second.Access, StringComparison.Ordinal)
+                && string.Equals(pair.First.Path, pair.Second.Path, StringComparison.OrdinalIgnoreCase)))
+            throw new HostPolicyException(
+                "approval-proof-executable-mismatch",
+                "The approved executable, hash, CWD, or declared access changed before node execution.");
 
         var fields = new List<string>
         {
@@ -217,6 +231,15 @@ internal sealed class ApprovalProofVerifier
         fields.Add(EncodeNullableField("commandPreview", commandPreview));
         fields.Add(EncodeNullableField("agentId", agentId));
         fields.Add(EncodeField("sessionKey", sessionKey));
+        fields.Add(EncodeField("executablePath", executablePath));
+        fields.Add(EncodeField("executableSha256", executableSha256));
+        fields.Add(EncodeField("cwdBinding", cwdBinding));
+        fields.Add($"declaredAccess={declaredAccess.Count}");
+        foreach (var entry in declaredAccess)
+        {
+            fields.Add(EncodeField("access", entry.Access));
+            fields.Add(EncodeField("path", entry.Path));
+        }
         return Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', fields)))).ToLowerInvariant();
     }
@@ -294,6 +317,33 @@ internal sealed class ApprovalProofVerifier
                 "approval-proof-plan-invalid",
                 $"The approved plan has an invalid {property}.");
         return value.GetString();
+    }
+
+    private static IReadOnlyList<DurableApprovalAccess> ReadDeclaredAccess(JsonElement plan)
+    {
+        if (!plan.TryGetProperty("declaredAccess", out var value)
+            || value.ValueKind != JsonValueKind.Array)
+            throw new HostPolicyException(
+                "approval-proof-plan-invalid",
+                "The approved plan has invalid declared access.");
+        var entries = new List<DurableApprovalAccess>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+                throw new HostPolicyException(
+                    "approval-proof-plan-invalid",
+                    "The approved plan has invalid declared access.");
+            var access = ReadRequiredString(item, "access").ToLowerInvariant();
+            var declaredPath = ReadRequiredString(item, "path");
+            if (access is not ("ro" or "rw"))
+                throw new HostPolicyException(
+                    "approval-proof-plan-invalid",
+                    "The approved plan has invalid declared access.");
+            entries.Add(new DurableApprovalAccess(access, declaredPath));
+        }
+        return entries
+            .OrderBy(entry => entry.Path, StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static string EncodeField(string name, string value) =>

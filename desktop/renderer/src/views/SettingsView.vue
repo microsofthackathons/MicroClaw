@@ -404,6 +404,19 @@
               </span>
             </div>
             <div class="card-row">
+              <span class="row-label">{{ t("settings.windowsNodeMxcLifecycle") }}</span>
+              <span class="row-value">
+                {{
+                  t(
+                    `settings.windowsNodeMxcLifecyclePhase.${windowsNodeMxcStatus.lifecycleState.phase}`,
+                  )
+                }}
+                <template v-if="windowsNodeMxcStatus.lifecycleState.detail">
+                  · {{ windowsNodeMxcStatus.lifecycleState.detail }}
+                </template>
+              </span>
+            </div>
+            <div class="card-row">
               <span class="row-label">{{ t("settings.windowsNodeMxcGatewayPolicy") }}</span>
               <span class="row-value">{{ windowsNodeMxcStatus.gatewayPolicyState }}</span>
             </div>
@@ -486,7 +499,17 @@
                 v-if="windowsNodeMxcStatus.desiredEnabled"
                 class="mxc-alert mxc-alert-warning mxc-folder-policy-locked"
               >
-                {{ t("settings.windowsNodeMxcFoldersLocked") }}
+                {{ t("settings.windowsNodeMxcFoldersStaged") }}
+              </div>
+              <div
+                v-if="windowsNodeMxcStatus.folderPolicyRecovery?.lastError"
+                class="mxc-alert mxc-alert-error"
+              >
+                {{ t("settings.windowsNodeMxcFolderRecovery") }}:
+                {{ windowsNodeMxcStatus.folderPolicyRecovery.lastError }}
+                <el-button text size="small" @click="stagePreviousWindowsNodeMxcFolderPolicy">
+                  {{ t("settings.windowsNodeMxcStagePreviousFolders") }}
+                </el-button>
               </div>
               <div class="dir-section">
                 <div class="mxc-folder-policy-heading">
@@ -496,33 +519,37 @@
                     size="small"
                     type="primary"
                     plain
-                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    :disabled="windowsNodeMxcFolderApplying"
                     @click="addWindowsNodeMxcFolder('rw')"
                   >
                     {{ t("settings.sandboxAddDir") }}
                   </el-button>
                 </div>
-                <div v-for="dir in sandboxUserDirs.rw" :key="'mxc-rw-' + dir" class="dir-item">
+                <div
+                  v-for="dir in windowsNodeMxcFolderDraft.rw"
+                  :key="'mxc-rw-' + dir"
+                  class="dir-item"
+                >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
                   <span class="dir-badge dir-badge-rw">RW</span>
                   <el-button
                     data-testid="mxc-change-ro"
                     text
                     size="small"
-                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    :disabled="windowsNodeMxcFolderApplying"
                     @click="changeWindowsNodeMxcFolderAccess(dir, 'ro')"
                   >
                     {{ t("settings.windowsNodeMxcChangeToRo") }}
                   </el-button>
                   <button
                     class="tag-remove"
-                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    :disabled="windowsNodeMxcFolderApplying"
                     @click="removeWindowsNodeMxcFolder(dir, 'rw')"
                   >
                     &times;
                   </button>
                 </div>
-                <div v-if="sandboxUserDirs.rw.length === 0" class="dir-empty">
+                <div v-if="windowsNodeMxcFolderDraft.rw.length === 0" class="dir-empty">
                   {{ t("settings.sandboxNoDirs") }}
                 </div>
               </div>
@@ -534,35 +561,55 @@
                     size="small"
                     type="primary"
                     plain
-                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    :disabled="windowsNodeMxcFolderApplying"
                     @click="addWindowsNodeMxcFolder('ro')"
                   >
                     {{ t("settings.sandboxAddDir") }}
                   </el-button>
                 </div>
-                <div v-for="dir in sandboxUserDirs.ro" :key="'mxc-ro-' + dir" class="dir-item">
+                <div
+                  v-for="dir in windowsNodeMxcFolderDraft.ro"
+                  :key="'mxc-ro-' + dir"
+                  class="dir-item"
+                >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
                   <span class="dir-badge dir-badge-ro">RO</span>
                   <el-button
                     data-testid="mxc-change-rw"
                     text
                     size="small"
-                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    :disabled="windowsNodeMxcFolderApplying"
                     @click="changeWindowsNodeMxcFolderAccess(dir, 'rw')"
                   >
                     {{ t("settings.windowsNodeMxcChangeToRw") }}
                   </el-button>
                   <button
                     class="tag-remove"
-                    :disabled="windowsNodeMxcStatus.desiredEnabled"
+                    :disabled="windowsNodeMxcFolderApplying"
                     @click="removeWindowsNodeMxcFolder(dir, 'ro')"
                   >
                     &times;
                   </button>
                 </div>
-                <div v-if="sandboxUserDirs.ro.length === 0" class="dir-empty">
+                <div v-if="windowsNodeMxcFolderDraft.ro.length === 0" class="dir-empty">
                   {{ t("settings.sandboxNoDirs") }}
                 </div>
+              </div>
+              <div v-if="windowsNodeMxcFolderDraftDirty" class="mxc-folder-policy-actions">
+                <el-button
+                  type="primary"
+                  :loading="windowsNodeMxcFolderApplying"
+                  data-testid="mxc-apply-folder-policy"
+                  @click="applyWindowsNodeMxcFolderPolicy"
+                >
+                  {{ t("settings.windowsNodeMxcApplyFolders") }}
+                </el-button>
+                <el-button
+                  :disabled="windowsNodeMxcFolderApplying"
+                  @click="replaceWindowsNodeMxcFolderDraft(windowsNodeMxcFolderBaseline)"
+                >
+                  {{ t("common.cancel") }}
+                </el-button>
               </div>
             </div>
             <div class="card-row">
@@ -574,6 +621,74 @@
                     : t("settings.windowsNodeMxcNotRun")
                 }}
               </span>
+            </div>
+            <div
+              class="card-row no-border mxc-folder-policy"
+              style="flex-direction: column; align-items: stretch"
+            >
+              <div class="mxc-folder-policy-heading">
+                <span class="row-label">{{ t("settings.windowsNodeMxcDurableApprovals") }}</span>
+                <el-button
+                  v-if="windowsNodeMxcStatus.durableApprovals.records.length"
+                  size="small"
+                  type="danger"
+                  plain
+                  @click="revokeAllWindowsNodeMxcDurableApprovals"
+                >
+                  {{ t("settings.windowsNodeMxcRevokeAllApprovals") }}
+                </el-button>
+              </div>
+              <div class="mxc-folder-policy-hint">
+                {{ t("settings.windowsNodeMxcDurableApprovalsHint") }}
+              </div>
+              <div
+                v-for="approval in windowsNodeMxcStatus.durableApprovals.records"
+                :key="approval.id"
+                class="mxc-durable-approval"
+              >
+                <strong>{{ approval.commandText }}</strong>
+                <span>{{ approval.executablePath }}</span>
+                <span
+                  >{{ t("settings.windowsNodeMxcApprovalCwd") }}: {{ approval.cwdBinding }}</span
+                >
+                <span>
+                  {{ t("settings.windowsNodeMxcApprovalAccess") }}:
+                  {{
+                    approval.declaredAccess
+                      .map((entry) => `${entry.access.toUpperCase()} ${entry.path}`)
+                      .join(", ") || "none"
+                  }}
+                </span>
+                <span>
+                  {{ t("settings.windowsNodeMxcApprovalScope") }}:
+                  {{ approval.agentId ?? "none" }} / {{ approval.sessionKey }}
+                </span>
+                <span>
+                  {{ t("settings.windowsNodeMxcApprovalCreated") }}: {{ approval.createdAt }} ·
+                  {{ t("settings.windowsNodeMxcApprovalLastUsed") }}:
+                  {{ approval.lastUsedAt ?? t("settings.windowsNodeMxcApprovalNever") }}
+                </span>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  @click="revokeWindowsNodeMxcDurableApproval(approval.id)"
+                >
+                  {{ t("settings.windowsNodeMxcRevokeApproval") }}
+                </el-button>
+              </div>
+              <div
+                v-if="windowsNodeMxcStatus.durableApprovals.records.length === 0"
+                class="dir-empty"
+              >
+                {{ t("settings.windowsNodeMxcNoDurableApprovals") }}
+              </div>
+              <div
+                v-if="windowsNodeMxcStatus.durableApprovals.warning"
+                class="mxc-alert mxc-alert-warning"
+              >
+                {{ windowsNodeMxcStatus.durableApprovals.warning }}
+              </div>
             </div>
           </template>
           <div class="card-row no-border mxc-actions">
@@ -1222,6 +1337,8 @@ const sandboxApplying = ref(false);
 /** Snapshot of external apps at load time, used to detect changes */
 let externalAppsOriginal: string[] = [];
 const sandboxUserDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
+const windowsNodeMxcFolderDraft = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
+const windowsNodeMxcFolderBaseline = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 const sandboxSystemDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 const sandboxCapabilities = ref<string[]>([]);
 const capsRestarting = ref(false);
@@ -1232,9 +1349,42 @@ const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcRefreshing = ref(false);
 const windowsNodeMxcSmokeRunning = ref(false);
 const windowsNodeMxcActivating = ref(false);
+const windowsNodeMxcFolderApplying = ref(false);
+let removeWindowsNodeMxcLifecycleListener: (() => void) | null = null;
+
+const windowsNodeMxcFolderDraftDirty = computed(
+  () => policyIdentity(windowsNodeMxcFolderDraft) !== policyIdentity(windowsNodeMxcFolderBaseline),
+);
+
+function policyIdentity(policy: { rw: string[]; ro: string[] }) {
+  const normalize = (values: string[]) =>
+    values
+      .map((value) => value.toLowerCase())
+      .sort()
+      .join("\n");
+  return `${normalize(policy.rw)}\u0000${normalize(policy.ro)}`;
+}
+
+function replaceWindowsNodeMxcFolderDraft(policy: { rw: string[]; ro: string[] }) {
+  windowsNodeMxcFolderDraft.rw.splice(0, windowsNodeMxcFolderDraft.rw.length, ...policy.rw);
+  windowsNodeMxcFolderDraft.ro.splice(0, windowsNodeMxcFolderDraft.ro.length, ...policy.ro);
+}
+
+function replaceWindowsNodeMxcFolderBaseline(policy: { rw: string[]; ro: string[] }) {
+  windowsNodeMxcFolderBaseline.rw.splice(0, windowsNodeMxcFolderBaseline.rw.length, ...policy.rw);
+  windowsNodeMxcFolderBaseline.ro.splice(0, windowsNodeMxcFolderBaseline.ro.length, ...policy.ro);
+}
 
 function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
   windowsNodeMxcStatus.value = status;
+  const effectiveFolders = {
+    rw: status.folders.filter((entry) => entry.access === "rw").map((entry) => entry.path),
+    ro: status.folders.filter((entry) => entry.access === "ro").map((entry) => entry.path),
+  };
+  if (!windowsNodeMxcFolderDraftDirty.value || windowsNodeMxcFolderApplying.value) {
+    replaceWindowsNodeMxcFolderDraft(effectiveFolders);
+  }
+  replaceWindowsNodeMxcFolderBaseline(effectiveFolders);
 }
 
 async function loadWindowsNodeMxcStatus() {
@@ -1457,8 +1607,29 @@ function showWindowsNodeMxcFolderPolicyError(reason: string) {
 
 async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
   try {
-    await addSandboxDir(access, "windows-node-mxc");
-    await loadWindowsNodeMxcStatus();
+    if (!windowsNodeMxcStatus.value?.desiredEnabled) {
+      await addSandboxDir(access, "windows-node-mxc");
+      await loadWindowsNodeMxcStatus();
+      return;
+    }
+    const result = await window.openclaw.sandbox.stageUserDir({
+      access,
+      draft: {
+        rw: [...windowsNodeMxcFolderDraft.rw],
+        ro: [...windowsNodeMxcFolderDraft.ro],
+      },
+    });
+    if (result.canceled) return;
+    if (!result.ok) {
+      showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
+      return;
+    }
+    replaceWindowsNodeMxcFolderDraft(result.dirs);
+    if (result.removedChildren?.length) {
+      ElMessage.info(
+        t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
+      );
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   }
@@ -1466,19 +1637,20 @@ async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
 
 async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro") {
   try {
-    const result = await window.openclaw.sandbox.setUserDirAccess({ dir, access });
-    sandboxUserDirs.rw = result.dirs.rw;
-    sandboxUserDirs.ro = result.dirs.ro;
-    if (!result.ok) {
-      showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
+    if (!windowsNodeMxcStatus.value?.desiredEnabled) {
+      const result = await window.openclaw.sandbox.setUserDirAccess({ dir, access });
+      if (!result.ok) showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
+      await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
       return;
     }
-    if (result.removedChildren?.length) {
-      ElMessage.info(
-        t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
-      );
-    }
-    await loadWindowsNodeMxcStatus();
+    const next = {
+      rw: windowsNodeMxcFolderDraft.rw.filter((entry) => entry !== dir),
+      ro: windowsNodeMxcFolderDraft.ro.filter((entry) => entry !== dir),
+    };
+    next[access].push(dir);
+    replaceWindowsNodeMxcFolderDraft(
+      await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
+    );
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   }
@@ -1486,11 +1658,85 @@ async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro"
 
 async function removeWindowsNodeMxcFolder(dir: string, access: "rw" | "ro") {
   try {
-    await removeSandboxDir(dir, access);
+    if (!windowsNodeMxcStatus.value?.desiredEnabled) {
+      await removeSandboxDir(dir, access);
+      await loadWindowsNodeMxcStatus();
+      return;
+    }
+    const next = {
+      rw: [...windowsNodeMxcFolderDraft.rw],
+      ro: [...windowsNodeMxcFolderDraft.ro],
+    };
+    next[access] = next[access].filter((entry) => entry !== dir);
+    replaceWindowsNodeMxcFolderDraft(
+      await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
+    );
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function applyWindowsNodeMxcFolderPolicy() {
+  try {
+    await ElMessageBox.confirm(
+      t("settings.windowsNodeMxcApplyFoldersWarning"),
+      t("settings.windowsNodeMxcApplyFolders"),
+      {
+        type: "warning",
+        confirmButtonText: t("settings.windowsNodeMxcApplyFolders"),
+        cancelButtonText: t("common.cancel"),
+      },
+    );
+  } catch {
+    return;
+  }
+  windowsNodeMxcFolderApplying.value = true;
+  try {
+    const status = await window.openclaw.windowsNodeMxc.applyFolderPolicy({
+      rw: [...windowsNodeMxcFolderDraft.rw],
+      ro: [...windowsNodeMxcFolderDraft.ro],
+    });
+    updateWindowsNodeMxcStatus(status);
+    await loadSandboxStatus();
+    ElMessage.success(t("settings.windowsNodeMxcApplyFoldersComplete"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await loadWindowsNodeMxcStatus();
+  } finally {
+    windowsNodeMxcFolderApplying.value = false;
+  }
+}
+
+function stagePreviousWindowsNodeMxcFolderPolicy() {
+  const previous = windowsNodeMxcStatus.value?.folderPolicyRecovery?.previous;
+  if (previous) replaceWindowsNodeMxcFolderDraft(previous);
+}
+
+async function revokeWindowsNodeMxcDurableApproval(id: string) {
+  try {
+    await window.openclaw.windowsNodeMxc.revokeDurableApproval(id);
     await loadWindowsNodeMxcStatus();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   }
+}
+
+async function revokeAllWindowsNodeMxcDurableApprovals() {
+  try {
+    await ElMessageBox.confirm(
+      t("settings.windowsNodeMxcRevokeAllApprovalsWarning"),
+      t("settings.windowsNodeMxcRevokeAllApprovals"),
+      {
+        type: "warning",
+        confirmButtonText: t("settings.windowsNodeMxcRevokeAllApprovals"),
+        cancelButtonText: t("common.cancel"),
+      },
+    );
+  } catch {
+    return;
+  }
+  await window.openclaw.windowsNodeMxc.revokeAllDurableApprovals();
+  await loadWindowsNodeMxcStatus();
 }
 
 async function removeSandboxDir(dir: string, access: "rw" | "ro") {
@@ -1973,6 +2219,13 @@ watch(showProviderSetup, (visible, wasVisible) => {
 
 onMounted(async () => {
   window.addEventListener("focus", handleSettingsWindowFocus);
+  removeWindowsNodeMxcLifecycleListener = window.openclaw.windowsNodeMxc.onLifecycleState(
+    (state) => {
+      if (windowsNodeMxcStatus.value) {
+        windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
+      }
+    },
+  );
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
@@ -2005,6 +2258,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
+  removeWindowsNodeMxcLifecycleListener?.();
   copilotModelsGeneration += 1;
 });
 
@@ -2972,6 +3226,29 @@ async function clearChatHistory() {
 .mxc-folder-policy .tag-remove:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.mxc-folder-policy-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mxc-durable-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mxc-durable-approval .el-button {
+  align-self: flex-start;
+  margin-top: 4px;
 }
 .mxc-actions {
   justify-content: flex-end;

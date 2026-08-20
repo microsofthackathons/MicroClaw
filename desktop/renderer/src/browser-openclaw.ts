@@ -74,6 +74,13 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       getStatus: async () => ({
         desiredEnabled: false,
         effectiveEnabled: false,
+        lifecycleState: {
+          phase: "idle" as const,
+          detail: null,
+          updatedAt: new Date(0).toISOString(),
+        },
+        folderPolicyRecovery: null,
+        durableApprovals: { records: [], invalidRecords: 0, warning: null },
         selectedNodeId: "",
         settingsPath: "",
         companionPath: "",
@@ -120,10 +127,18 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       activate: async () => {
         throw new Error("Unavailable in browser development");
       },
+      validateFolderPolicy: async (draft) => draft,
+      applyFolderPolicy: async () => {
+        throw new Error("Unavailable in browser development");
+      },
+      listDurableApprovals: async () => [],
+      revokeDurableApproval: async () => [],
+      revokeAllDurableApprovals: async () => [],
       respondApproval: async () => {
         throw new Error("Unavailable in browser development");
       },
       onApprovalRequest: noopSub,
+      onLifecycleState: noopSub,
     },
     sandbox: {
       getStatus: async () => ({
@@ -145,6 +160,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       provision: async () => true,
       getUserDirs: async () => ({ rw: [], ro: [] }),
       addUserDir: async () => ({ ok: false, reason: "browser-dev", dirs: { rw: [], ro: [] } }),
+      stageUserDir: async ({ draft }) => ({
+        ok: false,
+        reason: "browser-dev",
+        dirs: draft,
+      }),
       removeUserDir: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
       setUserDirAccess: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
       onPermissionRequest: noopSub,

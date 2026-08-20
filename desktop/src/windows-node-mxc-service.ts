@@ -41,6 +41,24 @@ export interface WindowsNodeMxcGateway {
   request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
 }
 
+export function isCurrentBundledWindowsNodeApprovalCallback(state: {
+  expectedHostGeneration: number;
+  currentHostGeneration: number;
+  gatewayConnected: boolean;
+  gatewayMatches: boolean;
+  gatewayProcessMatches: boolean;
+  expectedGatewayGeneration: string;
+  currentGatewayGeneration: string;
+}): boolean {
+  return (
+    state.expectedHostGeneration === state.currentHostGeneration &&
+    state.gatewayConnected &&
+    state.gatewayMatches &&
+    state.gatewayProcessMatches &&
+    state.expectedGatewayGeneration === state.currentGatewayGeneration
+  );
+}
+
 export interface StoredWindowsNodeMxcSmoke {
   gatewayGeneration: string;
   nodeId: string;
@@ -494,7 +512,10 @@ export function validateBundledCwdAttestation(value: unknown): {
     activeRunsRequireApprovalProof: true,
     approvalProofOneUse: true,
     approvalProofBindsPreparedPlan: true,
+    approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
+    approvalProofBindsExecutableContent: true,
     approvalProofBindsActivation: true,
+    durableApprovalStoreProtected: true,
   };
   const blockers = Object.entries(expected)
     .filter(([key, expectedValue]) => record?.[key] !== expectedValue)

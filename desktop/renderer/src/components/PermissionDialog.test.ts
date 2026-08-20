@@ -20,7 +20,7 @@ describe("PermissionDialog", () => {
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
       "Deny",
       "Allow once",
-      "Always allow",
+      "Allow always",
     ]);
     expect(wrapper.find(".perm-body").text()).toBe(
       "AI is trying to launch soffice. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
@@ -81,7 +81,7 @@ describe("PermissionDialog", () => {
     expect(wrapper.find(".perm-mxc-access script").exists()).toBe(false);
     expect(wrapper.find(".perm-mxc-value").text()).toBe("isolated-scratch:v1");
     expect(wrapper.findAll(".perm-body")[1].text()).toBe(
-      "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Always allow” remembers this exact command, canonical working directory, and declaration identity.",
+      "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Allow always” remembers this exact command, canonical working directory, and declaration identity.",
     );
     expect(wrapper.text()).not.toContain("Requested folder access");
   });
@@ -105,7 +105,7 @@ describe("PermissionDialog", () => {
     expect(wrapper.findAll(".perm-body")[1].text()).toBe(
       "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
     );
-    expect(wrapper.text()).not.toContain("Always allow");
+    expect(wrapper.text()).not.toContain("Allow always");
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
       "Deny",
       "Allow once",

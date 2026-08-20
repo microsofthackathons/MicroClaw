@@ -72,6 +72,17 @@ internal sealed class BundledSystemCapability(
         var cwd = policy.ResolveCwd(run.Cwd);
         var commandText = WindowsCommandLine.Join(run.Argv);
         var commandPreview = BuildApprovalCommandPreview(run, commandText);
+        var executable = ResolveExecutable(run.Argv[0])
+            ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
+        var exactArgs = run.Argv.Skip(1).ToArray();
+        var declaredApprovalAccess = run.DeclaredAccess
+            .Select(entry => new DurableApprovalAccess(entry.Access, entry.Path))
+            .ToArray();
+        using var executableLease = ExecutableApprovalLease.Acquire(executable);
+        var executableIdentity = executableLease.Capture(
+            exactArgs,
+            cwd.ApprovalBinding,
+            declaredApprovalAccess);
         return new
         {
             cmdText = commandText,
@@ -83,6 +94,10 @@ internal sealed class BundledSystemCapability(
                 commandPreview,
                 agentId = run.AgentId,
                 sessionKey = run.SessionKey,
+                executablePath = executableIdentity.ExecutablePath,
+                executableSha256 = executableIdentity.ExecutableSha256,
+                cwdBinding = cwd.ApprovalBinding,
+                declaredAccess = run.DeclaredAccess,
             },
             cwdBinding = cwd.ApprovalBinding,
             cwdAccess = cwd.Access.ToString(),
@@ -130,14 +145,6 @@ internal sealed class BundledSystemCapability(
         var cwd = policy.ResolveCwd(request.Cwd);
         var validatedActivation = activationLease.Validate(request.Argv);
         var activeGatewayApproval = validatedActivation.Mode is ActivationLeaseMode.Active;
-        if (activeGatewayApproval)
-        {
-            if (approvalProof is null)
-                throw new HostPolicyException(
-                    "approval-proof-unavailable",
-                    "The active Gateway approval proof verifier is unavailable.");
-            approvalProof.ValidateAndConsume(args);
-        }
         var executable = ResolveExecutable(request.Argv[0])
             ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
         var exactArgs = request.Argv.Skip(1).ToArray();
@@ -150,6 +157,14 @@ internal sealed class BundledSystemCapability(
             exactArgs,
             cwd.ApprovalBinding,
             declaredApprovalAccess);
+        if (activeGatewayApproval)
+        {
+            if (approvalProof is null)
+                throw new HostPolicyException(
+                    "approval-proof-unavailable",
+                    "The active Gateway approval proof verifier is unavailable.");
+            approvalProof.ValidateAndConsume(args, approvedIdentity);
+        }
 
         var durable = !activeGatewayApproval && DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, approvedIdentity));

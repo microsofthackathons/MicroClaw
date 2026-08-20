@@ -345,6 +345,48 @@ interface OpenClawAPI {
     getStatus(): Promise<{
       desiredEnabled: boolean;
       effectiveEnabled: boolean;
+      lifecycleState: {
+        phase:
+          | "idle"
+          | "locking"
+          | "validating"
+          | "persisting"
+          | "starting-locked"
+          | "smoking-locked"
+          | "starting-active"
+          | "smoking-active"
+          | "verifying-active"
+          | "active"
+          | "locked";
+        detail: string | null;
+        updatedAt: string;
+      };
+      folderPolicyRecovery: {
+        previous: { rw: string[]; ro: string[] };
+        draft: { rw: string[]; ro: string[] };
+        updatedAt: string;
+        lastError: string | null;
+      } | null;
+      durableApprovals: {
+        records: Array<{
+          schemaVersion: 1;
+          id: string;
+          executablePath: string;
+          executableSha256: string;
+          argv: string[];
+          commandText: string;
+          cwdBinding: string;
+          declaredAccess: Array<{ access: "ro" | "rw"; path: string }>;
+          agentId: string | null;
+          sessionKey: string;
+          policyFingerprint: string;
+          approvalPlanContract: "microclaw.windows-node-approval-plan.v2";
+          createdAt: string;
+          lastUsedAt: string | null;
+        }>;
+        invalidRecords: number;
+        warning: string | null;
+      };
       selectedNodeId: string;
       settingsPath: string;
       companionPath: string;
@@ -422,6 +464,23 @@ interface OpenClawAPI {
       deniedOutsideRoot: { outcome: string; reason: string };
     }>;
     activate(): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
+    validateFolderPolicy(draft: {
+      rw: string[];
+      ro: string[];
+    }): Promise<{ rw: string[]; ro: string[] }>;
+    applyFolderPolicy(draft: {
+      rw: string[];
+      ro: string[];
+    }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
+    listDurableApprovals(): Promise<
+      Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
+    >;
+    revokeDurableApproval(
+      id: string,
+    ): Promise<
+      Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
+    >;
+    revokeAllDurableApprovals(): Promise<[]>;
     respondApproval(params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
@@ -442,6 +501,13 @@ interface OpenClawAPI {
             path: string;
           }>;
         } | null,
+      ) => void,
+    ): () => void;
+    onLifecycleState(
+      callback: (
+        state: Awaited<
+          ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>
+        >["lifecycleState"],
       ) => void,
     ): () => void;
   };
@@ -468,6 +534,18 @@ interface OpenClawAPI {
     getUserDirs(): Promise<{ rw: string[]; ro: string[] }>;
     addUserDir(params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }): Promise<{
       ok: boolean;
+      reason?: string;
+      parentDir?: string;
+      parentAccess?: string;
+      removedChildren?: string[];
+      dirs: { rw: string[]; ro: string[] };
+    }>;
+    stageUserDir(params: {
+      access: "rw" | "ro";
+      draft: { rw: string[]; ro: string[] };
+    }): Promise<{
+      ok: boolean;
+      canceled?: boolean;
       reason?: string;
       parentDir?: string;
       parentAccess?: string;

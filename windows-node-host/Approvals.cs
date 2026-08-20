@@ -53,7 +53,7 @@ public static class DurableApprovalIdentity
             arguments.ToArray(),
             cwdBinding,
             declaredAccess
-                .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(entry => entry.Path, StringComparer.Ordinal)
                 .Select(entry => new DurableApprovalAccess(entry.Access.ToLowerInvariant(), entry.Path))
                 .ToArray(),
             executableSha256);

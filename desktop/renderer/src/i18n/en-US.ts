@@ -307,6 +307,27 @@ export default {
     "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
   "settings.windowsNodeMxcFoldersLocked":
     "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
+  "settings.windowsNodeMxcFoldersStaged":
+    "Changes are staged only. Applying them pauses protected chat, revokes current authorization, restarts and re-attests both generations, and requires attended contained smokes.",
+  "settings.windowsNodeMxcApplyFolders": "Apply changes and reactivate",
+  "settings.windowsNodeMxcApplyFoldersWarning":
+    "Agent execution and chat will pause. Current command approvals may be invalidated. MicroClaw will stay locked if any policy, restart, attestation, smoke, or activation step is canceled or fails.",
+  "settings.windowsNodeMxcApplyFoldersComplete":
+    "The folder policy was applied and the verified MXC route was reactivated.",
+  "settings.windowsNodeMxcFolderRecovery": "The last apply remained safely locked",
+  "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
+  "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
+  "settings.windowsNodeMxcLifecyclePhase.idle": "Idle",
+  "settings.windowsNodeMxcLifecyclePhase.locking": "Locking execution",
+  "settings.windowsNodeMxcLifecyclePhase.validating": "Validating policy",
+  "settings.windowsNodeMxcLifecyclePhase.persisting": "Applying policy",
+  "settings.windowsNodeMxcLifecyclePhase.starting-locked": "Starting locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-locked": "Testing locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.starting-active": "Starting active generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-active": "Testing active generation",
+  "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
+  "settings.windowsNodeMxcLifecyclePhase.active": "Active",
+  "settings.windowsNodeMxcLifecyclePhase.locked": "Locked",
   "settings.windowsNodeMxcChangeToRo": "Change to read-only",
   "settings.windowsNodeMxcChangeToRw": "Change to read/write",
   "settings.windowsNodeMxcFolderDuplicate": "This folder is already configured with that access.",
@@ -321,6 +342,20 @@ export default {
     "Windows could not apply and verify the folder access policy.",
   "settings.windowsNodeMxcFolderNotConfigured": "This folder is no longer configured.",
   "settings.windowsNodeMxcFolderMutationFailed": "Could not update the approved folder policy.",
+  "settings.windowsNodeMxcDurableApprovals": "Remembered exact commands",
+  "settings.windowsNodeMxcDurableApprovalsHint":
+    "Allow always remembers only the exact executable content, arguments, CWD, declared folder use, policy, agent, and session. It never changes global folders.",
+  "settings.windowsNodeMxcNoDurableApprovals": "No exact commands are remembered.",
+  "settings.windowsNodeMxcRevokeApproval": "Revoke",
+  "settings.windowsNodeMxcRevokeAllApprovals": "Revoke all",
+  "settings.windowsNodeMxcRevokeAllApprovalsWarning":
+    "Revoke every remembered exact MXC command? Future runs will require a new visible approval.",
+  "settings.windowsNodeMxcApprovalCwd": "CWD",
+  "settings.windowsNodeMxcApprovalAccess": "Declared folder use",
+  "settings.windowsNodeMxcApprovalScope": "Agent / session",
+  "settings.windowsNodeMxcApprovalCreated": "Created",
+  "settings.windowsNodeMxcApprovalLastUsed": "Last used",
+  "settings.windowsNodeMxcApprovalNever": "never",
   "settings.windowsNodeMxcSmoke": "Contained child-process smoke",
   "settings.windowsNodeMxcNotRun": "Not run",
   "settings.windowsNodeMxcRefresh": "Refresh readiness",
@@ -640,11 +675,11 @@ export default {
   "perm.mxcAccessRw": "Read and write",
   "perm.mxcCwdLabel": "Canonical working directory",
   "perm.mxcScope":
-    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Always allow” remembers this exact command, canonical working directory, and declaration identity.",
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Allow always” remembers this exact command, canonical working directory, and declaration identity.",
   "perm.mxcScopeOnce":
     "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access.",
   "perm.mxcScopeNoAccess":
-    "Approval authorizes this command itself inside MXC with the canonical working directory shown. “Always allow” remembers this exact command and canonical working directory.",
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown. “Allow always” remembers this exact command and canonical working directory.",
   "perm.mxcScopeNoAccessOnce":
     "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
@@ -654,7 +689,7 @@ export default {
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
   "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
   "perm.commandLabel": "Command",
-  "perm.allowAlways": "Always allow",
+  "perm.allowAlways": "Allow always",
   "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
   "perm.aclTimeout":

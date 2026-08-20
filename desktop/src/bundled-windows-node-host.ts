@@ -9,8 +9,7 @@ import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
-export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT =
-  "microclaw.windows-node-approval.v1";
+export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
@@ -134,7 +133,7 @@ export class BundledWindowsNodeHost {
 
   async start(options: StartOptions): Promise<void> {
     if (this.process && this.process.exitCode === null) return;
-    this.stop();
+    this.stop(true);
     this.startOptions = options;
     this.lastError = null;
     assertLoopbackGateway(options.gatewayUrl);
@@ -142,7 +141,7 @@ export class BundledWindowsNodeHost {
 
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     const identityDirectory = path.join(stateRoot, "identity");
-    const approvalsPath = path.join(stateRoot, "approvals-v2.json");
+    const approvalsPath = path.join(stateRoot, "diagnostic-approvals.json");
     const policyPath = path.join(stateRoot, "policy.json");
     const activationLeasePath = path.join(stateRoot, "activation-lease.json");
     const scratchRoot = path.join(stateRoot, "scratch");
@@ -222,7 +221,7 @@ export class BundledWindowsNodeHost {
       this.process = null;
       this.stop();
     });
-    child.stdin.end(
+    child.stdin.write(
       `${JSON.stringify({
         gatewayUrl: options.gatewayUrl,
         gatewayToken: options.gatewayToken,
@@ -242,10 +241,7 @@ export class BundledWindowsNodeHost {
     );
   }
 
-  private buildPolicyJson(
-    folders: BundledWindowsNodeFolder[],
-    openClawStateRoot: string,
-  ): string {
+  private buildPolicyJson(folders: BundledWindowsNodeFolder[], openClawStateRoot: string): string {
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     return JSON.stringify(
       {
@@ -344,8 +340,8 @@ export class BundledWindowsNodeHost {
     if (this.activationLeasePath) {
       const revocationError = revokeActivationLeaseFile(this.activationLeasePath, () => {
         const child = this.process;
-        if (child?.pid && child.exitCode === null && !child.kill("SIGKILL")) {
-          throw new Error(`Could not terminate bundled Windows node process ${child.pid}`);
+        if (child?.pid && child.exitCode === null) {
+          terminateBundledWindowsNodeProcessTree(child.pid);
         }
       });
       if (revocationError) {
@@ -436,7 +432,8 @@ export class BundledWindowsNodeHost {
     this.startOptions?.onApproval(null);
   }
 
-  stop(): void {
+  stop(requireTreeTermination = false): void {
+    const child = this.process;
     this.revokeActivationLease();
     if (this.pendingApproval) {
       clearTimeout(this.pendingApproval.timer);
@@ -446,13 +443,22 @@ export class BundledWindowsNodeHost {
     }
     this.approvalServer?.close();
     this.approvalServer = null;
-    if (this.process?.pid && this.process.exitCode === null) this.process.kill();
     this.process = null;
     this.startOptions = null;
     this.activationLeaseSecret = null;
     this.activationLeasePath = null;
     this.gatewayGeneration = null;
     this.policyFingerprint = null;
+    if (child?.pid && child.exitCode === null) {
+      try {
+        terminateBundledWindowsNodeProcessTree(child.pid);
+      } catch (error) {
+        if (child.exitCode === null) this.process = child;
+        this.lastError = `Could not terminate bundled Windows node process tree ${child.pid}`;
+        if (requireTreeTermination) throw error;
+        console.error(`[windows-node] ${this.lastError}:`, error);
+      }
+    }
   }
 
   status(): BundledWindowsNodeHostStatus {
@@ -484,6 +490,108 @@ export class BundledWindowsNodeHost {
       return null;
     }
   }
+}
+
+export function terminateBundledWindowsNodeProcessTree(
+  pid: number,
+  run: typeof execFileSync = execFileSync,
+  isAlive: (candidate: number) => boolean = isProcessAlive,
+  listTree: (rootPids: readonly number[]) => number[] = listWindowsProcessTree,
+): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid bundled node process ID");
+  const trackedPids = new Set(listTree([pid]));
+  trackedPids.add(pid);
+  let terminationError: unknown = null;
+  try {
+    if (process.platform === "win32") {
+      run("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        timeout: 10_000,
+        stdio: "ignore",
+      });
+    } else {
+      process.kill(pid, "SIGKILL");
+    }
+  } catch (error) {
+    terminationError = error;
+  }
+  for (let attempt = 0; attempt < 4; attempt++) {
+    for (const latePid of listTree([...trackedPids])) trackedPids.add(latePid);
+    const survivors = [...trackedPids].filter((trackedPid) => isAlive(trackedPid));
+    if (survivors.length === 0) return;
+    for (const trackedPid of survivors) {
+      try {
+        if (process.platform === "win32") {
+          run("taskkill", ["/pid", String(trackedPid), "/T", "/F"], {
+            windowsHide: true,
+            timeout: 10_000,
+            stdio: "ignore",
+          });
+        } else {
+          process.kill(trackedPid, "SIGKILL");
+        }
+      } catch (error) {
+        terminationError ??= error;
+      }
+    }
+  }
+  for (const latePid of listTree([...trackedPids])) trackedPids.add(latePid);
+  const survivors = [...trackedPids].filter((trackedPid) => isAlive(trackedPid));
+  if (survivors.length > 0) {
+    throw new Error(
+      `Bundled Windows node process tree ${pid} still has live processes: ${survivors.join(", ")}`,
+      { cause: terminationError },
+    );
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function listWindowsProcessTree(rootPids: readonly number[]): number[] {
+  if (process.platform !== "win32") return [...rootPids];
+  const output = execFileSync(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+    ],
+    { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+  ).trim();
+  if (!output) throw new Error("Windows process inventory was empty");
+  const parsed = JSON.parse(output) as
+    | { ProcessId?: unknown; ParentProcessId?: unknown }
+    | Array<{ ProcessId?: unknown; ParentProcessId?: unknown }>;
+  const records = Array.isArray(parsed) ? parsed : [parsed];
+  const children = new Map<number, number[]>();
+  for (const record of records) {
+    const processId = Number(record.ProcessId);
+    const parentProcessId = Number(record.ParentProcessId);
+    if (!Number.isSafeInteger(processId) || !Number.isSafeInteger(parentProcessId)) continue;
+    const siblings = children.get(parentProcessId) ?? [];
+    siblings.push(processId);
+    children.set(parentProcessId, siblings);
+  }
+  const result: number[] = [];
+  const pending = [...rootPids];
+  const visited = new Set<number>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    result.push(current);
+    pending.push(...(children.get(current) ?? []));
+  }
+  return result;
 }
 
 export function findBundledDevicePairRequest(payload: unknown, nodeId: string): string | null {

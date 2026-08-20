@@ -29,8 +29,11 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("approvalProofContract")] string ApprovalProofContract,
     [property: JsonPropertyName("activeRunsRequireApprovalProof")] bool ActiveRunsRequireApprovalProof,
     [property: JsonPropertyName("approvalProofBindsPreparedPlan")] bool ApprovalProofBindsPreparedPlan,
+    [property: JsonPropertyName("approvalProofPlanContract")] string ApprovalProofPlanContract,
+    [property: JsonPropertyName("approvalProofBindsExecutableContent")] bool ApprovalProofBindsExecutableContent,
     [property: JsonPropertyName("approvalProofBindsActivation")] bool ApprovalProofBindsActivation,
     [property: JsonPropertyName("approvalProofOneUse")] bool ApprovalProofOneUse,
+    [property: JsonPropertyName("durableApprovalStoreProtected")] bool DurableApprovalStoreProtected,
     [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent)
 {
     public static readonly CwdPolicyAttestation Current = new(
@@ -50,8 +53,11 @@ public sealed record CwdPolicyAttestation(
         ApprovalProofContract: global::MicroClaw.WindowsNodeHost.ApprovalProofContract.Version,
         ActiveRunsRequireApprovalProof: true,
         ApprovalProofBindsPreparedPlan: true,
+        ApprovalProofPlanContract: global::MicroClaw.WindowsNodeHost.ApprovalProofContract.PlanVersion,
+        ApprovalProofBindsExecutableContent: true,
         ApprovalProofBindsActivation: true,
         ApprovalProofOneUse: true,
+        DurableApprovalStoreProtected: true,
         DurableApprovalsPresent: false);
 }
 

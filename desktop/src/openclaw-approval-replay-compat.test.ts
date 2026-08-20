@@ -5,15 +5,20 @@ import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
+  PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
   PINNED_CALL_SOURCE,
   PINNED_FUNCTION_SOURCE,
   PINNED_NODE_GATEWAY_ALLOW_ALWAYS_SOURCE,
   PINNED_NODE_GATEWAY_ALLOW_ONCE_SOURCE,
   PINNED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE,
   PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
+  PINNED_SYSTEM_RUN_PLAN_SOURCE,
   createWindowsNodeMxcApprovalProofMinter,
+  computeWindowsNodeMxcApprovalPlanSha256,
   patchPinnedOpenClawGateway,
+  patchPinnedOpenClawExecApproval,
   patchPinnedOpenClawNodeGateway,
+  patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
 } = replayCompat;
 
@@ -52,16 +57,69 @@ describe("pinned OpenClaw node approval proof backport", () => {
   it("injects a proof only into approved replay branches", () => {
     const patched = patchPinnedOpenClawNodeGateway(source);
 
-    expect(patched.match(/microclawApprovalProof =/g)).toHaveLength(2);
+    expect(patched.match(/microclawApprovalProof =/g)).toHaveLength(1);
     expect(patched).toContain("manager.consumeAllowOnce(runId)");
     expect(patched).toContain(
-      "approved && requestedDecision === \"allow-once\" && clientHasApprovals(opts.client)) {\n\t\treturn systemRunApprovalRequired(runId);",
+      'if (snapshot.decision === "allow-always") {\n\t\treturn systemRunApprovalRequired(runId);',
+    );
+    expect(patched).toContain(
+      'approved && requestedDecision === "allow-once" && clientHasApprovals(opts.client)) {\n\t\treturn systemRunApprovalRequired(runId);',
     );
     expect(patched).toContain("plan: runtimeContext.plan");
     expect(patched).toContain("nodeId: targetNodeId");
     expect(patched.indexOf("consumeAllowOnce(runId)")).toBeLessThan(
       patched.indexOf("microclawApprovalProof ="),
     );
+  });
+
+  describe("pinned OpenClaw prepared-plan identity backport", () => {
+    it("preserves the exact MicroClaw executable, CWD, and declared-access identity", () => {
+      const patched = patchPinnedOpenClawSystemRun(PINNED_SYSTEM_RUN_PLAN_SOURCE);
+
+      expect(patched).toContain("normalizeMicroclawSystemRunDeclaredAccess");
+      expect(patched).toContain("executablePath");
+      expect(patched).toContain("executableSha256: executableSha256.toLowerCase()");
+      expect(patched).toContain("cwdBinding");
+      expect(patched).toContain("declaredAccess");
+      expect(patched).toContain("/^[a-f0-9]{64}$/i");
+      expect(patched).not.toBe(PINNED_SYSTEM_RUN_PLAN_SOURCE);
+    });
+
+    describe("pinned OpenClaw approval schema projection", () => {
+      it("validates the standard plan projection while retaining the original bound plan", () => {
+        const patched = patchPinnedOpenClawExecApproval(PINNED_EXEC_APPROVAL_VALIDATION_SOURCE);
+
+        expect(patched).toContain("const validationParams = rawPlan");
+        expect(patched).toContain('name !== "executablePath"');
+        expect(patched).toContain('name !== "executableSha256"');
+        expect(patched).toContain('name !== "cwdBinding"');
+        expect(patched).toContain('name !== "declaredAccess"');
+        expect(patched).toContain("const p = params");
+        expect(patched).toContain("validateExecApprovalRequestParams(validationParams)");
+      });
+
+      it("fails closed when the pinned approval handler drifts or appears twice", () => {
+        expect(() => patchPinnedOpenClawExecApproval("unrecognized source")).toThrow(
+          /did not match exactly once/,
+        );
+        expect(() =>
+          patchPinnedOpenClawExecApproval(
+            `${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}\n${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}`,
+          ),
+        ).toThrow(/did not match exactly once/);
+      });
+    });
+
+    it("fails closed when the pinned plan normalizer drifts or appears twice", () => {
+      expect(() => patchPinnedOpenClawSystemRun("unrecognized source")).toThrow(
+        /did not match exactly once/,
+      );
+      expect(() =>
+        patchPinnedOpenClawSystemRun(
+          `${PINNED_SYSTEM_RUN_PLAN_SOURCE}\n${PINNED_SYSTEM_RUN_PLAN_SOURCE}`,
+        ),
+      ).toThrow(/did not match exactly once/);
+    });
   });
 
   it.each([
@@ -90,10 +148,13 @@ describe("Windows Node MXC approval proof minter", () => {
     argv: ["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", "echo café"],
     cwd: "C:\\Users\\Test\\Work",
     commandText: "echo café",
-    commandPreview:
-      "[declare-access]rw:C:\\Users\\Test\\Work[/declare-access] echo café",
+    commandPreview: "[declare-access]rw:C:\\Users\\Test\\Work[/declare-access] echo café",
     agentId: "main",
     sessionKey: "agent:main:main",
+    executablePath: "C:\\Windows\\System32\\cmd.exe",
+    executableSha256: "c".repeat(64),
+    cwdBinding: "C:\\Users\\Test\\Work",
+    declaredAccess: [{ access: "rw", path: "C:\\Users\\Test\\Work" }],
   };
 
   it("matches the fixed cross-language proof vector", () => {
@@ -123,11 +184,32 @@ describe("Windows Node MXC approval proof minter", () => {
       gatewayGeneration: "generation-test-001",
       policyFingerprint: "a".repeat(64),
       nodeId: "b".repeat(64),
-      planSha256: "4782770b7a3fa8db392ebaf6d0de8552586af5a251eebce502c6c36ddee9ad53",
+      planSha256: "121d69569e93b8e70445e4d8815cf9d72fd68d5065fa11106c4f204f4c78b661",
       issuedAtUnixMs: 1_735_689_600_000,
       expiresAtUnixMs: 1_735_689_600_000 + APPROVAL_PROOF_TTL_MS,
-      signature: "1011191f87cbd0ecbe947c3f8e965574c6359afa4c2c7c3d220e3127f521e560",
+      signature: "1167c6b0eeea3c385e252110d22bb87fa8e54f881a0f954d9f684289c1e48caa",
     });
+
+  });
+
+  it("uses culture-invariant ordinal declaration ordering", () => {
+    expect(
+      computeWindowsNodeMxcApprovalPlanSha256({
+        argv: ["cmd.exe"],
+        cwd: "C:\\Work",
+        commandText: "cmd.exe",
+        commandPreview: null,
+        agentId: "main",
+        sessionKey: "agent:main:test",
+        executablePath: "C:\\Windows\\System32\\cmd.exe",
+        executableSha256: "c".repeat(64),
+        cwdBinding: "C:\\Work",
+        declaredAccess: [
+          { access: "ro", path: "C:\\ä" },
+          { access: "rw", path: "C:\\z" },
+        ],
+      }),
+    ).toBe("c2d61960908c9c4c8cd9792bb5e1096e0f1e3136ab0fc1994f853361b197eb93");
   });
 
   describe("approval preload process scope", () => {
@@ -164,9 +246,9 @@ describe("Windows Node MXC approval proof minter", () => {
       policyFingerprint: "a".repeat(64),
       nodeId: "b".repeat(64),
     });
-    expect(() =>
-      minter.mint({ approvalId: "approval", nodeId: "c".repeat(64), plan }),
-    ).toThrow(/node binding/);
+    expect(() => minter.mint({ approvalId: "approval", nodeId: "c".repeat(64), plan })).toThrow(
+      /node binding/,
+    );
     expect(() =>
       minter.mint({
         approvalId: "approval",
