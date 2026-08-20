@@ -50,11 +50,11 @@ internal static class Program
         {
             processTreeJob = ProcessTreeJob.CreateForCurrentProcess();
             var bootstrapJson = await Console.In.ReadLineAsync();
-            var ownerLifetime = WaitForOwnerLifetimeEndAsync();
             var bootstrap = JsonSerializer.Deserialize<HostBootstrap>(
                 bootstrapJson ?? string.Empty,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                 ?? throw new HostPolicyException("bootstrap-empty", "MicroClaw bootstrap input is missing.");
+            var ownerLifetime = OwnerProcessLifetime.WaitForExitAsync(bootstrap.OwnerProcessId);
             var gatewayUri = new Uri(bootstrap.GatewayUrl, UriKind.Absolute);
             if (gatewayUri.Scheme is not ("ws" or "wss")
                 || !string.Equals(gatewayUri.Host, "127.0.0.1", StringComparison.Ordinal))
@@ -123,13 +123,6 @@ internal static class Program
         }
     }
 
-    private static async Task WaitForOwnerLifetimeEndAsync()
-    {
-        var buffer = new char[1];
-        while (await Console.In.ReadAsync(buffer) > 0)
-        {
-        }
-    }
 }
 
 internal sealed class HostBootstrap
@@ -137,6 +130,7 @@ internal sealed class HostBootstrap
     public string GatewayUrl { get; init; } = string.Empty;
     public string GatewayToken { get; init; } = string.Empty;
     public int GatewayProcessId { get; init; }
+    public int OwnerProcessId { get; init; }
     public string PolicyPath { get; init; } = string.Empty;
     public string IdentityDirectory { get; init; } = string.Empty;
     public string ApprovalPipeName { get; init; } = string.Empty;

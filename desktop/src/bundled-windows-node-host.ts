@@ -221,24 +221,22 @@ export class BundledWindowsNodeHost {
       this.process = null;
       this.stop();
     });
-    child.stdin.write(
-      `${JSON.stringify({
-        gatewayUrl: options.gatewayUrl,
-        gatewayToken: options.gatewayToken,
-        gatewayProcessId: options.gatewayProcessId,
-        policyPath,
-        identityDirectory,
-        approvalPipeName: pipeName,
-        approvalsPath,
-        activationLeasePath,
-        activationLeaseSecret: activationLeaseSecret.toString("base64"),
-        gatewayGeneration: options.gatewayGeneration,
-        policyFingerprint,
-        approvalProofSecret: options.approvalProof.secretBase64,
-        nodeId: options.approvalProof.nodeId,
-        uiLocale: options.uiLocale,
-      })}\n`,
-    );
+    endBundledWindowsNodeBootstrap(child.stdin, {
+      gatewayUrl: options.gatewayUrl,
+      gatewayToken: options.gatewayToken,
+      gatewayProcessId: options.gatewayProcessId,
+      policyPath,
+      identityDirectory,
+      approvalPipeName: pipeName,
+      approvalsPath,
+      activationLeasePath,
+      activationLeaseSecret: activationLeaseSecret.toString("base64"),
+      gatewayGeneration: options.gatewayGeneration,
+      policyFingerprint,
+      approvalProofSecret: options.approvalProof.secretBase64,
+      nodeId: options.approvalProof.nodeId,
+      uiLocale: options.uiLocale,
+    });
   }
 
   private buildPolicyJson(folders: BundledWindowsNodeFolder[], openClawStateRoot: string): string {
@@ -490,6 +488,14 @@ export class BundledWindowsNodeHost {
       return null;
     }
   }
+}
+
+export function endBundledWindowsNodeBootstrap(
+  stdin: { end(chunk: string): unknown },
+  bootstrap: Record<string, unknown>,
+  ownerProcessId = process.pid,
+): void {
+  stdin.end(`${JSON.stringify({ ...bootstrap, ownerProcessId })}\n`);
 }
 
 export function terminateBundledWindowsNodeProcessTree(

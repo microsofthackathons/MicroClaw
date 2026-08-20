@@ -9,6 +9,7 @@ import {
   assertApprovalResponseMatches,
   assertLoopbackGateway,
   createBundledWindowsNodeEnvironment,
+  endBundledWindowsNodeBootstrap,
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
   replaceFileWithRetry,
@@ -26,6 +27,18 @@ vi.mock("electron", () => ({
 }));
 
 describe("bundled Windows node host", () => {
+  it("ends bootstrap stdin and binds host lifetime to the Electron owner", () => {
+    const end = vi.fn();
+
+    endBundledWindowsNodeBootstrap({ end }, { gatewayUrl: "ws://127.0.0.1:18789" }, 4242);
+
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(end.mock.calls[0][0])).toEqual({
+      gatewayUrl: "ws://127.0.0.1:18789",
+      ownerProcessId: 4242,
+    });
+  });
+
   it("uses the exact CWD policy contract", () => {
     expect(BUNDLED_WINDOWS_NODE_CWD_CONTRACT).toBe("microclaw.windows-cwd.v1");
   });
