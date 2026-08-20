@@ -49,8 +49,10 @@ export const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
  *  even though the gateway process is alive and making progress. */
 export const HEALTH_CHECK_BUSY_GRACE_MS = 240_000;
 
-/** Max time to wait for the gateway to become ready after spawn (ms). */
-export const GATEWAY_READY_TIMEOUT_MS = 120_000;
+/** Max time to wait for the gateway to become ready after spawn (ms).
+ *  The pinned compatibility preload can make a cold Windows start take more
+ *  than two minutes before the Gateway binds its health endpoint. */
+export const GATEWAY_READY_TIMEOUT_MS = 300_000;
 
 /** Max time to wait for the gateway port to become free (ms). */
 export const PORT_WAIT_TIMEOUT_MS = 30_000;
