@@ -185,8 +185,11 @@ entry points remain disabled, and inventory APIs return no active ingress. The l
 the failed MXC phase and recovery detail;
 the user may retry the same serialized transaction or turn MXC off. Toggling either direction
 returns to loading immediately, rejects chat during the transition, and releases ingress only after
-the selected route is ready. Security settings retain read-only proof and lifecycle details, but no
-longer expose separate refresh, smoke, or activation buttons.
+the selected route is ready. Security settings keep the protection state, actionable failures,
+folder policy, and remembered-command controls visible. Read-only node identity, policy lifecycle,
+generation, lease, containment tier, contracts, fingerprints, and readiness evidence are grouped
+under a **Technical details** disclosure that starts collapsed whenever Settings is opened. The page
+does not expose separate refresh, smoke, or activation buttons.
 
 The pinned OpenClaw 2026.7.1-1 Gateway can block its event loop for more than a minute during
 startup. Pairing therefore remains generation-bound and locked for up to five minutes while the

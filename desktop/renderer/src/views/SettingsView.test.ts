@@ -63,9 +63,12 @@ describe("SettingsView", () => {
     companionPath: "",
     companionInstalled: true,
     settingsLoaded: true,
-    settingsFingerprint: "settings",
+    settingsFingerprint: "settings-fingerprint-1",
     nodes,
     selectedNode: nodes.find((node) => node.id === selectedNodeId) ?? null,
+    helperRevision: "fc9add75eda78daf548d80a55ffb64e63b159961",
+    mxcRuntimeVersion: "0.7.0",
+    cwdPolicyContract: "microclaw.windows-cwd.v1",
     cwdAttestationReady: true,
     activationLeaseContract: "microclaw.windows-activation.v1",
     gatewayGeneration: "generation-1",
@@ -220,9 +223,94 @@ describe("SettingsView", () => {
 
     await flushPromises();
 
-    expect(wrapper.find(".mxc-card").text()).toContain("Local Windows node (online)");
+    await wrapper.find('[data-testid="mxc-technical-details-toggle"]').trigger("click");
+    expect(wrapper.find('[data-testid="mxc-technical-details"]').text()).toContain(
+      "Local Windows node (node-local)",
+    );
     expect(wrapper.find(".mxc-card").find("el-select").exists()).toBe(false);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps technical MXC details collapsed on a fresh Settings view", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      effectiveEnabled: true,
+      lifecycleState: {
+        phase: "active",
+        detail: null,
+        updatedAt: new Date(0).toISOString(),
+      },
+      activationLeaseMode: "active",
+      gatewayPolicyState: "active",
+      strictFallbackEffective: true,
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    await flushPromises();
+
+    const toggle = wrapper.find('[data-testid="mxc-technical-details-toggle"]');
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
+    expect(wrapper.find(".mxc-card").text()).toContain("Protected");
+    expect(wrapper.find('[data-testid="mxc-add-rw"]').exists()).toBe(true);
+    expect(wrapper.find(".mxc-card").text()).toContain("Remembered exact commands");
+    expect(wrapper.find(".mxc-card").text()).not.toContain("Gateway generation");
+  });
+
+  it("expands and collapses the accessible MXC technical disclosure", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce(status("node-local"));
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    const toggle = wrapper.find('[data-testid="mxc-technical-details-toggle"]');
+    expect(toggle.attributes("aria-controls")).toBe("windows-node-mxc-technical-details");
+
+    await toggle.trigger("click");
+    const details = wrapper.find('[data-testid="mxc-technical-details"]');
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+    expect(details.attributes("role")).toBe("region");
+    expect(details.text()).toContain("Policy lifecycle");
+    expect(details.text()).toContain("Gateway generation");
+    expect(details.text()).toContain("settings-fingerprint-1");
+    expect(details.text()).toContain("microclaw.windows-cwd.v1");
+    expect(details.text()).toContain("Contained child-process smoke");
+
+    await toggle.trigger("click");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
+  });
+
+  it("keeps action-required failures and essential controls outside technical details", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      lifecycleState: {
+        phase: "failed",
+        detail: "The bundled node disconnected.",
+        updatedAt: new Date(0).toISOString(),
+      },
+      blockers: ["Reconnect the exact bundled node before retrying."],
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
+    expect(wrapper.find(".mxc-card").text()).toContain("Action required");
+    expect(wrapper.find(".mxc-card").text()).toContain("The bundled node disconnected.");
+    expect(wrapper.find(".section").text()).toContain(
+      "Reconnect the exact bundled node before retrying.",
+    );
+    expect(wrapper.find('[data-testid="mxc-add-ro"]').exists()).toBe(true);
+    expect(wrapper.find(".mxc-card").text()).toContain("No exact commands are remembered.");
   });
 
   it("does not expose manual readiness or activation actions", async () => {

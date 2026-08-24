@@ -377,115 +377,15 @@
               @change="toggleWindowsNodeMxc"
             />
           </div>
-          <div class="card-row">
-            <span class="row-label">{{ t("settings.windowsNodeMxcSelectedNode") }}</span>
-            <span class="row-value">
-              {{
-                windowsNodeMxcStatus?.selectedNode
-                  ? `${windowsNodeMxcStatus.selectedNode.displayName} (${windowsNodeMxcStatus.selectedNode.connected ? "online" : "offline"})`
-                  : "app-owned node unavailable"
-              }}
-            </span>
-          </div>
           <template v-if="windowsNodeMxcStatus">
             <div class="card-row">
               <span class="row-label">{{ t("settings.windowsNodeMxcEffective") }}</span>
-              <span
-                class="mxc-state"
-                :class="
-                  windowsNodeMxcStatus.effectiveEnabled ? 'mxc-state-ok' : 'mxc-state-blocked'
-                "
-              >
-                {{
-                  windowsNodeMxcStatus.effectiveEnabled
-                    ? t("settings.windowsNodeMxcReady")
-                    : t("settings.windowsNodeMxcBlocked")
-                }}
+              <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
+                {{ windowsNodeMxcProtectionLabel }}
               </span>
             </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcLifecycle") }}</span>
-              <span class="row-value">
-                {{
-                  t(
-                    `settings.windowsNodeMxcLifecyclePhase.${windowsNodeMxcStatus.lifecycleState.phase}`,
-                  )
-                }}
-                <template v-if="windowsNodeMxcStatus.lifecycleState.detail">
-                  · {{ windowsNodeMxcStatus.lifecycleState.detail }}
-                </template>
-              </span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcGatewayPolicy") }}</span>
-              <span class="row-value">{{ windowsNodeMxcStatus.gatewayPolicyState }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcTier") }}</span>
-              <span class="row-value">
-                {{ windowsNodeMxcStatus.probe.tier ?? windowsNodeMxcStatus.probe.outcome }}
-                <template v-if="windowsNodeMxcStatus.probe.needsDaclAugmentation">
-                  · DACL augmentation required
-                </template>
-              </span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">Bundled helper</span>
-              <span class="row-value">{{
-                windowsNodeMxcStatus.helperRevision
-                  ? windowsNodeMxcStatus.helperRevision.slice(0, 12)
-                  : "unavailable"
-              }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">MXC runtime / CWD policy</span>
-              <span class="row-value">{{
-                `${windowsNodeMxcStatus.mxcRuntimeVersion ?? "unavailable"} / ${windowsNodeMxcStatus.cwdPolicyContract ?? "unavailable"}`
-              }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcActivationLease") }}</span>
-              <span class="row-value">
-                {{
-                  `${windowsNodeMxcStatus.activationLeaseMode ?? "none"} / ${
-                    windowsNodeMxcStatus.activationLeaseContract ?? "unavailable"
-                  }`
-                }}
-              </span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcGatewayGeneration") }}</span>
-              <span class="row-value">{{
-                windowsNodeMxcStatus.gatewayGeneration
-                  ? windowsNodeMxcStatus.gatewayGeneration.slice(0, 12)
-                  : "unavailable"
-              }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcStrictFallback") }}</span>
-              <span class="row-value">{{
-                windowsNodeMxcStatus.strictFallbackEffective
-                  ? t("settings.windowsNodeMxcEnabled")
-                  : t("settings.windowsNodeMxcDisabled")
-              }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcCommands") }}</span>
-              <span class="row-value">{{
-                windowsNodeMxcStatus.selectedNode?.commands.join(", ") || "—"
-              }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcConnection") }}</span>
-              <span class="row-value">
-                {{
-                  windowsNodeMxcStatus.selectedNode
-                    ? `${windowsNodeMxcStatus.selectedNode.connected ? "connected" : "disconnected"} / ${
-                        windowsNodeMxcStatus.selectedNode.paired ? "paired" : "reapproval required"
-                      }`
-                    : "not selected"
-                }}
-              </span>
+            <div v-if="windowsNodeMxcProtectionDetail" class="mxc-primary-detail">
+              {{ windowsNodeMxcProtectionDetail }}
             </div>
             <div
               class="card-row no-border mxc-folder-policy"
@@ -612,16 +512,6 @@
                 </el-button>
               </div>
             </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcSmoke") }}</span>
-              <span class="row-value">
-                {{
-                  windowsNodeMxcStatus.smoke
-                    ? `${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome} / ${windowsNodeMxcStatus.smoke.hostname.outcome} / ${windowsNodeMxcStatus.smoke.powershell.outcome}`
-                    : t("settings.windowsNodeMxcNotRun")
-                }}
-              </span>
-            </div>
             <div
               class="card-row no-border mxc-folder-policy"
               style="flex-direction: column; align-items: stretch"
@@ -688,6 +578,155 @@
                 class="mxc-alert mxc-alert-warning"
               >
                 {{ windowsNodeMxcStatus.durableApprovals.warning }}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="mxc-technical-summary"
+              :aria-expanded="windowsNodeMxcTechnicalDetailsOpen"
+              aria-controls="windows-node-mxc-technical-details"
+              data-testid="mxc-technical-details-toggle"
+              @click="windowsNodeMxcTechnicalDetailsOpen = !windowsNodeMxcTechnicalDetailsOpen"
+            >
+              <span>{{ t("settings.windowsNodeMxcTechnicalDetails") }}</span>
+              <span class="mxc-technical-chevron" aria-hidden="true">
+                {{ windowsNodeMxcTechnicalDetailsOpen ? "−" : "+" }}
+              </span>
+            </button>
+            <div
+              v-if="windowsNodeMxcTechnicalDetailsOpen"
+              id="windows-node-mxc-technical-details"
+              class="mxc-technical-details"
+              role="region"
+              :aria-label="t('settings.windowsNodeMxcTechnicalDetails')"
+              data-testid="mxc-technical-details"
+            >
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcSelectedNode") }}</span>
+                <span class="row-value">
+                  {{
+                    windowsNodeMxcStatus.selectedNode
+                      ? `${windowsNodeMxcStatus.selectedNode.displayName} (${windowsNodeMxcStatus.selectedNode.id})`
+                      : t("settings.windowsNodeMxcUnavailable")
+                  }}
+                </span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcLifecycle") }}</span>
+                <span class="row-value">
+                  {{
+                    t(
+                      `settings.windowsNodeMxcLifecyclePhase.${windowsNodeMxcStatus.lifecycleState.phase}`,
+                    )
+                  }}
+                  <template v-if="windowsNodeMxcStatus.lifecycleState.detail">
+                    · {{ windowsNodeMxcStatus.lifecycleState.detail }}
+                  </template>
+                </span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcGatewayPolicy") }}</span>
+                <span class="row-value">{{ windowsNodeMxcStatus.gatewayPolicyState }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcTier") }}</span>
+                <span class="row-value">
+                  {{ windowsNodeMxcStatus.probe.tier ?? windowsNodeMxcStatus.probe.outcome }}
+                  <template v-if="windowsNodeMxcStatus.probe.needsDaclAugmentation">
+                    · {{ t("settings.windowsNodeMxcDaclRequired") }}
+                  </template>
+                </span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBundledHelper") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.helperRevision
+                    ? windowsNodeMxcStatus.helperRevision.slice(0, 12)
+                    : t("settings.windowsNodeMxcUnavailable")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcRuntimeContract") }}</span>
+                <span class="row-value">{{
+                  `${windowsNodeMxcStatus.mxcRuntimeVersion ?? t("settings.windowsNodeMxcUnavailable")} / ${
+                    windowsNodeMxcStatus.cwdPolicyContract ??
+                    t("settings.windowsNodeMxcUnavailable")
+                  }`
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcSettingsFingerprint") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.settingsFingerprint ??
+                  t("settings.windowsNodeMxcUnavailable")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcActivationLease") }}</span>
+                <span class="row-value">
+                  {{
+                    `${windowsNodeMxcStatus.activationLeaseMode ?? "none"} / ${
+                      windowsNodeMxcStatus.activationLeaseContract ??
+                      t("settings.windowsNodeMxcUnavailable")
+                    }`
+                  }}
+                </span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcGatewayGeneration") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.gatewayGeneration || t("settings.windowsNodeMxcUnavailable")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcStrictFallback") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.strictFallbackEffective
+                    ? t("settings.windowsNodeMxcEnabled")
+                    : t("settings.windowsNodeMxcDisabled")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcCwdAttestation") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.cwdAttestationReady
+                    ? t("settings.windowsNodeMxcVerified")
+                    : t("settings.windowsNodeMxcUnverified")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcEffectiveTools") }}</span>
+                <span class="row-value">{{ windowsNodeMxcStatus.effectiveToolsState }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcCommands") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.selectedNode?.commands.join(", ") || "—"
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcConnection") }}</span>
+                <span class="row-value">
+                  {{
+                    windowsNodeMxcStatus.selectedNode
+                      ? `${windowsNodeMxcStatus.selectedNode.connected ? "connected" : "disconnected"} / ${
+                          windowsNodeMxcStatus.selectedNode.paired
+                            ? "paired"
+                            : "reapproval required"
+                        }`
+                      : "not selected"
+                  }}
+                </span>
+              </div>
+              <div class="card-row no-border">
+                <span class="row-label">{{ t("settings.windowsNodeMxcSmoke") }}</span>
+                <span class="row-value">
+                  {{
+                    windowsNodeMxcStatus.smoke
+                      ? `${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome} / ${windowsNodeMxcStatus.smoke.hostname.outcome} / ${windowsNodeMxcStatus.smoke.powershell.outcome}`
+                      : t("settings.windowsNodeMxcNotRun")
+                  }}
+                </span>
               </div>
             </div>
           </template>
@@ -1317,6 +1356,50 @@ type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNod
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
+const windowsNodeMxcTechnicalDetailsOpen = ref(false);
+const windowsNodeMxcTransitionPhases = new Set([
+  "locking",
+  "validating",
+  "persisting",
+  "starting-locked",
+  "smoking-locked",
+  "starting-active",
+  "smoking-active",
+  "verifying-active",
+  "starting-standard",
+]);
+
+const windowsNodeMxcProtectionLabel = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (!status?.desiredEnabled) return t("settings.windowsNodeMxcProtectionOff");
+  if (status.effectiveEnabled && status.lifecycleState.phase === "active") {
+    return t("settings.windowsNodeMxcProtected");
+  }
+  if (windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)) {
+    return t("settings.windowsNodeMxcStarting");
+  }
+  return t("settings.windowsNodeMxcActionRequired");
+});
+
+const windowsNodeMxcProtectionClass = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (status?.effectiveEnabled && status.lifecycleState.phase === "active") {
+    return "mxc-state-ok";
+  }
+  return status?.desiredEnabled ? "mxc-state-blocked" : "mxc-state-neutral";
+});
+
+const windowsNodeMxcProtectionDetail = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (
+    !status?.desiredEnabled ||
+    (status.effectiveEnabled && status.lifecycleState.phase === "active")
+  ) {
+    return "";
+  }
+  const phase = t(`settings.windowsNodeMxcLifecyclePhase.${status.lifecycleState.phase}`);
+  return status.lifecycleState.detail ? `${phase} · ${status.lifecycleState.detail}` : phase;
+});
 
 const windowsNodeMxcFolderDraftDirty = computed(
   () => policyIdentity(windowsNodeMxcFolderDraft) !== policyIdentity(windowsNodeMxcFolderBaseline),
@@ -1987,6 +2070,10 @@ watch(
     setLocale(v as Locale);
   },
 );
+
+watch(activeSection, (section) => {
+  if (section === "security") windowsNodeMxcTechnicalDetailsOpen.value = false;
+});
 watch(
   () => settings.autoStart,
   (v) => window.openclaw.settings.set("autoStart", v),
@@ -3118,6 +3205,51 @@ async function clearChatHistory() {
 }
 .mxc-state-blocked {
   color: var(--settings-action-danger);
+}
+.mxc-state-neutral {
+  color: var(--text-muted);
+}
+.mxc-primary-detail {
+  padding: 0 24px 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.mxc-technical-summary {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.mxc-technical-summary:hover {
+  background: var(--bg-hover);
+}
+.mxc-technical-summary:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -3px;
+}
+.mxc-technical-chevron {
+  color: var(--text-muted);
+  font-size: 18px;
+}
+.mxc-technical-details {
+  border-top: 1px solid var(--border);
+}
+.mxc-technical-details .row-value {
+  max-width: 65%;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 .mxc-folder-policy {
   gap: 8px;

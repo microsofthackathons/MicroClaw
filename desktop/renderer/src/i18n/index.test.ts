@@ -95,12 +95,20 @@ describe("i18n", () => {
 
   it("localizes the global MXC folder policy and remediation", () => {
     setLocale("en-US");
+    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("Technical details");
+    expect(t("settings.windowsNodeMxcProtected")).toBe("Protected");
+    expect(t("settings.windowsNodeMxcStarting")).toBe("Starting");
+    expect(t("settings.windowsNodeMxcActionRequired")).toBe("Action required");
     expect(t("settings.windowsNodeMxcFolders")).toBe("Global MXC approved folders");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("global capability ceiling");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("never grant access");
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("Disable Windows Node + MXC");
 
     setLocale("zh-CN");
+    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("技术详情");
+    expect(t("settings.windowsNodeMxcProtected")).toBe("已保护");
+    expect(t("settings.windowsNodeMxcStarting")).toBe("正在启动");
+    expect(t("settings.windowsNodeMxcActionRequired")).toBe("需要操作");
     expect(t("settings.windowsNodeMxcFolders")).toBe("MXC 全局批准文件夹");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("全局能力上限");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("绝不会授予访问权限");
