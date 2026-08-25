@@ -67,8 +67,51 @@ if (-not $nodeFound) {
     exit 1
 }
 
-# -- Step 1: Build AppContainerLauncher.exe (.NET 9) --
-Write-Host "`n=== Step 1/7: Build AppContainerLauncher ===" -ForegroundColor Cyan
+$windowsNodeSharedProject = "$root\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
+if (-not (Test-Path $windowsNodeSharedProject)) {
+    Write-Host "  Initializing pinned OpenClaw Windows Node source..." -ForegroundColor Yellow
+    git -C $root submodule update --init --recursive -- third_party/openclaw-windows-node/source
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $windowsNodeSharedProject)) {
+        Write-Host "  ERROR: unable to initialize the pinned OpenClaw Windows Node submodule" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Bootstrap desktop dependencies before building the Windows node, because the
+# resource preparation step consumes the pinned @microsoft/mxc-sdk package.
+Push-Location "$root\desktop"
+try {
+    $needsNpmInstall = -not (Test-Path "$root\desktop\node_modules")
+    if (-not $needsNpmInstall) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        npm ls --depth=0 *> $null
+        $npmLsExit = $LASTEXITCODE
+        $ErrorActionPreference = $prev
+        if ($npmLsExit -ne 0) {
+            $needsNpmInstall = $true
+            Write-Host "  desktop dependencies are incomplete — running 'npm install'..." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  desktop\node_modules not found — running 'npm install'..." -ForegroundColor Yellow
+    }
+
+    if ($needsNpmInstall) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        npm install 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $ErrorActionPreference = $prev
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ERROR: npm install failed" -ForegroundColor Red
+            exit 1
+        }
+    }
+} finally {
+    Pop-Location
+}
+
+# -- Step 1: Build native security helpers --
+Write-Host "`n=== Step 1/7: Build security helpers ===" -ForegroundColor Cyan
 $acProject = "$root\appcontainer"
 if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
     Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
@@ -95,6 +138,17 @@ if (-not (Test-Path $acExe)) {
     exit 1
 }
 Write-Host "  AppContainerLauncher.exe built" -ForegroundColor Green
+
+Push-Location "$root\desktop"
+try {
+    npm run prepare-windows-node-resources
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ERROR: bundled Windows Node/MXC resource preparation failed" -ForegroundColor Red
+        exit 1
+    }
+} finally {
+    Pop-Location
+}
 
 # Copy sandbox-preload.js and its modules alongside launcher (used by electron-builder extraResources)
 $preloadSrc = "$acProject\sandbox-preload.js"
@@ -128,38 +182,9 @@ if (-not (Test-Path $outDist)) {
 Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
 try {
-    # First-run bootstrap: install npm deps (including renderer via postinstall)
-    # if node_modules is missing or the installed dependency tree is incomplete.
-    # Without this, `npm run pack` can fail later inside electron-builder.
-    $needsNpmInstall = -not (Test-Path "$root\desktop\node_modules")
-    if (-not $needsNpmInstall) {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        npm ls --depth=0 *> $null
-        $npmLsExit = $LASTEXITCODE
-        $ErrorActionPreference = $prev
-        if ($npmLsExit -ne 0) {
-            $needsNpmInstall = $true
-            Write-Host "  desktop dependencies are incomplete — running 'npm install'..." -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "  desktop\node_modules not found — running 'npm install'..." -ForegroundColor Yellow
-    }
-
-    if ($needsNpmInstall) {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        npm install 2>&1 | ForEach-Object { Write-Host "  $_" }
-        $ErrorActionPreference = $prev
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  ERROR: npm install failed" -ForegroundColor Red
-            exit 1
-        }
-    }
-
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    npm run pack 2>&1 | ForEach-Object { Write-Host "  $_" }
+    npm run pack:prepared 2>&1 | ForEach-Object { Write-Host "  $_" }
     $ErrorActionPreference = $prev
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: desktop build failed" -ForegroundColor Red

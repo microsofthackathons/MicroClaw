@@ -1,0 +1,7 @@
+{
+  "name": "openclaw/openclaw-windows-node",
+  "repository": "https://github.com/openclaw/openclaw-windows-node",
+  "revision": "fc9add75eda78daf548d80a55ffb64e63b159961",
+  "license": "MIT",
+  "usage": "Architecture and protocol baseline for the app-owned node role, V2 approvals, and direct MXC execution. MicroClaw's security policy implementation is maintained in windows-node-host/."
+}

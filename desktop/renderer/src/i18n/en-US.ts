@@ -287,6 +287,101 @@ export default {
     "Ask for confirmation before the agent reads files that match these patterns.",
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "Security sandbox",
+  "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
+  "settings.windowsNodeMxcExperimental":
+    "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
+  "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
+  "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
+  "settings.windowsNodeMxcEffective": "Effective state",
+  "settings.windowsNodeMxcGatewayPolicy": "Gateway agent policy",
+  "settings.windowsNodeMxcReady": "Ready",
+  "settings.windowsNodeMxcBlocked": "Blocked (fail closed)",
+  "settings.windowsNodeMxcProtected": "Protected",
+  "settings.windowsNodeMxcStarting": "Starting",
+  "settings.windowsNodeMxcActionRequired": "Action required",
+  "settings.windowsNodeMxcProtectionOff": "Off",
+  "settings.windowsNodeMxcTechnicalDetails": "Technical details",
+  "settings.windowsNodeMxcUnavailable": "Unavailable",
+  "settings.windowsNodeMxcVerified": "Verified",
+  "settings.windowsNodeMxcUnverified": "Unverified",
+  "settings.windowsNodeMxcDaclRequired": "DACL augmentation required",
+  "settings.windowsNodeMxcBundledHelper": "Bundled helper",
+  "settings.windowsNodeMxcRuntimeContract": "MXC runtime / CWD policy",
+  "settings.windowsNodeMxcSettingsFingerprint": "Settings fingerprint",
+  "settings.windowsNodeMxcCwdAttestation": "CWD policy attestation",
+  "settings.windowsNodeMxcEffectiveTools": "Effective Gateway tools",
+  "settings.windowsNodeMxcTier": "MXC isolation tier",
+  "settings.windowsNodeMxcStrictFallback": "Strict host-fallback blocking",
+  "settings.windowsNodeMxcEnabled": "Enabled",
+  "settings.windowsNodeMxcDisabled": "Disabled",
+  "settings.windowsNodeMxcCommands": "Declared node commands",
+  "settings.windowsNodeMxcConnection": "Connection / pairing",
+  "settings.windowsNodeMxcFolders": "Global MXC approved folders",
+  "settings.windowsNodeMxcFoldersHint":
+    "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
+  "settings.windowsNodeMxcFoldersLocked":
+    "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
+  "settings.windowsNodeMxcFoldersStaged":
+    "Changes are staged only. Applying them pauses protected chat, revokes current authorization, then restarts, re-attests, and runs exact internal contained probes in both generations.",
+  "settings.windowsNodeMxcApplyFolders": "Apply changes and reactivate",
+  "settings.windowsNodeMxcApplyFoldersWarning":
+    "Agent execution and chat will pause. Current command approvals may be invalidated. MicroClaw will stay locked if any policy, restart, attestation, smoke, or activation step is canceled or fails.",
+  "settings.windowsNodeMxcApplyFoldersComplete":
+    "The folder policy was applied and the verified MXC route was reactivated.",
+  "settings.windowsNodeMxcFolderRecovery": "The last apply remained safely locked",
+  "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
+  "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
+  "settings.windowsNodeMxcLifecyclePhase.idle": "Idle",
+  "settings.windowsNodeMxcLifecyclePhase.locking": "Locking execution",
+  "settings.windowsNodeMxcLifecyclePhase.validating": "Validating policy",
+  "settings.windowsNodeMxcLifecyclePhase.persisting": "Applying policy",
+  "settings.windowsNodeMxcLifecyclePhase.starting-locked": "Starting locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-locked":
+    "Running internal probes in locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.starting-active": "Starting active generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-active":
+    "Running internal probes in active generation",
+  "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
+  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting standard security mode",
+  "settings.windowsNodeMxcLifecyclePhase.active": "Active",
+  "settings.windowsNodeMxcLifecyclePhase.locked": "Locked",
+  "settings.windowsNodeMxcLifecyclePhase.failed": "Transition failed",
+  "settings.windowsNodeMxcChangeToRo": "Change to read-only",
+  "settings.windowsNodeMxcChangeToRw": "Change to read/write",
+  "settings.windowsNodeMxcFolderDuplicate": "This folder is already configured with that access.",
+  "settings.windowsNodeMxcFolderNonlocal":
+    "Only existing local drive folders are allowed; UNC and device paths are denied.",
+  "settings.windowsNodeMxcFolderMissing": "The selected folder no longer exists.",
+  "settings.windowsNodeMxcFolderReparse":
+    "Folders containing junctions, symbolic links, or other reparse points are denied.",
+  "settings.windowsNodeMxcFolderSensitive":
+    "This folder overlaps a protected credentials, browser, SSH, cloud, or MicroClaw state root.",
+  "settings.windowsNodeMxcFolderAclFailed":
+    "Windows could not apply and verify the folder access policy.",
+  "settings.windowsNodeMxcFolderNotConfigured": "This folder is no longer configured.",
+  "settings.windowsNodeMxcFolderMutationFailed": "Could not update the approved folder policy.",
+  "settings.windowsNodeMxcDurableApprovals": "Remembered exact commands",
+  "settings.windowsNodeMxcDurableApprovalsHint":
+    "Allow always remembers only the exact executable content, arguments, CWD, declared folder use, policy, agent, and session. It never changes global folders.",
+  "settings.windowsNodeMxcNoDurableApprovals": "No exact commands are remembered.",
+  "settings.windowsNodeMxcRevokeApproval": "Revoke",
+  "settings.windowsNodeMxcRevokeAllApprovals": "Revoke all",
+  "settings.windowsNodeMxcRevokeAllApprovalsWarning":
+    "Revoke every remembered exact MXC command? Future runs will require a new visible approval.",
+  "settings.windowsNodeMxcApprovalCwd": "CWD",
+  "settings.windowsNodeMxcApprovalAccess": "Declared folder use",
+  "settings.windowsNodeMxcApprovalScope": "Agent / session",
+  "settings.windowsNodeMxcApprovalCreated": "Created",
+  "settings.windowsNodeMxcApprovalLastUsed": "Last used",
+  "settings.windowsNodeMxcApprovalNever": "never",
+  "settings.windowsNodeMxcSmoke": "Contained child-process smoke",
+  "settings.windowsNodeMxcNotRun": "Not run",
+  "settings.windowsNodeMxcActivationLease": "Activation lease",
+  "settings.windowsNodeMxcGatewayGeneration": "Gateway generation",
+  "settings.windowsNodeMxcCompatibility":
+    "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. AppContainer and this mode are mutually exclusive.",
+  "settings.windowsNodeMxcDegraded":
+    "Warning: this machine uses degraded DACL-based MXC containment. Execution remains blocked unless every other proof passes.",
   "settings.sandboxEnabled": "Tool sandbox (AppContainer)",
   "settings.externalApps": "Apps allowed outside the sandbox",
   "settings.externalAppsHint":
@@ -434,6 +529,8 @@ export default {
 
   // ── GatewayLoading ──
   "gateway.retry": "Retry",
+  "gateway.disableMxc": "Turn off Windows Node + MXC",
+  "gateway.mxcFailed": "MXC readiness failed. Execution remains safely locked.",
   "gateway.ready": "Ready",
   "gateway.starting": "Starting services…",
   "gateway.connecting": "Connecting…",
@@ -574,6 +671,7 @@ export default {
   "perm.titleWrite": "File access permission",
   "perm.titleCommand": "Command approval required",
   "perm.titleApp": "External app approval required",
+  "perm.titleMxc": "MXC sandbox command approval",
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
@@ -585,13 +683,27 @@ export default {
   "perm.shellDescRO": "Allow read permission to {dir}",
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
+  "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
+  "perm.mxcAccessLabel": "Declared folder use",
+  "perm.mxcAccessRo": "Read only",
+  "perm.mxcAccessRw": "Read and write",
+  "perm.mxcCwdLabel": "Canonical working directory",
+  "perm.mxcScope":
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Allow always” remembers this exact command, canonical working directory, and declaration identity.",
+  "perm.mxcScopeOnce":
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access.",
+  "perm.mxcScopeNoAccess":
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown. “Allow always” remembers this exact command and canonical working directory.",
+  "perm.mxcScopeNoAccessOnce":
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",
   "perm.riskCommandRW": "High risk: this command may change files or system state.",
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
+  "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
   "perm.commandLabel": "Command",
-  "perm.allowAlways": "Always allow",
+  "perm.allowAlways": "Allow always",
   "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
   "perm.aclTimeout":

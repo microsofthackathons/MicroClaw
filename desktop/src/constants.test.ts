@@ -52,8 +52,10 @@ describe("constants", () => {
       expect(HEALTH_CHECK_BUSY_GRACE_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_INTERVAL_MS);
     });
 
-    it("gateway ready timeout > port wait timeout", () => {
+    it("gateway ready timeout covers cold compatibility-preload startup", () => {
+      expect(GATEWAY_READY_TIMEOUT_MS).toBe(300_000);
       expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(PORT_WAIT_TIMEOUT_MS);
+      expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_BUSY_GRACE_MS);
     });
 
     it("model connection test has a finite timeout", () => {

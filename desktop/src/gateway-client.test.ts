@@ -6,6 +6,7 @@ import {
   isAgentWarmupEvent,
   normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
+  shouldHandleGatewayDisconnect,
   type GatewayEventFrame,
 } from "./gateway-client";
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
@@ -61,6 +62,13 @@ describe("extractMainSessionKey", () => {
     ).toBe("global");
   });
 
+  describe("Gateway disconnect lifecycle", () => {
+    it("ignores a socket close callback after the client was intentionally stopped", () => {
+      expect(shouldHandleGatewayDisconnect(true)).toBe(false);
+      expect(shouldHandleGatewayDisconnect(false)).toBe(true);
+    });
+  });
+
   it("returns null for a malformed Gateway hello snapshot", () => {
     expect(extractMainSessionKey({ snapshot: { sessionDefaults: [] } })).toBeNull();
   });
@@ -113,6 +121,7 @@ describe("isAgentWarmupEvent", () => {
 describe("GatewayClient.sendChat", () => {
   function createClient() {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { opts: { port: 18789, token: "" } });
     const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
     return { client, request };
   }
@@ -155,6 +164,21 @@ describe("GatewayClient.sendChat", () => {
         ],
       }),
     );
+  });
+
+  it("does not issue or queue chat.send when the ingress gate rejects", async () => {
+    const { client, request } = createClient();
+    const beforeChatSend = vi.fn().mockRejectedValue(new Error("MXC ingress is locked"));
+    Object.assign(client, { opts: { port: 18789, token: "", beforeChatSend } });
+
+    await expect(client.sendChat("session-123", "blocked")).rejects.toThrow(
+      "MXC ingress is locked",
+    );
+    expect(request).not.toHaveBeenCalled();
+
+    beforeChatSend.mockResolvedValue(undefined);
+    await Promise.resolve();
+    expect(request).not.toHaveBeenCalled();
   });
 });
 
@@ -211,11 +235,11 @@ describe("GatewayClient.deleteSession", () => {
       handleMessage(raw: string): void;
     };
 
-    function createClient() {
+    function createClient(beforeChatSend?: () => Promise<void>) {
       const onEvent = vi.fn();
       const client = Object.create(GatewayClient.prototype) as GatewayClient;
       Object.assign(client, {
-        opts: { port: 18789, token: "", onEvent },
+        opts: { port: 18789, token: "", onEvent, beforeChatSend },
         _mainSessionKey: "agent:main:main",
         agentWarmupPromise: null,
         agentWarmupWaiter: null,
@@ -299,6 +323,21 @@ describe("GatewayClient.deleteSession", () => {
       expect(request).toHaveBeenCalledWith("chat.abort", {
         sessionKey: AGENT_WARMUP_SESSION_KEY,
       });
+    });
+
+    it("does not issue or replay a warm-up turn while ingress is locked", async () => {
+      const beforeChatSend = vi.fn().mockRejectedValue(new Error("MXC ingress is locked"));
+      const { client, request } = createClient(beforeChatSend);
+
+      await expect(client.warmUpAgent(30_000)).resolves.toEqual({
+        outcome: "error",
+        transcriptDeleted: false,
+      });
+      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
+
+      beforeChatSend.mockResolvedValue(undefined);
+      await Promise.resolve();
+      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
     });
 
     it("fails open at the timeout and starts cleanup", async () => {

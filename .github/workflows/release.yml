@@ -71,6 +71,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # GitHub-hosted windows-latest ships older/other toolchain versions than
       # build.ps1 expects, so pin them explicitly with the setup-* actions
@@ -82,10 +84,12 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Setup .NET 9 SDK
+      - name: Setup .NET 9 and 10 SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: |
+            9.0.x
+            10.0.x
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -98,9 +102,10 @@ jobs:
           $node = (& node --version).TrimStart('v')
           if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
           Write-Host "node $node"
-          $dotnet = & dotnet --version
-          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
-          Write-Host "dotnet $dotnet"
+          $sdks = & dotnet --list-sdks
+          if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }
+          if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
+          Write-Host $sdks
           Write-Host "python $(& python --version)"
 
       - name: Install Python build dependencies

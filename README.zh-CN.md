@@ -202,6 +202,7 @@ npm run dev
 - Node.js 22+
 - Python 3.10+ —— 通过 `pip install -r requirements.txt` 安装构建依赖（已包含 PyInstaller）
 - .NET 9 SDK（用于构建 AppContainer 启动器）
+- .NET 10 SDK（用于构建内置 Windows Node 主机）
 - npm 依赖已安装（`cd desktop && npm install`）
 
 ---

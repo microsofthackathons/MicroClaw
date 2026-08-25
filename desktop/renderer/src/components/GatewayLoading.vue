@@ -94,13 +94,20 @@
         </div>
 
         <!-- Error detail (shown when gateway reports an error) -->
-        <div v-if="isFailed && props.errorMessage" class="loading-error-detail">
-          {{ props.errorMessage }}
+        <div v-if="isFailed && displayError" class="loading-error-detail">
+          {{ displayError }}
         </div>
 
         <!-- Retry button (timeout / failed) -->
         <button v-if="isFailed" class="loading-retry" @click="$emit('retry')">
           {{ t("gateway.retry") }}
+        </button>
+        <button
+          v-if="isMxcFailure && props.mxcDesired"
+          class="loading-retry loading-disable-mxc"
+          @click="$emit('disable-mxc')"
+        >
+          {{ t("gateway.disableMxc") }}
         </button>
       </div>
     </div>
@@ -148,10 +155,28 @@ const props = defineProps<{
   connected: boolean;
   warming: boolean;
   errorMessage?: string;
+  mxcDesired?: boolean;
+  mxcPhase?: string;
+  mxcDetail?: string | null;
 }>();
-defineEmits<{ retry: [] }>();
+defineEmits<{ retry: []; "disable-mxc": [] }>();
 
-const isFailed = computed(() => props.status === "timeout" || props.status === "failed");
+const isMxcFailure = computed(
+  () =>
+    props.mxcDesired === true &&
+    ["locked", "failed"].includes(props.mxcPhase ?? "") &&
+    Boolean(props.mxcDetail),
+);
+const isMxcTransition = computed(
+  () =>
+    props.mxcDesired === true &&
+    Boolean(props.mxcPhase) &&
+    !["active", "idle", "locked", "failed"].includes(props.mxcPhase ?? ""),
+);
+const isFailed = computed(
+  () => isMxcFailure.value || props.status === "timeout" || props.status === "failed",
+);
+const displayError = computed(() => props.mxcDetail || props.errorMessage);
 
 // ── Window controls ──
 
@@ -173,6 +198,20 @@ function closeWindow() {
 // ── Progress (preserved from original) ──
 
 const targetProgress = computed(() => {
+  if (isMxcTransition.value) {
+    const progress: Record<string, number> = {
+      locking: 20,
+      validating: 35,
+      persisting: 50,
+      "starting-locked": 72,
+      "smoking-locked": 80,
+      "starting-active": 86,
+      "smoking-active": 92,
+      "verifying-active": 97,
+      "starting-standard": 88,
+    };
+    return progress[props.mxcPhase ?? ""] ?? 65;
+  }
   if (props.warming) return 98;
   if (props.connected) return 100;
   if (isFailed.value) return displayProgress.value; // freeze
@@ -219,6 +258,10 @@ watch(
 );
 
 const statusText = computed(() => {
+  if (isMxcFailure.value) return t("gateway.mxcFailed");
+  if (isMxcTransition.value) {
+    return t(`settings.windowsNodeMxcLifecyclePhase.${props.mxcPhase}`);
+  }
   if (props.warming) return t("gateway.warming");
   if (props.connected) return t("gateway.ready");
   switch (props.status) {

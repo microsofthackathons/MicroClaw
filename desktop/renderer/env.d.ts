@@ -172,6 +172,7 @@ interface OpenClawAPI {
   gateway: {
     getPort(): Promise<number>;
     getStatus(): Promise<string>;
+    isServiceReady(): Promise<boolean>;
     restart(): Promise<void>;
     warmUpAgent(): Promise<{
       outcome: "skipped" | "delta" | "terminal" | "timeout" | "error" | "disconnected";
@@ -181,6 +182,7 @@ interface OpenClawAPI {
     onLog(callback: (msg: string) => void): () => void;
     onWsConnected(callback: (mainSessionKey: string | null) => void): () => void;
     onWsDisconnected(callback: (reason: string) => void): () => void;
+    onServiceReady(callback: () => void): () => void;
   };
   config: {
     getStateDir(): Promise<string>;
@@ -202,9 +204,15 @@ interface OpenClawAPI {
     refresh(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
-    setAgentSkills(agentId: string, skillIds: string[]): Promise<{ agentId: string; skills: string[] }>;
+    setAgentSkills(
+      agentId: string,
+      skillIds: string[],
+    ): Promise<{ agentId: string; skills: string[] }>;
     getStatus(agentId: string): Promise<SkillsStatus>;
-    setGlobalEnabled(skillKey: string, enabled: boolean): Promise<{ skillKey: string; enabled: boolean }>;
+    setGlobalEnabled(
+      skillKey: string,
+      enabled: boolean,
+    ): Promise<{ skillKey: string; enabled: boolean }>;
     applyAgentConfig(
       agentId: string,
       skillIds: string[],
@@ -222,11 +230,7 @@ interface OpenClawAPI {
   };
   chat: {
     isConnected(): Promise<boolean>;
-    sendMessage(
-      sessionKey: string,
-      message: string,
-      attachments?: ChatAttachment[],
-    ): Promise<void>;
+    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
@@ -310,9 +314,7 @@ interface OpenClawAPI {
     disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
     getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
     listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
-    onGitHubCopilotLoginEvent(
-      callback: (event: GitHubCopilotLoginEvent) => void,
-    ): () => void;
+    onGitHubCopilotLoginEvent(callback: (event: GitHubCopilotLoginEvent) => void): () => void;
   };
   window: {
     minimize(): Promise<void>;
@@ -339,6 +341,181 @@ interface OpenClawAPI {
   logs: {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
+  windowsNodeMxc: {
+    getStatus(): Promise<{
+      desiredEnabled: boolean;
+      effectiveEnabled: boolean;
+      lifecycleState: {
+        phase:
+          | "idle"
+          | "locking"
+          | "validating"
+          | "persisting"
+          | "starting-locked"
+          | "smoking-locked"
+          | "starting-active"
+          | "smoking-active"
+          | "verifying-active"
+          | "starting-standard"
+          | "active"
+          | "locked"
+          | "failed";
+        detail: string | null;
+        updatedAt: string;
+      };
+      folderPolicyRecovery: {
+        previous: { rw: string[]; ro: string[] };
+        draft: { rw: string[]; ro: string[] };
+        updatedAt: string;
+        lastError: string | null;
+      } | null;
+      durableApprovals: {
+        records: Array<{
+          schemaVersion: 1;
+          id: string;
+          executablePath: string;
+          executableSha256: string;
+          argv: string[];
+          commandText: string;
+          cwdBinding: string;
+          declaredAccess: Array<{ access: "ro" | "rw"; path: string }>;
+          agentId: string | null;
+          sessionKey: string;
+          policyFingerprint: string;
+          approvalPlanContract: "microclaw.windows-node-approval-plan.v2";
+          createdAt: string;
+          lastUsedAt: string | null;
+        }>;
+        invalidRecords: number;
+        warning: string | null;
+      };
+      selectedNodeId: string;
+      settingsPath: string;
+      companionPath: string;
+      companionInstalled: boolean;
+      settingsLoaded: boolean;
+      settingsFingerprint: string | null;
+      strictFallbackEffective: boolean;
+      allowWindowsUiEffective: boolean;
+      folders: Array<{ path: string; access: "ro" | "rw" }>;
+      nodes: Array<{
+        id: string;
+        displayName: string;
+        platform: string;
+        connected: boolean;
+        paired: boolean;
+        remoteIp: string | null;
+        commands: string[];
+      }>;
+      selectedNode: {
+        id: string;
+        displayName: string;
+        platform: string;
+        connected: boolean;
+        paired: boolean;
+        remoteIp: string | null;
+        commands: string[];
+      } | null;
+      helperRevision?: string;
+      mxcRuntimeVersion?: string;
+      cwdPolicyContract?: string;
+      cwdAttestationReady: boolean;
+      activationLeaseContract?: string;
+      gatewayGeneration: string;
+      activationLeaseMode: "diagnostic" | "active" | null;
+      activationLeaseExpiresAt: string | null;
+      gatewayPolicyState: "active" | "locked" | "drift";
+      gatewayPolicyReady: boolean;
+      effectiveToolsReady: boolean;
+      effectiveToolsState: "unverified" | "verified" | "drift";
+      durableApprovalsPresent: boolean | null;
+      probe: {
+        outcome: "supported" | "unsupported" | "error";
+        tier: string | null;
+        needsDaclAugmentation: boolean;
+        degraded: boolean;
+        warnings: string[];
+        reason: string | null;
+      };
+      smoke: {
+        gatewayGeneration: string;
+        nodeId: string;
+        settingsFingerprint: string;
+        probeTier: string;
+        checkedAt: string;
+        hostname: { outcome: string; reason: string };
+        powershell: { outcome: string; reason: string };
+        deniedOutsideRoot: { outcome: string; reason: string };
+      } | null;
+      blockers: string[];
+      warnings: string[];
+      remediation: string[];
+    }>;
+    setEnabled(params: {
+      enabled: boolean;
+      nodeId?: string;
+    }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
+    validateFolderPolicy(draft: {
+      rw: string[];
+      ro: string[];
+    }): Promise<{ rw: string[]; ro: string[] }>;
+    applyFolderPolicy(draft: {
+      rw: string[];
+      ro: string[];
+    }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
+    listDurableApprovals(): Promise<
+      Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
+    >;
+    revokeDurableApproval(
+      id: string,
+    ): Promise<
+      Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
+    >;
+    revokeAllDurableApprovals(): Promise<[]>;
+    getPendingApproval(): Promise<{
+      id: string;
+      executable: string;
+      arguments: string[];
+      commandText?: string;
+      agent: string | null;
+      canonicalCwd: string;
+      approvalLayer: "gateway" | "node";
+      allowedDecisions: Array<"deny" | "allow-once" | "allow-always">;
+      declaredAccess: Array<{
+        access: "ro" | "rw";
+        path: string;
+      }>;
+    } | null>;
+    respondApproval(params: {
+      requestId: string;
+      decision: "deny" | "allow-once" | "allow-always";
+    }): Promise<void>;
+    onApprovalRequest(
+      callback: (
+        request: {
+          id: string;
+          executable: string;
+          arguments: string[];
+          commandText?: string;
+          agent: string | null;
+          canonicalCwd: string;
+          approvalLayer: "gateway" | "node";
+          allowedDecisions: Array<"deny" | "allow-once" | "allow-always">;
+          declaredAccess: Array<{
+            access: "ro" | "rw";
+            path: string;
+          }>;
+        } | null,
+      ) => void,
+    ): () => void;
+    onLifecycleState(
+      callback: (
+        state: Awaited<
+          ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>
+        >["lifecycleState"],
+      ) => void,
+    ): () => void;
+  };
   sandbox: {
     getStatus(): Promise<{
       available: boolean;
@@ -360,8 +537,20 @@ interface OpenClawAPI {
     ): Promise<{ ok: boolean; caps: string[]; needsRestart: boolean }>;
     provision(): Promise<boolean>;
     getUserDirs(): Promise<{ rw: string[]; ro: string[] }>;
-    addUserDir(params: { access: "rw" | "ro" }): Promise<{
+    addUserDir(params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }): Promise<{
       ok: boolean;
+      reason?: string;
+      parentDir?: string;
+      parentAccess?: string;
+      removedChildren?: string[];
+      dirs: { rw: string[]; ro: string[] };
+    }>;
+    stageUserDir(params: {
+      access: "rw" | "ro";
+      draft: { rw: string[]; ro: string[] };
+    }): Promise<{
+      ok: boolean;
+      canceled?: boolean;
       reason?: string;
       parentDir?: string;
       parentAccess?: string;
@@ -372,6 +561,14 @@ interface OpenClawAPI {
       dir: string;
       access: "rw" | "ro";
     }): Promise<{ ok: boolean; dirs: { rw: string[]; ro: string[] } }>;
+    setUserDirAccess(params: { dir: string; access: "rw" | "ro" }): Promise<{
+      ok: boolean;
+      reason?: string;
+      parentDir?: string;
+      parentAccess?: string;
+      removedChildren?: string[];
+      dirs: { rw: string[]; ro: string[] };
+    }>;
     onPermissionRequest(
       callback: (data: {
         requestId: string;

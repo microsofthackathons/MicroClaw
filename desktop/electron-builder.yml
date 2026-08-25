@@ -5,12 +5,24 @@ copyright: Copyright © 2026 MicroClaw
 directories:
   output: release
 
+afterSign: scripts/update-signed-windows-node-manifest.mjs
+
 win:
   target:
     - target: nsis
       arch:
         - x64
   icon: assets/microclaw.ico
+  signExts:
+    # These are unmodified third-party MXC binaries. MicroClaw-owned helpers,
+    # including microclaw-mxc-host-prep.exe, remain eligible for product signing.
+    - "!mxc-diagnostic-console.exe"
+    - "!winhttp-proxy-shim.exe"
+    - "!wxc-exec.exe"
+    - "!wxc-host-prep.exe"
+    - "!wxc-test-proxy.exe"
+    - "!wxc-windows-sandbox-daemon.exe"
+    - "!wxc-windows-sandbox-guest.exe"
 
 appx:
   artifactName: MicroClawDesktop-${version}-${arch}.msix
@@ -37,12 +49,16 @@ nsis:
 extraResources:
   - from: dist/github-copilot-auth-worker.js
     to: github-copilot-auth-worker.js
+  - from: src/openclaw-approval-replay-compat.mjs
+    to: openclaw-approval-replay-compat.mjs
   - from: resources/node.exe
     to: node.exe
   - from: resources/openclaw/
     to: openclaw/
   - from: resources/openclaw.asar
     to: openclaw.asar
+  - from: resources/windows-node/
+    to: windows-node/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js

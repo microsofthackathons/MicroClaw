@@ -1,0 +1,887 @@
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+  WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
+  WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+  type MxcProbeResult,
+  type MxcSmokeResult,
+  type WindowsNodeMxcFolder,
+  type WindowsNodeMxcSettings,
+  type WindowsNodeRecord,
+  classifyMxcProbe,
+  classifyMxcSmoke,
+  classifyMissingEffectiveToolSession,
+  extractEffectiveToolNames,
+  getWindowsNodeMxcGatewayPolicyState,
+  getMxcTierWarning,
+  listAgentSessionKeys,
+  listConfiguredSandboxFolders,
+  normalizeWindowsNodeRecord,
+  validateEffectiveToolNames,
+  validateSelectedWindowsNode,
+  validateWindowsNodeMxcSettings,
+  type WindowsNodeMxcGatewayPolicyState,
+} from "./windows-node-mxc";
+import type {
+  BundledWindowsNodeActivationLease,
+  BundledWindowsNodeHostStatus,
+} from "./bundled-windows-node-host";
+import {
+  WINDOWS_NODE_MXC_READINESS_AGENT_ID,
+  WINDOWS_NODE_MXC_READINESS_COMMAND,
+  WINDOWS_NODE_MXC_READINESS_PROBES,
+  createWindowsNodeMxcReadinessProofMinter,
+  windowsNodeMxcReadinessSessionKey,
+  type WindowsNodeMxcReadinessPlan,
+  type WindowsNodeMxcReadinessProbeKind,
+  type WindowsNodeMxcReadinessProofContext,
+} from "./windows-node-mxc-readiness-proof";
+
+const WINDOWS_NODE_SETTINGS_FILENAME = "settings.json";
+const HOSTNAME_MARKER = "MICROCLAW_MXC_HOSTNAME_OK";
+const POWERSHELL_MARKER = "MICROCLAW_MXC_POWERSHELL_OK";
+const ATTENDED_SMOKE_GATEWAY_TIMEOUT_MS = 90_000;
+const ATTENDED_SMOKE_CLIENT_TIMEOUT_MS = 95_000;
+
+export interface WindowsNodeMxcGateway {
+  connected: boolean;
+  request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
+}
+
+export function isCurrentBundledWindowsNodeApprovalCallback(state: {
+  expectedHostGeneration: number;
+  currentHostGeneration: number;
+  gatewayConnected: boolean;
+  gatewayMatches: boolean;
+  gatewayProcessMatches: boolean;
+  expectedGatewayGeneration: string;
+  currentGatewayGeneration: string;
+}): boolean {
+  return (
+    state.expectedHostGeneration === state.currentHostGeneration &&
+    state.gatewayConnected &&
+    state.gatewayMatches &&
+    state.gatewayProcessMatches &&
+    state.expectedGatewayGeneration === state.currentGatewayGeneration
+  );
+}
+
+export interface StoredWindowsNodeMxcSmoke {
+  gatewayGeneration: string;
+  nodeId: string;
+  settingsFingerprint: string;
+  probeTier: string;
+  checkedAt: string;
+  hostname: MxcSmokeResult;
+  powershell: MxcSmokeResult;
+  deniedOutsideRoot: MxcSmokeResult;
+}
+
+export interface WindowsNodeMxcReadinessAuthorization {
+  transitionId: string;
+  proofContext: WindowsNodeMxcReadinessProofContext;
+}
+
+export interface WindowsNodeMxcRuntimeStatus {
+  desiredEnabled: boolean;
+  effectiveEnabled: boolean;
+  selectedNodeId: string;
+  settingsPath: string;
+  companionPath: string;
+  companionInstalled: boolean;
+  settingsLoaded: boolean;
+  settingsFingerprint: string | null;
+  strictFallbackEffective: boolean;
+  allowWindowsUiEffective: boolean;
+  folders: WindowsNodeMxcFolder[];
+  nodes: WindowsNodeRecord[];
+  selectedNode: WindowsNodeRecord | null;
+  helperRevision?: string;
+  mxcRuntimeVersion?: string;
+  cwdPolicyContract?: string;
+  cwdAttestationReady: boolean;
+  activationLeaseContract?: string;
+  gatewayGeneration: string;
+  activationLeaseMode: "diagnostic" | "active" | null;
+  activationLeaseExpiresAt: string | null;
+  gatewayPolicyState: WindowsNodeMxcGatewayPolicyState;
+  gatewayPolicyReady: boolean;
+  effectiveToolsReady: boolean;
+  effectiveToolsState: "unverified" | "verified" | "drift";
+  durableApprovalsPresent: boolean | null;
+  probe: MxcProbeResult;
+  smoke: StoredWindowsNodeMxcSmoke | null;
+  blockers: string[];
+  warnings: string[];
+  remediation: string[];
+}
+
+export interface InspectWindowsNodeMxcOptions {
+  desiredEnabled: boolean;
+  selectedNodeId: string;
+  config: unknown;
+  gateway: WindowsNodeMxcGateway | null;
+  managedGateway: boolean;
+  gatewayGeneration: string;
+  storedSmoke?: StoredWindowsNodeMxcSmoke | null;
+  appData?: string;
+  localAppData?: string;
+  userProfile?: string;
+  environment?: NodeJS.ProcessEnv;
+  bundledHost?: BundledWindowsNodeHostStatus;
+  bundledFolders?: WindowsNodeMxcFolder[];
+}
+
+export function resolveWindowsNodeSettingsPath(
+  environment: NodeJS.ProcessEnv = process.env,
+  appData = environment.APPDATA ?? "",
+): string {
+  const override = environment.OPENCLAW_TRAY_DATA_DIR?.trim();
+  return path.join(override || path.join(appData, "OpenClawTray"), WINDOWS_NODE_SETTINGS_FILENAME);
+}
+
+export function resolveWindowsCompanionPath(localAppData = process.env.LOCALAPPDATA ?? ""): string {
+  return path.join(localAppData, "OpenClawTray", "OpenClaw.Tray.WinUI.exe");
+}
+
+export function resolveWxcExecPath(
+  environment: NodeJS.ProcessEnv = process.env,
+  localAppData = environment.LOCALAPPDATA ?? "",
+): string {
+  const override = environment.OPENCLAW_WXC_EXEC?.trim();
+  if (override) return override;
+  const architecture = process.arch === "arm64" ? "arm64" : "x64";
+  return path.join(localAppData, "OpenClawTray", "tools", "mxc", architecture, "wxc-exec.exe");
+}
+
+export async function inspectWindowsNodeMxc(
+  options: InspectWindowsNodeMxcOptions,
+): Promise<WindowsNodeMxcRuntimeStatus> {
+  const environment = options.environment ?? process.env;
+  const appData = options.appData ?? environment.APPDATA ?? "";
+  const localAppData = options.localAppData ?? environment.LOCALAPPDATA ?? "";
+  const userProfile = options.userProfile ?? environment.USERPROFILE ?? os.homedir();
+  const selectedNodeId = options.selectedNodeId.trim();
+  const bundled = options.bundledHost;
+  const settingsPath = bundled
+    ? "MicroClaw-managed policy"
+    : resolveWindowsNodeSettingsPath(environment, appData);
+  const companionPath = bundled ? bundled.hostPath : resolveWindowsCompanionPath(localAppData);
+  const wxcExecPath = bundled ? bundled.wxcExecPath : resolveWxcExecPath(environment, localAppData);
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  const remediation: string[] = [];
+
+  const settings = bundled
+    ? ({
+        EnableNodeMode: true,
+        NodeSystemRunEnabled: true,
+        NodeCanvasEnabled: false,
+        NodeScreenEnabled: false,
+        NodeCameraEnabled: false,
+        NodeLocationEnabled: false,
+        NodeBrowserProxyEnabled: false,
+        NodeSttEnabled: false,
+        NodeTtsEnabled: false,
+        EnableMcpServer: false,
+        SystemRunSandboxEnabled: true,
+        SystemRunBlockHostFallbackWhenMxcUnavailable: true,
+        SystemRunAllowWindowsUi: true,
+        SystemRunAllowOutbound: false,
+        SandboxClipboard: 0,
+      } satisfies WindowsNodeMxcSettings)
+    : await readWindowsNodeSettings(settingsPath);
+  const settingsCheck = validateWindowsNodeMxcSettings(settings);
+  blockers.push(...settingsCheck.blockers);
+  warnings.push(...settingsCheck.warnings);
+  if (bundled && !bundled.processRunning) {
+    blockers.push(bundled.lastError ?? "Bundled MicroClaw Windows node host is not running");
+    remediation.push("Restart MicroClaw so it can start its app-owned Windows node host.");
+  } else if (!settings) {
+    remediation.push(
+      `Install and launch OpenClaw Windows Companion, then configure its Sandbox page. Expected settings: ${settingsPath}`,
+    );
+  } else if (!settingsCheck.ready) {
+    remediation.push(
+      "In Windows Companion, enable node mode and system tools; enable MXC and strict host-fallback blocking; enable Allow Windows UI APIs; disable network, clipboard, MCP, and all non-system node capabilities.",
+    );
+  }
+
+  const settingsFingerprint = settings ? fingerprintSecuritySettings(settings) : null;
+  const folders = bundled
+    ? (options.bundledFolders ?? [])
+    : settings
+      ? listConfiguredSandboxFolders(settings, userProfile)
+      : [];
+  const companionInstalled = bundled ? fs.existsSync(companionPath) : fs.existsSync(companionPath);
+  if (!companionInstalled) {
+    blockers.push(
+      bundled
+        ? "Bundled MicroClaw Windows node host is missing"
+        : "OpenClaw Windows Companion is not installed at the supported per-user path",
+    );
+    remediation.push(
+      bundled
+        ? "Repair or reinstall MicroClaw's bundled Windows node resources."
+        : `Install the pinned Windows Companion build at ${companionPath}`,
+    );
+  }
+
+  const probe = await runMxcProbe(wxcExecPath);
+  if (probe.outcome !== "supported") {
+    blockers.push(probe.reason ?? "MXC probe did not report a usable tier");
+    remediation.push(
+      `Repair MXC or set OPENCLAW_WXC_EXEC to the pinned wxc-exec.exe; checked ${wxcExecPath}`,
+    );
+  }
+  const tierWarning = getMxcTierWarning(probe);
+  if (tierWarning) warnings.push(tierWarning);
+  warnings.push(...probe.warnings);
+
+  const gatewayPolicyState = getWindowsNodeMxcGatewayPolicyState(options.config, selectedNodeId);
+  const gatewayPolicyReady = gatewayPolicyState !== "drift";
+  if (gatewayPolicyState === "drift") {
+    blockers.push("Gateway agent tool policy drifted from the diagnostic-only locked MXC policy");
+  } else if (gatewayPolicyState === "locked") {
+    blockers.push("Gateway agent execution remains diagnostic-only and locked");
+  }
+
+  let nodes: WindowsNodeRecord[] = [];
+  let selectedNode: WindowsNodeRecord | null = null;
+  let effectiveToolsReady = false;
+  let effectiveToolsState: WindowsNodeMxcRuntimeStatus["effectiveToolsState"] = "unverified";
+  let durableApprovalsPresent: boolean | null = null;
+  let cwdAttestationReady = false;
+  if (!selectedNodeId) {
+    blockers.push(
+      bundled
+        ? "The app-owned Windows node identity is unavailable"
+        : "Select one paired local Windows node by stable node ID",
+    );
+  }
+  if (options.desiredEnabled && !options.managedGateway) {
+    blockers.push("Windows Node + MXC mode requires a freshly started MicroClaw managed Gateway");
+  }
+  if (!options.gateway?.connected) {
+    blockers.push("MicroClaw managed Gateway is not connected");
+  } else {
+    try {
+      const payload = await options.gateway.request<unknown>("node.list", {});
+      nodes = extractNodeRecords(payload);
+      if (bundled?.nodeId) {
+        nodes = nodes.map((node) =>
+          node.id === bundled.nodeId ? { ...node, displayName: bundled.displayName } : node,
+        );
+      }
+      selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+      blockers.push(...validateSelectedWindowsNode(selectedNode, bundled?.nodeId ?? "").blockers);
+      if (bundled && selectedNode?.connected) {
+        try {
+          const attestation = await options.gateway.request("node.invoke", {
+            nodeId: selectedNodeId,
+            command: WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+            params: {},
+            timeoutMs: 30_000,
+            idempotencyKey: randomUUID(),
+          });
+          const attestationCheck = validateBundledCwdAttestation(attestation);
+          cwdAttestationReady = attestationCheck.ready;
+          durableApprovalsPresent = attestationCheck.durableApprovalsPresent;
+          if (!attestationCheck.ready) blockers.push(...attestationCheck.blockers);
+        } catch (error) {
+          blockers.push(`Bundled node CWD attestation failed: ${messageOf(error)}`);
+        }
+      }
+    } catch (error) {
+      blockers.push(`Could not list Gateway nodes: ${messageOf(error)}`);
+    }
+
+    if (selectedNodeId) {
+      const agentIds = listAgentIds(options.config);
+      try {
+        const expectedToolsState = gatewayPolicyState === "active" ? "active" : "locked";
+        const sessionKeys = await listAgentSessionKeys(options.gateway, agentIds);
+        const effectiveChecks = await Promise.all(
+          agentIds.map(async (agentId) => {
+            const sessionKey = sessionKeys.get(agentId);
+            if (!sessionKey) {
+              return classifyMissingEffectiveToolSession(agentId, expectedToolsState);
+            }
+            const result = await options.gateway!.request("tools.effective", {
+              agentId,
+              sessionKey,
+            });
+            const check = validateEffectiveToolNames(
+              extractEffectiveToolNames(result),
+              expectedToolsState,
+            );
+            return {
+              ready: check.ready,
+              blockers: check.blockers.map((blocker) => `Agent "${agentId}": ${blocker}`),
+              warnings: [],
+            };
+          }),
+        );
+        effectiveToolsReady = effectiveChecks.every((check) => check.ready);
+        effectiveToolsState = effectiveToolsReady ? "verified" : "drift";
+        blockers.push(...effectiveChecks.flatMap((check) => check.blockers));
+        warnings.push(...effectiveChecks.flatMap((check) => check.warnings));
+      } catch (error) {
+        blockers.push(`Could not verify effective Gateway tools: ${messageOf(error)}`);
+      }
+
+      if (!bundled) {
+        try {
+          const approvals = await options.gateway.request("exec.approvals.node.get", {
+            nodeId: selectedNodeId,
+          });
+          durableApprovalsPresent = hasDurableApprovals(approvals);
+        } catch (error) {
+          blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
+        }
+        if (durableApprovalsPresent) {
+          blockers.push(
+            "Selected node has durable exec approvals, which the pinned Windows Node does not bind to cwd",
+          );
+        }
+      }
+    }
+  }
+
+  if (
+    selectedNode &&
+    selectedNode.commands.includes(WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND) === false
+  ) {
+    remediation.push(
+      "Upstream Windows Node must canonicalize cwd through reparse points, restrict it to configured folder grants, bind canonical cwd into durable approval identity, and revalidate immediately before launch.",
+    );
+  }
+
+  const smoke = selectCurrentWindowsNodeMxcSmoke(
+    options.storedSmoke,
+    options.gatewayGeneration,
+    selectedNodeId,
+    settingsFingerprint,
+    probe.tier,
+  );
+  if (
+    !smoke ||
+    smoke.hostname.outcome !== "passed" ||
+    smoke.powershell.outcome !== "passed" ||
+    smoke.deniedOutsideRoot.outcome !== "passed"
+  ) {
+    blockers.push(
+      "A current contained hostname.exe and PowerShell child-process smoke proof is required",
+    );
+    remediation.push(
+      bundled
+        ? "Retry automatic readiness. MicroClaw authorizes only its fixed internal probes; normal commands still require approval."
+        : "Run the contained child-process check from MicroClaw Security settings and approve each command once in Windows Companion.",
+    );
+  } else if (bundled && gatewayPolicyState === "locked") {
+    remediation.push("Activate the verified MXC route from MicroClaw Security settings.");
+  }
+
+  const activationLease = bundled?.activationLease ?? null;
+  if (gatewayPolicyState === "active") {
+    if (
+      !isCurrentBundledActivationLease(
+        activationLease,
+        "active",
+        options.gatewayGeneration,
+        bundled?.policyFingerprint ?? null,
+      )
+    ) {
+      blockers.push(
+        "The bundled node does not hold an active generation- and policy-bound activation lease",
+      );
+    }
+  } else if (activationLease?.mode === "active") {
+    blockers.push("The bundled node retained an active lease while the Gateway policy is locked");
+  }
+
+  const effectiveEnabled =
+    options.desiredEnabled &&
+    gatewayPolicyState === "active" &&
+    effectiveToolsReady &&
+    blockers.length === 0;
+
+  return {
+    desiredEnabled: options.desiredEnabled,
+    effectiveEnabled,
+    selectedNodeId,
+    settingsPath,
+    companionPath,
+    companionInstalled,
+    settingsLoaded: settings !== null,
+    settingsFingerprint,
+    strictFallbackEffective:
+      settings?.SystemRunSandboxEnabled === true &&
+      settings.SystemRunBlockHostFallbackWhenMxcUnavailable === true,
+    allowWindowsUiEffective: settings?.SystemRunAllowWindowsUi === true,
+    folders,
+    nodes,
+    selectedNode,
+    helperRevision: bundled?.helperRevision,
+    mxcRuntimeVersion: bundled?.runtimeVersion,
+    cwdPolicyContract: bundled?.cwdPolicyContract,
+    cwdAttestationReady,
+    activationLeaseContract: bundled ? "microclaw.windows-activation.v1" : undefined,
+    gatewayGeneration: options.gatewayGeneration,
+    activationLeaseMode: activationLease?.mode ?? null,
+    activationLeaseExpiresAt: activationLease
+      ? new Date(activationLease.expiresAtUnixMs).toISOString()
+      : null,
+    gatewayPolicyState,
+    gatewayPolicyReady,
+    effectiveToolsReady,
+    effectiveToolsState,
+    durableApprovalsPresent,
+    probe,
+    smoke,
+    blockers: [...new Set(blockers)],
+    warnings: [...new Set(warnings)],
+    remediation: [...new Set(remediation)],
+  };
+}
+
+export function shouldStopManagedGatewayForWindowsNodeMxc(
+  status: Pick<
+    WindowsNodeMxcRuntimeStatus,
+    "effectiveEnabled" | "effectiveToolsState" | "gatewayPolicyState"
+  >,
+): boolean {
+  if (status.gatewayPolicyState === "drift" || status.effectiveToolsState === "drift") return true;
+  return status.gatewayPolicyState === "active" && !status.effectiveEnabled;
+}
+
+export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWindowsNodeMxcSmoke {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.gatewayGeneration === "string" &&
+    typeof value.nodeId === "string" &&
+    typeof value.settingsFingerprint === "string" &&
+    typeof value.probeTier === "string" &&
+    typeof value.checkedAt === "string" &&
+    isMxcSmokeResult(value.hostname) &&
+    isMxcSmokeResult(value.powershell) &&
+    isMxcSmokeResult(value.deniedOutsideRoot)
+  );
+}
+
+export function selectCurrentWindowsNodeMxcSmoke(
+  value: unknown,
+  gatewayGeneration: string,
+  nodeId: string,
+  settingsFingerprint: string | null,
+  probeTier: string | null | undefined,
+): StoredWindowsNodeMxcSmoke | null {
+  return isCurrentWindowsNodeMxcSmoke(value) &&
+    value.gatewayGeneration === gatewayGeneration &&
+    value.nodeId === nodeId &&
+    value.settingsFingerprint === settingsFingerprint &&
+    value.probeTier === probeTier
+    ? value
+    : null;
+}
+
+export function isCurrentBundledActivationLease(
+  lease: BundledWindowsNodeActivationLease | null,
+  mode: BundledWindowsNodeActivationLease["mode"],
+  gatewayGeneration: string,
+  policyFingerprint: string | null,
+): boolean {
+  return (
+    lease !== null &&
+    lease.mode === mode &&
+    lease.gatewayGeneration === gatewayGeneration &&
+    lease.policyFingerprint === policyFingerprint &&
+    lease.expiresAtUnixMs > Date.now()
+  );
+}
+
+export function validateBundledCwdAttestation(value: unknown): {
+  ready: boolean;
+  blockers: string[];
+  durableApprovalsPresent: boolean | null;
+} {
+  const record = findAttestationRecord(value);
+  const expected = {
+    contract: "microclaw.windows-cwd.v1",
+    approvedRootOnly: true,
+    canonicalFinalPath: true,
+    rejectsReparseComponents: true,
+    durableApprovalBindsCwd: true,
+    durableApprovalBindsDeclaredAccess: true,
+    launchTimeRevalidation: true,
+    omittedCwdUsesIsolatedScratch: true,
+    hostFallbackAbsent: true,
+    activationLeaseContract: "microclaw.windows-activation.v1",
+    generationBoundActivation: true,
+    policyBoundActivation: true,
+    launchTimeLeaseRevalidation: true,
+    approvalProofContract: "microclaw.windows-node-approval.v1",
+    activeRunsRequireApprovalProof: true,
+    approvalProofOneUse: true,
+    approvalProofBindsPreparedPlan: true,
+    approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
+    approvalProofBindsExecutableContent: true,
+    approvalProofBindsActivation: true,
+    durableApprovalStoreProtected: true,
+    readinessProofContract: "microclaw.windows-node-readiness.v1",
+    readinessProofBindsTransition: true,
+    readinessProofBindsPreparedPlan: true,
+    readinessProofExactBuiltInsOnly: true,
+    readinessProofOneUse: true,
+  };
+  const blockers = Object.entries(expected)
+    .filter(([key, expectedValue]) => record?.[key] !== expectedValue)
+    .map(([key]) => `Bundled node CWD attestation is missing or invalid: ${key}`);
+  const durableApprovalsPresent =
+    typeof record?.durableApprovalsPresent === "boolean" ? record.durableApprovalsPresent : null;
+  if (durableApprovalsPresent === null) {
+    blockers.push("Bundled node CWD attestation is missing or invalid: durableApprovalsPresent");
+  }
+  return { ready: blockers.length === 0, blockers, durableApprovalsPresent };
+}
+
+function findAttestationRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.contract === "microclaw.windows-cwd.v1") return record;
+  for (const key of ["payload", "result", "data"]) {
+    const nested = findAttestationRecord(record[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+export async function runWindowsNodeMxcSmoke(
+  gateway: WindowsNodeMxcGateway,
+  gatewayGeneration: string,
+  nodeId: string,
+  settingsFingerprint: string,
+  probeTier: string,
+  authorization: WindowsNodeMxcReadinessAuthorization,
+): Promise<StoredWindowsNodeMxcSmoke> {
+  if (!gateway.connected) throw new Error("MicroClaw managed Gateway is not connected");
+  if (!nodeId.trim()) throw new Error("A stable Windows node ID is required");
+  if (!settingsFingerprint) throw new Error("Strict Windows Companion settings are not loaded");
+  if (!probeTier) throw new Error("A supported MXC tier is required");
+  if (
+    authorization.transitionId !== authorization.proofContext.readinessTransitionId ||
+    gatewayGeneration !== authorization.proofContext.gatewayGeneration ||
+    nodeId.toLowerCase() !== authorization.proofContext.nodeId.toLowerCase()
+  ) {
+    throw new Error("Internal readiness authorization does not match this lifecycle generation");
+  }
+  const minter = createWindowsNodeMxcReadinessProofMinter(authorization.proofContext);
+
+  const deniedOutsideRoot = await invokeDeniedCwdSmoke(gateway, nodeId);
+  const hostname = await invokeInternalReadinessProbe(
+    gateway,
+    nodeId,
+    "hostname",
+    HOSTNAME_MARKER,
+    authorization.transitionId,
+    minter,
+  );
+  let powershell: MxcSmokeResult = {
+    outcome: "failed",
+    reason: "PowerShell smoke was not run because hostname.exe did not pass",
+  };
+  if (hostname.outcome === "passed") {
+    powershell = await invokeInternalReadinessProbe(
+      gateway,
+      nodeId,
+      "powershell",
+      POWERSHELL_MARKER,
+      authorization.transitionId,
+      minter,
+    );
+  }
+  return {
+    gatewayGeneration,
+    nodeId: nodeId.trim(),
+    settingsFingerprint,
+    probeTier,
+    checkedAt: new Date().toISOString(),
+    hostname,
+    powershell,
+    deniedOutsideRoot,
+  };
+}
+
+async function invokeDeniedCwdSmoke(
+  gateway: WindowsNodeMxcGateway,
+  nodeId: string,
+): Promise<MxcSmokeResult> {
+  try {
+    await gateway.request("node.invoke", {
+      nodeId,
+      command: "system.run",
+      params: {
+        command: ["C:\\Windows\\System32\\hostname.exe"],
+        cwd: "C:\\Windows",
+        timeoutMs: 15_000,
+      },
+      timeoutMs: 20_000,
+      idempotencyKey: randomUUID(),
+    });
+    return {
+      outcome: "failed",
+      reason: "The bundled node unexpectedly accepted a protected CWD outside approved roots",
+    };
+  } catch (error) {
+    return classifyDeniedCwdSmoke(messageOf(error));
+  }
+}
+
+export function classifyDeniedCwdSmoke(message: string): MxcSmokeResult {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("cwd-sensitive-root") ||
+    normalized.includes("cwd-outside-approved-root")
+  ) {
+    return {
+      outcome: "passed",
+      reason: "The bundled node denied a protected CWD outside approved roots",
+    };
+  }
+  return {
+    outcome: "failed",
+    reason: `Unapproved-CWD proof failed with an unexpected result: ${message}`,
+  };
+}
+
+async function invokeInternalReadinessProbe(
+  gateway: WindowsNodeMxcGateway,
+  nodeId: string,
+  probeKind: WindowsNodeMxcReadinessProbeKind,
+  marker: string,
+  transitionId: string,
+  minter: ReturnType<typeof createWindowsNodeMxcReadinessProofMinter>,
+): Promise<MxcSmokeResult> {
+  const command = [...WINDOWS_NODE_MXC_READINESS_PROBES[probeKind]];
+  const sessionKey = windowsNodeMxcReadinessSessionKey(transitionId);
+  try {
+    const prepared = await gateway.request(
+      "node.invoke",
+      {
+        nodeId,
+        command: "system.run.prepare",
+        params: {
+          command,
+          timeoutMs: 15_000,
+          agentId: WINDOWS_NODE_MXC_READINESS_AGENT_ID,
+          sessionKey,
+        },
+        timeoutMs: 20_000,
+        idempotencyKey: randomUUID(),
+      },
+      25_000,
+    );
+    const plan = findReadinessPlan(prepared);
+    if (!plan) {
+      throw new Error(`The bundled node did not return an exact ${probeKind} readiness plan`);
+    }
+    const proof = minter.mint({ transitionId, nodeId, probeKind, plan });
+    console.info(
+      `[windows-node-mxc] Running internal fixed readiness probe kind=${probeKind} transition=${transitionId} generation=${proof.gatewayGeneration}`,
+    );
+    const result = await gateway.request(
+      "node.invoke",
+      {
+        nodeId,
+        command: WINDOWS_NODE_MXC_READINESS_COMMAND,
+        params: {
+          command,
+          cwd: null,
+          rawCommand: plan.commandText,
+          timeoutMs: 15_000,
+          agentId: WINDOWS_NODE_MXC_READINESS_AGENT_ID,
+          sessionKey,
+          systemRunPlan: plan,
+          probeKind,
+          microclawReadinessProof: proof,
+        },
+        timeoutMs: ATTENDED_SMOKE_GATEWAY_TIMEOUT_MS,
+        idempotencyKey: randomUUID(),
+      },
+      ATTENDED_SMOKE_CLIENT_TIMEOUT_MS,
+    );
+    return classifyMxcSmoke(result, marker);
+  } catch (error) {
+    return classifyMxcSmoke({ error: messageOf(error) }, marker);
+  }
+
+  function findReadinessPlan(value: unknown): WindowsNodeMxcReadinessPlan | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (
+      Array.isArray(record.argv) &&
+      record.argv.every((entry) => typeof entry === "string") &&
+      (record.cwd === undefined || record.cwd === null || typeof record.cwd === "string") &&
+      typeof record.commandText === "string" &&
+      (record.commandPreview === undefined ||
+        record.commandPreview === null ||
+        typeof record.commandPreview === "string") &&
+      (record.agentId === null || typeof record.agentId === "string") &&
+      typeof record.sessionKey === "string" &&
+      typeof record.executablePath === "string" &&
+      typeof record.executableSha256 === "string" &&
+      typeof record.cwdBinding === "string" &&
+      Array.isArray(record.declaredAccess)
+    ) {
+      return {
+        ...record,
+        cwd: record.cwd ?? null,
+        commandPreview: record.commandPreview ?? null,
+      } as unknown as WindowsNodeMxcReadinessPlan;
+    }
+    for (const key of ["plan", "payload", "result", "data"]) {
+      const nested = findReadinessPlan(record[key]);
+      if (nested) return nested;
+    }
+    return null;
+  }
+}
+
+async function readWindowsNodeSettings(
+  settingsPath: string,
+): Promise<WindowsNodeMxcSettings | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const contents = await fs.promises.readFile(settingsPath, "utf-8");
+      const parsed = JSON.parse(contents);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as WindowsNodeMxcSettings;
+      }
+    } catch {
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  return null;
+}
+
+function fingerprintSecuritySettings(settings: WindowsNodeMxcSettings): string {
+  const relevant = {
+    EnableNodeMode: settings.EnableNodeMode,
+    NodeSystemRunEnabled: settings.NodeSystemRunEnabled,
+    NodeCanvasEnabled: settings.NodeCanvasEnabled,
+    NodeScreenEnabled: settings.NodeScreenEnabled,
+    NodeCameraEnabled: settings.NodeCameraEnabled,
+    NodeLocationEnabled: settings.NodeLocationEnabled,
+    NodeBrowserProxyEnabled: settings.NodeBrowserProxyEnabled,
+    NodeSttEnabled: settings.NodeSttEnabled,
+    NodeTtsEnabled: settings.NodeTtsEnabled,
+    EnableMcpServer: settings.EnableMcpServer,
+    SystemRunSandboxEnabled: settings.SystemRunSandboxEnabled,
+    SystemRunBlockHostFallbackWhenMxcUnavailable:
+      settings.SystemRunBlockHostFallbackWhenMxcUnavailable,
+    SystemRunAllowOutbound: settings.SystemRunAllowOutbound,
+    SystemRunAllowWindowsUi: settings.SystemRunAllowWindowsUi,
+    SandboxClipboard: settings.SandboxClipboard,
+    SandboxDocumentsAccess: settings.SandboxDocumentsAccess,
+    SandboxDownloadsAccess: settings.SandboxDownloadsAccess,
+    SandboxDesktopAccess: settings.SandboxDesktopAccess,
+    SandboxCustomFolders: settings.SandboxCustomFolders,
+  };
+  return createHash("sha256").update(JSON.stringify(relevant)).digest("hex");
+}
+
+function extractNodeRecords(payload: unknown): WindowsNodeRecord[] {
+  const record =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  const values = Array.isArray(payload)
+    ? payload
+    : Array.isArray(record.nodes)
+      ? record.nodes
+      : Array.isArray(record.paired)
+        ? record.paired
+        : [];
+  return values
+    .map(normalizeWindowsNodeRecord)
+    .filter((entry): entry is WindowsNodeRecord => entry !== null);
+}
+
+function listAgentIds(config: unknown): string[] {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return [];
+  const agents = (config as Record<string, unknown>).agents;
+  if (!agents || typeof agents !== "object" || Array.isArray(agents)) return [];
+  const list = (agents as Record<string, unknown>).list;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const id = (entry as Record<string, unknown>).id;
+    return typeof id === "string" && id.trim() ? [id.trim()] : [];
+  });
+}
+
+function hasDurableApprovals(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const root = payload as Record<string, unknown>;
+  const file =
+    root.file && typeof root.file === "object" && !Array.isArray(root.file)
+      ? (root.file as Record<string, unknown>)
+      : root;
+  const agents =
+    file.agents && typeof file.agents === "object" && !Array.isArray(file.agents)
+      ? (file.agents as Record<string, unknown>)
+      : {};
+  return Object.values(agents).some((agent) => {
+    if (!agent || typeof agent !== "object" || Array.isArray(agent)) return false;
+    const allowlist = (agent as Record<string, unknown>).allowlist;
+    return Array.isArray(allowlist) && allowlist.length > 0;
+  });
+}
+
+async function runMxcProbe(wxcExecPath: string): Promise<MxcProbeResult> {
+  if (!fs.existsSync(wxcExecPath)) {
+    return classifyMxcProbe(null, "", "", `wxc-exec.exe not found at ${wxcExecPath}`);
+  }
+  return new Promise((resolve) => {
+    execFile(
+      wxcExecPath,
+      ["--probe"],
+      {
+        windowsHide: true,
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf-8",
+      },
+      (error, stdout, stderr) => {
+        if (error && "killed" in error && error.killed) {
+          resolve(classifyMxcProbe(null, "", "wxc-exec --probe timed out", "probe timed out"));
+          return;
+        }
+        const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
+        resolve(
+          classifyMxcProbe(exitCode, stdout, stderr, error && !stdout ? error.message : undefined),
+        );
+      },
+    );
+  });
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMxcSmokeResult(value: unknown): value is MxcSmokeResult {
+  return isRecord(value) && typeof value.outcome === "string" && typeof value.reason === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export const WINDOWS_NODE_MXC_DIAGNOSTIC_COMMANDS = [
+  ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
+  WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+] as const;

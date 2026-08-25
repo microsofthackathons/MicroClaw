@@ -1,5 +1,11 @@
 export const GATEWAY_MIN_PROTOCOL_VERSION = 3;
 export const GATEWAY_MAX_PROTOCOL_VERSION = 4;
+export const GATEWAY_OPERATOR_SCOPES = [
+  "operator.admin",
+  "operator.read",
+  "operator.write",
+  "operator.approvals",
+] as const;
 
 export type GatewayConnectInput = {
   token: string;
@@ -22,7 +28,7 @@ export function buildGatewayConnectParams(input: GatewayConnectInput): Record<st
       mode: "backend",
     },
     role: "operator",
-    scopes: ["operator.admin", "operator.read", "operator.write"],
+    scopes: [...GATEWAY_OPERATOR_SCOPES],
     device: {
       id: input.deviceId,
       publicKey: input.publicKey,
