@@ -311,21 +311,20 @@
         <div class="sub-label-row">
           <span class="sub-label">{{ t("settings.webSearch") }}</span>
           <div class="sub-label-actions">
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="!searchDirty"
-              :loading="searchSavingAll"
-              @click="saveSearchSettings"
-              >{{ t("settings.save") }}</el-button
+            <span
+              v-if="searchSaveStatus !== 'idle'"
+              class="status-indicator"
+              :class="searchSaveStatusClass"
             >
+              <span class="status-dot"></span>
+              {{ searchSaveStatusText }}
+            </span>
           </div>
         </div>
         <div class="card-group">
-          <div class="card-row">
+          <div class="card-row" :class="{ 'no-border': !activeSearchProvider.requiresKey }">
             <span class="row-label">{{ t("settings.provider") }}</span>
-            <el-select v-model="searchProvider" style="width: 130px">
+            <el-select v-model="searchProvider" style="width: 130px" @change="handleSearchProviderChange">
               <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
           </div>
@@ -343,11 +342,9 @@
               show-password
               :placeholder="activeSearchProvider.placeholder"
               class="provider-key-input"
+              @blur="saveSearchKeyIfReady"
+              @keyup.enter="saveSearchKeyIfReady"
             />
-          </div>
-          <div v-else class="card-row no-border">
-            <span class="row-label">{{ t("settings.apiKey") }}</span>
-            <span class="placeholder-text">{{ t("settings.noApiKeyRequired") }}</span>
           </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
@@ -1946,10 +1943,20 @@ const savedSearchKeys = reactive<Record<SearchProviderId, string>>({
   brave: "",
   tavily: "",
 });
-const searchSavingAll = ref(false);
-const searchDirty = computed(() => {
-  if (searchProvider.value !== savedSearchProvider.value) return true;
-  return searchProviders.some((p) => searchKeys[p.id].trim() !== savedSearchKeys[p.id]);
+type SearchSaveStatus = "idle" | "saving" | "saved" | "error" | "invalid";
+const searchSaveStatus = ref<SearchSaveStatus>("idle");
+const searchSaveError = ref("");
+const searchSaveStatusClass = computed(() => {
+  if (searchSaveStatus.value === "saved") return "status-indicator--ok";
+  if (searchSaveStatus.value === "saving") return "status-indicator--muted";
+  return "status-indicator--error";
+});
+const searchSaveStatusText = computed(() => {
+  if (searchSaveStatus.value === "saving") return t("settings.saving");
+  if (searchSaveStatus.value === "saved") return t("settings.saved");
+  if (searchSaveStatus.value === "invalid") return searchSaveError.value;
+  if (searchSaveStatus.value === "error") return t("settings.searchSaveFailed");
+  return "";
 });
 
 // --- Usage state ---
@@ -2446,6 +2453,24 @@ function snapshotSearchConfig(): void {
   for (const p of searchProviders) savedSearchKeys[p.id] = searchKeys[p.id].trim();
 }
 
+function validateActiveSearchKey(): string | null {
+  if (!activeSearchProvider.value.requiresKey) return null;
+  const key = searchKeys[searchProvider.value].trim();
+  if (!key) return t("settings.searchApiKeyRequired");
+  if (searchProvider.value === "brave" && !key.startsWith("BSA")) {
+    return t("settings.searchApiKeyFormatInvalid");
+  }
+  if (searchProvider.value === "tavily" && !key.startsWith("tvly-")) {
+    return t("settings.searchApiKeyFormatInvalid");
+  }
+  return null;
+}
+
+function setSearchValidationError(message: string): void {
+  searchSaveError.value = message;
+  searchSaveStatus.value = "invalid";
+}
+
 // Writes only the active provider into tools.web.search — the single object the gateway
 // consumes. The gateway schema rejects any extra keys under tools.web, so no per-provider map
 // is persisted; unsaved keys for other providers live only in-memory for quick switching.
@@ -2468,16 +2493,34 @@ async function persistSearchConfig(): Promise<void> {
 // Single save for the Web search section: commits both provider keys and the selected default
 // provider in one action. The gateway hot-reloads the tools config on write.
 async function saveSearchSettings(): Promise<void> {
-  searchSavingAll.value = true;
+  searchSaveStatus.value = "saving";
   try {
     await persistSearchConfig();
     snapshotSearchConfig();
-    ElMessage.success(t("settings.searchSettingsSaved"));
+    searchSaveError.value = "";
+    searchSaveStatus.value = "saved";
   } catch (err: any) {
+    searchSaveStatus.value = "error";
     ElMessage.error(t("settings.saveFailed", { error: err.message || err }));
-  } finally {
-    searchSavingAll.value = false;
   }
+}
+
+async function handleSearchProviderChange(): Promise<void> {
+  const validationError = validateActiveSearchKey();
+  if (validationError) {
+    setSearchValidationError(validationError);
+    return;
+  }
+  await saveSearchSettings();
+}
+
+async function saveSearchKeyIfReady(): Promise<void> {
+  const validationError = validateActiveSearchKey();
+  if (validationError) {
+    setSearchValidationError(validationError);
+    return;
+  }
+  await saveSearchSettings();
 }
 
 function openExternal(url: string) {
