@@ -6,10 +6,15 @@ import { getAgentSkills, matchesSkill, resolveSkillFilterNames } from "./agent-c
 import {
   AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
+  CREATIVE_MUSE_LEGACY_PIPELINE_MARKER,
+  CREATIVE_MUSE_PIPELINE_SECTION,
   ensureAgentPersonasConfig,
   getAgentPersona,
   getAgentWorkspacePath,
   listConfiguredAgents,
+  MARKET_SENTINEL_FINANCIAL_BOUNDARY_SECTION,
+  MARKET_SENTINEL_OPERATING_BOUNDARY_SECTION,
+  OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION,
   removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
@@ -43,7 +48,7 @@ describe("agent personas", () => {
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
     expect(listConfiguredAgents(config)).toEqual([{ id: "main", name: "Assistant" }]);
-    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+    ensureAgentPersonasConfig(config, stateDir);
   });
 
   it("migrates unsupported entries data back to the runtime list", () => {
@@ -202,6 +207,171 @@ describe("agent personas", () => {
     );
   });
 
+  it("seeds the Dr. Pulse workspace with its safety-first Windows context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("dr-pulse");
+    if (!persona) throw new Error("Dr. Pulse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "dr-pulse",
+      name: "Dr. Pulse",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Dr. Pulse workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-dr-pulse"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "Never run autonomous broad repair",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "explicit confirmation before any system or application change",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Dr. Pulse",
+    );
+  });
+
+  it("seeds the Market Sentinel workspace with its non-advisory market context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("market-sentinel");
+    if (!persona) throw new Error("Market Sentinel persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "market-sentinel",
+      name: "Market Sentinel",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Market Sentinel workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-market-sentinel"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "Do not issue buy, sell, hold",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "Never execute or simulate a trade",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Market Sentinel",
+    );
+  });
+
+  it("seeds the Office Artisan workspace with its artifact-production context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("office-artisan");
+    if (!persona) throw new Error("Office Artisan persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "office-artisan",
+      name: "Office Artisan",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Office Artisan workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-office-artisan"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "Preserve original files by default",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "Re-open or inspect the generated artifact",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Office Artisan",
+    );
+  });
+
+  it("seeds the Creative Muse workspace with its platform content context", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("creative-muse");
+    if (!persona) throw new Error("Creative Muse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    expect(listConfiguredAgents(config)).toContainEqual({
+      id: "creative-muse",
+      name: "Creative Muse",
+    });
+    const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Creative Muse workspace is not configured");
+
+    expect(workspace).toBe(path.join(stateDir, "workspace-creative-muse"));
+    expect(created).toHaveLength(5);
+    expect(fs.readFileSync(path.join(workspace, "SOUL.md"), "utf-8")).toContain(
+      "trend-aware Rednote content producer",
+    );
+    expect(fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf-8")).toContain(
+      "three distinct durable stages",
+    );
+    expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Creative Muse",
+    );
+  });
+
+  it("adds the Rednote pipeline to an existing Creative Muse guide without replacing it", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("creative-muse");
+    if (!persona) throw new Error("Creative Muse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Creative Muse workspace is not configured");
+    fs.mkdirSync(workspace, { recursive: true });
+    const agentsPath = path.join(workspace, "AGENTS.md");
+    fs.writeFileSync(agentsPath, "# Custom guide\n\nKeep my editorial rules.\n", "utf-8");
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
+    const migrated = fs.readFileSync(agentsPath, "utf-8");
+    expect(migrated).toContain("Keep my editorial rules.");
+    expect(migrated).toContain("## Rednote publishing pipeline v2");
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
+    expect(
+      fs
+        .readFileSync(agentsPath, "utf-8")
+        .match(new RegExp(CREATIVE_MUSE_PIPELINE_SECTION.split("\n")[0], "g")),
+    ).toHaveLength(1);
+  });
+
+  it("replaces the legacy monolithic Creative Muse pipeline with v2", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("creative-muse");
+    if (!persona) throw new Error("Creative Muse persona is not registered");
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    const workspace = getAgentWorkspacePath(stateDir, persona);
+    if (!workspace) throw new Error("Creative Muse workspace is not configured");
+    fs.mkdirSync(workspace, { recursive: true });
+    const agentsPath = path.join(workspace, "AGENTS.md");
+    fs.writeFileSync(
+      agentsPath,
+      `# Custom guide
+
+## Rednote publishing pipeline
+
+- ${CREATIVE_MUSE_LEGACY_PIPELINE_MARKER}; material skips discovery.
+
+## Custom rules
+
+Keep this section.
+`,
+      "utf-8",
+    );
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
+    const migrated = fs.readFileSync(agentsPath, "utf-8");
+    expect(migrated).toContain("## Rednote publishing pipeline v2");
+    expect(migrated).not.toContain(CREATIVE_MUSE_LEGACY_PIPELINE_MARKER);
+    expect(migrated).toContain("## Custom rules");
+    expect(migrated).toContain("Keep this section.");
+  });
+
   it("migrates an installed Growth Hacker to Intel Analyst without losing custom settings", () => {
     const stateDir = createStateDir();
     const customWorkspace = path.join(stateDir, "custom-research");
@@ -236,6 +406,482 @@ describe("agent personas", () => {
     expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Intel Analyst",
     );
+  });
+
+  it("migrates an installed Singer to Creative Muse without losing custom settings", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-content");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "singer",
+            name: "Singer",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/content-model",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "creative-muse", name: "Creative Muse" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/content-model",
+    });
+    expect(agentList(config).find((entry) => entry.id === "singer")).toMatchObject({
+      name: "Creative Muse",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+    });
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Creative Muse",
+    );
+  });
+
+  it("migrates an installed Master to Dr. Pulse without losing custom settings or default", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-system-doctor");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "master",
+            name: "My PC Doctor",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/diagnostic-model",
+            default: true,
+            confirmationMode: "always",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "dr-pulse", name: "My PC Doctor" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "My PC Doctor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/diagnostic-model",
+      default: true,
+      confirmationMode: "always",
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "My PC Doctor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/diagnostic-model",
+      confirmationMode: "always",
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).not.toHaveProperty("default");
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Dr. Pulse",
+    );
+    expect(fs.existsSync(path.join(stateDir, "workspace-dr-pulse"))).toBe(false);
+  });
+
+  it("moves an uncustomized Master to the fixed Dr. Pulse workspace", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "master", name: "Master" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+    });
+  });
+
+  it("restores the hidden Master alias whenever Dr. Pulse is configured", () => {
+    const stateDir = createStateDir();
+    const workspace = path.join(stateDir, "workspace-dr-pulse");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "dr-pulse", name: "Dr. Pulse", workspace },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "dr-pulse", name: "Dr. Pulse" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace,
+    });
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+  });
+
+  it("keeps canonical Dr. Pulse settings while filling missing legacy fields", () => {
+    const stateDir = createStateDir();
+    const legacyWorkspace = path.join(stateDir, "custom-master");
+    const drPulsePersona = getAgentPersona("dr-pulse");
+    if (!drPulsePersona) throw new Error("Dr. Pulse persona is not registered");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "dr-pulse",
+            name: "Dr. Pulse",
+            workspace: path.join(stateDir, "workspace-dr-pulse"),
+            skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
+          },
+          {
+            id: "master",
+            name: "My System Specialist",
+            workspace: legacyWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/system-model",
+            default: true,
+          },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).filter((entry) => entry.id === "dr-pulse")).toHaveLength(1);
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+      skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
+      model: "custom/system-model",
+      default: true,
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Dr. Pulse",
+      workspace: path.join(stateDir, "workspace-dr-pulse"),
+      skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
+      model: "custom/system-model",
+    });
+  });
+
+  it("keeps an existing customized Dr. Pulse identity when Master coexists", () => {
+    const stateDir = createStateDir();
+    const drPulseWorkspace = path.join(stateDir, "custom-dr-pulse");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "dr-pulse",
+            name: "Trusted System Doctor",
+            workspace: drPulseWorkspace,
+            skills: ["preferred-skill"],
+          },
+          {
+            id: "master",
+            name: "Legacy Master",
+            workspace: path.join(stateDir, "legacy-master"),
+            skills: ["legacy-skill"],
+            model: "custom/legacy-model",
+            default: true,
+          },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Trusted System Doctor",
+      workspace: drPulseWorkspace,
+      skills: ["preferred-skill"],
+      model: "custom/legacy-model",
+      default: true,
+    });
+    expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
+      name: "Trusted System Doctor",
+      workspace: drPulseWorkspace,
+      skills: ["preferred-skill"],
+    });
+  });
+
+  it("migrates an installed Leopard to Market Sentinel without losing custom settings", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "custom-market-monitor");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "leopard",
+            name: "My Market Monitor",
+            workspace: customWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/market-model",
+            default: true,
+            dataProvider: "licensed-feed",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "market-sentinel", name: "My Market Monitor" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "My Market Monitor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/market-model",
+      default: true,
+      dataProvider: "licensed-feed",
+    });
+    expect(agentList(config).find((entry) => entry.id === "leopard")).toMatchObject({
+      name: "My Market Monitor",
+      workspace: customWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/market-model",
+      dataProvider: "licensed-feed",
+    });
+    expect(agentList(config).find((entry) => entry.id === "leopard")).not.toHaveProperty("default");
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(fs.readFileSync(path.join(customWorkspace, "IDENTITY.md"), "utf-8")).toContain(
+      "Name: Market Sentinel",
+    );
+  });
+
+  it("keeps Leopard's implicit workspace when migrating to Market Sentinel", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "leopard", name: "Leopard" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "Market Sentinel",
+      workspace: path.join(stateDir, "workspace-leopard"),
+    });
+    expect(agentList(config).find((entry) => entry.id === "leopard")).toMatchObject({
+      name: "Market Sentinel",
+      workspace: path.join(stateDir, "workspace-leopard"),
+    });
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(
+      fs.readFileSync(path.join(stateDir, "workspace-leopard", "IDENTITY.md"), "utf-8"),
+    ).toContain("Name: Market Sentinel");
+    expect(fs.existsSync(path.join(stateDir, "workspace-market-sentinel"))).toBe(false);
+  });
+
+  it("adds mandatory Market Sentinel boundaries to a populated legacy workspace", () => {
+    const stateDir = createStateDir();
+    const customWorkspace = path.join(stateDir, "legacy-market-workspace");
+    fs.mkdirSync(customWorkspace);
+    const agentsPath = path.join(customWorkspace, "AGENTS.md");
+    const soulPath = path.join(customWorkspace, "SOUL.md");
+    fs.writeFileSync(
+      agentsPath,
+      "# Custom market guide\n\nKeep my data-provider rules.\n",
+      "utf-8",
+    );
+    fs.writeFileSync(soulPath, "# Custom market persona\n\nKeep my reporting voice.\n", "utf-8");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "leopard", name: "Leopard", workspace: customWorkspace },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([
+      path.join(stateDir, "workspace", "IDENTITY.md"),
+      path.join(stateDir, "workspace", "SOUL.md"),
+      agentsPath,
+      path.join(customWorkspace, "IDENTITY.md"),
+      soulPath,
+    ]);
+
+    const agents = fs.readFileSync(agentsPath, "utf-8");
+    const soul = fs.readFileSync(soulPath, "utf-8");
+    expect(agents).toContain("Keep my data-provider rules.");
+    expect(agents).toContain(MARKET_SENTINEL_OPERATING_BOUNDARY_SECTION.split("\n")[0]);
+    expect(agents).toContain("Ask before creating an external alert");
+    expect(agents).toContain("Never send a report or change a subscription");
+    expect(soul).toContain("Keep my reporting voice.");
+    expect(soul).toContain(MARKET_SENTINEL_FINANCIAL_BOUNDARY_SECTION.split("\n")[0]);
+    expect(soul).toContain("## Shared safety rule");
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([]);
+  });
+
+  it("migrates an installed Painter to Office Artisan and preserves its implicit workspace", () => {
+    const stateDir = createStateDir();
+    const legacyWorkspace = path.join(stateDir, "workspace-painter");
+    fs.mkdirSync(legacyWorkspace);
+    const agentsPath = path.join(legacyWorkspace, "AGENTS.md");
+    const soulPath = path.join(legacyWorkspace, "SOUL.md");
+    fs.writeFileSync(agentsPath, "# Custom production guide\n\nKeep my template rules.\n", "utf-8");
+    fs.writeFileSync(soulPath, "# Custom production persona\n\nKeep my review voice.\n", "utf-8");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant" },
+          {
+            id: "painter",
+            name: "My Document Studio",
+            skills: ["custom-skill"],
+            model: "custom/office-model",
+            default: true,
+            templatePack: "corporate",
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(listConfiguredAgents(config)).toEqual([
+      { id: "main", name: "Assistant" },
+      { id: "office-artisan", name: "My Document Studio" },
+    ]);
+    expect(agentList(config).find((entry) => entry.id === "office-artisan")).toMatchObject({
+      name: "My Document Studio",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/office-model",
+      default: true,
+      templatePack: "corporate",
+    });
+    expect(agentList(config).find((entry) => entry.id === "painter")).toMatchObject({
+      name: "My Document Studio",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/office-model",
+      templatePack: "corporate",
+    });
+    expect(agentList(config).find((entry) => entry.id === "painter")).not.toHaveProperty("default");
+
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([
+      path.join(stateDir, "workspace-main", "IDENTITY.md"),
+      path.join(stateDir, "workspace-main", "SOUL.md"),
+      agentsPath,
+      path.join(legacyWorkspace, "IDENTITY.md"),
+      soulPath,
+    ]);
+    const agents = fs.readFileSync(agentsPath, "utf-8");
+    const soul = fs.readFileSync(soulPath, "utf-8");
+    expect(agents).toContain("Keep my template rules.");
+    expect(agents).toContain(OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION.split("\n")[0]);
+    expect(soul).toContain("Keep my review voice.");
+    expect(soul).toContain(OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION.split("\n")[0]);
+    expect(soul).toContain("## Shared safety rule");
+    expect(seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule")).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, "workspace-office-artisan"))).toBe(false);
+  });
+
+  it("keeps Singer's implicit workspace when migrating to Creative Muse", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "singer", name: "Singer" },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      workspace: path.join(stateDir, "workspace-singer"),
+    });
+    expect(agentList(config).find((entry) => entry.id === "singer")).toMatchObject({
+      workspace: path.join(stateDir, "workspace-singer"),
+    });
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(
+      fs.readFileSync(path.join(stateDir, "workspace-singer", "IDENTITY.md"), "utf-8"),
+    ).toContain("Name: Creative Muse");
+    expect(fs.existsSync(path.join(stateDir, "workspace-creative-muse"))).toBe(false);
+  });
+
+  it("prefers customized Singer settings over default Creative Muse settings", () => {
+    const stateDir = createStateDir();
+    const legacyWorkspace = path.join(stateDir, "custom-singer");
+    const creativePersona = getAgentPersona("creative-muse");
+    if (!creativePersona) throw new Error("Creative Muse persona is not registered");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "creative-muse",
+            name: "Creative Muse",
+            workspace: path.join(stateDir, "workspace-creative-muse"),
+            skills: resolveSkillFilterNames(getAgentSkills("creative-muse")),
+          },
+          {
+            id: "singer",
+            name: "My Content Partner",
+            workspace: legacyWorkspace,
+            skills: ["custom-skill"],
+            model: "custom/content-model",
+          },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+
+    expect(agentList(config).filter((entry) => entry.id === "creative-muse")).toHaveLength(1);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "My Content Partner",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+      model: "custom/content-model",
+    });
+    expect(agentList(config).find((entry) => entry.id === "singer")).toMatchObject({
+      name: "My Content Partner",
+      workspace: legacyWorkspace,
+      skills: ["custom-skill"],
+    });
   });
 
   it("does not seed a Popular Agent before it is installed", () => {
@@ -353,6 +999,59 @@ _Fill this in during your first conversation. Make it yours._
     expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
     expect(fs.readFileSync(soulPath, "utf-8")).toBe("custom persona\n");
     expect(removeConfiguredAgent(config, "master-archive").changed).toBe(false);
+  });
+
+  it("removes Dr. Pulse and its Master compatibility alias together", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "dr-pulse", name: "Dr. Pulse", workspace: "workspace-dr-pulse" },
+          { id: "master", name: "Dr. Pulse", workspace: "workspace-dr-pulse" },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "dr-pulse").changed).toBe(true);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+  });
+
+  it("removes Market Sentinel and its Leopard compatibility alias together", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "market-sentinel",
+            name: "Market Sentinel",
+            workspace: "workspace-market-sentinel",
+          },
+          { id: "leopard", name: "Market Sentinel", workspace: "workspace-market-sentinel" },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "market-sentinel").changed).toBe(true);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+  });
+
+  it("removes Office Artisan and its Painter compatibility alias together", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "office-artisan",
+            name: "Office Artisan",
+            workspace: "workspace-painter",
+          },
+          { id: "painter", name: "Office Artisan", workspace: "workspace-painter" },
+        ],
+      },
+    };
+
+    expect(removeConfiguredAgent(config, "office-artisan").changed).toBe(true);
+    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
   });
 
   it("does not allow the built-in default agent to be removed", () => {
@@ -505,6 +1204,134 @@ _Fill this in during your first conversation. Make it yours._
     const mainEntry = agentList(config).find((entry) => entry.id === "main");
     expect(mainEntry?.skills).toEqual(["stale-skill"]);
     expect(result.changed).toBe(false);
+  });
+
+  it("adds Rednote Publisher to an untouched previous catalog skill set", () => {
+    const stateDir = createStateDir();
+    const currentSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
+    const previousSkills = currentSkills.filter((skill) => skill !== "Rednote Publisher");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "creative-muse", name: "Creative Muse", skills: previousSkills },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")?.skills).toEqual(
+      currentSkills,
+    );
+  });
+
+  it("preserves an explicit Rednote Publisher assignment on non-owner agents", () => {
+    const stateDir = createStateDir();
+    const legacyAllSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
+    const config = {
+      agents: {
+        list: [
+          {
+            id: "main",
+            name: "Assistant",
+            default: true,
+            skills: legacyAllSkills,
+          },
+          {
+            id: "code-geek",
+            name: "Code Geek",
+            skills: legacyAllSkills,
+          },
+        ],
+      },
+    };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+    expect(agentList(config).find((entry) => entry.id === "main")?.skills).toEqual(legacyAllSkills);
+    expect(agentList(config).find((entry) => entry.id === "code-geek")?.skills).toEqual(
+      legacyAllSkills,
+    );
+  });
+
+  it("does not restore Rednote Publisher after the user removes it", () => {
+    const stateDir = createStateDir();
+    const currentSkills = resolveSkillFilterNames(getAgentSkills("creative-muse"));
+    const withoutRednote = currentSkills.filter((skill) => skill !== "Rednote Publisher");
+    const markerPath = path.join(
+      stateDir,
+      "skills",
+      "rednote-publisher",
+      ".microclaw-agent-skill.json",
+    );
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, "{}");
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "creative-muse", name: "Creative Muse", skills: withoutRednote },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")?.skills).toEqual(
+      withoutRednote,
+    );
+  });
+
+  it("does not add Rednote Publisher to a customized skill set", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          { id: "creative-muse", name: "Creative Muse", skills: ["custom-skill"] },
+        ],
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(agentList(config).find((entry) => entry.id === "creative-muse")?.skills).toEqual([
+      "custom-skill",
+    ]);
+    seedAgentPersonaWorkspaces(config, stateDir);
+    expect(
+      fs.readFileSync(path.join(stateDir, "workspace-creative-muse", "AGENTS.md"), "utf-8"),
+    ).not.toContain("## Rednote publishing pipeline");
+  });
+
+  it("removes the managed pipeline when Rednote Publisher is globally disabled", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        list: [
+          { id: "main", name: "Assistant", default: true },
+          {
+            id: "creative-muse",
+            name: "Creative Muse",
+            skills: resolveSkillFilterNames(getAgentSkills("creative-muse")),
+          },
+        ],
+      },
+      skills: {
+        entries: {
+          "rednote-publisher": { enabled: true },
+        },
+      },
+    };
+
+    seedAgentPersonaWorkspaces(config, stateDir);
+    const agentsPath = path.join(stateDir, "workspace-creative-muse", "AGENTS.md");
+    fs.appendFileSync(agentsPath, "\nCustom editorial note.\n", "utf-8");
+    expect(fs.readFileSync(agentsPath, "utf-8")).toContain("## Rednote publishing pipeline");
+
+    config.skills.entries["rednote-publisher"].enabled = false;
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toContain(agentsPath);
+    const disabled = fs.readFileSync(agentsPath, "utf-8");
+    expect(disabled).not.toContain("## Rednote publishing pipeline");
+    expect(disabled).toContain("Custom editorial note.");
+    expect(seedAgentPersonaWorkspaces(config, stateDir)).toEqual([]);
   });
 
   it("leaves a custom non-catalog agent without an injected skills field", () => {

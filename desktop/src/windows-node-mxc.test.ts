@@ -14,6 +14,7 @@ import {
   isWindowsNodeMxcIngressReleased,
   isWindowsNodeMxcFolderConfigured,
   listAgentSessionKeys,
+  migrateWindowsNodeMxcToolBackupAliases,
   normalizeWindowsNodeMxcGatewayApproval,
   normalizeWindowsNodeMxcFolderPolicy,
   normalizeWindowsNodeRecord,
@@ -549,6 +550,40 @@ describe("Windows Node MXC Gateway policy", () => {
     ]);
     expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123").ready).toBe(true);
     expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
+  });
+
+  it("preserves original tool backups across canonical agent ID migrations", () => {
+    const originalTools = { allow: ["legacy-tool"] };
+    const pinnedTools = buildWindowsNodeMxcToolPolicy("node-123");
+    const backups = migrateWindowsNodeMxcToolBackupAliases(
+      { singer: originalTools },
+      { singer: "creative-muse" },
+    );
+    const migratedConfig = {
+      agents: {
+        list: [
+          { id: "creative-muse", tools: pinnedTools },
+          { id: "singer", tools: pinnedTools },
+        ],
+      },
+    };
+
+    expect(restoreWindowsNodeMxcGatewayPolicy(migratedConfig, backups)).toEqual({
+      agents: {
+        list: [
+          { id: "creative-muse", tools: originalTools },
+          { id: "singer", tools: originalTools },
+        ],
+      },
+    });
+    expect(
+      migrateWindowsNodeMxcToolBackupAliases(
+        { singer: originalTools, "creative-muse": { allow: ["canonical-tool"] } },
+        { singer: "creative-muse" },
+      ),
+    ).toMatchObject({
+      "creative-muse": { allow: ["canonical-tool"] },
+    });
   });
 
   it("disables and restores every MicroClaw-managed external ingress surface", () => {

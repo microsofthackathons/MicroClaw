@@ -27,7 +27,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 - **Only the LLM is bring-your-own**: the user supplies the model endpoint, API key, and model name; the rest of the stack is installed and configured by MicroClaw
 - **Fast path on first launch**: if no provider is configured, the app opens a setup wizard that asks only for model credentials; if `MODEL_*` values already exist in `.env`, MicroClaw can auto-configure them
 - **Recommended tasks on day one**: the home screen ships with starter task cards and prompt suggestions so users can begin with concrete tasks instead of a blank chat box
-- **Preloaded capability surface**: 52 bundled skills plus 6 managed skills are available as part of the default Windows experience
+- **Preloaded capability surface**: 52 bundled skills plus 6 managed skills are available as part of the default Windows experience; specialist agents add their own skills on demand
 
 ### Built-In Trust
 
@@ -234,6 +234,15 @@ Installed to `~/.openclaw/skills/`, these are custom advanced skills included in
 | officecli | Office document CLI tool (create/edit .docx/.xlsx/.pptx) |
 | desktop-organizer | Scan and organize files on the Windows desktop |
 | security-practice | AI agent safety practices (red/yellow line rules, install audit protocol) |
+
+### Agent-Owned Skills
+
+Agent-owned skills are dormant resources in the desktop package and are installed only
+when their owning specialist agent is added:
+
+| Agent | Skill | Description |
+|---|---|---|
+| Creative Muse | rednote-publisher | Create staged topic ideas, sourced material kits, and publish-ready Rednote packages |
 
 ---
 

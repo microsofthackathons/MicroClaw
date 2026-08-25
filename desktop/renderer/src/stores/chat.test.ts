@@ -603,6 +603,34 @@ describe("useChatStore — draft sessions", () => {
     expect(store.sessionKey).toMatch(/^session-/);
     expect(store.currentSessionAgentId).toBe("main");
   });
+
+  it("attributes historical Singer session keys to Creative Muse", () => {
+    const store = useChatStore();
+    store.newSession("singer");
+    expect(store.sessionKey).toMatch(/^agent:singer:session-/);
+    expect(store.currentSessionAgentId).toBe("creative-muse");
+  });
+
+  it("attributes historical Master session keys to Dr. Pulse", () => {
+    const store = useChatStore();
+    store.newSession("master");
+    expect(store.sessionKey).toMatch(/^agent:master:session-/);
+    expect(store.currentSessionAgentId).toBe("dr-pulse");
+  });
+
+  it("attributes historical Leopard session keys to Market Sentinel", () => {
+    const store = useChatStore();
+    store.newSession("leopard");
+    expect(store.sessionKey).toMatch(/^agent:leopard:session-/);
+    expect(store.currentSessionAgentId).toBe("market-sentinel");
+  });
+
+  it("attributes historical Painter session keys to Office Artisan", () => {
+    const store = useChatStore();
+    store.newSession("painter");
+    expect(store.sessionKey).toMatch(/^agent:painter:session-/);
+    expect(store.currentSessionAgentId).toBe("office-artisan");
+  });
 });
 
 describe("useChatStore — attachments", () => {

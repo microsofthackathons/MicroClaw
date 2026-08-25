@@ -360,7 +360,7 @@ type AgentEntry = {
   [key: string]: unknown;
 };
 
-type AgentToolsBackup = Record<string, unknown | null>;
+export type AgentToolsBackup = Record<string, unknown | null>;
 const GATEWAY_NODES_BACKUP_KEY = "$microclaw.gateway.nodes";
 const INGRESS_BACKUP_KEYS = {
   channels: "$microclaw.ingress.channels",
@@ -373,6 +373,19 @@ export interface WindowsNodeMxcPolicyApplication {
   config: Record<string, unknown>;
   backups: AgentToolsBackup;
   agentIds: string[];
+}
+
+export function migrateWindowsNodeMxcToolBackupAliases(
+  backups: AgentToolsBackup,
+  aliases: Readonly<Record<string, string>>,
+): AgentToolsBackup {
+  const migrated = structuredClone(backups);
+  for (const [legacyId, canonicalId] of Object.entries(aliases)) {
+    if (Object.hasOwn(migrated, legacyId) && !Object.hasOwn(migrated, canonicalId)) {
+      migrated[canonicalId] = structuredClone(migrated[legacyId]);
+    }
+  }
+  return migrated;
 }
 
 export function buildWindowsNodeMxcToolPolicy(nodeId: string): Record<string, unknown> {

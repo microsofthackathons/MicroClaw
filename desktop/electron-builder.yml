@@ -75,6 +75,8 @@ extraResources:
     to: sandbox-sensitive.js
   - from: ../appcontainer/path-extraction.js
     to: path-extraction.js
+  - from: ../skills/rednote-publisher/
+    to: agent-skills/rednote-publisher/
 
 files:
   - dist/**/*

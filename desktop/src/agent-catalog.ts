@@ -1,9 +1,6 @@
-// The complete universe of skill IDs shipped by MicroClaw: the union of the
-// certified/bundled skills (SKILL_CATALOG) and the managed skills
-// (MANAGED_SKILL_CATALOG), alphabetically sorted. This MUST be kept in sync with
-// `deployer/skill_catalog.py` (SKILL_CATALOG + MANAGED_SKILL_CATALOG) — adding or
-// removing a skill there requires the same change here.
-export const ALL_SKILL_IDS: readonly string[] = [
+// Skills available to every catalog agent. This is the union of the bundled and
+// installer-managed catalogs and MUST stay in sync with deployer/skill_catalog.py.
+export const SHARED_SKILL_IDS: readonly string[] = [
   "1password",
   "blucli",
   "canvas",
@@ -29,6 +26,23 @@ export const ALL_SKILL_IDS: readonly string[] = [
   "word-docx",
 ];
 
+// Agent-owned skills ship as dormant desktop resources. They are installed into
+// the OpenClaw state directory only when their owning agent is added.
+export const AGENT_OWNED_SKILL_IDS: readonly string[] = ["rednote-publisher"];
+
+export const ALL_SKILL_IDS: readonly string[] = [
+  ...SHARED_SKILL_IDS.slice(0, 15),
+  ...AGENT_OWNED_SKILL_IDS,
+  ...SHARED_SKILL_IDS.slice(15),
+];
+
+function catalogSkills(...agentOwnedSkillIds: string[]): string[] {
+  const owned = new Set(agentOwnedSkillIds);
+  return ALL_SKILL_IDS.filter(
+    (skillId) => SHARED_SKILL_IDS.includes(skillId) || owned.has(skillId),
+  );
+}
+
 export interface AgentCatalogEntry {
   id: string;
   name: string;
@@ -40,8 +54,16 @@ export interface AgentCatalogEntry {
   taskKeys: Array<{ titleKey: string; descKey: string }>;
   installedByDefault: boolean;
   skills: readonly string[];
+  ownedSkills?: readonly string[];
   workspaceDirName?: string;
-  personaProfile?: "master-archive" | "code-geek" | "intel-analyst";
+  personaProfile?:
+    | "master-archive"
+    | "code-geek"
+    | "dr-pulse"
+    | "intel-analyst"
+    | "market-sentinel"
+    | "office-artisan"
+    | "creative-muse";
 }
 
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
@@ -59,7 +81,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.main.task.3.title", descKey: "agent.main.task.3.desc" },
     ],
     installedByDefault: true,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
   },
   {
     id: "master-archive",
@@ -88,7 +110,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
     workspaceDirName: "workspace-master-archive",
     personaProfile: "master-archive",
   },
@@ -106,41 +128,58 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       { titleKey: "agent.codeGeek.task.3.title", descKey: "agent.codeGeek.task.3.desc" },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
     workspaceDirName: "workspace-code-geek",
     personaProfile: "code-geek",
   },
   {
-    id: "painter",
-    name: "Painter",
-    nameKey: "agent.painter.name",
-    descKey: "agent.painter.desc",
-    avatar: "painter-avatar.png",
+    id: "office-artisan",
+    name: "Office Artisan",
+    nameKey: "agent.officeArtisan.name",
+    descKey: "agent.officeArtisan.desc",
+    avatar: "office-artisan-avatar.png",
     image: "Painter.png",
-    tagKeys: ["agent.painter.tag.1", "agent.painter.tag.2", "agent.painter.tag.3"],
+    tagKeys: [
+      "agent.officeArtisan.tag.1",
+      "agent.officeArtisan.tag.2",
+      "agent.officeArtisan.tag.3",
+    ],
     taskKeys: [
-      { titleKey: "agent.painter.task.1.title", descKey: "agent.painter.task.1.desc" },
-      { titleKey: "agent.painter.task.2.title", descKey: "agent.painter.task.2.desc" },
-      { titleKey: "agent.painter.task.3.title", descKey: "agent.painter.task.3.desc" },
+      {
+        titleKey: "agent.officeArtisan.task.1.title",
+        descKey: "agent.officeArtisan.task.1.desc",
+      },
+      {
+        titleKey: "agent.officeArtisan.task.2.title",
+        descKey: "agent.officeArtisan.task.2.desc",
+      },
+      {
+        titleKey: "agent.officeArtisan.task.3.title",
+        descKey: "agent.officeArtisan.task.3.desc",
+      },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
+    workspaceDirName: "workspace-office-artisan",
+    personaProfile: "office-artisan",
   },
   {
-    id: "master",
-    name: "Master",
-    nameKey: "agent.master.name",
-    descKey: "agent.master.desc",
-    avatar: "master-avatar.png",
+    id: "dr-pulse",
+    name: "Dr. Pulse",
+    nameKey: "agent.drPulse.name",
+    descKey: "agent.drPulse.desc",
+    avatar: "dr-pulse-avatar.png",
     image: "Diviner.png",
-    tagKeys: ["agent.master.tag.1", "agent.master.tag.2", "agent.master.tag.3"],
+    tagKeys: ["agent.drPulse.tag.1", "agent.drPulse.tag.2", "agent.drPulse.tag.3"],
     taskKeys: [
-      { titleKey: "agent.master.task.1.title", descKey: "agent.master.task.1.desc" },
-      { titleKey: "agent.master.task.2.title", descKey: "agent.master.task.2.desc" },
-      { titleKey: "agent.master.task.3.title", descKey: "agent.master.task.3.desc" },
+      { titleKey: "agent.drPulse.task.1.title", descKey: "agent.drPulse.task.1.desc" },
+      { titleKey: "agent.drPulse.task.2.title", descKey: "agent.drPulse.task.2.desc" },
+      { titleKey: "agent.drPulse.task.3.title", descKey: "agent.drPulse.task.3.desc" },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
+    workspaceDirName: "workspace-dr-pulse",
+    personaProfile: "dr-pulse",
   },
   {
     id: "intel-analyst",
@@ -165,41 +204,68 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
       },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
     workspaceDirName: "workspace-intel-analyst",
     personaProfile: "intel-analyst",
   },
   {
-    id: "leopard",
-    name: "Leopard",
-    nameKey: "agent.leopard.name",
-    descKey: "agent.leopard.desc",
-    avatar: "leopard-avatar.png",
+    id: "market-sentinel",
+    name: "Market Sentinel",
+    nameKey: "agent.marketSentinel.name",
+    descKey: "agent.marketSentinel.desc",
+    avatar: "market-sentinel-avatar.png",
     image: "stock.png",
-    tagKeys: ["agent.leopard.tag.1", "agent.leopard.tag.2", "agent.leopard.tag.3"],
+    tagKeys: [
+      "agent.marketSentinel.tag.1",
+      "agent.marketSentinel.tag.2",
+      "agent.marketSentinel.tag.3",
+    ],
     taskKeys: [
-      { titleKey: "agent.leopard.task.1.title", descKey: "agent.leopard.task.1.desc" },
-      { titleKey: "agent.leopard.task.2.title", descKey: "agent.leopard.task.2.desc" },
-      { titleKey: "agent.leopard.task.3.title", descKey: "agent.leopard.task.3.desc" },
+      {
+        titleKey: "agent.marketSentinel.task.1.title",
+        descKey: "agent.marketSentinel.task.1.desc",
+      },
+      {
+        titleKey: "agent.marketSentinel.task.2.title",
+        descKey: "agent.marketSentinel.task.2.desc",
+      },
+      {
+        titleKey: "agent.marketSentinel.task.3.title",
+        descKey: "agent.marketSentinel.task.3.desc",
+      },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(),
+    workspaceDirName: "workspace-market-sentinel",
+    personaProfile: "market-sentinel",
   },
   {
-    id: "singer",
-    name: "Singer",
-    nameKey: "agent.singer.name",
-    descKey: "agent.singer.desc",
-    avatar: "singer-avatar.png",
-    image: "Singer.png",
-    tagKeys: ["agent.singer.tag.1", "agent.singer.tag.2", "agent.singer.tag.3"],
+    id: "creative-muse",
+    name: "Creative Muse",
+    nameKey: "agent.creativeMuse.name",
+    descKey: "agent.creativeMuse.desc",
+    avatar: "creative-muse-avatar.png",
+    image: "CreativeMuse.png",
+    tagKeys: ["agent.creativeMuse.tag.1", "agent.creativeMuse.tag.2", "agent.creativeMuse.tag.3"],
     taskKeys: [
-      { titleKey: "agent.singer.task.1.title", descKey: "agent.singer.task.1.desc" },
-      { titleKey: "agent.singer.task.2.title", descKey: "agent.singer.task.2.desc" },
-      { titleKey: "agent.singer.task.3.title", descKey: "agent.singer.task.3.desc" },
+      {
+        titleKey: "agent.creativeMuse.task.1.title",
+        descKey: "agent.creativeMuse.task.1.desc",
+      },
+      {
+        titleKey: "agent.creativeMuse.task.2.title",
+        descKey: "agent.creativeMuse.task.2.desc",
+      },
+      {
+        titleKey: "agent.creativeMuse.task.3.title",
+        descKey: "agent.creativeMuse.task.3.desc",
+      },
     ],
     installedByDefault: false,
-    skills: [...ALL_SKILL_IDS],
+    skills: catalogSkills(...AGENT_OWNED_SKILL_IDS),
+    ownedSkills: AGENT_OWNED_SKILL_IDS,
+    workspaceDirName: "workspace-creative-muse",
+    personaProfile: "creative-muse",
   },
 ];
 
@@ -224,6 +290,7 @@ export const SKILL_MATCH_NAMES: Readonly<Record<string, string>> = {
   "desktop-organizer": "Desktop Organizer",
   "excel-xlsx": "Excel / XLSX",
   "powerpoint-pptx": "Powerpoint / PPTX",
+  "rednote-publisher": "Rednote Publisher",
   "security-practice": "Security Practice",
   "word-docx": "Word / DOCX",
 };
@@ -257,13 +324,33 @@ export function getAgentSkills(agentId: string): readonly string[] {
   return agent ? agent.skills : [];
 }
 
+export function getAgentOwnedSkillIds(agentId: string): readonly string[] {
+  return AGENT_CATALOG.find((entry) => entry.id === agentId)?.ownedSkills ?? [];
+}
+
+export const LEGACY_AGENT_ID_ALIASES: Readonly<Record<string, string>> = {
+  leopard: "market-sentinel",
+  master: "dr-pulse",
+  painter: "office-artisan",
+  singer: "creative-muse",
+};
+
+export function canonicalAgentId(agentId: string): string {
+  return LEGACY_AGENT_ID_ALIASES[agentId] ?? agentId;
+}
+
 const ALL_SKILL_ID_SET: ReadonlySet<string> = new Set(ALL_SKILL_IDS);
+const AGENT_OWNED_SKILL_ID_SET: ReadonlySet<string> = new Set(AGENT_OWNED_SKILL_IDS);
 
 /**
  * Returns true when the given id is one of the known catalog skill ids.
  */
 export function isKnownSkillId(skillId: string): boolean {
   return ALL_SKILL_ID_SET.has(skillId);
+}
+
+export function isAgentOwnedSkillId(skillId: string): boolean {
+  return AGENT_OWNED_SKILL_ID_SET.has(skillId);
 }
 
 /**

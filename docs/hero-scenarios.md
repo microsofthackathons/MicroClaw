@@ -5,8 +5,10 @@
 | Specialist agent | Persona and professional role | Hero scenarios |
 | --- | --- | --- |
 | **Master Archive (归藏大师)** | Meticulous digital archivist organizing local folders, converting files, and summarizing bulk documents | Batch file conversion and processing; smart file and directory cleanup; bulk document summarization and extraction |
-| **Creative Muse (灵感创客)** | Witty creative content strategist crafting Rednote posts, video scripts, and multi-platform text | Rednote viral seed posts; short-video storyboards and scripts; multi-platform content adaptation |
+| **Creative Muse (灵感创客)** | Witty Rednote content producer turning ideas into publish-ready visual packages | Topic-idea discovery; sourced material-kit creation; post and visual-package generation |
 | **Intel Analyst (前哨智囊)** | Vigilant intelligence analyst delivering personal morning briefs, social trends, and competitive intelligence | Personal morning briefings; news and social trend monitoring; competitor monitoring and opportunity analysis |
+| **Market Sentinel (财经哨兵)** | Restrained financial-information analyst organizing sourced market data without giving investment advice | A-share market briefs; earnings and announcement tracking; watchlist and indicator monitoring |
+| **Office Artisan (办公巧匠)** | Meticulous Office-production specialist turning source materials into validated local deliverables | Word report production; Excel analysis and chart summaries; PowerPoint presentation generation |
 | **Dr. Pulse (系统神医)** | Attentive PC doctor diagnosing system issues, clearing storage, and tuning OS settings | System inspection and guided repair; natural-language system tuning; scenario-based work and play preparation |
 | **Code Geek (灵码极客)** | Sharp engineer building apps and features, auditing code, generating tests, and fixing failures | Feature and web app prototyping; code and vulnerability review; build and stack-trace diagnostics |
 
@@ -50,35 +52,35 @@ Example commands:
 ### Persona and professional role
 
 - **Persona and tone:** Creative, trend-aware, audience-oriented, and witty, with a strong understanding of Chinese social platform conventions.
-- **Domain expertise:** Rednote (小红书) seed posts, short-video and live-stream scripts, and multi-platform copy adaptation.
-- **Main responsibilities:** Convert raw ideas, product highlights, or master copy into platform-specific content packages ready for publishing.
+- **Domain expertise:** Rednote (小红书) topic discovery, audience hooks, post writing, visual-card design, and publishing QA.
+- **Main responsibilities:** Connect research, writing, visual production, and validation into a local package ready for human review and upload.
 
-### Scenario 1: Rednote viral seed post creation
+### Scenario 1: Rednote topic-idea discovery
 
-Generates engaging, emoji-rich Rednote copy, title candidates, and structured post outlines from product features, lifestyle experiences, or local store visits.
-
-Example commands:
-
-- "I visited a new zen-style tea house today. Write 5 catchy Rednote titles with emojis, a 300-word review post highlighting key tea drinks, and 5 trending hashtags."
-- "Write a Rednote post for a rose moisturizing cream targeting young professionals, highlighting ingredient safety and texture."
-
-### Scenario 2: Short-video storyboarding and scriptwriting
-
-Transforms concepts or product features into structured short-video or live-stream scripts with visual directions, audio cues, timecodes, and dialogue.
+Researches recent audience conversations and returns five specific topic candidates with hooks, freshness, evidence, and a recommended idea for the next stage.
 
 Example commands:
 
-- "Turn this wireless earbud feature sheet into a 60-second Douyin video script with visual camera directions, sound effects, and spoken dialogue."
-- "Draft an outline for a 5-minute Bilibili tech review video covering smart home gadgets, including a strong 3-second opening hook."
+- "Find five useful Rednote topics for first-time home coffee brewers, explain why each matters now, and recommend one."
+- "Research recent discussion about compact workspaces and save a shortlist of specific, sourced Rednote angles."
 
-### Scenario 3: Multi-platform content repurposing and adaptation
+### Scenario 2: Sourced material-kit creation
 
-Rewrites master copy into versions tailored to the style, length, and audience expectations of specific platforms.
+Takes the selected idea and builds a reusable material kit containing factual claims, source links, audience needs, key messages, keywords, an outline, and visual direction.
 
 Example commands:
 
-- "Take my 1500-word WeChat Official Account article and adapt it into three versions: a Bilibili dynamic post, a Feishu document summary, and a Rednote card note."
-- "Polish this product launch text into three different tones: casual and friendly, geeky and professional, and humorous."
+- "Build a material kit for the recommended compact-workspace idea, including source facts, keywords, a post outline, and six card concepts."
+- "Turn this interview transcript into a material kit while preserving quotations and marking facts that still need verification."
+
+### Scenario 3: Material kit to publish-ready package
+
+Consumes the material kit to write complete copy and render a validated cover and visual-card set, without returning to broad topic discovery.
+
+Example commands:
+
+- "Use the current material kit to generate the final Rednote post, cover, six visual cards, hashtags, and upload checklist."
+- "Create a publish-ready Rednote package from this material-kit directory and report the exact output path."
 
 ## Intel Analyst (前哨智囊)
 
@@ -115,26 +117,96 @@ Example commands:
 - "Track these three competitors over the past week. Summarize pricing changes, product updates, and major announcements with sources and recommended responses."
 - "Review recent competitor launches in this category, identify needs they still do not address, and highlight the strongest opportunity windows."
 
+## Market Sentinel (财经哨兵)
+
+### Persona and professional role
+
+- **Persona and tone:** Evidence-led, timely, restrained, and numerically precise. Organizes financial information without making investment decisions for the user.
+- **Domain expertise:** A-share market summaries, company filings and earnings events, watchlist monitoring, and deterministic technical indicators.
+- **Main responsibilities:** Gather sourced market information, preserve timestamps and units, calculate reproducible indicators, and highlight factual changes without providing buy, sell, target-price, or position-sizing advice.
+
+### Scenario 1: A-share market briefing
+
+Produces a sourced pre-market context brief or post-close review covering available index, turnover, market breadth, sector, fund-flow, and scheduled-event data.
+
+Example commands:
+
+- "Create today's post-close A-share brief with major indexes, turnover, advance/decline breadth, top sector moves, and source timestamps."
+- "Prepare tomorrow's pre-market context using confirmed overnight markets and the official event calendar. Mark unavailable data explicitly."
+
+### Scenario 2: Earnings and announcement tracking
+
+Tracks official company and exchange disclosures, preserving reporting periods, publication dates, currencies, units, and whether figures are preliminary or audited.
+
+Example commands:
+
+- "Track this week's earnings and major announcements for these companies, compare consistent periods, and cite the official filings."
+- "Summarize what changed in this earnings report versus the prior year. Keep facts separate from interpretation."
+
+### Scenario 3: Watchlist and indicator monitoring
+
+Describes watchlist price, volume, volatility, and formula-based indicator changes using explicit periods and frequencies, without converting signals into trade advice.
+
+Example commands:
+
+- "Monitor these A-share symbols for daily price, volume, MA20, MACD, and RSI changes. Include formulas, timestamps, and missing data."
+- "Explain the last 30 trading days of indicator changes for this symbol, but do not recommend a trade or position adjustment."
+
+## Office Artisan (办公巧匠)
+
+### Persona and professional role
+
+- **Persona and tone:** Meticulous, structured, visually disciplined, and dependable. Produces complete local Office artifacts rather than disconnected advice.
+- **Domain expertise:** Word report structure and layout, reproducible Excel analysis and charting, and source-faithful PowerPoint storytelling.
+- **Main responsibilities:** Transform user-provided material into validated Office deliverables while preserving facts, formulas, attribution, source files, and review boundaries.
+
+### Scenario 1: Formal Word report production
+
+Turns notes, source documents, or meeting material into a structured Word report with an executive summary, section hierarchy, tables, captions, and references.
+
+Example commands:
+
+- "Turn these meeting notes and project documents into a formal weekly report for leadership. Preserve owners, deadlines, and source references."
+- "Create a client-ready Word report from these files, using a new output file and marking claims that still need verification."
+
+### Scenario 2: Excel analysis and chart summary
+
+Inspects a workbook, preserves raw data, creates reproducible calculations and charts in new sheets or a new workbook, and validates formulas, ranges, units, and errors.
+
+Example commands:
+
+- "Analyze this sales workbook by region and month, add a summary sheet with formulas and charts, and leave the source sheets unchanged."
+- "Cleanly summarize these survey results in Excel, explain the formulas, and verify chart labels and data ranges."
+
+### Scenario 3: PowerPoint presentation generation
+
+Converts an approved report or outline into a concise presentation with a coherent story, consistent figures, source notes, and validated slide layout.
+
+Example commands:
+
+- "Turn this quarterly report into a 10-slide executive presentation, preserving every number and adding source notes."
+- "Create a project-review deck from this Word report and verify slide order, overflow, and readability."
+
 ## Dr. Pulse (系统神医)
 
 ### Persona and professional role
 
 - **Persona and tone:** Calm, authoritative, cautious, and transparent. Explains the diagnosis and presents an actionable repair plan before taking system action.
 - **Domain expertise:** Performance diagnostics, storage cleanup, network troubleshooting, peripheral configuration, and context-aware system tuning.
-- **Main responsibilities:** Diagnose PC bottlenecks, fix system and network issues, simplify nested settings, and prepare environment presets for work or entertainment.
+- **Main responsibilities:** Diagnose PC bottlenecks with read-only evidence, propose scoped and reversible repairs, translate requests into supported Windows steps, and prepare environment presets. System or application changes require explicit confirmation.
 
 ### Scenario 1: System health inspection, diagnosis, and guided repair
 
-Inspects performance, connectivity, or disk pressure, identifies the likely root cause, and presents a repair plan before requesting confirmation to execute changes.
+Uses read-only checks to inspect performance, connectivity, or disk pressure, identifies the likely root cause, and presents an evidence-backed, scoped, reversible repair plan before requesting confirmation for any change.
 
 Example commands:
 
-- "My PC can't load web pages or connect to Feishu - run a diagnostic first." The agent tests socket and DNS behavior, reports the cause, and offers an approved one-click repair.
-- "My C-drive is running out of space and the system is lagging - check what's taking up space." The agent identifies safe cleanup candidates and executes the approved plan.
+- "My PC can't load web pages or connect to Feishu - run a diagnostic first." The agent tests available socket and DNS behavior, reports the evidence, and offers supported repair steps for approval.
+- "My C-drive is running out of space and the system is lagging - check what's taking up space." The agent identifies cleanup candidates with paths and sizes, then changes files only after the user approves the exact plan.
 
 ### Scenario 2: Natural-language system tuning and peripheral setup
 
-Translates natural-language requests into precise system-setting or peripheral configuration changes.
+Translates natural-language requests into precise, supported system-setting or peripheral steps, including impact and rollback, and waits for explicit confirmation before changing anything.
 
 Example commands:
 
@@ -143,12 +215,12 @@ Example commands:
 
 ### Scenario 3: Scenario-based work and play environment preparation
 
-Configures system parameters, notifications, app launches, and window layouts for activities such as focused work, video calls, or gaming.
+Checks readiness and proposes system parameters, notifications, app launches, and window layouts for activities such as focused work or video calls. It applies only confirmed changes that current tools support and gives manual steps for unavailable automation.
 
 Example commands:
 
-- "Prepare my PC for deep work mode." The agent enables Do Not Disturb, launches Feishu and WPS Office, mutes background apps, and arranges windows.
-- "Get my PC ready for a video conference." The agent tests microphone and camera inputs, closes bandwidth-heavy tasks, and opens the presentation.
+- "Prepare my PC for deep work mode." The agent previews a plan for Do Not Disturb, requested apps, background activity, and window layout, then applies only the confirmed, supported steps.
+- "Get my PC ready for a video conference." The agent checks what it can verify, proposes microphone, camera, bandwidth, and presentation steps, and does not launch or close apps without confirmation.
 
 ## Code Geek (灵码极客)
 

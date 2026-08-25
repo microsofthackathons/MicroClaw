@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import importlib
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
@@ -20,6 +21,11 @@ if importlib.util.find_spec('webview') is None:
 webview_datas = collect_data_files('webview', subdir='lib') + collect_data_files('webview', subdir='js')
 webview_binaries = collect_dynamic_libs('webview')
 pythonnet_datas = collect_data_files('pythonnet', subdir='runtime')
+managed_skill_datas = [
+    (str(skill_dir), f"skills/{skill_dir.name}")
+    for skill_dir in Path("skills").iterdir()
+    if skill_dir.is_dir() and skill_dir.name != "rednote-publisher"
+]
 
 a = Analysis(
     ['deploy.py'],
@@ -29,10 +35,9 @@ a = Analysis(
         ('dist/microclaw-portable.zip', '.'),
         ('dist/install-manifest.json', '.'),
         ('scripts/windows/setup-dependencies.ps1', '.'),
-        ('skills', 'skills'),
         ('scripts', 'scripts'),
         ('deployer/assets', 'deployer/assets'),
-    ] + webview_datas + pythonnet_datas,
+    ] + managed_skill_datas + webview_datas + pythonnet_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

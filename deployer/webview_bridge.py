@@ -386,7 +386,7 @@ class WebInstallerBridge:
             "lawyer.png",
             "painter.png",
             "scientist.png",
-            "singer.png",
+            "creative-muse.png",
         ]
         with self._state_lock:
             install_dir = self._state["install_dir"]

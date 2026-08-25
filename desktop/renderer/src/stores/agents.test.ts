@@ -38,6 +38,33 @@ describe("agent store", () => {
     expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
   });
 
+  it("hides legacy compatibility aliases from the sidebar", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "office-artisan", name: "Office Artisan" },
+        { id: "painter", name: "Office Artisan" },
+        { id: "dr-pulse", name: "Dr. Pulse" },
+        { id: "master", name: "Dr. Pulse" },
+        { id: "market-sentinel", name: "Market Sentinel" },
+        { id: "leopard", name: "Market Sentinel" },
+        { id: "creative-muse", name: "Creative Muse" },
+        { id: "singer", name: "Creative Muse" },
+      ],
+    });
+
+    await store.fetchAgents();
+
+    expect(store.agents.map((agent) => agent.id)).toEqual([
+      "main",
+      "office-artisan",
+      "dr-pulse",
+      "market-sentinel",
+      "creative-muse",
+    ]);
+  });
+
   it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
     const store = useAgentStore();
     const marketAgent = store.marketAgents.find((entry) => entry.id === "master-archive");
@@ -73,6 +100,24 @@ describe("agent store", () => {
     });
   });
 
+  it("presents the Office Artisan validated Office scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "office-artisan")).toMatchObject({
+      name: "Office Artisan",
+      description:
+        "Validated Word reports, Excel analysis & PowerPoint presentations from source material",
+      tags: ["Word Reports", "Excel Analysis", "Presentation Decks"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "office-artisan")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Turn these materials into a formal Word report" }),
+      expect.objectContaining({ title: "Analyze this workbook and create a chart summary" }),
+      expect.objectContaining({ title: "Turn this report into a presentation deck" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "painter")).toBe(false);
+  });
+
   it("presents the Intel Analyst research scenarios", () => {
     const store = useAgentStore();
 
@@ -83,6 +128,54 @@ describe("agent store", () => {
       isAdded: false,
     });
     expect(store.marketAgents.some((entry) => entry.id === "growth-hacker")).toBe(false);
+  });
+
+  it("presents the Dr. Pulse safety-first Windows scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      description: "Evidence-led Windows diagnostics, guided tuning & scenario preparation",
+      tags: ["System Health", "Guided Tuning", "Scenario Prep"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "dr-pulse")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Diagnose my Windows PC before proposing repairs" }),
+      expect.objectContaining({ title: "Tune this Windows setting or peripheral" }),
+      expect.objectContaining({ title: "Prepare my PC for deep work or a video call" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "master")).toBe(false);
+  });
+
+  it("presents the Market Sentinel non-advisory financial scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "Market Sentinel",
+      description:
+        "Sourced A-share briefs, filing tracking & watchlist monitoring without investment advice",
+      tags: ["Market Briefs", "Filing Tracker", "Watchlist Signals"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "market-sentinel")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Prepare today's A-share market brief" }),
+      expect.objectContaining({ title: "Track earnings and company announcements" }),
+      expect.objectContaining({ title: "Monitor my watchlist and indicator changes" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "leopard")).toBe(false);
+  });
+
+  it("presents the Creative Muse platform content scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      description:
+        "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+      tags: ["Topic Discovery", "Material Kits", "Visual Packages"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.some((entry) => entry.id === "singer")).toBe(false);
   });
 
   it("keeps the roster unchanged when Add fails", async () => {

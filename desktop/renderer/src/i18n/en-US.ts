@@ -894,29 +894,36 @@ export default {
   "agent.codeGeek.task.3.desc":
     "Trace the first relevant error to its root cause, apply a fix, and verify the command.",
 
-  "agent.painter.name": "Van Gogh",
-  "agent.painter.desc": "Pixel-style illustration & scene creation",
-  "agent.painter.tag.1": "Illustration",
-  "agent.painter.tag.2": "Style Analysis",
-  "agent.painter.tag.3": "Scene Design",
-  "agent.painter.task.1.title": "Generate a cyberpunk cityscape",
-  "agent.painter.task.1.desc": "Create a futuristic cityscape illustration with neon lights.",
-  "agent.painter.task.2.title": "Design a game character portrait",
-  "agent.painter.task.2.desc": "Draw a stylized character concept based on your description.",
-  "agent.painter.task.3.title": "Create pixel emoji stickers",
-  "agent.painter.task.3.desc": "Generate cute retro pixel-style emoji stickers.",
+  "agent.officeArtisan.name": "Office Artisan",
+  "agent.officeArtisan.desc":
+    "Validated Word reports, Excel analysis & PowerPoint presentations from source material",
+  "agent.officeArtisan.tag.1": "Word Reports",
+  "agent.officeArtisan.tag.2": "Excel Analysis",
+  "agent.officeArtisan.tag.3": "Presentation Decks",
+  "agent.officeArtisan.task.1.title": "Turn these materials into a formal Word report",
+  "agent.officeArtisan.task.1.desc":
+    "Create a structured, sourced report in a new file and validate its layout and contents.",
+  "agent.officeArtisan.task.2.title": "Analyze this workbook and create a chart summary",
+  "agent.officeArtisan.task.2.desc":
+    "Preserve raw data, add reproducible calculations and charts, and verify formulas and ranges.",
+  "agent.officeArtisan.task.3.title": "Turn this report into a presentation deck",
+  "agent.officeArtisan.task.3.desc":
+    "Build a concise, source-faithful deck and validate slide order, readability, and overflow.",
 
-  "agent.master.name": "Life Master",
-  "agent.master.desc": "Life planning, meals & travel arrangements",
-  "agent.master.tag.1": "Life Planning",
-  "agent.master.tag.2": "Meal Suggestions",
-  "agent.master.tag.3": "Travel Plans",
-  "agent.master.task.1.title": "Plan my weekend trip",
-  "agent.master.task.1.desc": "Customize a two-day itinerary based on weather and preferences.",
-  "agent.master.task.2.title": "Recommend healthy recipes",
-  "agent.master.task.2.desc": "Suggest balanced meal plans matching your taste preferences.",
-  "agent.master.task.3.title": "Create a study plan",
-  "agent.master.task.3.desc": "Break down an efficient daily study schedule by goals and time.",
+  "agent.drPulse.name": "Dr. Pulse",
+  "agent.drPulse.desc": "Evidence-led Windows diagnostics, guided tuning & scenario preparation",
+  "agent.drPulse.tag.1": "System Health",
+  "agent.drPulse.tag.2": "Guided Tuning",
+  "agent.drPulse.tag.3": "Scenario Prep",
+  "agent.drPulse.task.1.title": "Diagnose my Windows PC before proposing repairs",
+  "agent.drPulse.task.1.desc":
+    "Run read-only health checks, show the evidence, and prepare a scoped, reversible repair plan.",
+  "agent.drPulse.task.2.title": "Tune this Windows setting or peripheral",
+  "agent.drPulse.task.2.desc":
+    "Translate the request into supported steps, explain impact and rollback, and wait for approval.",
+  "agent.drPulse.task.3.title": "Prepare my PC for deep work or a video call",
+  "agent.drPulse.task.3.desc":
+    "Inspect readiness, propose supported app and system adjustments, and apply only confirmed changes.",
 
   "agent.intelAnalyst.name": "Intel Analyst",
   "agent.intelAnalyst.desc":
@@ -934,31 +941,37 @@ export default {
   "agent.intelAnalyst.task.3.desc":
     "Monitor pricing, product updates, and market activity to surface changes and recommended responses.",
 
-  "agent.leopard.name": "Money Leopard",
-  "agent.leopard.desc": "Stock market analysis & portfolio tracking",
-  "agent.leopard.tag.1": "Stock Analysis",
-  "agent.leopard.tag.2": "Market Review",
-  "agent.leopard.tag.3": "Portfolio Mgmt",
-  "agent.leopard.task.1.title": "Today's market analysis",
-  "agent.leopard.task.1.desc": "Quick overview of market trends and sector movements.",
-  "agent.leopard.task.2.title": "30-day K-line review",
-  "agent.leopard.task.2.desc": "Review recent technical indicators and key support levels.",
-  "agent.leopard.task.3.title": "Position adjustment advice",
-  "agent.leopard.task.3.desc":
-    "Provide risk diversification optimization based on current holdings.",
+  "agent.marketSentinel.name": "Market Sentinel",
+  "agent.marketSentinel.desc":
+    "Sourced A-share briefs, filing tracking & watchlist monitoring without investment advice",
+  "agent.marketSentinel.tag.1": "Market Briefs",
+  "agent.marketSentinel.tag.2": "Filing Tracker",
+  "agent.marketSentinel.tag.3": "Watchlist Signals",
+  "agent.marketSentinel.task.1.title": "Prepare today's A-share market brief",
+  "agent.marketSentinel.task.1.desc":
+    "Summarize sourced index, breadth, turnover, sector, and scheduled-event data with timestamps.",
+  "agent.marketSentinel.task.2.title": "Track earnings and company announcements",
+  "agent.marketSentinel.task.2.desc":
+    "Review official filings, preserve reporting periods and units, and highlight factual changes.",
+  "agent.marketSentinel.task.3.title": "Monitor my watchlist and indicator changes",
+  "agent.marketSentinel.task.3.desc":
+    "Describe price, volume, and formula-based indicator changes without trade or position advice.",
 
-  "agent.singer.name": "Singer-Songwriter",
-  "agent.singer.desc": "Lyrics, arrangement inspiration & music style analysis",
-  "agent.singer.tag.1": "Lyrics Writing",
-  "agent.singer.tag.2": "Arrangement Ideas",
-  "agent.singer.tag.3": "Style Analysis",
-  "agent.singer.task.1.title": "Write some lyrics for me",
-  "agent.singer.task.1.desc": "Create original lyrics based on theme and emotion.",
-  "agent.singer.task.2.title": "Analyze this song's style",
-  "agent.singer.task.2.desc": "Break down genre, arrangement techniques, and emotional expression.",
-  "agent.singer.task.3.title": "Recommend arrangement inspiration",
-  "agent.singer.task.3.desc":
-    "Suggest reference tracks and sound combinations by style preference.",
+  "agent.creativeMuse.name": "Creative Muse",
+  "agent.creativeMuse.desc":
+    "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+  "agent.creativeMuse.tag.1": "Topic Discovery",
+  "agent.creativeMuse.tag.2": "Material Kits",
+  "agent.creativeMuse.tag.3": "Visual Packages",
+  "agent.creativeMuse.task.1.title": "Find Rednote topic ideas",
+  "agent.creativeMuse.task.1.desc":
+    "Research recent discussions, list 5 specific themes, and recommend the strongest angle.",
+  "agent.creativeMuse.task.2.title": "Build a material kit for the selected idea",
+  "agent.creativeMuse.task.2.desc":
+    "Collect facts, sources, keywords, an outline, and cover and visual directions.",
+  "agent.creativeMuse.task.3.title": "Create a Rednote package from the material kit",
+  "agent.creativeMuse.task.3.desc":
+    "Generate complete copy, titles, hashtags, a cover, and carousel visual cards.",
 
   "agent.main.task.1.title": "Summarize this content",
   "agent.main.task.1.desc": "Quickly extract key points from articles or documents.",

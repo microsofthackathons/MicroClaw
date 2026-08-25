@@ -19,8 +19,13 @@ import { minimizeWindow, sendToWindow, showAndFocusWindow } from "./window-lifec
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
+  acceptManagedSkillIntegrityChanges,
   generateAndSignSnapshot,
+  captureSkillIntegritySnapshotState,
   getSkillSourceDirs,
+  isManagedSkillTrustedBySnapshot,
+  migrateLegacySkillIntegritySnapshot,
+  restoreSkillIntegritySnapshotState,
   type IntegrityResult,
 } from "./skill-integrity";
 import { ToolSandbox } from "./tool-sandbox";
@@ -94,6 +99,7 @@ import {
   ensureSelectedModelProviderPlugins,
 } from "./model-provider-plugins";
 import {
+  AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
   ensureAgentPersonasConfig,
   getAgentPersona,
@@ -107,7 +113,27 @@ import {
   type AgentRosterConfig,
 } from "./agent-personas";
 import { assertConfigWriteAllowed } from "./config-write-policy";
-import { AGENT_CATALOG, sanitizeAgentSkillIds } from "./agent-catalog";
+import {
+  AGENT_CATALOG,
+  isAgentOwnedSkillId,
+  LEGACY_AGENT_ID_ALIASES,
+  sanitizeAgentSkillIds,
+} from "./agent-catalog";
+import {
+  agentOwnedSkillInstallChanged,
+  agentOwnedSkillMatchNames,
+  commitAgentOwnedSkillInstalls,
+  commitAgentOwnedSkillRemovals,
+  disableUnreferencedAgentOwnedSkills,
+  installAgentOwnedSkills,
+  inspectConfiguredAgentOwnedSkills,
+  prepareUnusedAgentOwnedSkillRemoval,
+  reconcileConfiguredAgentOwnedSkills,
+  resolveAgentOwnedSkillBundleRoot,
+  rollbackAgentOwnedSkillInstalls,
+  rollbackAgentOwnedSkillRemovals,
+  setAgentOwnedSkillsEnabled,
+} from "./agent-owned-skills";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import { requiresPostSpawnChannelRestart } from "./post-spawn-restart";
@@ -125,6 +151,7 @@ import {
   getWindowsNodeMxcGatewayPolicyState,
   isWindowsNodeMxcFolderConfigured,
   isWindowsNodeMxcIngressReleased,
+  migrateWindowsNodeMxcToolBackupAliases,
   normalizeWindowsNodeMxcGatewayApproval,
   normalizeWindowsNodeMxcFolderPolicy,
   planWindowsNodeMxcFolderUpsert,
@@ -2049,8 +2076,8 @@ function writeConfigTextAtomically(contents: string): void {
 
 function failForExternalGateway(port: number): never {
   const message =
-    `Agent configuration changed, but Gateway port ${port} is owned by another process. ` +
-    "Stop that Gateway and retry so MicroClaw can apply the new roster safely.";
+    `Agent or owned-skill state requires reconciliation, but Gateway port ${port} ` +
+    "is owned by another process. Stop that Gateway and retry so MicroClaw can apply it safely.";
   setGatewayStatus("failed");
   mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
   throw new Error(message);
@@ -2061,22 +2088,19 @@ function seedSpecialistAgentWorkspaces(
   stateDir: string,
   entryPath: string,
   gatewayEnvironment: Record<string, string>,
-): void {
-  try {
-    const seededFiles = seedAgentPersonaWorkspaces(
-      config,
-      stateDir,
-      DECLARE_ACCESS_SECTION,
-      gatewayEnvironment,
-      os.homedir(),
-      path.dirname(entryPath),
-    );
-    if (seededFiles.length > 0) {
-      console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
-    }
-  } catch (err) {
-    console.warn("[seed] Failed to create specialist agent workspace files:", err);
+): string[] {
+  const seededFiles = seedAgentPersonaWorkspaces(
+    config,
+    stateDir,
+    DECLARE_ACCESS_SECTION,
+    gatewayEnvironment,
+    os.homedir(),
+    path.dirname(entryPath),
+  );
+  if (seededFiles.length > 0) {
+    console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
   }
+  return seededFiles;
 }
 
 interface WorkspaceSnapshot {
@@ -2132,6 +2156,32 @@ function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
   }
 }
 
+function captureAgentWorkspaces(
+  config: AgentRosterConfig,
+  stateDir: string,
+  gatewayEnvironment: Record<string, string>,
+  entryPath: string,
+): WorkspaceSnapshot[] {
+  const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
+  return AGENT_PERSONAS.flatMap((persona) => {
+    if (!configuredIds.has(persona.id)) return [];
+    const snapshot = captureAgentWorkspace(
+      config,
+      stateDir,
+      persona,
+      gatewayEnvironment,
+      entryPath,
+    );
+    return snapshot ? [snapshot] : [];
+  });
+}
+
+function restoreAgentWorkspaces(snapshots: readonly WorkspaceSnapshot[]): void {
+  for (const snapshot of [...snapshots].reverse()) {
+    restoreAgentWorkspace(snapshot);
+  }
+}
+
 async function applyGatewayAgentRoster(
   agentId: string,
   shouldExist: boolean,
@@ -2179,11 +2229,11 @@ async function addCatalogAgent(
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
   const result = ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
-  if (!result.changed) {
-    return { agents: listConfiguredAgents(config) };
-  }
-
+  const skillConfigChanged = setAgentOwnedSkillsEnabled(config, agentId, true);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
+    throw new Error(`Cannot add agent "${agentId}" with an externally managed Gateway`);
+  }
 
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
@@ -2194,9 +2244,23 @@ async function addCatalogAgent(
     gatewayEnvironment,
     entryPath,
   );
+  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  const agentSkillBundleRoot = resolveAgentOwnedSkillBundleRoot(
+    app.isPackaged,
+    process.resourcesPath,
+  );
+  let skillInstalls: ReturnType<typeof installAgentOwnedSkills> = [];
   let restartAttempted = false;
 
   try {
+    skillInstalls = installAgentOwnedSkills(agentId, stateDir, agentSkillBundleRoot, {
+      isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot,
+    });
+    const skillRuntimeChanged =
+      skillConfigChanged || skillInstalls.some(agentOwnedSkillInstallChanged);
+    if (!result.changed && !skillRuntimeChanged) {
+      return { agents: listConfiguredAgents(config) };
+    }
     seedAgentPersonaWorkspace(
       config,
       stateDir,
@@ -2207,21 +2271,42 @@ async function addCatalogAgent(
       path.dirname(entryPath),
     );
     persistAgentPersonas(config);
-    const applyResult = await applyGatewayAgentRoster(
-      agentId,
-      true,
-      managedGateway
-        ? async () => {
-            restartAttempted = true;
-            await restartManagedGatewayAndRequireReady(
-              `Adding agent ${agentId} after hot-reload timeout`,
-            );
-          }
-        : undefined,
-    );
+    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
+    if (skillRuntimeChanged) {
+      restartAttempted = true;
+      await restartManagedGatewayAndRequireReady(`Installing agent-owned skills for ${agentId}`);
+      applyResult = await applyGatewayAgentRoster(agentId, true);
+    } else {
+      applyResult = await applyGatewayAgentRoster(
+        agentId,
+        true,
+        managedGateway
+          ? async () => {
+              restartAttempted = true;
+              await restartManagedGatewayAndRequireReady(
+                `Adding agent ${agentId} after hot-reload timeout`,
+              );
+            }
+          : undefined,
+      );
+    }
     if (applyResult === "timed-out") {
       throw new Error(
         `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
+      );
+    }
+    if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
+      acceptManagedSkillIntegrityChanges(
+        skillInstalls.filter(agentOwnedSkillInstallChanged).map((install) => ({
+          skillName: install.skillId,
+          expectedDirectory: path.join(agentSkillBundleRoot, install.skillId),
+        })),
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillInstalls(skillInstalls);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[agents] Deferred cleanup for agent-owned skill upgrade: ${deferredCleanup.join(", ")}`,
       );
     }
     console.log(`[agents] Added ${agentId} via ${applyResult}`);
@@ -2237,6 +2322,18 @@ async function addCatalogAgent(
       restoreAgentWorkspace(workspaceSnapshot);
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
+    }
+    try {
+      rollbackAgentOwnedSkillInstalls(skillInstalls);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
+      try {
+        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
     }
     if (restartAttempted && managedGateway) {
       try {
@@ -2272,30 +2369,64 @@ async function removeCatalogAgent(
 
   ensureAgentPersonasConfig(config, stateDir);
   const result = removeConfiguredAgent(config, agentId);
-  if (!result.changed) {
-    return { agents: listConfiguredAgents(config) };
+  const skillConfigChanged = disableUnreferencedAgentOwnedSkills(config, agentId);
+  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
+    throw new Error(`Cannot remove agent "${agentId}" with an externally managed Gateway`);
   }
 
-  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
-
+  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  let skillRemovals: ReturnType<typeof prepareUnusedAgentOwnedSkillRemoval> = [];
   let restartAttempted = false;
   try {
-    persistAgentPersonas(config);
-    const applyResult = await applyGatewayAgentRoster(
+    skillRemovals = prepareUnusedAgentOwnedSkillRemoval(
+      config,
       agentId,
-      false,
-      managedGateway
-        ? async () => {
-            restartAttempted = true;
-            await restartManagedGatewayAndRequireReady(
-              `Removing agent ${agentId} after hot-reload timeout`,
-            );
-          }
-        : undefined,
+      stateDir,
+      resolveAgentOwnedSkillBundleRoot(app.isPackaged, process.resourcesPath),
+      { isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot },
     );
+    const skillRuntimeChanged = skillConfigChanged || skillRemovals.length > 0;
+    if (!result.changed && !skillRuntimeChanged) {
+      return { agents: listConfiguredAgents(config) };
+    }
+    persistAgentPersonas(config);
+    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
+    if (skillRuntimeChanged) {
+      restartAttempted = true;
+      await restartManagedGatewayAndRequireReady(`Removing agent-owned skills for ${agentId}`);
+      applyResult = await applyGatewayAgentRoster(agentId, false);
+    } else {
+      applyResult = await applyGatewayAgentRoster(
+        agentId,
+        false,
+        managedGateway
+          ? async () => {
+              restartAttempted = true;
+              await restartManagedGatewayAndRequireReady(
+                `Removing agent ${agentId} after hot-reload timeout`,
+              );
+            }
+          : undefined,
+      );
+    }
     if (applyResult === "timed-out") {
       throw new Error(
         `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
+      );
+    }
+    if (skillRemovals.length > 0) {
+      acceptManagedSkillIntegrityChanges(
+        skillRemovals.map((removal) => ({
+          skillName: removal.skillId,
+          expectedDirectory: null,
+        })),
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillRemovals(skillRemovals);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[agents] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
       );
     }
     console.log(`[agents] Removed ${agentId} via ${applyResult}`);
@@ -2306,6 +2437,18 @@ async function removeCatalogAgent(
       writeConfigTextAtomically(originalConfigText);
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
+    }
+    try {
+      rollbackAgentOwnedSkillRemovals(skillRemovals);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (skillRemovals.length > 0) {
+      try {
+        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
     }
     if (restartAttempted && managedGateway) {
       try {
@@ -3181,8 +3324,14 @@ async function startGatewayInner(): Promise<void> {
   }
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
-  const agentRosterChanged = preparedPersonas?.changed ?? false;
   if (isWindowsNodeMxcDesired() && preparedPersonas) {
+    settingsStore.set(
+      "windowsNodeMxcToolBackups",
+      migrateWindowsNodeMxcToolBackupAliases(
+        settingsStore.get("windowsNodeMxcToolBackups"),
+        LEGACY_AGENT_ID_ALIASES,
+      ),
+    );
     const policy = validateWindowsNodeMxcGatewayPolicy(
       preparedPersonas.config,
       settingsStore.get("windowsNodeMxcNodeId"),
@@ -3199,12 +3348,105 @@ async function startGatewayInner(): Promise<void> {
       return;
     }
   }
+  const originalAgentConfigText = fs.existsSync(getConfigPath())
+    ? fs.readFileSync(getConfigPath(), "utf-8")
+    : null;
+  const originalIntegritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  const agentSkillBundleRoot = resolveAgentOwnedSkillBundleRoot(
+    app.isPackaged,
+    process.resourcesPath,
+  );
+  const ownedSkillTrust = {
+    isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot,
+  };
+
+  // Check ownership before any agent-owned skill filesystem mutation. An
+  // externally managed Gateway may observe the shared state directory.
+  const alreadyRunning = await checkExistingGateway(configuredPort);
+  logStartupTiming("gateway-existing-check-complete");
+  const externallyManagedGateway =
+    alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
+  const ownedSkillPlan = preparedPersonas
+    ? inspectConfiguredAgentOwnedSkills(
+        preparedPersonas.config,
+        stateDir,
+        agentSkillBundleRoot,
+        ownedSkillTrust,
+      )
+    : { required: false, reasons: [] };
+  if (externallyManagedGateway && (preparedPersonas?.changed || ownedSkillPlan.required)) {
+    failForExternalGateway(configuredPort);
+  }
+
+  const agentSkillReconciliation =
+    preparedPersonas && !externallyManagedGateway
+      ? reconcileConfiguredAgentOwnedSkills(
+          preparedPersonas.config,
+          stateDir,
+          agentSkillBundleRoot,
+          ownedSkillTrust,
+        )
+      : { installs: [], removals: [], configChanged: false, runtimeChanged: false };
+  const agentConfigurationChanged =
+    (preparedPersonas?.changed ?? false) || agentSkillReconciliation.runtimeChanged;
+  const agentSkillDiskChanged =
+    agentSkillReconciliation.installs.some(
+      (install) => agentOwnedSkillInstallChanged(install) || install.markerCreated,
+    ) || agentSkillReconciliation.removals.length > 0;
+  const agentSkillIntegrityChanged =
+    agentSkillReconciliation.installs.some(agentOwnedSkillInstallChanged) ||
+    agentSkillReconciliation.removals.length > 0;
+  let agentSkillTransactionPending = agentSkillDiskChanged || agentConfigurationChanged;
+  const workspaceSnapshots = preparedPersonas
+    ? captureAgentWorkspaces(preparedPersonas.config, stateDir, gatewayEnvironment, entryPath)
+    : [];
+
+  const rollbackStartupAgentSkills = () => {
+    if (!agentSkillTransactionPending) return;
+    rollbackAgentOwnedSkillInstalls(agentSkillReconciliation.installs);
+    rollbackAgentOwnedSkillRemovals(agentSkillReconciliation.removals);
+    if (originalAgentConfigText !== null) {
+      writeConfigTextAtomically(originalAgentConfigText);
+    }
+    restoreAgentWorkspaces(workspaceSnapshots);
+    restoreSkillIntegritySnapshotState(originalIntegritySnapshot, stateDir);
+    agentSkillTransactionPending = false;
+  };
+
+  const commitStartupAgentSkills = () => {
+    if (!agentSkillTransactionPending) return;
+    if (agentSkillIntegrityChanged) {
+      acceptManagedSkillIntegrityChanges([
+        ...agentSkillReconciliation.installs
+          .filter(agentOwnedSkillInstallChanged)
+          .map((install) => ({
+            skillName: install.skillId,
+            expectedDirectory: path.join(agentSkillBundleRoot, install.skillId),
+          })),
+        ...agentSkillReconciliation.removals.map((removal) => ({
+          skillName: removal.skillId,
+          expectedDirectory: null,
+        })),
+      ]);
+    }
+    const deferredUpgradeCleanup = commitAgentOwnedSkillInstalls(agentSkillReconciliation.installs);
+    if (deferredUpgradeCleanup.length > 0) {
+      console.warn(
+        `[startup] Deferred cleanup for agent-owned skill upgrade: ${deferredUpgradeCleanup.join(", ")}`,
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillRemovals(agentSkillReconciliation.removals);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[startup] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
+      );
+    }
+    agentSkillTransactionPending = false;
+  };
 
   // If gateway is already healthy, just connect WS and return — no new process.
   // Callers that need replacement use restartManagedGateway(), which stops the
   // old process and waits for the port before invoking this function.
-  const alreadyRunning = await checkExistingGateway(configuredPort);
-  logStartupTiming("gateway-existing-check-complete");
   if (
     isWindowsNodeMxcDesired() &&
     alreadyRunning &&
@@ -3215,638 +3457,678 @@ async function startGatewayInner(): Promise<void> {
   if (
     requiresExternalGatewayStop(
       alreadyRunning,
-      agentRosterChanged,
+      agentConfigurationChanged,
       gatewaySpawnedByUs,
       gatewayProcess !== null,
     )
   ) {
+    rollbackStartupAgentSkills();
     failForExternalGateway(configuredPort);
   }
-  if (preparedPersonas?.changed) {
-    persistAgentPersonas(preparedPersonas.config);
-  }
-  if (preparedPersonas) {
-    seedSpecialistAgentWorkspaces(preparedPersonas.config, stateDir, entryPath, gatewayEnvironment);
-  }
-  if (alreadyRunning && !agentRosterChanged) {
-    console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
-    gatewaySpawnedByUs = false;
-    setGatewayStatus("running");
-    connectGatewayWs();
-    startHealthMonitor();
-    return;
-  }
-  if (alreadyRunning) {
-    console.log("[gateway] Agent roster changed — restarting to load canonical configuration");
-    gwClient?.stop();
-  }
-
-  // Kill any old gateway on this port
-  stopGatewayProcess();
-  logStartupTiming("gateway-stop-complete");
-  await new Promise((r) => setTimeout(r, 1000));
-
-  // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
   try {
-    const lockDir = path.join(process.env.LOCALAPPDATA || "", "Temp", "openclaw");
-    if (fs.existsSync(lockDir)) {
-      for (const f of fs.readdirSync(lockDir)) {
-        if (f.startsWith("gateway.") && f.endsWith(".lock")) {
-          fs.unlinkSync(path.join(lockDir, f));
-          console.log(`Removed stale lock: ${f}`);
+    if (preparedPersonas?.changed || agentSkillReconciliation.configChanged) {
+      persistAgentPersonas(preparedPersonas!.config);
+    }
+    if (preparedPersonas && !externallyManagedGateway) {
+      agentSkillTransactionPending = true;
+      seedSpecialistAgentWorkspaces(
+        preparedPersonas.config,
+        stateDir,
+        entryPath,
+        gatewayEnvironment,
+      );
+    }
+  } catch (error) {
+    rollbackStartupAgentSkills();
+    throw error;
+  }
+  try {
+    if (alreadyRunning && !agentConfigurationChanged) {
+      commitStartupAgentSkills();
+      console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
+      gatewaySpawnedByUs = false;
+      setGatewayStatus("running");
+      connectGatewayWs();
+      startHealthMonitor();
+      return;
+    }
+    if (alreadyRunning) {
+      console.log(
+        "[gateway] Agent or owned-skill configuration changed — restarting to load canonical configuration",
+      );
+      gwClient?.stop();
+    }
+
+    // Kill any old gateway on this port
+    stopGatewayProcess();
+    logStartupTiming("gateway-stop-complete");
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
+    try {
+      const lockDir = path.join(process.env.LOCALAPPDATA || "", "Temp", "openclaw");
+      if (fs.existsSync(lockDir)) {
+        for (const f of fs.readdirSync(lockDir)) {
+          if (f.startsWith("gateway.") && f.endsWith(".lock")) {
+            fs.unlinkSync(path.join(lockDir, f));
+            console.log(`Removed stale lock: ${f}`);
+          }
         }
       }
-    }
-  } catch {}
+    } catch {}
 
-  if (!fs.existsSync(nodePath)) {
-    const msg = `[error] node.exe not found at ${nodePath}`;
-    console.error(msg);
-    mainWindow?.webContents.send("gateway:log", msg);
-    mainWindow?.webContents.send(
-      "gateway:log",
-      "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
-    );
-    setGatewayStatus("failed");
-    return;
-  }
-  if (!fs.existsSync(entryPath)) {
-    const msg = `[error] openclaw entry not found at ${entryPath}`;
-    console.error(msg);
-    mainWindow?.webContents.send("gateway:log", msg);
-    mainWindow?.webContents.send(
-      "gateway:log",
-      "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
-    );
-    setGatewayStatus("failed");
-    return;
-  }
-
-  console.log(
-    `Launching gateway: stateDir=${stateDir} auth=${gatewayToken ? "configured" : "missing"}`,
-  );
-  console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
-
-  // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
-  const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
-  if (!fs.existsSync(compileCacheDir)) {
-    fs.mkdirSync(compileCacheDir, { recursive: true });
-  }
-
-  // Spawn gateway as a hidden background process — logs are forwarded
-  // to the renderer via the gateway:log IPC channel (visible in Settings).
-
-  const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
-  const nextGatewayGenerationId = randomUUID();
-  const nextApprovalProofContext = windowsNodeMxcDesired
-    ? bundledWindowsNodeHost.createApprovalProofContext(
-        nextGatewayGenerationId,
-        settingsStore.get("windowsNodeMxcNodeId"),
-        getBundledWindowsNodeFolders(),
-        stateDir,
-        windowsNodeMxcReadinessTransitionId ?? randomUUID(),
-      )
-    : null;
-  const gwEnv: Record<string, string> = {
-    ...gatewayEnvironment,
-    OPENCLAW_STATE_DIR: stateDir,
-    NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
-    NODE_ENV: "production",
-    NODE_COMPILE_CACHE: compileCacheDir,
-    // The Desktop process already supplies a stable cache directory. Prevent
-    // the OpenClaw launcher from self-respawning through the tool sandbox.
-    OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
-    OPENCLAW_NO_RESPAWN: "1",
-    // HMAC key for verifying the external apps whitelist file
-    OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
-  };
-
-  // Determine spawn command
-  const launcherPath = resolveAppContainerLauncher();
-
-  // Initialize tool sandbox for AI agent command sandboxing.
-  // Gateway runs outside AppContainer, but tool commands are routed
-  // through AppContainer via preload interception.
-  toolSandbox = new ToolSandbox(launcherPath, nodePath);
-
-  // Restore sandbox enabled state from settings
-  const sandboxEnabled = settingsStore.get("sandboxEnabled") && !isWindowsNodeMxcDesired();
-  if (!sandboxEnabled) {
-    toolSandbox.setEnabled(false);
-  }
-
-  // Grant sandbox access to the state directory and the resolved runtimes.
-  if (fs.existsSync(stateDir)) toolSandbox.addDirRW(stateDir);
-  const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
-  if (fs.existsSync(openClawPackageDir)) toolSandbox.addDirRO(openClawPackageDir);
-  const nodeRuntimeDir = path.dirname(nodePath);
-  if (fs.existsSync(nodeRuntimeDir)) toolSandbox.addDirRO(nodeRuntimeDir);
-
-  // Preserve support for the legacy per-user runtime layout.
-  const ocNodeDir = process.env.USERPROFILE
-    ? path.join(process.env.USERPROFILE, ".openclaw-node")
-    : "";
-  if (ocNodeDir && fs.existsSync(ocNodeDir)) toolSandbox.addDirRO(ocNodeDir);
-
-  // Grant read access to custom skills dir (~/.agents/skills/) so the
-  // gateway can scan it without triggering a sandbox permission prompt.
-  const customSkillsDir = process.env.USERPROFILE
-    ? path.join(process.env.USERPROFILE, ".agents", "skills")
-    : "";
-  if (customSkillsDir && fs.existsSync(customSkillsDir)) toolSandbox.addDirRO(customSkillsDir);
-
-  // Load user-configured external apps whitelist from settings.
-  // These apps bypass AppContainer when launched (need COM/RPC/named-pipes).
-  // Stored in Electron settings (not accessible from sandbox).
-  const externalApps = settingsStore.get("sandboxExternalApps");
-  toolSandbox.setExternalApps(externalApps);
-  // Write to %APPDATA%/microclaw/ so sandbox-preload.js can read it.
-  // This file is NOT in the AppContainer's writable dirs, so it's safe.
-  writeExternalAppsFile(externalApps);
-
-  // Load AppContainer capabilities from settings (e.g. internetClient, privateNetworkClientServer).
-  const savedCaps = settingsStore.get("sandboxCapabilities");
-  if (savedCaps && savedCaps.length > 0) {
-    toolSandbox.setCapabilities(savedCaps);
-  }
-
-  // Load user-configured sandbox directory permissions from settings.
-  const userDirsRW = settingsStore.get("sandboxUserDirsRW");
-  const userDirsRO = settingsStore.get("sandboxUserDirsRO");
-  for (const dir of userDirsRW) {
-    if (fs.existsSync(dir)) toolSandbox.addDirRW(dir);
-  }
-  for (const dir of userDirsRO) {
-    if (fs.existsSync(dir)) toolSandbox.addDirRO(dir);
-  }
-
-  if (toolSandbox.isActive()) {
-    // Provision AppContainer profile and ACLs (async to avoid blocking UI)
-    toolSandbox.provisionAsync().then(async (provisioned) => {
-      if (provisioned) {
-        console.log("[sandbox] AppContainer tool sandbox provisioned");
-        mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
-        // Clean up any stale ACLs from previous failed revokes
-        await cleanupStaleAcls();
-        // Apply explicit DENY ACEs on credential / private files inside the
-        // OpenClaw state dir. The state dir as a whole is granted rw to the
-        // AppContainer (skills need it for logs/scratch/plugin state), but
-        // .env / openclaw.json / device-identity.json / sessions/ must be
-        // shielded from sandboxed skill subprocesses.
-        hardenOpenClawStateDir();
-      } else {
-        console.warn("[sandbox] AppContainer provisioning failed — sandbox disabled");
-        toolSandbox!.setEnabled(false);
-      }
-    });
-  }
-
-  // Merge sandbox env (COMSPEC, sandbox config)
-  const sandboxEnv = toolSandbox.getGatewayEnv();
-  Object.assign(gwEnv, sandboxEnv);
-
-  // Append sandbox preload to NODE_OPTIONS if available
-  const preloadPath = toolSandbox.getPreloadPath();
-  if (preloadPath) {
-    // NODE_OPTIONS --require treats backslashes as escapes; use forward slashes
-    const preloadForward = preloadPath.replace(/\\/g, "/");
-    gwEnv.NODE_OPTIONS = `${gwEnv.NODE_OPTIONS} --require ${preloadForward}`;
-    console.log(`[sandbox] Preload: ${preloadForward}`);
-  }
-
-  const approvalCompatPath = app.isPackaged
-    ? path.join(process.resourcesPath, "openclaw-approval-replay-compat.mjs")
-    : path.join(__dirname, "..", "src", "openclaw-approval-replay-compat.mjs");
-  if (windowsNodeMxcDesired) {
-    if (!fs.existsSync(approvalCompatPath)) {
-      const msg = `[error] Windows Node + MXC approval compatibility preload is missing: ${approvalCompatPath}`;
+    if (!fs.existsSync(nodePath)) {
+      const msg = `[error] node.exe not found at ${nodePath}`;
       console.error(msg);
       mainWindow?.webContents.send("gateway:log", msg);
-      setGatewayStatus("failed");
-      return;
-    }
-    gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
-    gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
-    if (!nextApprovalProofContext) {
-      throw new Error("Windows Node + MXC approval proof context is unavailable");
-    }
-    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_SECRET = nextApprovalProofContext.secretBase64;
-    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION =
-      nextApprovalProofContext.gatewayGeneration;
-    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT =
-      nextApprovalProofContext.policyFingerprint;
-    gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID = nextApprovalProofContext.nodeId;
-  }
-
-  const gwArgs = [
-    ...(windowsNodeMxcDesired ? ["--import", pathToFileURL(approvalCompatPath).href] : []),
-    entryPath,
-    "gateway",
-    "run",
-    "--port",
-    String(configuredPort),
-    "--bind",
-    "loopback",
-    // Note: --force is intentionally omitted. It calls exec("netstat") which
-    // routes through COMSPEC=AppContainerLauncher, causing netstat to run inside
-    // AppContainer where it may return wrong results, leading to the gateway
-    // killing itself in a restart loop. Stale lock cleanup is handled by
-    // ContainerManager.CleanStaleLockFiles() instead.
-    "--allow-unconfigured",
-  ];
-
-  logStartupTiming("gateway-spawn");
-  const child = spawn(nodePath, gwArgs, {
-    cwd: path.dirname(entryPath),
-    env: gwEnv,
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
-    windowsHide: true,
-    ...(process.platform === "win32" ? { creationFlags: CREATE_NO_WINDOW } : {}),
-  });
-
-  gatewayProcess = child;
-  gatewayGenerationId = nextGatewayGenerationId;
-  windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
-  windowsNodeMxcIngressGeneration = null;
-  gatewaySpawnedByUs = true;
-  // Only allow post-spawn restart on the very first gateway launch.
-  // Do NOT reset on subsequent restarts — it causes an infinite restart loop.
-  // postSpawnRestartDone keeps its value across gateway restarts.
-
-  const safeSendLog = (channel: string, payload: unknown) => {
-    try {
-      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-        mainWindow.webContents.send(channel, payload);
-      }
-    } catch {
-      // window tearing down — ignore
-    }
-  };
-
-  // Forward stdout/stderr to the renderer's gateway log viewer
-  child.stdout?.on("data", (data: Buffer) => {
-    const msg = data.toString("utf-8").trim();
-    if (msg) {
-      console.log(`[gateway] ${msg}`);
-      safeSendLog("gateway:log", msg);
-    }
-  });
-  child.stderr?.on("data", (data: Buffer) => {
-    const msg = data.toString("utf-8").trim();
-    if (msg) {
-      console.log(`[gateway:err] ${msg}`);
-      safeSendLog("gateway:log", msg);
-    }
-  });
-
-  child.on("error", (err) => {
-    console.error("Gateway spawn error:", err);
-    safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
-    safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
-    if (gatewayProcess === child) {
-      windowsNodeMxcIngressGeneration = null;
-      windowsNodeMxcApprovalProofContext = null;
-      bundledWindowsNodeHost.revokeActivationLease();
-      stopBundledWindowsNodeHost();
-      gatewayProcess = null;
-      gatewaySpawnedByUs = false;
-      setGatewayStatus("failed");
-    }
-  });
-
-  child.on("exit", (code, signal) => {
-    console.log(`[gateway] exited: code=${code} signal=${signal}`);
-    safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
-    if (gatewayProcess === child) {
-      windowsNodeMxcIngressGeneration = null;
-      windowsNodeMxcApprovalProofContext = null;
-      bundledWindowsNodeHost.revokeActivationLease();
-      stopBundledWindowsNodeHost();
-      gatewayProcess = null;
-      gatewaySpawnedByUs = false;
-    }
-  });
-
-  // Log ALL IPC messages from gateway for debugging remote permission routing
-  child.on("message", (msg: any) => {
-    if (msg?.type) {
-      console.log(`[gateway-ipc] type=${msg.type} keys=${Object.keys(msg).join(",")}`);
-    }
-  });
-
-  // Forward actual shell command notifications to renderer for exec panel display
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "sandbox-exec-command") return;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("sandbox:exec-command", {
-        shell: msg.shell,
-        command: msg.command,
-      });
-    }
-  });
-
-  // Handle sandbox approval requests from sandbox-preload.js via Node IPC.
-  // The preload blocks (Atomics.wait) until we write the response file.
-  // We pause the health-monitor while blocked to prevent it killing the gateway.
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "sandbox-approval-request") return;
-    const { id, app, command, responseFile } = msg;
-    const appLower = (app || "").toLowerCase();
-    console.log(
-      `[sandbox] Approval request: app=${appLower} id=${id} session=${activeChatSession}`,
-    );
-
-    // Check per-session deny list — auto-deny without prompting
-    const sessionDenied = sessionDeniedApps.get(activeChatSession);
-    if (sessionDenied?.has(appLower)) {
-      console.log(`[sandbox] Auto-denied (session): ${appLower}`);
-      try {
-        fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
-      } catch {}
-      return;
-    }
-
-    pendingSyncPermissionRequests++;
-    const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    pendingPermissionRequests.set(requestId, { type: "app-approval", msg });
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      notifyRemotePermissionNeeded();
-      mainWindow.webContents.send("sandbox:permission-request", {
-        requestId,
-        type: "app-approval",
-        app: appLower,
-        command,
-      });
-    } else {
-      pendingPermissionRequests.delete(requestId);
-      pendingSyncPermissionRequests--;
-      try {
-        fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
-      } catch {}
-    }
-  });
-
-  // Handle file permission requests from sandbox-preload.js via Node IPC.
-  // The preload blocks (Atomics.wait) until we write the response file.
-  // We pause the health-monitor and use a renderer dialog.
-  // ACL is granted BEFORE writing the response file so the retried write succeeds.
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "sandbox-file-permission-request") return;
-    const {
-      id,
-      filePath: reqPath,
-      roDir,
-      accessNeeded,
-      command: blockedCommand,
-      callerStack,
-      responseFile,
-    } = msg;
-    console.log(
-      `[sandbox] File permission request: path=${reqPath} roDir=${roDir} access=${accessNeeded} command=${blockedCommand || "(none)"} stack=${callerStack || "(none)"} id=${id}`,
-    );
-
-    pendingSyncPermissionRequests++;
-    const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    pendingPermissionRequests.set(requestId, { type: "file", msg });
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      notifyRemotePermissionNeeded();
-      mainWindow.webContents.send("sandbox:permission-request", {
-        requestId,
-        type: "file",
-        targetPath: reqPath,
-        dirPath: roDir,
-        accessNeeded: accessNeeded || "rw",
-        command: blockedCommand || null,
-        callerStack: callerStack || null,
-      });
-    } else {
-      pendingPermissionRequests.delete(requestId);
-      pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
-      try {
-        fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
-      } catch {}
-    }
-  });
-
-  // Handle shell command permission requests (access-denied retry).
-  // Triggered when a shell command inside AppContainer fails with "Access is denied".
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "sandbox-shell-permission-request") return;
-    const { id, deniedPath, dirPath, command, accessNeeded, responseFile } = msg;
-    console.log(
-      `[sandbox] Shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded} id=${id}`,
-    );
-
-    // If directory is already granted, re-grant ACL silently (may have been lost
-    // e.g. startup provision failed due to admin requirement) and auto-approve.
-    const normalCheck = normalizeDirPath(dirPath).toLowerCase();
-    const existingRW = settingsStore.get("sandboxUserDirsRW");
-    const existingRO = settingsStore.get("sandboxUserDirsRO");
-    const alreadyRW = existingRW.some(
-      (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
-    );
-    const alreadyRO = existingRO.some(
-      (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
-    );
-    if (alreadyRW || alreadyRO) {
-      console.log(
-        `[sandbox] Dir "${dirPath}" already granted — re-granting ACL and auto-approving`,
+      mainWindow?.webContents.send(
+        "gateway:log",
+        "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
       );
-      const access = alreadyRW ? "rw" : "r";
-      const dirToGrant = normalizeDirPath(dirPath);
-      grantAndVerifyAcl(dirToGrant, access as "rw" | "r")
-        .then(() => {
-          const decision = alreadyRW ? "grant-rw" : "grant-ro";
-          try {
-            fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
-          } catch {}
-        })
-        .catch(() => {
-          const decision = alreadyRW ? "grant-rw" : "grant-ro";
-          try {
-            fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
-          } catch {}
+      setGatewayStatus("failed");
+      rollbackStartupAgentSkills();
+      return;
+    }
+    if (!fs.existsSync(entryPath)) {
+      const msg = `[error] openclaw entry not found at ${entryPath}`;
+      console.error(msg);
+      mainWindow?.webContents.send("gateway:log", msg);
+      mainWindow?.webContents.send(
+        "gateway:log",
+        "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
+      );
+      setGatewayStatus("failed");
+      rollbackStartupAgentSkills();
+      return;
+    }
+
+    console.log(
+      `Launching gateway: stateDir=${stateDir} auth=${gatewayToken ? "configured" : "missing"}`,
+    );
+    console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
+
+    // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
+    const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+    if (!fs.existsSync(compileCacheDir)) {
+      fs.mkdirSync(compileCacheDir, { recursive: true });
+    }
+
+    // Spawn gateway as a hidden background process — logs are forwarded
+    // to the renderer via the gateway:log IPC channel (visible in Settings).
+
+    const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
+    const nextGatewayGenerationId = randomUUID();
+    const nextApprovalProofContext = windowsNodeMxcDesired
+      ? bundledWindowsNodeHost.createApprovalProofContext(
+          nextGatewayGenerationId,
+          settingsStore.get("windowsNodeMxcNodeId"),
+          getBundledWindowsNodeFolders(),
+          stateDir,
+          windowsNodeMxcReadinessTransitionId ?? randomUUID(),
+        )
+      : null;
+    const gwEnv: Record<string, string> = {
+      ...gatewayEnvironment,
+      OPENCLAW_STATE_DIR: stateDir,
+      NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
+      NODE_ENV: "production",
+      NODE_COMPILE_CACHE: compileCacheDir,
+      // The Desktop process already supplies a stable cache directory. Prevent
+      // the OpenClaw launcher from self-respawning through the tool sandbox.
+      OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
+      OPENCLAW_NO_RESPAWN: "1",
+      // HMAC key for verifying the external apps whitelist file
+      OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
+    };
+
+    // Determine spawn command
+    const launcherPath = resolveAppContainerLauncher();
+
+    // Initialize tool sandbox for AI agent command sandboxing.
+    // Gateway runs outside AppContainer, but tool commands are routed
+    // through AppContainer via preload interception.
+    toolSandbox = new ToolSandbox(launcherPath, nodePath);
+
+    // Restore sandbox enabled state from settings
+    const sandboxEnabled = settingsStore.get("sandboxEnabled") && !isWindowsNodeMxcDesired();
+    if (!sandboxEnabled) {
+      toolSandbox.setEnabled(false);
+    }
+
+    // Grant sandbox access to the state directory and the resolved runtimes.
+    if (fs.existsSync(stateDir)) toolSandbox.addDirRW(stateDir);
+    const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
+    if (fs.existsSync(openClawPackageDir)) toolSandbox.addDirRO(openClawPackageDir);
+    const nodeRuntimeDir = path.dirname(nodePath);
+    if (fs.existsSync(nodeRuntimeDir)) toolSandbox.addDirRO(nodeRuntimeDir);
+
+    // Preserve support for the legacy per-user runtime layout.
+    const ocNodeDir = process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".openclaw-node")
+      : "";
+    if (ocNodeDir && fs.existsSync(ocNodeDir)) toolSandbox.addDirRO(ocNodeDir);
+
+    // Grant read access to custom skills dir (~/.agents/skills/) so the
+    // gateway can scan it without triggering a sandbox permission prompt.
+    const customSkillsDir = process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".agents", "skills")
+      : "";
+    if (customSkillsDir && fs.existsSync(customSkillsDir)) toolSandbox.addDirRO(customSkillsDir);
+
+    // Load user-configured external apps whitelist from settings.
+    // These apps bypass AppContainer when launched (need COM/RPC/named-pipes).
+    // Stored in Electron settings (not accessible from sandbox).
+    const externalApps = settingsStore.get("sandboxExternalApps");
+    toolSandbox.setExternalApps(externalApps);
+    // Write to %APPDATA%/microclaw/ so sandbox-preload.js can read it.
+    // This file is NOT in the AppContainer's writable dirs, so it's safe.
+    writeExternalAppsFile(externalApps);
+
+    // Load AppContainer capabilities from settings (e.g. internetClient, privateNetworkClientServer).
+    const savedCaps = settingsStore.get("sandboxCapabilities");
+    if (savedCaps && savedCaps.length > 0) {
+      toolSandbox.setCapabilities(savedCaps);
+    }
+
+    // Load user-configured sandbox directory permissions from settings.
+    const userDirsRW = settingsStore.get("sandboxUserDirsRW");
+    const userDirsRO = settingsStore.get("sandboxUserDirsRO");
+    for (const dir of userDirsRW) {
+      if (fs.existsSync(dir)) toolSandbox.addDirRW(dir);
+    }
+    for (const dir of userDirsRO) {
+      if (fs.existsSync(dir)) toolSandbox.addDirRO(dir);
+    }
+
+    if (toolSandbox.isActive()) {
+      // Provision AppContainer profile and ACLs (async to avoid blocking UI)
+      toolSandbox.provisionAsync().then(async (provisioned) => {
+        if (provisioned) {
+          console.log("[sandbox] AppContainer tool sandbox provisioned");
+          mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
+          // Clean up any stale ACLs from previous failed revokes
+          await cleanupStaleAcls();
+          // Apply explicit DENY ACEs on credential / private files inside the
+          // OpenClaw state dir. The state dir as a whole is granted rw to the
+          // AppContainer (skills need it for logs/scratch/plugin state), but
+          // .env / openclaw.json / device-identity.json / sessions/ must be
+          // shielded from sandboxed skill subprocesses.
+          hardenOpenClawStateDir();
+        } else {
+          console.warn("[sandbox] AppContainer provisioning failed — sandbox disabled");
+          toolSandbox!.setEnabled(false);
+        }
+      });
+    }
+
+    // Merge sandbox env (COMSPEC, sandbox config)
+    const sandboxEnv = toolSandbox.getGatewayEnv();
+    Object.assign(gwEnv, sandboxEnv);
+
+    // Append sandbox preload to NODE_OPTIONS if available
+    const preloadPath = toolSandbox.getPreloadPath();
+    if (preloadPath) {
+      // NODE_OPTIONS --require treats backslashes as escapes; use forward slashes
+      const preloadForward = preloadPath.replace(/\\/g, "/");
+      gwEnv.NODE_OPTIONS = `${gwEnv.NODE_OPTIONS} --require ${preloadForward}`;
+      console.log(`[sandbox] Preload: ${preloadForward}`);
+    }
+
+    const approvalCompatPath = app.isPackaged
+      ? path.join(process.resourcesPath, "openclaw-approval-replay-compat.mjs")
+      : path.join(__dirname, "..", "src", "openclaw-approval-replay-compat.mjs");
+    if (windowsNodeMxcDesired) {
+      if (!fs.existsSync(approvalCompatPath)) {
+        const msg = `[error] Windows Node + MXC approval compatibility preload is missing: ${approvalCompatPath}`;
+        console.error(msg);
+        mainWindow?.webContents.send("gateway:log", msg);
+        setGatewayStatus("failed");
+        rollbackStartupAgentSkills();
+        return;
+      }
+      gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+      gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
+      if (!nextApprovalProofContext) {
+        throw new Error("Windows Node + MXC approval proof context is unavailable");
+      }
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_SECRET = nextApprovalProofContext.secretBase64;
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION =
+        nextApprovalProofContext.gatewayGeneration;
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT =
+        nextApprovalProofContext.policyFingerprint;
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID = nextApprovalProofContext.nodeId;
+    }
+
+    const gwArgs = [
+      ...(windowsNodeMxcDesired ? ["--import", pathToFileURL(approvalCompatPath).href] : []),
+      entryPath,
+      "gateway",
+      "run",
+      "--port",
+      String(configuredPort),
+      "--bind",
+      "loopback",
+      // Note: --force is intentionally omitted. It calls exec("netstat") which
+      // routes through COMSPEC=AppContainerLauncher, causing netstat to run inside
+      // AppContainer where it may return wrong results, leading to the gateway
+      // killing itself in a restart loop. Stale lock cleanup is handled by
+      // ContainerManager.CleanStaleLockFiles() instead.
+      "--allow-unconfigured",
+    ];
+
+    logStartupTiming("gateway-spawn");
+    const child = spawn(nodePath, gwArgs, {
+      cwd: path.dirname(entryPath),
+      env: gwEnv,
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      windowsHide: true,
+      ...(process.platform === "win32" ? { creationFlags: CREATE_NO_WINDOW } : {}),
+    });
+
+    gatewayProcess = child;
+    gatewayGenerationId = nextGatewayGenerationId;
+    windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
+    windowsNodeMxcIngressGeneration = null;
+    gatewaySpawnedByUs = true;
+    // Only allow post-spawn restart on the very first gateway launch.
+    // Do NOT reset on subsequent restarts — it causes an infinite restart loop.
+    // postSpawnRestartDone keeps its value across gateway restarts.
+
+    const safeSendLog = (channel: string, payload: unknown) => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send(channel, payload);
+        }
+      } catch {
+        // window tearing down — ignore
+      }
+    };
+
+    // Forward stdout/stderr to the renderer's gateway log viewer
+    child.stdout?.on("data", (data: Buffer) => {
+      const msg = data.toString("utf-8").trim();
+      if (msg) {
+        console.log(`[gateway] ${msg}`);
+        safeSendLog("gateway:log", msg);
+      }
+    });
+    child.stderr?.on("data", (data: Buffer) => {
+      const msg = data.toString("utf-8").trim();
+      if (msg) {
+        console.log(`[gateway:err] ${msg}`);
+        safeSendLog("gateway:log", msg);
+      }
+    });
+
+    child.on("error", (err) => {
+      console.error("Gateway spawn error:", err);
+      safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
+      safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
+      if (gatewayProcess === child) {
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcApprovalProofContext = null;
+        bundledWindowsNodeHost.revokeActivationLease();
+        stopBundledWindowsNodeHost();
+        gatewayProcess = null;
+        gatewaySpawnedByUs = false;
+        setGatewayStatus("failed");
+      }
+    });
+
+    child.on("exit", (code, signal) => {
+      console.log(`[gateway] exited: code=${code} signal=${signal}`);
+      safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
+      if (gatewayProcess === child) {
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcApprovalProofContext = null;
+        bundledWindowsNodeHost.revokeActivationLease();
+        stopBundledWindowsNodeHost();
+        gatewayProcess = null;
+        gatewaySpawnedByUs = false;
+      }
+    });
+
+    // Log ALL IPC messages from gateway for debugging remote permission routing
+    child.on("message", (msg: any) => {
+      if (msg?.type) {
+        console.log(`[gateway-ipc] type=${msg.type} keys=${Object.keys(msg).join(",")}`);
+      }
+    });
+
+    // Forward actual shell command notifications to renderer for exec panel display
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-exec-command") return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("sandbox:exec-command", {
+          shell: msg.shell,
+          command: msg.command,
         });
-    } else {
-      // Use renderer dialog — safe because spawnSync no longer calls this
-      // (it sends sandbox-shell-permission-request-async instead).
+      }
+    });
+
+    // Handle sandbox approval requests from sandbox-preload.js via Node IPC.
+    // The preload blocks (Atomics.wait) until we write the response file.
+    // We pause the health-monitor while blocked to prevent it killing the gateway.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-approval-request") return;
+      const { id, app, command, responseFile } = msg;
+      const appLower = (app || "").toLowerCase();
+      console.log(
+        `[sandbox] Approval request: app=${appLower} id=${id} session=${activeChatSession}`,
+      );
+
+      // Check per-session deny list — auto-deny without prompting
+      const sessionDenied = sessionDeniedApps.get(activeChatSession);
+      if (sessionDenied?.has(appLower)) {
+        console.log(`[sandbox] Auto-denied (session): ${appLower}`);
+        try {
+          fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
+        } catch {}
+        return;
+      }
+
+      pendingSyncPermissionRequests++;
       const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      pendingPermissionRequests.set(requestId, { type: "shell", msg });
+      pendingPermissionRequests.set(requestId, { type: "app-approval", msg });
 
       if (mainWindow && !mainWindow.isDestroyed()) {
         notifyRemotePermissionNeeded();
         mainWindow.webContents.send("sandbox:permission-request", {
           requestId,
-          type: "shell",
-          targetPath: deniedPath,
-          dirPath,
+          type: "app-approval",
+          app: appLower,
           command,
-          accessNeeded: accessNeeded || "rw",
         });
       } else {
         pendingPermissionRequests.delete(requestId);
+        pendingSyncPermissionRequests--;
         try {
           fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
         } catch {}
       }
-    }
-  });
+    });
 
-  // Handle async shell permission requests from spawn (non-blocking).
-  // The command has already failed — we show a dialog, grant ACL if approved,
-  // and the AI will naturally retry the command.
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "sandbox-shell-permission-request-async") return;
-    const { deniedPath, dirPath, command, accessNeeded } = msg;
-    console.log(
-      `[sandbox] Async shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded}`,
-    );
-
-    // If directory is already in settings but command still failed with Access
-    // Denied, silently re-grant ACL (may have been lost, e.g. startup provision
-    // failed due to admin requirement).  No dialog needed.
-    const normalCheck = normalizeDirPath(dirPath).toLowerCase();
-    const rwDirs = settingsStore.get("sandboxUserDirsRW");
-    const roDirs = settingsStore.get("sandboxUserDirsRO");
-    const alreadyRW = rwDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalCheck);
-    const alreadyRO = roDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalCheck);
-    if (alreadyRW || alreadyRO) {
-      const access = alreadyRW ? "rw" : "r";
-      const dirToGrant = normalizeDirPath(dirPath);
+    // Handle file permission requests from sandbox-preload.js via Node IPC.
+    // The preload blocks (Atomics.wait) until we write the response file.
+    // We pause the health-monitor and use a renderer dialog.
+    // ACL is granted BEFORE writing the response file so the retried write succeeds.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-file-permission-request") return;
+      const {
+        id,
+        filePath: reqPath,
+        roDir,
+        accessNeeded,
+        command: blockedCommand,
+        callerStack,
+        responseFile,
+      } = msg;
       console.log(
-        `[sandbox] Async: dir "${dirPath}" already in settings — silently re-granting ACL (${access})`,
+        `[sandbox] File permission request: path=${reqPath} roDir=${roDir} access=${accessNeeded} command=${blockedCommand || "(none)"} stack=${callerStack || "(none)"} id=${id}`,
       );
-      grantAndVerifyAcl(dirToGrant, access as "rw" | "r")
-        .then(() => {
-          // Write response file to unblock any sync poll in preload
-          if (msg.responseFile) {
-            const decision = alreadyRW ? "grant-rw" : "grant-ro";
-            try {
-              fs.writeFileSync(msg.responseFile, JSON.stringify({ decision }), "utf-8");
-            } catch {}
-          }
-        })
-        .catch(() => {
-          if (msg.responseFile) {
-            try {
-              fs.writeFileSync(msg.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
-            } catch {}
-          }
-        });
-      return;
-    }
 
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      // No window — write deny response to unblock
-      if (msg.responseFile) {
+      pendingSyncPermissionRequests++;
+      const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingPermissionRequests.set(requestId, { type: "file", msg });
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        notifyRemotePermissionNeeded();
+        mainWindow.webContents.send("sandbox:permission-request", {
+          requestId,
+          type: "file",
+          targetPath: reqPath,
+          dirPath: roDir,
+          accessNeeded: accessNeeded || "rw",
+          command: blockedCommand || null,
+          callerStack: callerStack || null,
+        });
+      } else {
+        pendingPermissionRequests.delete(requestId);
+        pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
         try {
-          fs.writeFileSync(msg.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+          fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
         } catch {}
       }
-      return;
-    }
-
-    notifyRemotePermissionNeeded();
-    const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    pendingPermissionRequests.set(requestId, { type: "shell-async", msg });
-    mainWindow.webContents.send("sandbox:permission-request", {
-      requestId,
-      type: "shell-async",
-      targetPath: deniedPath,
-      dirPath,
-      command,
-      accessNeeded: accessNeeded || "rw",
     });
-  });
 
-  // Handle ACL-ineffective reports: directory is in settings but AppContainer
-  // still got Access Denied. Attempt silent re-grant and notify the user.
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "sandbox-acl-ineffective") return;
-    const { deniedPath, dirPath, command } = msg;
-    console.warn(
-      `[sandbox] ACL ineffective: path=${deniedPath} dir=${dirPath} cmd=${command?.substring(0, 80)}`,
-    );
+    // Handle shell command permission requests (access-denied retry).
+    // Triggered when a shell command inside AppContainer fails with "Access is denied".
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-shell-permission-request") return;
+      const { id, deniedPath, dirPath, command, accessNeeded, responseFile } = msg;
+      console.log(
+        `[sandbox] Shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded} id=${id}`,
+      );
 
-    // Find the dir in settings to determine access level
-    const normalCheck = path.resolve(dirPath).toLowerCase();
-    const rwDirs = settingsStore.get("sandboxUserDirsRW");
-    const roDirs = settingsStore.get("sandboxUserDirsRO");
-    const isRW = rwDirs.some(
-      (d: string) =>
-        normalizeDirPath(d).toLowerCase() === normalCheck ||
-        normalCheck.startsWith(normalizeDirPath(d).toLowerCase()),
-    );
-    const isRO =
-      !isRW &&
-      roDirs.some(
+      // If directory is already granted, re-grant ACL silently (may have been lost
+      // e.g. startup provision failed due to admin requirement) and auto-approve.
+      const normalCheck = normalizeDirPath(dirPath).toLowerCase();
+      const existingRW = settingsStore.get("sandboxUserDirsRW");
+      const existingRO = settingsStore.get("sandboxUserDirsRO");
+      const alreadyRW = existingRW.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      const alreadyRO = existingRO.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      if (alreadyRW || alreadyRO) {
+        console.log(
+          `[sandbox] Dir "${dirPath}" already granted — re-granting ACL and auto-approving`,
+        );
+        const access = alreadyRW ? "rw" : "r";
+        const dirToGrant = normalizeDirPath(dirPath);
+        grantAndVerifyAcl(dirToGrant, access as "rw" | "r")
+          .then(() => {
+            const decision = alreadyRW ? "grant-rw" : "grant-ro";
+            try {
+              fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+            } catch {}
+          })
+          .catch(() => {
+            const decision = alreadyRW ? "grant-rw" : "grant-ro";
+            try {
+              fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+            } catch {}
+          });
+      } else {
+        // Use renderer dialog — safe because spawnSync no longer calls this
+        // (it sends sandbox-shell-permission-request-async instead).
+        const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        pendingPermissionRequests.set(requestId, { type: "shell", msg });
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          notifyRemotePermissionNeeded();
+          mainWindow.webContents.send("sandbox:permission-request", {
+            requestId,
+            type: "shell",
+            targetPath: deniedPath,
+            dirPath,
+            command,
+            accessNeeded: accessNeeded || "rw",
+          });
+        } else {
+          pendingPermissionRequests.delete(requestId);
+          try {
+            fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
+          } catch {}
+        }
+      }
+    });
+
+    // Handle async shell permission requests from spawn (non-blocking).
+    // The command has already failed — we show a dialog, grant ACL if approved,
+    // and the AI will naturally retry the command.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-shell-permission-request-async") return;
+      const { deniedPath, dirPath, command, accessNeeded } = msg;
+      console.log(
+        `[sandbox] Async shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded}`,
+      );
+
+      // If directory is already in settings but command still failed with Access
+      // Denied, silently re-grant ACL (may have been lost, e.g. startup provision
+      // failed due to admin requirement).  No dialog needed.
+      const normalCheck = normalizeDirPath(dirPath).toLowerCase();
+      const rwDirs = settingsStore.get("sandboxUserDirsRW");
+      const roDirs = settingsStore.get("sandboxUserDirsRO");
+      const alreadyRW = rwDirs.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      const alreadyRO = roDirs.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      if (alreadyRW || alreadyRO) {
+        const access = alreadyRW ? "rw" : "r";
+        const dirToGrant = normalizeDirPath(dirPath);
+        console.log(
+          `[sandbox] Async: dir "${dirPath}" already in settings — silently re-granting ACL (${access})`,
+        );
+        grantAndVerifyAcl(dirToGrant, access as "rw" | "r")
+          .then(() => {
+            // Write response file to unblock any sync poll in preload
+            if (msg.responseFile) {
+              const decision = alreadyRW ? "grant-rw" : "grant-ro";
+              try {
+                fs.writeFileSync(msg.responseFile, JSON.stringify({ decision }), "utf-8");
+              } catch {}
+            }
+          })
+          .catch(() => {
+            if (msg.responseFile) {
+              try {
+                fs.writeFileSync(msg.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+              } catch {}
+            }
+          });
+        return;
+      }
+
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        // No window — write deny response to unblock
+        if (msg.responseFile) {
+          try {
+            fs.writeFileSync(msg.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+          } catch {}
+        }
+        return;
+      }
+
+      notifyRemotePermissionNeeded();
+      const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingPermissionRequests.set(requestId, { type: "shell-async", msg });
+      mainWindow.webContents.send("sandbox:permission-request", {
+        requestId,
+        type: "shell-async",
+        targetPath: deniedPath,
+        dirPath,
+        command,
+        accessNeeded: accessNeeded || "rw",
+      });
+    });
+
+    // Handle ACL-ineffective reports: directory is in settings but AppContainer
+    // still got Access Denied. Attempt silent re-grant and notify the user.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-acl-ineffective") return;
+      const { deniedPath, dirPath, command } = msg;
+      console.warn(
+        `[sandbox] ACL ineffective: path=${deniedPath} dir=${dirPath} cmd=${command?.substring(0, 80)}`,
+      );
+
+      // Find the dir in settings to determine access level
+      const normalCheck = path.resolve(dirPath).toLowerCase();
+      const rwDirs = settingsStore.get("sandboxUserDirsRW");
+      const roDirs = settingsStore.get("sandboxUserDirsRO");
+      const isRW = rwDirs.some(
         (d: string) =>
           normalizeDirPath(d).toLowerCase() === normalCheck ||
           normalCheck.startsWith(normalizeDirPath(d).toLowerCase()),
       );
+      const isRO =
+        !isRW &&
+        roDirs.some(
+          (d: string) =>
+            normalizeDirPath(d).toLowerCase() === normalCheck ||
+            normalCheck.startsWith(normalizeDirPath(d).toLowerCase()),
+        );
 
-    if (isRW || isRO) {
-      const access = isRW ? "rw" : "r";
-      const matchedDir = isRW
-        ? rwDirs.find((d: string) => normalCheck.startsWith(normalizeDirPath(d).toLowerCase()))
-        : roDirs.find((d: string) => normalCheck.startsWith(normalizeDirPath(d).toLowerCase()));
-      if (matchedDir) {
-        console.log(`[sandbox] Attempting silent ACL re-grant for: ${matchedDir} (${access})`);
-        grantAndVerifyAcl(normalizeDirPath(matchedDir), access as "rw" | "r").then((ok) => {
-          if (!ok) {
-            console.error(`[sandbox] ACL re-grant failed for: ${matchedDir}`);
-            mainWindow?.webContents.send("sandbox:acl-ineffective", {
-              dir: matchedDir,
-              deniedPath,
-              access,
-              command,
-            });
-          } else {
-            console.log(`[sandbox] ACL re-grant succeeded for: ${matchedDir}`);
-          }
-        });
+      if (isRW || isRO) {
+        const access = isRW ? "rw" : "r";
+        const matchedDir = isRW
+          ? rwDirs.find((d: string) => normalCheck.startsWith(normalizeDirPath(d).toLowerCase()))
+          : roDirs.find((d: string) => normalCheck.startsWith(normalizeDirPath(d).toLowerCase()));
+        if (matchedDir) {
+          console.log(`[sandbox] Attempting silent ACL re-grant for: ${matchedDir} (${access})`);
+          grantAndVerifyAcl(normalizeDirPath(matchedDir), access as "rw" | "r").then((ok) => {
+            if (!ok) {
+              console.error(`[sandbox] ACL re-grant failed for: ${matchedDir}`);
+              mainWindow?.webContents.send("sandbox:acl-ineffective", {
+                dir: matchedDir,
+                deniedPath,
+                access,
+                command,
+              });
+            } else {
+              console.log(`[sandbox] ACL re-grant succeeded for: ${matchedDir}`);
+            }
+          });
+        }
       }
+    });
+
+    // Track session source info from the WeChat plugin (or other remote channels).
+    // Used to send a notification when a permission dialog appears on the desktop.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "session-source") return;
+      const { source } = msg;
+      if (source?.channelType) {
+        lastInputFromRemote = true;
+        cachedRemoteSource = source;
+        console.log(`[session] Remote source: channel=${source.channelType} user=${source.userId}`);
+      }
+    });
+
+    // Wait for gateway to become ready
+    setGatewayStatus("starting");
+
+    const ready = await waitForGatewayReady(configuredPort);
+    if (ready) {
+      try {
+        logStartupTiming("gateway-ready");
+        commitStartupAgentSkills();
+        setGatewayStatus("running");
+      } catch (error) {
+        stopGatewayProcess();
+        rollbackStartupAgentSkills();
+        setGatewayStatus("failed");
+        throw error;
+      }
+    } else {
+      mainWindow?.webContents.send(
+        "gateway:log",
+        `[warn] Gateway health check timed out on port ${configuredPort}`,
+      );
+      mainWindow?.webContents.send(
+        "gateway:log",
+        `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
+      );
+      stopGatewayProcess();
+      rollbackStartupAgentSkills();
+      setGatewayStatus("timeout");
     }
-  });
+    // Always connect WS — even on timeout the gateway may start shortly after,
+    // and GatewayClient has built-in reconnect with exponential backoff.
+    connectGatewayWs();
 
-  // Track session source info from the WeChat plugin (or other remote channels).
-  // Used to send a notification when a permission dialog appears on the desktop.
-  child.on("message", (msg: any) => {
-    if (msg?.type !== "session-source") return;
-    const { source } = msg;
-    if (source?.channelType) {
-      lastInputFromRemote = true;
-      cachedRemoteSource = source;
-      console.log(`[session] Remote source: channel=${source.channelType} user=${source.userId}`);
+    // Start health monitoring to auto-restart if the gateway goes down
+    startHealthMonitor();
+  } catch (error) {
+    if (agentSkillTransactionPending) {
+      stopGatewayProcess();
+      rollbackStartupAgentSkills();
     }
-  });
-
-  // Wait for gateway to become ready
-  setGatewayStatus("starting");
-
-  const ready = await waitForGatewayReady(configuredPort);
-  if (ready) {
-    logStartupTiming("gateway-ready");
-    setGatewayStatus("running");
-  } else {
-    mainWindow?.webContents.send(
-      "gateway:log",
-      `[warn] Gateway health check timed out on port ${configuredPort}`,
-    );
-    mainWindow?.webContents.send(
-      "gateway:log",
-      `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
-    );
-    setGatewayStatus("timeout");
+    throw error;
   }
-  // Always connect WS — even on timeout the gateway may start shortly after,
-  // and GatewayClient has built-in reconnect with exponential backoff.
-  connectGatewayWs();
-
-  // Start health monitoring to auto-restart if the gateway goes down
-  startHealthMonitor();
 }
 
 // (end of startGatewayInner)
@@ -4561,9 +4843,11 @@ function registerIpcHandlers(): void {
     // directory but are NOT part of the shipped managed catalog. Reclassify those as
     // custom so they appear under "Custom Skills" instead of the built-in workspace
     // skills. Catalog workspace skills (officecli, excel-xlsx, …) stay managed.
-    const managedWorkspace = managedOnDisk.filter((s) => managedCatalog[s.id] !== undefined);
+    const managedWorkspace = managedOnDisk.filter(
+      (s) => managedCatalog[s.id] !== undefined || isAgentOwnedSkillId(s.id),
+    );
     const userAuthored = managedOnDisk
-      .filter((s) => managedCatalog[s.id] === undefined)
+      .filter((s) => managedCatalog[s.id] === undefined && !isAgentOwnedSkillId(s.id))
       // Reclassified from managed → custom: recompute `enabled` with custom
       // semantics (default on) rather than the managed default (off when not
       // windows-adapted in the catalog).
@@ -7602,6 +7886,9 @@ app.whenReady().then(async () => {
 
   // Skill integrity check — must run BEFORE loading renderer so
   // pendingIntegrityResult is ready when App.vue calls the IPC.
+  if (migrateLegacySkillIntegritySnapshot()) {
+    console.log("Migrated skill integrity snapshot to the current root-aware schema");
+  }
   const integrityResult = verifySkillIntegrity();
   if (!integrityResult.snapshotExists) {
     console.log(

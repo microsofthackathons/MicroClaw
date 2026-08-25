@@ -66,6 +66,30 @@ describe("i18n", () => {
     setLocale("en-US"); // restore
   });
 
+  it("Market Sentinel catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.marketSentinel.name")).toBe("Market Sentinel");
+    setLocale("zh-CN");
+    expect(t("agent.marketSentinel.name")).toBe("财经哨兵");
+    setLocale("en-US"); // restore
+  });
+
+  it("Office Artisan catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.officeArtisan.name")).toBe("Office Artisan");
+    setLocale("zh-CN");
+    expect(t("agent.officeArtisan.name")).toBe("办公巧匠");
+    setLocale("en-US"); // restore
+  });
+
+  it("Creative Muse catalog keys exist in both locales", () => {
+    setLocale("en-US");
+    expect(t("agent.creativeMuse.name")).toBe("Creative Muse");
+    setLocale("zh-CN");
+    expect(t("agent.creativeMuse.name")).toBe("灵感创客");
+    setLocale("en-US"); // restore
+  });
+
   it("localizes Agent Team and Agent Catalog navigation in zh-CN", () => {
     setLocale("zh-CN");
     expect(t("sidebar.agents")).toBe("智能体团队");
