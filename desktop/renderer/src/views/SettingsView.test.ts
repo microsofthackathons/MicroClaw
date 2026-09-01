@@ -15,6 +15,7 @@ vi.mock("vue-router", () => ({
 describe("SettingsView", () => {
   type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
   const exportGatewayLogs = vi.fn();
+  const openExternal = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
   const addUserDir = vi.fn();
@@ -95,7 +96,6 @@ describe("SettingsView", () => {
     warnings: [],
     remediation: [],
   });
-
   beforeEach(() => {
     routeState.section = "skills";
     setLocale("en-US");
@@ -134,6 +134,9 @@ describe("SettingsView", () => {
       logs: {
         exportGateway: exportGatewayLogs,
       },
+      shell: {
+        openExternal,
+      },
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
         setEnabled: setWindowsNodeMxcEnabled,
@@ -166,6 +169,7 @@ describe("SettingsView", () => {
       canceled: false,
       filePath: "C:\\Logs\\gateway.log",
     });
+    openExternal.mockReset().mockResolvedValue(undefined);
   });
 
   it("hides the development-only Skills section by default", async () => {
@@ -222,7 +226,6 @@ describe("SettingsView", () => {
     });
 
     await flushPromises();
-
     await wrapper.find('[data-testid="mxc-technical-details-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mxc-technical-details"]').text()).toContain(
       "Local Windows node (node-local)",
@@ -556,5 +559,45 @@ describe("SettingsView", () => {
       rw: ["C:\\Work"],
       ro: ["C:\\Docs"],
     });
+  });
+
+  it("opens the English legal documents from About", async () => {
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [createPinia()],
+      },
+    });
+
+    await flushPromises();
+    await wrapper
+      .findAll(".settings-menu-item")
+      .find((item) => item.text() === "About")!
+      .trigger("click");
+
+    const links = wrapper.findAll(".legal-link");
+    expect(links.map((link) => link.text())).toEqual([
+      "MicroClaw End User License Agreement",
+      "Privacy Statement",
+    ]);
+    expect(links[0].attributes("href")).toBe(
+      "https://microclaw.microsoft.com/eula.en.html",
+    );
+    expect(links[1].attributes("href")).toBe(
+      "https://www.microsoft.com/privacy/privacystatement",
+    );
+
+    await links[0].trigger("click");
+    await links[1].trigger("click");
+
+    expect(openExternal.mock.calls).toEqual([
+      ["https://microclaw.microsoft.com/eula.en.html"],
+      ["https://www.microsoft.com/privacy/privacystatement"],
+    ]);
+
+    setLocale("zh-CN");
+    await wrapper.vm.$nextTick();
+
+    expect(links[0].text()).toBe("MicroClaw 最终用户许可协议");
+    expect(links[0].attributes("href")).toBe("https://microclaw.microsoft.com/eula.html");
   });
 });
