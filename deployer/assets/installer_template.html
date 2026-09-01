@@ -603,13 +603,16 @@
         els.language.value = state.bootstrap.lang;
         els.language.setAttribute("aria-label", s.language);
         els.title.textContent = s.welcomeTitle;
+        const eulaUrl = state.bootstrap.eula_urls[state.bootstrap.lang];
         els.legal.innerHTML =
           s.legalLine +
-          ' <a href="#">' +
+          ' <a href="' + eulaUrl + '" data-link="eula" rel="noreferrer">' +
           s.serviceAgreement +
           "</a> " +
           (s.and || "") +
-          ' <a href="#">' +
+          ' <a href="' +
+          state.bootstrap.privacy_statement_url +
+          '" data-link="privacy" rel="noreferrer">' +
           s.privacyStatement +
           "</a>";
         els.quick.textContent = s.quickInstall;
@@ -847,6 +850,15 @@
           if (!api) return; // retry later
           const a = state.bootstrap.assets;
           els.close.onclick = () => api.close_window();
+          els.legal.onclick = (event) => {
+            if (event.target.closest('[data-link="privacy"]')) {
+              event.preventDefault();
+              api.open_privacy_statement();
+            } else if (event.target.closest('[data-link="eula"]')) {
+              event.preventDefault();
+              api.open_eula();
+            }
+          };
           els.language.onchange = async () => {
             const localized = await api.set_language(els.language.value);
             state.bootstrap.lang = localized.lang;

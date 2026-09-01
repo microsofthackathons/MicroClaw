@@ -30,6 +30,11 @@ INSTALLER_WINDOW_WIDTH = 710
 INSTALLER_WINDOW_HEIGHT = 680
 UNINSTALL_CONFIRM_WINDOW_WIDTH = 500
 UNINSTALL_CONFIRM_WINDOW_HEIGHT = 250
+PRIVACY_STATEMENT_URL = "https://www.microsoft.com/privacy/privacystatement"
+EULA_URLS = {
+    "zh": "https://microclaw.microsoft.com/eula.html",
+    "en": "https://microclaw.microsoft.com/eula.en.html",
+}
 
 # Per-step retry budgets for the install pipeline (number of *additional*
 # attempts after the first). Network/download-bound steps get more attempts to
@@ -243,7 +248,7 @@ _STRINGS = {
         "language": "语言",
         "welcomeTitle": "欢迎来到 MicroClaw",
         "legalLine": "点击“快速安装”，即表示你同意 MicroClaw",
-        "serviceAgreement": "服务协议",
+        "serviceAgreement": "MicroClaw 最终用户许可协议",
         "and": "和",
         "privacyStatement": "隐私声明",
         "quickInstall": "快速安装",
@@ -297,7 +302,7 @@ _STRINGS = {
         "language": "Language",
         "welcomeTitle": "Welcome to MicroClaw",
         "legalLine": 'By clicking "Quick Install", you agree to the MicroClaw',
-        "serviceAgreement": "Service Agreement",
+        "serviceAgreement": "MicroClaw End User License Agreement",
         "and": "and",
         "privacyStatement": "Privacy Statement",
         "quickInstall": "Quick Install",
@@ -394,6 +399,8 @@ class WebInstallerBridge:
         return {
             "lang": self._lang,
             "strings": _STRINGS[self._lang],
+            "privacy_statement_url": PRIVACY_STATEMENT_URL,
+            "eula_urls": EULA_URLS,
             "assets": {
                 "fold": "welcome-fold.png",
                 "expand": "welcome-expand.png",
@@ -496,6 +503,14 @@ class WebInstallerBridge:
             os.startfile(str(self._logger.log_file))
         except Exception:
             webbrowser.open(self._logger.log_file.as_uri())
+        return True
+
+    def open_privacy_statement(self):
+        webbrowser.open(PRIVACY_STATEMENT_URL)
+        return True
+
+    def open_eula(self):
+        webbrowser.open(EULA_URLS[self._lang])
         return True
 
     def close_window(self):

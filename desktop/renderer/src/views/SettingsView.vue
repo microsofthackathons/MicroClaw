@@ -1216,6 +1216,19 @@
             <span class="row-value">© 2026 {{ t("app.name") }}</span>
           </div>
         </div>
+        <div class="sub-label">{{ t("settings.legal") }}</div>
+        <div class="card-group legal-links">
+          <a class="card-row legal-link" :href="eulaUrl" @click.prevent="openExternal(eulaUrl)">
+            {{ t("settings.eula") }}
+          </a>
+          <a
+            class="card-row legal-link no-border"
+            :href="privacyStatementUrl"
+            @click.prevent="openExternal(privacyStatementUrl)"
+          >
+            {{ t("settings.privacyStatement") }}
+          </a>
+        </div>
       </div>
 
       <ModelSetupDialog
@@ -1235,7 +1248,7 @@ import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
-import { t, setLocale } from "@/i18n";
+import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import {
@@ -2484,6 +2497,13 @@ function openExternal(url: string) {
   window.openclaw.shell.openExternal(url);
 }
 
+const privacyStatementUrl = "https://www.microsoft.com/privacy/privacystatement";
+const eulaUrl = computed(() =>
+  getLocale() === "zh-CN"
+    ? "https://microclaw.microsoft.com/eula.html"
+    : "https://microclaw.microsoft.com/eula.en.html",
+);
+
 async function checkForUpdates() {
   updateChecking.value = true;
   try {
@@ -2822,6 +2842,21 @@ async function clearChatHistory() {
 
 .update-check-btn {
   margin-top: 10px;
+}
+
+.legal-links {
+  margin-top: 0;
+}
+
+.legal-link {
+  color: var(--el-color-primary);
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.legal-link:hover {
+  text-decoration: underline;
 }
 
 .update-card {
