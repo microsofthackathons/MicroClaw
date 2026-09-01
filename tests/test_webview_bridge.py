@@ -80,6 +80,46 @@ class WebInstallerBridgeTests(unittest.TestCase):
         for language in _STRINGS.values():
             self.assertNotIn("OpenClaw", "\n".join(string_values(language)))
 
+    def test_installer_uses_localized_microclaw_eula_labels(self):
+        self.assertEqual(
+            _STRINGS["zh"]["serviceAgreement"],
+            "MicroClaw 最终用户许可协议",
+        )
+        self.assertEqual(
+            _STRINGS["en"]["serviceAgreement"],
+            "MicroClaw End User License Agreement",
+        )
+
+    def test_eula_opens_localized_website_page(self):
+        with unittest.mock.patch("deployer.webview_bridge.webbrowser.open") as open_browser:
+            self.assertTrue(self.bridge.open_eula())
+            self.bridge.set_language("zh")
+            self.assertTrue(self.bridge.open_eula())
+
+        self.assertEqual(
+            open_browser.call_args_list,
+            [
+                unittest.mock.call("https://microclaw.microsoft.com/eula.en.html"),
+                unittest.mock.call("https://microclaw.microsoft.com/eula.html"),
+            ],
+        )
+        self.assertEqual(
+            self.bridge.get_bootstrap()["eula_urls"],
+            {
+                "zh": "https://microclaw.microsoft.com/eula.html",
+                "en": "https://microclaw.microsoft.com/eula.en.html",
+            },
+        )
+
+    def test_privacy_statement_opens_microsoft_privacy_page(self):
+        expected_url = "https://www.microsoft.com/privacy/privacystatement"
+
+        with unittest.mock.patch("deployer.webview_bridge.webbrowser.open") as open_browser:
+            self.assertTrue(self.bridge.open_privacy_statement())
+
+        open_browser.assert_called_once_with(expected_url)
+        self.assertEqual(self.bridge.get_bootstrap()["privacy_statement_url"], expected_url)
+
     def test_chinese_dynamic_file_progress_is_fully_localized(self):
         self.bridge.set_language("zh")
 
@@ -172,6 +212,10 @@ class WebInstallerBridgeTests(unittest.TestCase):
 
         self.assertIn('id="language"', template)
         self.assertIn("api.set_language", template)
+        self.assertIn('data-link="eula"', template)
+        self.assertIn("api.open_eula", template)
+        self.assertIn('data-link="privacy"', template)
+        self.assertIn("api.open_privacy_statement", template)
         self.assertNotIn("<br><a", template)
         self.assertIn('id="progressPercent"', template)
         self.assertIn('role="progressbar"', template)
