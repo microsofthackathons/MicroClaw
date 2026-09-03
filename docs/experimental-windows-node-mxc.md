@@ -191,21 +191,21 @@ generation, lease, containment tier, contracts, fingerprints, and readiness evid
 under a **Technical details** disclosure that starts collapsed whenever Settings is opened. The page
 does not expose separate refresh, smoke, or activation buttons.
 
-The pinned OpenClaw 2026.7.1-1 Gateway can block its event loop for more than a minute during
-startup. Pairing therefore remains generation-bound and locked for up to five minutes while the
-helper reconnects; timeout or a Gateway-generation change stops the helper. Transient inability to
-query effective tools is recorded as unverified and does not kill an otherwise statically locked
-Gateway; confirmed drift still stops it.
+The Gateway can block its event loop for more than a minute during startup. Pairing therefore
+remains generation-bound and locked for up to five minutes while the helper reconnects; timeout or
+a Gateway-generation change stops the helper. Transient inability to query effective tools is
+recorded as unverified and does not kill an otherwise statically locked Gateway; confirmed drift
+still stops it.
 
-OpenClaw 2026.7.1-1 also binds a node approval request to a persisted operator device but omits that
+OpenClaw 2026.7.1-1 bound a node approval request to a persisted operator device but omitted that
 identity when replaying the approved `node.invoke system.run`, causing
-`approval id not valid for this device`. Upstream fixed the defect in
+`approval id not valid for this device`. OpenClaw 2026.8.2 includes the upstream fix from
 [openclaw/openclaw#103886](https://github.com/openclaw/openclaw/pull/103886), commit
-`7a38f140a2cf2c99dd08f92db3ea1b291d5b10c4`. MXC mode enables a MicroClaw-owned Node load hook that
-backports only that replay-identity change in memory. The installed OpenClaw package is not modified.
-The hook requires OpenClaw `2026.7.1-1` and SHA-256
-`6eed85ef8b377cffa593578227758443b37fc98f87c74848f9ddb4ad8db46bb5` for the affected compiled
-module; any version, hash, or source-shape mismatch prevents the managed Gateway from starting.
+`7a38f140a2cf2c99dd08f92db3ea1b291d5b10c4`. MXC mode still enables a MicroClaw-owned Node load
+hook for the one-use approval proof and prepared-plan identity extensions. The installed OpenClaw
+package is not modified. The hook requires OpenClaw `2026.8.2` and exact SHA-256 hashes for the
+affected compiled modules; any version, hash, or source-shape mismatch prevents the managed Gateway
+from starting.
 
 The same pinned Gateway binds approval registration and replay to the prepared plan's exact argv,
 CWD, agent, and session. The bundled host therefore returns the canonical

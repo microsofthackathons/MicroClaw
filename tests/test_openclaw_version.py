@@ -10,7 +10,7 @@ from deployer.openclaw_version import (
 
 class OpenClawVersionTests(unittest.TestCase):
     def test_target_version(self) -> None:
-        self.assertEqual(OPENCLAW_TARGET_VERSION, "2026.7.1-1")
+        self.assertEqual(OPENCLAW_TARGET_VERSION, "2026.8.2")
 
     def test_node_22_boundary(self) -> None:
         self.assertFalse(is_supported_node_version("v22.22.2"))
@@ -37,9 +37,9 @@ class OpenClawVersionTests(unittest.TestCase):
         output = """
         npm list -g openclaw --depth=0
         C:\\Program Files\\nodejs
-        `-- openclaw@2026.7.1-1
+        `-- openclaw@2026.8.2
         """
-        self.assertEqual(extract_openclaw_version(output), "2026.7.1-1")
+        self.assertEqual(extract_openclaw_version(output), "2026.8.2")
 
     def test_extract_openclaw_version_malformed(self) -> None:
         self.assertIsNone(extract_openclaw_version("openclaw missing"))

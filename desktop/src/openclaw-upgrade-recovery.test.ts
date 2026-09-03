@@ -55,7 +55,7 @@ function fixture(phase = "installing") {
     transaction_id: transactionId,
     owner_pid: 999999,
     source_version: "2026.3.12",
-    target_version: "2026.7.1-1",
+    target_version: "2026.8.2",
     prefix,
     package_dir: packageDir,
     state_dir: stateDir,

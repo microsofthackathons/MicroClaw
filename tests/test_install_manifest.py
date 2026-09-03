@@ -18,7 +18,7 @@ def _manifest(**overrides):
         "desktopArchiveSha256": "desktop",
         "installerBundleId": "installer",
         "managedSkillsId": "skills",
-        "openClawVersion": "2026.7.1-1",
+        "openClawVersion": "2026.8.2",
         "appContainerSchema": 1,
         **overrides,
     }

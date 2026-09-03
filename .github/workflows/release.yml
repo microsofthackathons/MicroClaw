@@ -100,7 +100,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $node = (& node --version).TrimStart('v')
-          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          $parsed = [version]$node
+          $supported =
+            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
+            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
+            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
+          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.8.2" }
           Write-Host "node $node"
           $sdks = & dotnet --list-sdks
           if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }
