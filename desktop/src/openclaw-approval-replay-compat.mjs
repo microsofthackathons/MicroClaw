@@ -7,76 +7,21 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
-const EXPECTED_VERSION = "2026.7.1-1";
-const EXPECTED_MODULE = "gateway-tPQsEkmF.js";
-const EXPECTED_SHA256 = "6eed85ef8b377cffa593578227758443b37fc98f87c74848f9ddb4ad8db46bb5";
-const EXPECTED_NODE_GATEWAY_MODULE = "nodes-H4LZVTsZ.js";
+const EXPECTED_VERSION = "2026.8.2";
+const EXPECTED_NODE_GATEWAY_MODULE = "nodes-EjR1K851.js";
 const EXPECTED_NODE_GATEWAY_SHA256 =
-  "d97bf2d9452179d8e63d8e2a197622ad753bc024f6e7978fb7fa389368821952";
-const EXPECTED_SYSTEM_RUN_MODULE = "system-run-command-Bd_agqvl.js";
+  "099116b8473febbf3ffc30022f78bd62451bc9f7f604be6ed987e9dd4cd1ad91";
+const EXPECTED_SYSTEM_RUN_MODULE = "system-run-approval-binding-CBdJlfb5.js";
 const EXPECTED_SYSTEM_RUN_SHA256 =
-  "5c77e5d9a78126d2d20e7d2eb3c8282f5f457430ac1fca87255669a318e8d01e";
-const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-DjCDFD7V.js";
+  "aab50ca701cd8b5a453abbd4ba03277c51e22e8739ea7fac4c826ae61c053e50";
+const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-D4dsyUjJ.js";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
-  "8ce734fece792a6b964e21a5783586935e7c8d38d854d01ffbe95a0cadb4ec60";
+  "f87300c477bc4a80a95c1f052b44a4fe21c5a85932044bd3afe6656fa3a0e99c";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
-
-export const PINNED_FUNCTION_SOURCE = `function resolveApprovalRequesterDeviceIdentityForGatewayTool(params) {
-\tif (!APPROVAL_RUNTIME_METHODS.has(params.method)) return;
-\tif (trimToUndefined(params.opts.gatewayUrl) !== void 0) return;
-\ttry {
-\t\tconst identity = loadOrCreateDeviceIdentity();
-\t\tif (loadDeviceIdentityIfPresent()?.deviceId !== identity.deviceId) throw new Error("device identity is not persisted");
-\t\treturn identity;
-\t} catch (error) {
-\t\tif (params.target === "local") return;
-\t\tthrow new Error(["remote approval gateway calls require a stable device identity.", "Fix the OpenClaw state directory permissions or use the local approval-runtime gateway."].join(" "), { cause: error });
-\t}
-}`;
-
-const PATCHED_FUNCTION_SOURCE = `function isApprovalReplayNodeSystemRun(method, callParams) {
-\tconst invoke = method === "node.invoke" && callParams && typeof callParams === "object" && !Array.isArray(callParams) ? callParams : null;
-\tconst run = invoke?.command === "system.run" && invoke.params && typeof invoke.params === "object" && !Array.isArray(invoke.params) ? invoke.params : null;
-\tconst decision = normalizeOptionalString(run?.approvalDecision);
-\treturn run?.approved === true || decision === "allow-once" || decision === "allow-always";
-}
-function resolveApprovalRequesterDeviceIdentityForGatewayTool(params) {
-\tconst isApprovalRuntimeMethod = APPROVAL_RUNTIME_METHODS.has(params.method);
-\tconst isNodeApprovalReplay = isApprovalReplayNodeSystemRun(params.method, params.callParams);
-\tif (!isApprovalRuntimeMethod && !isNodeApprovalReplay) return;
-\tif (isApprovalRuntimeMethod && trimToUndefined(params.opts.gatewayUrl) !== void 0) return;
-\ttry {
-\t\tif (isNodeApprovalReplay) {
-\t\t\tconst identity = loadDeviceIdentityIfPresent();
-\t\t\tif (!identity) throw new Error("device identity is not persisted");
-\t\t\treturn identity;
-\t\t}
-\t\tconst identity = loadOrCreateDeviceIdentity();
-\t\tif (loadDeviceIdentityIfPresent()?.deviceId !== identity.deviceId) throw new Error("device identity is not persisted");
-\t\treturn identity;
-\t} catch (error) {
-\t\tif (isNodeApprovalReplay) throw new Error(["approved node gateway calls require a stable device identity.", "Fix the OpenClaw state directory permissions and retry the approval."].join(" "), { cause: error });
-\t\tif (params.target === "local") return;
-\t\tthrow new Error(["remote approval gateway calls require a stable device identity.", "Fix the OpenClaw state directory permissions or use the local approval-runtime gateway."].join(" "), { cause: error });
-\t}
-}`;
-
-export const PINNED_CALL_SOURCE = `const deviceIdentity = resolveApprovalRequesterDeviceIdentityForGatewayTool({
-\t\tmethod,
-\t\topts,
-\t\ttarget: gateway.target
-\t});`;
-
-const PATCHED_CALL_SOURCE = `const deviceIdentity = resolveApprovalRequesterDeviceIdentityForGatewayTool({
-\t\tmethod,
-\t\tcallParams: params,
-\t\topts,
-\t\ttarget: gateway.target
-\t});`;
 
 export const PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE =
   "function sanitizeSystemRunParamsForForwarding(opts) {";
@@ -88,15 +33,48 @@ const PATCHED_NODE_GATEWAY_MINT_INSERT_SOURCE = `function mintMicroclawNodeAppro
 function sanitizeSystemRunParamsForForwarding(opts) {`;
 
 export const PINNED_NODE_GATEWAY_ALLOW_ONCE_SOURCE = `\tif (snapshot.decision === "allow-once") {
+\t\tif (approvalSource !== null) return systemRunApprovalGuardError({
+\t\t\tcode: "APPROVAL_SOURCE_MISMATCH",
+\t\t\tmessage: "approval source does not match approval record",
+\t\t\tdetails: { runId }
+\t\t});
+\t\tif (recordedResolutionSource === "auto-review") {
+\t\t\tif (!runtimeContext.plan) return systemRunApprovalGuardError({
+\t\t\t\tcode: "APPROVAL_PLAN_REQUIRED",
+\t\t\t\tmessage: "auto-review approval requires an approved execution plan",
+\t\t\t\tdetails: { runId }
+\t\t\t});
+\t\t}
 \t\tif (typeof manager.consumeAllowOnce !== "function" || !manager.consumeAllowOnce(runId)) return systemRunApprovalRequired(runId);
+\t\tif (recordedResolutionSource === "auto-review") {
+\t\t\tnext.approvalSource = "auto-review";
+\t\t\treturn {
+\t\t\t\tok: true,
+\t\t\t\tparams: next,
+\t\t\t\tapprovalAuthority: {
+\t\t\t\t\trecordId: runId,
+\t\t\t\t\tdecision: "allow-once"
+\t\t\t\t}
+\t\t\t};
+\t\t}
 \t\tnext.approved = true;
 \t\tnext.approvalDecision = "allow-once";
 \t\treturn {
 \t\t\tok: true,
-\t\t\tparams: next
+\t\t\tparams: next,
+\t\t\tapprovalAuthority: {
+\t\t\t\trecordId: runId,
+\t\t\t\tdecision: "allow-once"
+\t\t\t}
 \t\t};
 \t}`;
 const PATCHED_NODE_GATEWAY_ALLOW_ONCE_SOURCE = `\tif (snapshot.decision === "allow-once") {
+\t\tif (approvalSource !== null) return systemRunApprovalGuardError({
+\t\t\tcode: "APPROVAL_SOURCE_MISMATCH",
+\t\t\tmessage: "approval source does not match approval record",
+\t\t\tdetails: { runId }
+\t\t});
+\t\tif (recordedResolutionSource !== "operator") return systemRunApprovalRequired(runId);
 \t\tif (typeof manager.consumeAllowOnce !== "function" || !manager.consumeAllowOnce(runId)) return systemRunApprovalRequired(runId);
 \t\tnext.approved = true;
 \t\tnext.approvalDecision = "allow-once";
@@ -107,31 +85,53 @@ const PATCHED_NODE_GATEWAY_ALLOW_ONCE_SOURCE = `\tif (snapshot.decision === "all
 \t\t});
 \t\treturn {
 \t\t\tok: true,
-\t\t\tparams: next
+\t\t\tparams: next,
+\t\t\tapprovalAuthority: {
+\t\t\t\trecordId: runId,
+\t\t\t\tdecision: "allow-once"
+\t\t\t}
 \t\t};
 \t}`;
 
 export const PINNED_NODE_GATEWAY_ALLOW_ALWAYS_SOURCE = `\tif (snapshot.decision === "allow-always") {
+\t\tif (approvalSource !== null) return systemRunApprovalGuardError({
+\t\t\tcode: "APPROVAL_SOURCE_MISMATCH",
+\t\t\tmessage: "approval source does not match approval record",
+\t\t\tdetails: { runId }
+\t\t});
 \t\tnext.approved = true;
 \t\tnext.approvalDecision = "allow-always";
 \t\treturn {
 \t\t\tok: true,
-\t\t\tparams: next
+\t\t\tparams: next,
+\t\t\tapprovalAuthority: {
+\t\t\t\trecordId: runId,
+\t\t\t\tdecision: "allow-always"
+\t\t\t}
 \t\t};
 \t}`;
 const PATCHED_NODE_GATEWAY_ALLOW_ALWAYS_SOURCE = `\tif (snapshot.decision === "allow-always") {
 \t\treturn systemRunApprovalRequired(runId);
 \t}`;
 
-export const PINNED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE = `\tif (snapshot.resolvedAtMs !== void 0 && snapshot.decision === void 0 && snapshot.resolvedBy === null && approved && requestedDecision === "allow-once" && clientHasApprovals(opts.client)) {
-\t\tnext.approved = true;
-\t\tnext.approvalDecision = "allow-once";
+export const PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE = `\tif (timedOut && approvalSource === "ask-fallback" && !approved && requestedDecision === null && clientHasApprovals(opts.client)) {
+\t\tif (!runtimeContext.plan) return systemRunApprovalGuardError({
+\t\t\tcode: "APPROVAL_PLAN_REQUIRED",
+\t\t\tmessage: "ask fallback requires an approved execution plan",
+\t\t\tdetails: { runId }
+\t\t});
+\t\tif (typeof manager.consumeAskFallback !== "function" || !manager.consumeAskFallback(runId)) return systemRunApprovalRequired(runId);
+\t\tnext.approvalSource = "ask-fallback";
 \t\treturn {
 \t\t\tok: true,
-\t\t\tparams: next
+\t\t\tparams: next,
+\t\t\tapprovalAuthority: {
+\t\t\t\trecordId: runId,
+\t\t\t\tdecision: "allow-once"
+\t\t\t}
 \t\t};
 \t}`;
-const PATCHED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE = `\tif (snapshot.resolvedAtMs !== void 0 && snapshot.decision === void 0 && snapshot.resolvedBy === null && approved && requestedDecision === "allow-once" && clientHasApprovals(opts.client)) {
+const PATCHED_NODE_GATEWAY_ASK_FALLBACK_SOURCE = `\tif (timedOut && approvalSource === "ask-fallback" && !approved && requestedDecision === null && clientHasApprovals(opts.client)) {
 \t\treturn systemRunApprovalRequired(runId);
 \t}`;
 
@@ -142,6 +142,8 @@ export const PINNED_SYSTEM_RUN_PLAN_SOURCE = `function normalizeSystemRunApprova
 \tif (argv.length === 0) return null;
 \tconst mutableFileOperand = normalizeSystemRunApprovalFileOperand(candidate.mutableFileOperand);
 \tif (candidate.mutableFileOperand !== void 0 && mutableFileOperand === null) return null;
+\tconst policySnapshot = normalizeExecApprovalPolicySnapshot(candidate.policySnapshot);
+\tif (candidate.policySnapshot !== void 0 && policySnapshot === null) return null;
 \tconst commandText = normalizeNonEmptyString(candidate.commandText) ?? normalizeNonEmptyString(candidate.rawCommand);
 \tif (!commandText) return null;
 \treturn {
@@ -151,6 +153,7 @@ export const PINNED_SYSTEM_RUN_PLAN_SOURCE = `function normalizeSystemRunApprova
 \t\tcommandPreview: normalizeNonEmptyString(candidate.commandPreview),
 \t\tagentId: normalizeNonEmptyString(candidate.agentId),
 \t\tsessionKey: normalizeNonEmptyString(candidate.sessionKey),
+\t\t...policySnapshot ? { policySnapshot } : {},
 \t\tmutableFileOperand: mutableFileOperand ?? void 0
 \t};
 }`;
@@ -174,6 +177,8 @@ function normalizeSystemRunApprovalPlan(value) {
 \tif (argv.length === 0) return null;
 \tconst mutableFileOperand = normalizeSystemRunApprovalFileOperand(candidate.mutableFileOperand);
 \tif (candidate.mutableFileOperand !== void 0 && mutableFileOperand === null) return null;
+\tconst policySnapshot = normalizeExecApprovalPolicySnapshot(candidate.policySnapshot);
+\tif (candidate.policySnapshot !== void 0 && policySnapshot === null) return null;
 \tconst commandText = normalizeNonEmptyString(candidate.commandText) ?? normalizeNonEmptyString(candidate.rawCommand);
 \tif (!commandText) return null;
 \tconst hasMicroclawIdentity = candidate.executablePath !== void 0 || candidate.executableSha256 !== void 0 || candidate.cwdBinding !== void 0 || candidate.declaredAccess !== void 0;
@@ -189,6 +194,7 @@ function normalizeSystemRunApprovalPlan(value) {
 \t\tcommandPreview: normalizeNonEmptyString(candidate.commandPreview),
 \t\tagentId: normalizeNonEmptyString(candidate.agentId),
 \t\tsessionKey: normalizeNonEmptyString(candidate.sessionKey),
+\t\t...policySnapshot ? { policySnapshot } : {},
 \t\tmutableFileOperand: mutableFileOperand ?? void 0,
 \t\t...hasMicroclawIdentity ? {
 \t\t\texecutablePath,
@@ -200,10 +206,7 @@ function normalizeSystemRunApprovalPlan(value) {
 }`;
 
 export const PINNED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": async ({ params, respond, context, client }) => {
-\t\t\tif (!validateExecApprovalRequestParams(params)) {
-\t\t\t\trespond(false, void 0, errorShape(ErrorCodes.INVALID_REQUEST, \`invalid exec.approval.request params: \${formatValidationErrors(validateExecApprovalRequestParams.errors)}\`));
-\t\t\t\treturn;
-\t\t\t}
+\t\t\tif (!assertValidParams(params, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;
 \t\t\tconst p = params;`;
 
 const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": async ({ params, respond, context, client }) => {
@@ -212,10 +215,7 @@ const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": as
 \t\t\t\t...params,
 \t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess"))
 \t\t\t} : params;
-\t\t\tif (!validateExecApprovalRequestParams(validationParams)) {
-\t\t\t\trespond(false, void 0, errorShape(ErrorCodes.INVALID_REQUEST, \`invalid exec.approval.request params: \${formatValidationErrors(validateExecApprovalRequestParams.errors)}\`));
-\t\t\t\treturn;
-\t\t\t}
+\t\t\tif (!assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;
 \t\t\tconst p = params;`;
 
 function replaceExactlyOnce(source, expected, replacement, label) {
@@ -224,21 +224,6 @@ function replaceExactlyOnce(source, expected, replacement, label) {
     throw new Error(`Pinned OpenClaw ${label} did not match exactly once`);
   }
   return source.slice(0, first) + replacement + source.slice(first + expected.length);
-}
-
-export function patchPinnedOpenClawGateway(source) {
-  const functionPatched = replaceExactlyOnce(
-    source,
-    PINNED_FUNCTION_SOURCE,
-    PATCHED_FUNCTION_SOURCE,
-    "approval identity function",
-  );
-  return replaceExactlyOnce(
-    functionPatched,
-    PINNED_CALL_SOURCE,
-    PATCHED_CALL_SOURCE,
-    "approval identity call",
-  );
 }
 
 export function patchPinnedOpenClawNodeGateway(source) {
@@ -262,9 +247,9 @@ export function patchPinnedOpenClawNodeGateway(source) {
   );
   return replaceExactlyOnce(
     patched,
-    PINNED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE,
-    PATCHED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE,
-    "node bridged allow-once approval proof handoff",
+    PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
+    PATCHED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
+    "node ask-fallback approval proof handoff",
   );
 }
 
@@ -481,11 +466,6 @@ function initialize() {
 
   const targets = [
     {
-      module: EXPECTED_MODULE,
-      sha256: EXPECTED_SHA256,
-      patch: patchPinnedOpenClawGateway,
-    },
-    {
       module: EXPECTED_NODE_GATEWAY_MODULE,
       sha256: EXPECTED_NODE_GATEWAY_SHA256,
       patch: patchPinnedOpenClawNodeGateway,
@@ -531,7 +511,7 @@ function initialize() {
     },
   });
   globalThis.console.log(
-    "[microclaw-openclaw-compat] enabled approval replay identity and one-use node proof backports",
+    "[microclaw-openclaw-compat] enabled one-use node proof and prepared-plan backports",
   );
 }
 

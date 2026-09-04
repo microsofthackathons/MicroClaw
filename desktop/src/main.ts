@@ -2040,7 +2040,7 @@ function ensurePluginsAllow(): void {
 
 /**
  * Ensure the default MicroClaw persona exists in the OpenClaw roster.
- * OpenClaw 2026.7.1-1 uses `agents.list`; unsupported `agents.entries` data
+ * OpenClaw 2026.8.2 uses `agents.list`; unsupported `agents.entries` data
  * written by preview builds is migrated back before personas are added. Existing
  * entries are preserved by id and the config is only rewritten when something
  * changes. Both processes consume the shared agent catalog.

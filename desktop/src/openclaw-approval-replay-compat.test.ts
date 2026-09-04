@@ -6,52 +6,25 @@ const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
   PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
-  PINNED_CALL_SOURCE,
-  PINNED_FUNCTION_SOURCE,
   PINNED_NODE_GATEWAY_ALLOW_ALWAYS_SOURCE,
   PINNED_NODE_GATEWAY_ALLOW_ONCE_SOURCE,
-  PINNED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE,
+  PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
   PINNED_SYSTEM_RUN_PLAN_SOURCE,
   createWindowsNodeMxcApprovalProofMinter,
   computeWindowsNodeMxcApprovalPlanSha256,
-  patchPinnedOpenClawGateway,
   patchPinnedOpenClawExecApproval,
   patchPinnedOpenClawNodeGateway,
   patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
 } = replayCompat;
 
-describe("OpenClaw node approval replay compatibility", () => {
-  it("backports the upstream replay identity binding", () => {
-    const patched = patchPinnedOpenClawGateway(
-      `${PINNED_FUNCTION_SOURCE}\nfixture\n${PINNED_CALL_SOURCE}`,
-    );
-
-    expect(patched).toContain("isApprovalReplayNodeSystemRun");
-    expect(patched).toContain("callParams: params");
-    expect(patched).toContain("loadDeviceIdentityIfPresent()");
-    expect(patched).not.toContain(PINNED_FUNCTION_SOURCE);
-  });
-
-  it("fails closed when the pinned source shape drifts", () => {
-    expect(() => patchPinnedOpenClawGateway("unrecognized source")).toThrow(
-      "did not match exactly once",
-    );
-    expect(() =>
-      patchPinnedOpenClawGateway(
-        `${PINNED_FUNCTION_SOURCE}\n${PINNED_FUNCTION_SOURCE}\n${PINNED_CALL_SOURCE}`,
-      ),
-    ).toThrow("did not match exactly once");
-  });
-});
-
 describe("pinned OpenClaw node approval proof backport", () => {
   const source = [
     PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
     PINNED_NODE_GATEWAY_ALLOW_ONCE_SOURCE,
     PINNED_NODE_GATEWAY_ALLOW_ALWAYS_SOURCE,
-    PINNED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE,
+    PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   ].join("\n");
 
   it("injects a proof only into approved replay branches", () => {
@@ -63,8 +36,9 @@ describe("pinned OpenClaw node approval proof backport", () => {
       'if (snapshot.decision === "allow-always") {\n\t\treturn systemRunApprovalRequired(runId);',
     );
     expect(patched).toContain(
-      'approved && requestedDecision === "allow-once" && clientHasApprovals(opts.client)) {\n\t\treturn systemRunApprovalRequired(runId);',
+      'timedOut && approvalSource === "ask-fallback" && !approved && requestedDecision === null && clientHasApprovals(opts.client)) {\n\t\treturn systemRunApprovalRequired(runId);',
     );
+    expect(patched).toContain('recordedResolutionSource !== "operator"');
     expect(patched).toContain("plan: runtimeContext.plan");
     expect(patched).toContain("nodeId: targetNodeId");
     expect(patched.indexOf("consumeAllowOnce(runId)")).toBeLessThan(
@@ -81,6 +55,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
       expect(patched).toContain("executableSha256: executableSha256.toLowerCase()");
       expect(patched).toContain("cwdBinding");
       expect(patched).toContain("declaredAccess");
+      expect(patched).toContain("policySnapshot");
       expect(patched).toContain("/^[a-f0-9]{64}$/i");
       expect(patched).not.toBe(PINNED_SYSTEM_RUN_PLAN_SOURCE);
     });
@@ -95,7 +70,9 @@ describe("pinned OpenClaw node approval proof backport", () => {
         expect(patched).toContain('name !== "cwdBinding"');
         expect(patched).toContain('name !== "declaredAccess"');
         expect(patched).toContain("const p = params");
-        expect(patched).toContain("validateExecApprovalRequestParams(validationParams)");
+        expect(patched).toContain(
+          'assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)',
+        );
       });
 
       it("fails closed when the pinned approval handler drifts or appears twice", () => {
@@ -126,7 +103,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
     PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
     PINNED_NODE_GATEWAY_ALLOW_ONCE_SOURCE,
     PINNED_NODE_GATEWAY_ALLOW_ALWAYS_SOURCE,
-    PINNED_NODE_GATEWAY_BRIDGED_ALLOW_ONCE_SOURCE,
+    PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   ])("fails closed when a pinned source fragment drifts", (fragment) => {
     expect(() =>
       patchPinnedOpenClawNodeGateway(
@@ -189,7 +166,6 @@ describe("Windows Node MXC approval proof minter", () => {
       expiresAtUnixMs: 1_735_689_600_000 + APPROVAL_PROOF_TTL_MS,
       signature: "1167c6b0eeea3c385e252110d22bb87fa8e54f881a0f954d9f684289c1e48caa",
     });
-
   });
 
   it("uses culture-invariant ordinal declaration ordering", () => {

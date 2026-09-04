@@ -54,7 +54,7 @@ def _concurrent_create_worker(
         transaction = OpenClawUpgradeTransaction.create(
             microclaw_root=Path(microclaw_value),
             state_dir=state,
-            target_version="2026.7.1-1",
+            target_version="2026.8.2",
             installation=_worker_installation(prefix_value),
         )
     except upgrade.UpgradeInProgressError:
@@ -451,7 +451,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         transaction = OpenClawUpgradeTransaction.create(
             microclaw_root=self.microclaw,
             state_dir=self.state,
-            target_version="2026.7.1-1",
+            target_version="2026.8.2",
             installation=installation or self._installation(),
             backup_mode=backup_mode,
             managed_paths=managed_paths,
@@ -595,7 +595,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         )
         self.assertEqual(data["schema_version"], 2)
         self.assertEqual(data["source_version"], "2026.3.12")
-        self.assertEqual(data["target_version"], "2026.7.1-1")
+        self.assertEqual(data["target_version"], "2026.8.2")
         self.assertEqual(data["phase"], "backing-up")
         self.assertEqual(data["validation_results"], {})
         self.assertEqual(data["backup_mode"], "full")
@@ -1019,7 +1019,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 tx = OpenClawUpgradeTransaction.create(
                     microclaw_root=self.microclaw / "file-state",
                     state_dir=state_dir,
-                    target_version="2026.7.1-1",
+                    target_version="2026.8.2",
                     installation=self._installation(),
                 )
                 tx.backup()
@@ -1045,7 +1045,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 tx = OpenClawUpgradeTransaction.create(
                     microclaw_root=self.microclaw / "directory-state",
                     state_dir=state_dir,
-                    target_version="2026.7.1-1",
+                    target_version="2026.8.2",
                     installation=self._installation(),
                 )
                 tx.backup()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-OPENCLAW_TARGET_VERSION = "2026.7.1-1"
+OPENCLAW_TARGET_VERSION = "2026.8.2"
 NODE_FALLBACK_VERSION = "22.22.3"
 
 _NODE_VERSION_RE = re.compile(r"^v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
