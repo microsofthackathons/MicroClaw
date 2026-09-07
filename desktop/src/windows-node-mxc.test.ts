@@ -522,7 +522,7 @@ describe("Windows Node MXC Gateway policy", () => {
         node: "node-123",
         security: "allowlist",
         ask: "on-miss",
-        timeoutSec: 1800,
+        timeoutSeconds: 1800,
         strictInlineEval: true,
       },
     });
@@ -551,6 +551,26 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123").ready).toBe(true);
     expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
   });
+
+  it.each(["active", "locked"] as const)(
+    "preserves keyed explicit rosters through %s policy and restoration",
+    (state) => {
+      const source = {
+        agents: {
+          ownership: "explicit",
+          entries: { main: { tools: { allow: ["read"] } }, coder: { name: "Coder" } },
+        },
+      };
+      const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, state);
+      expect(applied.agentIds).toEqual(["main", "coder"]);
+      expect(applied.config.agents).not.toHaveProperty("list");
+      expect(applied.config.agents).toHaveProperty("ownership", "explicit");
+      expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123", state).ready).toBe(
+        true,
+      );
+      expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
+    },
+  );
 
   it("preserves original tool backups across canonical agent ID migrations", () => {
     const originalTools = { allow: ["legacy-tool"] };

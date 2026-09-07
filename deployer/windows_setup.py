@@ -2256,6 +2256,41 @@ class WindowsSetup:
         self.log.error("OpenClaw install failed through every configured npm registry")
         return False
 
+    def migrate_openclaw_state(self) -> bool:
+        """Apply the target runtime's supported config and state migrations."""
+        command = self._find_openclaw_cmd()
+        installation = self._detect_openclaw_installation()
+        if command is None or installation is None:
+            self.log.error("OpenClaw is unavailable for state migration")
+            return False
+
+        state_dir = Path.home() / ".openclaw"
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env["OPENCLAW_STATE_DIR"] = str(state_dir)
+        self.log.step("Migrating OpenClaw configuration and state…")
+        try:
+            result = self._run(
+                command + ["doctor", "--fix"],
+                cwd=str(installation.package_dir),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.log.error(f"OpenClaw migration failed: {error}")
+            return False
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            self.log.error(f"OpenClaw migration failed: {detail[-1500:]}")
+            return False
+        self.log.success("OpenClaw configuration and state migrated")
+        return True
+
     def _load_openclaw_state_env(self, state_dir: Path) -> dict[str, str]:
         values: dict[str, str] = {}
         env_path = state_dir / ".env"
@@ -3120,12 +3155,8 @@ class WindowsSetup:
 
         # ── Model + provider: only write when api_key is configured ──
         if api_key and base_url:
-            existing["agents"] = {
-                "defaults": {
-                    "model": {
-                        "primary": provider_model,
-                    },
-                },
+            existing.setdefault("agents", {}).setdefault("defaults", {})["model"] = {
+                "primary": provider_model,
             }
 
             # apiKey uses ${ENV_VAR} syntax so secrets stay in .env
@@ -3722,9 +3753,7 @@ class WindowsSetup:
         if not projects_dir.is_dir():
             return False
         try:
-            packages = projects_dir.glob(
-                "*/node_modules/@openclaw/parallel-plugin/package.json"
-            )
+            packages = projects_dir.glob("*/node_modules/@openclaw/parallel-plugin/package.json")
             for package_path in packages:
                 plugin_dir = package_path.parent
                 manifest_path = plugin_dir / "openclaw.plugin.json"
@@ -5280,9 +5309,7 @@ class WindowsSetup:
             local_appdata / "npm-cache",  # npm cache (heavy I/O during install)
             local_appdata / "Temp",  # %TEMP% (npm extracts packages here)
         ]
-        normalized = sorted(
-            os.path.normcase(os.path.normpath(str(path))) for path in dirs
-        )
+        normalized = sorted(os.path.normcase(os.path.normpath(str(path))) for path in dirs)
         marker = DEFAULT_DESKTOP_DIR / "install-state" / "defender-exclusions.json"
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
@@ -5335,9 +5362,7 @@ class WindowsSetup:
                 parsed = json.loads(result.stdout or "[]")
                 current = [parsed] if isinstance(parsed, str) else parsed
                 normalized = {
-                    os.path.normcase(os.path.normpath(str(path)))
-                    for path in current
-                    if path
+                    os.path.normcase(os.path.normpath(str(path))) for path in current if path
                 }
                 missing = [
                     path
@@ -5352,9 +5377,7 @@ class WindowsSetup:
             return True
 
         # Add-MpPreference always requires admin — elevate directly
-        safe_paths = ",".join(
-            f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing
-        )
+        safe_paths = ",".join(f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing)
         try:
             result = self._run(
                 [

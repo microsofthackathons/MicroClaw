@@ -207,6 +207,11 @@ package is not modified. The hook requires OpenClaw `2026.8.2` and exact SHA-256
 affected compiled modules; any version, hash, or source-shape mismatch prevents the managed Gateway
 from starting.
 
+OpenClaw's doctor migrates the roster to keyed `agents.entries` with explicit ownership.
+Desktop startup, skill updates and MXC policy changes preserve this format and never reintroduce
+the retired per-agent `default` marker. Node command policy uses `gateway.nodes.commands.allow`
+and `.deny`; execution timeouts use `timeoutSeconds`.
+
 The same pinned Gateway binds approval registration and replay to the prepared plan's exact argv,
 CWD, agent, and session. The bundled host therefore returns the canonical
 `{ plan: { argv, commandText, cwd, agentId, sessionKey } }` response and copies `sessionKey` from the

@@ -944,8 +944,47 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "timed out"),
         ):
             self.ws._run_openclaw_json(["plugins", "inspect", "openclaw-weixin", "--json"])
-
         self.ws._terminate_process_tree.assert_called_once_with(process, self.process_job)
+
+    def test_migrate_openclaw_state_runs_target_doctor_with_state_environment(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={"PATH": "test"})
+        self.ws._load_openclaw_state_env = unittest.mock.Mock(
+            return_value={"OPENCLAW_HOME": str(self.home)}
+        )
+
+        with unittest.mock.patch.object(
+            self.ws,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="ok", stderr=""),
+        ) as run:
+            self.assertTrue(self.ws.migrate_openclaw_state())
+
+        (command,) = run.call_args.args
+        self.assertEqual(command, ["openclaw.cmd", "doctor", "--fix"])
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(
+            run.call_args.kwargs["env"]["OPENCLAW_STATE_DIR"],
+            str(self.home / ".openclaw"),
+        )
+
+    def test_migrate_openclaw_state_fails_closed_when_doctor_rejects_state(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._load_openclaw_state_env = unittest.mock.Mock(return_value={})
+
+        with unittest.mock.patch.object(
+            self.ws,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="migration failed"),
+        ):
+            self.assertFalse(self.ws.migrate_openclaw_state())
 
     def test_validation_records_every_required_check_and_stops_gateway(self):
         transaction = unittest.mock.Mock()
@@ -1617,6 +1656,32 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
         self.assertIn("openclaw-weixin", written["plugins"]["allow"])
 
+    def test_write_config_keeps_migrated_agent_ownership_when_setting_a_model(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        agents = {
+            "ownership": "explicit",
+            "entries": {"main": {"name": "Assistant"}, "custom": {"skills": []}},
+            "defaults": {"heartbeat": {"agentId": "custom"}},
+        }
+        config_path.write_text(json.dumps({"agents": agents}), encoding="utf-8")
+        self.ws.cfg = _Config(
+            {
+                "model.api_key": "test-key",
+                "model.base_url": "https://example.invalid",
+                "model.model_name": "test-model",
+            }
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+        self.assertTrue(self.ws.write_config())
+        written = json.loads(config_path.read_text(encoding="utf-8"))["agents"]
+        self.assertEqual(written["entries"], agents["entries"])
+        self.assertEqual(written["ownership"], "explicit")
+        self.assertEqual(written["defaults"]["heartbeat"], {"agentId": "custom"})
+        self.assertEqual(written["defaults"]["model"], {"primary": "custom/test-model"})
+
     def test_write_config_defaults_fresh_install_to_parallel_free_search(self):
         self.ws._deploy_managed_skills = unittest.mock.Mock()
         self.ws._install_officecli = unittest.mock.Mock()
@@ -1678,9 +1743,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.write_config())
 
         entries = json.loads(config_path.read_text(encoding="utf-8"))["skills"]["entries"]
-        self.assertEqual(
-            entries["rednote-publisher"], {"enabled": False, "owner": "desktop"}
-        )
+        self.assertEqual(entries["rednote-publisher"], {"enabled": False, "owner": "desktop"})
         self.assertEqual(entries["user-skill"], {"enabled": True})
 
     def test_write_config_preserves_existing_web_search_provider(self):

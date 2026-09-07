@@ -1,12 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import {
   applyAgentRosterReload,
   hardRestartGateway,
   isApplicationServiceReadyState,
   isGatewayServiceReady,
   requiresExternalGatewayStop,
+  shouldRetryGatewayStartup,
   waitForAgentRosterReload,
 } from "./gateway-lifecycle";
+
+describe("Gateway startup convergence", () => {
+  it("awaits AppContainer ACL work before taking the Gateway plugin inventory", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    const prepare = main.indexOf("await toolSandbox.provisionAsync()");
+    const spawn = main.indexOf("const child = spawn(nodePath, gwArgs");
+    expect(prepare).toBeGreaterThan(0);
+    expect(spawn).toBeGreaterThan(prepare);
+  });
+  const refusal =
+    "OpenClaw plugin migration inputs changed during startup convergence; refusing to report the gateway ready. " +
+    "Restart OpenClaw so state migrations run against the final config and plugin inventory.";
+  it("allows a bounded fresh startup only for the runtime's explicit convergence restart request", () => {
+    expect(shouldRetryGatewayStartup(1, refusal, 1)).toBe(true);
+    expect(shouldRetryGatewayStartup(1, refusal, 0)).toBe(false);
+    expect(shouldRetryGatewayStartup(78, refusal, 1)).toBe(false);
+    expect(shouldRetryGatewayStartup(1, "Invalid config", 1)).toBe(false);
+    expect(shouldRetryGatewayStartup(null, refusal, 1)).toBe(false);
+  });
+});
 
 describe("requiresExternalGatewayStop", () => {
   it("protects an unowned listener when the roster must be reloaded", () => {

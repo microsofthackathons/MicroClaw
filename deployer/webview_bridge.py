@@ -278,6 +278,7 @@ _STRINGS = {
             "node": "正在安装 Node.js…",
             "npmRegistry": "正在配置软件下载源…",
             "openclaw": "正在安装 MicroClaw 后台服务…",
+            "migrateOpenClaw": "正在迁移 MicroClaw 配置与数据…",
             "path": "正在更新系统路径…",
             "desktop": "正在安装桌面客户端…",
             "assets": "正在复制内置资源…",
@@ -332,6 +333,7 @@ _STRINGS = {
             "node": "Installing Node.js...",
             "npmRegistry": "Configuring npm registry...",
             "openclaw": "Installing MicroClaw background service...",
+            "migrateOpenClaw": "Migrating MicroClaw configuration and data...",
             "path": "Updating PATH...",
             "desktop": "Installing desktop client...",
             "assets": "Copying bundled assets...",
@@ -435,9 +437,7 @@ class WebInstallerBridge:
 
         settings["language"] = "zh-CN" if self._lang == "zh" else "en-US"
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._settings_path.with_name(
-            f".{self._settings_path.name}.{os.getpid()}.tmp"
-        )
+        temp_path = self._settings_path.with_name(f".{self._settings_path.name}.{os.getpid()}.tmp")
         try:
             temp_path.write_text(
                 json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
@@ -598,13 +598,14 @@ class WebInstallerBridge:
             (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
             (65, steps["apiKeys"], lambda: self._write_env_file(), LOCAL_RETRIES),
             (70, steps["config"], ws.write_config, LOCAL_RETRIES),
-            (75, steps["compileCache"], ws.warmup_compile_cache, LOCAL_RETRIES),
             (
                 80,
                 steps["searchProvider"],
                 ws.install_search_provider_plugin,
                 NETWORK_RETRIES,
             ),
+            (82, steps["migrateOpenClaw"], ws.migrate_openclaw_state, LOCAL_RETRIES),
+            (84, steps["compileCache"], ws.warmup_compile_cache, LOCAL_RETRIES),
             (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
@@ -748,7 +749,7 @@ class WebInstallerBridge:
                         return False
                     time.sleep(1)
 
-        self._finish_fail(f"{clean_label} failed after {attempts} attempt(s).")
+        self._finish_fail(f"{clean_label} failed after {attempts} attempt(s): {detail}")
         return False
 
     def _prepare_upgrade(self, ws):
@@ -1037,9 +1038,7 @@ def run_web_installer(mode="install"):
         raise ValueError(f"Unsupported web installer mode: {mode}")
     logger = DeployerLogger()
     logger.step(
-        "Starting web installer"
-        if mode == "install"
-        else "Starting uninstall confirmation"
+        "Starting web installer" if mode == "install" else "Starting uninstall confirmation"
     )
     logger.debug(
         f"frozen={getattr(sys, 'frozen', False)} executable={sys.executable} cwd={Path.cwd()}"
@@ -1131,9 +1130,7 @@ def run_web_installer(mode="install"):
     logger.debug(f"installer icon path: {icon_path}")
     try:
         width = (
-            UNINSTALL_CONFIRM_WINDOW_WIDTH
-            if is_uninstall_confirmation
-            else INSTALLER_WINDOW_WIDTH
+            UNINSTALL_CONFIRM_WINDOW_WIDTH if is_uninstall_confirmation else INSTALLER_WINDOW_WIDTH
         )
         height = (
             UNINSTALL_CONFIRM_WINDOW_HEIGHT

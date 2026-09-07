@@ -7,6 +7,7 @@ import {
   matchesSkill,
   resolveSkillFilterNames,
 } from "./agent-catalog";
+import { readAgentRoster } from "./agent-roster";
 
 export const AGENT_OWNED_SKILL_MARKER = ".microclaw-agent-skill.json";
 
@@ -49,7 +50,7 @@ interface AgentOwnedSkillTrust {
 }
 
 type AgentSkillsConfig = {
-  agents?: { list?: unknown };
+  agents?: { list?: unknown; entries?: unknown };
   skills?: { entries?: Record<string, { enabled?: boolean } & Record<string, unknown>> };
 };
 
@@ -188,12 +189,7 @@ export function hasAgentOwnedSkillMarker(stateDirectory: string, skillId: string
 }
 
 function configReferencesSkill(config: AgentSkillsConfig, skillId: string): boolean {
-  const list = config.agents?.list;
-  if (!Array.isArray(list)) return false;
-  return list.some((candidate) => {
-    if (typeof candidate !== "object" || candidate === null) {
-      return false;
-    }
+  return readAgentRoster(config.agents).some(({ config: candidate }) => {
     if (!Object.hasOwn(candidate, "skills")) return true;
     if (!Array.isArray((candidate as { skills?: unknown }).skills)) return true;
     return (candidate as { skills: unknown[] }).skills.some(
@@ -497,17 +493,7 @@ export function reconcileConfiguredAgentOwnedSkills(
   const installs: AgentOwnedSkillInstall[] = [];
   const removals: AgentOwnedSkillRemoval[] = [];
   let configChanged = false;
-  const configuredAgentIds = new Set(
-    Array.isArray(config.agents?.list)
-      ? config.agents.list.flatMap((candidate) =>
-          typeof candidate === "object" &&
-          candidate !== null &&
-          typeof (candidate as { id?: unknown }).id === "string"
-            ? [(candidate as { id: string }).id]
-            : [],
-        )
-      : [],
-  );
+  const configuredAgentIds = new Set(readAgentRoster(config.agents).map(({ id }) => id));
   try {
     for (const agent of AGENT_CATALOG) {
       if (getAgentOwnedSkillIds(agent.id).length === 0) continue;
@@ -553,17 +539,7 @@ export function inspectConfiguredAgentOwnedSkills(
   trust: AgentOwnedSkillTrust = {},
 ): AgentOwnedSkillReconciliationPlan {
   const reasons: string[] = [];
-  const configuredAgentIds = new Set(
-    Array.isArray(config.agents?.list)
-      ? config.agents.list.flatMap((candidate) =>
-          typeof candidate === "object" &&
-          candidate !== null &&
-          typeof (candidate as { id?: unknown }).id === "string"
-            ? [(candidate as { id: string }).id]
-            : [],
-        )
-      : [],
-  );
+  const configuredAgentIds = new Set(readAgentRoster(config.agents).map(({ id }) => id));
 
   for (const agent of AGENT_CATALOG) {
     const ownedSkillIds = getAgentOwnedSkillIds(agent.id);

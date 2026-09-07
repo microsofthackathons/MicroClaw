@@ -6,6 +6,23 @@ import {
 } from "./skill-config";
 
 describe("applyAgentSkillsToConfig", () => {
+  it("updates keyed entries and aliases without recreating legacy roster/default fields", () => {
+    const config = {
+      agents: {
+        ownership: "explicit",
+        entries: {
+          main: { skills: ["keep"] },
+          "creative-muse": { skills: ["old"] },
+          singer: { skills: ["old"] },
+        },
+      },
+    };
+    applyAgentSkillsToConfig(config, "singer", ["excel-xlsx"]);
+    expect(config.agents.entries["creative-muse"].skills).toEqual(["Excel / XLSX"]);
+    expect(config.agents.entries.singer.skills).toEqual(["Excel / XLSX"]);
+    expect(config.agents.entries.main.skills).toEqual(["keep"]);
+    expect(config.agents).not.toHaveProperty("list");
+  });
   it("writes OpenClaw match-names (not raw slugs) for the differing skills", () => {
     const config: MutableSkillsConfig = {
       agents: { list: [{ id: "main", skills: [] }] },

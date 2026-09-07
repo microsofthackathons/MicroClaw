@@ -40,6 +40,41 @@ var extractWritePaths = _pathExtraction.extractWritePaths;
 var extractReadPaths = _pathExtraction.extractReadPaths;
 var extractShellPayloadFromString = _pathExtraction.extractShellPayloadFromString;
 var filterSystemPaths = _pathExtraction.filterSystemPaths;
+var TRUSTED_NODE_EXEC_PATH = process.execPath;
+var TRUSTED_OPENCLAW_ENTRY_PATH = process.argv[1] || "";
+var TRUSTED_OPENCLAW_STATE_DIR = process.env.OPENCLAW_STATE_DIR || "";
+var TRUSTED_PRELOAD_PATH = pathMod.join(__dirname, "sandbox-preload.js");
+var TRUSTED_WORKER_ENV = (function () {
+  var environment = {};
+  [
+    "APPDATA",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "Path",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+  ].forEach(function (name) {
+    if (process.env[name] !== undefined) environment[name] = process.env[name];
+  });
+  environment.ComSpec =
+    process.env.OPENCLAW_ORIGINAL_COMSPEC ||
+    pathMod.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
+  environment.OPENCLAW_STATE_DIR = TRUSTED_OPENCLAW_STATE_DIR;
+  return Object.freeze(environment);
+})();
 
 // ── Utility functions ───────────────────────────────────────────────────
 
@@ -55,6 +90,101 @@ function isShellExe(exe) {
 function isLauncherExe(exe) {
   if (!exe) return false;
   return /appcontainerlauncher/i.test(pathMod.basename(String(exe)));
+}
+
+var INTERNAL_SQLITE_WORKER_MARKER = "MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER";
+
+function normalizeComparablePath(value) {
+  try {
+    return pathMod.resolve(String(value)).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function resolveOpenClawPackageRoot(entryPath) {
+  var resolved = normalizeComparablePath(entryPath);
+  if (!resolved) return "";
+  if (pathMod.basename(resolved) === "openclaw.mjs") return pathMod.dirname(resolved);
+  var parent = pathMod.dirname(resolved);
+  return pathMod.basename(parent) === "dist" ? pathMod.dirname(parent) : "";
+}
+
+function canonicalExistingPath(value, runtime) {
+  try {
+    var resolver =
+      runtime && runtime.realpath
+        ? runtime.realpath
+        : fsMod.realpathSync.native
+          ? fsMod.realpathSync.native
+          : fsMod.realpathSync;
+    return pathMod.resolve(String(resolver(String(value)))).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isCanonicalPathWithin(rootPath, candidatePath, runtime) {
+  var root = canonicalExistingPath(rootPath, runtime);
+  var candidate = canonicalExistingPath(candidatePath, runtime);
+  if (!root || !candidate) return false;
+  var relative = pathMod.relative(root, candidate);
+  return relative !== "" && !relative.startsWith("..") && !pathMod.isAbsolute(relative);
+}
+
+function isOpenClawInternalSqliteWorkerCommand(cmd, args, stack, runtime, options) {
+  if (options && options.shell) return false;
+  if (!Array.isArray(args) || args.length !== 4) return false;
+  var execPath = normalizeComparablePath(
+    runtime && runtime.execPath ? runtime.execPath : TRUSTED_NODE_EXEC_PATH,
+  );
+  if (!execPath || normalizeComparablePath(cmd) !== execPath) return false;
+  if (
+    args[1] !== "--openclaw-sqlite-readonly-child" ||
+    (args[2] !== "async" && args[2] !== "sync") ||
+    !pathMod.isAbsolute(String(args[3]))
+  ) {
+    return false;
+  }
+  var packageRoot = resolveOpenClawPackageRoot(
+    runtime && runtime.entryPath ? runtime.entryPath : TRUSTED_OPENCLAW_ENTRY_PATH,
+  );
+  if (!packageRoot) return false;
+  var expectedWorker = normalizeComparablePath(
+    pathMod.join(packageRoot, "dist", "infra", "sqlite-readonly-location.worker.js"),
+  );
+  if (normalizeComparablePath(args[0]) !== expectedWorker) return false;
+  var stateDir = runtime && runtime.stateDir ? runtime.stateDir : TRUSTED_OPENCLAW_STATE_DIR;
+  if (
+    pathMod.extname(String(args[3])).toLowerCase() !== ".sqlite" ||
+    !isCanonicalPathWithin(stateDir, args[3], runtime)
+  ) {
+    return false;
+  }
+  var normalizedStack = String(stack || "")
+    .replace(/\//g, pathMod.sep)
+    .toLowerCase();
+  var trustedCallerPrefix =
+    normalizeComparablePath(pathMod.join(packageRoot, "dist")) +
+    pathMod.sep +
+    "sqlite-readonly-location-";
+  return normalizedStack.indexOf(trustedCallerPrefix) >= 0;
+}
+
+function buildInternalSqliteWorkerInvocation(args, options) {
+  var environment = Object.assign({}, TRUSTED_WORKER_ENV);
+  environment[INTERNAL_SQLITE_WORKER_MARKER] = "1";
+  var nextOptions = {
+    env: environment,
+    windowsHide: true,
+  };
+  if (options && options.encoding !== undefined) nextOptions.encoding = options.encoding;
+  if (options && options.maxBuffer !== undefined) nextOptions.maxBuffer = options.maxBuffer;
+  if (options && options.timeout !== undefined) nextOptions.timeout = options.timeout;
+  return {
+    args: ["--require", TRUSTED_PRELOAD_PATH].concat(args),
+    options: nextOptions,
+  };
 }
 
 function buildLA(exe, childArgs) {
@@ -1194,6 +1324,14 @@ function install(cp, getExternalApps) {
         S.state.sandboxActive +
         "\n",
     );
+    if (
+      S.state.sandboxActive &&
+      isOpenClawInternalSqliteWorkerCommand(cmd, args, new Error().stack, undefined, opts)
+    ) {
+      process.stderr.write("[sandbox] spawnSync: OpenClaw SQLite worker -> BYPASS (internal)\n");
+      var _syncWorker = buildInternalSqliteWorkerInvocation(args, opts);
+      return _spawnSync.call(this, cmd, _syncWorker.args, _syncWorker.options);
+    }
     if (S.state.sandboxActive && isShell) {
       // Intercept declare-access magic command — return synthetic result
       var _syncPayload = extractShellPayload(cmd, Array.isArray(args) ? args : []);
@@ -1263,6 +1401,16 @@ function install(cp, getExternalApps) {
 
   var _execFile = cp.execFile;
   cp.execFile = function (file, args, opts, cb) {
+    if (
+      S.state.sandboxActive &&
+      isOpenClawInternalSqliteWorkerCommand(file, args, new Error().stack, undefined, opts)
+    ) {
+      var _workerCallback = typeof opts === "function" ? opts : cb;
+      var _workerOptions = typeof opts === "object" && opts !== null ? opts : {};
+      process.stderr.write("[sandbox] execFile: OpenClaw SQLite worker -> BYPASS (internal)\n");
+      var _asyncWorker = buildInternalSqliteWorkerInvocation(args, _workerOptions);
+      return _execFile.call(this, file, _asyncWorker.args, _asyncWorker.options, _workerCallback);
+    }
     if (S.state.sandboxActive && isShellExe(file)) {
       // Intercept declare-access magic command
       var _efPayload = extractShellPayload(file, Array.isArray(args) ? args : []);
@@ -1753,6 +1901,8 @@ module.exports = {
   ensureUtf8Args: ensureUtf8Args,
   isSafeDiagnosticCommand: isSafeDiagnosticCommand,
   isSafeDiagnosticCommandStr: isSafeDiagnosticCommandStr,
+  isOpenClawInternalSqliteWorkerCommand: isOpenClawInternalSqliteWorkerCommand,
+  buildInternalSqliteWorkerInvocation: buildInternalSqliteWorkerInvocation,
   extractLaunchedApp: extractLaunchedApp,
   tryDeclareAccess: tryDeclareAccess,
   tryInlineDeclareAccess: tryInlineDeclareAccess,

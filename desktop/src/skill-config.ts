@@ -9,8 +9,9 @@ import {
   LEGACY_AGENT_ID_ALIASES,
   resolveSkillFilterNames,
 } from "./agent-catalog";
+import { readAgentRoster } from "./agent-roster";
 
-/** A single per-agent entry inside `config.agents.list`. */
+/** A single per-agent configuration. */
 export interface MutableAgentEntry {
   id?: unknown;
   skills?: unknown;
@@ -34,7 +35,7 @@ export interface GlobalSkillChange {
 }
 
 /**
- * Writes the per-agent allowlist for `agentId` into `config.agents.list[*].skills`.
+ * Writes the per-agent allowlist without changing the runtime's roster format.
  * Persists match-names (not raw slugs) so OpenClaw's frontmatter-name based filter
  * binds every eligible skill. Throws when the agent list is missing or the agent id
  * isn't present. Mutates `config` in place.
@@ -45,16 +46,12 @@ export function applyAgentSkillsToConfig(
   skillIds: readonly string[],
 ): void {
   const agents = config.agents;
-  if (!agents || !Array.isArray(agents.list)) {
+  const roster = readAgentRoster(agents);
+  if (roster.length === 0) {
     throw new Error("No configured agents to update");
   }
   const canonicalId = canonicalAgentId(agentId);
-  const entry = agents.list.find(
-    (candidate: unknown): candidate is MutableAgentEntry =>
-      typeof candidate === "object" &&
-      candidate !== null &&
-      (candidate as { id?: unknown }).id === canonicalId,
-  );
+  const entry = roster.find((candidate) => candidate.id === canonicalId);
   if (!entry) {
     throw new Error(`Unknown agent "${agentId}"`);
   }
@@ -65,13 +62,9 @@ export function applyAgentSkillsToConfig(
       .filter(([, targetId]) => targetId === canonicalId)
       .map(([legacyId]) => legacyId),
   ]);
-  for (const candidate of agents.list) {
-    if (
-      typeof candidate === "object" &&
-      candidate !== null &&
-      synchronizedIds.has(String((candidate as { id?: unknown }).id))
-    ) {
-      (candidate as MutableAgentEntry).skills = [...resolvedSkills];
+  for (const candidate of roster) {
+    if (synchronizedIds.has(candidate.id)) {
+      candidate.config.skills = [...resolvedSkills];
     }
   }
 }

@@ -19,6 +19,7 @@ import {
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
 } from "./agent-personas";
+import { readAgentRoster } from "./agent-roster";
 
 const tempDirs: string[] = [];
 
@@ -37,8 +38,10 @@ afterEach(() => {
 type AgentListEntry = { id: string; skills?: readonly string[] } & Record<string, unknown>;
 
 function agentList(config: { agents?: unknown }): AgentListEntry[] {
-  const agents = (config.agents ?? {}) as { list?: unknown };
-  return (Array.isArray(agents.list) ? agents.list : []) as AgentListEntry[];
+  return readAgentRoster(config.agents).map(({ id, config: entry }) => ({
+    ...entry,
+    id,
+  })) as AgentListEntry[];
 }
 
 describe("agent personas", () => {
@@ -51,7 +54,7 @@ describe("agent personas", () => {
     ensureAgentPersonasConfig(config, stateDir);
   });
 
-  it("migrates unsupported entries data back to the runtime list", () => {
+  it("preserves keyed entries and removes retired legacy default markers", () => {
     const stateDir = createStateDir();
     const agents: Record<string, unknown> = {
       entries: {
@@ -63,8 +66,11 @@ describe("agent personas", () => {
     };
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
-    expect(agents).not.toHaveProperty("entries");
+    expect(agents).not.toHaveProperty("list");
+    expect(agents).toHaveProperty("entries.main.name", "Existing Assistant");
+    expect(agents).not.toHaveProperty("entries.main.default");
     expect(listConfiguredAgents(config)).toEqual([{ id: "main", name: "Existing Assistant" }]);
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
   it("preserves the effective legacy default and removes extra default markers", () => {
@@ -100,7 +106,7 @@ describe("agent personas", () => {
     expect(config.agents).toEqual({ list });
   });
 
-  it("merges preview-only entries without overriding the runtime list", () => {
+  it("merges mixed legacy input into keyed entries without losing settings", () => {
     const stateDir = createStateDir();
     const config = {
       agents: {
@@ -114,18 +120,60 @@ describe("agent personas", () => {
 
     ensureAgentPersonasConfig(config, stateDir);
 
-    expect(config.agents).not.toHaveProperty("entries");
-    expect(config.agents.list.find((entry) => entry.id === "main")).toMatchObject({
+    expect(config.agents).not.toHaveProperty("list");
+    expect(agentList(config).find((entry) => entry.id === "main")).toMatchObject({
       name: "Runtime Assistant",
       workspace: "preview-main",
-      default: true,
     });
-    expect(config.agents.list.find((entry) => entry.id === "analyst")).toMatchObject({
+    expect(agentList(config).find((entry) => entry.id === "analyst")).toMatchObject({
       name: "Analyst",
       workspace: "preview-analyst",
     });
   });
 
+  it("does not undo doctor's explicit ownership during startup, add, remove or workspace seeding", () => {
+    const stateDir = createStateDir();
+    const entries = {
+      main: { name: "My assistant", workspace: path.join(stateDir, "workspace"), skills: [] },
+      analyst: {
+        name: "Custom",
+        workspace: path.join(stateDir, "custom"),
+        skills: ["healthcheck"],
+      },
+    };
+    const config = {
+      agents: {
+        ownership: "explicit",
+        defaults: { systemAgent: { agentId: "analyst" }, heartbeat: { agentId: "main" } },
+        entries,
+      },
+    };
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+    const creative = getAgentPersona("creative-muse")!;
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, creative]);
+    expect(config.agents.ownership).toBe("explicit");
+    expect(config.agents.defaults.systemAgent.agentId).toBe("analyst");
+    expect(config.agents).not.toHaveProperty("list");
+    expect(
+      Object.values(config.agents.entries).every((entry) => !Object.hasOwn(entry, "default")),
+    ).toBe(true);
+    expect(resolveAgentPersonaWorkspace(config, stateDir, getAgentPersona("main")!)).toBe(
+      entries.main.workspace,
+    );
+    expect(seedAgentPersonaWorkspaces(config, stateDir).length).toBeGreaterThan(0);
+    removeConfiguredAgent(config, "creative-muse");
+    expect(config.agents.entries).not.toHaveProperty("creative-muse");
+    expect(config.agents.entries.main).toEqual(entries.main);
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+  });
+
+  it("resolves implicit explicit-fleet workspaces per agent rather than treating the first as default", () => {
+    const stateDir = createStateDir();
+    const config = { agents: { ownership: "explicit", entries: { main: {}, analyst: {} } } };
+    expect(resolveAgentPersonaWorkspace(config, stateDir, getAgentPersona("main")!)).toBe(
+      path.join(stateDir, "workspace-main"),
+    );
+  });
   it("seeds the Master Archive workspace with its operating context", () => {
     const stateDir = createStateDir();
     const config = { agents: {} };

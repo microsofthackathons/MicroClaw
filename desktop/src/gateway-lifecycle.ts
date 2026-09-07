@@ -18,6 +18,21 @@ export type AgentRosterReloadDependencies = {
 
 export type AgentRosterApplyResult = "hot-reloaded" | "restarted" | "timed-out";
 
+export function shouldRetryGatewayStartup(
+  exitCode: number | null,
+  stderr: string,
+  retriesRemaining: number,
+): boolean {
+  return (
+    retriesRemaining > 0 &&
+    exitCode === 1 &&
+    stderr.includes("OpenClaw plugin migration inputs changed during startup convergence;") &&
+    stderr.includes(
+      "Restart OpenClaw so state migrations run against the final config and plugin inventory.",
+    )
+  );
+}
+
 export function requiresExternalGatewayStop(
   alreadyRunning: boolean,
   rosterChanged: boolean,
