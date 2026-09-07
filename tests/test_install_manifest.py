@@ -53,6 +53,11 @@ class InstallManifestTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(build_identity_matches(bundled, _manifest(**{key: "changed"})))
 
+    def test_load_accepts_windows_powershell_utf8_bom(self):
+        path = self.root / "install-manifest.json"
+        path.write_text(json.dumps(_manifest()), encoding="utf-8-sig")
+        self.assertEqual(load_install_manifest(path), _manifest())
+
     def test_committed_manifest_normalizes_runtime_registry(self):
         committed = committed_install_manifest(_manifest(), " HTTPS://Registry.Example/ ")
 

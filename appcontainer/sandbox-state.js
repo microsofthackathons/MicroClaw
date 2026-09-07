@@ -76,9 +76,8 @@ var _safePaths = (function () {
     dirs.push(path.resolve(programFiles, "nodejs").toLowerCase() + path.sep);
   }
   var localAppData = process.env.LOCALAPPDATA || (home ? path.join(home, "AppData", "Local") : "");
-  if (localAppData) {
+  if (localAppData)
     dirs.push(path.resolve(localAppData, "Programs", "nodejs").toLowerCase() + path.sep);
-  }
   // Allow runtime override (mirrors OPENCLAW_NODE_DIR used by the deployer).
   var overrideDir = process.env.OPENCLAW_NODE_DIR || "";
   if (overrideDir) {
@@ -131,6 +130,12 @@ var _safeReadExactPaths = (function () {
   return paths;
 })();
 
+var _openClawLocalRuntimeRoot = (function () {
+  var home = process.env.USERPROFILE || "";
+  var localAppData = process.env.LOCALAPPDATA || (home ? path.join(home, "AppData", "Local") : "");
+  return localAppData ? path.resolve(localAppData, "OpenClaw").toLowerCase() + path.sep : "";
+})();
+
 // ── Path checking functions ──
 
 function resolvePathLower(filePath) {
@@ -143,9 +148,19 @@ function resolvePathLower(filePath) {
 }
 
 function isNonFilePath(p) {
-  // Numeric values are already-open file descriptors. The original open call
-  // is where path authorization is enforced.
+  // Numeric descriptors and fs/promises FileHandle objects were authorized
+  // when opened; stringifying a FileHandle produces "[object Object]".
   if (typeof p === "number") return true;
+  if (
+    p &&
+    typeof p === "object" &&
+    Number.isInteger(p.fd) &&
+    p.fd >= 0 &&
+    p.constructor &&
+    p.constructor.name === "FileHandle"
+  ) {
+    return true;
+  }
   var s = String(p);
   if (s.indexOf("\\\\.\\") === 0 || s.indexOf("\\\\?\\") === 0) return true;
   if (/^\\\\[.?]\\/.test(s)) return true;
@@ -153,6 +168,7 @@ function isNonFilePath(p) {
 }
 
 function isSafePath(resolvedLower) {
+  if (isOpenClawSqliteRuntimePath(resolvedLower)) return true;
   for (var j = 0; j < _safeExactPaths.length; j++) {
     if (resolvedLower === _safeExactPaths[j]) return true;
   }
@@ -164,11 +180,22 @@ function isSafePath(resolvedLower) {
 }
 
 function isSafePrefixPath(resolvedLower) {
+  if (isOpenClawSqliteRuntimePath(resolvedLower)) return true;
   for (var i = 0; i < _safePaths.length; i++) {
     if (resolvedLower === _safePaths[i].slice(0, -1) || resolvedLower.indexOf(_safePaths[i]) === 0)
       return true;
   }
   return false;
+}
+
+function isOpenClawSqliteRuntimePath(resolvedLower) {
+  if (!_openClawLocalRuntimeRoot || resolvedLower.indexOf(_openClawLocalRuntimeRoot) !== 0) {
+    return false;
+  }
+  var relative = resolvedLower.slice(_openClawLocalRuntimeRoot.length);
+  if (relative === "locks" || relative.indexOf("locks" + path.sep) === 0) return true;
+  var firstSegment = relative.split(path.sep)[0];
+  return /^openclaw-sqlite-readonly-\d+-[0-9a-f-]{36}$/i.test(firstSegment);
 }
 
 function isSafeReadProbe(resolvedLower) {

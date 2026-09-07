@@ -12,6 +12,7 @@ import {
   applyAgentRosterReload,
   hardRestartGateway,
   isApplicationServiceReadyState,
+  shouldRetryGatewayStartup,
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
 import { createTray, destroyTray, updateTrayMenu } from "./tray";
@@ -2040,10 +2041,9 @@ function ensurePluginsAllow(): void {
 
 /**
  * Ensure the default MicroClaw persona exists in the OpenClaw roster.
- * OpenClaw 2026.8.2 uses `agents.list`; unsupported `agents.entries` data
- * written by preview builds is migrated back before personas are added. Existing
- * entries are preserved by id and the config is only rewritten when something
- * changes. Both processes consume the shared agent catalog.
+ * Preserve OpenClaw 2026.8.2's keyed roster and explicit ownership after doctor
+ * migration, while retaining support for legacy input. Entries are preserved by
+ * id and the config is only rewritten when something changes.
  */
 function prepareAgentPersonas(
   stateDir: string,
@@ -2632,9 +2632,11 @@ function resolveAppContainerLauncher(): string | null {
 async function waitForGatewayReady(
   port: number,
   timeoutMs = GATEWAY_READY_TIMEOUT_MS,
+  isProcessAlive: () => boolean = () => true,
 ): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    if (!isProcessAlive()) return false;
     const ok = await checkExistingGateway(port);
     if (ok) return true;
     await new Promise((r) => setTimeout(r, 500));
@@ -3265,7 +3267,7 @@ async function startGatewayWithWindowsNodeMxcPolicy(policy: "active" | "locked")
   }
 }
 
-async function startGatewayInner(): Promise<void> {
+async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
   logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   let config = readConfig();
@@ -3641,8 +3643,9 @@ async function startGatewayInner(): Promise<void> {
     }
 
     if (toolSandbox.isActive()) {
-      // Provision AppContainer profile and ACLs (async to avoid blocking UI)
-      toolSandbox.provisionAsync().then(async (provisioned) => {
+      // ACL inheritance changes plugin file ctime. Finish before OpenClaw captures
+      // its startup inventory, otherwise its migration fingerprint never converges.
+      await toolSandbox.provisionAsync().then(async (provisioned) => {
         if (provisioned) {
           console.log("[sandbox] AppContainer tool sandbox provisioned");
           mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
@@ -3752,7 +3755,9 @@ async function startGatewayInner(): Promise<void> {
         safeSendLog("gateway:log", msg);
       }
     });
+    let startupStderr = "";
     child.stderr?.on("data", (data: Buffer) => {
+      startupStderr = (startupStderr + data.toString("utf-8")).slice(-8192);
       const msg = data.toString("utf-8").trim();
       if (msg) {
         console.log(`[gateway:err] ${msg}`);
@@ -3765,6 +3770,7 @@ async function startGatewayInner(): Promise<void> {
       safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
       safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
       if (gatewayProcess === child) {
+        if (!postInstallReadySignaled) signalPostInstallFailure(err);
         windowsNodeMxcIngressGeneration = null;
         windowsNodeMxcApprovalProofContext = null;
         bundledWindowsNodeHost.revokeActivationLease();
@@ -3779,6 +3785,12 @@ async function startGatewayInner(): Promise<void> {
       console.log(`[gateway] exited: code=${code} signal=${signal}`);
       safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
       if (gatewayProcess === child) {
+        // EX_CONFIG is terminal: waiting longer cannot repair rejected configuration.
+        if (code === 78 && !postInstallReadySignaled) {
+          signalPostInstallFailure(
+            new Error("Gateway rejected its configuration (exit 78); see the desktop handoff log"),
+          );
+        }
         windowsNodeMxcIngressGeneration = null;
         windowsNodeMxcApprovalProofContext = null;
         bundledWindowsNodeHost.revokeActivationLease();
@@ -4091,7 +4103,11 @@ async function startGatewayInner(): Promise<void> {
     // Wait for gateway to become ready
     setGatewayStatus("starting");
 
-    const ready = await waitForGatewayReady(configuredPort);
+    const ready = await waitForGatewayReady(
+      configuredPort,
+      GATEWAY_READY_TIMEOUT_MS,
+      () => gatewayProcess === child && !child.killed,
+    );
     if (ready) {
       try {
         logStartupTiming("gateway-ready");
@@ -4104,6 +4120,17 @@ async function startGatewayInner(): Promise<void> {
         throw error;
       }
     } else {
+      const retryConvergence = shouldRetryGatewayStartup(
+        child.exitCode,
+        startupStderr,
+        startupRetriesRemaining,
+      );
+      if (retryConvergence) {
+        stopGatewayProcess();
+        rollbackStartupAgentSkills();
+        console.log("[gateway] Retrying once after plugin migration convergence requested restart");
+        return startGatewayInner(startupRetriesRemaining - 1);
+      }
       mainWindow?.webContents.send(
         "gateway:log",
         `[warn] Gateway health check timed out on port ${configuredPort}`,
@@ -4115,6 +4142,13 @@ async function startGatewayInner(): Promise<void> {
       stopGatewayProcess();
       rollbackStartupAgentSkills();
       setGatewayStatus("timeout");
+      signalPostInstallFailure(
+        new Error(
+          child.exitCode !== null
+            ? `Gateway exited during startup (code ${child.exitCode}); see the desktop handoff log`
+            : "Gateway health check timed out",
+        ),
+      );
     }
     // Always connect WS — even on timeout the gateway may start shortly after,
     // and GatewayClient has built-in reconnect with exponential backoff.
@@ -7905,6 +7939,7 @@ app.whenReady().then(async () => {
   // the local UI and background service initialize concurrently.
   logStartupTiming("gateway-requested");
   startApplicationServices().catch((err) => {
+    signalPostInstallFailure(err);
     console.error("Failed to start application services:", err);
   });
 

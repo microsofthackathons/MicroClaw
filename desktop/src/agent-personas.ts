@@ -10,6 +10,7 @@ import {
   resolveSkillFilterNames,
 } from "./agent-catalog";
 import { hasAgentOwnedSkillMarker } from "./agent-owned-skills";
+import { readAgentRoster, usesKeyedAgentRoster, writeAgentRoster } from "./agent-roster";
 
 type WorkspaceFileName = "AGENTS.md" | "IDENTITY.md" | "SOUL.md";
 type WorkspaceFiles = Partial<Record<WorkspaceFileName, string>>;
@@ -738,10 +739,9 @@ function configuredAgentAllowsSkill(
       }
     }
   }
-  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) return true;
-  const entry = config.agents.list.find(
-    (candidate) => isRecord(candidate) && candidate.id === agentId,
-  );
+  const entry = readAgentRoster(config.agents).find(
+    (candidate) => candidate.id === agentId,
+  )?.config;
   if (!isRecord(entry) || !Object.hasOwn(entry, "skills")) return true;
   if (!Array.isArray(entry.skills)) return false;
   return entry.skills.some((value) => typeof value === "string" && matchesSkill(value, skillId));
@@ -815,6 +815,7 @@ export function ensureAgentPersonasConfig(
   }
 
   const agents = config.agents ?? {};
+  const keyedRoster = usesKeyedAgentRoster(agents);
   const sourceEntries: Array<{
     id: string;
     config: Record<string, unknown>;
@@ -950,7 +951,9 @@ export function ensureAgentPersonasConfig(
   }
 
   for (const entry of entries) {
-    if (entry.id === defaultAgentId) {
+    if (keyedRoster) {
+      delete entry.default;
+    } else if (entry.id === defaultAgentId) {
       entry.default = true;
     } else if (entry.default === true) {
       delete entry.default;
@@ -999,12 +1002,10 @@ export function ensureAgentPersonasConfig(
     entries.push(alias);
   }
 
-  const changed =
-    !hasList ||
-    Object.hasOwn(agents, "entries") ||
-    JSON.stringify(agents.list) !== JSON.stringify(entries);
-  agents.list = entries;
-  delete agents.entries;
+  const changed = writeAgentRoster(
+    agents,
+    entries.map((entry) => ({ id: entry.id, config: entry })),
+  );
   config.agents = agents;
   return { changed };
 }
@@ -1012,10 +1013,8 @@ export function ensureAgentPersonasConfig(
 export function listConfiguredAgents(
   config: AgentRosterConfig,
 ): Array<{ id: string; name: string }> {
-  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) return [];
-  return config.agents.list.flatMap((candidate) => {
-    if (!isRecord(candidate) || typeof candidate.id !== "string") return [];
-    const id = normalizeAgentId(candidate.id);
+  return readAgentRoster(config.agents).flatMap(({ id: rawId, config: candidate }) => {
+    const id = normalizeAgentId(rawId);
     if (Object.hasOwn(LEGACY_AGENT_ID_ALIASES, id)) return [];
     return [
       {
@@ -1034,8 +1033,8 @@ export function removeConfiguredAgent(
   if (DEFAULT_AGENT_IDS.includes(normalizedId)) {
     throw new Error(`Default agent "${normalizedId}" cannot be removed`);
   }
-  if (!isRecord(config.agents) || !Array.isArray(config.agents.list)) {
-    throw new Error("Invalid agents.list configuration");
+  if (!isRecord(config.agents)) {
+    throw new Error("Invalid agents configuration");
   }
 
   let removed = false;
@@ -1045,11 +1044,8 @@ export function removeConfiguredAgent(
       .filter(([, targetId]) => targetId === normalizedId)
       .map(([legacyId]) => legacyId),
   );
-  const remaining = config.agents.list.filter((candidate) => {
-    if (!isRecord(candidate) || typeof candidate.id !== "string" || !candidate.id.trim()) {
-      throw new Error("Invalid agent entry in agents.list");
-    }
-    const candidateId = normalizeAgentId(candidate.id);
+  const remaining = readAgentRoster(config.agents).filter(({ id, config: candidate }) => {
+    const candidateId = normalizeAgentId(id);
     if (candidateId !== normalizedId && !legacyAliases.has(candidateId)) return true;
     removed = true;
     removedDefault ||= candidate.default === true;
@@ -1057,14 +1053,14 @@ export function removeConfiguredAgent(
   });
 
   if (!removed) return { changed: false };
-  if (removedDefault) {
-    const mainAgent = remaining.find((candidate) => isRecord(candidate) && candidate.id === "main");
+  if (removedDefault && !usesKeyedAgentRoster(config.agents)) {
+    const mainAgent = remaining.find((candidate) => candidate.id === "main")?.config;
     if (!isRecord(mainAgent)) {
       throw new Error("Cannot reassign the default agent because main is missing");
     }
     mainAgent.default = true;
   }
-  config.agents.list = remaining;
+  writeAgentRoster(config.agents, remaining);
   return { changed: true };
 }
 
@@ -1106,14 +1102,9 @@ export function resolveAgentPersonaWorkspace(
   cwd = process.cwd(),
 ): string {
   const agents = isRecord(config.agents) ? config.agents : {};
-  const entries = Array.isArray(agents.list)
-    ? agents.list.filter((entry): entry is Record<string, unknown> => isRecord(entry))
-    : [];
+  const entries = readAgentRoster(agents);
   const entry =
-    entries.find(
-      (candidate) =>
-        typeof candidate.id === "string" && normalizeAgentId(candidate.id) === persona.id,
-    ) ?? {};
+    entries.find((candidate) => normalizeAgentId(candidate.id) === persona.id)?.config ?? {};
   if (typeof entry.workspace === "string" && entry.workspace.trim()) {
     return resolveUserPath(entry.workspace, env, homeDir, cwd);
   }
@@ -1123,9 +1114,16 @@ export function resolveAgentPersonaWorkspace(
     typeof defaults.workspace === "string" && defaults.workspace.trim()
       ? resolveUserPath(defaults.workspace, env, homeDir, cwd)
       : undefined;
-  const defaultAgentId = normalizeAgentId(
-    String(entries.find((candidate) => candidate.default === true)?.id ?? entries[0]?.id ?? "main"),
-  );
+  const defaultAgentId =
+    agents.ownership === "explicit"
+      ? entries.length === 1
+        ? normalizeAgentId(entries[0].id)
+        : undefined
+      : normalizeAgentId(
+          entries.find((candidate) => candidate.config.default === true)?.id ??
+            entries[0]?.id ??
+            "main",
+        );
 
   if (persona.id === defaultAgentId) {
     return defaultWorkspace ?? path.join(stateDir, "workspace");

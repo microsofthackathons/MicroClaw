@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { readAgentRoster } from "./agent-roster";
 
 export const WINDOWS_NODE_MXC_MODE = "windows-node-mxc";
 export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
@@ -354,12 +355,6 @@ export interface CanonicalCwdResult {
   reason: string | null;
 }
 
-type AgentEntry = {
-  id?: unknown;
-  tools?: unknown;
-  [key: string]: unknown;
-};
-
 export type AgentToolsBackup = Record<string, unknown | null>;
 const GATEWAY_NODES_BACKUP_KEY = "$microclaw.gateway.nodes";
 const INGRESS_BACKUP_KEYS = {
@@ -402,7 +397,7 @@ export function buildWindowsNodeMxcToolPolicy(nodeId: string): Record<string, un
       node: normalizedNodeId,
       security: "allowlist",
       ask: "on-miss",
-      timeoutSec: 1800,
+      timeoutSeconds: 1800,
       strictInlineEval: true,
     },
   };
@@ -429,7 +424,7 @@ export function applyWindowsNodeMxcGatewayPolicy(
     config.agents && typeof config.agents === "object" && !Array.isArray(config.agents)
       ? (config.agents as Record<string, unknown>)
       : {};
-  const list = Array.isArray(agents.list) ? (agents.list as AgentEntry[]) : [];
+  const list = readAgentRoster(agents);
   if (list.length === 0) {
     throw new Error("Windows Node + MXC mode requires at least one configured agent");
   }
@@ -440,8 +435,8 @@ export function applyWindowsNodeMxcGatewayPolicy(
       : buildWindowsNodeMxcLockedToolPolicy(nodeId);
   const backups = structuredClone(existingBackups);
   const agentIds: string[] = [];
-  for (const entry of list) {
-    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+  for (const { id: rawId, config: entry } of list) {
+    const id = rawId.trim();
     if (!id) throw new Error("Every configured agent must have a stable ID");
     if (!Object.hasOwn(backups, id)) {
       backups[id] = Object.hasOwn(entry, "tools") ? structuredClone(entry.tools) : null;
@@ -450,7 +445,6 @@ export function applyWindowsNodeMxcGatewayPolicy(
     agentIds.push(id);
   }
 
-  agents.list = list;
   config.agents = agents;
   const gateway =
     config.gateway && typeof config.gateway === "object" && !Array.isArray(config.gateway)
@@ -465,8 +459,9 @@ export function applyWindowsNodeMxcGatewayPolicy(
     gateway.nodes && typeof gateway.nodes === "object" && !Array.isArray(gateway.nodes)
       ? (gateway.nodes as Record<string, unknown>)
       : {};
-  nodes.allowCommands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
-  nodes.denyCommands = [];
+  nodes.commands = { allow: [...WINDOWS_NODE_MXC_NODE_COMMANDS], deny: [] };
+  delete nodes.allowCommands;
+  delete nodes.denyCommands;
   gateway.nodes = nodes;
   config.gateway = gateway;
   for (const [field, backupKey] of Object.entries(INGRESS_BACKUP_KEYS)) {
@@ -512,9 +507,9 @@ export function restoreWindowsNodeMxcGatewayPolicy(
     config.agents && typeof config.agents === "object" && !Array.isArray(config.agents)
       ? (config.agents as Record<string, unknown>)
       : null;
-  const list = agents && Array.isArray(agents.list) ? (agents.list as AgentEntry[]) : [];
-  for (const entry of list) {
-    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+  const list = readAgentRoster(agents ?? undefined);
+  for (const { id: rawId, config: entry } of list) {
+    const id = rawId.trim();
     if (!id || !Object.hasOwn(backups, id)) continue;
     const previous = backups[id];
     if (previous === null) delete entry.tools;
@@ -563,13 +558,17 @@ export function validateWindowsNodeMxcGatewayPolicy(
     root.agents && typeof root.agents === "object" && !Array.isArray(root.agents)
       ? (root.agents as Record<string, unknown>)
       : null;
-  const list = agents && Array.isArray(agents.list) ? (agents.list as AgentEntry[]) : [];
+  let list: ReturnType<typeof readAgentRoster>;
+  try {
+    list = readAgentRoster(agents ?? undefined);
+  } catch (error) {
+    return { ready: false, blockers: [String(error)], warnings };
+  }
   if (list.length === 0) blockers.push("No configured agents are protected by the MXC policy");
 
   const active = buildWindowsNodeMxcToolPolicy(nodeId);
   const locked = buildWindowsNodeMxcLockedToolPolicy(nodeId);
-  for (const entry of list) {
-    const id = typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : "<unknown>";
+  for (const { id, config: entry } of list) {
     const matchesActive = isDeepStrictEqual(entry.tools, active);
     const matchesLocked = isDeepStrictEqual(entry.tools, locked);
     const matchesExpected =
@@ -599,8 +598,9 @@ export function validateWindowsNodeMxcGatewayPolicy(
     gateway?.nodes && typeof gateway.nodes === "object" && !Array.isArray(gateway.nodes)
       ? (gateway.nodes as Record<string, unknown>)
       : null;
-  const allowCommands = Array.isArray(nodes?.allowCommands) ? nodes.allowCommands : [];
-  const denyCommands = Array.isArray(nodes?.denyCommands) ? nodes.denyCommands : [];
+  const commands = asRecord(nodes?.commands);
+  const allowCommands = Array.isArray(commands.allow) ? commands.allow : [];
+  const denyCommands = Array.isArray(commands.deny) ? commands.deny : [];
   if (!isDeepStrictEqual(allowCommands, [...WINDOWS_NODE_MXC_NODE_COMMANDS])) {
     blockers.push("Gateway node command allowlist drifted from the bundled system-only surface");
   }

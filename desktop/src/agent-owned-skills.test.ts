@@ -40,6 +40,24 @@ afterEach(() => {
 });
 
 describe("agent-owned skills", () => {
+  it("reconciles keyed roster skills without treating configured owners as removed", () => {
+    const root = tempDirectory();
+    const bundle = path.join(root, "bundle");
+    const state = path.join(root, "state");
+    seedBundle(bundle);
+    const config = {
+      agents: {
+        ownership: "explicit",
+        entries: { "creative-muse": { skills: ["Rednote Publisher"] } },
+      },
+    };
+    const result = reconcileConfiguredAgentOwnedSkills(config, state, bundle);
+    expect(result.installs).toHaveLength(1);
+    expect(result.removals).toEqual([]);
+    expect(inspectConfiguredAgentOwnedSkills(config, state, bundle).required).toBe(false);
+    expect(disableUnreferencedAgentOwnedSkills(config, "creative-muse")).toBe(false);
+    expect(config.agents).not.toHaveProperty("list");
+  });
   it("packages the Creative Muse skill as a dormant desktop resource", () => {
     const repositoryRoot = path.resolve(__dirname, "../..");
     expect(

@@ -19,6 +19,7 @@
 "use strict";
 
 var path = require("path");
+var fs = require("fs");
 
 // ── External app whitelist (read from HMAC-signed file or env var) ──
 
@@ -113,7 +114,36 @@ function getExternalApps() {
 // ── Main initialization ──
 
 var LAUNCHER = process.env.COMSPEC;
-var isLauncherConfigured = LAUNCHER && /AppContainerLauncher/i.test(LAUNCHER);
+var INTERNAL_SQLITE_WORKER_MARKER = "MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER";
+var internalWorkerStateDir = process.env.OPENCLAW_STATE_DIR || "";
+var internalWorkerTarget = process.argv[4] || "";
+function canonicalExistingPath(value) {
+  try {
+    var resolver = fs.realpathSync.native || fs.realpathSync;
+    return path.resolve(resolver(String(value))).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+var canonicalInternalWorkerStateDir = canonicalExistingPath(internalWorkerStateDir);
+var canonicalInternalWorkerTarget = canonicalExistingPath(internalWorkerTarget);
+var internalWorkerRelative =
+  canonicalInternalWorkerStateDir && canonicalInternalWorkerTarget
+    ? path.relative(canonicalInternalWorkerStateDir, canonicalInternalWorkerTarget)
+    : "";
+var isAuthorizedInternalSqliteWorker =
+  process.env[INTERNAL_SQLITE_WORKER_MARKER] === "1" &&
+  path.basename(process.argv[1] || "").toLowerCase() === "sqlite-readonly-location.worker.js" &&
+  path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "infra" &&
+  process.argv[2] === "--openclaw-sqlite-readonly-child" &&
+  (process.argv[3] === "async" || process.argv[3] === "sync") &&
+  path.extname(internalWorkerTarget).toLowerCase() === ".sqlite" &&
+  internalWorkerRelative !== "" &&
+  !internalWorkerRelative.startsWith("..") &&
+  !path.isAbsolute(internalWorkerRelative);
+delete process.env[INTERNAL_SQLITE_WORKER_MARKER];
+var isLauncherConfigured =
+  LAUNCHER && /AppContainerLauncher/i.test(LAUNCHER) && !isAuthorizedInternalSqliteWorker;
 
 if (isLauncherConfigured) {
   var S = require(path.join(__dirname, "sandbox-state.js"));
@@ -136,4 +166,8 @@ if (isLauncherConfigured) {
   require(path.join(__dirname, "sandbox-cp-hooks.js")).install(cp, getExternalApps);
 
   process.stderr.write("[sandbox-preload] Loaded - sandbox active immediately\n");
+} else if (isAuthorizedInternalSqliteWorker) {
+  process.stderr.write(
+    "[sandbox-preload] Trusted OpenClaw SQLite worker - host runtime retained\n",
+  );
 }

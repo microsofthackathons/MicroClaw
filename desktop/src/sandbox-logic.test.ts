@@ -2475,6 +2475,110 @@ describe("checkApproval — no auto-bypass for whitelisted apps", () => {
 const pathExtraction = require("../../appcontainer/path-extraction.js");
 const sandboxState = require("../../appcontainer/sandbox-state.js");
 
+describe("OpenClaw internal SQLite worker", () => {
+  const packageRoot = "C:\\Users\\test\\AppData\\Roaming\\npm\\node_modules\\openclaw";
+  const execPath = "C:\\Program Files\\nodejs\\node.exe";
+  const entryPath = path.join(packageRoot, "openclaw.mjs");
+  const stateDir = "C:\\Users\\test\\.openclaw";
+  const workerPath = path.join(packageRoot, "dist", "infra", "sqlite-readonly-location.worker.js");
+  const args = [
+    workerPath,
+    "--openclaw-sqlite-readonly-child",
+    "async",
+    path.join(stateDir, "state", "openclaw.sqlite"),
+  ];
+  const stack = `Error
+    at prepareSqliteReadOnlyLocation (file:///${packageRoot.replace(/\\/g, "/")}/dist/sqlite-readonly-location-AbCd1234.js:662:3)`;
+  const canonical = new Map([
+    [stateDir.toLowerCase(), stateDir],
+    [args[3].toLowerCase(), args[3]],
+  ]);
+  const runtime = {
+    entryPath,
+    execPath,
+    stateDir,
+    realpath: (value: string) => {
+      const resolved = canonical.get(value.toLowerCase());
+      if (!resolved) throw new Error("ENOENT");
+      return resolved;
+    },
+  };
+
+  it("recognizes only the exact worker invocation from the trusted runtime caller", () => {
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, runtime)).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ["executable", "C:\\Windows\\System32\\cmd.exe", args, stack],
+    [
+      "worker path",
+      execPath,
+      [path.join(packageRoot, "dist", "other.js"), ...args.slice(1)],
+      stack,
+    ],
+    ["worker marker", execPath, [workerPath, "--other-child", ...args.slice(2)], stack],
+    ["mode", execPath, [workerPath, args[1], "write", args[3]], stack],
+    ["database path", execPath, [workerPath, args[1], args[2], "relative.sqlite"], stack],
+    [
+      "database scope",
+      execPath,
+      [
+        workerPath,
+        args[1],
+        args[2],
+        "C:\\Users\\test\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cookies.sqlite",
+      ],
+      stack,
+    ],
+    ["caller", execPath, args, "Error\n    at untrusted-plugin.js:1:1"],
+  ])("rejects a mismatched %s", (_label, cmd, candidateArgs, candidateStack) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(cmd, candidateArgs, candidateStack, runtime),
+    ).toBe(false);
+  });
+
+  it("rejects shell execution and canonical paths that escape through a reparse point", () => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, runtime, {
+        shell: true,
+      }),
+    ).toBe(false);
+
+    const escapedRuntime = {
+      ...runtime,
+      realpath: (value: string) =>
+        value.toLowerCase() === stateDir.toLowerCase()
+          ? stateDir
+          : "C:\\Users\\test\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cookies.sqlite",
+    };
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, escapedRuntime),
+    ).toBe(false);
+  });
+
+  it("launches the worker with a fixed preload and without caller-controlled Node loading", () => {
+    const invocation = cpHooks.buildInternalSqliteWorkerInvocation(args, {
+      encoding: "utf8",
+      env: {
+        NODE_OPTIONS: '--require "C:\\Users\\test\\.openclaw\\payload.js"',
+        NODE_PATH: "C:\\Users\\test\\.openclaw\\modules",
+      },
+    });
+
+    expect(invocation.args.slice(0, 2)).toEqual([
+      "--require",
+      expect.stringMatching(/sandbox-preload\.js$/),
+    ]);
+    expect(invocation.args.slice(2)).toEqual(args);
+    expect(invocation.options.encoding).toBe("utf8");
+    expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
+    expect(invocation.options.env.NODE_PATH).toBeUndefined();
+    expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("1");
+  });
+});
+
 describe("per-path independent enforcement", () => {
   describe("path extraction finds all paths regardless of declare-access", () => {
     // declare-access only declares A, but extractWritePaths/extractReadPaths
@@ -2704,6 +2808,12 @@ describe("per-path independent enforcement", () => {
         sandboxState.state.sandboxActive = true;
         expect(sandboxState.isReadBlockedPath(3, false)).toBe(false);
         expect(sandboxState.isBlockedPath(3)).toBe(false);
+        const fileHandle = {
+          fd: 4,
+          constructor: { name: "FileHandle" },
+        };
+        expect(sandboxState.isReadBlockedPath(fileHandle, false)).toBe(false);
+        expect(sandboxState.isBlockedPath(fileHandle)).toBe(false);
       } finally {
         sandboxState.state.sandboxActive = originalActive;
       }
@@ -2738,6 +2848,49 @@ describe("per-path independent enforcement", () => {
         ).toBe(true);
       } finally {
         sandboxState.state.sandboxActive = originalActive;
+      }
+    });
+
+    it("allows OpenClaw to coordinate SQLite state ownership in its runtime lock directory", () => {
+      const originalActive = sandboxState.state.sandboxActive;
+      const originalRW = sandboxState.state._rwDirs.slice();
+      const originalRO = sandboxState.state._roDirs.slice();
+      try {
+        sandboxState.state.sandboxActive = true;
+        sandboxState.state._rwDirs = [];
+        sandboxState.state._roDirs = [];
+        const localAppData =
+          process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE!, "AppData", "Local");
+        const lockFile = path.join(
+          localAppData,
+          "OpenClaw",
+          "locks",
+          "openclaw-state-locks",
+          "state-lifecycle.test.lock.sqlite",
+        );
+        const snapshotFile = path.join(
+          localAppData,
+          "OpenClaw",
+          "openclaw-sqlite-readonly-2056-139531e6-3179-429e-90e2-f16d5a267869",
+          "openclaw.sqlite",
+        );
+
+        expect(sandboxState.isBlockedPath(lockFile)).toBe(false);
+        expect(sandboxState.isReadBlockedPath(lockFile, false)).toBe(false);
+        expect(sandboxState.isBlockedPath(snapshotFile)).toBe(false);
+        expect(sandboxState.isReadBlockedPath(snapshotFile, false)).toBe(false);
+        expect(
+          sandboxState.isBlockedPath(path.join(localAppData, "OpenClaw", "credentials.json")),
+        ).toBe(true);
+        expect(
+          sandboxState.isBlockedPath(
+            path.join(localAppData, "OpenClaw", "openclaw-sqlite-readonly-spoof", "secret"),
+          ),
+        ).toBe(true);
+      } finally {
+        sandboxState.state.sandboxActive = originalActive;
+        sandboxState.state._rwDirs = originalRW;
+        sandboxState.state._roDirs = originalRO;
       }
     });
 

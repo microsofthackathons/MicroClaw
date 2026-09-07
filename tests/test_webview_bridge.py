@@ -161,9 +161,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertTrue(self.bridge._start_and_validate_desktop(setup))
 
         self.bridge._launch_desktop.assert_called_once_with("20260720T000000Z-1234abcd")
-        self.bridge._wait_for_desktop_service.assert_called_once_with(
-            "20260720T000000Z-1234abcd"
-        )
+        self.bridge._wait_for_desktop_service.assert_called_once_with("20260720T000000Z-1234abcd")
         setup.validate_running_gateway.assert_called_once_with()
 
     def test_service_handoff_is_not_retried_with_a_second_desktop(self):
@@ -176,6 +174,21 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(retries_by_key["verifyUpgrade"], 1)
         self.assertEqual(retries_by_key["commitUpgrade"], 1)
 
+    def test_migration_runs_after_config_and_plugins_before_any_gateway_start(self):
+        setup = unittest.mock.Mock()
+        steps = self.bridge._build_install_steps(setup)
+        actions = [step[2] for step in steps]
+        self.assertLess(
+            actions.index(setup.write_config), actions.index(setup.migrate_openclaw_state)
+        )
+        self.assertLess(
+            actions.index(setup.install_search_provider_plugin),
+            actions.index(setup.migrate_openclaw_state),
+        )
+        self.assertLess(
+            actions.index(setup.migrate_openclaw_state), actions.index(setup.warmup_compile_cache)
+        )
+
     def test_service_wait_allows_slow_gateway_cold_start(self):
         defaults = WebInstallerBridge._wait_for_desktop_service.__defaults__
 
@@ -187,6 +200,32 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.bridge._launched_desktop_process = process
 
         self.assertFalse(self.bridge._wait_for_desktop_service("20260720T000000Z-1234abcd"))
+
+    def test_service_rejection_is_reported_without_waiting_for_timeout(self):
+        root = Path(self.temp.name)
+        transaction_id = "20260720T000000Z-1234abcd"
+        ready_path = root / "upgrade" / f"desktop-ready-{transaction_id}.json"
+        ready_path.parent.mkdir()
+        ready_path.write_text(
+            json.dumps(
+                {
+                    "transactionId": transaction_id,
+                    "pid": 4321,
+                    "error": "Gateway rejected its configuration (exit 78)",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.bridge._state["running"] = True
+        self.bridge._launched_desktop_process = unittest.mock.Mock(pid=4321)
+        self.bridge._launched_desktop_process.poll.return_value = None
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", root),
+            unittest.mock.patch("deployer.webview_bridge.time.sleep") as sleep,
+            self.assertRaisesRegex(RuntimeError, "Gateway rejected its configuration"),
+        ):
+            self.bridge._wait_for_desktop_service(transaction_id)
+        sleep.assert_not_called()
 
     def test_failed_install_does_not_persist_language(self):
         self.bridge.set_language("zh")
