@@ -9,7 +9,7 @@ import {
   GATEWAY_READY_TIMEOUT_MS,
   PORT_WAIT_TIMEOUT_MS,
   MODEL_CONNECTION_TEST_TIMEOUT_MS,
-  POST_SPAWN_RESTART_DELAY_MS,
+  POST_SPAWN_CHANNEL_READY_TIMEOUT_MS,
   WEIXIN_LOGIN_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
   WS_RECONNECT_INITIAL_MS,
@@ -67,8 +67,8 @@ describe("constants", () => {
       expect(WEIXIN_LOGIN_TIMEOUT_MS).toBeGreaterThan(60_000);
     });
 
-    it("post-spawn restart delay > 1s", () => {
-      expect(POST_SPAWN_RESTART_DELAY_MS).toBeGreaterThan(1_000);
+    it("post-spawn channel readiness wait is bounded to 5s", () => {
+      expect(POST_SPAWN_CHANNEL_READY_TIMEOUT_MS).toBe(5_000);
     });
 
     it("usage query days is reasonable", () => {

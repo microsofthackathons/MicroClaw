@@ -73,7 +73,6 @@ import {
   SETUP_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
   MIN_WINDOW_HEIGHT,
-  POST_SPAWN_RESTART_DELAY_MS,
   WEIXIN_LOGIN_TIMEOUT_MS,
   SKILLS_STATUS_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
@@ -137,7 +136,7 @@ import {
 } from "./agent-owned-skills";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
-import { requiresPostSpawnChannelRestart } from "./post-spawn-restart";
+import { requiresPostSpawnChannelCheck, waitForPostSpawnChannels } from "./post-spawn-restart";
 import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
@@ -478,10 +477,11 @@ let pendingSyncPermissionRequests = 0;
 /** True when we spawned the gateway ourselves (vs. connecting to an existing one). */
 let gatewaySpawnedByUs = false;
 let agentRosterChangeInProgress = false;
-/** Tracks whether the post-spawn channel kick has already fired. */
+/** Tracks completion of the first-spawn channel check and optional recovery. */
 let postSpawnRestartDone = false;
 let postSpawnRestartRequired = false;
 let postSpawnRestartScheduled = false;
+let postSpawnChannelCheck: symbol | null = null;
 const postInstallTransactionIndex = process.argv.indexOf("--post-install-transaction");
 const postInstallTransactionId =
   postInstallTransactionIndex >= 0 ? process.argv[postInstallTransactionIndex + 1] : undefined;
@@ -3319,7 +3319,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
   postSpawnRestartRequired =
-    !isWindowsNodeMxcDesired() && requiresPostSpawnChannelRestart(readConfig());
+    !isWindowsNodeMxcDesired() && requiresPostSpawnChannelCheck(readConfig());
   if (!postSpawnRestartRequired) {
     postSpawnRestartDone = true;
     postSpawnRestartScheduled = false;
@@ -3489,6 +3489,9 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       commitStartupAgentSkills();
       console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
       gatewaySpawnedByUs = false;
+      postSpawnRestartDone = true;
+      postSpawnRestartScheduled = false;
+      postSpawnChannelCheck = null;
       setGatewayStatus("running");
       connectGatewayWs();
       startHealthMonitor();
@@ -4186,10 +4189,51 @@ function _extractText(message: unknown): string | null {
 
 let wsAuthRestartInProgress = false;
 
+async function completePostSpawnChannelStartup(
+  client: GatewayClient,
+  child: ChildProcess,
+): Promise<void> {
+  const check = Symbol("post-spawn-channel-check");
+  postSpawnChannelCheck = check;
+  postSpawnRestartScheduled = true;
+  const isCurrent = () =>
+    postSpawnChannelCheck === check &&
+    gwClient === client &&
+    gatewayProcess === child &&
+    !isWindowsNodeMxcDesired() &&
+    client.connected;
+  try {
+    const result = await waitForPostSpawnChannels({
+      readStatus: (timeoutMs) => client.getChannelsStatus(timeoutMs),
+      isCurrent,
+      onError: (error) => console.warn("[gateway-ws] startup channel status unavailable:", error),
+    });
+    if (result === "cancelled" || !isCurrent()) return;
+    postSpawnRestartDone = true;
+    if (result === "ready") {
+      logStartupTiming("channels-ready-without-restart");
+      return;
+    }
+    console.log("[gateway-ws] post-spawn: restarting Gateway for inactive plugin channels");
+    mainWindow?.webContents.send("gateway:log", "[startup] 正在重启网关以激活插件通道…");
+    await restartManagedGateway("Activating installed plugin channels", true);
+  } finally {
+    if (postSpawnChannelCheck === check) {
+      postSpawnChannelCheck = null;
+      postSpawnRestartScheduled = false;
+      notifyRendererApplicationReady();
+    }
+  }
+}
+
 function connectGatewayWs(): void {
   stopBundledWindowsNodeHost();
   gwClient?.stop();
   gatewayModelCatalogRequest = null;
+  if (!postSpawnRestartDone) {
+    postSpawnChannelCheck = null;
+    postSpawnRestartScheduled = false;
+  }
 
   gwClient = new GatewayClient({
     port: gatewayPort,
@@ -4299,30 +4343,15 @@ function connectGatewayWs(): void {
       if (gatewayStatus !== "running") {
         setGatewayStatus("running");
       }
-      // After a fresh spawn, auto-discovered plugins (like weixin) may miss
-      // the initial channel-start sweep. Replace the process once so every
-      // channel initializes from the final plugin configuration.
-      // IMPORTANT: Do NOT notify the renderer of ws-connected yet — if we
-      // announce connectivity now, the user can send a message that will be
-      // killed when the restart fires seconds later (causing a 30s timeout).
-      // The renderer will be notified on the SECOND onConnected (after restart).
+      // Keep chat gated until we know whether a compatibility restart is needed.
+      // Already-running channels must not pay for a second full Gateway startup.
       if (gatewaySpawnedByUs && postSpawnRestartRequired && !postSpawnRestartDone) {
-        postSpawnRestartDone = true;
-        postSpawnRestartScheduled = true;
-        console.log("[gateway-ws] post-spawn: deferring ws-connected until after restart");
-        mainWindow?.webContents.send("gateway:log", "[startup] 正在重启网关以激活插件通道…");
-        setTimeout(async () => {
-          console.log("[gateway-ws] post-spawn: restarting gateway to activate plugin channels");
-          try {
-            await restartManagedGateway("Activating installed plugin channels", true);
-          } catch (err: any) {
-            console.error("[gateway-ws] post-spawn restart failed:", err.message);
-          } finally {
-            postSpawnRestartScheduled = false;
-            notifyRendererApplicationReady();
-          }
-        }, POST_SPAWN_RESTART_DELAY_MS);
-        return; // skip ws-connected notification — will fire on reconnect
+        if (!postSpawnRestartScheduled && gwClient && gatewayProcess) {
+          void completePostSpawnChannelStartup(gwClient, gatewayProcess).catch((error) => {
+            console.error("[gateway-ws] post-spawn channel startup failed:", error);
+          });
+        }
+        return;
       }
 
       notifyRendererApplicationReady();
