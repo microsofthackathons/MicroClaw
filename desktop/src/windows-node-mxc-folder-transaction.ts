@@ -7,6 +7,7 @@ export type WindowsNodeMxcFolderTransactionPhase =
   | "smoking-locked"
   | "starting-active"
   | "smoking-active"
+  | "promoting-active"
   | "verifying-active"
   | "starting-standard"
   | "active"

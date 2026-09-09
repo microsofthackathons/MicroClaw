@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runWindowsNodeMxcAutomaticTransition } from "./windows-node-mxc-auto-transition";
 
 describe("automatic Windows Node + MXC transition", () => {
-  it("keeps ingress closed until both internally probed generations verify", async () => {
+  it("keeps one generation locked until its policy is promoted and verified", async () => {
     const calls: string[] = [];
     const status = await runWindowsNodeMxcAutomaticTransition({
       setPhase: (phase) => calls.push(`phase:${phase}`),
@@ -16,11 +16,11 @@ describe("automatic Windows Node + MXC transition", () => {
       smokeLockedGeneration: async () => {
         calls.push("smoke-locked");
       },
-      startActiveGeneration: async () => {
-        calls.push("start-active");
+      promoteActivePolicy: async () => {
+        calls.push("promote-active");
         return "active";
       },
-      smokeActiveGeneration: async () => {
+      smokeActivePolicy: async () => {
         calls.push("smoke-active");
       },
       mintActivationLease: async () => {
@@ -43,8 +43,8 @@ describe("automatic Windows Node + MXC transition", () => {
       "start-locked",
       "phase:smoking-locked",
       "smoke-locked",
-      "phase:starting-active",
-      "start-active",
+      "phase:promoting-active",
+      "promote-active",
       "phase:smoking-active",
       "smoke-active",
       "lease",
@@ -55,7 +55,7 @@ describe("automatic Windows Node + MXC transition", () => {
     ]);
   });
 
-  it.each(["start-locked", "smoke-locked", "start-active", "smoke-active", "lease", "verify"])(
+  it.each(["start-locked", "smoke-locked", "promote-active", "smoke-active", "lease", "verify"])(
     "fails locked without releasing ingress when %s fails",
     async (failure) => {
       const releaseIngress = vi.fn();
@@ -74,11 +74,11 @@ describe("automatic Windows Node + MXC transition", () => {
             return "locked";
           },
           smokeLockedGeneration: async () => fail("smoke-locked"),
-          startActiveGeneration: async () => {
-            fail("start-active");
+          promoteActivePolicy: async () => {
+            fail("promote-active");
             return "active";
           },
-          smokeActiveGeneration: async () => fail("smoke-active"),
+          smokeActivePolicy: async () => fail("smoke-active"),
           mintActivationLease: async () => fail("lease"),
           verifyActiveGeneration: async () => {
             fail("verify");

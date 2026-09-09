@@ -344,6 +344,8 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.starting-active": "Starting active generation",
   "settings.windowsNodeMxcLifecyclePhase.smoking-active":
     "Running internal probes in active generation",
+  "settings.windowsNodeMxcLifecyclePhase.promoting-active":
+    "Promoting verified policy in the current generation",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
   "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting standard security mode",
   "settings.windowsNodeMxcLifecyclePhase.active": "Active",

@@ -324,6 +324,7 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.smoking-locked": "正在锁定代际中运行内部探针",
   "settings.windowsNodeMxcLifecyclePhase.starting-active": "正在启动活动代际",
   "settings.windowsNodeMxcLifecyclePhase.smoking-active": "正在活动代际中运行内部探针",
+  "settings.windowsNodeMxcLifecyclePhase.promoting-active": "正在当前代际中提升已验证策略",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "正在验证活动路由",
   "settings.windowsNodeMxcLifecyclePhase.starting-standard": "正在启动标准安全模式",
   "settings.windowsNodeMxcLifecyclePhase.active": "活动",

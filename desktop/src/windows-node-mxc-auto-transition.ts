@@ -5,8 +5,8 @@ export interface WindowsNodeMxcAutomaticTransitionHooks<TStatus> {
   closeIngress(): Promise<void> | void;
   startLockedGeneration(): Promise<TStatus>;
   smokeLockedGeneration(status: TStatus): Promise<void>;
-  startActiveGeneration(): Promise<TStatus>;
-  smokeActiveGeneration(status: TStatus): Promise<void>;
+  promoteActivePolicy(status: TStatus): Promise<TStatus>;
+  smokeActivePolicy(status: TStatus): Promise<void>;
   mintActivationLease(): Promise<void>;
   verifyActiveGeneration(): Promise<TStatus>;
   releaseIngress(status: TStatus): Promise<void> | void;
@@ -25,11 +25,11 @@ export async function runWindowsNodeMxcAutomaticTransition<TStatus>(
     hooks.setPhase("smoking-locked");
     await hooks.smokeLockedGeneration(locked);
 
-    hooks.setPhase("starting-active");
-    const active = await hooks.startActiveGeneration();
+    hooks.setPhase("promoting-active");
+    const active = await hooks.promoteActivePolicy(locked);
 
     hooks.setPhase("smoking-active");
-    await hooks.smokeActiveGeneration(active);
+    await hooks.smokeActivePolicy(active);
     await hooks.mintActivationLease();
 
     hooks.setPhase("verifying-active");

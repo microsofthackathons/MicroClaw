@@ -32,6 +32,23 @@ describe("GatewayLoading MXC lifecycle", () => {
     expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
   });
 
+  it("shows in-process policy promotion as a guarded startup phase", () => {
+    const wrapper = shallowMount(GatewayLoading, {
+      props: {
+        status: "running",
+        connected: true,
+        warming: false,
+        mxcDesired: true,
+        mxcPhase: "promoting-active",
+      },
+    });
+
+    expect(wrapper.find(".loading-status").text()).toContain(
+      "Promoting verified policy in the current generation",
+    );
+    expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
+  });
+
   it("shows fail-closed recovery without labeling MXC failure as a Gateway outage", async () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {

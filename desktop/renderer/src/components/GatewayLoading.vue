@@ -207,6 +207,7 @@ const targetProgress = computed(() => {
       "smoking-locked": 80,
       "starting-active": 86,
       "smoking-active": 92,
+      "promoting-active": 92,
       "verifying-active": 97,
       "starting-standard": 88,
     };

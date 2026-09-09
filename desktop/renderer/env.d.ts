@@ -359,6 +359,7 @@ interface OpenClawAPI {
           | "starting-locked"
           | "smoking-locked"
           | "starting-active"
+          | "promoting-active"
           | "smoking-active"
           | "verifying-active"
           | "starting-standard"

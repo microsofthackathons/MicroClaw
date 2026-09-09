@@ -67,6 +67,10 @@ import {
   DEFAULT_WINDOW_WIDTH,
   DEFAULT_WINDOW_HEIGHT,
   GATEWAY_READY_TIMEOUT_MS,
+  MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS,
+  MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
+  MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
+  MXC_GATEWAY_RPC_READY_TIMEOUT_MS,
   HEALTH_CHECK_INTERVAL_MS,
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
   HEALTH_CHECK_FAILURE_THRESHOLD,
@@ -175,6 +179,13 @@ import {
   type WindowsNodeMxcFolderTransactionPhase,
 } from "./windows-node-mxc-folder-transaction";
 import { runWindowsNodeMxcAutomaticTransition } from "./windows-node-mxc-auto-transition";
+import {
+  attestWindowsNodeMxcGatewaySnapshot,
+  promoteWindowsNodeMxcPolicy,
+  type GatewayConfigSnapshot,
+} from "./windows-node-mxc-policy-promotion";
+import { startAfterGatewayRpcReady } from "./gateway-rpc-readiness";
+import { waitForGatewayHttpReadiness } from "./gateway-http-readiness";
 import {
   WindowsNodeMxcDurableApprovalStore,
   consumeExactDurableApproval,
@@ -467,6 +478,7 @@ const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
 let gatewayGenerationId = "";
+let gatewayHttpReadyGeneration: string | null = null;
 let windowsNodeMxcApprovalProofContext: BundledWindowsNodeApprovalProofContext | null = null;
 let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcActivationInProgress = false;
@@ -482,6 +494,11 @@ let pendingWindowsNodeMxcGatewayApproval: {
   gatewayGeneration: string;
 } | null = null;
 let windowsNodeMxcFailClosedPromise: Promise<void> | null = null;
+let windowsNodeMxcStartupTiming: {
+  startedAt: number;
+  previousAt: number;
+  generation: string | null;
+} | null = null;
 let windowsNodeMxcDurableApprovalStore: WindowsNodeMxcDurableApprovalStore | null = null;
 let windowsNodeMxcDurableApprovalOperation: Promise<void> = Promise.resolve();
 let windowsNodeMxcApprovalResolutionInProgress = false;
@@ -582,6 +599,22 @@ function stopBundledWindowsNodeHost(requireTreeTermination = false): void {
 
 function logStartupTiming(phase: string): void {
   console.log(`[startup-timing] ${phase} +${Date.now() - appStartupStartedAt}ms`);
+}
+
+function beginWindowsNodeMxcStartupTiming(): void {
+  const now = Date.now();
+  windowsNodeMxcStartupTiming = { startedAt: now, previousAt: now, generation: null };
+}
+
+function markWindowsNodeMxcStartupTiming(phase: string, detail = ""): void {
+  const timing = windowsNodeMxcStartupTiming;
+  if (!timing) return;
+  const now = Date.now();
+  if (gatewayGenerationId) timing.generation = gatewayGenerationId;
+  console.log(
+    `[windows-node-mxc][startup-timing] phase=${phase} durationMs=${now - timing.previousAt} totalMs=${now - timing.startedAt} generation=${timing.generation ?? "pending"}${detail ? ` ${detail}` : ""}`,
+  );
+  timing.previousAt = now;
 }
 
 function setGatewayStatus(status: GatewayStatus): void {
@@ -1489,6 +1522,7 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
   return runWindowsNodeMxcAutomaticTransition({
     setPhase: setWindowsNodeMxcLifecycleState,
     closeIngress: () => {
+      beginWindowsNodeMxcStartupTiming();
       windowsNodeMxcActivationInProgress = true;
       windowsNodeMxcIngressGeneration = null;
       bundledWindowsNodeHost.revokeActivationLease();
@@ -1500,38 +1534,49 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       await startGatewayWithWindowsNodeMxcPolicy("locked");
       const lockedGeneration = gatewayGenerationId;
       await waitForBundledWindowsNodeGeneration(lockedGeneration);
-      return waitForWindowsNodeMxcBaseReady(lockedGeneration, "locked", false);
+      const status = await waitForWindowsNodeMxcBaseReady(lockedGeneration, "locked", false);
+      markWindowsNodeMxcStartupTiming("attestation");
+      return status;
     },
     smokeLockedGeneration: async (lockedStatus) => {
       assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(lockedStatus), "Locked");
+      markWindowsNodeMxcStartupTiming("probes");
     },
-    startActiveGeneration: async () => {
-      const config = readConfig();
-      if (!config || typeof config !== "object" || Array.isArray(config)) {
-        throw new Error("OpenClaw configuration is unavailable");
-      }
-      const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+    promoteActivePolicy: async () => {
+      const generation = gatewayGenerationId;
+      const gateway = gwClient;
+      const gatewayProcessAtPromotion = gatewayProcess;
       const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-      const activePolicy = applyWindowsNodeMxcGatewayPolicy(
-        config,
+      if (!gateway || !gatewayProcessAtPromotion) {
+        throw new Error("Managed Gateway is unavailable for MXC policy promotion");
+      }
+      const promoted = await promoteWindowsNodeMxcPolicy({
+        gateway,
         nodeId,
-        settingsStore.get("windowsNodeMxcToolBackups"),
-        "active",
-      );
-      await stopGatewayForSecurityTransition(configuredPort);
-      settingsStore.delete("windowsNodeMxcSmoke");
-      settingsStore.set("windowsNodeMxcToolBackups", activePolicy.backups);
-      writeConfigTextAtomically(JSON.stringify(activePolicy.config, null, 2));
-      await startGatewayWithWindowsNodeMxcPolicy("active");
-      activeGeneration = gatewayGenerationId;
-      await waitForBundledWindowsNodeGeneration(activeGeneration);
-      return waitForWindowsNodeMxcBaseReady(activeGeneration, "active", false);
+        backups: settingsStore.get("windowsNodeMxcToolBackups"),
+        expectedGeneration: generation,
+        currentGeneration: () => gatewayGenerationId,
+        isCurrent: () =>
+          gwClient === gateway &&
+          gateway.connected &&
+          gatewayProcess === gatewayProcessAtPromotion &&
+          isManagedGatewayProcessAlive(),
+        requestTimeoutMs: MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
+      });
+      settingsStore.set("windowsNodeMxcToolBackups", promoted.backups);
+      activeGeneration = generation;
+      const status = await waitForWindowsNodeMxcBaseReady(generation, "active", false);
+      markWindowsNodeMxcStartupTiming("policy-promoted");
+      return status;
     },
-    smokeActiveGeneration: async (activeStatus) => {
+    smokeActivePolicy: async (activeStatus) => {
       assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(activeStatus), "Active");
+      await waitForWindowsNodeMxcBaseReady(activeGeneration, "active", true);
+      markWindowsNodeMxcStartupTiming("active-probes");
     },
     mintActivationLease: async () => {
       await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+      markWindowsNodeMxcStartupTiming("activation-lease");
     },
     verifyActiveGeneration: async () => {
       const finalStatus = await getWindowsNodeMxcStatus();
@@ -1543,14 +1588,18 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       if (gatewayGenerationId !== activeGeneration) {
         throw new Error("Managed Gateway generation changed before ingress release");
       }
+      markWindowsNodeMxcStartupTiming("activation");
       return finalStatus;
     },
     releaseIngress: () => {
       windowsNodeMxcIngressGeneration = activeGeneration;
       windowsNodeMxcActivationInProgress = false;
+      markWindowsNodeMxcStartupTiming("ingress-release");
+      windowsNodeMxcStartupTiming = null;
     },
     lockAfterFailure: async (error) => {
       windowsNodeMxcActivationInProgress = false;
+      windowsNodeMxcStartupTiming = null;
       await failClosedWindowsNodeMxc(
         `Automatic readiness failed: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -2771,19 +2820,18 @@ async function waitForGatewayReady(
   timeoutMs = GATEWAY_READY_TIMEOUT_MS,
   isProcessAlive: () => boolean = () => true,
 ): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!isProcessAlive()) return false;
-    const ok = await checkExistingGateway(port);
-    if (ok) return true;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
+  return waitForGatewayHttpReadiness({
+    probe: () => checkExistingGateway(port),
+    isProcessAlive,
+    timeoutMs,
+    pollIntervalMs: 500,
+  });
 }
 
 /** Kill the managed gateway and any listener still holding gatewayPort. */
 function stopGatewayProcess(): void {
   stopBundledWindowsNodeHost();
+  gatewayHttpReadyGeneration = null;
   windowsNodeMxcApprovalProofContext = null;
   const knownPid = gatewayProcess?.pid;
   gatewayProcess = null;
@@ -2898,6 +2946,7 @@ async function stopGatewayForSecurityTransition(port: number): Promise<void> {
   pendingWindowsNodeMxcGatewayApproval = null;
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
   stopBundledWindowsNodeHost(true);
+  gatewayHttpReadyGeneration = null;
   const managedPid =
     gatewaySpawnedByUs && isManagedGatewayProcessAlive() ? gatewayProcess?.pid : undefined;
   const listenerPids = getGatewayListenerPids(port);
@@ -3898,6 +3947,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
 
     gatewayProcess = child;
     gatewayGenerationId = nextGatewayGenerationId;
+    gatewayHttpReadyGeneration = null;
     windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
     windowsNodeMxcIngressGeneration = null;
     gatewaySpawnedByUs = true;
@@ -3940,6 +3990,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       if (gatewayProcess === child) {
         if (!postInstallReadySignaled) signalPostInstallFailure(err);
         windowsNodeMxcIngressGeneration = null;
+        gatewayHttpReadyGeneration = null;
         windowsNodeMxcApprovalProofContext = null;
         bundledWindowsNodeHost.revokeActivationLease();
         stopBundledWindowsNodeHost();
@@ -3960,6 +4011,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
           );
         }
         windowsNodeMxcIngressGeneration = null;
+        gatewayHttpReadyGeneration = null;
         windowsNodeMxcApprovalProofContext = null;
         bundledWindowsNodeHost.revokeActivationLease();
         stopBundledWindowsNodeHost();
@@ -4279,6 +4331,10 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     if (ready) {
       try {
         logStartupTiming("gateway-ready");
+        gatewayHttpReadyGeneration = nextGatewayGenerationId;
+        if (windowsNodeMxcActivationInProgress) {
+          markWindowsNodeMxcStartupTiming("http-ready");
+        }
         commitStartupAgentSkills();
         setGatewayStatus("running");
       } catch (error) {
@@ -4431,6 +4487,16 @@ function connectGatewayWs(): void {
             return;
           }
           const hostGeneration = ++bundledWindowsNodeGeneration;
+          const expectedGatewayPolicy = getWindowsNodeMxcGatewayPolicyState(
+            readConfig(),
+            approvalProof.nodeId,
+          );
+          if (expectedGatewayPolicy === "drift") {
+            void failClosedWindowsNodeMxc(
+              "Gateway policy drifted before authenticated RPC readiness",
+            );
+            return;
+          }
           const startOptions = {
             gatewayUrl: `ws://127.0.0.1:${gatewayPort}`,
             gatewayToken,
@@ -4473,6 +4539,7 @@ function connectGatewayWs(): void {
               bundledWindowsNodeGeneration !== hostGeneration ||
               gwClient !== gateway ||
               !gateway.connected ||
+              gatewayHttpReadyGeneration !== approvalProof.gatewayGeneration ||
               !gatewayGeneration ||
               gatewayProcess !== gatewayGeneration ||
               gatewayGeneration.exitCode !== null ||
@@ -4481,15 +4548,55 @@ function connectGatewayWs(): void {
               throw new Error("Managed Gateway generation changed before Windows node startup");
             }
           };
-          const startup = Promise.resolve()
-            .then(() => {
+          const startup = startAfterGatewayRpcReady({
+            probe: async (timeoutMs) => {
               assertCurrentGatewayGeneration();
-              return bundledWindowsNodeHost.start(startOptions);
-            })
-            .then(() => {
+              const snapshot = await gateway.request<GatewayConfigSnapshot>(
+                "config.get",
+                {},
+                timeoutMs,
+              );
               assertCurrentGatewayGeneration();
-              return bundledWindowsNodeHost.ensurePaired(gateway);
-            })
+              attestWindowsNodeMxcGatewaySnapshot(
+                snapshot,
+                approvalProof.nodeId,
+                expectedGatewayPolicy,
+              );
+            },
+            isCurrent: () => {
+              try {
+                assertCurrentGatewayGeneration();
+                return true;
+              } catch {
+                return false;
+              }
+            },
+            timeoutMs: MXC_GATEWAY_RPC_READY_TIMEOUT_MS,
+            attemptTimeoutMs: MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
+            initialBackoffMs: MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS,
+            maxBackoffMs: MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
+            onAttemptFailure: (error, attempt) => {
+              console.warn(
+                `[bundled-windows-node] authenticated RPC readiness attempt ${attempt} failed:`,
+                error,
+              );
+            },
+            onReady: (result) => {
+              markWindowsNodeMxcStartupTiming(
+                "rpc-ready",
+                `attempts=${result.attempts} probeElapsedMs=${result.elapsedMs}`,
+              );
+            },
+            start: async () => {
+              assertCurrentGatewayGeneration();
+              await bundledWindowsNodeHost.start(startOptions);
+              assertCurrentGatewayGeneration();
+              await bundledWindowsNodeHost.ensurePaired(gateway);
+              assertCurrentGatewayGeneration();
+              markWindowsNodeMxcStartupTiming("node-connected");
+            },
+          })
+            .then(() => undefined)
             .catch((error) => {
               if (bundledWindowsNodeGeneration === hostGeneration) {
                 bundledWindowsNodeHost.stop();
@@ -4502,6 +4609,13 @@ function connectGatewayWs(): void {
           bundledWindowsNodeStartup = startup;
           void startup.catch((error) => {
             console.error("[bundled-windows-node] start failed:", error);
+            if (!windowsNodeMxcSecurityTransitionInProgress) {
+              void failClosedWindowsNodeMxc(
+                `Bundled node startup failed during authenticated RPC readiness: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
           });
         }
       }
