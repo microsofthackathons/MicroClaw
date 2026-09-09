@@ -245,7 +245,7 @@ function shouldBlockWrite(filePath) {
   }
 }
 
-function shouldBlockRead(filePath, shellContext) {
+function shouldBlockRead(filePath, shellContext, denyWithoutPrompt) {
   if (!S.isReadBlockedPath(filePath, shellContext)) return false;
   var resolved;
   try {
@@ -261,6 +261,9 @@ function shouldBlockRead(filePath, shellContext) {
   if (_filePermReadAllowed[resolved] && _filePermReadAllowed[resolved] > now) return false;
   if (isUnderApprovedParent(resolved, now, true)) return false;
   if (_filePermDenied.has(roDir)) return true;
+  // Optional runtime probes may fail immediately, but must never create a
+  // grant or a cached denial, nor wait for another pending permission request.
+  if (denyWithoutPrompt) return true;
   var pendingDecision = waitForPendingAsync(roDir);
   if (pendingDecision) return handlePermissionDecision(pendingDecision, roDir, false);
   var decision = requestFilePermission(resolved, roDir, "ro");

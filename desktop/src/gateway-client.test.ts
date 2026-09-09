@@ -52,6 +52,29 @@ describe("normalizeGatewayChannelsStatus", () => {
       },
     ]);
   });
+
+  it("requests a local status snapshot with the startup caller's timeout", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const snapshot = {
+      channels: { "openclaw-weixin": { configured: true } },
+      channelAccounts: { "openclaw-weixin": [{ configured: true, running: true }] },
+    };
+    const request = vi.spyOn(client, "request").mockResolvedValue(snapshot);
+
+    expect(await client.getChannelsStatus(1_500)).toBe(snapshot);
+    expect(request).toHaveBeenCalledExactlyOnceWith("channels.status", { probe: false }, 1_500);
+    expect(await client.listChannels()).toEqual({
+      channels: [
+        {
+          id: "openclaw-weixin",
+          name: "openclaw-weixin",
+          icon: "",
+          type: "openclaw-weixin",
+          connected: true,
+        },
+      ],
+    });
+  });
 });
 describe("extractMainSessionKey", () => {
   it("reads the canonical main key from the Gateway hello snapshot", () => {

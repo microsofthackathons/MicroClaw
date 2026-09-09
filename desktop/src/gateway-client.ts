@@ -130,12 +130,14 @@ export type ListedGatewayChannel = {
 };
 
 type GatewayChannelState = {
+  enabled?: boolean;
+  configured?: boolean;
   connected?: boolean;
   running?: boolean;
   linked?: boolean;
 };
 
-type GatewayChannelsStatusPayload = {
+export type GatewayChannelsStatusPayload = {
   channels?: Record<string, GatewayChannelState>;
   channelAccounts?: Record<string, GatewayChannelState[]>;
   channelOrder?: string[];
@@ -524,11 +526,13 @@ export class GatewayClient {
     return this.request("agents.list");
   }
 
+  getChannelsStatus(timeoutMs = WS_REQUEST_TIMEOUT_MS): Promise<GatewayChannelsStatusPayload> {
+    return this.request("channels.status", { probe: false }, timeoutMs);
+  }
+
   /** List IM channels from the OpenClaw 7.1 status snapshot. */
   async listChannels(): Promise<{ channels: ListedGatewayChannel[] }> {
-    const status = await this.request<GatewayChannelsStatusPayload>("channels.status", {
-      probe: false,
-    });
+    const status = await this.getChannelsStatus();
     return { channels: normalizeGatewayChannelsStatus(status) };
   }
 

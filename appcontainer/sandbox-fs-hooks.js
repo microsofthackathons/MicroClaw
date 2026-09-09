@@ -22,6 +22,48 @@ function install(fsMod) {
   var isSensitivePath = sensitive.isSensitivePath;
   var throwSensitiveDenied = sensitive.throwSensitiveDenied;
 
+  var optionalShebangCaller = (function () {
+    if (process.platform !== "win32") return "";
+    var entry = process.argv[1] || "";
+    if (!path.isAbsolute(entry)) return "";
+    var entryDir = path.dirname(entry);
+    var root = "";
+    if (path.basename(entry).toLowerCase() === "openclaw.mjs") {
+      root = entryDir;
+    } else if (
+      path.basename(entry).toLowerCase() === "index.js" &&
+      path.basename(entryDir).toLowerCase() === "dist"
+    ) {
+      root = path.dirname(entryDir);
+    }
+    return root
+      ? S.resolvePathLower(
+          path.join(root, "node_modules", "execa", "lib", "arguments", "command-file.js"),
+        )
+      : "";
+  })();
+
+  function isOptionalExecutableShebangProbe(file, flags, callerBoundary) {
+    if (
+      !optionalShebangCaller ||
+      flags !== "r" ||
+      typeof file !== "string" ||
+      !path.isAbsolute(file) ||
+      path.extname(file).toLowerCase() !== ".exe"
+    ) {
+      return false;
+    }
+    try {
+      var trace = {};
+      Error.captureStackTrace(trace, callerBoundary);
+      if (typeof trace.stack !== "string") return false;
+      var caller = /^ *at readShebang \((.+):\d+:\d+\)$/.exec(trace.stack.split("\n")[1] || "");
+      return !!caller && S.resolvePathLower(caller[1]) === optionalShebangCaller;
+    } catch {
+      return false;
+    }
+  }
+
   // Wrap shouldBlockWrite/Read to pre-check sensitive paths.
   // Sensitive paths are always blocked with a distinct error, before
   // the normal permission logic runs. This keeps all existing hooks
@@ -30,9 +72,9 @@ function install(fsMod) {
     if (isSensitivePath(filePath)) return true;
     return _shouldBlockWrite(filePath);
   }
-  function shouldBlockRead(filePath, shellContext) {
+  function shouldBlockRead(filePath, shellContext, denyWithoutPrompt) {
     if (isSensitivePath(filePath)) return true;
-    return _shouldBlockRead(filePath, shellContext);
+    return _shouldBlockRead(filePath, shellContext, denyWithoutPrompt);
   }
   // Override throwReadOnly/throwReadBlocked to produce sensitive-specific errors
   var _throwReadOnly = throwReadOnly;
@@ -442,11 +484,16 @@ function install(fsMod) {
   // ── open / createWriteStream ──
 
   var _openSync = fsMod.openSync;
-  fsMod.openSync = function (file, flags) {
+  fsMod.openSync = function sandboxOpenSync(file, flags) {
     var f = String(flags || "r");
     S.state._currentCmdPreview = 'fs.openSync("' + file + '", "' + f + '")';
     if (f === "r" || f === "rs" || f === "sr") {
-      if (shouldBlockRead(file)) {
+      // Execa treats a failed shebang read as "no interpreter" and then spawns
+      // native .exe files normally. Deny an unapproved optional probe without
+      // the synchronous IPC wait. Caller matching only selects a denial, never
+      // authorization: even a forged stack or renamed binary cannot gain reads.
+      var denyWithoutPrompt = isOptionalExecutableShebangProbe(file, flags, sandboxOpenSync);
+      if (shouldBlockRead(file, false, denyWithoutPrompt)) {
         S.state._currentCmdPreview = null;
         throw throwReadBlocked(file);
       }
