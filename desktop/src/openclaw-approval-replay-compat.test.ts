@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error The compatibility preload is intentionally external ESM for the Gateway child.
 import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 
@@ -17,7 +22,106 @@ const {
   patchPinnedOpenClawNodeGateway,
   patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
+  validatePinnedOpenClawApprovalPackage,
 } = replayCompat;
+
+describe("pinned OpenClaw package validation", () => {
+  const temporaryPackages: string[] = [];
+
+  function createPackage(version: string): string {
+    const packageDir = mkdtempSync(join(tmpdir(), "microclaw-approval-compat-"));
+    temporaryPackages.push(packageDir);
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ version }));
+    mkdirSync(join(packageDir, "dist"));
+    return packageDir;
+  }
+
+  afterEach(() => {
+    for (const packageDir of temporaryPackages.splice(0)) {
+      rmSync(packageDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([undefined, "", "relative-package"])("rejects a non-absolute package path: %s", (dir) => {
+    expect(() => validatePinnedOpenClawApprovalPackage(dir)).toThrow(/absolute path/);
+  });
+
+  it.each(["2026.8.2", "2026.9.2", "2026.9.3-beta.1", "2026.9.4"])(
+    "rejects an unpinned OpenClaw version: %s",
+    (version) => {
+      expect(() => validatePinnedOpenClawApprovalPackage(createPackage(version))).toThrow(
+        /requires OpenClaw 2026\.9\.3/,
+      );
+    },
+  );
+
+  it("rejects modified 9.3 approval bundles", () => {
+    const packageDir = createPackage("2026.9.3");
+    writeFileSync(join(packageDir, "dist", "nodes-C8-hkmi0.mjs"), "// changed");
+    expect(() => validatePinnedOpenClawApprovalPackage(packageDir)).toThrow(/hash mismatch/);
+  });
+
+  const publishedPackage = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
+  describe.skipIf(!publishedPackage)("official npm package integration", () => {
+    it("validates all published hashes and patch points and parses the patched bundles", () => {
+      const targets = validatePinnedOpenClawApprovalPackage(publishedPackage);
+      expect(targets.map((target: { module: string }) => target.module)).toEqual([
+        "nodes-C8-hkmi0.mjs",
+        "system-run-approval-binding-DMkQH3tb.mjs",
+        "exec-approval-B0MHHes6.mjs",
+      ]);
+      for (const target of targets) {
+        const patched = target.patch(target.original.toString("utf8"));
+        const checked = spawnSync(process.execPath, ["--check", "--input-type=module"], {
+          input: patched,
+          encoding: "utf8",
+          timeout: 10_000,
+        });
+        expect(checked.error).toBeUndefined();
+        expect(checked.status, checked.stderr).toBe(0);
+        if (target.module.startsWith("nodes-")) {
+          expect(patched.indexOf("manager.projectDecisionIfActive")).toBeLessThan(
+            patched.indexOf("next.microclawApprovalProof ="),
+          );
+        }
+      }
+    });
+
+    it("initializes the real preload only after package validation", () => {
+      const hook = pathToFileURL(resolve(__dirname, "openclaw-approval-replay-compat.mjs")).href;
+      const initialized = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          hook,
+          "--input-type=module",
+          "-e",
+          `import assert from "node:assert/strict";
+assert.equal(process.env.MICROCLAW_MXC_APPROVAL_PROOF_SECRET, undefined);
+assert.equal(process.env.MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED, "1");
+assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-proof.v1")].mint, "function");`,
+        ],
+        {
+          env: {
+            ...process.env,
+            MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "1",
+            MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
+            MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
+            MICROCLAW_MXC_APPROVAL_PROOF_SECRET: Buffer.alloc(32, 1).toString("base64"),
+            MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION: "test-generation",
+            MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT: "a".repeat(64),
+            MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID: "b".repeat(64),
+          },
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+      expect(initialized.error).toBeUndefined();
+      expect(initialized.status, initialized.stderr).toBe(0);
+      expect(initialized.stdout).toContain("enabled one-use node proof");
+    });
+  });
+});
 
 describe("pinned OpenClaw node approval proof backport", () => {
   const source = [

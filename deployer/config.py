@@ -57,7 +57,7 @@ _load_dotenv()
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "node": {
-        "version": "22",
+        "version": "26",
     },
     "openclaw": {
         "install_method": "npm",  # npm | source

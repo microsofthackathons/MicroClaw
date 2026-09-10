@@ -15,6 +15,7 @@ export type GatewayConnectInput = {
   signature: string;
   signedAt: number;
   nonce: string;
+  supportsExecApprovals?: boolean;
 };
 
 export function buildGatewayConnectParams(input: GatewayConnectInput): Record<string, unknown> {
@@ -36,7 +37,7 @@ export function buildGatewayConnectParams(input: GatewayConnectInput): Record<st
       signedAt: input.signedAt,
       nonce: input.nonce,
     },
-    caps: ["tool-events"],
+    caps: ["tool-events", ...(input.supportsExecApprovals ? ["exec-approvals"] : [])],
   };
   if (input.token) params.auth = { token: input.token };
   return params;

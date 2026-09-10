@@ -3307,7 +3307,16 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
   const configuredPort = config?.gateway?.port || DEFAULT_PORT;
   gatewayPort = configuredPort;
   const stateDir = getOpenClawStateDir();
-  const nodePath = resolveNodePath();
+  let nodePath: string;
+  try {
+    nodePath = resolveNodePath();
+  } catch (error) {
+    const message = `[error] ${error instanceof Error ? error.message : String(error)}`;
+    console.error(message);
+    mainWindow?.webContents.send("gateway:log", message);
+    setGatewayStatus("failed");
+    throw error;
+  }
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
@@ -4238,6 +4247,7 @@ function connectGatewayWs(): void {
   gwClient = new GatewayClient({
     port: gatewayPort,
     token: gatewayToken,
+    supportsExecApprovals: isWindowsNodeMxcDesired(),
     beforeChatSend: requireEffectiveWindowsNodeMxc,
     onConnected: () => {
       console.log("[gateway-ws] connected");

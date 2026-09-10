@@ -62,4 +62,24 @@ describe("buildGatewayConnectParams", () => {
 
     expect(params).not.toHaveProperty("auth");
   });
+
+  it.each([true, false])(
+    "advertises approval delivery only when the handler is enabled: %s",
+    (supportsExecApprovals) => {
+      const params = buildGatewayConnectParams({
+        token: "token",
+        platform: "win32",
+        deviceId: "device",
+        publicKey: "public",
+        signature: "signature",
+        signedAt: 123,
+        nonce: "nonce",
+        supportsExecApprovals,
+      });
+
+      expect(params.caps).toEqual(
+        supportsExecApprovals ? ["tool-events", "exec-approvals"] : ["tool-events"],
+      );
+    },
+  );
 });

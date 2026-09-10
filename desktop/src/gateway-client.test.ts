@@ -11,6 +11,38 @@ import {
 } from "./gateway-client";
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
 
+describe("GatewayClient approval capability", () => {
+  it.each([true, false])(
+    "passes the handler capability through the connect handshake: %s",
+    async (supportsExecApprovals) => {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      Object.assign(client, {
+        opts: { port: 18789, token: "test-token", supportsExecApprovals },
+        connectSent: false,
+        connectTimer: null,
+        connectNonce: "test-nonce",
+        deviceIdentity: {
+          deviceId: "test-device",
+          publicKey: "test-public-key",
+          privateKey: Buffer.alloc(32, 1).toString("base64url"),
+        },
+        ws: { readyState: 1 },
+      });
+      const request = vi.spyOn(client, "request").mockResolvedValue({});
+
+      client["sendConnect"]();
+      await Promise.resolve();
+
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "connect",
+        expect.objectContaining({
+          caps: supportsExecApprovals ? ["tool-events", "exec-approvals"] : ["tool-events"],
+        }),
+      );
+    },
+  );
+});
+
 describe("normalizeGatewayChannelsStatus", () => {
   it("preserves Gateway order and derives connection state from accounts", () => {
     const channels = normalizeGatewayChannelsStatus({

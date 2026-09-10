@@ -1064,6 +1064,9 @@ class DeployerApp(tk.Tk):
         if src:
             try:
                 shutil.copy2(str(src), str(dest_dir / "setup-dependencies.ps1"))
+                shutil.copy2(
+                    str(src.with_name("node-runtime.ps1")), str(dest_dir / "node-runtime.ps1")
+                )
                 self.logger.info(f"Setup script copied to {dest_dir} (for reference)")
             except Exception as e:
                 self.logger.warn(f"Could not copy setup script: {e}")

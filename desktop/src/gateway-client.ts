@@ -183,6 +183,7 @@ type Pending = {
 export type GatewayClientOptions = {
   port: number;
   token: string;
+  supportsExecApprovals?: boolean;
   beforeChatSend?: () => Promise<void>;
   onEvent?: (evt: GatewayEventFrame) => void;
   onConnected?: (hello: Record<string, unknown>) => void;
@@ -636,6 +637,7 @@ export class GatewayClient {
       signature,
       signedAt: signedAtMs,
       nonce,
+      supportsExecApprovals: this.opts.supportsExecApprovals,
     });
 
     this.request<Record<string, unknown>>("connect", params)

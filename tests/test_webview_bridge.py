@@ -36,6 +36,29 @@ class WebInstallerBridgeTests(unittest.TestCase):
     def _step_labels(steps):
         return [step[1] for step in steps]
 
+    def test_both_installers_copy_setup_runtime_gate(self):
+        app = DeployerApp.__new__(DeployerApp)
+        app.logger = _Log()
+        for module, copy_assets in (
+            ("deployer.webview_bridge", self.bridge._copy_bundled_assets),
+            ("deploy", lambda: app._copy_bundled_assets(None)),
+        ):
+            with self.subTest(module=module):
+                destination = Path(self.temp.name) / module
+                with (
+                    unittest.mock.patch(f"{module}.DEFAULT_DESKTOP_DIR", destination),
+                    unittest.mock.patch(f"{module}.shutil.copytree"),
+                ):
+                    self.assertTrue(copy_assets())
+                self.assertIn(
+                    "Test-SupportedNodeVersion",
+                    (destination / "node-runtime.ps1").read_text(encoding="utf-8"),
+                )
+                self.assertIn(
+                    r'. "$PSScriptRoot\node-runtime.ps1"',
+                    (destination / "setup-dependencies.ps1").read_text(encoding="utf-8"),
+                )
+
     def test_prepare_upgrade_prompts_then_closes_running_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=Path("gateway.lock"))
         active = ActiveInstallation(pids=(1234,), gateway=gateway)

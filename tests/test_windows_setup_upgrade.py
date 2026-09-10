@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from deployer.openclaw_upgrade import UpgradeBackupMode, UpgradePhase
-from deployer.openclaw_version import OPENCLAW_TARGET_VERSION
+from deployer.openclaw_version import NODE_FALLBACK_VERSION, OPENCLAW_TARGET_VERSION
 from deployer.uninstaller_bundle import UninstallerBundleError
 from deployer.windows_setup import (
     _OPENCLAW_RPC_TIMEOUT,
@@ -770,26 +770,98 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             )
 
     def test_resolve_target_node_version_bumps_to_installed_major(self):
-        # An already-installed newer Node (e.g. 24.x) must not be downgraded to
-        # the default 22.x line — the MSI refuses to install an older version.
-        self.ws.node_version = "22"
-        self.ws._installed_node_major = lambda: 24
+        # The MSI refuses to install an older major over an existing newer one.
+        self.ws.node_version = "26"
+        self.ws._installed_node_major = lambda: 27
         self.ws._resolve_latest_version = lambda major: {
-            "22": "22.23.1",
-            "24": "24.15.0",
+            "26": "26.1.0",
+            "27": "27.0.0",
         }[major]
 
-        self.assertEqual(self.ws._resolve_target_node_version(), "24.15.0")
+        self.assertEqual(self.ws._resolve_target_node_version(), "27.0.0")
 
     def test_resolve_target_node_version_keeps_default_when_no_newer(self):
-        self.ws.node_version = "22"
-        self.ws._resolve_latest_version = lambda major: "22.23.1" if major == "22" else "wrong"
+        self.ws.node_version = "26"
+        self.ws._resolve_latest_version = lambda major: "26.1.0" if major == "26" else "wrong"
 
         self.ws._installed_node_major = lambda: None
-        self.assertEqual(self.ws._resolve_target_node_version(), "22.23.1")
+        self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
 
         self.ws._installed_node_major = lambda: 20
-        self.assertEqual(self.ws._resolve_target_node_version(), "22.23.1")
+        self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+
+    def test_resolve_target_migrates_unsupported_configured_lines(self):
+        self.ws._installed_node_major = lambda: None
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value="26.1.0")
+        for target in ("22", "23", "25", "invalid"):
+            with self.subTest(target=target):
+                self.ws.node_version = target
+                self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+                self.ws._resolve_latest_version.assert_called_with("26")
+
+    def test_resolve_target_keeps_supported_node_24_line(self):
+        self.ws.node_version = "24"
+        self.ws._installed_node_major = lambda: 24
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value="24.16.0")
+        self.assertEqual(self.ws._resolve_target_node_version(), "24.16.0")
+        self.ws._resolve_latest_version.assert_called_once_with("24")
+
+    def test_resolve_target_skips_installed_node_25_line(self):
+        self.ws.node_version = "24"
+        self.ws._installed_node_major = lambda: 25
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value="26.1.0")
+        self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+        self.ws._resolve_latest_version.assert_called_once_with("26")
+
+    def test_resolve_target_refuses_unsupported_resolution(self):
+        self.ws.node_version = "26"
+        self.ws._installed_node_major = lambda: None
+        for version in ("26.0.0", "25.9.0", "24.15.0", "26.1.0-rc.1"):
+            with self.subTest(version=version):
+                self.ws._resolve_latest_version = unittest.mock.Mock(return_value=version)
+                with self.assertRaises(NodeInstallBlocked):
+                    self.ws._resolve_target_node_version()
+
+    def test_resolve_target_refuses_fallback_major_downgrade(self):
+        self.ws.node_version = "26"
+        self.ws._installed_node_major = lambda: 27
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value=NODE_FALLBACK_VERSION)
+        with self.assertRaisesRegex(NodeInstallBlocked, "refusing to downgrade"):
+            self.ws._resolve_target_node_version()
+
+    def test_version_index_skips_unsupported_or_malformed_releases(self):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            [{"version": v} for v in ("v26.2.0-rc.1", "v26.0.0", "vv26.1.0", "v26.1.0")]
+        ).encode()
+        with unittest.mock.patch("urllib.request.urlopen", return_value=response):
+            self.assertEqual(self.ws._resolve_latest_version("26"), "26.1.0")
+
+    def test_version_resolution_uses_supported_fallback_offline(self):
+        self.ws._node_download_base = MIRRORS[MIRROR_OFFICIAL]["node_download_base"]
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            self.assertEqual(self.ws._resolve_latest_version("26"), NODE_FALLBACK_VERSION)
+
+    def test_managed_node_requires_supported_version(self):
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_text("", encoding="utf-8")
+        self.ws._get_npm_path = unittest.mock.Mock(return_value="npm.cmd")
+        with unittest.mock.patch("deployer.windows_setup.shutil.which", return_value=None):
+            for version in ("v22.22.3", "v24.15.9", "v25.9.0", "v26.0.0", "v26.1.0-rc.1"):
+                with self.subTest(version=version):
+                    self.ws._get_node_version = unittest.mock.Mock(return_value=version)
+                    self.assertFalse(self.ws.check_node_windows())
+            for version in ("v24.16.0", "v26.1.0"):
+                with self.subTest(version=version):
+                    self.ws._get_node_version = unittest.mock.Mock(return_value=version)
+                    self.assertTrue(self.ws.check_node_windows())
+
+    def test_install_node_rejects_unsupported_version_before_download(self):
+        self.ws._mirror_name = MIRROR_OFFICIAL
+        self.ws._resolve_target_node_version = lambda: "26.0.0"
+        self.ws._download_and_verify_node_msi = unittest.mock.Mock()
+        self.assertFalse(self.ws.install_node_windows())
+        self.ws._download_and_verify_node_msi.assert_not_called()
 
     def test_installed_node_major_reads_highest(self):
         with (
@@ -813,8 +885,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         # is deterministic: raise NodeInstallBlocked so the pipeline stops
         # instead of re-prompting UAC on every retry.
         self.ws._mirror_name = MIRROR_OFFICIAL
-        self.ws.node_version = "22"
-        self.ws._resolve_target_node_version = lambda: "24.15.0"
+        self.ws.node_version = "26"
+        self.ws._resolve_target_node_version = lambda: "26.1.0"
         self.ws._download_and_verify_node_msi = lambda _version, _path: True
         self.ws._get_arch = lambda: "x64"
 

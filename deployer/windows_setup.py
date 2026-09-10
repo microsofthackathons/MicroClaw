@@ -45,6 +45,7 @@ from deployer.openclaw_upgrade import (
     prune_previous_committed_backups,
 )
 from deployer.openclaw_version import (
+    NODE_ENGINE_RANGE,
     NODE_FALLBACK_VERSION,
     OPENCLAW_TARGET_VERSION,
     is_supported_node_version,
@@ -399,7 +400,7 @@ class WindowsSetup:
     def __init__(self, config, logger: DeployerLogger):
         self.cfg = config
         self.log = logger
-        self.node_version = config.get("node.version", "22")
+        self.node_version = config.get("node.version", "26")
         # Re-read env var at construction time (UI may have set it)
         self.node_dir = Path(os.environ.get("OPENCLAW_NODE_DIR", str(DEFAULT_NODE_DIR)))
         self._node_bin: Path | None = None
@@ -1023,7 +1024,7 @@ class WindowsSetup:
         return False
 
     def _resolve_latest_version(self, major: str) -> str:
-        """Resolve '22' to the latest specific version like '22.14.0'."""
+        """Resolve '26' to the latest supported specific version like '26.1.0'."""
         self.log.debug(f"Resolving latest Node.js {major}.x version…")
         import json
         import re
@@ -1041,8 +1042,8 @@ class WindowsSetup:
                 with resp:
                     data = json.loads(resp.read())
                 for entry in data:
-                    ver = entry.get("version", "").lstrip("v")
-                    if ver.startswith(f"{major}."):
+                    ver = entry.get("version", "").removeprefix("v")
+                    if ver.startswith(f"{major}.") and is_supported_node_version(ver):
                         self.log.debug(f"Resolved from {url}: {ver}")
                         return ver
             except Exception as e:
@@ -1056,7 +1057,7 @@ class WindowsSetup:
                 html = resp.read().decode("utf-8", errors="replace")
             arch = self._get_arch()
             pattern = rf"node-v({major}\.\d+\.\d+)-win-{arch}\.zip"
-            matches = re.findall(pattern, html)
+            matches = [v for v in re.findall(pattern, html) if is_supported_node_version(v)]
             if matches:
                 best = max(matches, key=lambda v: tuple(int(x) for x in v.split(".")))
                 self.log.debug(f"Resolved from npmmirror: {best}")
@@ -1072,9 +1073,8 @@ class WindowsSetup:
     def check_node_windows(self) -> bool:
         """Check if a suitable Node.js is available on Windows.
 
-        Only the managed install (inside node_dir) counts as a pass.
-        A system-level node is logged for diagnostics but never accepted,
-        because its version/PATH-priority is outside our control.
+        Accept a supported managed install or a system Node in a standard
+        installation directory, provided npm is also available.
         """
         # Check our managed install first — only this is authoritative
         managed_node = self.node_dir / "node.exe"
@@ -1094,7 +1094,7 @@ class WindowsSetup:
             elif ver:
                 self.log.info(
                     "Managed Node.js "
-                    f"{ver} is outdated (need >=22.22.3, <23 / >=24.15.0, <25 / >=25.9.0), "
+                    f"{ver} is unsupported (need {NODE_ENGINE_RANGE}; Node 26 recommended), "
                     "will reinstall"
                 )
 
@@ -1165,13 +1165,14 @@ class WindowsSetup:
         """Resolve the Node.js version to install, never downgrading.
 
         Starts from the configured target line (``self.node_version``, default
-        ``22``) but bumps up to the major of any already-installed Node when
+        ``26``) but bumps up to the major of any already-installed Node when
         that is higher, so the per-machine MSI performs an upgrade rather than
         a blocked downgrade.
         """
         target_line = str(self.node_version)
-        match = re.match(r"(\d+)", target_line)
-        target_major = int(match.group(1)) if match else 0
+        target_major = int(target_line) if re.fullmatch(r"[1-9][0-9]*", target_line) else 26
+        if target_major < 24 or target_major == 25:
+            target_major = 26
 
         installed_major = self._installed_node_major()
         if installed_major is not None and installed_major > target_major:
@@ -1180,9 +1181,22 @@ class WindowsSetup:
                 f"{installed_major}.x line instead of {target_major}.x — the MSI refuses "
                 "to install an older version over a newer one."
             )
-            target_line = str(installed_major)
+            target_major = installed_major
+        if target_major == 25:
+            target_major = 26
 
-        return self._resolve_latest_version(target_line)
+        version = self._resolve_latest_version(str(target_major))
+        if not is_supported_node_version(version):
+            raise NodeInstallBlocked(
+                f"Resolved Node.js {version!r} is unsupported by OpenClaw "
+                f"{OPENCLAW_TARGET_VERSION}; need {NODE_ENGINE_RANGE}."
+            )
+        if installed_major is not None and int(version.split(".")[0]) < installed_major:
+            raise NodeInstallBlocked(
+                f"Could not resolve a supported Node.js {installed_major}.x or newer release; "
+                f"refusing to downgrade to {version}. Retry when the version index is available."
+            )
+        return version
 
     def install_node_windows(self) -> bool:
         """Download and install Node.js on Windows via the official signed MSI.
@@ -1197,8 +1211,10 @@ class WindowsSetup:
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
 
         version = self._resolve_target_node_version()
-        if not _VERSION_RE.match(version):
-            self.log.error(f"Invalid resolved version: {version!r}")
+        if not _VERSION_RE.fullmatch(version) or not is_supported_node_version(version):
+            self.log.error(
+                f"Unsupported resolved Node.js version: {version!r}; need {NODE_ENGINE_RANGE}"
+            )
             return False
         self.log.info(f"Resolved version: v{version}")
 
@@ -1297,8 +1313,10 @@ class WindowsSetup:
             self._node_bin = self.node_dir
 
             ver = self._get_node_version(str(node_exe))
-            if not ver:
-                self.log.error("Node.js installed but verification failed")
+            if not ver or not is_supported_node_version(ver):
+                self.log.error(
+                    f"Node.js installed but verification failed; need {NODE_ENGINE_RANGE}"
+                )
                 return False
 
             self.log.success(f"Node.js {ver} installed to {self.node_dir}")

@@ -203,9 +203,19 @@ identity when replaying the approved `node.invoke system.run`, causing
 [openclaw/openclaw#103886](https://github.com/openclaw/openclaw/pull/103886), commit
 `7a38f140a2cf2c99dd08f92db3ea1b291d5b10c4`. MXC mode still enables a MicroClaw-owned Node load
 hook for the one-use approval proof and prepared-plan identity extensions. The installed OpenClaw
-package is not modified. The hook requires OpenClaw `2026.8.2` and exact SHA-256 hashes for the
+package is not modified. The hook requires OpenClaw `2026.9.3` and exact SHA-256 hashes for the
 affected compiled modules; any version, hash, or source-shape mismatch prevents the managed Gateway
-from starting.
+from starting. The 9.3 package uses `.mjs` bundles; its approval replay and plan-normalization
+contracts retain the same patch points, including the upstream active-decision check before replay.
+The runtime must be Node `>=24.16.0 <25 || >=26.1.0`.
+The desktop advertises the `exec-approvals` Gateway capability only while MXC mode is enabled,
+so 9.3 routes approval events to its handler without diverting approvals in normal mode.
+
+To verify the hook against an unpacked official `openclaw@2026.9.3` npm package, set
+`MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR` to its absolute package directory and run
+`npm test --prefix desktop -- openclaw-approval-replay-compat`. The integration cases validate the
+published module hashes, patch points, preload initialization, and compiled JavaScript syntax without
+modifying the installed package or requiring a configured Gateway.
 
 OpenClaw's doctor migrates the roster to keyed `agents.entries` with explicit ownership.
 Desktop startup, skill updates and MXC policy changes preserve this format and never reintroduce
