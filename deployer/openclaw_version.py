@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import re
 
-OPENCLAW_TARGET_VERSION = "2026.8.2"
-NODE_FALLBACK_VERSION = "22.22.3"
+OPENCLAW_TARGET_VERSION = "2026.9.3"
+NODE_ENGINE_RANGE = ">=24.16.0 <25 || >=26.1.0"
+NODE_FALLBACK_VERSION = "26.1.0"
 
-_NODE_VERSION_RE = re.compile(r"^v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
+_NODE_VERSION_RE = re.compile(
+    r"v?(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
+)
 _OPENCLAW_VERSION_RE = re.compile(r"openclaw@(?P<version>\S+)")
 
 
@@ -25,10 +28,9 @@ def is_supported_node_version(value: str) -> bool:
 
     major, minor, patch = version
     return (
-        (major == 22 and (minor, patch) >= (22, 3))
-        or (major == 24 and (minor, patch) >= (15, 0))
-        or (major == 25 and (minor, patch) >= (9, 0))
-        or major > 25
+        (major == 24 and (minor, patch) >= (16, 0))
+        or (major == 26 and (minor, patch) >= (1, 0))
+        or major > 26
     )
 
 

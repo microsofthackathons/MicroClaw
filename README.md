@@ -114,7 +114,7 @@ MicroClaw targets **Windows 10/11**. For most users, the only thing you need to 
 
 Build the installer from source, then run it:
 
-> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 22+** and **Python 3.10+**. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
+> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.9.3** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
 
 ```powershell
 .\build.ps1                                        # produces dist/MicroClawInstaller/MicroClawInstaller.exe
@@ -124,7 +124,7 @@ Build the installer from source, then run it:
 The installer handles the Windows-side setup in a single run:
 
 - Git for Windows (PortableGit → `~/.openclaw-git`)
-- Node.js 22+ via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing system Node ≥22.16 at that path is reused as-is)
+- Node.js 26 via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing supported system Node at that path is reused as-is; supported range: `>=24.16.0 <25 || >=26.1.0`, download fallback: `26.1.0`)
 - OpenClaw Gateway (`npm install -g openclaw`)
 - Configures the npm registry mirror and V8 compile cache
 - Installs the MicroClaw desktop client, managed skills, AppContainer sandbox, WeChat plugin
@@ -317,7 +317,7 @@ download-update path.
 
 ### Prerequisites
 
-- Node.js 22+
+- Node.js 26.1+ (recommended), or 24.16+ on the 24.x line
 - Python 3.10+ — install build deps with `pip install -r requirements.txt` (includes PyInstaller)
 - .NET 9 SDK (for the AppContainer launcher)
 - .NET 10 SDK (for the bundled Windows Node host)

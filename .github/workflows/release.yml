@@ -79,10 +79,10 @@ jobs:
       # (reliable on hosted runners, unlike on the self-hosted NetworkService
       # account). build.ps1 then installs its own npm/pip deps and locates NSIS
       # from electron-builder's cache.
-      - name: Setup Node.js 22
+      - name: Setup Node.js 26
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "26"
 
       - name: Setup .NET 9 and 10 SDKs
         uses: actions/setup-dotnet@v4
@@ -99,13 +99,11 @@ jobs:
       - name: Verify toolchain
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          $parsed = [version]$node
-          $supported =
-            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
-            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
-            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
-          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.8.2" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.9.3 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
           $sdks = & dotnet --list-sdks
           if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }

@@ -43,19 +43,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Toolchain (Node 22) is pre-installed on the self-hosted runner.
+      # Toolchain (Node 26.1+) is pre-installed on the self-hosted runner.
       # actions/setup-node is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues), so just verify the version.
       - name: Verify pre-installed Node.js
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          $parsed = [version]$node
-          $supported =
-            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
-            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
-            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
-          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.8.2" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.9.3 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
 
       - name: Install dependencies (all packages)
@@ -138,20 +136,18 @@ jobs:
         with:
           submodules: recursive
 
-      # Toolchain (Node 22, .NET 9/10 SDKs, Python 3.12+) is pre-installed on
+      # Toolchain (Node 26.1+, .NET 9/10 SDKs, Python 3.12+) is pre-installed on
       # the self-hosted runner. We only verify versions here; installing
       # via actions/setup-* is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues).
       - name: Verify pre-installed toolchain
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          $parsed = [version]$node
-          $supported =
-            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
-            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
-            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
-          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.8.2" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.9.3 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
           $sdks = & dotnet --list-sdks
           if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }

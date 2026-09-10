@@ -45,7 +45,7 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
 ### Development Setup
 
 1. Clone the repository
-2. Install Node.js 22+
+2. Install Node.js 26.1+ (recommended), or 24.16+ on the 24.x line. OpenClaw 2026.9.3 requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported.
 3. Install dependencies:
    ```bash
    cd desktop && npm install

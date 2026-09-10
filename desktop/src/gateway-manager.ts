@@ -99,7 +99,14 @@ export class GatewayManager extends EventEmitter {
     await this.waitForPortAvailable();
     this.cleanStaleLockFiles();
 
-    const nodePath = resolveNodePath();
+    let nodePath: string;
+    try {
+      nodePath = resolveNodePath();
+    } catch (error) {
+      this.emit("log", `ERROR: ${error instanceof Error ? error.message : String(error)}`);
+      this.emit("status", "failed");
+      return this.port;
+    }
     const entryPath = resolveOpenClawEntry();
 
     // Log resolved paths for diagnostics

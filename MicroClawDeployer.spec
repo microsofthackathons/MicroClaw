@@ -35,6 +35,7 @@ a = Analysis(
         ('dist/microclaw-portable.zip', '.'),
         ('dist/install-manifest.json', '.'),
         ('scripts/windows/setup-dependencies.ps1', '.'),
+        ('scripts/windows/node-runtime.ps1', '.'),
         ('scripts', 'scripts'),
         ('deployer/assets', 'deployer/assets'),
     ] + managed_skill_datas + webview_datas + pythonnet_datas,

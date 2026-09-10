@@ -7,16 +7,16 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
-const EXPECTED_VERSION = "2026.8.2";
-const EXPECTED_NODE_GATEWAY_MODULE = "nodes-EjR1K851.js";
+const EXPECTED_VERSION = "2026.9.3";
+const EXPECTED_NODE_GATEWAY_MODULE = "nodes-C8-hkmi0.mjs";
 const EXPECTED_NODE_GATEWAY_SHA256 =
-  "099116b8473febbf3ffc30022f78bd62451bc9f7f604be6ed987e9dd4cd1ad91";
-const EXPECTED_SYSTEM_RUN_MODULE = "system-run-approval-binding-CBdJlfb5.js";
+  "805c73836285f1b0bd503f755b388052e75dfc21efdac5a408731e6efcb72fbb";
+const EXPECTED_SYSTEM_RUN_MODULE = "system-run-approval-binding-DMkQH3tb.mjs";
 const EXPECTED_SYSTEM_RUN_SHA256 =
-  "aab50ca701cd8b5a453abbd4ba03277c51e22e8739ea7fac4c826ae61c053e50";
-const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-D4dsyUjJ.js";
+  "08ae201f03f2b0bcd2c8c91ade26acf1572401001ed3daf1564910058c598bfd";
+const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-B0MHHes6.mjs";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
-  "f87300c477bc4a80a95c1f052b44a4fe21c5a85932044bd3afe6656fa3a0e99c";
+  "182e54781c24463a2b636aa0ecebd9fa959871c594167fb0f14d9301d496edc2";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;
@@ -450,8 +450,7 @@ function installApprovalProofMinter() {
   });
 }
 
-function initialize() {
-  const packageDir = process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR;
+export function validatePinnedOpenClawApprovalPackage(packageDir) {
   if (!packageDir || !isAbsolute(packageDir)) {
     throw new Error("MICROCLAW_OPENCLAW_PACKAGE_DIR must be an absolute path");
   }
@@ -464,7 +463,7 @@ function initialize() {
     );
   }
 
-  const targets = [
+  return [
     {
       module: EXPECTED_NODE_GATEWAY_MODULE,
       sha256: EXPECTED_NODE_GATEWAY_SHA256,
@@ -491,8 +490,13 @@ function initialize() {
     if (hash !== target.sha256) {
       throw new Error(`Pinned OpenClaw approval module hash mismatch (${target.module}): ${hash}`);
     }
+    target.patch(original.toString("utf8"));
     return { ...target, targetPath, original };
   });
+}
+
+function initialize() {
+  const targets = validatePinnedOpenClawApprovalPackage(process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR);
   installApprovalProofMinter();
 
   registerHooks({

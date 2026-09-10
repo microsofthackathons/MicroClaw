@@ -31,8 +31,9 @@ function Get-FileSetId {
     }
 }
 
-# Prefer Node 22 from the standard per-user MSI install location, falling back
-# to the legacy zip-extract path and finally the system Node.
+. "$root\scripts\windows\node-runtime.ps1"
+
+# Prefer a supported standard MSI install, then the legacy zip and PATH.
 $nodeCandidates = @(
     "$env:ProgramFiles\nodejs",
     "$env:LOCALAPPDATA\Programs\nodejs",
@@ -41,8 +42,13 @@ $nodeCandidates = @(
 $nodeFound = $false
 foreach ($candidate in $nodeCandidates) {
     if (Test-Path "$candidate\node.exe") {
+        $version = & "$candidate\node.exe" --version
+        if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $version)) {
+            Write-Host "  Skipping unsupported Node: $candidate ($version)" -ForegroundColor Yellow
+            continue
+        }
         $env:PATH = "$candidate;$env:PATH"
-        Write-Host "  Using Node: $candidate ($(& node --version))"
+        Write-Host "  Using Node: $candidate ($version)"
         $nodeFound = $true
         break
     }
@@ -55,15 +61,19 @@ if (-not $nodeFound) {
     $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($nodeCmd) {
         $nodeDir = Split-Path -Parent $nodeCmd.Source
-        Write-Host "  Using Node from PATH: $nodeDir ($(& node --version))"
-        $nodeFound = $true
+        $version = & $nodeCmd.Source --version
+        if ($LASTEXITCODE -eq 0 -and (Test-SupportedNodeVersion $version)) {
+            Write-Host "  Using Node from PATH: $nodeDir ($version)"
+            $nodeFound = $true
+        }
     }
 }
 if (-not $nodeFound) {
-    Write-Host "  ERROR: node.exe not found in any of:" -ForegroundColor Red
+    Write-Host "  ERROR: supported node.exe not found in any of:" -ForegroundColor Red
     foreach ($candidate in $nodeCandidates) { Write-Host "    - $candidate" -ForegroundColor Red }
     Write-Host "    - PATH (Get-Command node.exe)" -ForegroundColor Red
-    Write-Host "  Install Node.js 22+ (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
+    Write-Host "  OpenClaw 2026.9.3 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
+    Write-Host "  Install Node.js 26 (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
     exit 1
 }
 
