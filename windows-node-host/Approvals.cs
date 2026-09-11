@@ -151,5 +151,25 @@ public sealed class ExecutableApprovalLease : IDisposable
             declaredAccess ?? [],
             _stream);
 
+    public void VerifySha256(string expectedSha256)
+    {
+        _stream.Position = 0;
+        var actualSha256 = Convert.ToHexString(SHA256.HashData(_stream)).ToLowerInvariant();
+        _stream.Position = 0;
+        if (!Regexes.Sha256().IsMatch(expectedSha256)
+            || !CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(actualSha256),
+                Encoding.ASCII.GetBytes(expectedSha256.ToLowerInvariant())))
+            throw new HostPolicyException(
+                "executable-hash-mismatch",
+                "The locked executable does not match the pinned content hash.");
+    }
+
     public void Dispose() => _stream.Dispose();
+}
+
+internal static partial class Regexes
+{
+    [System.Text.RegularExpressions.GeneratedRegex("^[a-f0-9]{64}$")]
+    public static partial System.Text.RegularExpressions.Regex Sha256();
 }

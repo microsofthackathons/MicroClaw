@@ -157,6 +157,14 @@ internal sealed class ReadinessProofVerifier
             proof.ExpiresAtUnixMs);
     }
 
+    public void Revalidate(ValidatedReadinessProof proof)
+    {
+        if (proof.ExpiresAtUnixMs <= _nowUnixMs())
+            throw new HostPolicyException(
+                "readiness-proof-stale",
+                "The readiness proof expired before process launch.");
+    }
+
     public static string ComputeSignature(string secretBase64, ReadinessProofRecord proof) =>
         ComputeSignature(DecodeSecret(secretBase64), proof);
 
