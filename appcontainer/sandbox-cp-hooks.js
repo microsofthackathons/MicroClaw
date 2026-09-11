@@ -132,9 +132,29 @@ function isCanonicalPathWithin(rootPath, candidatePath, runtime) {
   return relative !== "" && !relative.startsWith("..") && !pathMod.isAbsolute(relative);
 }
 
+function isOpenClawSqliteStagingRoot(value, runtime) {
+  if (typeof value !== "string" || !pathMod.isAbsolute(value)) return false;
+  var localAppData =
+    runtime && runtime.localAppData ? runtime.localAppData : TRUSTED_WORKER_ENV.LOCALAPPDATA;
+  if (!localAppData) return false;
+  var root = canonicalExistingPath(pathMod.join(localAppData, "openclaw"), runtime);
+  var candidate = canonicalExistingPath(value, runtime);
+  if (!root || !candidate) return false;
+  var relative = pathMod.relative(root, candidate);
+  var pid = runtime && runtime.pid !== undefined ? runtime.pid : process.pid;
+  var expectedName = new RegExp(
+    "^openclaw-sqlite-readonly-" +
+      pid +
+      "-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    "i",
+  );
+  return relative === pathMod.basename(value).toLowerCase() && expectedName.test(relative);
+}
+
 function isOpenClawInternalSqliteWorkerCommand(cmd, args, stack, runtime, options) {
   if (options && options.shell) return false;
-  if (!Array.isArray(args) || args.length !== 4) return false;
+  if (!Array.isArray(args) || (args.length !== 4 && args.length !== 5)) return false;
+  if (args.length === 5 && !isOpenClawSqliteStagingRoot(args[4], runtime)) return false;
   var execPath = normalizeComparablePath(
     runtime && runtime.execPath ? runtime.execPath : TRUSTED_NODE_EXEC_PATH,
   );
@@ -164,11 +184,11 @@ function isOpenClawInternalSqliteWorkerCommand(cmd, args, stack, runtime, option
   var normalizedStack = String(stack || "")
     .replace(/\//g, pathMod.sep)
     .toLowerCase();
-  var trustedCallerPrefix =
-    normalizeComparablePath(pathMod.join(packageRoot, "dist")) +
-    pathMod.sep +
-    "sqlite-readonly-location-";
-  return normalizedStack.indexOf(trustedCallerPrefix) >= 0;
+  var trustedDist = normalizeComparablePath(pathMod.join(packageRoot, "dist")) + pathMod.sep;
+  return (
+    normalizedStack.indexOf(trustedDist + "sqlite-readonly-location-") >= 0 ||
+    normalizedStack.indexOf(trustedDist + "sqlite-readonly-worker-") >= 0
+  );
 }
 
 function buildInternalSqliteWorkerInvocation(args, options) {
@@ -181,6 +201,7 @@ function buildInternalSqliteWorkerInvocation(args, options) {
   if (options && options.encoding !== undefined) nextOptions.encoding = options.encoding;
   if (options && options.maxBuffer !== undefined) nextOptions.maxBuffer = options.maxBuffer;
   if (options && options.timeout !== undefined) nextOptions.timeout = options.timeout;
+  if (options && options.killSignal !== undefined) nextOptions.killSignal = options.killSignal;
   return {
     args: ["--require", TRUSTED_PRELOAD_PATH].concat(args),
     options: nextOptions,
