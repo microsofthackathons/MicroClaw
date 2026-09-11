@@ -314,11 +314,15 @@ describe("bundled Windows Node CWD attestation", () => {
           approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
           approvalProofBindsExecutableContent: true,
           approvalProofBindsActivation: true,
+          launchTimeApprovalProofRevalidation: true,
           readinessProofContract: "microclaw.windows-node-readiness.v1",
           readinessProofBindsTransition: true,
           readinessProofBindsPreparedPlan: true,
           readinessProofExactBuiltInsOnly: true,
           readinessProofOneUse: true,
+          launchTimeReadinessProofRevalidation: true,
+          exactFilesystemIsolationRequired: true,
+          degradedIsolationTierRejected: true,
           durableApprovalStoreProtected: true,
           durableApprovalsPresent: true,
         },
@@ -332,10 +336,14 @@ describe("bundled Windows Node CWD attestation", () => {
     "approvalProofBindsPreparedPlan",
     "approvalProofBindsExecutableContent",
     "approvalProofBindsActivation",
+    "launchTimeApprovalProofRevalidation",
     "readinessProofBindsTransition",
     "readinessProofBindsPreparedPlan",
     "readinessProofExactBuiltInsOnly",
     "readinessProofOneUse",
+    "launchTimeReadinessProofRevalidation",
+    "exactFilesystemIsolationRequired",
+    "degradedIsolationTierRejected",
     "durableApprovalStoreProtected",
   ])("fails closed when %s is not attested", (property) => {
     const payload = {
@@ -359,11 +367,15 @@ describe("bundled Windows Node CWD attestation", () => {
       approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
       approvalProofBindsExecutableContent: true,
       approvalProofBindsActivation: true,
+      launchTimeApprovalProofRevalidation: true,
       readinessProofContract: "microclaw.windows-node-readiness.v1",
       readinessProofBindsTransition: true,
       readinessProofBindsPreparedPlan: true,
       readinessProofExactBuiltInsOnly: true,
       readinessProofOneUse: true,
+      launchTimeReadinessProofRevalidation: true,
+      exactFilesystemIsolationRequired: true,
+      degradedIsolationTierRejected: true,
       durableApprovalStoreProtected: true,
       durableApprovalsPresent: false,
     };
@@ -966,15 +978,26 @@ describe("Windows Node MXC global folder policy", () => {
 });
 
 describe("MXC probe and smoke classification", () => {
-  it("accepts DACL-only machines with a prominent degraded warning", () => {
+  it("fails closed on DACL-only machines", () => {
     const probe = classifyMxcProbe(
       0,
       JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
       "",
     );
-    expect(probe.outcome).toBe("supported");
+    expect(probe.outcome).toBe("unsupported");
     expect(probe.degraded).toBe(true);
-    expect(getMxcTierWarning(probe)).toContain("requires host DACL augmentation");
+    expect(probe.reason).toContain("cannot enforce the configured filesystem roots");
+    expect(getMxcTierWarning(probe)).toContain("Rejected degraded MXC containment");
+  });
+
+  it("fails closed when an otherwise strong tier requests DACL augmentation", () => {
+    const probe = classifyMxcProbe(
+      0,
+      JSON.stringify({ tier: "base-container", needsDaclAugmentation: true }),
+      "",
+    );
+    expect(probe.outcome).toBe("unsupported");
+    expect(probe.degraded).toBe(true);
   });
 
   it("treats base-container and BFS as full-strength", () => {

@@ -33,11 +33,15 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("approvalProofBindsExecutableContent")] bool ApprovalProofBindsExecutableContent,
     [property: JsonPropertyName("approvalProofBindsActivation")] bool ApprovalProofBindsActivation,
     [property: JsonPropertyName("approvalProofOneUse")] bool ApprovalProofOneUse,
+    [property: JsonPropertyName("launchTimeApprovalProofRevalidation")] bool LaunchTimeApprovalProofRevalidation,
     [property: JsonPropertyName("readinessProofContract")] string ReadinessProofContract,
     [property: JsonPropertyName("readinessProofBindsTransition")] bool ReadinessProofBindsTransition,
     [property: JsonPropertyName("readinessProofBindsPreparedPlan")] bool ReadinessProofBindsPreparedPlan,
     [property: JsonPropertyName("readinessProofExactBuiltInsOnly")] bool ReadinessProofExactBuiltInsOnly,
     [property: JsonPropertyName("readinessProofOneUse")] bool ReadinessProofOneUse,
+    [property: JsonPropertyName("launchTimeReadinessProofRevalidation")] bool LaunchTimeReadinessProofRevalidation,
+    [property: JsonPropertyName("exactFilesystemIsolationRequired")] bool ExactFilesystemIsolationRequired,
+    [property: JsonPropertyName("degradedIsolationTierRejected")] bool DegradedIsolationTierRejected,
     [property: JsonPropertyName("durableApprovalStoreProtected")] bool DurableApprovalStoreProtected,
     [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent)
 {
@@ -62,11 +66,15 @@ public sealed record CwdPolicyAttestation(
         ApprovalProofBindsExecutableContent: true,
         ApprovalProofBindsActivation: true,
         ApprovalProofOneUse: true,
+        LaunchTimeApprovalProofRevalidation: true,
         ReadinessProofContract: global::MicroClaw.WindowsNodeHost.ReadinessProbeContract.Version,
         ReadinessProofBindsTransition: true,
         ReadinessProofBindsPreparedPlan: true,
         ReadinessProofExactBuiltInsOnly: true,
         ReadinessProofOneUse: true,
+        LaunchTimeReadinessProofRevalidation: true,
+        ExactFilesystemIsolationRequired: true,
+        DegradedIsolationTierRejected: true,
         DurableApprovalStoreProtected: true,
         DurableApprovalsPresent: false);
 }
@@ -79,7 +87,11 @@ public enum FolderAccess
 
 public sealed record ApprovedRoot(string Path, FolderAccess Access);
 
-public sealed record CanonicalCwd(string LaunchPath, string ApprovalBinding, FolderAccess Access);
+public sealed record CanonicalCwd(
+    string LaunchPath,
+    string ApprovalBinding,
+    FolderAccess Access,
+    string? MatchedRoot);
 
 public sealed class HostPolicyException(string code, string message) : Exception(message)
 {
@@ -171,7 +183,11 @@ public sealed class HostPolicy
     public CanonicalCwd ResolveCwd(string? requestedCwd)
     {
         if (string.IsNullOrWhiteSpace(requestedCwd))
-            return new CanonicalCwd(string.Empty, CwdPolicyContract.ScratchBinding, FolderAccess.ReadWrite);
+            return new CanonicalCwd(
+                string.Empty,
+                CwdPolicyContract.ScratchBinding,
+                FolderAccess.ReadWrite,
+                MatchedRoot: null);
 
         var canonical = WindowsPathCanonicalizer.CanonicalizeDirectory(requestedCwd);
         if (DeniedRoots.Any(root => WindowsPathCanonicalizer.IsEqualOrNested(canonical, root)))
@@ -183,7 +199,7 @@ public sealed class HostPolicy
             .FirstOrDefault()
             ?? throw new HostPolicyException("cwd-outside-approved-roots", "The requested working directory is not within an approved folder.");
 
-        return new CanonicalCwd(canonical, canonical, grant.Access);
+        return new CanonicalCwd(canonical, canonical, grant.Access, grant.Path);
     }
 
     public CanonicalCwd RevalidateCwd(string? requestedCwd, string approvalBinding)

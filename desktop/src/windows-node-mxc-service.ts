@@ -530,12 +530,16 @@ export function validateBundledCwdAttestation(value: unknown): {
     approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
     approvalProofBindsExecutableContent: true,
     approvalProofBindsActivation: true,
+    launchTimeApprovalProofRevalidation: true,
     durableApprovalStoreProtected: true,
     readinessProofContract: "microclaw.windows-node-readiness.v1",
     readinessProofBindsTransition: true,
     readinessProofBindsPreparedPlan: true,
     readinessProofExactBuiltInsOnly: true,
     readinessProofOneUse: true,
+    launchTimeReadinessProofRevalidation: true,
+    exactFilesystemIsolationRequired: true,
+    degradedIsolationTierRejected: true,
   };
   const blockers = Object.entries(expected)
     .filter(([key, expectedValue]) => record?.[key] !== expectedValue)
@@ -564,13 +568,18 @@ export async function runWindowsNodeMxcSmoke(
   gatewayGeneration: string,
   nodeId: string,
   settingsFingerprint: string,
-  probeTier: string,
+  probe: MxcProbeResult,
   authorization: WindowsNodeMxcReadinessAuthorization,
 ): Promise<StoredWindowsNodeMxcSmoke> {
   if (!gateway.connected) throw new Error("MicroClaw managed Gateway is not connected");
   if (!nodeId.trim()) throw new Error("A stable Windows node ID is required");
   if (!settingsFingerprint) throw new Error("Strict Windows Companion settings are not loaded");
-  if (!probeTier) throw new Error("A supported MXC tier is required");
+  if (probe.outcome !== "supported" || probe.degraded || !probe.tier) {
+    throw new Error(
+      probe.reason ??
+        "Exact filesystem isolation requires the base-container or appcontainer-bfs MXC tier",
+    );
+  }
   if (
     authorization.transitionId !== authorization.proofContext.readinessTransitionId ||
     gatewayGeneration !== authorization.proofContext.gatewayGeneration ||
@@ -607,7 +616,7 @@ export async function runWindowsNodeMxcSmoke(
     gatewayGeneration,
     nodeId: nodeId.trim(),
     settingsFingerprint,
-    probeTier,
+    probeTier: probe.tier,
     checkedAt: new Date().toISOString(),
     hostname,
     powershell,

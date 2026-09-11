@@ -337,6 +337,8 @@ export interface MxcProbeResult {
   reason: string | null;
 }
 
+const MXC_EXACT_FILESYSTEM_ISOLATION_TIERS = new Set(["base-container", "appcontainer-bfs"]);
+
 export interface MxcSmokeResult {
   outcome:
     | "passed"
@@ -925,26 +927,39 @@ export function classifyMxcProbe(
   const tier = typeof parsed.tier === "string" ? parsed.tier.trim() : "";
   if (!tier) return probeError("wxc-exec --probe did not report an isolation tier");
   const normalizedTier = tier.toLowerCase();
-  if (!["base-container", "appcontainer-bfs", "appcontainer-dacl"].includes(normalizedTier)) {
+  if (![...MXC_EXACT_FILESYSTEM_ISOLATION_TIERS, "appcontainer-dacl"].includes(normalizedTier)) {
     return probeError(`wxc-exec --probe reported an unrecognized isolation tier: ${tier}`);
   }
   const needsDaclAugmentation = parsed.needsDaclAugmentation === true;
+  const degraded =
+    needsDaclAugmentation || !MXC_EXACT_FILESYSTEM_ISOLATION_TIERS.has(normalizedTier);
+  if (degraded) {
+    return {
+      outcome: "unsupported",
+      tier,
+      needsDaclAugmentation,
+      degraded: true,
+      warnings,
+      reason:
+        `MXC isolation tier ${tier} cannot enforce the configured filesystem roots as a hard ` +
+        "capability boundary; base-container or appcontainer-bfs is required",
+    };
+  }
   return {
     outcome: "supported",
     tier,
     needsDaclAugmentation,
-    degraded:
-      needsDaclAugmentation || !["base-container", "appcontainer-bfs"].includes(normalizedTier),
+    degraded: false,
     warnings,
     reason: null,
   };
 }
 
 export function getMxcTierWarning(probe: MxcProbeResult): string | null {
-  if (probe.outcome !== "supported" || !probe.degraded) return null;
-  return `Degraded MXC containment: ${probe.tier ?? "unknown tier"}${
+  if (!probe.degraded) return null;
+  return `Rejected degraded MXC containment: ${probe.tier ?? "unknown tier"}${
     probe.needsDaclAugmentation ? " requires host DACL augmentation" : ""
-  }. This mode remains usable but is weaker than base-container or appcontainer-bfs.`;
+  }. This mode cannot enforce the configured folder policy exactly.`;
 }
 
 export function classifyMxcSmoke(value: unknown, expectedMarker: string): MxcSmokeResult {

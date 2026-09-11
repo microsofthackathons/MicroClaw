@@ -71,6 +71,7 @@ internal static class Program
             var policy = await HostPolicy.LoadVerifiedAsync(
                 bootstrap.PolicyPath,
                 bootstrap.PolicyFingerprint);
+            await MxcIsolationTierGuard.EnsureExactFilesystemIsolationAsync(policy.WxcExecPath);
             SecureStateDirectory.Ensure(bootstrap.IdentityDirectory);
             var approvalDirectory = Path.GetDirectoryName(bootstrap.ApprovalsPath)
                 ?? throw new HostPolicyException(

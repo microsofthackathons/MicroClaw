@@ -12,6 +12,8 @@ namespace MicroClaw.WindowsNodeHost.Tests;
 
 public sealed class CwdPolicyTests : IDisposable
 {
+    private static readonly Func<CancellationToken, Task> NoopIsolationGuard =
+        _ => Task.CompletedTask;
     private readonly string _root = Path.Combine(Path.GetTempPath(), "microclaw-cwd-tests-" + Guid.NewGuid().ToString("N"));
 
     public CwdPolicyTests()
@@ -249,6 +251,7 @@ public sealed class CwdPolicyTests : IDisposable
             root.GetProperty("approvalProofPlanContract").GetString());
         Assert.True(root.GetProperty("approvalProofBindsExecutableContent").GetBoolean());
         Assert.True(root.GetProperty("approvalProofBindsActivation").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeApprovalProofRevalidation").GetBoolean());
         Assert.Equal(
             "microclaw.windows-node-readiness.v1",
             root.GetProperty("readinessProofContract").GetString());
@@ -256,6 +259,9 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(root.GetProperty("readinessProofBindsPreparedPlan").GetBoolean());
         Assert.True(root.GetProperty("readinessProofExactBuiltInsOnly").GetBoolean());
         Assert.True(root.GetProperty("readinessProofOneUse").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeReadinessProofRevalidation").GetBoolean());
+        Assert.True(root.GetProperty("exactFilesystemIsolationRequired").GetBoolean());
+        Assert.True(root.GetProperty("degradedIsolationTierRejected").GetBoolean());
         Assert.True(root.GetProperty("durableApprovalStoreProtected").GetBoolean());
         Assert.False(root.GetProperty("durableApprovalsPresent").GetBoolean());
         Assert.False(root.TryGetProperty("Contract", out _));
@@ -660,7 +666,8 @@ public sealed class CwdPolicyTests : IDisposable
                     Path.Combine(_root, "missing-lease.json"),
                     Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
                     "unused-generation",
-                    "unused-fingerprint"));
+                    "unused-fingerprint"),
+                isolationGuard: NoopIsolationGuard);
 
             var response = await capability.ExecuteAsync(
                 new NodeInvokeRequest
@@ -743,6 +750,136 @@ public sealed class CwdPolicyTests : IDisposable
     }
 
     [Fact]
+    public void DeniedRootsOverrideApprovedRootsWhenBuildingMxcPolicy()
+    {
+        var denied = Directory.CreateDirectory(Path.Combine(_root, "approved", "sensitive")).FullName;
+        var approved = Directory.GetParent(denied)!.FullName;
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch-denied")).FullName;
+
+        var error = Assert.Throws<HostPolicyException>(() =>
+            BundledSystemCapability.BuildMxcConfig(
+                Policy(
+                    [new ApprovedRoot(approved, FolderAccess.ReadWrite)],
+                    [WindowsPathCanonicalizer.CanonicalizeDirectory(denied)]),
+                Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+                [],
+                approved,
+                scratch,
+                30_000));
+
+        Assert.Equal("approved-root-overlaps-sensitive-root", error.Code);
+    }
+
+    [Fact]
+    public void FilesystemPolicyKeepsApprovalSeparateFromConfiguredRootCapabilities()
+    {
+        var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
+        var nestedDesktop = Directory.CreateDirectory(Path.Combine(desktop, "nested")).FullName;
+        var downloads = Directory.CreateDirectory(Path.Combine(_root, "Downloads")).FullName;
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch-boundary")).FullName;
+        var executable = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        var arguments = new[]
+        {
+            "-NoProfile",
+            "-Command",
+            $"Set-Content -Path '{Path.Combine(downloads, "outside.txt")}' -Value denied",
+        };
+
+        var desktopReadWrite = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]),
+            executable,
+            arguments,
+            nestedDesktop,
+            scratch,
+            30_000);
+        Assert.Equal([desktop, scratch], desktopReadWrite.Filesystem!.ReadwritePaths!);
+        Assert.Empty(desktopReadWrite.Filesystem.ReadonlyPaths!);
+        Assert.DoesNotContain(
+            downloads,
+            desktopReadWrite.Filesystem.ReadwritePaths!,
+            StringComparer.OrdinalIgnoreCase);
+        using (var serialized = JsonDocument.Parse(
+            BundledSystemCapability.SerializeMxcConfig(desktopReadWrite)))
+        {
+            Assert.False(
+                serialized.RootElement
+                    .GetProperty("fallback")
+                    .GetProperty("allowDaclMutation")
+                    .GetBoolean());
+        }
+
+        var desktopReadOnly = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadOnly)]),
+            executable,
+            arguments,
+            desktop,
+            scratch,
+            30_000);
+        Assert.Equal([desktop], desktopReadOnly.Filesystem!.ReadonlyPaths!);
+        Assert.DoesNotContain(
+            desktop,
+            desktopReadOnly.Filesystem.ReadwritePaths!,
+            StringComparer.OrdinalIgnoreCase);
+
+        var downloadsReadWrite = BundledSystemCapability.BuildMxcConfig(
+            Policy(
+            [
+                new ApprovedRoot(desktop, FolderAccess.ReadWrite),
+                new ApprovedRoot(downloads, FolderAccess.ReadWrite),
+            ]),
+            executable,
+            arguments,
+            desktop,
+            scratch,
+            30_000);
+        Assert.Contains(
+            downloads,
+            downloadsReadWrite.Filesystem!.ReadwritePaths!,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("base-container")]
+    [InlineData("appcontainer-bfs")]
+    public void ExactFilesystemIsolationTiersAreAccepted(string tier)
+    {
+        var actual = MxcIsolationTierGuard.ValidateProbeResult(
+            0,
+            $$"""{"tier":{{JsonSerializer.Serialize(tier)}},"needsDaclAugmentation":false}""",
+            string.Empty);
+
+        Assert.Equal(tier, actual);
+    }
+
+    [Theory]
+    [InlineData("appcontainer-dacl", false)]
+    [InlineData("base-container", true)]
+    [InlineData("future-tier", false)]
+    public void DegradedFilesystemIsolationTiersFailClosed(string tier, bool needsDaclAugmentation)
+    {
+        var error = Assert.Throws<HostPolicyException>(() =>
+            MxcIsolationTierGuard.ValidateProbeResult(
+                0,
+                $$"""{"tier":{{JsonSerializer.Serialize(tier)}},"needsDaclAugmentation":{{JsonSerializer.Serialize(needsDaclAugmentation)}}}""",
+                string.Empty));
+
+        Assert.Equal("mxc-filesystem-isolation-insufficient", error.Code);
+    }
+
+    [Fact]
+    public void LockedExecutableContentMustMatchExpectedHash()
+    {
+        var executable = Path.Combine(_root, "fake-wxc-exec.exe");
+        File.WriteAllText(executable, "not the pinned runtime");
+        using var lease = ExecutableApprovalLease.Acquire(executable);
+
+        var error = Assert.Throws<HostPolicyException>(() =>
+            lease.VerifySha256(new string('0', 64)));
+
+        Assert.Equal("executable-hash-mismatch", error.Code);
+    }
+
+    [Fact]
     public async Task DiagnosticDeclaredCommandRetainsAttendedPromptAndDenyStopsExecution()
     {
         var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
@@ -770,7 +907,8 @@ public sealed class CwdPolicyTests : IDisposable
             Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]),
             pipeName,
             approvalsPath,
-            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint));
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
+            isolationGuard: NoopIsolationGuard);
         var command = new[]
         {
             @"C:\Windows\System32\cmd.exe",
@@ -845,7 +983,8 @@ public sealed class CwdPolicyTests : IDisposable
             Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
             pipeName,
             approvalsPath,
-            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint));
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
+            isolationGuard: NoopIsolationGuard);
         var command = ReadinessProbeContract.Probes["hostname"];
         var commandText = WindowsCommandLine.Join(command);
 
@@ -908,7 +1047,8 @@ public sealed class CwdPolicyTests : IDisposable
                 generation,
                 fingerprint,
                 nodeId,
-                transitionId));
+                transitionId),
+            isolationGuard: NoopIsolationGuard);
 
         var response = await capability.ExecuteAsync(
             new NodeInvokeRequest
@@ -967,7 +1107,8 @@ public sealed class CwdPolicyTests : IDisposable
                 proofSecret,
                 generation,
                 fingerprint,
-                nodeId));
+                nodeId),
+            isolationGuard: NoopIsolationGuard);
 
         var response = await capability.ExecuteAsync(
             new NodeInvokeRequest
@@ -1009,6 +1150,60 @@ public sealed class CwdPolicyTests : IDisposable
 
         Assert.False(response.Ok);
         Assert.Contains("declare-access-position-invalid", response.Error);
+    }
+
+    [Fact]
+    public async Task IsolationTierDegradationAfterPrepareStopsBeforeApprovalOrExecution()
+    {
+        var leasePath = Path.Combine(_root, "degraded-tier-lease.json");
+        var approvalsPath = Path.Combine(_root, "degraded-tier-approvals.json");
+        var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "degraded-tier-generation";
+        const string fingerprint = "degraded-tier-policy";
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var strongTier = true;
+        Task Guard(CancellationToken _)
+        {
+            if (!strongTier)
+                throw new HostPolicyException(
+                    "mxc-filesystem-isolation-insufficient",
+                    "MXC isolation degraded.");
+            return Task.CompletedTask;
+        }
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            "missing-approval-pipe-" + Guid.NewGuid().ToString("N"),
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
+            isolationGuard: Guard);
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var args = Parse(JsonSerializer.Serialize(new
+        {
+            command,
+            rawCommand = WindowsCommandLine.Join(command),
+            agentId = "main",
+            sessionKey = "agent:main:degraded-tier",
+        }));
+
+        var prepared = await capability.ExecuteAsync(
+            new NodeInvokeRequest { Command = "system.run.prepare", Args = args },
+            TestContext.Current.CancellationToken);
+        Assert.True(prepared.Ok, prepared.Error);
+
+        strongTier = false;
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest { Command = "system.run", Args = args },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Ok);
+        Assert.Contains("mxc-filesystem-isolation-insufficient", response.Error);
+        Assert.False(File.Exists(approvalsPath));
     }
 
     [Fact]
@@ -1128,7 +1323,8 @@ public sealed class CwdPolicyTests : IDisposable
                 Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
                 "unused-generation",
                 "unused-fingerprint"),
-            uiLocale);
+            uiLocale,
+            isolationGuard: NoopIsolationGuard);
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 

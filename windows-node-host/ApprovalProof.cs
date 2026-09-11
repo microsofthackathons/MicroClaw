@@ -173,6 +173,14 @@ internal sealed class ApprovalProofVerifier
             proof.ExpiresAtUnixMs);
     }
 
+    public void Revalidate(ValidatedApprovalProof proof)
+    {
+        if (proof.ExpiresAtUnixMs <= _nowUnixMs())
+            throw new HostPolicyException(
+                "approval-proof-stale",
+                "The Gateway approval proof expired before process launch.");
+    }
+
     public static string ComputePlanSha256(JsonElement args, DurableApproval currentIdentity)
     {
         if (!args.TryGetProperty("systemRunPlan", out var plan)

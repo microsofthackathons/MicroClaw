@@ -28,6 +28,11 @@ The helper advertises only `system.run`, proof-only `system.run.readiness`, `sys
 when MXC is absent or fails. Network, clipboard, input injection, MCP, screen, camera, canvas,
 browser, location, and speech capabilities are absent. `allowWindowsUi=true` is required for
 PowerShell compatibility with MXC 0.7; it does not activate any UI capture or input capability.
+MicroClaw accepts only the `base-container` and `appcontainer-bfs` isolation tiers. The
+`appcontainer-dacl` tier is rejected before the node registers because its additive ACL grants
+cannot remove ambient filesystem access and therefore cannot enforce approved folders as a hard
+capability ceiling. Every command config also sets `fallback.allowDaclMutation=false`, so an
+individual invocation cannot silently downgrade after readiness.
 
 Gateway-native file/process tools remain removed from the agent surface. The policy pins `exec` to
 the app-owned node and denies the runtime/filesystem/plugin groups. An empty OpenClaw allowlist is
@@ -230,11 +235,12 @@ back to the chat session while replay normalizes the plan to `null`, which the G
 rejects as `approval id does not match request`.
 
 After explicit consent, the MicroClaw-built system-drive helper and the official MXC null-device
-helper both completed successfully. Non-elevated probing reports `appcontainer-dacl` with no host-
-preparation warning. Live locked-generation proof reached the exact bundled node and official
-`wxc-exec.exe`; protected `C:\Windows` CWD denial, `cmd.exe -> hostname.exe`, and PowerShell child
-execution all pass under transition-bound internal one-use proofs with no durable approval, user
-prompt, or host fallback. Ordinary agent execution retains the visible approval contract.
+helper both completed successfully. A host that reports `appcontainer-dacl` remains locked; only
+`base-container` or `appcontainer-bfs` can proceed to live readiness. On a supported host, locked-
+generation proof reaches the exact bundled node and official `wxc-exec.exe`; protected `C:\Windows`
+CWD denial, `cmd.exe -> hostname.exe`, and PowerShell child execution pass under transition-bound
+internal one-use proofs with no durable approval, user prompt, or host fallback. Ordinary agent
+execution retains the visible approval contract.
 The active transaction also passed end to end: MicroClaw reported chat disconnected before release,
 started a new Gateway generation, re-attested the exact node and `exec`-only tool surface, repeated
 all three smokes, issued and renewed the generation-bound active lease, then reported chat connected.

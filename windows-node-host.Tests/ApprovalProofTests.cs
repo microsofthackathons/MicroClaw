@@ -58,6 +58,24 @@ public sealed class ApprovalProofTests
     }
 
     [Fact]
+    public void RevalidationRejectsProofThatExpiresBeforeLaunch()
+    {
+        var now = IssuedAtUnixMs;
+        var verifier = new ApprovalProofVerifier(
+            Secret,
+            "generation-test-001",
+            PolicyFingerprint,
+            NodeId,
+            () => now);
+        var validated = verifier.ValidateAndConsume(Args(VectorProof()), CurrentIdentity);
+
+        now = validated.ExpiresAtUnixMs;
+        var error = Assert.Throws<HostPolicyException>(() => verifier.Revalidate(validated));
+
+        Assert.Equal("approval-proof-stale", error.Code);
+    }
+
+    [Fact]
     public async Task ConcurrentConsumptionAllowsExactlyOneInvocation()
     {
         var verifier = Verifier(IssuedAtUnixMs);

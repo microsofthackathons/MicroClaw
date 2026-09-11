@@ -72,6 +72,28 @@ public sealed class ReadinessProofTests
         Assert.Equal(23, results.Count(result => result == "readiness-proof-replayed"));
     }
 
+    [Fact]
+    public void RevalidationRejectsProofThatExpiresBeforeLaunch()
+    {
+        var now = IssuedAtUnixMs;
+        var verifier = new ReadinessProofVerifier(
+            Secret,
+            Generation,
+            PolicyFingerprint,
+            NodeId,
+            TransitionId,
+            () => now);
+        var args = Args();
+        var validated = verifier.ValidateAndConsume(
+            Args(Sign(UnsignedProof(args))),
+            CurrentIdentity);
+
+        now = validated.ExpiresAtUnixMs;
+        var error = Assert.Throws<HostPolicyException>(() => verifier.Revalidate(validated));
+
+        Assert.Equal("readiness-proof-stale", error.Code);
+    }
+
     [Theory]
     [InlineData("transition", "readiness-proof-transition-mismatch")]
     [InlineData("generation", "readiness-proof-generation-mismatch")]

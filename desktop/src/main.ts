@@ -1363,7 +1363,7 @@ function assertWindowsNodeMxcBaseReady(
     failures.push("Strict MXC no-host-fallback is not effective");
   if (!status.allowWindowsUiEffective)
     failures.push("PowerShell compatibility policy is not effective");
-  if (status.probe.outcome !== "supported" || !status.probe.tier) {
+  if (status.probe.outcome !== "supported" || status.probe.degraded || !status.probe.tier) {
     failures.push(status.probe.reason ?? "MXC did not report a supported containment tier");
   }
   if (!status.settingsFingerprint) failures.push("The bundled node security policy is unavailable");
@@ -1464,8 +1464,16 @@ async function runCurrentWindowsNodeMxcSmoke(
   status: WindowsNodeMxcRuntimeStatus,
 ): Promise<StoredWindowsNodeMxcSmoke> {
   if (!gwClient?.connected) throw new Error("MicroClaw managed Gateway is not connected");
-  if (!status.settingsFingerprint || !status.probe.tier) {
-    throw new Error("Current MXC settings and containment tier are required");
+  if (
+    !status.settingsFingerprint ||
+    status.probe.outcome !== "supported" ||
+    status.probe.degraded ||
+    !status.probe.tier
+  ) {
+    throw new Error(
+      status.probe.reason ??
+        "Current MXC settings and an exact filesystem isolation tier are required",
+    );
   }
   const expectedGeneration = gatewayGenerationId;
   const transitionId = windowsNodeMxcReadinessTransitionId;
@@ -1486,7 +1494,7 @@ async function runCurrentWindowsNodeMxcSmoke(
       expectedGeneration,
       status.selectedNodeId,
       status.settingsFingerprint,
-      status.probe.tier,
+      status.probe,
       { transitionId, proofContext },
     );
     if (gatewayGenerationId !== expectedGeneration || !gwClient.connected) {

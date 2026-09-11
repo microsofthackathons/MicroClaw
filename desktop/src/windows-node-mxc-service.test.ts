@@ -6,11 +6,13 @@ import {
   WINDOWS_NODE_MXC_SCRATCH_BINDING,
   windowsNodeMxcReadinessSessionKey,
 } from "./windows-node-mxc-readiness-proof";
+import { classifyMxcProbe } from "./windows-node-mxc";
 import { runWindowsNodeMxcSmoke, type WindowsNodeMxcGateway } from "./windows-node-mxc-service";
 
 const transitionId = "12345678-1234-4234-8234-123456789abc";
 const generation = "generation-test-001";
 const nodeId = "b".repeat(64);
+const strongProbe = classifyMxcProbe(0, JSON.stringify({ tier: "base-container" }), "");
 
 function preparedPlan(probeKind: "hostname" | "powershell") {
   const argv = [...WINDOWS_NODE_MXC_READINESS_PROBES[probeKind]];
@@ -74,7 +76,7 @@ describe("Windows Node MXC readiness smoke", () => {
       generation,
       nodeId,
       "settings-fingerprint",
-      "appcontainer-dacl",
+      strongProbe,
       authorization(),
     );
 
@@ -115,7 +117,7 @@ describe("Windows Node MXC readiness smoke", () => {
         "another-generation",
         nodeId,
         "settings",
-        "appcontainer-dacl",
+        strongProbe,
         authorization(),
       ),
     ).rejects.toThrow(/does not match/);
@@ -125,16 +127,31 @@ describe("Windows Node MXC readiness smoke", () => {
         generation,
         "d".repeat(64),
         "settings",
-        "appcontainer-dacl",
+        strongProbe,
         authorization(),
       ),
     ).rejects.toThrow(/does not match/);
     await expect(
-      runWindowsNodeMxcSmoke(gateway, generation, nodeId, "settings", "appcontainer-dacl", {
+      runWindowsNodeMxcSmoke(gateway, generation, nodeId, "settings", strongProbe, {
         ...authorization(),
         transitionId: "12345678-1234-4234-8234-123456789abe",
       }),
     ).rejects.toThrow(/does not match/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rejects degraded containment before invoking the node", async () => {
+    const request = vi.fn();
+    const gateway = { connected: true, request } as unknown as WindowsNodeMxcGateway;
+    const degraded = classifyMxcProbe(
+      0,
+      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
+      "",
+    );
+
+    await expect(
+      runWindowsNodeMxcSmoke(gateway, generation, nodeId, "settings", degraded, authorization()),
+    ).rejects.toThrow(/cannot enforce the configured filesystem roots/);
     expect(request).not.toHaveBeenCalled();
   });
 });
