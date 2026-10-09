@@ -1,11 +1,22 @@
 import { app } from "electron";
-import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
+import {
+  type ChildProcessWithoutNullStreams,
+  execFile,
+  execFileSync,
+  spawn,
+} from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
+import {
+  validateWindowsNodeMxcAmbientAccessAssessment,
+  type WindowsNodeMxcAmbientAccessAssessment,
+  type WindowsNodeMxcAmbientAccessCategory,
+  type WindowsNodeMxcEffectiveStrength,
+} from "./windows-node-mxc-modes";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
@@ -44,6 +55,9 @@ export interface BundledWindowsNodeHostStatus {
   gatewayGeneration: string | null;
   policyFingerprint: string | null;
   activationLease: BundledWindowsNodeActivationLease | null;
+  requestedStrength: WindowsNodeMxcEffectiveStrength | null;
+  effectiveTier: string | null;
+  ambientAccess: WindowsNodeMxcAmbientAccessAssessment | null;
 }
 
 export interface BundledWindowsNodeActivationLease {
@@ -83,8 +97,18 @@ interface StartOptions {
   uiLocale: string;
   openClawStateRoot: string;
   folders: BundledWindowsNodeFolder[];
+  requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">;
+  effectiveTier: string;
+  ambientAccess: BundledWindowsNodeAmbientAccess | null;
   approvalProof: BundledWindowsNodeApprovalProofContext;
   onApproval: (approval: BundledApprovalRequest | null) => void;
+}
+
+export interface BundledWindowsNodeAmbientAccess extends WindowsNodeMxcAmbientAccessAssessment {
+  targets: Array<{
+    category: WindowsNodeMxcAmbientAccessCategory;
+    path: string;
+  }>;
 }
 
 export interface BundledWindowsNodeGateway {
@@ -122,13 +146,22 @@ export class BundledWindowsNodeHost {
     folders: BundledWindowsNodeFolder[],
     openClawStateRoot: string,
     readinessTransitionId: string,
+    requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off"> = "full",
+    effectiveTier = "base-container",
+    ambientAccess: BundledWindowsNodeAmbientAccess | null = null,
   ): BundledWindowsNodeApprovalProofContext {
     if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
     if (!/^[a-f0-9]{64}$/i.test(nodeId)) throw new Error("Bundled Windows node ID is invalid");
     if (!isUuid(readinessTransitionId)) {
       throw new Error("Bundled Windows node readiness transition ID is invalid");
     }
-    const policyJson = this.buildPolicyJson(folders, openClawStateRoot);
+    const policyJson = this.buildPolicyJson(
+      folders,
+      openClawStateRoot,
+      requestedStrength,
+      effectiveTier,
+      ambientAccess,
+    );
     return {
       contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
       secretBase64: randomBytes(32).toString("base64"),
@@ -153,9 +186,17 @@ export class BundledWindowsNodeHost {
     const policyPath = path.join(stateRoot, "policy.json");
     const activationLeasePath = path.join(stateRoot, "activation-lease.json");
     const scratchRoot = path.join(stateRoot, "scratch");
+    const ambientScratchRoot = path.join(stateRoot, "ambient-scratch");
     await fs.promises.mkdir(stateRoot, { recursive: true });
     await fs.promises.mkdir(scratchRoot, { recursive: true });
-    const policyJson = this.buildPolicyJson(options.folders, options.openClawStateRoot);
+    await fs.promises.mkdir(ambientScratchRoot, { recursive: true });
+    const policyJson = this.buildPolicyJson(
+      options.folders,
+      options.openClawStateRoot,
+      options.requestedStrength,
+      options.effectiveTier,
+      options.ambientAccess,
+    );
     await writeTextAtomically(policyPath, policyJson);
     await fs.promises.rm(activationLeasePath, { force: true });
     const activationLeaseSecret = randomBytes(32);
@@ -249,10 +290,20 @@ export class BundledWindowsNodeHost {
     });
   }
 
-  private buildPolicyJson(folders: BundledWindowsNodeFolder[], openClawStateRoot: string): string {
+  private buildPolicyJson(
+    folders: BundledWindowsNodeFolder[],
+    openClawStateRoot: string,
+    requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">,
+    effectiveTier: string,
+    ambientAccess: BundledWindowsNodeAmbientAccess | null,
+  ): string {
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
+    const ambientAssessmentScratchRoot = path.join(stateRoot, "ambient-scratch");
     return JSON.stringify(
       {
+        policySchemaVersion: 2,
+        requestedStrength,
+        effectiveTier,
         approvedRoots: folders.map((folder) => ({
           path: folder.path,
           access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
@@ -264,10 +315,59 @@ export class BundledWindowsNodeHost {
         clipboard: "none",
         inputInjection: false,
         strictNoHostFallback: true,
+        ambientAssessmentScratchRoot,
+        ambientAccess: ambientAccess
+          ? {
+              contract: ambientAccess.contract,
+              hash: ambientAccess.hash,
+              entries: ambientAccess.entries.map((entry) => ({
+                ...entry,
+                path:
+                  ambientAccess.targets.find((target) => target.category === entry.category)
+                    ?.path ?? "",
+              })),
+            }
+          : null,
       },
       null,
       2,
     );
+  }
+
+  async assessLimitedAmbientAccess(
+    openClawStateRoot: string,
+  ): Promise<BundledWindowsNodeAmbientAccess> {
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath);
+    const stateRoot = path.join(app.getPath("userData"), "windows-node");
+    const scratchRoot = path.join(stateRoot, "ambient-scratch");
+    await fs.promises.mkdir(scratchRoot, { recursive: true });
+    const targets = resolveAmbientAccessTargets(openClawStateRoot);
+    const requestPath = path.join(
+      stateRoot,
+      `ambient-assessment-${process.pid}-${randomBytes(8).toString("hex")}.json`,
+    );
+    try {
+      await writeTextAtomically(
+        requestPath,
+        JSON.stringify(
+          {
+            wxcExecPath: this.wxcExecPath,
+            scratchRoot,
+            targets,
+          },
+          null,
+          2,
+        ),
+      );
+      const stdout = await execFileText(this.hostPath, ["--ambient-assess", requestPath], 180_000);
+      const parsed = JSON.parse(stdout) as unknown;
+      if (!validateWindowsNodeMxcAmbientAccessAssessment(parsed)) {
+        throw new Error("Bundled Windows node returned an invalid ambient-access assessment");
+      }
+      return { ...parsed, targets };
+    } finally {
+      await fs.promises.rm(requestPath, { force: true });
+    }
   }
 
   async setActivationLease(
@@ -489,6 +589,16 @@ export class BundledWindowsNodeHost {
       nodeId: this.tryReadNodeId(),
       gatewayGeneration: this.gatewayGeneration,
       policyFingerprint: this.policyFingerprint,
+      requestedStrength: this.startOptions?.requestedStrength ?? null,
+      effectiveTier: this.startOptions?.effectiveTier ?? null,
+      ambientAccess: this.startOptions?.ambientAccess
+        ? {
+            contract: this.startOptions.ambientAccess.contract,
+            hash: this.startOptions.ambientAccess.hash,
+            checkedAt: this.startOptions.ambientAccess.checkedAt,
+            entries: this.startOptions.ambientAccess.entries.map((entry) => ({ ...entry })),
+          }
+        : null,
       activationLease:
         this.activationLease && this.activationLease.expiresAtUnixMs > Date.now()
           ? { ...this.activationLease }
@@ -503,6 +613,79 @@ export class BundledWindowsNodeHost {
       return null;
     }
   }
+
+}
+
+function resolveAmbientAccessTargets(
+  openClawStateRoot: string,
+): BundledWindowsNodeAmbientAccess["targets"] {
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
+  const roamingAppData = process.env.APPDATA ?? path.join(home, "AppData", "Roaming");
+  return [
+    { category: "desktop", path: app.getPath("desktop") },
+    { category: "documents", path: app.getPath("documents") },
+    { category: "downloads", path: app.getPath("downloads") },
+    { category: "microclaw-state", path: app.getPath("userData") },
+    { category: "openclaw-state", path: openClawStateRoot },
+    { category: "openclaw-roaming-state", path: path.join(roamingAppData, "openclaw") },
+    { category: "ssh", path: path.join(home, ".ssh") },
+    { category: "gnupg", path: path.join(home, ".gnupg") },
+    { category: "aws", path: path.join(home, ".aws") },
+    { category: "azure", path: path.join(home, ".azure") },
+    { category: "kube", path: path.join(home, ".kube") },
+    { category: "gcloud", path: path.join(home, ".config", "gcloud") },
+    {
+      category: "windows-credentials",
+      path: path.join(roamingAppData, "Microsoft", "Credentials"),
+    },
+    {
+      category: "powershell-history",
+      path: path.join(roamingAppData, "Microsoft", "Windows", "PowerShell", "PSReadLine"),
+    },
+    {
+      category: "browser-chrome",
+      path: path.join(localAppData, "Google", "Chrome", "User Data"),
+    },
+    {
+      category: "browser-edge",
+      path: path.join(localAppData, "Microsoft", "Edge", "User Data"),
+    },
+    {
+      category: "browser-brave",
+      path: path.join(localAppData, "BraveSoftware", "Brave-Browser", "User Data"),
+    },
+    {
+      category: "browser-firefox",
+      path: path.join(roamingAppData, "Mozilla", "Firefox", "Profiles"),
+    },
+  ];
+}
+
+function execFileText(executable: string, args: string[], timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      executable,
+      args,
+      {
+        windowsHide: true,
+        timeout,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf8",
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(
+            new Error(
+              `Bundled Windows node ambient assessment failed: ${stderr.trim() || error.message}`,
+            ),
+          );
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
 }
 
 function isUuid(value: string): boolean {

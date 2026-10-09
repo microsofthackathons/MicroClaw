@@ -195,16 +195,25 @@ import {
 import {
   inspectWindowsNodeMxc,
   isCurrentBundledWindowsNodeApprovalCallback,
-  preflightWindowsNodeMxcExactBackend,
+  preflightWindowsNodeMxcBackend,
   runWindowsNodeMxcSmoke,
   shouldStopManagedGatewayForWindowsNodeMxc,
   type StoredWindowsNodeMxcSmoke,
   type WindowsNodeMxcRuntimeStatus,
 } from "./windows-node-mxc-service";
 import {
+  createWindowsNodeMxcSelection,
+  migrateWindowsNodeMxcSelection,
+  summarizeWindowsNodeMxcAmbientAccess,
+  type WindowsNodeMxcAmbientAccessAssessment,
+  type WindowsNodeMxcRequestedMode,
+  type WindowsNodeMxcSelection,
+} from "./windows-node-mxc-modes";
+import {
   BundledWindowsNodeHost,
   sensitiveWindowsRoots,
   type BundledApprovalRequest,
+  type BundledWindowsNodeAmbientAccess,
   type BundledWindowsNodeApprovalProofContext,
   type BundledWindowsNodeFolder,
 } from "./bundled-windows-node-host";
@@ -293,6 +302,10 @@ const settingsStore = new Store<{
   windowsNodeMxcToolBackups: Record<string, unknown | null>;
   /** AppContainer preference captured before entering the experimental mode. */
   windowsNodeMxcPreviousSandboxEnabled: boolean;
+  /** Versioned explicit MXC containment mode selection. */
+  windowsNodeMxcSelection?: WindowsNodeMxcSelection;
+  /** Last Limited-mode ambient-access assessment; paths are never persisted here. */
+  windowsNodeMxcAmbientAccess?: WindowsNodeMxcAmbientAccessAssessment;
   /** Last contained hostname + PowerShell readiness proof. */
   windowsNodeMxcSmoke?: StoredWindowsNodeMxcSmoke;
   /** Recoverable policy state retained across a failed apply/reactivate transaction. */
@@ -481,6 +494,8 @@ let bundledWindowsNodeGeneration = 0;
 let gatewayGenerationId = "";
 let gatewayHttpReadyGeneration: string | null = null;
 let windowsNodeMxcApprovalProofContext: BundledWindowsNodeApprovalProofContext | null = null;
+let windowsNodeMxcCurrentAmbientAccess: BundledWindowsNodeAmbientAccess | null = null;
+let windowsNodeMxcCurrentEffectiveTier: string | null = null;
 let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
@@ -1081,8 +1096,64 @@ function readConfig(): any {
   }
 }
 
+function getWindowsNodeMxcSelection(): WindowsNodeMxcSelection {
+  const current = settingsStore.get("windowsNodeMxcSelection");
+  const migrated = migrateWindowsNodeMxcSelection(
+    current,
+    settingsStore.get("securityMode") === WINDOWS_NODE_MXC_MODE,
+  );
+  if (JSON.stringify(current) !== JSON.stringify(migrated)) {
+    settingsStore.set("windowsNodeMxcSelection", migrated);
+  }
+  return migrated;
+}
+
+function getWindowsNodeMxcRequestedMode(): WindowsNodeMxcRequestedMode {
+  return getWindowsNodeMxcSelection().requestedMode;
+}
+
 function isWindowsNodeMxcDesired(): boolean {
-  return settingsStore.get("securityMode") === WINDOWS_NODE_MXC_MODE;
+  return getWindowsNodeMxcRequestedMode() !== "off";
+}
+
+async function prepareWindowsNodeMxcContainment(
+  requestedMode: Exclude<WindowsNodeMxcRequestedMode, "off">,
+): Promise<{
+  effectiveTier: string;
+  ambientAccess: BundledWindowsNodeAmbientAccess | null;
+}> {
+  const probe = await preflightWindowsNodeMxcBackend(
+    bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
+    requestedMode,
+  );
+  if (!probe.tier) throw new Error("MXC preflight did not attest an effective tier");
+  if (requestedMode === "full") {
+    windowsNodeMxcCurrentAmbientAccess = null;
+    windowsNodeMxcCurrentEffectiveTier = probe.tier;
+    settingsStore.delete("windowsNodeMxcAmbientAccess");
+    return { effectiveTier: probe.tier, ambientAccess: null };
+  }
+
+  const ambientAccess = await bundledWindowsNodeHost.assessLimitedAmbientAccess(
+    getOpenClawStateDir(),
+  );
+  const summary = summarizeWindowsNodeMxcAmbientAccess(ambientAccess);
+  if (summary.sensitiveAccessible.length > 0) {
+    throw new Error(
+      `Limited containment activation blocked because sensitive path categories are ambiently accessible: ${summary.sensitiveAccessible
+        .map((entry) => entry.category)
+        .join(", ")}`,
+    );
+  }
+  windowsNodeMxcCurrentAmbientAccess = ambientAccess;
+  windowsNodeMxcCurrentEffectiveTier = probe.tier;
+  settingsStore.set("windowsNodeMxcAmbientAccess", {
+    contract: ambientAccess.contract,
+    hash: ambientAccess.hash,
+    checkedAt: ambientAccess.checkedAt,
+    entries: ambientAccess.entries.map((entry) => ({ ...entry })),
+  });
+  return { effectiveTier: probe.tier, ambientAccess };
 }
 
 function isApplicationIngressReady(): boolean {
@@ -1140,6 +1211,7 @@ async function getWindowsNodeMxcStatus(): Promise<
     runtimeIntegrityError = error instanceof Error ? error.message : String(error);
   }
   const status = await inspectWindowsNodeMxc({
+    requestedMode: getWindowsNodeMxcRequestedMode(),
     desiredEnabled: isWindowsNodeMxcDesired(),
     selectedNodeId: settingsStore.get("windowsNodeMxcNodeId"),
     config: readConfig(),
@@ -1150,6 +1222,8 @@ async function getWindowsNodeMxcStatus(): Promise<
     bundledHost,
     bundledFolders,
     runtimeIntegrityError,
+    ambientAccess:
+      bundledHost.ambientAccess ?? settingsStore.get("windowsNodeMxcAmbientAccess") ?? null,
   });
   const durable = getWindowsNodeMxcDurableApprovalStore().inspect();
   const lifecyclePhase = windowsNodeMxcSecurityTransitionInProgress
@@ -1241,7 +1315,10 @@ async function handleWindowsNodeMxcGatewayApproval(
   const identity = proofContext
     ? durableApprovalIdentityFromGateway(approval, proofContext.policyFingerprint)
     : null;
-  const durable = identity ? getWindowsNodeMxcDurableApprovalStore().findExact(identity) : null;
+  const durable =
+    getWindowsNodeMxcRequestedMode() === "full" && identity
+      ? getWindowsNodeMxcDurableApprovalStore().findExact(identity)
+      : null;
   if (durable) {
     try {
       const consumed = await withWindowsNodeMxcApprovalResolution(async () => {
@@ -1301,13 +1378,22 @@ async function handleWindowsNodeMxcGatewayApproval(
     }
     return;
   }
+  const rendererApproval =
+    getWindowsNodeMxcRequestedMode() === "limited-dacl"
+      ? {
+          ...approval,
+          allowedDecisions: approval.allowedDecisions.filter(
+            (decision) => decision !== "allow-always",
+          ),
+        }
+      : approval;
   pendingWindowsNodeMxcGatewayApproval = {
-    request: approval,
+    request: rendererApproval,
     gatewayGeneration: approvalGeneration,
   };
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
-    ...approval,
-    commandText: approval.command,
+    ...rendererApproval,
+    commandText: rendererApproval.command,
     approvalLayer: "gateway",
   });
 }
@@ -1372,8 +1458,23 @@ function assertWindowsNodeMxcBaseReady(
     failures.push("Strict MXC no-host-fallback is not effective");
   if (!status.allowWindowsUiEffective)
     failures.push("PowerShell compatibility policy is not effective");
-  if (status.probe.outcome !== "supported" || status.probe.degraded || !status.probe.tier) {
-    failures.push(status.probe.reason ?? "MXC did not report a supported containment tier");
+  const expectedStrength = getWindowsNodeMxcRequestedMode();
+  const probeTier = status.probe.tier?.toLowerCase();
+  const probeAccepted =
+    expectedStrength === "limited-dacl"
+      ? status.probe.outcome !== "error" && probeTier === "appcontainer-dacl"
+      : status.probe.outcome === "supported" &&
+        !status.probe.degraded &&
+        (probeTier === "base-container" || probeTier === "appcontainer-bfs");
+  if (!probeAccepted) {
+    failures.push(status.probe.reason ?? "MXC did not report the explicitly requested tier");
+  }
+  if (
+    expectedStrength === "limited-dacl" &&
+    (!status.ambientAccess ||
+      summarizeWindowsNodeMxcAmbientAccess(status.ambientAccess).sensitiveAccessible.length > 0)
+  ) {
+    failures.push("Limited containment ambient-access assessment is missing or unsafe");
   }
   if (!status.settingsFingerprint) failures.push("The bundled node security policy is unavailable");
   if (!status.gatewayPolicyReady || status.gatewayPolicyState !== expectedPolicy) {
@@ -1475,8 +1576,6 @@ async function runCurrentWindowsNodeMxcSmoke(
   if (!gwClient?.connected) throw new Error("MicroClaw managed Gateway is not connected");
   if (
     !status.settingsFingerprint ||
-    status.probe.outcome !== "supported" ||
-    status.probe.degraded ||
     !status.probe.tier
   ) {
     throw new Error(
@@ -1505,6 +1604,8 @@ async function runCurrentWindowsNodeMxcSmoke(
       status.settingsFingerprint,
       status.probe,
       { transitionId, proofContext },
+      getWindowsNodeMxcRequestedMode() === "limited-dacl" ? "limited-dacl" : "full",
+      status.ambientAccess?.hash ?? null,
     );
     if (gatewayGenerationId !== expectedGeneration || !gwClient.connected) {
       throw new Error("Managed Gateway generation changed during contained smokes");
@@ -1548,9 +1649,9 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       sendToWindow(mainWindow, "gateway:service-loading");
     },
     preflightExactBackend: async () => {
-      await preflightWindowsNodeMxcExactBackend(
-        bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
-      );
+      const requestedMode = getWindowsNodeMxcRequestedMode();
+      if (requestedMode === "off") throw new Error("MXC containment mode is off");
+      await prepareWindowsNodeMxcContainment(requestedMode);
     },
     startLockedGeneration: async () => {
       await startGatewayWithWindowsNodeMxcPolicy("locked");
@@ -3780,6 +3881,11 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     // to the renderer via the gateway:log IPC channel (visible in Settings).
 
     const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
+    const windowsNodeMxcRequestedMode = getWindowsNodeMxcRequestedMode();
+    const containmentPreparation =
+      windowsNodeMxcDesired && windowsNodeMxcRequestedMode !== "off"
+        ? await prepareWindowsNodeMxcContainment(windowsNodeMxcRequestedMode)
+        : null;
     const nextGatewayGenerationId = randomUUID();
     const nextApprovalProofContext = windowsNodeMxcDesired
       ? bundledWindowsNodeHost.createApprovalProofContext(
@@ -3788,6 +3894,9 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
           getBundledWindowsNodeFolders(),
           stateDir,
           windowsNodeMxcReadinessTransitionId ?? randomUUID(),
+          windowsNodeMxcRequestedMode === "limited-dacl" ? "limited-dacl" : "full",
+          containmentPreparation?.effectiveTier ?? "",
+          containmentPreparation?.ambientAccess ?? null,
         )
       : null;
     const gwEnv: Record<string, string> = {
@@ -4527,6 +4636,12 @@ function connectGatewayWs(): void {
             uiLocale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
             openClawStateRoot: getOpenClawStateDir(),
             folders: getBundledWindowsNodeFolders(),
+            requestedStrength:
+              getWindowsNodeMxcRequestedMode() === "limited-dacl"
+                ? ("limited-dacl" as const)
+                : ("full" as const),
+            effectiveTier: windowsNodeMxcCurrentEffectiveTier ?? "",
+            ambientAccess: windowsNodeMxcCurrentAmbientAccess,
             approvalProof,
             onApproval: (approval: BundledApprovalRequest | null) => {
               if (
@@ -6504,11 +6619,14 @@ function registerIpcHandlers(): void {
 
   // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
   ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
-  ipcMain.handle("windows-node-mxc:preflight", async () => {
-    await preflightWindowsNodeMxcExactBackend(
-      bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
-    );
-  });
+  ipcMain.handle(
+    "windows-node-mxc:preflight",
+    async (_event, params?: { requestedMode?: WindowsNodeMxcRequestedMode }) => {
+      const requestedMode = params?.requestedMode ?? "full";
+      if (requestedMode === "off") return null;
+      return prepareWindowsNodeMxcContainment(requestedMode);
+    },
+  );
   ipcMain.handle("windows-node-mxc:approval-current", () =>
     getPendingWindowsNodeMxcApprovalForRenderer(),
   );
@@ -6533,7 +6651,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "windows-node-mxc:set-enabled",
-    async (_event, params: { enabled: boolean; nodeId?: string }) => {
+    async (
+      _event,
+      params: {
+        enabled?: boolean;
+        requestedMode?: WindowsNodeMxcRequestedMode;
+        acknowledgeLimitedFilesystem?: boolean;
+        nodeId?: string;
+      },
+    ) => {
       localModelService.assertIdle();
       sessionModelService.assertIdle();
       beginWindowsNodeMxcLifecycleOperation();
@@ -6541,7 +6667,25 @@ function registerIpcHandlers(): void {
       let automaticReadinessStarted = false;
       let transitionMutationStarted = false;
       try {
-        const enabled = params?.enabled === true;
+        const requestedMode =
+          params?.requestedMode ??
+          (params?.enabled === true ? "full" : params?.enabled === false ? "off" : null);
+        if (
+          requestedMode !== "off" &&
+          requestedMode !== "full" &&
+          requestedMode !== "limited-dacl"
+        ) {
+          throw new Error("A valid MXC containment mode is required");
+        }
+        const enabled = requestedMode !== "off";
+        const currentSelection = getWindowsNodeMxcSelection();
+        const nextSelection = createWindowsNodeMxcSelection(
+          requestedMode,
+          params?.acknowledgeLimitedFilesystem === true ||
+            (requestedMode === "limited-dacl" &&
+              currentSelection.requestedMode === "limited-dacl" &&
+              currentSelection.limitedFilesystemAcknowledgedAt !== null),
+        );
         if (gwClient?.connected && (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())) {
           throw new Error(
             "Windows Node + MXC mode requires MicroClaw's managed Gateway; stop the external Gateway first",
@@ -6555,9 +6699,7 @@ function registerIpcHandlers(): void {
         const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
         if (enabled) {
           setWindowsNodeMxcLifecycleState("validating");
-          await preflightWindowsNodeMxcExactBackend(
-            bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
-          );
+          await prepareWindowsNodeMxcContainment(requestedMode);
         }
 
         transitionMutationStarted = true;
@@ -6584,7 +6726,13 @@ function registerIpcHandlers(): void {
           }
           settingsStore.set("windowsNodeMxcToolBackups", applied.backups);
           settingsStore.set("windowsNodeMxcNodeId", nodeId);
+          settingsStore.set("windowsNodeMxcSelection", nextSelection);
           settingsStore.set("securityMode", WINDOWS_NODE_MXC_MODE);
+          if (requestedMode === "limited-dacl") {
+            await withWindowsNodeMxcDurableApprovalLock(() =>
+              getWindowsNodeMxcDurableApprovalStore().revokeAll(),
+            );
+          }
           settingsStore.set("sandboxEnabled", false);
           settingsStore.delete("windowsNodeMxcSmoke");
           toolSandbox?.setEnabled(false);
@@ -6608,7 +6756,11 @@ function registerIpcHandlers(): void {
           writeConfigTextAtomically(JSON.stringify(restored, null, 2));
           settingsStore.set("windowsNodeMxcToolBackups", {});
           settingsStore.delete("windowsNodeMxcSmoke");
+          settingsStore.delete("windowsNodeMxcAmbientAccess");
+          settingsStore.set("windowsNodeMxcSelection", nextSelection);
           settingsStore.set("securityMode", "appcontainer");
+          windowsNodeMxcCurrentAmbientAccess = null;
+          windowsNodeMxcCurrentEffectiveTier = null;
           setWindowsNodeMxcLifecycleState("starting-standard");
           postSpawnRestartDone = false;
           mainWindow?.webContents.send(
@@ -6666,6 +6818,14 @@ function registerIpcHandlers(): void {
         throw new Error("Invalid Windows node approval decision");
       }
       const normalizedDecision = decision as WindowsNodeMxcApprovalDecision;
+      if (
+        normalizedDecision === "allow-always" &&
+        getWindowsNodeMxcRequestedMode() === "limited-dacl"
+      ) {
+        throw new Error(
+          "Durable command approvals are disabled under Limited filesystem containment",
+        );
+      }
       const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
       if (gatewayApproval?.request.id === requestId) {
         await withWindowsNodeMxcApprovalResolution(async () => {
@@ -7322,9 +7482,9 @@ function registerIpcHandlers(): void {
             settingsStore.delete("windowsNodeMxcSmoke");
           },
           preflightExactBackend: async () => {
-            await preflightWindowsNodeMxcExactBackend(
-              bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
-            );
+            const requestedMode = getWindowsNodeMxcRequestedMode();
+            if (requestedMode === "off") throw new Error("MXC containment mode is off");
+            await prepareWindowsNodeMxcContainment(requestedMode);
           },
           validatePolicy: (candidate) => normalizeCompleteWindowsNodeMxcFolderPolicy(candidate),
           stopCurrentGeneration: async () => {

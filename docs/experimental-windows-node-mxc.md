@@ -28,11 +28,28 @@ The helper advertises only `system.run`, proof-only `system.run.readiness`, `sys
 when MXC is absent or fails. Network, clipboard, input injection, MCP, screen, camera, canvas,
 browser, location, and speech capabilities are absent. `allowWindowsUi=true` is required for
 PowerShell compatibility with MXC 0.7; it does not activate any UI capture or input capability.
-MicroClaw accepts only the `base-container` and `appcontainer-bfs` isolation tiers. The
-`appcontainer-dacl` tier is rejected before the node registers because its additive ACL grants
-cannot remove ambient filesystem access and therefore cannot enforce approved folders as a hard
-capability ceiling. Every command config also sets `fallback.allowDaclMutation=false`, so an
-individual invocation cannot silently downgrade after readiness.
+
+MicroClaw exposes three explicit requested states:
+
+| Requested state | Accepted MXC tier | Filesystem boundary |
+|---|---|---|
+| **Full containment** | `base-container` or `appcontainer-bfs` only | Selected RO/RW roots are a strict, exclusive capability ceiling |
+| **Limited containment (DACL)** | `appcontainer-dacl` only | Selected roots are additive ACL grants; ambient Windows ACL access can remain |
+| **Off** | No bundled MXC host | Restore the remembered standard sandbox route; it may be unsandboxed if that setting is off |
+
+Full containment is the security contract established by
+[#224](https://github.com/microsofthackathons/MicroClaw/pull/224). It rejects DACL augmentation,
+sets `fallback.allowDaclMutation=false`, and preserves the exact RO/RW ceiling, denied-root
+precedence, and out-of-root denial invariants.
+
+Limited containment is a separate, explicitly acknowledged threat model. It accepts only a
+probe-attested `appcontainer-dacl` tier and sets `fallback.allowDaclMutation=true` for the reviewed
+MXC DACL path. AppContainer process isolation, network denial, clipboard denial, input-injection
+denial, pinned-node execution, and strict no-host-fallback remain enforced. However, Windows ACLs
+may already allow the contained identity to access user folders outside the selected grants.
+Selected RO/RW folders therefore **add access** and are not an exclusive allowlist; a read-only
+selection cannot reduce a broader pre-existing ACL. MicroClaw never automatically changes Full to
+Limited after an OS update, probe change, startup failure, or settings migration.
 
 Gateway-native file/process tools remain removed from the agent surface. The policy pins `exec` to
 the app-owned node and denies the runtime/filesystem/plugin groups. An empty OpenClaw allowlist is
@@ -41,42 +58,59 @@ policy allowlists exactly the five bundled commands above. MicroClaw pairs/reapp
 app-owned device identity and does not expose manual node selection, even if another Windows
 Companion is connected.
 
-## CWD and durable approval contract
+## CWD and approval contract
 
 The exact attestation contract is `microclaw.windows-cwd.v1`. A supplied CWD must:
 
 - be an existing local drive-qualified directory;
 - reject UNC, device, NT object-manager, junction, symlink, and other reparse components;
 - resolve to the same final case-insensitive Windows path;
-- be equal to or below one canonical global RO/RW root;
+- be equal to or below one canonical selected RO/RW root;
 - not overlap a protected credential, OpenClaw state, SSH, cloud, or browser-profile root.
 
-CWD inherits the matched root's access; it never creates a grant. Omitted CWD binds approval to
-`isolated-scratch:v1` and launches in a per-run writable scratch directory. The node re-hashes the
-executable through its held handle; policy, reparse state, root membership, exact CWD binding, and
-declared access are revalidated immediately before launch. Delete-denying directory handles retain
-every approved-root/CWD path component through MXC completion, preventing a validated directory
-from being replaced by a junction during launch.
+CWD inherits the matched root's requested access; it never creates a grant. Omitted CWD binds
+approval to `isolated-scratch:v1` and launches in a per-run writable scratch directory. This check
+is launch-location validation, not proof that every target file is bounded by the selected roots.
+That stronger statement is true only in Full containment. In Limited containment, ambient Windows
+ACL access may still permit target-file access elsewhere. The node re-hashes the executable through
+its held handle; policy, reparse state, root membership, exact CWD binding, and declared access are
+revalidated immediately before launch. Delete-denying directory handles retain every approved-root
+/CWD path component through MXC completion, preventing a validated directory from being replaced by
+a junction during launch.
 
-Settings > Security presents this global policy as separate Read-only and Read/write lists. Folder
-selection uses Electron's trusted native directory picker. Equal paths are deduplicated, redundant
-nested grants are collapsed, and a narrower RW root under a broader RO root remains explicit. While
-MXC is enabled, edits remain a renderer draft and cannot mutate live ACLs or settings. **Apply changes
-and reactivate** performs one serialized fail-closed transaction: lock ingress, reject pending
-approvals, revoke proof/lease state, validate the complete draft, stop the exact generation, apply
-and atomically persist the same `sandboxUserDirsRO`/`sandboxUserDirsRW` policy, attest and smoke a
-locked generation, attest and smoke a fresh active generation, mint its lease, verify the effective
-route, then release ingress. The fixed smokes use internal one-use readiness proofs and never enter
-the user approval queue. Cancellation or any failure leaves execution locked and retains the
-attempted draft and previous policy for explicit retry or revert; MicroClaw never silently restores
-old active execution. Folder preparation that requires elevation fails locked without opening an
-elevation prompt. UNC, device-namespace, missing, reparse, final-target-changing, and protected
-credential/state/browser roots are rejected before persistence.
+Settings > Security presents the mode cards and separate Read-only and Read/write lists. In Full,
+these lists define the hard capability ceiling. In Limited, they are labeled as additional grants
+and do not claim to override ambient ACLs. Folder selection uses Electron's trusted native directory
+picker. Equal paths are deduplicated, redundant nested grants are collapsed, and a narrower RW root
+under a broader RO root remains explicit. While MXC is enabled, edits remain a renderer draft and
+cannot mutate live ACLs or settings. **Apply changes and reactivate** performs one serialized
+fail-closed transaction: lock ingress, reject pending approvals, revoke proof/lease state, validate
+the complete draft, stop the exact generation, apply and atomically persist the same
+`sandboxUserDirsRO`/`sandboxUserDirsRW` policy, attest and smoke a locked generation, attest and
+smoke a fresh active generation, mint its lease, verify the effective route, then release ingress.
+The fixed smokes use internal one-use readiness proofs and never enter the user approval queue.
+Cancellation or any failure leaves execution locked and retains the attempted draft and previous
+policy for explicit retry or revert; MicroClaw never silently restores old active execution. Folder
+preparation that requires elevation fails locked without opening an elevation prompt. UNC,
+device-namespace, missing, reparse, final-target-changing, and protected credential/state/browser
+roots are rejected before persistence.
+
+Persistent AppContainer folder ACL ownership is scoped to the exact
+`(MicroClaw AppContainer principal, canonical folder, requested RO/RW access)` tuple. Policy
+replacement revokes only the MicroClaw principal on changed folders, applies the new tuples in
+deterministic parent-before-child order, verifies propagation, and rolls the complete tuple set back
+if mutation or persistence fails. The recoverable previous/draft policy retains access levels, while
+the grant-history reconciliation removes stale MicroClaw grants on startup. Revocation is
+principal-targeted and does not replace the folder DACL, so pre-existing Windows, administrator,
+user, or third-party ACEs remain untouched.
 
 The normal active route has one visible Gateway/MicroClaw prompt. It displays executable, exact argv,
-agent/session scope, canonical CWD, and declared folder use, and offers Deny, Allow once, and eligible
-Allow always. MicroClaw resolves both allow choices upstream as one-use; it never delegates durable
-authority to the Gateway or node. The Gateway then mints a fresh 15-second, one-use HMAC proof bound
+agent/session scope, canonical CWD, declared folder use, the attested containment strength, and in
+Limited mode the category-only ambient-access summary. Full offers Deny, Allow once, and eligible
+Allow always. Limited offers only Deny and Allow once: durable approvals are rejected, including
+records created under another mode. MicroClaw resolves allowed executions upstream as one-use; it
+never delegates durable authority to the Gateway or node. The Gateway then mints a fresh 15-second,
+one-use HMAC proof bound
 to the exact generation, node, policy fingerprint, prepared plan, executable path/content hash, CWD,
 declarations, agent, and session. The node silently accepts only that proof after recapturing the
 held executable identity. Direct `node.invoke`, malformed, stale, replayed, or concurrent reuse is
@@ -101,8 +135,8 @@ command, canonical CWD or scratch semantic, normalized declarations, agent/sessi
 fingerprint, and plan contract. Writes are atomic and replace exact duplicates. Legacy, malformed,
 unbound, policy-stale, hash-stale, path-stale, or scope-mismatched records authorize nothing.
 Security settings shows creation/last-use details and supports individual or complete revocation. A
-valid exact match suppresses the visible prompt but still receives a fresh one-use Gateway proof and
-full node launch-time revalidation. It never changes configured folder grants.
+valid exact match suppresses the visible prompt in Full mode but still receives a fresh one-use
+Gateway proof and full node launch-time revalidation. It never changes configured folder grants.
 An unlisted declaration, or an RW declaration covered only by RO policy, is rejected before the
 command-approval prompt with localized remediation to change Settings > Security and retry. Omitting
 declaration metadata never expands the MXC policy: only the configured global roots are emitted, and
@@ -149,21 +183,24 @@ signed package hash; this avoids both excluding the MicroClaw-owned executable f
 and rejecting the package because Authenticode changed its bytes. The helper build disables
 repository-HEAD suffixes in its informational version so its pinned unsigned hash remains
 reproducible across MicroClaw commits.
+Host-prep prepare/unprepare is idempotent and removes only the exact non-callback
+All Application Packages metadata-read ACE tuple that MicroClaw owns. Tests preserve the existing
+child DACL byte-for-byte and preserve unrelated or callback ACEs, including ACEs for the same SID.
 
 ## Exact-backend host support
 
 MicroClaw does not provision an exact backend by changing host security state. It first validates
-the pinned runtime manifest and hashes, then runs `wxc-exec --probe`. The Windows node and Gateway
-activation sequence do not start unless the probe proves `base-container` or `appcontainer-bfs`
-with no DACL augmentation.
+the pinned runtime manifest and hashes, then runs `wxc-exec --probe`. Full activation does not start
+unless the probe proves `base-container` or `appcontainer-bfs` with no DACL augmentation. Limited
+activation does not start unless the same pinned runtime proves exactly `appcontainer-dacl`.
 
-| Probe and host state | Supported | Behavior |
-|---|---:|---|
-| `base-container`, Base Container API usable | Yes | Continue with locked-generation attestation |
-| `appcontainer-bfs`, BFS compiled in and `bfscfg.exe` present | Yes | Continue with locked-generation attestation |
-| `appcontainer-dacl` | No | Stay fail-closed; additive ACLs are not exact containment |
-| Base Container API absent and official MXC 0.7 BFS compiled out | No | Stay fail-closed with OS/API and runtime-build diagnostics |
-| Probe, version, source revision, or hash mismatch | No | Stay fail-closed and require repair of the reviewed runtime |
+| Probe and host state | Full | Limited | Behavior |
+|---|---:|---:|---|
+| `base-container`, Base Container API usable | Yes | No | Full may continue with locked-generation attestation |
+| `appcontainer-bfs`, BFS compiled in and `bfscfg.exe` present | Yes | No | Full may continue with locked-generation attestation |
+| `appcontainer-dacl` | No | Yes | Full remains disabled; Limited requires acknowledgment and ambient assessment |
+| Base Container API absent and official MXC 0.7 BFS compiled out | No | Probe-dependent | Show the exact [#228](https://github.com/microsofthackathons/MicroClaw/pull/228) Base Container/BFS prerequisite and remediation; never downgrade Full |
+| Probe, version, source revision, or hash mismatch | No | No | Stay fail-closed and require repair of the reviewed runtime |
 
 For MXC 0.7, Tier 1 dynamically requires `processmodel.dll` and
 `Experimental_CreateProcessInSandbox`. The API is supplied by Windows, not by the SDK package or
@@ -177,29 +214,56 @@ feature disabled because the BFS path can hang affected Windows 11 25H2 hosts; c
 `bfscfg.exe` onto the machine cannot enable it in the packaged runtime. The official host-prep
 utility and MicroClaw's reviewed patch prepare only Tier 3 DACL prerequisites and cannot install
 the Base Container API or add BFS support to `wxc-exec.exe`. The minimal upstream requirement for
-GA Windows is an official signed runtime with a reviewed exact backend, plus a documented supported
-Windows build/feature matrix. Until one is available, unsupported hosts remain locked.
+GA Windows Full containment is an official signed runtime with a reviewed exact backend, plus a
+documented supported Windows build/feature matrix. Until one is available, Full remains disabled on
+unsupported hosts even when Limited is available.
+
+## Limited ambient-access assessment
+
+Before Limited activation, MicroClaw runs a bounded assessment through the exact pinned Windows
+Node host and `wxc-exec` path. It records only a stable category and `denied`, `read`, or
+`read-write`; it does not read file contents, enumerate names into output, or expose sensitive
+absolute paths in normal UI or logs. The assessed categories are Desktop, Documents, Downloads,
+MicroClaw state, the active and roaming OpenClaw state roots, `.ssh`, GnuPG, AWS, Azure,
+Kubernetes, Google Cloud, Windows Credentials, PowerShell history, and common Chrome, Edge, Brave,
+and Firefox profile roots.
+
+Access to any state, credential, shell-history, cloud, SSH/GnuPG, or browser profile root blocks
+activation. Ambient access to Desktop, Documents, or Downloads is a warning and is shown truthfully
+as a known Limited-mode capability. An existing sensitive root whose contents cannot be enumerated
+is treated as accessible rather than denied. For an absent root, the assessment tests whether the
+nearest existing parent can create it; writable parents block activation. The deterministic
+category/status result hash is embedded in the fingerprinted host policy. Consequently the
+requested strength, effective tier, assessment hash, approval/readiness proofs, activation lease,
+and Gateway generation all describe the same attested state.
+
+The host re-runs the assessment at startup and immediately before every Limited launch. A changed
+status or hash, missing result, tier change, restart, or policy change closes ingress, revokes the
+lease, and requires a fresh explicit transition. The assessment is enforcement evidence, not a
+one-time warning dialog.
 
 ## Readiness and activation transaction
 
 The helper also enforces `microclaw.windows-activation.v1`: an HMAC-SHA256 lease bound to the exact
-Gateway generation, helper policy fingerprint, mode, and expiry. Its per-generation key is delivered
-only through inherited stdin. A diagnostic lease admits only the fixed `hostname.exe` and PowerShell
+Gateway generation, helper policy fingerprint, requested containment strength, effective tier,
+Limited assessment hash when applicable, mode, and expiry. Its per-generation key is delivered only
+through inherited stdin. A diagnostic lease admits only the fixed `hostname.exe` and PowerShell
 probe declarations; the denied-CWD check fails at canonical CWD policy before launch. An active
 lease admits the normal attended `system.run` path. The helper checks the lease before authorization
 and again immediately before MXC launch.
 
-MicroClaw remembers the selected security mode. When Windows Node + MXC is off, startup follows the
-normal Gateway/chat-ready path without starting the bundled node. When it is on, the loading screen
-remains visible while MicroClaw closes ingress, proves an exact backend, then starts every Gateway
-generation locked and runs the same secure readiness and activation sequence. Fixed readiness
-probes are internally authorized by the current serialized lifecycle and produce no permission
-dialog; this authority cannot be used by agent commands. Readiness requires the exact
-CWD/activation attestation payload, selected app-owned node identity, paired and connected state,
-strict no-fallback settings, current-generation effective tools, MXC tier, contained `hostname.exe`,
-contained PowerShell, and denied-access proof.
-`appcontainer-dacl` is rejected before node startup and is also rejected again by the bundled host
-before node registration.
+MicroClaw stores a versioned requested mode separately from the attested effective strength. A
+legacy enabled boolean migrates conservatively to Full, never Limited; Limited survives migration
+only with explicit persisted evidence and an acknowledgment timestamp. When MXC is Off, startup
+follows the remembered standard Gateway/sandbox route without starting the bundled node. When Full
+or Limited is requested, the loading screen remains visible while MicroClaw closes ingress, proves
+the mode-specific backend, then starts every Gateway generation locked and runs the secure
+readiness and activation sequence. Fixed readiness probes are internally authorized by the current
+serialized lifecycle and produce no permission dialog; this authority cannot be used by agent
+commands. Readiness requires the exact CWD/activation attestation payload, selected app-owned node
+identity, paired and connected state, strict no-fallback settings, current-generation effective
+tools, exact mode/tier agreement, contained `hostname.exe`, contained PowerShell, and denied-access
+proof. Limited additionally requires the current ambient-assessment hash and category/status result.
 
 Every MicroClaw-owned `chat.send` path, including startup warm-up and generated session titles,
 passes through the same current-generation active-ingress gate. Locked or attesting startup skips
@@ -207,23 +271,26 @@ warm-up without queuing or replaying it; warm-up can run only after final activa
 
 Activation is an automatic fail-closed transaction:
 
-1. Close ingress, validate the pinned runtime provenance/hashes, and prove an exact backend.
+1. Close ingress, validate the pinned runtime provenance/hashes, and prove the exact backend allowed
+   by the explicitly requested mode.
 2. Start and attest the locked generation and its smoke record.
 3. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
 4. Write an active policy that exposes only node-pinned `exec` and disables configured channels,
    webhooks, internal hooks, cron, plugin loading, and plugin entries.
 5. Start a new managed loopback Gateway generation and pair the exact bundled node.
-6. Verify the node declaration, CWD contract, strict helper policy, and effective `exec`-only tool
+6. Verify the node declaration, requested/effective containment strength, exact tier, CWD contract,
+   strict helper policy, Limited assessment hash if applicable, and effective `exec`-only tool
    inventory.
 7. Repeat all contained smokes for the active generation under a diagnostic lease.
 8. Issue an active lease, perform a final attestation, then release MicroClaw chat ingress.
 
-Any restart, disconnect, timeout, policy/tool drift, missing or expired lease, helper failure, or
-attestation error revokes the lease, clears the smoke proof, rewrites the locked policy, and stops
-the managed Gateway. Configuration and restart operations that could invalidate an active
-transaction are rejected while this mode is enabled. External channel, hook, cron, and plugin
-entry points remain disabled, and inventory APIs return no active ingress. The loading screen shows
-the failed MXC phase and recovery detail;
+Any restart, disconnect, timeout, policy/tool/tier/assessment drift, missing or expired lease,
+helper failure, or attestation error revokes the lease, clears the smoke proof, rewrites the locked
+policy, and stops the managed Gateway. A new probe never authorizes a Full-to-Limited downgrade.
+Configuration and restart operations that could invalidate an active transaction are rejected while
+this mode is enabled. External channel, hook, cron, and plugin entry points remain disabled, and
+inventory APIs return no active ingress. The loading screen shows the requested mode, attested
+effective strength/tier, failed MXC phase, and recovery detail;
 the user may retry the same serialized transaction or turn MXC off. Toggling either direction
 returns to loading immediately, rejects chat during the transition, and releases ingress only after
 the selected route is ready. Security settings keep the protection state, actionable failures,

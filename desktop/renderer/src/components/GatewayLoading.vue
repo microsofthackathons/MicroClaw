@@ -92,6 +92,9 @@
           {{ statusText }}
           <span v-if="!isFailed" class="loading-pct">{{ Math.floor(displayProgress) }}%</span>
         </div>
+        <div v-if="props.mxcDesired" class="loading-mxc-strength">
+          {{ mxcStrengthText }}
+        </div>
 
         <!-- Error detail (shown when gateway reports an error) -->
         <div v-if="isFailed && displayError" class="loading-error-detail">
@@ -158,6 +161,9 @@ const props = defineProps<{
   mxcDesired?: boolean;
   mxcPhase?: string;
   mxcDetail?: string | null;
+  mxcRequestedMode?: "off" | "full" | "limited-dacl";
+  mxcEffectiveStrength?: "off" | "full" | "limited-dacl";
+  mxcEffectiveTier?: string | null;
 }>();
 defineEmits<{ retry: []; "disable-mxc": [] }>();
 
@@ -177,6 +183,19 @@ const isFailed = computed(
   () => isMxcFailure.value || props.status === "timeout" || props.status === "failed",
 );
 const displayError = computed(() => props.mxcDetail || props.errorMessage);
+const mxcStrengthText = computed(() => {
+  const requested =
+    props.mxcRequestedMode === "limited-dacl"
+      ? t("settings.windowsNodeMxcModeLimited")
+      : t("settings.windowsNodeMxcModeFull");
+  const effective =
+    props.mxcEffectiveStrength === "limited-dacl"
+      ? t("settings.windowsNodeMxcModeLimited")
+      : props.mxcEffectiveStrength === "full"
+        ? t("settings.windowsNodeMxcModeFull")
+        : t("settings.windowsNodeMxcProtectionOff");
+  return `${t("settings.windowsNodeMxcRequestedMode")}: ${requested} · ${t("settings.windowsNodeMxcAttestedStrength")}: ${effective}${props.mxcEffectiveTier ? ` (${props.mxcEffectiveTier})` : ""}`;
+});
 
 // ── Window controls ──
 

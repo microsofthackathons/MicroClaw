@@ -807,6 +807,17 @@ public sealed class CwdPolicyTests : IDisposable
                     .GetProperty("allowDaclMutation")
                     .GetBoolean());
         }
+        using (var serialized = JsonDocument.Parse(
+            BundledSystemCapability.SerializeMxcConfig(
+                desktopReadWrite,
+                allowDaclMutation: true)))
+        {
+            Assert.True(
+                serialized.RootElement
+                    .GetProperty("fallback")
+                    .GetProperty("allowDaclMutation")
+                    .GetBoolean());
+        }
 
         var desktopReadOnly = BundledSystemCapability.BuildMxcConfig(
             Policy([new ApprovedRoot(desktop, FolderAccess.ReadOnly)]),
@@ -864,6 +875,97 @@ public sealed class CwdPolicyTests : IDisposable
                 string.Empty));
 
         Assert.Equal("mxc-filesystem-isolation-insufficient", error.Code);
+    }
+
+    [Fact]
+    public void LimitedContainmentAcceptsOnlyAppContainerDacl()
+    {
+        var accepted = MxcIsolationTierGuard.ValidateProbeResult(
+            0,
+            """{"tier":"appcontainer-dacl","needsDaclAugmentation":true}""",
+            string.Empty,
+            "limited-dacl",
+            "appcontainer-dacl");
+        Assert.Equal("appcontainer-dacl", accepted);
+
+        var error = Assert.Throws<HostPolicyException>(() =>
+            MxcIsolationTierGuard.ValidateProbeResult(
+                0,
+                """{"tier":"base-container","needsDaclAugmentation":false}""",
+                string.Empty,
+                "limited-dacl",
+                "appcontainer-dacl"));
+        Assert.Equal("mxc-filesystem-isolation-drift", error.Code);
+    }
+
+    [Fact]
+    public void LimitedAmbientAssessmentBlocksSensitiveAccessAndBindsAttestation()
+    {
+        var deniedEntries = new[]
+        {
+            new AmbientAccessEntry("desktop", "denied", Path.Combine(_root, "Desktop")),
+            new AmbientAccessEntry("documents", "denied", Path.Combine(_root, "Documents")),
+            new AmbientAccessEntry("downloads", "read-write", Path.Combine(_root, "Downloads")),
+            new AmbientAccessEntry("microclaw-state", "denied", Path.Combine(_root, "MicroClaw")),
+            new AmbientAccessEntry("openclaw-state", "denied", Path.Combine(_root, "OpenClaw")),
+            new AmbientAccessEntry(
+                "openclaw-roaming-state",
+                "denied",
+                Path.Combine(_root, "OpenClawRoaming")),
+            new AmbientAccessEntry("ssh", "denied", Path.Combine(_root, ".ssh")),
+            new AmbientAccessEntry("gnupg", "denied", Path.Combine(_root, ".gnupg")),
+            new AmbientAccessEntry("aws", "denied", Path.Combine(_root, ".aws")),
+            new AmbientAccessEntry("azure", "denied", Path.Combine(_root, ".azure")),
+            new AmbientAccessEntry("kube", "denied", Path.Combine(_root, ".kube")),
+            new AmbientAccessEntry("gcloud", "denied", Path.Combine(_root, "gcloud")),
+            new AmbientAccessEntry(
+                "windows-credentials",
+                "denied",
+                Path.Combine(_root, "Credentials")),
+            new AmbientAccessEntry(
+                "powershell-history",
+                "denied",
+                Path.Combine(_root, "PSReadLine")),
+            new AmbientAccessEntry("browser-chrome", "denied", Path.Combine(_root, "Chrome")),
+            new AmbientAccessEntry("browser-edge", "denied", Path.Combine(_root, "Edge")),
+            new AmbientAccessEntry("browser-brave", "denied", Path.Combine(_root, "Brave")),
+            new AmbientAccessEntry("browser-firefox", "denied", Path.Combine(_root, "Firefox")),
+        };
+        var policy = new AmbientAccessPolicy(
+            AmbientAccessAssessmentContract.Version,
+            AmbientAccessAssessment.ComputeHash(deniedEntries),
+            deniedEntries);
+        AmbientAccessAssessment.ValidatePolicy(policy);
+
+        var hostPolicy = new HostPolicy
+        {
+            ApprovedRoots = [],
+            DeniedRoots = [],
+            WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            AllowWindowsUi = true,
+            StrictNoHostFallback = true,
+            RequestedStrength = "limited-dacl",
+            EffectiveTier = "appcontainer-dacl",
+            AmbientAccess = policy,
+            AmbientAssessmentScratchRoot = _root,
+        };
+        var attestation = hostPolicy.Attestation;
+        Assert.False(attestation.ExactFilesystemIsolationRequired);
+        Assert.False(attestation.FolderPolicyIsExclusiveBoundary);
+        Assert.False(attestation.DurableApprovalsAllowed);
+        Assert.True(attestation.AmbientAssessmentBound);
+
+        var accessibleEntries = deniedEntries
+            .Select(entry =>
+                entry.Category == "ssh" ? entry with { Status = "read" } : entry)
+            .ToArray();
+        var error = Assert.Throws<HostPolicyException>(() =>
+            AmbientAccessAssessment.ValidatePolicy(
+                new AmbientAccessPolicy(
+                    AmbientAccessAssessmentContract.Version,
+                    AmbientAccessAssessment.ComputeHash(accessibleEntries),
+                    accessibleEntries)));
+        Assert.Equal("ambient-sensitive-access", error.Code);
     }
 
     [Fact]

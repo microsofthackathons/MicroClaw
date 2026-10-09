@@ -293,6 +293,29 @@ export default {
   "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
+  "settings.windowsNodeMxcModeFull": "Full containment",
+  "settings.windowsNodeMxcFullBadge": "Hard boundary",
+  "settings.windowsNodeMxcModeFullDesc":
+    "Uses the attested MXC filesystem boundary. Approved folders are the exclusive filesystem capability ceiling.",
+  "settings.windowsNodeMxcModeLimited": "Limited containment (DACL)",
+  "settings.windowsNodeMxcLimitedBadge": "Limited",
+  "settings.windowsNodeMxcModeLimitedDesc":
+    "Uses DACL-based filesystem containment when the full MXC boundary is unavailable.",
+  "settings.windowsNodeMxcLimitedFilesystemWarning":
+    "Additional folder grants are additive, not an exclusive allowlist. Read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
+  "settings.windowsNodeMxcModeOff": "Off",
+  "settings.windowsNodeMxcModeOffDesc":
+    "Turns off the bundled Windows node route and restores the remembered standard sandbox setting.",
+  "settings.windowsNodeMxcOffWarning":
+    "Non-MXC: protection falls back to the remembered standard sandbox setting and may be unsandboxed if that setting is off.",
+  "settings.windowsNodeMxcSelected": "Selected",
+  "settings.windowsNodeMxcUseFull": "Use Full containment",
+  "settings.windowsNodeMxcUseLimited": "Use Limited containment",
+  "settings.windowsNodeMxcUseOff": "Turn containment off",
+  "settings.windowsNodeMxcRequestedMode": "Requested mode",
+  "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
+  "settings.windowsNodeMxcAttestedTier": "Attested effective tier",
+  "settings.windowsNodeMxcLimitedActive": "Limited containment active",
   "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
   "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
   "settings.windowsNodeMxcEffective": "Effective state",
@@ -328,8 +351,42 @@ export default {
   "settings.windowsNodeMxcCommands": "Declared node commands",
   "settings.windowsNodeMxcConnection": "Connection / pairing",
   "settings.windowsNodeMxcFolders": "Global MXC approved folders",
+  "settings.windowsNodeMxcFullFolders": "Full hard-boundary approved folders",
+  "settings.windowsNodeMxcLimitedFolders": "Limited additional filesystem grants",
+  "settings.windowsNodeMxcConfiguredFolders": "Configured MXC folders",
   "settings.windowsNodeMxcFoldersHint":
     "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
+  "settings.windowsNodeMxcLimitedFoldersHint":
+    "These grants add access in Limited mode; they are not an exclusive allowlist. Read-only cannot reduce access already provided by ambient Windows ACLs.",
+  "settings.windowsNodeMxcConfiguredFoldersHint":
+    "These folders will be used when Full or Limited containment is selected.",
+  "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
+  "settings.windowsNodeMxcAmbientAccessHint":
+    "Category-level attestation only; absolute paths are intentionally not displayed.",
+  "settings.windowsNodeMxcAmbientUnavailable":
+    "Ambient access attestation is not available.",
+  "settings.windowsNodeMxcAmbientCategory.desktop": "Desktop",
+  "settings.windowsNodeMxcAmbientCategory.documents": "Documents",
+  "settings.windowsNodeMxcAmbientCategory.downloads": "Downloads",
+  "settings.windowsNodeMxcAmbientCategory.microclaw-state": "MicroClaw state",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-state": "OpenClaw state",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state":
+    "OpenClaw roaming state",
+  "settings.windowsNodeMxcAmbientCategory.ssh": "SSH",
+  "settings.windowsNodeMxcAmbientCategory.gnupg": "GnuPG",
+  "settings.windowsNodeMxcAmbientCategory.aws": "AWS credentials",
+  "settings.windowsNodeMxcAmbientCategory.azure": "Azure credentials",
+  "settings.windowsNodeMxcAmbientCategory.kube": "Kubernetes credentials",
+  "settings.windowsNodeMxcAmbientCategory.gcloud": "Google Cloud credentials",
+  "settings.windowsNodeMxcAmbientCategory.windows-credentials": "Windows credentials",
+  "settings.windowsNodeMxcAmbientCategory.powershell-history": "PowerShell history",
+  "settings.windowsNodeMxcAmbientCategory.browser-chrome": "Chrome data",
+  "settings.windowsNodeMxcAmbientCategory.browser-edge": "Edge data",
+  "settings.windowsNodeMxcAmbientCategory.browser-brave": "Brave data",
+  "settings.windowsNodeMxcAmbientCategory.browser-firefox": "Firefox data",
+  "settings.windowsNodeMxcAmbientStatus.denied": "Denied",
+  "settings.windowsNodeMxcAmbientStatus.read": "Read",
+  "settings.windowsNodeMxcAmbientStatus.read-write": "Read/write",
   "settings.windowsNodeMxcFoldersLocked":
     "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
   "settings.windowsNodeMxcFoldersStaged":
@@ -376,6 +433,16 @@ export default {
   "settings.windowsNodeMxcDurableApprovals": "Remembered exact commands",
   "settings.windowsNodeMxcDurableApprovalsHint":
     "Allow always remembers only the exact executable content, arguments, CWD, declared folder use, policy, agent, and session. It never changes global folders.",
+  "settings.windowsNodeMxcLimitedCommandApprovals": "Per-command approval only",
+  "settings.windowsNodeMxcLimitedCommandApprovalsHint":
+    "Limited containment does not offer Allow always. Every command requires a visible per-command approval.",
+  "settings.windowsNodeMxcLimitedAcknowledgeTitle":
+    "Enable Limited filesystem containment?",
+  "settings.windowsNodeMxcLimitedAcknowledgeBody":
+    "Limited containment relies on additive Windows DACL grants. It is not an exclusive filesystem allowlist, and a read-only grant cannot remove access already available through ambient ACLs.",
+  "settings.windowsNodeMxcLimitedAcknowledgeCheckbox":
+    "I understand these filesystem limitations and want to enable Limited containment.",
+  "settings.windowsNodeMxcEnableLimited": "Enable Limited containment",
   "settings.windowsNodeMxcNoDurableApprovals": "No exact commands are remembered.",
   "settings.windowsNodeMxcRevokeApproval": "Revoke",
   "settings.windowsNodeMxcRevokeAllApprovals": "Revoke all",
@@ -905,6 +972,7 @@ export default {
   "perm.titleCommand": "Command approval required",
   "perm.titleApp": "External app approval required",
   "perm.titleMxc": "MXC sandbox command approval",
+  "perm.titleMxcLimited": "Limited filesystem containment",
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
@@ -917,7 +985,10 @@ export default {
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
   "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
+  "perm.mxcLimitedDesc":
+    "AI wants to run this command with Limited filesystem containment.",
   "perm.mxcAccessLabel": "Declared folder use",
+  "perm.mxcAdditionalAccessLabel": "Additional filesystem grants",
   "perm.mxcAccessRo": "Read only",
   "perm.mxcAccessRw": "Read and write",
   "perm.mxcCwdLabel": "Canonical working directory",
@@ -929,12 +1000,20 @@ export default {
     "Approval authorizes this command itself inside MXC with the canonical working directory shown. “Allow always” remembers this exact command and canonical working directory.",
   "perm.mxcScopeNoAccessOnce":
     "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
+  "perm.mxcLimitedScope":
+    "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist, and read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
+  "perm.mxcAmbientAccess": "Ambient filesystem access",
+  "perm.mxcAmbientAccessHint":
+    "Category-level summary only; absolute paths are not displayed.",
+  "perm.mxcAmbientUnavailable": "Ambient access attestation is unavailable.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",
   "perm.riskCommandRW": "High risk: this command may change files or system state.",
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
   "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
+  "perm.riskMxcLimited":
+    "Limited filesystem containment: review the command, additional grants, and ambient access before allowing.",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Allow always",
   "perm.callerLabel": "Caller",

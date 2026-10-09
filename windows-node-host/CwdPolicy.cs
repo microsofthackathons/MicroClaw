@@ -43,7 +43,11 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("exactFilesystemIsolationRequired")] bool ExactFilesystemIsolationRequired,
     [property: JsonPropertyName("degradedIsolationTierRejected")] bool DegradedIsolationTierRejected,
     [property: JsonPropertyName("durableApprovalStoreProtected")] bool DurableApprovalStoreProtected,
-    [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent)
+    [property: JsonPropertyName("durableApprovalsPresent")] bool DurableApprovalsPresent,
+    [property: JsonPropertyName("requestedContainmentStrength")] string RequestedContainmentStrength,
+    [property: JsonPropertyName("folderPolicyIsExclusiveBoundary")] bool FolderPolicyIsExclusiveBoundary,
+    [property: JsonPropertyName("durableApprovalsAllowed")] bool DurableApprovalsAllowed,
+    [property: JsonPropertyName("ambientAssessmentBound")] bool AmbientAssessmentBound)
 {
     public static readonly CwdPolicyAttestation Current = new(
         CwdPolicyContract.Version,
@@ -76,7 +80,25 @@ public sealed record CwdPolicyAttestation(
         ExactFilesystemIsolationRequired: true,
         DegradedIsolationTierRejected: true,
         DurableApprovalStoreProtected: true,
-        DurableApprovalsPresent: false);
+        DurableApprovalsPresent: false,
+        RequestedContainmentStrength: "full",
+        FolderPolicyIsExclusiveBoundary: true,
+        DurableApprovalsAllowed: true,
+        AmbientAssessmentBound: false);
+
+    public static CwdPolicyAttestation ForPolicy(HostPolicy policy) =>
+        Current with
+        {
+            ExactFilesystemIsolationRequired =
+                string.Equals(policy.RequestedStrength, "full", StringComparison.Ordinal),
+            DegradedIsolationTierRejected =
+                string.Equals(policy.RequestedStrength, "full", StringComparison.Ordinal),
+            RequestedContainmentStrength = policy.RequestedStrength,
+            FolderPolicyIsExclusiveBoundary =
+                string.Equals(policy.RequestedStrength, "full", StringComparison.Ordinal),
+            DurableApprovalsAllowed = policy.DurableApprovalsAllowed,
+            AmbientAssessmentBound = policy.AmbientAccess is not null,
+        };
 }
 
 public enum FolderAccess
@@ -108,7 +130,13 @@ public sealed class HostPolicy
     public string Clipboard { get; init; } = "none";
     public bool InputInjection { get; init; }
     public bool StrictNoHostFallback { get; init; }
-    public CwdPolicyAttestation Attestation => CwdPolicyAttestation.Current;
+    public string RequestedStrength { get; init; } = "full";
+    public string EffectiveTier { get; init; } = "base-container";
+    public AmbientAccessPolicy? AmbientAccess { get; init; }
+    public string AmbientAssessmentScratchRoot { get; init; } = Path.GetTempPath();
+    public bool DurableApprovalsAllowed =>
+        string.Equals(RequestedStrength, "full", StringComparison.Ordinal);
+    public CwdPolicyAttestation Attestation => CwdPolicyAttestation.ForPolicy(this);
 
     public static async Task<HostPolicy> LoadAsync(string path)
     {
@@ -148,6 +176,38 @@ public sealed class HostPolicy
             throw new HostPolicyException("windows-ui-disabled", "allowWindowsUi must be enabled for MXC 0.7.");
         if (input.NetworkAllowed || input.InputInjection || !string.Equals(input.Clipboard, "none", StringComparison.Ordinal))
             throw new HostPolicyException("unsafe-capability", "Network, clipboard, and input injection must remain disabled.");
+        if (input.RequestedStrength is not ("full" or "limited-dacl"))
+            throw new HostPolicyException(
+                "containment-strength-invalid",
+                "The requested containment strength is invalid.");
+        if (string.IsNullOrWhiteSpace(input.EffectiveTier))
+            throw new HostPolicyException(
+                "containment-tier-missing",
+                "The effective MXC tier is missing.");
+        if (input.RequestedStrength == "full"
+            && input.EffectiveTier is not ("base-container" or "appcontainer-bfs"))
+            throw new HostPolicyException(
+                "containment-tier-mismatch",
+                "Full containment requires base-container or appcontainer-bfs.");
+        if (input.RequestedStrength == "limited-dacl"
+            && !string.Equals(input.EffectiveTier, "appcontainer-dacl", StringComparison.Ordinal))
+            throw new HostPolicyException(
+                "containment-tier-mismatch",
+                "Limited containment requires appcontainer-dacl.");
+        if (input.RequestedStrength == "limited-dacl")
+        {
+            if (input.AmbientAccess is null)
+                throw new HostPolicyException(
+                    "ambient-assessment-required",
+                    "Limited containment requires an ambient-access assessment.");
+            AmbientAccessAssessment.ValidatePolicy(input.AmbientAccess);
+        }
+        else if (input.AmbientAccess is not null)
+        {
+            throw new HostPolicyException(
+                "ambient-assessment-unexpected",
+                "Full containment must not carry a Limited-mode ambient-access assessment.");
+        }
 
         var approved = (input.ApprovedRoots ?? [])
             .Select(root => new ApprovedRoot(
@@ -166,6 +226,11 @@ public sealed class HostPolicy
                 "Approved folders must not contain or be contained by a protected root.");
         }
         var wxc = WindowsPathCanonicalizer.CanonicalizeFile(input.WxcExecPath);
+        var ambientScratch =
+            input.RequestedStrength == "limited-dacl"
+                ? WindowsPathCanonicalizer.CanonicalizeDirectory(
+                    input.AmbientAssessmentScratchRoot)
+                : Path.GetFullPath(input.AmbientAssessmentScratchRoot);
 
         return new HostPolicy
         {
@@ -177,6 +242,10 @@ public sealed class HostPolicy
             Clipboard = "none",
             InputInjection = false,
             StrictNoHostFallback = true,
+            RequestedStrength = input.RequestedStrength,
+            EffectiveTier = input.EffectiveTier.ToLowerInvariant(),
+            AmbientAccess = input.AmbientAccess,
+            AmbientAssessmentScratchRoot = ambientScratch,
         };
     }
 
@@ -220,6 +289,10 @@ public sealed class HostPolicy
         public string Clipboard { get; init; } = "none";
         public bool InputInjection { get; init; }
         public bool StrictNoHostFallback { get; init; }
+        public string RequestedStrength { get; init; } = "full";
+        public string EffectiveTier { get; init; } = "base-container";
+        public AmbientAccessPolicy? AmbientAccess { get; init; }
+        public string AmbientAssessmentScratchRoot { get; init; } = Path.GetTempPath();
     }
 
     private sealed class ApprovedRootInput

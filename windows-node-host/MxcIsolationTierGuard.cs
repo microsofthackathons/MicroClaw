@@ -8,6 +8,7 @@ internal static class MxcIsolationTierGuard
 {
     private static readonly HashSet<string> ExactFilesystemIsolationTiers =
         new(StringComparer.OrdinalIgnoreCase) { "base-container", "appcontainer-bfs" };
+    private const string LimitedDaclTier = "appcontainer-dacl";
     private const string WxcExecX64Sha256 =
         "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2";
     private const string WxcExecArm64Sha256 =
@@ -16,6 +17,17 @@ internal static class MxcIsolationTierGuard
     public static async Task EnsureExactFilesystemIsolationAsync(
         string wxcExecPath,
         CancellationToken cancellationToken = default)
+        => await EnsureFilesystemIsolationAsync(
+            wxcExecPath,
+            "full",
+            expectedTier: null,
+            cancellationToken);
+
+    public static async Task<string> EnsureFilesystemIsolationAsync(
+        string wxcExecPath,
+        string requestedStrength,
+        string? expectedTier,
+        CancellationToken cancellationToken = default)
     {
         var parentDirectory = Path.GetDirectoryName(wxcExecPath)
             ?? throw new HostPolicyException(
@@ -23,11 +35,26 @@ internal static class MxcIsolationTierGuard
                 "The pinned MXC runtime path has no parent directory.");
         using var directoryLease = DirectoryPathLease.Acquire([parentDirectory]);
         using var executableLease = ExecutableApprovalLease.Acquire(wxcExecPath);
-        await EnsureExactFilesystemIsolationAsync(executableLease, cancellationToken);
+        return await EnsureFilesystemIsolationAsync(
+            executableLease,
+            requestedStrength,
+            expectedTier,
+            cancellationToken);
     }
 
     internal static async Task EnsureExactFilesystemIsolationAsync(
         ExecutableApprovalLease executableLease,
+        CancellationToken cancellationToken = default)
+        => await EnsureFilesystemIsolationAsync(
+            executableLease,
+            "full",
+            expectedTier: null,
+            cancellationToken);
+
+    internal static async Task<string> EnsureFilesystemIsolationAsync(
+        ExecutableApprovalLease executableLease,
+        string requestedStrength,
+        string? expectedTier,
         CancellationToken cancellationToken = default)
     {
         executableLease.VerifySha256(ExpectedWxcExecSha256());
@@ -77,10 +104,12 @@ internal static class MxcIsolationTierGuard
                 "The pinned MXC runtime probe timed out.");
         }
 
-        ValidateProbeResult(
+        return ValidateProbeResult(
             process.ExitCode,
             await stdoutTask,
-            await stderrTask);
+            await stderrTask,
+            requestedStrength,
+            expectedTier);
     }
 
     private static string ExpectedWxcExecSha256() =>
@@ -94,6 +123,14 @@ internal static class MxcIsolationTierGuard
         };
 
     internal static string ValidateProbeResult(int exitCode, string stdout, string stderr)
+        => ValidateProbeResult(exitCode, stdout, stderr, "full", expectedTier: null);
+
+    internal static string ValidateProbeResult(
+        int exitCode,
+        string stdout,
+        string stderr,
+        string requestedStrength,
+        string? expectedTier)
     {
         if (exitCode != 0)
             throw new HostPolicyException(
@@ -122,12 +159,35 @@ internal static class MxcIsolationTierGuard
             var needsDaclAugmentation =
                 root.TryGetProperty("needsDaclAugmentation", out var dacl)
                 && dacl.ValueKind == JsonValueKind.True;
-            if (string.IsNullOrEmpty(tier)
-                || needsDaclAugmentation
-                || !ExactFilesystemIsolationTiers.Contains(tier))
+            if (string.IsNullOrEmpty(tier))
                 throw new HostPolicyException(
                     "mxc-filesystem-isolation-insufficient",
-                    $"MXC isolation tier {tier ?? "<missing>"} cannot enforce configured filesystem roots exactly; base-container or appcontainer-bfs is required.");
+                    "MXC did not attest a filesystem isolation tier.");
+            if (!string.IsNullOrWhiteSpace(expectedTier)
+                && !string.Equals(tier, expectedTier, StringComparison.OrdinalIgnoreCase))
+                throw new HostPolicyException(
+                    "mxc-filesystem-isolation-drift",
+                    $"MXC isolation tier drifted from {expectedTier} to {tier}.");
+            if (string.Equals(requestedStrength, "full", StringComparison.Ordinal))
+            {
+                if (needsDaclAugmentation || !ExactFilesystemIsolationTiers.Contains(tier))
+                    throw new HostPolicyException(
+                        "mxc-filesystem-isolation-insufficient",
+                        $"MXC isolation tier {tier} cannot enforce configured filesystem roots exactly; base-container or appcontainer-bfs is required.");
+            }
+            else if (string.Equals(requestedStrength, "limited-dacl", StringComparison.Ordinal))
+            {
+                if (!string.Equals(tier, LimitedDaclTier, StringComparison.OrdinalIgnoreCase))
+                    throw new HostPolicyException(
+                        "mxc-filesystem-isolation-insufficient",
+                        $"Limited containment requires appcontainer-dacl, but MXC attested {tier}.");
+            }
+            else
+            {
+                throw new HostPolicyException(
+                    "mxc-containment-strength-invalid",
+                    $"Unsupported containment strength: {requestedStrength}.");
+            }
             return tier;
         }
         catch (HostPolicyException)

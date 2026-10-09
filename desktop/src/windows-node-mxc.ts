@@ -106,6 +106,7 @@ export interface WindowsNodeMxcGatewayApproval {
     access: SandboxFolderAccess;
     path: string;
   }>;
+  hasMutableFileOperand: boolean;
   allowedDecisions: WindowsNodeMxcApprovalDecision[];
 }
 
@@ -228,6 +229,10 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const cwdBinding = typeof plan.cwdBinding === "string" ? plan.cwdBinding.trim() : "";
   const previewDeclaredAccess = parseGatewayDeclaredAccess(commandPreview);
   const declaredAccess = normalizeStructuredDeclaredAccess(plan.declaredAccess);
+  const hasMutableFileOperand =
+    Object.hasOwn(plan, "mutableFileOperand") &&
+    plan.mutableFileOperand !== null &&
+    plan.mutableFileOperand !== undefined;
   const hasCanonicalCwd =
     Object.hasOwn(plan, "cwd") &&
     (plan.cwd === null || (typeof plan.cwd === "string" && plan.cwd.trim().length > 0));
@@ -286,6 +291,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     agent: typeof plan.agentId === "string" && plan.agentId.trim() ? plan.agentId : null,
     sessionKey: plan.sessionKey as string,
     declaredAccess,
+    hasMutableFileOperand,
     allowedDecisions: [...new Set(allowed)],
   };
 }

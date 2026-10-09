@@ -11,7 +11,7 @@ describe("desktop startup order", () => {
     );
 
     const integrityIndex = lifecycle.indexOf("verifySkillIntegrity()");
-    const gatewayIndex = lifecycle.indexOf("startGateway().catch");
+    const gatewayIndex = lifecycle.indexOf("startApplicationServices().catch");
     const rendererIndex = lifecycle.indexOf("mainWindow.loadFile(indexPath)");
 
     expect(integrityIndex).toBeGreaterThan(-1);

@@ -50,9 +50,11 @@ internal sealed class BundledSystemCapability(
             return request.Command switch
             {
                 "system.run.cwd-policy" => Success(
-                    CwdPolicyAttestation.Current with
+                    policy.Attestation with
                     {
-                        DurableApprovalsPresent = DurableApprovalIdentity.Load(approvalsPath).Count > 0,
+                        DurableApprovalsPresent =
+                            policy.DurableApprovalsAllowed
+                            && DurableApprovalIdentity.Load(approvalsPath).Count > 0,
                     }),
                 "system.which" => Success(new { bins = ResolveBins(request.Args) }),
                 "system.run.prepare" => Success(await PrepareAsync(request, cancellationToken)),
@@ -79,7 +81,7 @@ internal sealed class BundledSystemCapability(
         NodeInvokeRequest request,
         CancellationToken cancellationToken)
     {
-        await EnsureExactFilesystemIsolationAsync(cancellationToken);
+        await EnsureFilesystemIsolationAsync(cancellationToken);
         var run = ParseRun(request.Args);
         var cwd = policy.ResolveCwd(run.Cwd);
         var commandText = WindowsCommandLine.Join(run.Argv);
@@ -166,7 +168,8 @@ internal sealed class BundledSystemCapability(
         bool readiness,
         CancellationToken cancellationToken)
     {
-        await EnsureExactFilesystemIsolationAsync(cancellationToken);
+        await EnsureFilesystemIsolationAsync(cancellationToken);
+        await AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
         var request = ParseRun(args);
         var cwd = policy.ResolveCwd(request.Cwd);
         var validatedActivation = activationLease.Validate(request.Argv);
@@ -213,7 +216,8 @@ internal sealed class BundledSystemCapability(
             validatedApproval = approvalProof.ValidateAndConsume(args, approvedIdentity);
         }
 
-        var durable = !readiness && !activeGatewayApproval && DurableApprovalIdentity.Load(approvalsPath)
+        var durable = policy.DurableApprovalsAllowed
+            && !readiness && !activeGatewayApproval && DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, approvedIdentity));
         var requireDurableRecheck = durable;
         if (!readiness && !activeGatewayApproval && !durable)
@@ -230,7 +234,7 @@ internal sealed class BundledSystemCapability(
                 cancellationToken);
             if (decision is ApprovalDecision.Deny)
                 return Error("approval-denied: The operator denied this command.");
-            if (decision is ApprovalDecision.AllowAlways)
+            if (decision is ApprovalDecision.AllowAlways && policy.DurableApprovalsAllowed)
             {
                 DurableApprovalFile.Add(approvalsPath, approvedIdentity);
                 requireDurableRecheck = true;
@@ -264,9 +268,10 @@ internal sealed class BundledSystemCapability(
                     "The pinned MXC runtime path has no parent directory.");
             using var wxcDirectoryLease = DirectoryPathLease.Acquire([wxcDirectory]);
             using var wxcExecutableLease = ExecutableApprovalLease.Acquire(policy.WxcExecPath);
-            await EnsureExactFilesystemIsolationAsync(
+            await EnsureFilesystemIsolationAsync(
                 cancellationToken,
                 wxcExecutableLease);
+            await AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
             currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
             activationLease.Revalidate(validatedActivation, request.Argv);
             currentIdentity = executableLease.Capture(
@@ -288,7 +293,7 @@ internal sealed class BundledSystemCapability(
                     "The durable approval is no longer current.");
             var launchCwd = string.IsNullOrEmpty(currentCwd.LaunchPath) ? scratch : currentCwd.LaunchPath;
             Console.Error.WriteLine(
-                $"[filesystem-policy] matchedRoot={currentCwd.MatchedRoot ?? "<isolated-scratch>"} effectiveAccess={currentCwd.Access}");
+                $"[filesystem-policy] launchLocation={(currentCwd.MatchedRoot is null ? "isolated-scratch" : "selected-grant")} effectiveAccess={currentCwd.Access} containmentStrength={policy.RequestedStrength}");
             var config = BuildMxcConfig(
                 policy,
                 currentExecutable,
@@ -299,7 +304,12 @@ internal sealed class BundledSystemCapability(
             var configPath = Path.Combine(scratch, "mxc-config.json");
             await File.WriteAllTextAsync(
                 configPath,
-                SerializeMxcConfig(config),
+                SerializeMxcConfig(
+                    config,
+                    allowDaclMutation: string.Equals(
+                        policy.RequestedStrength,
+                        "limited-dacl",
+                        StringComparison.Ordinal)),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 cancellationToken);
             using var environment = ProcessEnvironmentOverride.Apply(
@@ -328,6 +338,8 @@ internal sealed class BundledSystemCapability(
                 timedOut = result.TimedOut,
                 durationMs = result.DurationMs,
                 containment = "mxc",
+                containmentStrength = policy.RequestedStrength,
+                effectiveTier = policy.EffectiveTier,
             });
         }
 
@@ -337,26 +349,30 @@ internal sealed class BundledSystemCapability(
         }
     }
 
-    internal static string SerializeMxcConfig(MxcConfig config)
+    internal static string SerializeMxcConfig(MxcConfig config, bool allowDaclMutation = false)
     {
         var root = JsonSerializer.SerializeToNode(config, MxcConfigJsonOptions)?.AsObject()
             ?? throw new HostPolicyException(
                 "mxc-config-serialization-failed",
                 "The MXC launch policy could not be serialized.");
-        root["fallback"] = new JsonObject { ["allowDaclMutation"] = false };
+        root["fallback"] = new JsonObject { ["allowDaclMutation"] = allowDaclMutation };
         return root.ToJsonString(MxcConfigJsonOptions);
     }
 
-    private Task EnsureExactFilesystemIsolationAsync(
+    private Task EnsureFilesystemIsolationAsync(
         CancellationToken cancellationToken,
         ExecutableApprovalLease? wxcExecutableLease = null) =>
         isolationGuard?.Invoke(cancellationToken)
         ?? (wxcExecutableLease is null
-            ? MxcIsolationTierGuard.EnsureExactFilesystemIsolationAsync(
+            ? MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
                 policy.WxcExecPath,
+                policy.RequestedStrength,
+                policy.EffectiveTier,
                 cancellationToken)
-            : MxcIsolationTierGuard.EnsureExactFilesystemIsolationAsync(
+            : MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
                 wxcExecutableLease,
+                policy.RequestedStrength,
+                policy.EffectiveTier,
                 cancellationToken));
 
     internal static MxcConfig BuildMxcConfig(

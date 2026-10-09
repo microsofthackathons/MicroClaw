@@ -276,6 +276,28 @@ export default {
   "settings.windowsNodeMxc": "实验性内置 Windows Node + MXC",
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
+  "settings.windowsNodeMxcModeFull": "完整隔离",
+  "settings.windowsNodeMxcFullBadge": "强边界",
+  "settings.windowsNodeMxcModeFullDesc":
+    "使用经证明的 MXC 文件系统边界。批准的文件夹构成排他的文件系统能力上限。",
+  "settings.windowsNodeMxcModeLimited": "有限隔离（DACL）",
+  "settings.windowsNodeMxcLimitedBadge": "有限",
+  "settings.windowsNodeMxcModeLimitedDesc":
+    "完整 MXC 边界不可用时，使用基于 DACL 的文件系统隔离。",
+  "settings.windowsNodeMxcLimitedFilesystemWarning":
+    "额外文件夹授权是叠加式授权，并非排他允许列表。只读授权无法降低 Windows 环境 ACL 已允许的访问。",
+  "settings.windowsNodeMxcModeOff": "关闭",
+  "settings.windowsNodeMxcModeOffDesc": "关闭内置 Windows 节点路径，并恢复之前记住的标准沙箱设置。",
+  "settings.windowsNodeMxcOffWarning":
+    "非 MXC：保护将回退到之前记住的标准沙箱设置；如果该设置已关闭，命令可能不受沙箱保护。",
+  "settings.windowsNodeMxcSelected": "已选择",
+  "settings.windowsNodeMxcUseFull": "使用完整隔离",
+  "settings.windowsNodeMxcUseLimited": "使用有限隔离",
+  "settings.windowsNodeMxcUseOff": "关闭隔离",
+  "settings.windowsNodeMxcRequestedMode": "请求的模式",
+  "settings.windowsNodeMxcAttestedStrength": "经证明的实际强度",
+  "settings.windowsNodeMxcAttestedTier": "经证明的实际层级",
+  "settings.windowsNodeMxcLimitedActive": "有限隔离已启用",
   "settings.windowsNodeMxcSelectedNode": "已选择的本地 Windows 节点",
   "settings.windowsNodeMxcSelectNode": "请选择一个已配对的 Windows 节点",
   "settings.windowsNodeMxcEffective": "实际状态",
@@ -311,8 +333,40 @@ export default {
   "settings.windowsNodeMxcCommands": "节点声明的命令",
   "settings.windowsNodeMxcConnection": "连接 / 配对",
   "settings.windowsNodeMxcFolders": "MXC 全局批准文件夹",
+  "settings.windowsNodeMxcFullFolders": "完整强边界批准文件夹",
+  "settings.windowsNodeMxcLimitedFolders": "有限模式额外文件系统授权",
+  "settings.windowsNodeMxcConfiguredFolders": "已配置的 MXC 文件夹",
   "settings.windowsNodeMxcFoldersHint":
     "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。",
+  "settings.windowsNodeMxcLimitedFoldersHint":
+    "这些授权会在有限模式中增加访问权限，并非排他允许列表。只读无法降低环境 Windows ACL 已提供的访问。",
+  "settings.windowsNodeMxcConfiguredFoldersHint":
+    "选择完整或有限隔离时将使用这些文件夹。",
+  "settings.windowsNodeMxcAmbientAccess": "环境文件系统访问",
+  "settings.windowsNodeMxcAmbientAccessHint":
+    "仅显示类别级证明；不会显示绝对路径。",
+  "settings.windowsNodeMxcAmbientUnavailable": "环境访问证明不可用。",
+  "settings.windowsNodeMxcAmbientCategory.desktop": "桌面",
+  "settings.windowsNodeMxcAmbientCategory.documents": "文档",
+  "settings.windowsNodeMxcAmbientCategory.downloads": "下载",
+  "settings.windowsNodeMxcAmbientCategory.microclaw-state": "MicroClaw 状态",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-state": "OpenClaw 状态",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state": "OpenClaw 漫游状态",
+  "settings.windowsNodeMxcAmbientCategory.ssh": "SSH",
+  "settings.windowsNodeMxcAmbientCategory.gnupg": "GnuPG",
+  "settings.windowsNodeMxcAmbientCategory.aws": "AWS 凭据",
+  "settings.windowsNodeMxcAmbientCategory.azure": "Azure 凭据",
+  "settings.windowsNodeMxcAmbientCategory.kube": "Kubernetes 凭据",
+  "settings.windowsNodeMxcAmbientCategory.gcloud": "Google Cloud 凭据",
+  "settings.windowsNodeMxcAmbientCategory.windows-credentials": "Windows 凭据",
+  "settings.windowsNodeMxcAmbientCategory.powershell-history": "PowerShell 历史记录",
+  "settings.windowsNodeMxcAmbientCategory.browser-chrome": "Chrome 数据",
+  "settings.windowsNodeMxcAmbientCategory.browser-edge": "Edge 数据",
+  "settings.windowsNodeMxcAmbientCategory.browser-brave": "Brave 数据",
+  "settings.windowsNodeMxcAmbientCategory.browser-firefox": "Firefox 数据",
+  "settings.windowsNodeMxcAmbientStatus.denied": "拒绝",
+  "settings.windowsNodeMxcAmbientStatus.read": "读取",
+  "settings.windowsNodeMxcAmbientStatus.read-write": "读写",
   "settings.windowsNodeMxcFoldersLocked":
     "请先禁用 Windows Node + MXC，再添加、更改或移除批准的文件夹。",
   "settings.windowsNodeMxcFoldersStaged":
@@ -352,6 +406,15 @@ export default {
   "settings.windowsNodeMxcDurableApprovals": "记住的精确命令",
   "settings.windowsNodeMxcDurableApprovalsHint":
     "“始终允许”仅记住精确的可执行文件内容、参数、工作目录、声明的文件夹用途、策略、代理和会话，绝不会更改全局文件夹。",
+  "settings.windowsNodeMxcLimitedCommandApprovals": "仅逐命令批准",
+  "settings.windowsNodeMxcLimitedCommandApprovalsHint":
+    "有限隔离不提供“始终允许”。每条命令都需要可见的逐命令批准。",
+  "settings.windowsNodeMxcLimitedAcknowledgeTitle": "启用有限文件系统隔离？",
+  "settings.windowsNodeMxcLimitedAcknowledgeBody":
+    "有限隔离依赖叠加式 Windows DACL 授权。它不是排他的文件系统允许列表，而且只读授权无法移除环境 ACL 已允许的访问。",
+  "settings.windowsNodeMxcLimitedAcknowledgeCheckbox":
+    "我理解这些文件系统限制，并希望启用有限隔离。",
+  "settings.windowsNodeMxcEnableLimited": "启用有限隔离",
   "settings.windowsNodeMxcNoDurableApprovals": "尚未记住任何精确命令。",
   "settings.windowsNodeMxcRevokeApproval": "撤销",
   "settings.windowsNodeMxcRevokeAllApprovals": "全部撤销",
@@ -845,6 +908,7 @@ export default {
   "perm.titleCommand": "需要确认命令执行",
   "perm.titleApp": "需要确认外部应用启动",
   "perm.titleMxc": "MXC 沙箱命令授权",
+  "perm.titleMxcLimited": "有限文件系统隔离",
   "perm.deny": "拒绝",
   "perm.allow": "允许",
   "perm.allowOnce": "允许一次",
@@ -856,7 +920,9 @@ export default {
   "perm.shellDescRO": "允许对 {dir} 的只读权限",
   "perm.appDesc": "AI 助手正在尝试启动 {app}，此应用不在沙箱白名单中，需要在沙箱外运行。",
   "perm.mxcDesc": "AI 助手想在 MXC 沙箱内运行此命令。",
+  "perm.mxcLimitedDesc": "AI 助手想使用有限文件系统隔离运行此命令。",
   "perm.mxcAccessLabel": "声明的文件夹用途",
+  "perm.mxcAdditionalAccessLabel": "额外文件系统授权",
   "perm.mxcAccessRo": "只读",
   "perm.mxcAccessRw": "读写",
   "perm.mxcCwdLabel": "规范化工作目录",
@@ -867,12 +933,19 @@ export default {
   "perm.mxcScopeNoAccess":
     "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。“始终允许”仅记住此确切命令和规范化工作目录。",
   "perm.mxcScopeNoAccessOnce": "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。",
+  "perm.mxcLimitedScope":
+    "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表；只读授权无法降低 Windows 环境 ACL 已允许的访问。",
+  "perm.mxcAmbientAccess": "环境文件系统访问",
+  "perm.mxcAmbientAccessHint": "仅显示类别级摘要；不会显示绝对路径。",
+  "perm.mxcAmbientUnavailable": "环境访问证明不可用。",
   "perm.riskRead": "低风险：智能体只能查看该文件夹中的文件。",
   "perm.riskWrite": "中风险：智能体可以在该文件夹中创建或修改文件。",
   "perm.riskCommandRO": "中风险：允许前请确认该命令符合当前任务。",
   "perm.riskCommandRW": "高风险：该命令可能修改文件或系统状态。",
   "perm.riskApp": "高风险：该应用将在沙箱外运行。",
   "perm.riskMxc": "由 MXC 隔离：允许前请检查命令和声明的文件夹用途。",
+  "perm.riskMxcLimited":
+    "有限文件系统隔离：允许前请检查命令、额外授权和环境访问。",
   "perm.commandLabel": "命令",
   "perm.allowAlways": "始终允许",
   "perm.callerLabel": "调用者",

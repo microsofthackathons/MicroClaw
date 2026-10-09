@@ -15,6 +15,37 @@ internal static class Program
             return 0;
         }
 
+        if (args is ["--ambient-assess", var requestPath])
+        {
+            try
+            {
+                var request = JsonSerializer.Deserialize<AmbientAccessAssessmentRequest>(
+                    await File.ReadAllTextAsync(requestPath),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? throw new HostPolicyException(
+                        "ambient-assessment-request-invalid",
+                        "The ambient-access assessment request is empty.");
+                var result = await AmbientAccessAssessment.RunAsync(request);
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    contract = result.Contract,
+                    hash = result.Hash,
+                    checkedAt = result.CheckedAt,
+                    entries = result.Entries.Select(entry => new
+                    {
+                        category = entry.Category,
+                        status = entry.Status,
+                    }),
+                }));
+                return 0;
+            }
+            catch (HostPolicyException ex)
+            {
+                Console.Error.WriteLine($"{ex.Code}: {ex.Message}");
+                return 2;
+            }
+        }
+
         if (args is ["--validate-config", var path])
         {
             try
@@ -42,7 +73,7 @@ internal static class Program
         if (args.Length != 0)
         {
             Console.Error.WriteLine(
-                "This helper is managed by MicroClaw. Supported diagnostics: --attestation, --validate-config <path>.");
+                "This helper is managed by MicroClaw. Supported diagnostics: --attestation, --validate-config <path>, --ambient-assess <request-path>.");
             return 2;
         }
 
@@ -71,7 +102,11 @@ internal static class Program
             var policy = await HostPolicy.LoadVerifiedAsync(
                 bootstrap.PolicyPath,
                 bootstrap.PolicyFingerprint);
-            await MxcIsolationTierGuard.EnsureExactFilesystemIsolationAsync(policy.WxcExecPath);
+            await MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
+                policy.WxcExecPath,
+                policy.RequestedStrength,
+                policy.EffectiveTier);
+            await AmbientAccessAssessment.RevalidateAsync(policy);
             SecureStateDirectory.Ensure(bootstrap.IdentityDirectory);
             var approvalDirectory = Path.GetDirectoryName(bootstrap.ApprovalsPath)
                 ?? throw new HostPolicyException(

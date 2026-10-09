@@ -22,6 +22,8 @@ describe("GatewayLoading MXC lifecycle", () => {
         warming: false,
         mxcDesired: true,
         mxcPhase: "smoking-locked",
+        mxcRequestedMode: "limited-dacl",
+        mxcEffectiveStrength: "off",
       },
     });
 
@@ -29,6 +31,12 @@ describe("GatewayLoading MXC lifecycle", () => {
       "Running internal probes in locked generation",
     );
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
+    expect(wrapper.find(".loading-mxc-strength").text()).toContain(
+      "Requested mode: Limited containment (DACL)",
+    );
+    expect(wrapper.find(".loading-mxc-strength").text()).toContain(
+      "Attested effective strength: Off",
+    );
     expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
   });
 

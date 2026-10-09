@@ -192,6 +192,63 @@ describe("bundled Windows node host", () => {
     expect(first.policyFingerprint).toBe(second.policyFingerprint);
   });
 
+  it("binds requested strength, effective tier, and ambient assessment into policy identity", () => {
+    const host = Object.create(BundledWindowsNodeHost.prototype) as BundledWindowsNodeHost;
+    const folders = [{ path: String.raw`C:\Approved`, access: "rw" as const }];
+    const args = [
+      "generation-1",
+      "a".repeat(64),
+      folders,
+      String.raw`C:\OpenClaw`,
+      "12345678-1234-4234-8234-123456789abc",
+    ] as const;
+    const full = host.createApprovalProofContext(...args, "full", "base-container", null);
+    const targets = [
+      ["desktop", String.raw`C:\Users\Alice\Desktop`],
+      ["documents", String.raw`C:\Users\Alice\Documents`],
+      ["downloads", String.raw`C:\Users\Alice\Downloads`],
+      ["microclaw-state", String.raw`C:\Users\Alice\AppData\Roaming\MicroClaw`],
+      ["openclaw-state", String.raw`C:\OpenClaw`],
+      ["openclaw-roaming-state", String.raw`C:\Users\Alice\AppData\Roaming\openclaw`],
+      ["ssh", String.raw`C:\Users\Alice\.ssh`],
+      ["gnupg", String.raw`C:\Users\Alice\.gnupg`],
+      ["aws", String.raw`C:\Users\Alice\.aws`],
+      ["azure", String.raw`C:\Users\Alice\.azure`],
+      ["kube", String.raw`C:\Users\Alice\.kube`],
+      ["gcloud", String.raw`C:\Users\Alice\.config\gcloud`],
+      ["windows-credentials", String.raw`C:\Users\Alice\AppData\Roaming\Microsoft\Credentials`],
+      [
+        "powershell-history",
+        String.raw`C:\Users\Alice\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine`,
+      ],
+      ["browser-chrome", String.raw`C:\Users\Alice\AppData\Local\Google\Chrome\User Data`],
+      ["browser-edge", String.raw`C:\Users\Alice\AppData\Local\Microsoft\Edge\User Data`],
+      [
+        "browser-brave",
+        String.raw`C:\Users\Alice\AppData\Local\BraveSoftware\Brave-Browser\User Data`,
+      ],
+      ["browser-firefox", String.raw`C:\Users\Alice\AppData\Roaming\Mozilla\Firefox\Profiles`],
+    ] as const;
+    const ambient = {
+      contract: "microclaw.windows-node-mxc-ambient-access.v1" as const,
+      hash: "b".repeat(64),
+      checkedAt: "2026-10-09T00:00:00.000Z",
+      entries: targets.map(([category]) => ({
+        category,
+        status: category === "downloads" ? ("read-write" as const) : ("denied" as const),
+      })),
+      targets: targets.map(([category, path]) => ({ category, path })),
+    };
+    const limited = host.createApprovalProofContext(
+      ...args,
+      "limited-dacl",
+      "appcontainer-dacl",
+      ambient,
+    );
+
+    expect(full.policyFingerprint).not.toBe(limited.policyFingerprint);
+  });
+
   it("protects both helper state and the resolved OpenClaw state root", () => {
     const roots = sensitiveWindowsRoots(
       "C:\\Users\\Alice\\AppData\\Roaming\\MicroClaw\\windows-node",

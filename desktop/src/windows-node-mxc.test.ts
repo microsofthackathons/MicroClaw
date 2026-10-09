@@ -87,6 +87,7 @@ describe("Gateway node exec approval bridge", () => {
       arguments: ["-Command", "Set-Content test.txt ok"],
       executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       executableSha256: "c".repeat(64),
+      hasMutableFileOperand: false,
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
       sessionKey: "agent:main:approval-regression",
@@ -125,6 +126,7 @@ describe("Gateway node exec approval bridge", () => {
       arguments: ["-Command", "Set-Content test.txt ok"],
       executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       executableSha256: "c".repeat(64),
+      hasMutableFileOperand: false,
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
       sessionKey: "agent:main:approval-regression",
@@ -326,6 +328,10 @@ describe("bundled Windows Node CWD attestation", () => {
           degradedIsolationTierRejected: true,
           durableApprovalStoreProtected: true,
           durableApprovalsPresent: true,
+          requestedContainmentStrength: "full",
+          folderPolicyIsExclusiveBoundary: true,
+          durableApprovalsAllowed: true,
+          ambientAssessmentBound: false,
         },
       }),
     ).toEqual({ ready: true, blockers: [], durableApprovalsPresent: true });
@@ -346,6 +352,8 @@ describe("bundled Windows Node CWD attestation", () => {
     "exactFilesystemIsolationRequired",
     "degradedIsolationTierRejected",
     "durableApprovalStoreProtected",
+    "folderPolicyIsExclusiveBoundary",
+    "durableApprovalsAllowed",
   ])("fails closed when %s is not attested", (property) => {
     const payload = {
       contract: "microclaw.windows-cwd.v1",
@@ -379,6 +387,10 @@ describe("bundled Windows Node CWD attestation", () => {
       degradedIsolationTierRejected: true,
       durableApprovalStoreProtected: true,
       durableApprovalsPresent: false,
+      requestedContainmentStrength: "full",
+      folderPolicyIsExclusiveBoundary: true,
+      durableApprovalsAllowed: true,
+      ambientAssessmentBound: false,
     };
 
     expect(
@@ -439,6 +451,8 @@ describe("bundled Windows Node CWD attestation", () => {
         nodeId: "node-1",
         settingsFingerprint: "settings-1",
         probeTier: "appcontainer-dacl",
+        containmentStrength: "limited-dacl" as const,
+        ambientAccessHash: "a".repeat(64),
         checkedAt: new Date().toISOString(),
         hostname: { outcome: "passed" as const, reason: "ok" },
         powershell: { outcome: "passed" as const, reason: "ok" },
@@ -452,6 +466,8 @@ describe("bundled Windows Node CWD attestation", () => {
           "node-1",
           "settings-1",
           "appcontainer-dacl",
+          "limited-dacl",
+          "a".repeat(64),
         ),
       ).toBe(smoke);
       expect(
@@ -461,6 +477,8 @@ describe("bundled Windows Node CWD attestation", () => {
           "node-1",
           "settings-1",
           "appcontainer-dacl",
+          "limited-dacl",
+          "a".repeat(64),
         ),
       ).toBeNull();
       expect(isWindowsNodeMxcIngressReleased(true, "generation-1", "generation-1", false)).toBe(

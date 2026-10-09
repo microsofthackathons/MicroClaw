@@ -74,6 +74,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     },
     windowsNodeMxc: {
       getStatus: async () => ({
+        requestedMode: "off" as const,
+        effectiveStrength: "off" as const,
+        effectiveTier: null,
         desiredEnabled: false,
         effectiveEnabled: false,
         lifecycleState: {
@@ -120,6 +123,19 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           },
           reason: "Unavailable in browser development",
         },
+        fullAvailability: {
+          available: false,
+          summary: "Unavailable in browser development",
+          blockers: ["Unavailable in browser development"],
+          remediation: [],
+        },
+        limitedAvailability: {
+          available: false,
+          summary: "Unavailable in browser development",
+          blockers: ["Unavailable in browser development"],
+          remediation: [],
+        },
+        ambientAccess: null,
         smoke: null,
         blockers: ["Unavailable in browser development"],
         warnings: [],

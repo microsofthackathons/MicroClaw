@@ -8,6 +8,7 @@ import {
 } from "./windows-node-mxc-readiness-proof";
 import { classifyMxcProbe } from "./windows-node-mxc";
 import {
+  preflightWindowsNodeMxcBackend,
   preflightWindowsNodeMxcExactBackend,
   runWindowsNodeMxcSmoke,
   type WindowsNodeMxcGateway,
@@ -176,6 +177,24 @@ describe("Windows Node MXC exact-backend preflight", () => {
       preflightWindowsNodeMxcExactBackend("C:\\MXC\\wxc-exec.exe", runner),
     ).resolves.toBe(probe);
     expect(runner).toHaveBeenCalledWith("C:\\MXC\\wxc-exec.exe");
+  });
+
+  it("accepts appcontainer-dacl only for an explicit Limited request", async () => {
+    const probe = classifyMxcProbe(
+      0,
+      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
+      "",
+    );
+    await expect(
+      preflightWindowsNodeMxcBackend(
+        "C:\\MXC\\wxc-exec.exe",
+        "limited-dacl",
+        async () => probe,
+      ),
+    ).resolves.toBe(probe);
+    await expect(
+      preflightWindowsNodeMxcBackend("C:\\MXC\\wxc-exec.exe", "full", async () => probe),
+    ).rejects.toThrow(/exact-containment backend/);
   });
 
   it("reports the unavailable OS API and compiled-out BFS backend before startup", async () => {
