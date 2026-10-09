@@ -4,8 +4,11 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   BUNDLED_WINDOWS_NODE_CWD_CONTRACT,
+  BUNDLED_WINDOWS_NODE_REVISION,
   BundledWindowsNodeHost,
+  MXC_EXACT_BACKEND_PROVISIONING,
   MXC_HOST_PREP_PATCH_REVISION,
+  MXC_SDK_SOURCE_REVISION,
   assertApprovalResponseMatches,
   assertLoopbackGateway,
   createBundledWindowsNodeEnvironment,
@@ -17,6 +20,7 @@ import {
   terminateBundledWindowsNodeProcessTree,
   sensitiveWindowsRoots,
   validateApprovalRequest,
+  validateBundledWindowsNodeRuntimeManifest,
 } from "./bundled-windows-node-host";
 
 vi.mock("electron", () => ({
@@ -45,6 +49,53 @@ describe("bundled Windows node host", () => {
 
   it("pins the reviewed MXC target-only host-prep patch", () => {
     expect(MXC_HOST_PREP_PATCH_REVISION).toBe("695c2b89c6142090a098ec4484f49aff8157f0b3");
+  });
+
+  it("attests the exact MXC package provenance and backend build contract", () => {
+    expect(() =>
+      validateBundledWindowsNodeRuntimeManifest(
+        {
+          architecture: "x64",
+          mxcVersion: "0.7.0",
+          mxcSourceRevision: MXC_SDK_SOURCE_REVISION,
+          mxcProductionBfsCompiledIn: false,
+          mxcExactBackendProvisioning: MXC_EXACT_BACKEND_PROVISIONING,
+          wxcExecSha256: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
+          windowsNodeRevision: BUNDLED_WINDOWS_NODE_REVISION,
+          mxcHostPrepPatchRevision: MXC_HOST_PREP_PATCH_REVISION,
+          microclawHostPrepOrigin: "microclaw-built",
+          microclawHostPrepOperations: ["prepare-system-drive", "unprepare-system-drive"],
+        },
+        "x64",
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["version", { mxcVersion: "0.7.1" }],
+    ["source revision", { mxcSourceRevision: "0".repeat(40) }],
+    ["BFS build flag", { mxcProductionBfsCompiledIn: true }],
+    ["backend provisioning contract", { mxcExactBackendProvisioning: "appcontainer-bfs" }],
+    ["runtime hash", { wxcExecSha256: "0".repeat(64) }],
+  ])("rejects an MXC runtime manifest with a mismatched %s", (_label, override) => {
+    expect(() =>
+      validateBundledWindowsNodeRuntimeManifest(
+        {
+          architecture: "x64",
+          mxcVersion: "0.7.0",
+          mxcSourceRevision: MXC_SDK_SOURCE_REVISION,
+          mxcProductionBfsCompiledIn: false,
+          mxcExactBackendProvisioning: MXC_EXACT_BACKEND_PROVISIONING,
+          wxcExecSha256: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
+          windowsNodeRevision: BUNDLED_WINDOWS_NODE_REVISION,
+          mxcHostPrepPatchRevision: MXC_HOST_PREP_PATCH_REVISION,
+          microclawHostPrepOrigin: "microclaw-built",
+          microclawHostPrepOperations: ["prepare-system-drive", "unprepare-system-drive"],
+          ...override,
+        },
+        "x64",
+      ),
+    ).toThrow("runtime manifest does not match");
   });
 
   it("terminates the exact bundled node process tree and verifies exit", () => {

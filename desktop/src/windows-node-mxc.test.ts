@@ -8,6 +8,7 @@ import {
   classifyMxcProbe,
   classifyMxcSmoke,
   classifyMissingEffectiveToolSession,
+  describeMxcExactBackendEligibility,
   extractEffectiveToolNames,
   getMxcTierWarning,
   getWindowsNodeMxcGatewayPolicyState,
@@ -981,13 +982,37 @@ describe("MXC probe and smoke classification", () => {
   it("fails closed on DACL-only machines", () => {
     const probe = classifyMxcProbe(
       0,
-      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
+      JSON.stringify({
+        tier: "appcontainer-dacl",
+        needsDaclAugmentation: true,
+        probes: {
+          baseContainerApiPresent: false,
+          bfscfgPresent: false,
+          bfsCompiledIn: false,
+        },
+      }),
       "",
     );
     expect(probe.outcome).toBe("unsupported");
     expect(probe.degraded).toBe(true);
+    expect(probe.probes).toEqual({
+      baseContainerApiPresent: false,
+      bfscfgPresent: false,
+      bfsCompiledIn: false,
+    });
     expect(probe.reason).toContain("cannot enforce the configured filesystem roots");
     expect(getMxcTierWarning(probe)).toContain("Rejected degraded MXC containment");
+    expect(describeMxcExactBackendEligibility(probe)).toMatchObject({
+      eligible: false,
+      blockers: [
+        expect.stringContaining("Base Container API is unavailable"),
+        expect.stringContaining("runtime was built without the appcontainer-bfs backend"),
+      ],
+      remediation: [
+        expect.stringContaining("processmodel.dll"),
+        expect.stringContaining("Do not copy bfscfg.exe"),
+      ],
+    });
   });
 
   it("fails closed when an otherwise strong tier requests DACL augmentation", () => {
@@ -1001,9 +1026,49 @@ describe("MXC probe and smoke classification", () => {
   });
 
   it("treats base-container and BFS as full-strength", () => {
-    for (const tier of ["base-container", "appcontainer-bfs"]) {
-      expect(classifyMxcProbe(0, JSON.stringify({ tier }), "").degraded).toBe(false);
-    }
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "base-container",
+          probes: { baseContainerApiPresent: true },
+        }),
+        "",
+      ).outcome,
+    ).toBe("supported");
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "appcontainer-bfs",
+          probes: { bfsCompiledIn: true, bfscfgPresent: true },
+        }),
+        "",
+      ).outcome,
+    ).toBe("supported");
+  });
+
+  it("rejects contradictory exact-backend probe evidence", () => {
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "base-container",
+          probes: { baseContainerApiPresent: false },
+        }),
+        "",
+      ).outcome,
+    ).toBe("error");
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "appcontainer-bfs",
+          probes: { bfsCompiledIn: false, bfscfgPresent: true },
+        }),
+        "",
+      ).outcome,
+    ).toBe("error");
   });
 
   it("fails closed on an unknown isolation tier", () => {

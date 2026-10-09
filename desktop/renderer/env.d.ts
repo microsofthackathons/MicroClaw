@@ -441,6 +441,11 @@ interface OpenClawAPI {
         needsDaclAugmentation: boolean;
         degraded: boolean;
         warnings: string[];
+        probes: {
+          baseContainerApiPresent: boolean | null;
+          bfscfgPresent: boolean | null;
+          bfsCompiledIn: boolean | null;
+        };
         reason: string | null;
       };
       smoke: {
@@ -457,6 +462,7 @@ interface OpenClawAPI {
       warnings: string[];
       remediation: string[];
     }>;
+    preflight(): Promise<void>;
     setEnabled(params: {
       enabled: boolean;
       nodeId?: string;

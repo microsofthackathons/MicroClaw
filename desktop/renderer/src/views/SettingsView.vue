@@ -726,6 +726,36 @@
                 </span>
               </div>
               <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBaseContainerApi") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.probe.probes.baseContainerApiPresent === null
+                    ? t("settings.windowsNodeMxcUnknown")
+                    : windowsNodeMxcStatus.probe.probes.baseContainerApiPresent
+                      ? t("settings.windowsNodeMxcAvailable")
+                      : t("settings.windowsNodeMxcMissing")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBfsRuntime") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.probe.probes.bfsCompiledIn === null
+                    ? t("settings.windowsNodeMxcUnknown")
+                    : windowsNodeMxcStatus.probe.probes.bfsCompiledIn
+                      ? t("settings.windowsNodeMxcCompiledIn")
+                      : t("settings.windowsNodeMxcCompiledOut")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBfsHostTool") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.probe.probes.bfscfgPresent === null
+                    ? t("settings.windowsNodeMxcUnknown")
+                    : windowsNodeMxcStatus.probe.probes.bfscfgPresent
+                      ? t("settings.windowsNodeMxcAvailable")
+                      : t("settings.windowsNodeMxcMissing")
+                }}</span>
+              </div>
+              <div class="card-row">
                 <span class="row-label">{{ t("settings.windowsNodeMxcBundledHelper") }}</span>
                 <span class="row-value">{{
                   windowsNodeMxcStatus.helperRevision
@@ -1552,9 +1582,10 @@ async function loadWindowsNodeMxcStatus() {
 
 async function toggleWindowsNodeMxc(enabled: boolean) {
   windowsNodeMxcApplying.value = true;
-  gateway.resetReady();
-  chatStore.wsConnected = false;
   try {
+    if (enabled) await window.openclaw.windowsNodeMxc.preflight();
+    gateway.resetReady();
+    chatStore.wsConnected = false;
     const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
     updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();

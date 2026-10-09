@@ -328,13 +328,27 @@ export interface WindowsNodeReadiness {
   warnings: string[];
 }
 
+export interface MxcBackendProbeFacts {
+  baseContainerApiPresent: boolean | null;
+  bfscfgPresent: boolean | null;
+  bfsCompiledIn: boolean | null;
+}
+
 export interface MxcProbeResult {
   outcome: "supported" | "unsupported" | "error";
   tier: string | null;
   needsDaclAugmentation: boolean;
   degraded: boolean;
   warnings: string[];
+  probes: MxcBackendProbeFacts;
   reason: string | null;
+}
+
+export interface MxcExactBackendEligibility {
+  eligible: boolean;
+  summary: string | null;
+  blockers: string[];
+  remediation: string[];
 }
 
 const MXC_EXACT_FILESYSTEM_ISOLATION_TIERS = new Set(["base-container", "appcontainer-bfs"]);
@@ -910,6 +924,17 @@ export function classifyMxcProbe(
   const warnings = Array.isArray(parsed.warnings)
     ? parsed.warnings.filter((entry): entry is string => typeof entry === "string")
     : [];
+  const nestedProbes =
+    parsed.probes && typeof parsed.probes === "object" && !Array.isArray(parsed.probes)
+      ? (parsed.probes as Record<string, unknown>)
+      : {};
+  const probes: MxcBackendProbeFacts = {
+    baseContainerApiPresent: optionalBoolean(
+      nestedProbes.baseContainerApiPresent ?? parsed.baseContainerApiPresent,
+    ),
+    bfscfgPresent: optionalBoolean(nestedProbes.bfscfgPresent ?? parsed.bfscfgPresent),
+    bfsCompiledIn: optionalBoolean(nestedProbes.bfsCompiledIn ?? parsed.bfsCompiledIn),
+  };
   if (typeof parsed.error === "string" || parsed.supported === false) {
     return {
       outcome: "unsupported",
@@ -917,6 +942,7 @@ export function classifyMxcProbe(
       needsDaclAugmentation: false,
       degraded: false,
       warnings,
+      probes,
       reason:
         typeof parsed.error === "string"
           ? parsed.error
@@ -940,10 +966,24 @@ export function classifyMxcProbe(
       needsDaclAugmentation,
       degraded: true,
       warnings,
+      probes,
       reason:
         `MXC isolation tier ${tier} cannot enforce the configured filesystem roots as a hard ` +
         "capability boundary; base-container or appcontainer-bfs is required",
     };
+  }
+  if (normalizedTier === "base-container" && probes.baseContainerApiPresent === false) {
+    return probeError(
+      "wxc-exec --probe reported base-container while the Base Container API was unavailable",
+    );
+  }
+  if (
+    normalizedTier === "appcontainer-bfs" &&
+    (probes.bfsCompiledIn === false || probes.bfscfgPresent === false)
+  ) {
+    return probeError(
+      "wxc-exec --probe reported appcontainer-bfs without proving compiled BFS support and bfscfg.exe",
+    );
   }
   return {
     outcome: "supported",
@@ -951,7 +991,74 @@ export function classifyMxcProbe(
     needsDaclAugmentation,
     degraded: false,
     warnings,
+    probes,
     reason: null,
+  };
+}
+
+export function describeMxcExactBackendEligibility(
+  probe: MxcProbeResult,
+): MxcExactBackendEligibility {
+  if (probe.outcome === "supported") {
+    return {
+      eligible: true,
+      summary: null,
+      blockers: [],
+      remediation: [],
+    };
+  }
+
+  const blockers: string[] = [];
+  const remediation: string[] = [];
+
+  if (probe.outcome === "error") {
+    blockers.push(probe.reason ?? "The MXC exact-containment probe failed");
+    remediation.push(
+      "Repair the pinned, signed MXC runtime and retry. MicroClaw will not start the Windows node until the probe succeeds.",
+    );
+  } else {
+    if (probe.probes.baseContainerApiPresent === false) {
+      blockers.push(
+        "The Base Container API is unavailable on this Windows installation, so MXC cannot create a base-container sandbox.",
+      );
+      remediation.push(
+        "Use a supported Windows build that exposes processmodel.dll and Experimental_CreateProcessInSandbox. MicroClaw cannot safely install or emulate this operating-system API.",
+      );
+    }
+    if (probe.probes.bfsCompiledIn === false) {
+      blockers.push(
+        "The pinned official MXC 0.7.0 production runtime was built without the appcontainer-bfs backend.",
+      );
+      remediation.push(
+        "Do not copy bfscfg.exe onto the host: it cannot enable BFS in this runtime. Use only a future reviewed and signed MXC release that enables an exact backend on a documented supported Windows build.",
+      );
+    } else if (
+      probe.probes.bfsCompiledIn === true &&
+      probe.probes.bfscfgPresent === false
+    ) {
+      blockers.push(
+        "The MXC runtime supports appcontainer-bfs, but the required bfscfg.exe host component is unavailable.",
+      );
+      remediation.push(
+        "Provision BFS only through a reviewed vendor installer on a documented supported Windows build; MicroClaw will not copy or execute an unverified host component.",
+      );
+    }
+    if (blockers.length === 0) {
+      blockers.push(
+        probe.reason ??
+          "MXC did not prove a base-container or appcontainer-bfs exact-containment backend",
+      );
+      remediation.push(
+        "Install a reviewed exact-containment backend supported by this Windows build, then retry. AppContainer + DACL remains intentionally unsupported.",
+      );
+    }
+  }
+
+  return {
+    eligible: false,
+    summary: blockers.join(" "),
+    blockers,
+    remediation,
   };
 }
 
@@ -1359,8 +1466,17 @@ function probeError(reason: string): MxcProbeResult {
     needsDaclAugmentation: false,
     degraded: false,
     warnings: [],
+    probes: {
+      baseContainerApiPresent: null,
+      bfscfgPresent: null,
+      bfsCompiledIn: null,
+    },
     reason,
   };
+}
+
+function optionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function normalizeWindowsPath(value: string): string {

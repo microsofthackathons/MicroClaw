@@ -348,6 +348,8 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
+    preflight: () =>
+      ipcRenderer.invoke("windows-node-mxc:preflight").then(() => undefined),
     setEnabled: (params: { enabled: boolean; nodeId?: string }) =>
       ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>

@@ -41,6 +41,7 @@ const expectedPatchedHostPrepSha256 = {
 };
 const expectedWindowsNodeRevision = "fc9add75eda78daf548d80a55ffb64e63b159961";
 const expectedMxcHostPrepPatchRevision = "695c2b89c6142090a098ec4484f49aff8157f0b3";
+const expectedMxcSourceRevision = "0e02a720e32416b151dbcb0a00e3d4ac2b891559";
 const rid = ridByArch[targetArch];
 
 if (process.platform !== "win32" || !rid) {
@@ -207,6 +208,9 @@ writeFileSync(
       architecture: targetArch,
       runtimeIdentifier: rid,
       mxcVersion: packageJson.version,
+      mxcSourceRevision: expectedMxcSourceRevision,
+      mxcProductionBfsCompiledIn: false,
+      mxcExactBackendProvisioning: "host-base-container-api",
       wxcExecSha256: actualWxcExecHash,
       officialWxcHostPrepSha256: actualOfficialWxcHostPrepHash,
       windowsNodeRevision: expectedWindowsNodeRevision,

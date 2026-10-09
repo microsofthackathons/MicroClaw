@@ -121,9 +121,12 @@ owner-lifetime signal; an Electron exit closes the pipe, exits the host, and clo
 
 `@microsoft/mxc-sdk` is lockfile-pinned to `0.7.0`. Resource staging validates the official
 architecture-specific `wxc-exec.exe` SHA-256 before copying the complete matching x64/ARM64 runtime
-layout unchanged. Package architecture is mandatory rather than inferred from the build machine,
-and a runtime manifest is checked again by the app. Development resources, portable/NSIS extra
-resources, and MSIX preparation all use the same staging script.
+layout unchanged. The published package binaries identify source revision
+`0e02a720e32416b151dbcb0a00e3d4ac2b891559`; the runtime manifest records and revalidates that
+revision, the binary hash, and the official production build's `tier2_bfs`-disabled contract.
+Package architecture is mandatory rather than inferred from the build machine, and the manifest is
+checked again by the app before the executable can be probed or launched. Development resources,
+portable/NSIS extra resources, and MSIX preparation all use the same staging script.
 
 MXC 0.7.0's official `wxc-host-prep.exe` is affected by
 [`microsoft/mxc#648`](https://github.com/microsoft/mxc/issues/648): its
@@ -147,6 +150,36 @@ and rejecting the package because Authenticode changed its bytes. The helper bui
 repository-HEAD suffixes in its informational version so its pinned unsigned hash remains
 reproducible across MicroClaw commits.
 
+## Exact-backend host support
+
+MicroClaw does not provision an exact backend by changing host security state. It first validates
+the pinned runtime manifest and hashes, then runs `wxc-exec --probe`. The Windows node and Gateway
+activation sequence do not start unless the probe proves `base-container` or `appcontainer-bfs`
+with no DACL augmentation.
+
+| Probe and host state | Supported | Behavior |
+|---|---:|---|
+| `base-container`, Base Container API usable | Yes | Continue with locked-generation attestation |
+| `appcontainer-bfs`, BFS compiled in and `bfscfg.exe` present | Yes | Continue with locked-generation attestation |
+| `appcontainer-dacl` | No | Stay fail-closed; additive ACLs are not exact containment |
+| Base Container API absent and official MXC 0.7 BFS compiled out | No | Stay fail-closed with OS/API and runtime-build diagnostics |
+| Probe, version, source revision, or hash mismatch | No | Stay fail-closed and require repair of the reviewed runtime |
+
+For MXC 0.7, Tier 1 dynamically requires `processmodel.dll` and
+`Experimental_CreateProcessInSandbox`. The API is supplied by Windows, not by the SDK package or
+`wxc-host-prep.exe`. MXC maintainers document current Tier 1 availability as Windows Insider-only
+in [`microsoft/mxc#693`](https://github.com/microsoft/mxc/issues/693), despite broader SDK
+documentation describing Windows 11 24H2 process containment. MicroClaw therefore uses successful
+capability probing rather than an edition/build-number allowlist.
+
+Tier 2 is compile-time gated by MXC's `tier2_bfs` feature. Official production 0.7 builds leave that
+feature disabled because the BFS path can hang affected Windows 11 25H2 hosts; copying
+`bfscfg.exe` onto the machine cannot enable it in the packaged runtime. The official host-prep
+utility and MicroClaw's reviewed patch prepare only Tier 3 DACL prerequisites and cannot install
+the Base Container API or add BFS support to `wxc-exec.exe`. The minimal upstream requirement for
+GA Windows is an official signed runtime with a reviewed exact backend, plus a documented supported
+Windows build/feature matrix. Until one is available, unsupported hosts remain locked.
+
 ## Readiness and activation transaction
 
 The helper also enforces `microclaw.windows-activation.v1`: an HMAC-SHA256 lease bound to the exact
@@ -158,13 +191,15 @@ and again immediately before MXC launch.
 
 MicroClaw remembers the selected security mode. When Windows Node + MXC is off, startup follows the
 normal Gateway/chat-ready path without starting the bundled node. When it is on, the loading screen
-remains visible while MicroClaw automatically starts every Gateway generation locked and runs the
-same secure readiness and activation sequence. Fixed readiness probes are internally authorized by
-the current serialized lifecycle and produce no permission dialog; this authority cannot be used by
-agent commands. Readiness requires the exact CWD/activation attestation payload, selected app-owned
-node identity, paired and connected state, strict no-fallback settings, current-generation effective
-tools, MXC tier, contained `hostname.exe`, contained PowerShell, and denied-access proof.
-`appcontainer-dacl` is accepted with a prominent degraded-containment warning.
+remains visible while MicroClaw closes ingress, proves an exact backend, then starts every Gateway
+generation locked and runs the same secure readiness and activation sequence. Fixed readiness
+probes are internally authorized by the current serialized lifecycle and produce no permission
+dialog; this authority cannot be used by agent commands. Readiness requires the exact
+CWD/activation attestation payload, selected app-owned node identity, paired and connected state,
+strict no-fallback settings, current-generation effective tools, MXC tier, contained `hostname.exe`,
+contained PowerShell, and denied-access proof.
+`appcontainer-dacl` is rejected before node startup and is also rejected again by the bundled host
+before node registration.
 
 Every MicroClaw-owned `chat.send` path, including startup warm-up and generated session titles,
 passes through the same current-generation active-ingress gate. Locked or attesting startup skips
@@ -172,15 +207,16 @@ warm-up without queuing or replaying it; warm-up can run only after final activa
 
 Activation is an automatic fail-closed transaction:
 
-1. Attest the locked generation and its smoke record.
-2. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
-3. Write an active policy that exposes only node-pinned `exec` and disables configured channels,
+1. Close ingress, validate the pinned runtime provenance/hashes, and prove an exact backend.
+2. Start and attest the locked generation and its smoke record.
+3. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
+4. Write an active policy that exposes only node-pinned `exec` and disables configured channels,
    webhooks, internal hooks, cron, plugin loading, and plugin entries.
-4. Start a new managed loopback Gateway generation and pair the exact bundled node.
-5. Verify the node declaration, CWD contract, strict helper policy, and effective `exec`-only tool
+5. Start a new managed loopback Gateway generation and pair the exact bundled node.
+6. Verify the node declaration, CWD contract, strict helper policy, and effective `exec`-only tool
    inventory.
-6. Repeat all contained smokes for the active generation under a diagnostic lease.
-7. Issue an active lease, perform a final attestation, then release MicroClaw chat ingress.
+7. Repeat all contained smokes for the active generation under a diagnostic lease.
+8. Issue an active lease, perform a final attestation, then release MicroClaw chat ingress.
 
 Any restart, disconnect, timeout, policy/tool drift, missing or expired lease, helper failure, or
 attestation error revokes the lease, clears the smoke proof, rewrites the locked policy, and stops

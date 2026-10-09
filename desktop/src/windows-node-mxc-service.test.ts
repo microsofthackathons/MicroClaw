@@ -7,7 +7,11 @@ import {
   windowsNodeMxcReadinessSessionKey,
 } from "./windows-node-mxc-readiness-proof";
 import { classifyMxcProbe } from "./windows-node-mxc";
-import { runWindowsNodeMxcSmoke, type WindowsNodeMxcGateway } from "./windows-node-mxc-service";
+import {
+  preflightWindowsNodeMxcExactBackend,
+  runWindowsNodeMxcSmoke,
+  type WindowsNodeMxcGateway,
+} from "./windows-node-mxc-service";
 
 const transitionId = "12345678-1234-4234-8234-123456789abc";
 const generation = "generation-test-001";
@@ -153,5 +157,46 @@ describe("Windows Node MXC readiness smoke", () => {
       runWindowsNodeMxcSmoke(gateway, generation, nodeId, "settings", degraded, authorization()),
     ).rejects.toThrow(/cannot enforce the configured filesystem roots/);
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("Windows Node MXC exact-backend preflight", () => {
+  it("accepts a proven exact backend", async () => {
+    const probe = classifyMxcProbe(
+      0,
+      JSON.stringify({
+        tier: "base-container",
+        probes: { baseContainerApiPresent: true },
+      }),
+      "",
+    );
+    const runner = vi.fn(async () => probe);
+
+    await expect(
+      preflightWindowsNodeMxcExactBackend("C:\\MXC\\wxc-exec.exe", runner),
+    ).resolves.toBe(probe);
+    expect(runner).toHaveBeenCalledWith("C:\\MXC\\wxc-exec.exe");
+  });
+
+  it("reports the unavailable OS API and compiled-out BFS backend before startup", async () => {
+    const probe = classifyMxcProbe(
+      0,
+      JSON.stringify({
+        tier: "appcontainer-dacl",
+        needsDaclAugmentation: true,
+        probes: {
+          baseContainerApiPresent: false,
+          bfscfgPresent: false,
+          bfsCompiledIn: false,
+        },
+      }),
+      "",
+    );
+
+    await expect(
+      preflightWindowsNodeMxcExactBackend("C:\\MXC\\wxc-exec.exe", async () => probe),
+    ).rejects.toThrow(
+      /Base Container API is unavailable.*built without the appcontainer-bfs backend.*cannot safely install or emulate/,
+    );
   });
 });

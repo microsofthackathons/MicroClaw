@@ -113,6 +113,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           needsDaclAugmentation: false,
           degraded: false,
           warnings: [],
+          probes: {
+            baseContainerApiPresent: null,
+            bfscfgPresent: null,
+            bfsCompiledIn: null,
+          },
           reason: "Unavailable in browser development",
         },
         smoke: null,
@@ -120,6 +125,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         warnings: [],
         remediation: [],
       }),
+      preflight: async () => {
+        throw new Error("Unavailable in browser development");
+      },
       setEnabled: async () => {
         throw new Error("Unavailable in browser development");
       },

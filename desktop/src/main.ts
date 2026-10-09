@@ -195,6 +195,7 @@ import {
 import {
   inspectWindowsNodeMxc,
   isCurrentBundledWindowsNodeApprovalCallback,
+  preflightWindowsNodeMxcExactBackend,
   runWindowsNodeMxcSmoke,
   shouldStopManagedGatewayForWindowsNodeMxc,
   type StoredWindowsNodeMxcSmoke,
@@ -1131,6 +1132,13 @@ async function getWindowsNodeMxcStatus(): Promise<
   }
 > {
   const bundledFolders = getBundledWindowsNodeFolders();
+  const bundledHost = bundledWindowsNodeHost.status();
+  let runtimeIntegrityError: string | undefined;
+  try {
+    bundledWindowsNodeHost.getValidatedMxcExecutablePath();
+  } catch (error) {
+    runtimeIntegrityError = error instanceof Error ? error.message : String(error);
+  }
   const status = await inspectWindowsNodeMxc({
     desiredEnabled: isWindowsNodeMxcDesired(),
     selectedNodeId: settingsStore.get("windowsNodeMxcNodeId"),
@@ -1139,8 +1147,9 @@ async function getWindowsNodeMxcStatus(): Promise<
     managedGateway: gatewaySpawnedByUs && isManagedGatewayProcessAlive(),
     gatewayGeneration: gatewayGenerationId,
     storedSmoke: settingsStore.get("windowsNodeMxcSmoke") ?? null,
-    bundledHost: bundledWindowsNodeHost.status(),
+    bundledHost,
     bundledFolders,
+    runtimeIntegrityError,
   });
   const durable = getWindowsNodeMxcDurableApprovalStore().inspect();
   const lifecyclePhase = windowsNodeMxcSecurityTransitionInProgress
@@ -1537,6 +1546,11 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       settingsStore.delete("windowsNodeMxcSmoke");
       sendToWindow(mainWindow, "gateway:ws-disconnected", "MXC readiness attestation");
       sendToWindow(mainWindow, "gateway:service-loading");
+    },
+    preflightExactBackend: async () => {
+      await preflightWindowsNodeMxcExactBackend(
+        bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
+      );
     },
     startLockedGeneration: async () => {
       await startGatewayWithWindowsNodeMxcPolicy("locked");
@@ -6490,6 +6504,11 @@ function registerIpcHandlers(): void {
 
   // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
   ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
+  ipcMain.handle("windows-node-mxc:preflight", async () => {
+    await preflightWindowsNodeMxcExactBackend(
+      bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
+    );
+  });
   ipcMain.handle("windows-node-mxc:approval-current", () =>
     getPendingWindowsNodeMxcApprovalForRenderer(),
   );
@@ -6520,14 +6539,9 @@ function registerIpcHandlers(): void {
       beginWindowsNodeMxcLifecycleOperation();
       let transitionSucceeded = false;
       let automaticReadinessStarted = false;
+      let transitionMutationStarted = false;
       try {
         const enabled = params?.enabled === true;
-        setWindowsNodeMxcLifecycleState("locking");
-        windowsNodeMxcIngressGeneration = null;
-        windowsNodeMxcActivationInProgress = false;
-        bundledWindowsNodeHost.revokeActivationLease();
-        sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
-        sendToWindow(mainWindow, "gateway:service-loading");
         if (gwClient?.connected && (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())) {
           throw new Error(
             "Windows Node + MXC mode requires MicroClaw's managed Gateway; stop the external Gateway first",
@@ -6539,7 +6553,20 @@ function registerIpcHandlers(): void {
         }
 
         const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+        if (enabled) {
+          setWindowsNodeMxcLifecycleState("validating");
+          await preflightWindowsNodeMxcExactBackend(
+            bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
+          );
+        }
 
+        transitionMutationStarted = true;
+        setWindowsNodeMxcLifecycleState("locking");
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcActivationInProgress = false;
+        bundledWindowsNodeHost.revokeActivationLease();
+        sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
+        sendToWindow(mainWindow, "gateway:service-loading");
         if (enabled) {
           const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
           const applied = applyWindowsNodeMxcGatewayPolicy(
@@ -6603,6 +6630,7 @@ function registerIpcHandlers(): void {
           }
         } else {
           setWindowsNodeMxcLifecycleState("failed", detail);
+          if (!transitionMutationStarted) throw error;
           try {
             await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
           } finally {
@@ -7292,6 +7320,11 @@ function registerIpcHandlers(): void {
             bundledWindowsNodeHost.revokeActivationLease();
             windowsNodeMxcApprovalProofContext = null;
             settingsStore.delete("windowsNodeMxcSmoke");
+          },
+          preflightExactBackend: async () => {
+            await preflightWindowsNodeMxcExactBackend(
+              bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
+            );
           },
           validatePolicy: (candidate) => normalizeCompleteWindowsNodeMxcFolderPolicy(candidate),
           stopCurrentGeneration: async () => {

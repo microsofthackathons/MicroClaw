@@ -13,6 +13,8 @@ export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT = "microclaw.windows-n
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
+export const MXC_SDK_SOURCE_REVISION = "0e02a720e32416b151dbcb0a00e3d4ac2b891559";
+export const MXC_EXACT_BACKEND_PROVISIONING = "host-base-container-api";
 const MXC_WXC_EXEC_SHA256 = {
   x64: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
   arm64: "e430d0e4f44f616e91db684f8d825a6dc93e06a1262b8d00bcaac7522a317aab",
@@ -428,6 +430,11 @@ export class BundledWindowsNodeHost {
     return nodeId.toLowerCase();
   }
 
+  getValidatedMxcExecutablePath(): string {
+    assertBundledMxcProbeArtifact(this.wxcExecPath);
+    return this.wxcExecPath;
+  }
+
   respond(requestId: string, decision: "deny" | "allow-once" | "allow-always"): void {
     const pending = this.pendingApproval;
     if (!pending) throw new Error("No bundled Windows node approval is pending");
@@ -758,13 +765,31 @@ export function assertLoopbackGateway(gatewayUrl: string): void {
   }
 }
 
+export function validateBundledWindowsNodeRuntimeManifest(
+  manifest: Record<string, unknown>,
+  architecture: "x64" | "arm64",
+): void {
+  if (
+    manifest.architecture !== architecture ||
+    manifest.mxcVersion !== "0.7.0" ||
+    manifest.mxcSourceRevision !== MXC_SDK_SOURCE_REVISION ||
+    manifest.mxcProductionBfsCompiledIn !== false ||
+    manifest.mxcExactBackendProvisioning !== MXC_EXACT_BACKEND_PROVISIONING ||
+    manifest.wxcExecSha256 !== MXC_WXC_EXEC_SHA256[architecture] ||
+    manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION ||
+    manifest.mxcHostPrepPatchRevision !== MXC_HOST_PREP_PATCH_REVISION ||
+    manifest.microclawHostPrepOrigin !== "microclaw-built" ||
+    JSON.stringify(manifest.microclawHostPrepOperations) !==
+      JSON.stringify(["prepare-system-drive", "unprepare-system-drive"])
+  ) {
+    throw new Error("Bundled Windows node runtime manifest does not match this application");
+  }
+}
+
 function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   if (!fs.existsSync(hostPath))
     throw new Error(`Bundled Windows node host is missing: ${hostPath}`);
-  if (!fs.existsSync(wxcExecPath)) throw new Error(`Pinned MXC runtime is missing: ${wxcExecPath}`);
-  if (process.arch !== "x64" && process.arch !== "arm64") {
-    throw new Error(`Bundled Windows node does not support architecture ${process.arch}`);
-  }
+  const architecture = assertBundledMxcProbeArtifact(wxcExecPath);
   const resourceRoot = path.dirname(path.dirname(hostPath));
   const patchedHostPrepPath = path.join(resourceRoot, "host-prep", "microclaw-mxc-host-prep.exe");
   const officialHostPrepPath = path.join(path.dirname(wxcExecPath), "wxc-host-prep.exe");
@@ -774,28 +799,14 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   if (!fs.existsSync(officialHostPrepPath)) {
     throw new Error(`Official MXC host-prep runtime is missing: ${officialHostPrepPath}`);
   }
-  const manifestPath = path.join(resourceRoot, "RUNTIME.json");
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-  if (
-    manifest.architecture !== process.arch ||
-    manifest.mxcVersion !== "0.7.0" ||
-    manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION ||
-    manifest.mxcHostPrepPatchRevision !== MXC_HOST_PREP_PATCH_REVISION ||
-    manifest.microclawHostPrepOrigin !== "microclaw-built" ||
-    JSON.stringify(manifest.microclawHostPrepOperations) !==
-      JSON.stringify(["prepare-system-drive", "unprepare-system-drive"])
-  ) {
-    throw new Error("Bundled Windows node runtime manifest does not match this application");
-  }
-  const actualHash = createHash("sha256").update(fs.readFileSync(wxcExecPath)).digest("hex");
-  if (actualHash !== MXC_WXC_EXEC_SHA256[process.arch]) {
-    throw new Error(`Pinned MXC runtime hash mismatch: ${actualHash}`);
-  }
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(resourceRoot, "RUNTIME.json"), "utf8"),
+  ) as Record<string, unknown>;
   const officialHostPrepHash = createHash("sha256")
     .update(fs.readFileSync(officialHostPrepPath))
     .digest("hex");
   if (
-    officialHostPrepHash !== MXC_OFFICIAL_HOST_PREP_SHA256[process.arch] ||
+    officialHostPrepHash !== MXC_OFFICIAL_HOST_PREP_SHA256[architecture] ||
     manifest.officialWxcHostPrepSha256 !== officialHostPrepHash
   ) {
     throw new Error(`Official MXC host-prep hash mismatch: ${officialHostPrepHash}`);
@@ -809,6 +820,23 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   ) {
     throw new Error(`MicroClaw MXC host-prep hash mismatch: ${patchedHostPrepHash}`);
   }
+}
+
+function assertBundledMxcProbeArtifact(wxcExecPath: string): "x64" | "arm64" {
+  if (!fs.existsSync(wxcExecPath)) throw new Error(`Pinned MXC runtime is missing: ${wxcExecPath}`);
+  if (process.arch !== "x64" && process.arch !== "arm64") {
+    throw new Error(`Bundled Windows node does not support architecture ${process.arch}`);
+  }
+  const resourceRoot = path.dirname(path.dirname(wxcExecPath));
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(resourceRoot, "RUNTIME.json"), "utf8"),
+  ) as Record<string, unknown>;
+  validateBundledWindowsNodeRuntimeManifest(manifest, process.arch);
+  const actualHash = createHash("sha256").update(fs.readFileSync(wxcExecPath)).digest("hex");
+  if (actualHash !== MXC_WXC_EXEC_SHA256[process.arch]) {
+    throw new Error(`Pinned MXC runtime hash mismatch: ${actualHash}`);
+  }
+  return process.arch;
 }
 
 async function writeJsonAtomically(

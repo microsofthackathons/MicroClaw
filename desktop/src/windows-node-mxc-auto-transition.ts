@@ -3,6 +3,7 @@ import type { WindowsNodeMxcFolderTransactionPhase } from "./windows-node-mxc-fo
 export interface WindowsNodeMxcAutomaticTransitionHooks<TStatus> {
   setPhase(phase: WindowsNodeMxcFolderTransactionPhase, detail?: string | null): void;
   closeIngress(): Promise<void> | void;
+  preflightExactBackend(): Promise<void>;
   startLockedGeneration(): Promise<TStatus>;
   smokeLockedGeneration(status: TStatus): Promise<void>;
   promoteActivePolicy(status: TStatus): Promise<TStatus>;
@@ -18,6 +19,9 @@ export async function runWindowsNodeMxcAutomaticTransition<TStatus>(
 ): Promise<TStatus> {
   try {
     await hooks.closeIngress();
+
+    hooks.setPhase("validating");
+    await hooks.preflightExactBackend();
 
     hooks.setPhase("starting-locked");
     const locked = await hooks.startLockedGeneration();

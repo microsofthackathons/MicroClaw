@@ -24,6 +24,7 @@ export interface WindowsNodeMxcFolderTransactionHooks<TStatus> {
   closeIngress(): Promise<void> | void;
   rejectPendingApprovals(): Promise<void> | void;
   revokeAuthorization(): Promise<void> | void;
+  preflightExactBackend(): Promise<void>;
   validatePolicy(
     draft: WindowsNodeMxcFolderPolicy,
   ): Promise<WindowsNodeMxcFolderPolicy> | WindowsNodeMxcFolderPolicy;
@@ -88,6 +89,7 @@ export async function runWindowsNodeMxcFolderPolicyTransaction<TStatus>(
     await hooks.revokeAuthorization();
 
     hooks.setPhase("validating");
+    await hooks.preflightExactBackend();
     const validated = await hooks.validatePolicy(draft);
     applied = validated;
     await hooks.stopCurrentGeneration();

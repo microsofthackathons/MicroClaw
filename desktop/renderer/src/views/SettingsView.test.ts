@@ -17,6 +17,7 @@ describe("SettingsView", () => {
   const exportGatewayLogs = vi.fn();
   const openExternal = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
+  const preflightWindowsNodeMxc = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
   const addUserDir = vi.fn();
   const stageUserDir = vi.fn();
@@ -89,6 +90,11 @@ describe("SettingsView", () => {
       needsDaclAugmentation: true,
       degraded: true,
       warnings: [],
+      probes: {
+        baseContainerApiPresent: false,
+        bfscfgPresent: false,
+        bfsCompiledIn: false,
+      },
       reason: null,
     },
     smoke: null,
@@ -100,6 +106,7 @@ describe("SettingsView", () => {
     routeState.section = "skills";
     setLocale("en-US");
     getWindowsNodeMxcStatus.mockReset().mockResolvedValue(status("diagnostic-unpaired-local-node"));
+    preflightWindowsNodeMxc.mockReset().mockResolvedValue(undefined);
     setWindowsNodeMxcEnabled
       .mockReset()
       .mockImplementation(async ({ enabled }: { enabled: boolean }) => ({
@@ -139,6 +146,7 @@ describe("SettingsView", () => {
       },
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
+        preflight: preflightWindowsNodeMxc,
         setEnabled: setWindowsNodeMxcEnabled,
         validateFolderPolicy,
         applyFolderPolicy,
@@ -355,6 +363,34 @@ describe("SettingsView", () => {
     expect(gateway.ready).toBe(false);
     expect(chat.wsConnected).toBe(false);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: false });
+  });
+
+  it("keeps the standard route ready when exact-backend preflight rejects enablement", async () => {
+    routeState.section = "security";
+    preflightWindowsNodeMxc.mockRejectedValueOnce(new Error("exact backend unavailable"));
+    const pinia = createPinia();
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          "el-switch": {
+            template: '<button data-testid="mxc-toggle" @click="$emit(\'change\', true)" />',
+          },
+        },
+      },
+    });
+    await flushPromises();
+    const gateway = useGatewayStore(pinia);
+    const chat = useChatStore(pinia);
+    gateway.markReady();
+    chat.wsConnected = true;
+
+    await wrapper.find('[data-testid="mxc-toggle"]').trigger("click");
+    await flushPromises();
+
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
   it("shows empty global RO and RW folder lists while MXC is disabled", async () => {

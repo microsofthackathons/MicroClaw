@@ -14,6 +14,7 @@ import {
   classifyMxcProbe,
   classifyMxcSmoke,
   classifyMissingEffectiveToolSession,
+  describeMxcExactBackendEligibility,
   extractEffectiveToolNames,
   getWindowsNodeMxcGatewayPolicyState,
   getMxcTierWarning,
@@ -133,6 +134,7 @@ export interface InspectWindowsNodeMxcOptions {
   environment?: NodeJS.ProcessEnv;
   bundledHost?: BundledWindowsNodeHostStatus;
   bundledFolders?: WindowsNodeMxcFolder[];
+  runtimeIntegrityError?: string;
 }
 
 export function resolveWindowsNodeSettingsPath(
@@ -197,10 +199,7 @@ export async function inspectWindowsNodeMxc(
   const settingsCheck = validateWindowsNodeMxcSettings(settings);
   blockers.push(...settingsCheck.blockers);
   warnings.push(...settingsCheck.warnings);
-  if (bundled && !bundled.processRunning) {
-    blockers.push(bundled.lastError ?? "Bundled MicroClaw Windows node host is not running");
-    remediation.push("Restart MicroClaw so it can start its app-owned Windows node host.");
-  } else if (!settings) {
+  if (!settings) {
     remediation.push(
       `Install and launch OpenClaw Windows Companion, then configure its Sandbox page. Expected settings: ${settingsPath}`,
     );
@@ -230,16 +229,21 @@ export async function inspectWindowsNodeMxc(
     );
   }
 
-  const probe = await runMxcProbe(wxcExecPath);
-  if (probe.outcome !== "supported") {
-    blockers.push(probe.reason ?? "MXC probe did not report a usable tier");
-    remediation.push(
-      `Repair MXC or set OPENCLAW_WXC_EXEC to the pinned wxc-exec.exe; checked ${wxcExecPath}`,
-    );
+  const probe = options.runtimeIntegrityError
+    ? classifyMxcProbe(null, "", "", options.runtimeIntegrityError)
+    : await runMxcProbe(wxcExecPath);
+  const backendEligibility = describeMxcExactBackendEligibility(probe);
+  if (!backendEligibility.eligible) {
+    blockers.push(...backendEligibility.blockers);
+    remediation.push(...backendEligibility.remediation);
   }
   const tierWarning = getMxcTierWarning(probe);
   if (tierWarning) warnings.push(tierWarning);
   warnings.push(...probe.warnings);
+  if (bundled && !bundled.processRunning && backendEligibility.eligible) {
+    blockers.push(bundled.lastError ?? "Bundled MicroClaw Windows node host is not running");
+    remediation.push("Restart MicroClaw so it can start its app-owned Windows node host.");
+  }
 
   const gatewayPolicyState = getWindowsNodeMxcGatewayPolicyState(options.config, selectedNodeId);
   const gatewayPolicyReady = gatewayPolicyState !== "drift";
@@ -848,6 +852,23 @@ function hasDurableApprovals(payload: unknown): boolean {
     const allowlist = (agent as Record<string, unknown>).allowlist;
     return Array.isArray(allowlist) && allowlist.length > 0;
   });
+}
+
+export async function preflightWindowsNodeMxcExactBackend(
+  wxcExecPath: string,
+  probeRunner: (path: string) => Promise<MxcProbeResult> = runMxcProbe,
+): Promise<MxcProbeResult> {
+  const probe = await probeRunner(wxcExecPath);
+  const eligibility = describeMxcExactBackendEligibility(probe);
+  if (!eligibility.eligible) {
+    const remediation = eligibility.remediation[0];
+    throw new Error(
+      `No eligible MXC exact-containment backend is available. ${eligibility.summary}${
+        remediation ? ` ${remediation}` : ""
+      }`,
+    );
+  }
+  return probe;
 }
 
 async function runMxcProbe(wxcExecPath: string): Promise<MxcProbeResult> {

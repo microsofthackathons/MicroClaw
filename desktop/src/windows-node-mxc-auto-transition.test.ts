@@ -9,6 +9,9 @@ describe("automatic Windows Node + MXC transition", () => {
       closeIngress: async () => {
         calls.push("close");
       },
+      preflightExactBackend: async () => {
+        calls.push("preflight");
+      },
       startLockedGeneration: async () => {
         calls.push("start-locked");
         return "locked";
@@ -39,6 +42,8 @@ describe("automatic Windows Node + MXC transition", () => {
     expect(status).toBe("verified");
     expect(calls).toEqual([
       "close",
+      "phase:validating",
+      "preflight",
       "phase:starting-locked",
       "start-locked",
       "phase:smoking-locked",
@@ -55,7 +60,53 @@ describe("automatic Windows Node + MXC transition", () => {
     ]);
   });
 
-  it.each(["start-locked", "smoke-locked", "promote-active", "smoke-active", "lease", "verify"])(
+  it("does not start or pair a node when exact-backend preflight fails", async () => {
+    const startLockedGeneration = vi.fn();
+    const smokeLockedGeneration = vi.fn();
+    const promoteActivePolicy = vi.fn();
+    const smokeActivePolicy = vi.fn();
+    const mintActivationLease = vi.fn();
+    const verifyActiveGeneration = vi.fn();
+    const releaseIngress = vi.fn();
+    const lockAfterFailure = vi.fn();
+
+    await expect(
+      runWindowsNodeMxcAutomaticTransition({
+        setPhase: vi.fn(),
+        closeIngress: vi.fn(),
+        preflightExactBackend: async () => {
+          throw new Error("exact backend unavailable");
+        },
+        startLockedGeneration,
+        smokeLockedGeneration,
+        promoteActivePolicy,
+        smokeActivePolicy,
+        mintActivationLease,
+        verifyActiveGeneration,
+        releaseIngress,
+        lockAfterFailure,
+      }),
+    ).rejects.toThrow("exact backend unavailable");
+
+    expect(startLockedGeneration).not.toHaveBeenCalled();
+    expect(smokeLockedGeneration).not.toHaveBeenCalled();
+    expect(promoteActivePolicy).not.toHaveBeenCalled();
+    expect(smokeActivePolicy).not.toHaveBeenCalled();
+    expect(mintActivationLease).not.toHaveBeenCalled();
+    expect(verifyActiveGeneration).not.toHaveBeenCalled();
+    expect(releaseIngress).not.toHaveBeenCalled();
+    expect(lockAfterFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "preflight",
+    "start-locked",
+    "smoke-locked",
+    "promote-active",
+    "smoke-active",
+    "lease",
+    "verify",
+  ])(
     "fails locked without releasing ingress when %s fails",
     async (failure) => {
       const releaseIngress = vi.fn();
@@ -69,6 +120,7 @@ describe("automatic Windows Node + MXC transition", () => {
         runWindowsNodeMxcAutomaticTransition({
           setPhase: (phase, detail) => phases.push({ phase, detail }),
           closeIngress: vi.fn(),
+          preflightExactBackend: async () => fail("preflight"),
           startLockedGeneration: async () => {
             fail("start-locked");
             return "locked";
