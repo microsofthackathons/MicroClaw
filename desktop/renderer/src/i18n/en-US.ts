@@ -316,6 +316,9 @@ export default {
   "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
   "settings.windowsNodeMxcAttestedTier": "Attested effective tier",
   "settings.windowsNodeMxcLimitedActive": "Limited containment active",
+  "settings.windowsNodeMxcStatusActive": "Active",
+  "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
+  "settings.windowsNodeMxcCompactOff": "Containment — Off",
   "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
   "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
   "settings.windowsNodeMxcEffective": "Effective state",
@@ -326,7 +329,7 @@ export default {
   "settings.windowsNodeMxcStarting": "Starting",
   "settings.windowsNodeMxcActionRequired": "Action required",
   "settings.windowsNodeMxcProtectionOff": "Off",
-  "settings.windowsNodeMxcTechnicalDetails": "Technical details",
+  "settings.windowsNodeMxcTechnicalDetails": "Security diagnostics",
   "settings.windowsNodeMxcUnavailable": "Unavailable",
   "settings.windowsNodeMxcAvailable": "Available",
   "settings.windowsNodeMxcMissing": "Missing",
@@ -354,6 +357,8 @@ export default {
   "settings.windowsNodeMxcFullFolders": "Full hard-boundary approved folders",
   "settings.windowsNodeMxcLimitedFolders": "Limited additional filesystem grants",
   "settings.windowsNodeMxcConfiguredFolders": "Configured MXC folders",
+  "settings.windowsNodeMxcGrantReadWrite": "Read/write",
+  "settings.windowsNodeMxcGrantReadOnly": "Read-only",
   "settings.windowsNodeMxcFoldersHint":
     "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
   "settings.windowsNodeMxcLimitedFoldersHint":
@@ -361,8 +366,17 @@ export default {
   "settings.windowsNodeMxcConfiguredFoldersHint":
     "These folders will be used when Full or Limited containment is selected.",
   "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
+  "settings.windowsNodeMxcAmbientBeforeGrants":
+    "Ambient access before selected-folder grants",
+  "settings.windowsNodeMxcAmbientAllDenied":
+    "No inherited filesystem access detected ({denied}/{total} denied)",
+  "settings.windowsNodeMxcAmbientExceptions":
+    "Inherited filesystem access detected: {details} ({denied}/{total} denied)",
+  "settings.windowsNodeMxcAmbientContract": "Attestation contract",
+  "settings.windowsNodeMxcAmbientHash": "Attestation hash",
+  "settings.windowsNodeMxcAmbientCheckedAt": "Assessed at",
   "settings.windowsNodeMxcAmbientAccessHint":
-    "Category-level attestation only; absolute paths are intentionally not displayed.",
+    "This assessment runs before MicroClaw adds the selected folder grants. Category-level attestation only; absolute paths are intentionally not displayed.",
   "settings.windowsNodeMxcAmbientUnavailable":
     "Ambient access attestation is not available.",
   "settings.windowsNodeMxcAmbientCategory.desktop": "Desktop",

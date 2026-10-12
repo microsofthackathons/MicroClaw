@@ -31,12 +31,10 @@ describe("GatewayLoading MXC lifecycle", () => {
       "Running internal probes in locked generation",
     );
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
-    expect(wrapper.find(".loading-mxc-strength").text()).toContain(
-      "Requested mode: Limited containment (DACL)",
+    expect(wrapper.find(".loading-mxc-strength").text()).toBe(
+      "Limited containment (DACL) — Starting",
     );
-    expect(wrapper.find(".loading-mxc-strength").text()).toContain(
-      "Attested effective strength: Off",
-    );
+    expect(wrapper.find(".loading-mxc-strength").text()).not.toContain("Attested");
     expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
   });
 

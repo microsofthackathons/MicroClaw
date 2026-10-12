@@ -184,17 +184,17 @@ const isFailed = computed(
 );
 const displayError = computed(() => props.mxcDetail || props.errorMessage);
 const mxcStrengthText = computed(() => {
-  const requested =
+  const mode =
     props.mxcRequestedMode === "limited-dacl"
       ? t("settings.windowsNodeMxcModeLimited")
       : t("settings.windowsNodeMxcModeFull");
-  const effective =
-    props.mxcEffectiveStrength === "limited-dacl"
-      ? t("settings.windowsNodeMxcModeLimited")
-      : props.mxcEffectiveStrength === "full"
-        ? t("settings.windowsNodeMxcModeFull")
-        : t("settings.windowsNodeMxcProtectionOff");
-  return `${t("settings.windowsNodeMxcRequestedMode")}: ${requested} · ${t("settings.windowsNodeMxcAttestedStrength")}: ${effective}${props.mxcEffectiveTier ? ` (${props.mxcEffectiveTier})` : ""}`;
+  const state =
+    props.mxcPhase === "active"
+      ? t("settings.windowsNodeMxcStatusActive")
+      : isMxcFailure.value
+        ? t("settings.windowsNodeMxcActionRequired")
+        : t("settings.windowsNodeMxcStarting");
+  return t("settings.windowsNodeMxcCompactStatus", { mode, state });
 });
 
 // ── Window controls ──

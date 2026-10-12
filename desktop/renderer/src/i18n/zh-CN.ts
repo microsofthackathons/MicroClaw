@@ -298,6 +298,9 @@ export default {
   "settings.windowsNodeMxcAttestedStrength": "经证明的实际强度",
   "settings.windowsNodeMxcAttestedTier": "经证明的实际层级",
   "settings.windowsNodeMxcLimitedActive": "有限隔离已启用",
+  "settings.windowsNodeMxcStatusActive": "已启用",
+  "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
+  "settings.windowsNodeMxcCompactOff": "隔离 — 已关闭",
   "settings.windowsNodeMxcSelectedNode": "已选择的本地 Windows 节点",
   "settings.windowsNodeMxcSelectNode": "请选择一个已配对的 Windows 节点",
   "settings.windowsNodeMxcEffective": "实际状态",
@@ -308,7 +311,7 @@ export default {
   "settings.windowsNodeMxcStarting": "正在启动",
   "settings.windowsNodeMxcActionRequired": "需要操作",
   "settings.windowsNodeMxcProtectionOff": "已关闭",
-  "settings.windowsNodeMxcTechnicalDetails": "技术详情",
+  "settings.windowsNodeMxcTechnicalDetails": "安全诊断",
   "settings.windowsNodeMxcUnavailable": "不可用",
   "settings.windowsNodeMxcAvailable": "可用",
   "settings.windowsNodeMxcMissing": "缺失",
@@ -336,6 +339,8 @@ export default {
   "settings.windowsNodeMxcFullFolders": "完整强边界批准文件夹",
   "settings.windowsNodeMxcLimitedFolders": "有限模式额外文件系统授权",
   "settings.windowsNodeMxcConfiguredFolders": "已配置的 MXC 文件夹",
+  "settings.windowsNodeMxcGrantReadWrite": "读写",
+  "settings.windowsNodeMxcGrantReadOnly": "只读",
   "settings.windowsNodeMxcFoldersHint":
     "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。",
   "settings.windowsNodeMxcLimitedFoldersHint":
@@ -343,8 +348,16 @@ export default {
   "settings.windowsNodeMxcConfiguredFoldersHint":
     "选择完整或有限隔离时将使用这些文件夹。",
   "settings.windowsNodeMxcAmbientAccess": "环境文件系统访问",
+  "settings.windowsNodeMxcAmbientBeforeGrants": "所选文件夹授权前的环境访问",
+  "settings.windowsNodeMxcAmbientAllDenied":
+    "未检测到继承的文件系统访问（{denied}/{total} 均被拒绝）",
+  "settings.windowsNodeMxcAmbientExceptions":
+    "检测到继承的文件系统访问：{details}（{denied}/{total} 被拒绝）",
+  "settings.windowsNodeMxcAmbientContract": "证明契约",
+  "settings.windowsNodeMxcAmbientHash": "证明哈希",
+  "settings.windowsNodeMxcAmbientCheckedAt": "评估时间",
   "settings.windowsNodeMxcAmbientAccessHint":
-    "仅显示类别级证明；不会显示绝对路径。",
+    "此评估在 MicroClaw 添加所选文件夹授权之前运行。仅显示类别级证明；不会显示绝对路径。",
   "settings.windowsNodeMxcAmbientUnavailable": "环境访问证明不可用。",
   "settings.windowsNodeMxcAmbientCategory.desktop": "桌面",
   "settings.windowsNodeMxcAmbientCategory.documents": "文档",

@@ -119,7 +119,19 @@ describe("i18n", () => {
 
   it("localizes the global MXC folder policy and remediation", () => {
     setLocale("en-US");
-    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("Technical details");
+    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("Security diagnostics");
+    expect(
+      t("settings.windowsNodeMxcCompactStatus", {
+        mode: t("settings.windowsNodeMxcModeLimited"),
+        state: t("settings.windowsNodeMxcStatusActive"),
+      }),
+    ).toBe("Limited containment (DACL) — Active");
+    expect(
+      t("settings.windowsNodeMxcAmbientAllDenied", { denied: 18, total: 18 }),
+    ).toBe("No inherited filesystem access detected (18/18 denied)");
+    expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe(
+      "Ambient access before selected-folder grants",
+    );
     expect(t("settings.windowsNodeMxcProtected")).toBe("Protected");
     expect(t("settings.windowsNodeMxcStarting")).toBe("Starting");
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("Action required");
@@ -150,7 +162,19 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcAmbientCategory.browser-edge")).toBe("Edge data");
 
     setLocale("zh-CN");
-    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("技术详情");
+    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("安全诊断");
+    expect(
+      t("settings.windowsNodeMxcCompactStatus", {
+        mode: t("settings.windowsNodeMxcModeLimited"),
+        state: t("settings.windowsNodeMxcStatusActive"),
+      }),
+    ).toBe("有限隔离（DACL） — 已启用");
+    expect(
+      t("settings.windowsNodeMxcAmbientAllDenied", { denied: 18, total: 18 }),
+    ).toBe("未检测到继承的文件系统访问（18/18 均被拒绝）");
+    expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe(
+      "所选文件夹授权前的环境访问",
+    );
     expect(t("settings.windowsNodeMxcProtected")).toBe("已保护");
     expect(t("settings.windowsNodeMxcStarting")).toBe("正在启动");
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("需要操作");

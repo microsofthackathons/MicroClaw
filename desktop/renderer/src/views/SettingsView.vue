@@ -596,26 +596,9 @@
             </section>
           </div>
           <template v-if="windowsNodeMxcStatus">
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcRequestedMode") }}</span>
-              <span class="row-value">{{ windowsNodeMxcRequestedModeLabel }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcAttestedStrength") }}</span>
+            <div class="card-row mxc-status-summary" data-testid="mxc-status-summary">
               <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
-                {{ windowsNodeMxcEffectiveStrengthLabel }}
-              </span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcAttestedTier") }}</span>
-              <span class="row-value">{{
-                windowsNodeMxcStatus.effectiveTier ?? t("settings.windowsNodeMxcUnavailable")
-              }}</span>
-            </div>
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcEffective") }}</span>
-              <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
-                {{ windowsNodeMxcProtectionLabel }}
+                {{ windowsNodeMxcCompactStatus }}
               </span>
             </div>
             <div v-if="windowsNodeMxcProtectionDetail" class="mxc-primary-detail">
@@ -626,27 +609,11 @@
                 windowsNodeMxcStatus.requestedMode === 'limited-dacl' ||
                 windowsNodeMxcStatus.effectiveStrength === 'limited-dacl'
               "
-              class="card-row no-border mxc-ambient-summary"
+              class="card-row no-border mxc-ambient-compact"
+              :class="windowsNodeMxcAmbientSummaryClass"
+              data-testid="mxc-ambient-compact"
             >
-              <span class="row-label">{{ t("settings.windowsNodeMxcAmbientAccess") }}</span>
-              <div v-if="windowsNodeMxcStatus.ambientAccess" class="mxc-ambient-grid">
-                <span
-                  v-for="entry in windowsNodeMxcStatus.ambientAccess.entries"
-                  :key="entry.category"
-                  class="mxc-ambient-entry"
-                >
-                  <span>{{ windowsNodeMxcAmbientCategoryLabel(entry.category) }}</span>
-                  <strong :class="`mxc-ambient-status-${entry.status}`">{{
-                    windowsNodeMxcAmbientStatusLabel(entry.status)
-                  }}</strong>
-                </span>
-              </div>
-              <div v-else class="mxc-alert mxc-alert-warning">
-                {{ t("settings.windowsNodeMxcAmbientUnavailable") }}
-              </div>
-              <div class="mxc-folder-policy-hint">
-                {{ t("settings.windowsNodeMxcAmbientAccessHint") }}
-              </div>
+              {{ windowsNodeMxcAmbientSummary }}
             </div>
             <div
               class="card-row no-border mxc-folder-policy"
@@ -692,7 +659,9 @@
                   class="dir-item"
                 >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
+                  <span class="dir-badge dir-badge-rw">{{
+                    t("settings.windowsNodeMxcGrantReadWrite")
+                  }}</span>
                   <el-button
                     data-testid="mxc-change-ro"
                     text
@@ -734,7 +703,9 @@
                   class="dir-item"
                 >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
+                  <span class="dir-badge dir-badge-ro">{{
+                    t("settings.windowsNodeMxcGrantReadOnly")
+                  }}</span>
                   <el-button
                     data-testid="mxc-change-rw"
                     text
@@ -876,6 +847,67 @@
               :aria-label="t('settings.windowsNodeMxcTechnicalDetails')"
               data-testid="mxc-technical-details"
             >
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcRequestedMode") }}</span>
+                <span class="row-value">{{ windowsNodeMxcRequestedModeLabel }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcAttestedStrength") }}</span>
+                <span class="row-value">{{ windowsNodeMxcEffectiveStrengthLabel }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcAttestedTier") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.effectiveTier ?? t("settings.windowsNodeMxcUnavailable")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcEffective") }}</span>
+                <span class="row-value">{{ windowsNodeMxcProtectionLabel }}</span>
+              </div>
+              <div
+                v-if="windowsNodeMxcLimitedMode"
+                class="card-row mxc-ambient-diagnostics"
+                data-testid="mxc-ambient-diagnostics"
+              >
+                <span class="row-label">{{
+                  t("settings.windowsNodeMxcAmbientBeforeGrants")
+                }}</span>
+                <template v-if="windowsNodeMxcStatus.ambientAccess">
+                  <div class="mxc-ambient-grid">
+                    <span
+                      v-for="entry in windowsNodeMxcStatus.ambientAccess.entries"
+                      :key="entry.category"
+                      class="mxc-ambient-entry"
+                    >
+                      <span>{{ windowsNodeMxcAmbientCategoryLabel(entry.category) }}</span>
+                      <strong :class="`mxc-ambient-status-${entry.status}`">{{
+                        windowsNodeMxcAmbientStatusLabel(entry.status)
+                      }}</strong>
+                    </span>
+                  </div>
+                  <div class="mxc-ambient-metadata">
+                    <span>
+                      {{ t("settings.windowsNodeMxcAmbientContract") }}:
+                      {{ windowsNodeMxcStatus.ambientAccess.contract }}
+                    </span>
+                    <span>
+                      {{ t("settings.windowsNodeMxcAmbientHash") }}:
+                      {{ windowsNodeMxcStatus.ambientAccess.hash }}
+                    </span>
+                    <span>
+                      {{ t("settings.windowsNodeMxcAmbientCheckedAt") }}:
+                      {{ windowsNodeMxcStatus.ambientAccess.checkedAt }}
+                    </span>
+                  </div>
+                </template>
+                <div v-else class="mxc-alert mxc-alert-warning">
+                  {{ t("settings.windowsNodeMxcAmbientUnavailable") }}
+                </div>
+                <div class="mxc-folder-policy-hint">
+                  {{ t("settings.windowsNodeMxcAmbientAccessHint") }}
+                </div>
+              </div>
               <div class="card-row">
                 <span class="row-label">{{ t("settings.windowsNodeMxcSelectedNode") }}</span>
                 <span class="row-value">
@@ -1790,6 +1822,66 @@ const windowsNodeMxcRequestedModeLabel = computed(() =>
 const windowsNodeMxcEffectiveStrengthLabel = computed(() =>
   windowsNodeMxcModeLabel(windowsNodeMxcStatus.value?.effectiveStrength ?? "off"),
 );
+
+const windowsNodeMxcCompactStatus = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (!status || status.requestedMode === "off") {
+    return t("settings.windowsNodeMxcCompactOff");
+  }
+  const mode =
+    status.effectiveEnabled && status.lifecycleState.phase === "active"
+      ? windowsNodeMxcModeLabel(status.effectiveStrength)
+      : windowsNodeMxcModeLabel(status.requestedMode);
+  const state =
+    status.effectiveEnabled && status.lifecycleState.phase === "active"
+      ? t("settings.windowsNodeMxcStatusActive")
+      : windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)
+        ? t("settings.windowsNodeMxcStarting")
+        : t("settings.windowsNodeMxcActionRequired");
+  return t("settings.windowsNodeMxcCompactStatus", { mode, state });
+});
+
+const windowsNodeMxcAmbientEntries = computed(
+  () => windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [],
+);
+
+const windowsNodeMxcAmbientExceptions = computed(() =>
+  windowsNodeMxcAmbientEntries.value.filter((entry) => entry.status !== "denied"),
+);
+
+const windowsNodeMxcAmbientSummary = computed(() => {
+  const entries = windowsNodeMxcAmbientEntries.value;
+  if (entries.length === 0) {
+    return t("settings.windowsNodeMxcAmbientUnavailable");
+  }
+  const denied = entries.length - windowsNodeMxcAmbientExceptions.value.length;
+  if (windowsNodeMxcAmbientExceptions.value.length === 0) {
+    return t("settings.windowsNodeMxcAmbientAllDenied", {
+      denied,
+      total: entries.length,
+    });
+  }
+  const details = windowsNodeMxcAmbientExceptions.value
+    .map(
+      (entry) =>
+        `${windowsNodeMxcAmbientCategoryLabel(entry.category)} — ${windowsNodeMxcAmbientStatusLabel(entry.status)}`,
+    )
+    .join(", ");
+  return t("settings.windowsNodeMxcAmbientExceptions", {
+    details,
+    denied,
+    total: entries.length,
+  });
+});
+
+const windowsNodeMxcAmbientSummaryClass = computed(() => {
+  if (windowsNodeMxcAmbientEntries.value.length === 0) {
+    return "mxc-summary-warning";
+  }
+  return windowsNodeMxcAmbientExceptions.value.length === 0
+    ? "mxc-summary-ok"
+    : "mxc-summary-error";
+});
 
 const windowsNodeMxcFolderTitle = computed(() => {
   if (windowsNodeMxcLimitedMode.value) {
@@ -3973,9 +4065,32 @@ async function clearChatHistory() {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.mxc-ambient-summary {
+.mxc-status-summary {
+  justify-content: flex-start;
+}
+.mxc-status-summary .mxc-state {
+  font-size: 14px;
+}
+.mxc-ambient-compact {
+  display: block;
+  padding: 12px 24px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.mxc-summary-ok {
+  color: #388e3c;
+}
+.mxc-summary-warning {
+  color: #b26a00;
+}
+.mxc-summary-error {
+  color: var(--settings-action-danger);
+}
+.mxc-ambient-diagnostics {
   flex-direction: column;
   align-items: stretch;
+  gap: 8px;
 }
 .mxc-ambient-grid {
   display: grid;
@@ -4000,6 +4115,13 @@ async function clearChatHistory() {
 }
 .mxc-ambient-status-read-write {
   color: var(--settings-action-danger);
+}
+.mxc-ambient-metadata {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 .mxc-technical-summary {
   width: 100%;

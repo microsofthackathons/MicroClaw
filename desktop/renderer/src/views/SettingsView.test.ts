@@ -42,6 +42,45 @@ describe("SettingsView", () => {
       "system.run.cwd-policy",
     ],
   };
+  const ambientCategories: Array<
+    NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"][number]["category"]
+  > = [
+    "desktop",
+    "documents",
+    "downloads",
+    "microclaw-state",
+    "openclaw-state",
+    "openclaw-roaming-state",
+    "ssh",
+    "gnupg",
+    "aws",
+    "azure",
+    "kube",
+    "gcloud",
+    "windows-credentials",
+    "powershell-history",
+    "browser-chrome",
+    "browser-edge",
+    "browser-brave",
+    "browser-firefox",
+  ];
+
+  const ambientAccess = (
+    overrides: Partial<
+      Record<
+        NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"][number]["category"],
+        NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"][number]["status"]
+      >
+    > = {},
+  ): NonNullable<WindowsNodeMxcStatus["ambientAccess"]> => ({
+    contract: "microclaw.windows-node-mxc-ambient-access.v1",
+    hash: "ambient-hash-1",
+    checkedAt: new Date(0).toISOString(),
+    entries: ambientCategories.map((category) => ({
+      category,
+      status: overrides[category] ?? "denied",
+    })),
+  });
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -263,6 +302,8 @@ describe("SettingsView", () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce({
       ...status("node-local"),
+      effectiveStrength: "full",
+      effectiveTier: "base-container",
       effectiveEnabled: true,
       lifecycleState: {
         phase: "active",
@@ -282,7 +323,9 @@ describe("SettingsView", () => {
     const toggle = wrapper.find('[data-testid="mxc-technical-details-toggle"]');
     expect(toggle.attributes("aria-expanded")).toBe("false");
     expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
-    expect(wrapper.find(".mxc-card").text()).toContain("Protected");
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toBe(
+      "Full containment — Active",
+    );
     expect(wrapper.find('[data-testid="mxc-add-rw"]').exists()).toBe(true);
     expect(wrapper.find(".mxc-card").text()).toContain("Remembered exact commands");
     expect(wrapper.find(".mxc-card").text()).not.toContain("Gateway generation");
@@ -356,7 +399,7 @@ describe("SettingsView", () => {
     expect(text).not.toContain("Activate verified route");
   });
 
-  it("shows explicit modes and requested state separately from attested strength and tier", async () => {
+  it("shows a compact active status and keeps raw attestation collapsed by default", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce({
       ...status("node-local"),
@@ -364,6 +407,7 @@ describe("SettingsView", () => {
       effectiveStrength: "limited-dacl",
       effectiveTier: "appcontainer-dacl",
       effectiveEnabled: true,
+      ambientAccess: ambientAccess(),
       lifecycleState: {
         phase: "active",
         detail: null,
@@ -383,14 +427,64 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-mode-off"]').text()).toContain(
       "remembered standard sandbox setting",
     );
-    expect(wrapper.find(".mxc-card").text()).toContain(
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toBe(
+      "Limited containment (DACL) — Active",
+    );
+    expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
+    expect(wrapper.find(".mxc-card").text()).not.toContain(
       "Requested modeLimited containment (DACL)",
     );
-    expect(wrapper.find(".mxc-card").text()).toContain(
+
+    await wrapper.find('[data-testid="mxc-technical-details-toggle"]').trigger("click");
+    const diagnostics = wrapper.find('[data-testid="mxc-technical-details"]');
+    expect(diagnostics.text()).toContain(
+      "Requested modeLimited containment (DACL)",
+    );
+    expect(diagnostics.text()).toContain(
       "Attested effective strengthLimited containment (DACL)",
     );
-    expect(wrapper.find(".mxc-card").text()).toContain(
+    expect(diagnostics.text()).toContain(
       "Attested effective tierappcontainer-dacl",
+    );
+    expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').text()).toContain(
+      "Security diagnostics",
+    );
+  });
+
+  it("keeps Full and Off status summaries concise and truthful", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus
+      .mockResolvedValueOnce({
+        ...status("node-local"),
+        effectiveStrength: "full",
+        effectiveTier: "base-container",
+        effectiveEnabled: true,
+        lifecycleState: {
+          phase: "active",
+          detail: null,
+          updatedAt: new Date(0).toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        ...status("node-local"),
+        requestedMode: "off",
+        desiredEnabled: false,
+      });
+    const full = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+    expect(full.find('[data-testid="mxc-status-summary"]').text()).toBe(
+      "Full containment — Active",
+    );
+
+    full.unmount();
+    const off = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+    expect(off.find('[data-testid="mxc-status-summary"]').text()).toBe(
+      "Containment — Off",
     );
   });
 
@@ -527,7 +621,7 @@ describe("SettingsView", () => {
     expect(policy.findAll(".dir-empty")).toHaveLength(2);
     expect(policy.find('[data-testid="mxc-add-rw"]').attributes("disabled")).toBe("false");
     expect(policy.text()).not.toContain("Disable Windows Node + MXC");
-    expect(wrapper.find(".mxc-ambient-summary").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
   });
 
   it("does not show Limited ambient attestation for Full containment", async () => {
@@ -538,10 +632,10 @@ describe("SettingsView", () => {
 
     await flushPromises();
 
-    expect(wrapper.find(".mxc-ambient-summary").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
   });
 
-  it("labels Limited folders as additive, shows ambient categories only, and hides durable approvals", async () => {
+  it("summarizes all-denied ambient access separately from selected folder grants", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce({
       ...status("node-local"),
@@ -549,16 +643,51 @@ describe("SettingsView", () => {
       effectiveStrength: "limited-dacl",
       effectiveTier: "appcontainer-dacl",
       effectiveEnabled: true,
-      ambientAccess: {
-        contract: "microclaw.windows-node-mxc-ambient-access.v1",
-        hash: "ambient-hash-1",
-        checkedAt: new Date(0).toISOString(),
-        entries: [
-          { category: "desktop", status: "read-write" },
-          { category: "openclaw-roaming-state", status: "denied" },
-          { category: "ssh", status: "denied" },
-        ],
+      ambientAccess: ambientAccess(),
+      folders: [{ path: String.raw`C:\Users\Alice\Desktop`, access: "rw" }],
+      lifecycleState: {
+        phase: "active",
+        detail: null,
+        updatedAt: new Date(0).toISOString(),
       },
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').text()).toBe(
+      "No inherited filesystem access detected (18/18 denied)",
+    );
+    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').classes()).toContain(
+      "mxc-summary-ok",
+    );
+    expect(wrapper.find('[data-testid="mxc-ambient-diagnostics"]').exists()).toBe(false);
+
+    const policy = wrapper.find(".mxc-folder-policy");
+    expect(policy.text()).toContain(String.raw`C:\Users\Alice\Desktop`);
+    expect(policy.text()).toContain("Read/write");
+    expect(policy.text()).toContain("not an exclusive allowlist");
+
+    await wrapper.find('[data-testid="mxc-technical-details-toggle"]').trigger("click");
+    const ambient = wrapper.find('[data-testid="mxc-ambient-diagnostics"]');
+    expect(ambient.text()).toContain("Ambient access before selected-folder grants");
+    expect(ambient.text()).toContain("Desktop");
+    expect(ambient.text()).toContain("Denied");
+    expect(ambient.text()).toContain("microclaw.windows-node-mxc-ambient-access.v1");
+    expect(ambient.text()).toContain("ambient-hash-1");
+    expect(ambient.text()).not.toContain(String.raw`C:\Users\Alice\Desktop`);
+  });
+
+  it("surfaces ambient exceptions prominently and hides category rows until expanded", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      requestedMode: "limited-dacl",
+      effectiveStrength: "limited-dacl",
+      effectiveTier: "appcontainer-dacl",
+      effectiveEnabled: true,
+      ambientAccess: ambientAccess({ desktop: "read-write" }),
       folders: [{ path: String.raw`C:\Work`, access: "ro" }],
       durableApprovals: {
         records: [
@@ -603,7 +732,17 @@ describe("SettingsView", () => {
     );
     expect(wrapper.find(".mxc-card").text()).not.toContain("hostname.exe");
 
-    const ambient = wrapper.find(".mxc-ambient-summary");
+    const ambientSummary = wrapper.find('[data-testid="mxc-ambient-compact"]');
+    expect(ambientSummary.text()).toContain(
+      "Inherited filesystem access detected: Desktop — Read/write",
+    );
+    expect(ambientSummary.text()).toContain("(17/18 denied)");
+    expect(ambientSummary.classes()).toContain("mxc-summary-error");
+    expect(wrapper.find('[data-testid="mxc-ambient-diagnostics"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="mxc-technical-details-toggle"]').trigger("click");
+    const ambient = wrapper.find('[data-testid="mxc-ambient-diagnostics"]');
+    expect(ambient.text()).toContain("Ambient access before selected-folder grants");
     expect(ambient.text()).toContain("Desktop");
     expect(ambient.text()).toContain("Read/write");
     expect(ambient.text()).toContain("OpenClaw roaming state");
