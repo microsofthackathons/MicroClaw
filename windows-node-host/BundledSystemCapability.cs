@@ -19,9 +19,13 @@ internal sealed class BundledSystemCapability(
     string uiLocale = "en-US",
     ApprovalProofVerifier? approvalProof = null,
     ReadinessProofVerifier? readinessProof = null,
-    Func<CancellationToken, Task>? isolationGuard = null) : INodeCapability
+    Func<CancellationToken, Task>? isolationGuard = null,
+    Func<CancellationToken, Task>? ambientGuard = null,
+    ReadinessPreparationGuard? readinessPreparation = null) : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
+    private readonly ReadinessPreparationGuard _readinessPreparation =
+        readinessPreparation ?? new ReadinessPreparationGuard();
     private static readonly JsonSerializerOptions MxcConfigJsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -57,7 +61,7 @@ internal sealed class BundledSystemCapability(
                             && DurableApprovalIdentity.Load(approvalsPath).Count > 0,
                     }),
                 "system.which" => Success(new { bins = ResolveBins(request.Args) }),
-                "system.run.prepare" => Success(await PrepareAsync(request, cancellationToken)),
+                "system.run.prepare" => Success(await PrepareSerializedAsync(request, cancellationToken)),
                 "system.run" => await RunAsync(request, cancellationToken),
                 ReadinessProbeContract.Command => await RunReadinessAsync(request, cancellationToken),
                 _ => Error("Unsupported bundled node command."),
@@ -77,48 +81,81 @@ internal sealed class BundledSystemCapability(
         }
     }
 
-    private async Task<object> PrepareAsync(
+    private async Task<object> PrepareSerializedAsync(
         NodeInvokeRequest request,
         CancellationToken cancellationToken)
     {
-        await EnsureFilesystemIsolationAsync(cancellationToken);
-        var run = ParseRun(request.Args);
-        var cwd = policy.ResolveCwd(run.Cwd);
-        var commandText = WindowsCommandLine.Join(run.Argv);
-        var commandPreview = BuildApprovalCommandPreview(run, commandText);
-        var executable = ResolveExecutable(run.Argv[0])
-            ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
-        var exactArgs = run.Argv.Skip(1).ToArray();
-        var declaredApprovalAccess = run.DeclaredAccess
-            .Select(entry => new DurableApprovalAccess(entry.Access, entry.Path))
-            .ToArray();
-        using var executableLease = ExecutableApprovalLease.Acquire(executable);
-        var executableIdentity = executableLease.Capture(
-            exactArgs,
-            cwd.ApprovalBinding,
-            declaredApprovalAccess);
-        return new
+        await _runGate.WaitAsync(cancellationToken);
+        try
         {
-            cmdText = commandText,
-            plan = new
+            await EnsureFilesystemIsolationAsync(cancellationToken);
+            var run = ParseRun(request.Args);
+            var cwd = policy.ResolveCwd(run.Cwd);
+            var commandText = WindowsCommandLine.Join(run.Argv);
+            var commandPreview = BuildApprovalCommandPreview(run, commandText);
+            var executable = ResolveExecutable(run.Argv[0])
+                ?? throw new HostPolicyException("executable-not-found", "The requested executable was not found.");
+            var exactArgs = run.Argv.Skip(1).ToArray();
+            var declaredApprovalAccess = run.DeclaredAccess
+                .Select(entry => new DurableApprovalAccess(entry.Access, entry.Path))
+                .ToArray();
+            using var executableLease = ExecutableApprovalLease.Acquire(executable);
+            var executableIdentity = executableLease.Capture(
+                exactArgs,
+                cwd.ApprovalBinding,
+                declaredApprovalAccess);
+            var readinessProbeKind = ReadinessProbeContract.MatchKind(run.Argv);
+            var readinessPreparation =
+                readinessProbeKind is not null
+                && string.Equals(run.AgentId, ReadinessProbeContract.AgentId, StringComparison.Ordinal)
+                && readinessProof is not null
+                && string.Equals(
+                    run.SessionKey,
+                    ReadinessProbeContract.SessionKey(readinessProof.TransitionId),
+                    StringComparison.Ordinal);
+            if (readinessPreparation)
             {
-                argv = run.Argv,
-                cwd = string.IsNullOrEmpty(cwd.LaunchPath) ? null : cwd.LaunchPath,
-                commandText,
-                commandPreview,
-                agentId = run.AgentId,
-                sessionKey = run.SessionKey,
-                executablePath = executableIdentity.ExecutablePath,
-                executableSha256 = executableIdentity.ExecutableSha256,
+                if (!string.Equals(cwd.ApprovalBinding, CwdPolicyContract.ScratchBinding, StringComparison.Ordinal)
+                    || run.DeclaredAccess.Count != 0
+                    || commandPreview is not null)
+                    throw new HostPolicyException(
+                        "readiness-preparation-scope-invalid",
+                        "The readiness preparation permits only the exact built-in probe in isolated scratch.");
+                await EnsureAmbientAccessAsync(cancellationToken);
+                cwd = policy.RevalidateCwd(run.Cwd, cwd.ApprovalBinding);
+                executableIdentity = executableLease.Capture(
+                    exactArgs,
+                    cwd.ApprovalBinding,
+                    declaredApprovalAccess);
+                _readinessPreparation.Record(readinessProbeKind!, executableIdentity);
+            }
+            return new
+            {
+                cmdText = commandText,
+                plan = new
+                {
+                    argv = run.Argv,
+                    cwd = string.IsNullOrEmpty(cwd.LaunchPath) ? null : cwd.LaunchPath,
+                    commandText,
+                    commandPreview,
+                    agentId = run.AgentId,
+                    sessionKey = run.SessionKey,
+                    executablePath = executableIdentity.ExecutablePath,
+                    executableSha256 = executableIdentity.ExecutableSha256,
+                    cwdBinding = cwd.ApprovalBinding,
+                    declaredAccess = run.DeclaredAccess,
+                },
                 cwdBinding = cwd.ApprovalBinding,
+                cwdAccess = cwd.Access.ToString(),
+                matchedRoot = cwd.MatchedRoot,
+                contract = CwdPolicyContract.Version,
                 declaredAccess = run.DeclaredAccess,
-            },
-            cwdBinding = cwd.ApprovalBinding,
-            cwdAccess = cwd.Access.ToString(),
-            matchedRoot = cwd.MatchedRoot,
-            contract = CwdPolicyContract.Version,
-            declaredAccess = run.DeclaredAccess,
-        };
+            };
+        }
+        finally
+        {
+            _runGate.Release();
+        }
     }
 
     private static string? BuildApprovalCommandPreview(RunRequest run, string commandText)
@@ -169,7 +206,8 @@ internal sealed class BundledSystemCapability(
         CancellationToken cancellationToken)
     {
         await EnsureFilesystemIsolationAsync(cancellationToken);
-        await AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
+        if (!readiness)
+            await EnsureAmbientAccessAsync(cancellationToken);
         var request = ParseRun(args);
         var cwd = policy.ResolveCwd(request.Cwd);
         var validatedActivation = activationLease.Validate(request.Argv);
@@ -271,9 +309,9 @@ internal sealed class BundledSystemCapability(
             await EnsureFilesystemIsolationAsync(
                 cancellationToken,
                 wxcExecutableLease);
-            await AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
+            if (!readiness)
+                await EnsureAmbientAccessAsync(cancellationToken);
             currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
-            activationLease.Revalidate(validatedActivation, request.Argv);
             currentIdentity = executableLease.Capture(
                 exactArgs,
                 currentCwd.ApprovalBinding,
@@ -282,15 +320,6 @@ internal sealed class BundledSystemCapability(
                 throw new HostPolicyException(
                     "approval-changed-before-launch",
                     "The executable, arguments, CWD, or declared access changed before launch.");
-            if (validatedApproval is not null)
-                approvalProof!.Revalidate(validatedApproval);
-            if (validatedReadiness is not null)
-                readinessProof!.Revalidate(validatedReadiness);
-            if (requireDurableRecheck && !DurableApprovalIdentity.Load(approvalsPath)
-                .Any(entry => DurableApprovalIdentity.Matches(entry, currentIdentity)))
-                throw new HostPolicyException(
-                    "approval-changed-before-launch",
-                    "The durable approval is no longer current.");
             var launchCwd = string.IsNullOrEmpty(currentCwd.LaunchPath) ? scratch : currentCwd.LaunchPath;
             Console.Error.WriteLine(
                 $"[filesystem-policy] launchLocation={(currentCwd.MatchedRoot is null ? "isolated-scratch" : "selected-grant")} effectiveAccess={currentCwd.Access} containmentStrength={policy.RequestedStrength}");
@@ -319,6 +348,32 @@ internal sealed class BundledSystemCapability(
                     ["TMP"] = scratch,
                     ["TMPDIR"] = scratch,
                 });
+            currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
+            activationLease.Revalidate(validatedActivation, request.Argv);
+            currentIdentity = executableLease.Capture(
+                exactArgs,
+                currentCwd.ApprovalBinding,
+                declaredApprovalAccess);
+            if (!DurableApprovalIdentity.Matches(approvedIdentity, currentIdentity))
+                throw new HostPolicyException(
+                    "approval-changed-before-launch",
+                    "The executable, arguments, CWD, or declared access changed at process launch.");
+            if (validatedApproval is not null)
+                approvalProof!.Revalidate(validatedApproval);
+            if (validatedReadiness is not null)
+            {
+                readinessProof!.Revalidate(validatedReadiness);
+                var preparationToLaunchMs = _readinessPreparation.ValidateAndConsume(
+                    validatedReadiness.ProbeKind,
+                    currentIdentity);
+                Console.Error.WriteLine(
+                    $"[readiness-probe] launch prepared kind={validatedReadiness.ProbeKind} preparationToLaunchMs={preparationToLaunchMs}");
+            }
+            if (requireDurableRecheck && !DurableApprovalIdentity.Load(approvalsPath)
+                .Any(entry => DurableApprovalIdentity.Matches(entry, currentIdentity)))
+                throw new HostPolicyException(
+                    "approval-changed-before-launch",
+                    "The durable approval is no longer current.");
             var result = await new MxcExecutor(
                     wxcExecutableLease.CanonicalPath,
                     4 * 1024 * 1024,
@@ -348,6 +403,10 @@ internal sealed class BundledSystemCapability(
             try { Directory.Delete(scratch, recursive: true); } catch { }
         }
     }
+
+    private Task EnsureAmbientAccessAsync(CancellationToken cancellationToken) =>
+        ambientGuard?.Invoke(cancellationToken)
+        ?? AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
 
     internal static string SerializeMxcConfig(MxcConfig config, bool allowDaclMutation = false)
     {

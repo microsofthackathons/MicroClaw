@@ -493,6 +493,7 @@ interface OpenClawAPI {
         }>;
       } | null;
       smoke: {
+        profile: "full-smoke" | "limited-minimal-smoke";
         gatewayGeneration: string;
         nodeId: string;
         settingsFingerprint: string;
@@ -500,9 +501,8 @@ interface OpenClawAPI {
         containmentStrength: "full" | "limited-dacl";
         ambientAccessHash: string | null;
         checkedAt: string;
-        hostname: { outcome: string; reason: string };
-        powershell: { outcome: string; reason: string };
-        deniedOutsideRoot: { outcome: string; reason: string };
+        execution: { outcome: string; reason: string };
+        deniedOutsideRoot: { outcome: string; reason: string } | null;
       } | null;
       blockers: string[];
       warnings: string[];

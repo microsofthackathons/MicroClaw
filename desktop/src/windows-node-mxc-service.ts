@@ -50,10 +50,11 @@ import {
 } from "./windows-node-mxc-readiness-proof";
 
 const WINDOWS_NODE_SETTINGS_FILENAME = "settings.json";
-const HOSTNAME_MARKER = "MICROCLAW_MXC_HOSTNAME_OK";
-const POWERSHELL_MARKER = "MICROCLAW_MXC_POWERSHELL_OK";
+const EXECUTION_MARKER = "MICROCLAW_MXC_EXECUTION_OK";
 const ATTENDED_SMOKE_GATEWAY_TIMEOUT_MS = 90_000;
 const ATTENDED_SMOKE_CLIENT_TIMEOUT_MS = 95_000;
+const READINESS_PREPARE_GATEWAY_TIMEOUT_MS = 90_000;
+const READINESS_PREPARE_CLIENT_TIMEOUT_MS = 95_000;
 
 export interface WindowsNodeMxcGateway {
   connected: boolean;
@@ -79,6 +80,7 @@ export function isCurrentBundledWindowsNodeApprovalCallback(state: {
 }
 
 export interface StoredWindowsNodeMxcSmoke {
+  profile: "full-smoke" | "limited-minimal-smoke";
   gatewayGeneration: string;
   nodeId: string;
   settingsFingerprint: string;
@@ -86,9 +88,8 @@ export interface StoredWindowsNodeMxcSmoke {
   containmentStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">;
   ambientAccessHash: string | null;
   checkedAt: string;
-  hostname: MxcSmokeResult;
-  powershell: MxcSmokeResult;
-  deniedOutsideRoot: MxcSmokeResult;
+  execution: MxcSmokeResult;
+  deniedOutsideRoot: MxcSmokeResult | null;
 }
 
 export interface WindowsNodeMxcReadinessAuthorization {
@@ -458,14 +459,11 @@ export async function inspectWindowsNodeMxc(
     options.requestedMode === "limited-dacl" ? "limited-dacl" : "full",
     options.ambientAccess?.hash ?? null,
   );
-  if (
-    !smoke ||
-    smoke.hostname.outcome !== "passed" ||
-    smoke.powershell.outcome !== "passed" ||
-    smoke.deniedOutsideRoot.outcome !== "passed"
-  ) {
+  if (!smoke || !isWindowsNodeMxcSmokePassed(smoke)) {
     blockers.push(
-      "A current contained hostname.exe and PowerShell child-process smoke proof is required",
+      options.requestedMode === "limited-dacl"
+        ? "A current Limited minimal contained execution smoke proof is required"
+        : "Current Full contained execution and outside-root denial smoke proofs are required",
     );
     remediation.push(
       bundled
@@ -571,6 +569,7 @@ export function shouldStopManagedGatewayForWindowsNodeMxc(
 export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWindowsNodeMxcSmoke {
   if (!isRecord(value)) return false;
   return (
+    (value.profile === "full-smoke" || value.profile === "limited-minimal-smoke") &&
     typeof value.gatewayGeneration === "string" &&
     typeof value.nodeId === "string" &&
     typeof value.settingsFingerprint === "string" &&
@@ -580,10 +579,17 @@ export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWin
       (typeof value.ambientAccessHash === "string" &&
         /^[a-f0-9]{64}$/.test(value.ambientAccessHash))) &&
     typeof value.checkedAt === "string" &&
-    isMxcSmokeResult(value.hostname) &&
-    isMxcSmokeResult(value.powershell) &&
-    isMxcSmokeResult(value.deniedOutsideRoot)
+    isMxcSmokeResult(value.execution) &&
+    (value.deniedOutsideRoot === null || isMxcSmokeResult(value.deniedOutsideRoot))
   );
+}
+
+export function isWindowsNodeMxcSmokePassed(smoke: StoredWindowsNodeMxcSmoke): boolean {
+  if (smoke.execution.outcome !== "passed") return false;
+  return smoke.profile === "limited-minimal-smoke"
+    ? smoke.containmentStrength === "limited-dacl" && smoke.deniedOutsideRoot === null
+    : smoke.containmentStrength === "full" &&
+        smoke.deniedOutsideRoot?.outcome === "passed";
 }
 
 export function selectCurrentWindowsNodeMxcSmoke(
@@ -601,6 +607,8 @@ export function selectCurrentWindowsNodeMxcSmoke(
     value.settingsFingerprint === settingsFingerprint &&
     value.probeTier === probeTier &&
     value.containmentStrength === containmentStrength &&
+    value.profile ===
+      (containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke") &&
     value.ambientAccessHash === ambientAccessHash
     ? value
     : null;
@@ -697,6 +705,10 @@ export async function runWindowsNodeMxcSmoke(
   authorization: WindowsNodeMxcReadinessAuthorization,
   containmentStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off"> = "full",
   ambientAccessHash: string | null = null,
+  dependencies: {
+    now?: () => number;
+    log?: (message: string) => void;
+  } = {},
 ): Promise<StoredWindowsNodeMxcSmoke> {
   if (!gateway.connected) throw new Error("MicroClaw managed Gateway is not connected");
   if (!nodeId.trim()) throw new Error("A stable Windows node ID is required");
@@ -719,32 +731,26 @@ export async function runWindowsNodeMxcSmoke(
   ) {
     throw new Error("Internal readiness authorization does not match this lifecycle generation");
   }
-  const minter = createWindowsNodeMxcReadinessProofMinter(authorization.proofContext);
-
-  const deniedOutsideRoot = await invokeDeniedCwdSmoke(gateway, nodeId);
-  const hostname = await invokeInternalReadinessProbe(
+  const minter = createWindowsNodeMxcReadinessProofMinter(authorization.proofContext, {
+    now: dependencies.now,
+  });
+  const profile =
+    containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke";
+  const deniedOutsideRoot =
+    containmentStrength === "full" ? await invokeDeniedCwdSmoke(gateway, nodeId) : null;
+  const execution = await invokeInternalReadinessProbe(
     gateway,
     nodeId,
-    "hostname",
-    HOSTNAME_MARKER,
+    "execution",
+    EXECUTION_MARKER,
     authorization.transitionId,
     minter,
+    profile,
+    dependencies.now ?? Date.now,
+    dependencies.log ?? console.info,
   );
-  let powershell: MxcSmokeResult = {
-    outcome: "failed",
-    reason: "PowerShell smoke was not run because hostname.exe did not pass",
-  };
-  if (hostname.outcome === "passed") {
-    powershell = await invokeInternalReadinessProbe(
-      gateway,
-      nodeId,
-      "powershell",
-      POWERSHELL_MARKER,
-      authorization.transitionId,
-      minter,
-    );
-  }
   return {
+    profile,
     gatewayGeneration,
     nodeId: nodeId.trim(),
     settingsFingerprint,
@@ -752,8 +758,7 @@ export async function runWindowsNodeMxcSmoke(
     containmentStrength,
     ambientAccessHash,
     checkedAt: new Date().toISOString(),
-    hostname,
-    powershell,
+    execution,
     deniedOutsideRoot,
   };
 }
@@ -807,6 +812,9 @@ async function invokeInternalReadinessProbe(
   marker: string,
   transitionId: string,
   minter: ReturnType<typeof createWindowsNodeMxcReadinessProofMinter>,
+  profile: StoredWindowsNodeMxcSmoke["profile"],
+  now: () => number,
+  log: (message: string) => void,
 ): Promise<MxcSmokeResult> {
   const command = [...WINDOWS_NODE_MXC_READINESS_PROBES[probeKind]];
   const sessionKey = windowsNodeMxcReadinessSessionKey(transitionId);
@@ -822,18 +830,19 @@ async function invokeInternalReadinessProbe(
           agentId: WINDOWS_NODE_MXC_READINESS_AGENT_ID,
           sessionKey,
         },
-        timeoutMs: 20_000,
+        timeoutMs: READINESS_PREPARE_GATEWAY_TIMEOUT_MS,
         idempotencyKey: randomUUID(),
       },
-      25_000,
+      READINESS_PREPARE_CLIENT_TIMEOUT_MS,
     );
     const plan = findReadinessPlan(prepared);
     if (!plan) {
       throw new Error(`The bundled node did not return an exact ${probeKind} readiness plan`);
     }
     const proof = minter.mint({ transitionId, nodeId, probeKind, plan });
-    console.info(
-      `[windows-node-mxc] Running internal fixed readiness probe kind=${probeKind} transition=${transitionId} generation=${proof.gatewayGeneration}`,
+    const dispatchAtUnixMs = Math.floor(now());
+    log(
+      `[windows-node-mxc] ${profile} dispatch kind=${probeKind} transition=${transitionId} generation=${proof.gatewayGeneration} proofIssueToDispatchMs=${Math.max(0, dispatchAtUnixMs - proof.issuedAtUnixMs)}`,
     );
     const result = await gateway.request(
       "node.invoke",

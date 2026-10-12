@@ -88,7 +88,10 @@ fail-closed transaction: lock ingress, reject pending approvals, revoke proof/le
 the complete draft, stop the exact generation, apply and atomically persist the same
 `sandboxUserDirsRO`/`sandboxUserDirsRW` policy, attest and smoke a locked generation, attest and
 smoke a fresh active generation, mint its lease, verify the effective route, then release ingress.
-The fixed smokes use internal one-use readiness proofs and never enter the user approval queue.
+Full runs its outside-root denial check plus one deterministic contained execution smoke. Limited
+runs only the contained execution smoke because ambient-access assessment, not out-of-root denial,
+is its filesystem safety gate. The fixed smokes use internal one-use readiness proofs and never
+enter the user approval queue.
 Cancellation or any failure leaves execution locked and retains the attempted draft and previous
 policy for explicit retry or revert; MicroClaw never silently restores old active execution. Folder
 preparation that requires elevation fails locked without opening an elevation prompt. UNC,
@@ -116,10 +119,13 @@ declarations, agent, and session. The node silently accepts only that proof afte
 held executable identity. Direct `node.invoke`, malformed, stale, replayed, or concurrent reuse is
 denied. Fixed readiness commands use a separate HMAC contract bound to the transition ID, Gateway
 generation, node, policy, probe kind, exact prepared executable path/content hash, argv, isolated
-scratch CWD, empty declarations, short expiry, and one-use consumption. Only
-`system.run.readiness` accepts that proof; ordinary `system.run`, including identical hostname or
-PowerShell argv after startup, still requires the normal visible approval. Each contained child
-inherits `TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
+scratch CWD, empty declarations, short expiry, and one-use consumption. Readiness preparation
+performs the mode-bound ambient revalidation first; only after it returns does MicroClaw mint and
+immediately dispatch the proof for that single invocation. The helper retains a bounded, one-use
+preparation record and revalidates the proof immediately before MXC process launch. Only
+`system.run.readiness` accepts that proof; ordinary `system.run`, including identical PowerShell
+argv after startup, still requires the normal visible approval. Each contained child inherits
+`TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
 
 Optional `[declare-access]ro:<path>;rw:<path>[/declare-access]` metadata is accepted only on leading
 metadata lines (with an optional `#`, `REM`, or `::` comment prefix). It can describe only canonical
@@ -237,7 +243,8 @@ category/status result hash is embedded in the fingerprinted host policy. Conseq
 requested strength, effective tier, assessment hash, approval/readiness proofs, activation lease,
 and Gateway generation all describe the same attested state.
 
-The host re-runs the assessment at startup and immediately before every Limited launch. A changed
+The host re-runs the assessment at startup and in the serialized readiness/command preparation
+immediately preceding every Limited launch. A changed
 status or hash, missing result, tier change, restart, or policy change closes ingress, revokes the
 lease, and requires a fresh explicit transition. The assessment is enforcement evidence, not a
 one-time warning dialog.
@@ -247,8 +254,10 @@ one-time warning dialog.
 The helper also enforces `microclaw.windows-activation.v1`: an HMAC-SHA256 lease bound to the exact
 Gateway generation, helper policy fingerprint, requested containment strength, effective tier,
 Limited assessment hash when applicable, mode, and expiry. Its per-generation key is delivered only
-through inherited stdin. A diagnostic lease admits only the fixed `hostname.exe` and PowerShell
-probe declarations; the denied-CWD check fails at canonical CWD policy before launch. An active
+through inherited stdin. A diagnostic lease admits only the fixed deterministic PowerShell probe,
+which launches the built-in `hostname.exe` child and verifies deterministic marker output from
+isolated scratch. Full additionally runs the denied-CWD check at canonical CWD policy before launch;
+Limited does not claim that check as a filesystem guarantee. An active
 lease admits the normal attended `system.run` path. The helper checks the lease before authorization
 and again immediately before MXC launch.
 
@@ -262,8 +271,9 @@ readiness and activation sequence. Fixed readiness probes are internally authori
 serialized lifecycle and produce no permission dialog; this authority cannot be used by agent
 commands. Readiness requires the exact CWD/activation attestation payload, selected app-owned node
 identity, paired and connected state, strict no-fallback settings, current-generation effective
-tools, exact mode/tier agreement, contained `hostname.exe`, contained PowerShell, and denied-access
-proof. Limited additionally requires the current ambient-assessment hash and category/status result.
+tools, exact mode/tier agreement, and the mode-specific current smoke record. Full requires the
+contained PowerShell/child execution smoke plus outside-root denial. Limited requires the one
+contained execution smoke plus the current ambient-assessment hash and category/status result.
 
 Every MicroClaw-owned `chat.send` path, including startup warm-up and generated session titles,
 passes through the same current-generation active-ingress gate. Locked or attesting startup skips
@@ -281,7 +291,8 @@ Activation is an automatic fail-closed transaction:
 6. Verify the node declaration, requested/effective containment strength, exact tier, CWD contract,
    strict helper policy, Limited assessment hash if applicable, and effective `exec`-only tool
    inventory.
-7. Repeat all contained smokes for the active generation under a diagnostic lease.
+7. Repeat the mode-specific contained smoke profile for the active generation under a diagnostic
+   lease.
 8. Issue an active lease, perform a final attestation, then release MicroClaw chat ingress.
 
 Any restart, disconnect, timeout, policy/tool/tier/assessment drift, missing or expired lease,
@@ -338,15 +349,18 @@ back to the chat session while replay normalizes the plan to `null`, which the G
 rejects as `approval id does not match request`.
 
 After explicit consent, the MicroClaw-built system-drive helper and the official MXC null-device
-helper both completed successfully. A host that reports `appcontainer-dacl` remains locked; only
-`base-container` or `appcontainer-bfs` can proceed to live readiness. On a supported host, locked-
-generation proof reaches the exact bundled node and official `wxc-exec.exe`; protected `C:\Windows`
-CWD denial, `cmd.exe -> hostname.exe`, and PowerShell child execution pass under transition-bound
-internal one-use proofs with no durable approval, user prompt, or host fallback. Ordinary agent
-execution retains the visible approval contract.
+helper both completed successfully. A Full request remains locked on `appcontainer-dacl`; only
+`base-container` or `appcontainer-bfs` satisfies Full. An explicitly acknowledged Limited request
+can proceed on `appcontainer-dacl` only after its sensitive ambient-access assessment passes. On a
+supported host, the locked-generation proof reaches the exact bundled node and official
+`wxc-exec.exe`; the deterministic PowerShell probe launches `hostname.exe` from isolated scratch
+under a transition-bound internal one-use proof with no durable approval, user prompt, or host
+fallback. Full also proves protected `C:\Windows` CWD denial. Ordinary agent execution retains the
+visible approval contract.
 The active transaction also passed end to end: MicroClaw reported chat disconnected before release,
 started a new Gateway generation, re-attested the exact node and `exec`-only tool surface, repeated
-all three smokes, issued and renewed the generation-bound active lease, then reported chat connected.
+the mode-specific smoke, issued and renewed the generation-bound active lease, then reported chat
+connected.
 The active config had channels, webhooks, internal hooks, cron, plugins, and every plugin entry
 disabled; channel and cron inventories were empty, and a direct Gateway restart request was rejected.
 

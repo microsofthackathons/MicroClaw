@@ -439,14 +439,15 @@ describe("bundled Windows Node CWD attestation", () => {
           settingsFingerprint: "settings",
           probeTier: "appcontainer-dacl",
           checkedAt: "2026-08-18T00:00:00.000Z",
-          hostname: { outcome: "passed", reason: "ok" },
-          powershell: { outcome: "passed", reason: "ok" },
+          profile: "limited-minimal-smoke",
+          execution: { outcome: "passed", reason: "ok" },
         }),
       ).toBe(false);
     });
 
     it("binds smoke proof and ingress release to the exact Gateway generation", () => {
       const smoke = {
+        profile: "limited-minimal-smoke" as const,
         gatewayGeneration: "generation-1",
         nodeId: "node-1",
         settingsFingerprint: "settings-1",
@@ -454,9 +455,8 @@ describe("bundled Windows Node CWD attestation", () => {
         containmentStrength: "limited-dacl" as const,
         ambientAccessHash: "a".repeat(64),
         checkedAt: new Date().toISOString(),
-        hostname: { outcome: "passed" as const, reason: "ok" },
-        powershell: { outcome: "passed" as const, reason: "ok" },
-        deniedOutsideRoot: { outcome: "passed" as const, reason: "denied" },
+        execution: { outcome: "passed" as const, reason: "ok" },
+        deniedOutsideRoot: null,
       };
 
       expect(

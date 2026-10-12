@@ -13,7 +13,8 @@ import {
 const transitionId = "12345678-1234-4234-8234-123456789abc";
 const secret = Buffer.from(Array.from({ length: 32 }, (_, index) => index)).toString("base64");
 
-function plan(kind: "hostname" | "powershell"): WindowsNodeMxcReadinessPlan {
+function plan(): WindowsNodeMxcReadinessPlan {
+  const kind = "execution";
   const argv = [...WINDOWS_NODE_MXC_READINESS_PROBES[kind]];
   return {
     argv,
@@ -50,8 +51,8 @@ describe("Windows Node MXC internal readiness proof", () => {
     const proof = minter().mint({
       transitionId,
       nodeId: "B".repeat(64),
-      probeKind: "hostname",
-      plan: plan("hostname"),
+      probeKind: "execution",
+      plan: plan(),
     });
 
     expect(proof).toEqual({
@@ -61,30 +62,30 @@ describe("Windows Node MXC internal readiness proof", () => {
       gatewayGeneration: "generation-test-001",
       policyFingerprint: "a".repeat(64),
       nodeId: "b".repeat(64),
-      probeKind: "hostname",
-      planSha256: "1cf9d0658d325540aba0d944d8d00937b2c86626a6a814cbc9017a2ab63c2c45",
+      probeKind: "execution",
+      planSha256: "35fc1fc5eb08a374a0247f7dde073db0ca0578d26158bbd6fdc5110ac6e50bda",
       issuedAtUnixMs: 1_735_689_600_000,
       expiresAtUnixMs: 1_735_689_600_000 + WINDOWS_NODE_MXC_READINESS_PROOF_TTL_MS,
-      signature: "7c964f4e5c2c0f169eb295185edf317f609cbdfe105b29ec29980bebb577744d",
+      signature: "223e2c971807546fe05478ebf9e28790b3b6339a92504e7f9fd6a559aab167c7",
     });
   });
 
   it.each([
-    ["argv", { argv: [...plan("hostname").argv, "extra"] }],
+    ["argv", { argv: [...plan().argv, "extra"] }],
     ["cwd", { cwd: "C:\\Windows" }],
     ["declaration", { declaredAccess: [{ access: "ro" as const, path: "C:\\Work" }] }],
     ["agent", { agentId: "main" }],
     ["session", { sessionKey: "agent:main:main" }],
     ["scratch", { cwdBinding: "C:\\Work" }],
-    ["preview", { commandPreview: "hostname" }],
+    ["preview", { commandPreview: "execution" }],
     ["executable", { executablePath: "C:\\Windows\\System32\\whoami.exe" }],
   ])("rejects altered %s identity", (_label, changed) => {
     expect(() =>
       minter().mint({
         transitionId,
         nodeId: "b".repeat(64),
-        probeKind: "hostname",
-        plan: { ...plan("hostname"), ...changed },
+        probeKind: "execution",
+        plan: { ...plan(), ...changed },
       }),
     ).toThrow(/exact built-in probe/);
   });
@@ -94,26 +95,26 @@ describe("Windows Node MXC internal readiness proof", () => {
       minter().mint({
         transitionId: "12345678-1234-4234-8234-123456789abe",
         nodeId: "b".repeat(64),
-        probeKind: "hostname",
-        plan: plan("hostname"),
+        probeKind: "execution",
+        plan: plan(),
       }),
     ).toThrow(/outside the current transition/);
     expect(() =>
       minter().mint({
         transitionId,
         nodeId: "d".repeat(64),
-        probeKind: "hostname",
-        plan: plan("hostname"),
+        probeKind: "execution",
+        plan: plan(),
       }),
     ).toThrow(/outside the current transition/);
     expect(() =>
       minter().mint({
         transitionId,
         nodeId: "b".repeat(64),
-        probeKind: "powershell",
-        plan: plan("hostname"),
+        probeKind: "hostname" as never,
+        plan: plan(),
       }),
-    ).toThrow(/exact built-in probe/);
+    ).toThrow(/outside the current transition/);
     expect(() =>
       createWindowsNodeMxcReadinessProofMinter({
         secretBase64: Buffer.alloc(31).toString("base64"),

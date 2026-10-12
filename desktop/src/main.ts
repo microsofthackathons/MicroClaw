@@ -197,6 +197,7 @@ import {
   isCurrentBundledWindowsNodeApprovalCallback,
   preflightWindowsNodeMxcBackend,
   runWindowsNodeMxcSmoke,
+  isWindowsNodeMxcSmokePassed,
   shouldStopManagedGatewayForWindowsNodeMxc,
   type StoredWindowsNodeMxcSmoke,
   type WindowsNodeMxcRuntimeStatus,
@@ -306,7 +307,7 @@ const settingsStore = new Store<{
   windowsNodeMxcSelection?: WindowsNodeMxcSelection;
   /** Last Limited-mode ambient-access assessment; paths are never persisted here. */
   windowsNodeMxcAmbientAccess?: WindowsNodeMxcAmbientAccessAssessment;
-  /** Last contained hostname + PowerShell readiness proof. */
+  /** Last mode-specific contained readiness smoke proof. */
   windowsNodeMxcSmoke?: StoredWindowsNodeMxcSmoke;
   /** Recoverable policy state retained across a failed apply/reactivate transaction. */
   windowsNodeMxcFolderPolicyRecovery?: {
@@ -1490,11 +1491,9 @@ function assertWindowsNodeMxcBaseReady(
     requireSmoke &&
     (!status.smoke ||
       status.smoke.gatewayGeneration !== gatewayGenerationId ||
-      status.smoke.deniedOutsideRoot.outcome !== "passed" ||
-      status.smoke.hostname.outcome !== "passed" ||
-      status.smoke.powershell.outcome !== "passed")
+      !isWindowsNodeMxcSmokePassed(status.smoke))
   ) {
-    failures.push("Current-generation denied-CWD, hostname, and PowerShell smokes must pass");
+    failures.push("Current-generation mode-specific contained smoke must pass");
   }
   if (failures.length > 0) {
     throw new Error(`Windows Node + MXC activation blocked: ${failures.join("; ")}`);
@@ -1621,13 +1620,9 @@ function assertWindowsNodeMxcSmokePassed(
   smoke: StoredWindowsNodeMxcSmoke,
   generation: "Locked" | "Active",
 ): void {
-  if (
-    smoke.deniedOutsideRoot.outcome !== "passed" ||
-    smoke.hostname.outcome !== "passed" ||
-    smoke.powershell.outcome !== "passed"
-  ) {
+  if (!isWindowsNodeMxcSmokePassed(smoke)) {
     throw new Error(
-      `${generation}-generation contained smokes failed: ${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+      `${generation}-generation ${smoke.profile} failed: execution=${smoke.execution.reason}; outsideRoot=${smoke.deniedOutsideRoot?.reason ?? "not-required"}`,
     );
   }
 }
@@ -1662,8 +1657,9 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       return status;
     },
     smokeLockedGeneration: async (lockedStatus) => {
-      assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(lockedStatus), "Locked");
-      markWindowsNodeMxcStartupTiming("probes");
+      const smoke = await runCurrentWindowsNodeMxcSmoke(lockedStatus);
+      assertWindowsNodeMxcSmokePassed(smoke, "Locked");
+      markWindowsNodeMxcStartupTiming(smoke.profile);
     },
     promoteActivePolicy: async () => {
       const generation = gatewayGenerationId;
@@ -1693,9 +1689,10 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       return status;
     },
     smokeActivePolicy: async (activeStatus) => {
-      assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(activeStatus), "Active");
+      const smoke = await runCurrentWindowsNodeMxcSmoke(activeStatus);
+      assertWindowsNodeMxcSmokePassed(smoke, "Active");
       await waitForWindowsNodeMxcBaseReady(activeGeneration, "active", true);
-      markWindowsNodeMxcStartupTiming("active-probes");
+      markWindowsNodeMxcStartupTiming(`active-${smoke.profile}`);
     },
     mintActivationLease: async () => {
       await bundledWindowsNodeHost.setActivationLease("active", 120_000);
@@ -7550,13 +7547,9 @@ function registerIpcHandlers(): void {
             assertWindowsNodeMxcBaseReady(status, "locked", false),
           smokeLockedGeneration: async (status) => {
             const smoke = await runCurrentWindowsNodeMxcSmoke(status);
-            if (
-              smoke.deniedOutsideRoot.outcome !== "passed" ||
-              smoke.hostname.outcome !== "passed" ||
-              smoke.powershell.outcome !== "passed"
-            ) {
+            if (!isWindowsNodeMxcSmokePassed(smoke)) {
               throw new Error(
-                `Locked-generation contained smokes failed: ${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+                `Locked-generation ${smoke.profile} failed: execution=${smoke.execution.reason}; outsideRoot=${smoke.deniedOutsideRoot?.reason ?? "not-required"}`,
               );
             }
           },
@@ -7585,13 +7578,9 @@ function registerIpcHandlers(): void {
             assertWindowsNodeMxcBaseReady(status, "active", false),
           smokeActiveGeneration: async (status) => {
             const smoke = await runCurrentWindowsNodeMxcSmoke(status);
-            if (
-              smoke.deniedOutsideRoot.outcome !== "passed" ||
-              smoke.hostname.outcome !== "passed" ||
-              smoke.powershell.outcome !== "passed"
-            ) {
+            if (!isWindowsNodeMxcSmokePassed(smoke)) {
               throw new Error(
-                `Active-generation contained smokes failed: ${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+                `Active-generation ${smoke.profile} failed: execution=${smoke.execution.reason}; outsideRoot=${smoke.deniedOutsideRoot?.reason ?? "not-required"}`,
               );
             }
           },

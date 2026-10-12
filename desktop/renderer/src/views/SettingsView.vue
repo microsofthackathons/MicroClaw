@@ -1028,7 +1028,11 @@
                 <span class="row-value">
                   {{
                     windowsNodeMxcStatus.smoke
-                      ? `${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome} / ${windowsNodeMxcStatus.smoke.hostname.outcome} / ${windowsNodeMxcStatus.smoke.powershell.outcome}`
+                      ? `${windowsNodeMxcStatus.smoke.profile}: ${windowsNodeMxcStatus.smoke.execution.outcome}${
+                          windowsNodeMxcStatus.smoke.deniedOutsideRoot
+                            ? ` / outside-root ${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome}`
+                            : ""
+                        }`
                       : t("settings.windowsNodeMxcNotRun")
                   }}
                 </span>

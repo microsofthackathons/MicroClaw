@@ -353,14 +353,7 @@ public sealed class CwdPolicyTests : IDisposable
             "policy-1",
             expiresAt);
         var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
-        var smoke = new[]
-        {
-            @"C:\Windows\System32\cmd.exe",
-            "/d",
-            "/s",
-            "/c",
-            @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
-        };
+        var smoke = ReadinessProbeContract.Probes["execution"];
         var validated = guard.Validate(smoke);
 
         Assert.Equal(
@@ -1011,14 +1004,7 @@ public sealed class CwdPolicyTests : IDisposable
             approvalsPath,
             new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
             isolationGuard: NoopIsolationGuard);
-        var command = new[]
-        {
-            @"C:\Windows\System32\cmd.exe",
-            "/d",
-            "/s",
-            "/c",
-            @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
-        };
+        var command = ReadinessProbeContract.Probes["execution"];
         var commandText = WindowsCommandLine.Join(command);
         var commandPreview =
             $"# [declare-access]rw:{desktop}[/declare-access]\n{command[^1]}";
@@ -1053,7 +1039,7 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Equal("rw", approval.GetProperty("declaredAccess")[0].GetProperty("access").GetString());
         Assert.Equal(desktop, approval.GetProperty("declaredAccess")[0].GetProperty("path").GetString(), ignoreCase: true);
         Assert.Equal(
-            @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
+            command[^1],
             approval.GetProperty("arguments").EnumerateArray().Last().GetString());
         Assert.False(File.Exists(approvalsPath));
     }
@@ -1087,7 +1073,7 @@ public sealed class CwdPolicyTests : IDisposable
             approvalsPath,
             new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
             isolationGuard: NoopIsolationGuard);
-        var command = ReadinessProbeContract.Probes["hostname"];
+        var command = ReadinessProbeContract.Probes["execution"];
         var commandText = WindowsCommandLine.Join(command);
 
         var response = await capability.ExecuteAsync(
@@ -1137,7 +1123,7 @@ public sealed class CwdPolicyTests : IDisposable
             1,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous);
-        var command = ReadinessProbeContract.Probes["hostname"];
+        var command = ReadinessProbeContract.Probes["execution"];
         var commandText = WindowsCommandLine.Join(command);
         var capability = new BundledSystemCapability(
             Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
@@ -1163,7 +1149,7 @@ public sealed class CwdPolicyTests : IDisposable
                     rawCommand = commandText,
                     agentId = ReadinessProbeContract.AgentId,
                     sessionKey = ReadinessProbeContract.SessionKey(transitionId),
-                    probeKind = "hostname",
+                    probeKind = "execution",
                 })),
             },
             TestContext.Current.CancellationToken);
@@ -1172,6 +1158,58 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Contains("readiness-proof-required", response.Error);
         Assert.False(server.IsConnected);
         Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task ReadinessPrepareCompletesAmbientGateBeforeReturningScratchPlan()
+    {
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var transitionId = Guid.NewGuid().ToString();
+        var ambientCompleted = false;
+        var command = ReadinessProbeContract.Probes["execution"];
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            "unused-readiness-pipe",
+            Path.Combine(_root, "unused-readiness-approvals.json"),
+            new ActivationLeaseGuard(
+                Path.Combine(_root, "unused-readiness-lease.json"),
+                Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                "generation",
+                new string('a', 64)),
+            readinessProof: new ReadinessProofVerifier(
+                proofSecret,
+                "generation",
+                new string('a', 64),
+                new string('b', 64),
+                transitionId),
+            isolationGuard: NoopIsolationGuard,
+            ambientGuard: async cancellationToken =>
+            {
+                await Task.Delay(25, cancellationToken);
+                ambientCompleted = true;
+            });
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    cwd = (string?)null,
+                    agentId = ReadinessProbeContract.AgentId,
+                    sessionKey = ReadinessProbeContract.SessionKey(transitionId),
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(response.Ok, response.Error);
+        Assert.True(ambientCompleted);
+        var payload = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.Equal(
+            CwdPolicyContract.ScratchBinding,
+            payload.GetProperty("plan").GetProperty("cwdBinding").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("plan").GetProperty("cwd").ValueKind);
     }
 
     [Fact]
