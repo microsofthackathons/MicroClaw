@@ -961,6 +961,7 @@ export default {
   "tasks.colLastRun": "Last Run",
   "tasks.enabled": "Enabled",
   "tasks.disabled": "Disabled",
+  "tasks.pausedByMxc": "Paused by MXC",
 
   // ── Common ──
   "common.close": "Close",

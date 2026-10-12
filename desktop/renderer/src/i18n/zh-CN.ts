@@ -895,6 +895,7 @@ export default {
   "tasks.colLastRun": "上次运行",
   "tasks.enabled": "启用",
   "tasks.disabled": "禁用",
+  "tasks.pausedByMxc": "已由 MXC 暂停",
 
   // ── Common ──
   "common.close": "关闭",

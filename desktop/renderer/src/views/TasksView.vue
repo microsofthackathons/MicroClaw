@@ -39,8 +39,14 @@
       <el-table-column prop="agentId" :label="t('tasks.colAgent')" width="150" />
       <el-table-column :label="t('tasks.colStatus')" width="100">
         <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-            {{ row.enabled ? t("tasks.enabled") : t("tasks.disabled") }}
+          <el-tag :type="row.pausedByMxc ? 'warning' : row.enabled ? 'success' : 'info'" size="small">
+            {{
+              row.pausedByMxc
+                ? t("tasks.pausedByMxc")
+                : row.enabled
+                  ? t("tasks.enabled")
+                  : t("tasks.disabled")
+            }}
           </el-tag>
         </template>
       </el-table-column>

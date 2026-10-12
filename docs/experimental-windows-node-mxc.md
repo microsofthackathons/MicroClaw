@@ -64,6 +64,14 @@ tools execute on the Windows host and would bypass Windows Node/MXC. Local file 
 MXC-contained Windows Node `exec` or the MicroClaw WeChat media broker. MXC Off restores the user's
 backed-up original tool policy.
 
+Scheduled tasks keep their stored definitions while MXC is requested, but the effective Gateway
+Cron scheduler remains disabled. Cron mutation, scratch-write, and run-now RPCs reject while MXC
+is requested, and the Tasks view labels preserved jobs as paused by MXC. Leaving MXC records a
+one-shot durable resume fence; the pinned OpenClaw compatibility preload advances schedules due at
+or before that fence, then allows ordinary startup recovery for later due times.
+It durably acknowledges completion only after the scheduler resumes, so jobs missed during the
+containment interval are not replayed without suppressing later work.
+
 The active policy also denies the runtime and plugin tool groups. The requested WeChat channel
 plugin may remain loaded, but its long-poll loop does not call `getUpdates` until a release record
 matches the current Gateway generation and MXC policy fingerprint. Outbound text and media use the

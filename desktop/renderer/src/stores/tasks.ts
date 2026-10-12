@@ -7,6 +7,7 @@ export interface ScheduledTask {
   cron: string;
   agentId: string;
   enabled: boolean;
+  pausedByMxc: boolean;
   lastRun?: number;
   lastStatus?: string;
 }
@@ -40,6 +41,7 @@ export const useTaskStore = defineStore("tasks", () => {
           cron: cronExpr,
           agentId: j.agentId || "",
           enabled: j.enabled ?? true,
+          pausedByMxc: j.pausedByMxc === true,
           lastRun: j.lastRun,
           lastStatus: j.lastStatus,
         } as ScheduledTask;

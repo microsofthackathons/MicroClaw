@@ -173,6 +173,14 @@ import {
   type WindowsNodeMxcGatewayApproval,
 } from "./windows-node-mxc";
 import {
+  annotateWindowsNodeMxcPausedCronJobs,
+  createWindowsNodeMxcCronResumeFence,
+  getWindowsNodeMxcCronResumeEnvironment,
+  isWindowsNodeMxcCronResumeAcknowledgement,
+  parseWindowsNodeMxcCronResumeFence,
+  type WindowsNodeMxcCronResumeFence,
+} from "./windows-node-mxc-cron";
+import {
   commitWindowsNodeMxcFolderPolicyAtomically,
   runWindowsNodeMxcFolderPolicyTransaction,
   type WindowsNodeMxcFolderPolicy,
@@ -316,6 +324,8 @@ const settingsStore = new Store<{
   windowsNodeMxcAmbientAccess?: WindowsNodeMxcAmbientAccessAssessment;
   /** Last mode-specific contained readiness smoke proof. */
   windowsNodeMxcSmoke?: StoredWindowsNodeMxcSmoke;
+  /** One-shot durable fence that prevents Cron catch-up when leaving MXC. */
+  windowsNodeMxcCronResumeFence?: WindowsNodeMxcCronResumeFence;
   /** Recoverable policy state retained across a failed apply/reactivate transaction. */
   windowsNodeMxcFolderPolicyRecovery?: {
     previous: WindowsNodeMxcFolderPolicy;
@@ -528,12 +538,43 @@ let windowsNodeMxcDurableApprovalStore: WindowsNodeMxcDurableApprovalStore | nul
 let windowsNodeMxcDurableApprovalOperation: Promise<void> = Promise.resolve();
 let windowsNodeMxcApprovalResolutionInProgress = false;
 let windowsNodeMxcApprovalResolutionCompletion: Promise<void> | null = null;
+const WINDOWS_NODE_MXC_CRON_RESUME_ACK_TIMEOUT_MS = 30_000;
 type WindowsNodeMxcFolderPolicyRecovery = {
   previous: WindowsNodeMxcFolderPolicy;
   draft: WindowsNodeMxcFolderPolicy;
   updatedAt: string;
   lastError: string | null;
 };
+
+async function tryConsumeWindowsNodeMxcCronResumeAcknowledgement(): Promise<boolean> {
+  const fence = parseWindowsNodeMxcCronResumeFence(
+    settingsStore.get("windowsNodeMxcCronResumeFence"),
+  );
+  if (!fence) return true;
+  try {
+    const acknowledgement = JSON.parse(
+      await fs.promises.readFile(fence.acknowledgementPath, "utf8"),
+    );
+    if (!isWindowsNodeMxcCronResumeAcknowledgement(acknowledgement, fence)) return false;
+    settingsStore.delete("windowsNodeMxcCronResumeFence");
+    await fs.promises.rm(fence.acknowledgementPath, { force: true });
+    console.log("[cron] consumed acknowledged MXC no-catch-up resume fence");
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function waitForWindowsNodeMxcCronResumeAcknowledgement(): Promise<void> {
+  if (await tryConsumeWindowsNodeMxcCronResumeAcknowledgement()) return;
+  const deadline = Date.now() + WINDOWS_NODE_MXC_CRON_RESUME_ACK_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await tryConsumeWindowsNodeMxcCronResumeAcknowledgement()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for MXC Cron no-catch-up resume acknowledgement");
+}
 
 async function withWindowsNodeMxcDurableApprovalLock<T>(operation: () => Promise<T>): Promise<T> {
   const previous = windowsNodeMxcDurableApprovalOperation;
@@ -3905,6 +3946,17 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
 
     const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
     const windowsNodeMxcRequestedMode = getWindowsNodeMxcRequestedMode();
+    if (!windowsNodeMxcDesired) {
+      await tryConsumeWindowsNodeMxcCronResumeAcknowledgement();
+    }
+    const storedCronResumeFence = settingsStore.get("windowsNodeMxcCronResumeFence");
+    const cronResumeFence =
+      windowsNodeMxcDesired || storedCronResumeFence === undefined
+        ? null
+        : parseWindowsNodeMxcCronResumeFence(storedCronResumeFence);
+    if (!windowsNodeMxcDesired && storedCronResumeFence !== undefined && !cronResumeFence) {
+      throw new Error("Stored MXC Cron resume fence is invalid");
+    }
     const containmentPreparation =
       windowsNodeMxcDesired && windowsNodeMxcRequestedMode !== "off"
         ? await prepareWindowsNodeMxcContainment(windowsNodeMxcRequestedMode)
@@ -3944,6 +3996,19 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
       ...(nextWeixinContext ? getWindowsNodeMxcWeixinEnvironment(nextWeixinContext) : {}),
     };
+    for (const reservedName of [
+      "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED",
+      "MICROCLAW_MXC_CRON_PAUSED",
+      "MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS",
+      "MICROCLAW_MXC_CRON_RESUME_ACK_PATH",
+      "MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN",
+    ]) {
+      delete gwEnv[reservedName];
+    }
+    if (windowsNodeMxcDesired) gwEnv.MICROCLAW_MXC_CRON_PAUSED = "1";
+    if (cronResumeFence) {
+      Object.assign(gwEnv, getWindowsNodeMxcCronResumeEnvironment(cronResumeFence));
+    }
 
     // Determine spawn command
     const launcherPath = resolveAppContainerLauncher();
@@ -4057,25 +4122,27 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     }
     gwEnv.MICROCLAW_FS_SAFE_COMPAT = "1";
     gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
-    if (windowsNodeMxcDesired) {
+    if (windowsNodeMxcDesired || cronResumeFence) {
       if (!fs.existsSync(approvalCompatPath)) {
-        const msg = `[error] Windows Node + MXC approval compatibility preload is missing: ${approvalCompatPath}`;
+        const msg = `[error] Windows Node + MXC compatibility preload is missing: ${approvalCompatPath}`;
         console.error(msg);
         mainWindow?.webContents.send("gateway:log", msg);
         setGatewayStatus("failed");
         rollbackStartupAgentSkills();
         return;
       }
-      gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
-      if (!nextApprovalProofContext) {
-        throw new Error("Windows Node + MXC approval proof context is unavailable");
+      if (windowsNodeMxcDesired) {
+        gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+        if (!nextApprovalProofContext) {
+          throw new Error("Windows Node + MXC approval proof context is unavailable");
+        }
+        gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_SECRET = nextApprovalProofContext.secretBase64;
+        gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION =
+          nextApprovalProofContext.gatewayGeneration;
+        gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT =
+          nextApprovalProofContext.policyFingerprint;
+        gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID = nextApprovalProofContext.nodeId;
       }
-      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_SECRET = nextApprovalProofContext.secretBase64;
-      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION =
-        nextApprovalProofContext.gatewayGeneration;
-      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT =
-        nextApprovalProofContext.policyFingerprint;
-      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID = nextApprovalProofContext.nodeId;
     }
 
     const gwArgs = [
@@ -4083,7 +4150,9 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       pathToFileURL(fsSafeCompatPath).href,
       "--import",
       pathToFileURL(localModelCompatPath).href,
-      ...(windowsNodeMxcDesired ? ["--import", pathToFileURL(approvalCompatPath).href] : []),
+      ...(windowsNodeMxcDesired || cronResumeFence
+        ? ["--import", pathToFileURL(approvalCompatPath).href]
+        : []),
       entryPath,
       "gateway",
       "run",
@@ -4629,6 +4698,11 @@ function connectGatewayWs(): void {
     onConnected: () => {
       console.log("[gateway-ws] connected");
       wsAuthRestartInProgress = false;
+      if (!isWindowsNodeMxcDesired()) {
+        void waitForWindowsNodeMxcCronResumeAcknowledgement().catch((error) => {
+          console.error("[cron] MXC resume acknowledgement failed:", error);
+        });
+      }
       if (isWindowsNodeMxcDesired()) {
         const gateway = gwClient;
         if (gateway && !bundledWindowsNodeStartup) {
@@ -5896,9 +5970,12 @@ function registerIpcHandlers(): void {
 
   // --- Cron / Scheduled Tasks ---
   ipcMain.handle("cron:list", async () => {
-    if (isWindowsNodeMxcDesired()) return { jobs: [] };
     if (!gwClient?.connected) throw new Error("Gateway not connected");
-    return await gwClient.listCronJobs();
+    const result = await gwClient.listCronJobs();
+    const requestedMode = getWindowsNodeMxcRequestedMode();
+    return requestedMode === "off"
+      ? result
+      : annotateWindowsNodeMxcPausedCronJobs(result, requestedMode);
   });
 
   // --- Agents ---
@@ -6771,6 +6848,7 @@ function registerIpcHandlers(): void {
           settingsStore.set("windowsNodeMxcToolBackups", applied.backups);
           settingsStore.set("windowsNodeMxcNodeId", nodeId);
           settingsStore.set("windowsNodeMxcSelection", nextSelection);
+          settingsStore.delete("windowsNodeMxcCronResumeFence");
           settingsStore.set("securityMode", WINDOWS_NODE_MXC_MODE);
           if (requestedMode === "limited-dacl") {
             await withWindowsNodeMxcDurableApprovalLock(() =>
@@ -6787,6 +6865,23 @@ function registerIpcHandlers(): void {
           return status;
         } else {
           stopBundledWindowsNodeHost();
+          const cronResumeAcknowledgementToken = randomUUID();
+          const cronResumeAcknowledgementDir = path.join(
+            app.getPath("userData"),
+            "mxc-cron-resume",
+          );
+          fs.mkdirSync(cronResumeAcknowledgementDir, { recursive: true });
+          const cronResumeAcknowledgementPath = path.join(
+            cronResumeAcknowledgementDir,
+            `${cronResumeAcknowledgementToken}.json`,
+          );
+          settingsStore.set(
+            "windowsNodeMxcCronResumeFence",
+            createWindowsNodeMxcCronResumeFence(
+              cronResumeAcknowledgementPath,
+              cronResumeAcknowledgementToken,
+            ),
+          );
           const restored = restoreWindowsNodeMxcGatewayPolicy(
             config,
             settingsStore.get("windowsNodeMxcToolBackups"),
@@ -6813,6 +6908,7 @@ function registerIpcHandlers(): void {
           );
           await startGateway();
           await waitForManagedGatewayConnection();
+          await waitForWindowsNodeMxcCronResumeAcknowledgement();
           setWindowsNodeMxcLifecycleState("idle");
           transitionSucceeded = true;
           return getWindowsNodeMxcStatus();

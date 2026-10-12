@@ -20,6 +20,12 @@ const EXPECTED_EXEC_APPROVAL_SHA256 =
 const EXPECTED_WEB_TOOLS_MODULE = "openclaw-tools-Dxfbrtff.mjs";
 const EXPECTED_WEB_TOOLS_SHA256 =
   "181c5f9673480fbdacfa3ff88ae83686d8d1cb6402f583c3546d87b6e468d53e";
+const EXPECTED_CRON_SERVICE_MODULE = "service-31u04axN.mjs";
+const EXPECTED_CRON_SERVICE_SHA256 =
+  "5f3fda2b466273f79606dbccb53e2952d3c33e198d32c8a0eed30f7be5cda3ab";
+const EXPECTED_CRON_HANDLERS_MODULE = "cron-D3Bd3ZFt.mjs";
+const EXPECTED_CRON_HANDLERS_SHA256 =
+  "3dd84c2aebf7cfe326f1ae4d3f40e5c68e4c897a623d834c60a613888c1f6ea1";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;
@@ -247,6 +253,100 @@ export function patchPinnedOpenClawExecApproval(source) {
   );
 }
 
+export const PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE = `\t\tawait runMissedJobs(state, {
+\t\t\tskipJobIds: skipJobIds.size > 0 ? skipJobIds : void 0,
+\t\t\tdeferAgentWork: true
+\t\t});`;
+const PATCHED_CRON_STARTUP_MISSED_JOBS_SOURCE = `\t\tconst microclawCronResumeFenceRaw = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\t\tconst microclawCronResumeFenceUnixMs = microclawCronResumeFenceRaw === void 0 ? void 0 : Number(microclawCronResumeFenceRaw);
+\t\tif (microclawCronResumeFenceUnixMs !== void 0 && Number.isSafeInteger(microclawCronResumeFenceUnixMs) && microclawCronResumeFenceUnixMs >= 0 && microclawCronResumeFenceUnixMs <= state.deps.nowMs()) {
+\t\t\tawait recomputeUnownedCronSchedules(state, {
+\t\t\t\trecomputeExpired: true,
+\t\t\t\tnowMs: microclawCronResumeFenceUnixMs
+\t\t\t});
+\t\t\tstate.deps.log.info({
+\t\t\t\tresumeFenceUnixMs: microclawCronResumeFenceUnixMs
+\t\t\t}, "cron: advanced schedules missed during MXC pause");
+\t\t}
+\t\tawait runMissedJobs(state, {
+\t\t\tskipJobIds: skipJobIds.size > 0 ? skipJobIds : void 0,
+\t\t\tdeferAgentWork: true
+\t\t});`;
+
+export function patchPinnedOpenClawCronService(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
+    PATCHED_CRON_STARTUP_MISSED_JOBS_SOURCE,
+    "Cron startup missed-job fence",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_CRON_STARTUP_ACK_SOURCE,
+    PATCHED_CRON_STARTUP_ACK_SOURCE,
+    "Cron startup resume acknowledgement",
+  );
+  return patched;
+}
+
+export const PINNED_CRON_STARTUP_ACK_SOURCE = `\t\tarmTimer(state);
+\t\tresumeForeignReceiptMonitor(state);
+\t\tstate.deps.log.info({`;
+const PATCHED_CRON_STARTUP_ACK_SOURCE = `\t\tarmTimer(state);
+\t\tresumeForeignReceiptMonitor(state);
+\t\tconst microclawCronResumeAckPath = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
+\t\tconst microclawCronResumeAckToken = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN;
+\t\tconst microclawCronResumeFenceRaw = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\t\tif (microclawCronResumeAckPath !== void 0 && microclawCronResumeAckToken !== void 0 && microclawCronResumeFenceRaw !== void 0) {
+\t\t\tconst microclawCronResumeFenceUnixMs = Number(microclawCronResumeFenceRaw);
+\t\t\tawait (await import("node:fs/promises")).writeFile(microclawCronResumeAckPath, JSON.stringify({
+\t\t\t\tcontract: "microclaw.windows-node-mxc.cron-resume.v1",
+\t\t\t\tresumeAfterUnixMs: microclawCronResumeFenceUnixMs,
+\t\t\t\tacknowledgementToken: microclawCronResumeAckToken,
+\t\t\t\tcompletedAtUnixMs: state.deps.nowMs()
+\t\t\t}), { encoding: "utf8", flag: "wx" });
+\t\t\tdelete process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\t\t\tdelete process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
+\t\t\tdelete process.env.MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN;
+\t\t}
+\t\tstate.deps.log.info({`;
+
+export const PINNED_CRON_HANDLER_MAP_SOURCE = "const cronHandlers = {";
+const PATCHED_CRON_HANDLER_MAP_SOURCE = `function rejectMicroclawMxcPausedCronMutation(method, respond) {
+\tif (process.env.MICROCLAW_MXC_CRON_PAUSED !== "1") return false;
+\trespond(false, void 0, errorShape(ErrorCodes.INVALID_REQUEST, \`\${method} is paused while MicroClaw MXC is enabled\`));
+\treturn true;
+}
+const cronHandlers = {`;
+export const PINNED_CRON_MUTATION_HANDLER_SOURCES = [
+  '\t"cron.scratch.set": scopedCronJobHandler("cron.scratch.set", validateCronScratchSetParams, async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }, { jobId, callerScope }) => {',
+  '\t"cron.add": async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }) => {',
+  '\t"cron.update": async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }) => {',
+  '\t"cron.remove": scopedCronJobHandler("cron.remove", validateCronRemoveParams, async ({ respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }, { jobId, callerScope, job }) => {',
+  '\t"cron.run": scopedCronJobHandler("cron.run", validateCronRunParams, async (options, { jobId, callerScope, job }) => {',
+];
+
+export function patchPinnedOpenClawCronHandlers(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_CRON_HANDLER_MAP_SOURCE,
+    PATCHED_CRON_HANDLER_MAP_SOURCE,
+    "Cron handler map",
+  );
+  for (const handlerSource of PINNED_CRON_MUTATION_HANDLER_SOURCES) {
+    const method = handlerSource.match(/"([^"]+)"/)?.[1];
+    if (!method) throw new Error("Pinned OpenClaw Cron mutation handler name is invalid");
+    const respondExpression = method === "cron.run" ? "options.respond" : "respond";
+    patched = replaceExactlyOnce(
+      patched,
+      handlerSource,
+      `${handlerSource}\n\t\tif (rejectMicroclawMxcPausedCronMutation("${method}", ${respondExpression})) return;`,
+      `${method} MXC pause fence`,
+    );
+  }
+  return patched;
+}
+
 function encodeField(name, value) {
   return `${name}=${Buffer.byteLength(value, "utf8")}:${value}`;
 }
@@ -426,7 +526,10 @@ function installApprovalProofMinter() {
   });
 }
 
-export function validatePinnedOpenClawApprovalPackage(packageDir) {
+export function validatePinnedOpenClawApprovalPackage(
+  packageDir,
+  capabilities = { approval: true, cronPause: false, cronResume: false },
+) {
   if (!packageDir || !isAbsolute(packageDir)) {
     throw new Error("MICROCLAW_OPENCLAW_PACKAGE_DIR must be an absolute path");
   }
@@ -439,28 +542,47 @@ export function validatePinnedOpenClawApprovalPackage(packageDir) {
     );
   }
 
-  return [
-    {
-      module: EXPECTED_NODE_GATEWAY_MODULE,
-      sha256: EXPECTED_NODE_GATEWAY_SHA256,
-      patch: patchPinnedOpenClawNodeGateway,
-    },
-    {
-      module: EXPECTED_SYSTEM_RUN_MODULE,
-      sha256: EXPECTED_SYSTEM_RUN_SHA256,
-      patch: patchPinnedOpenClawSystemRun,
-    },
-    {
-      module: EXPECTED_EXEC_APPROVAL_MODULE,
-      sha256: EXPECTED_EXEC_APPROVAL_SHA256,
-      patch: patchPinnedOpenClawExecApproval,
-    },
-    {
-      module: EXPECTED_WEB_TOOLS_MODULE,
-      sha256: EXPECTED_WEB_TOOLS_SHA256,
-      patch: attestPinnedOpenClawWebFetchHttpOnly,
-    },
-  ].map((target) => {
+  const requestedTargets = [];
+  if (capabilities.approval) {
+    requestedTargets.push(
+      {
+        module: EXPECTED_NODE_GATEWAY_MODULE,
+        sha256: EXPECTED_NODE_GATEWAY_SHA256,
+        patch: patchPinnedOpenClawNodeGateway,
+      },
+      {
+        module: EXPECTED_SYSTEM_RUN_MODULE,
+        sha256: EXPECTED_SYSTEM_RUN_SHA256,
+        patch: patchPinnedOpenClawSystemRun,
+      },
+      {
+        module: EXPECTED_EXEC_APPROVAL_MODULE,
+        sha256: EXPECTED_EXEC_APPROVAL_SHA256,
+        patch: patchPinnedOpenClawExecApproval,
+      },
+      {
+        module: EXPECTED_WEB_TOOLS_MODULE,
+        sha256: EXPECTED_WEB_TOOLS_SHA256,
+        patch: attestPinnedOpenClawWebFetchHttpOnly,
+      },
+    );
+  }
+  if (capabilities.cronResume) {
+    requestedTargets.push({
+      module: EXPECTED_CRON_SERVICE_MODULE,
+      sha256: EXPECTED_CRON_SERVICE_SHA256,
+      patch: patchPinnedOpenClawCronService,
+    });
+  }
+  if (capabilities.cronPause) {
+    requestedTargets.push({
+      module: EXPECTED_CRON_HANDLERS_MODULE,
+      sha256: EXPECTED_CRON_HANDLERS_SHA256,
+      patch: patchPinnedOpenClawCronHandlers,
+    });
+  }
+
+  return requestedTargets.map((target) => {
     const targetPath = realpathSync(join(canonicalPackageDir, "dist", target.module));
     const targetRelative = relative(canonicalPackageDir, targetPath);
     if (targetRelative.startsWith("..") || isAbsolute(targetRelative)) {
@@ -477,8 +599,34 @@ export function validatePinnedOpenClawApprovalPackage(packageDir) {
 }
 
 function initialize() {
-  const targets = validatePinnedOpenClawApprovalPackage(process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR);
-  installApprovalProofMinter();
+  const approvalEnabled = process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1";
+  const cronPauseEnabled = process.env.MICROCLAW_MXC_CRON_PAUSED === "1";
+  const cronResumeFence = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+  const cronResumeEnabled = cronResumeFence !== void 0;
+  if (cronResumeEnabled) {
+    const parsedFence = Number(cronResumeFence);
+    const acknowledgementPath = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
+    const acknowledgementToken = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN;
+    if (
+      !Number.isSafeInteger(parsedFence) ||
+      parsedFence < 0 ||
+      parsedFence > Date.now() ||
+      !acknowledgementPath ||
+      !isAbsolute(acknowledgementPath) ||
+      !acknowledgementToken
+    ) {
+      throw new Error("MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS is invalid");
+    }
+  }
+  const targets = validatePinnedOpenClawApprovalPackage(
+    process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR,
+    {
+      approval: approvalEnabled,
+      cronPause: cronPauseEnabled,
+      cronResume: cronResumeEnabled,
+    },
+  );
+  if (approvalEnabled) installApprovalProofMinter();
 
   registerHooks({
     load(url, context, nextLoad) {
@@ -496,12 +644,24 @@ function initialize() {
     },
   });
   globalThis.console.log(
-    "[microclaw-openclaw-compat] enabled one-use node proof and prepared-plan backports",
+    `[microclaw-openclaw-compat] enabled ${[
+      approvalEnabled ? "one-use node proof and prepared-plan backports" : null,
+      cronPauseEnabled ? "MXC Cron mutation pause fence" : null,
+      cronResumeEnabled ? "MXC Cron no-catch-up resume fence" : null,
+    ]
+      .filter(Boolean)
+      .join("; ")}`,
   );
 }
 
 export function shouldInitializeApprovalPreload(environment, mainThread) {
-  if (environment.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1") return false;
+  if (
+    environment.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1" &&
+    environment.MICROCLAW_MXC_CRON_PAUSED !== "1" &&
+    environment.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS === void 0
+  ) {
+    return false;
+  }
   if (environment[PRELOAD_INITIALIZED_ENV] === "1") return false;
   if (!mainThread) {
     throw new Error("MicroClaw approval preload must initialize on the Gateway main thread");

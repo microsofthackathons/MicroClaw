@@ -12,6 +12,10 @@ const {
   APPROVAL_PROOF_TTL_MS,
   PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
   PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
+  PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
+  PINNED_CRON_STARTUP_ACK_SOURCE,
+  PINNED_CRON_HANDLER_MAP_SOURCE,
+  PINNED_CRON_MUTATION_HANDLER_SOURCES,
   PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
   PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
@@ -20,6 +24,8 @@ const {
   createWindowsNodeMxcApprovalProofMinter,
   computeWindowsNodeMxcApprovalPlanSha256,
   patchPinnedOpenClawExecApproval,
+  patchPinnedOpenClawCronService,
+  patchPinnedOpenClawCronHandlers,
   patchPinnedOpenClawNodeGateway,
   patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
@@ -65,12 +71,18 @@ describe("pinned OpenClaw package validation", () => {
   const publishedPackage = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   describe.skipIf(!publishedPackage)("official npm package integration", () => {
     it("validates all published hashes and patch points and parses the patched bundles", () => {
-      const targets = validatePinnedOpenClawApprovalPackage(publishedPackage);
+      const targets = validatePinnedOpenClawApprovalPackage(publishedPackage, {
+        approval: true,
+        cronPause: true,
+        cronResume: true,
+      });
       expect(targets.map((target: { module: string }) => target.module)).toEqual([
         "nodes-CUbe_1MQ.mjs",
         "system-run-approval-plan-Cu-Ftdkp.mjs",
         "exec-approval-mGU7M4-K.mjs",
         "openclaw-tools-Dxfbrtff.mjs",
+        "service-31u04axN.mjs",
+        "cron-D3Bd3ZFt.mjs",
       ]);
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));
@@ -122,6 +134,30 @@ assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-p
       expect(initialized.status, initialized.stderr).toBe(0);
       expect(initialized.stdout).toContain("enabled one-use node proof");
     });
+
+    it("initializes the Cron-only resume fence without approval secrets", () => {
+      const hook = pathToFileURL(resolve(__dirname, "openclaw-approval-replay-compat.mjs")).href;
+      const initialized = spawnSync(process.execPath, ["--import", hook, "-e", ""], {
+        env: {
+          ...process.env,
+          MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "",
+          MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
+          MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
+          MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS: "1735689600000",
+          MICROCLAW_MXC_CRON_RESUME_ACK_PATH: join(
+            tmpdir(),
+            "microclaw-cron-resume-test.json",
+          ),
+          MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN: "test-token",
+          MICROCLAW_MXC_APPROVAL_PROOF_SECRET: "",
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      expect(initialized.error).toBeUndefined();
+      expect(initialized.status, initialized.stderr).toBe(0);
+      expect(initialized.stdout).toContain("MXC Cron no-catch-up resume fence");
+    });
   });
 });
 
@@ -135,6 +171,46 @@ describe("pinned OpenClaw web fetch contract", () => {
         'if (parsedUrl.protocol === "file:") return readFile(parsedUrl);',
       ),
     ).toThrow(/no longer rejects non-HTTP URL schemes/);
+  });
+
+  describe("pinned OpenClaw Cron resume contract", () => {
+    it("advances only pre-fence schedules before normal startup catch-up", () => {
+      const patched = patchPinnedOpenClawCronService(
+        `${PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE}\n${PINNED_CRON_STARTUP_ACK_SOURCE}`,
+      );
+
+      expect(patched).toContain("MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS");
+      expect(patched).toContain("cron: advanced schedules missed during MXC pause");
+      expect(patched).toContain("nowMs: microclawCronResumeFenceUnixMs");
+      expect(patched).toContain("await runMissedJobs(state");
+      expect(patched).toContain("MICROCLAW_MXC_CRON_RESUME_ACK_PATH");
+      expect(patched).toContain('flag: "wx"');
+      expect(patched).toContain("delete process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS");
+      expect(patched.indexOf("nowMs: microclawCronResumeFenceUnixMs")).toBeLessThan(
+        patched.indexOf("await runMissedJobs(state"),
+      );
+    });
+
+    it("blocks every Cron mutation and run-now handler while MXC is requested", () => {
+      const patched = patchPinnedOpenClawCronHandlers(
+        [PINNED_CRON_HANDLER_MAP_SOURCE, ...PINNED_CRON_MUTATION_HANDLER_SOURCES].join("\n"),
+      );
+
+      for (const handler of PINNED_CRON_MUTATION_HANDLER_SOURCES) {
+        const method = handler.match(/"([^"]+)"/)?.[1];
+        const respondExpression = method === "cron.run" ? "options.respond" : "respond";
+        expect(patched).toContain(
+          `rejectMicroclawMxcPausedCronMutation("${method}", ${respondExpression})`,
+        );
+      }
+      expect(patched).toContain("MICROCLAW_MXC_CRON_PAUSED");
+    });
+
+    it("fails closed when the pinned Cron startup boundary drifts", () => {
+      expect(() => patchPinnedOpenClawCronService("unrecognized source")).toThrow(
+        /did not match exactly once/,
+      );
+    });
   });
 });
 
@@ -359,6 +435,13 @@ describe("Windows Node MXC approval proof minter", () => {
         ),
       ).toBe(false);
       expect(() => shouldInitializeApprovalPreload(enabled, false)).toThrow(/main thread/);
+      expect(
+        shouldInitializeApprovalPreload(
+          { MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS: "1735689600000" },
+          true,
+        ),
+      ).toBe(true);
+      expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CRON_PAUSED: "1" }, true)).toBe(true);
       expect(shouldInitializeApprovalPreload({}, true)).toBe(false);
     });
   });
