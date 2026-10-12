@@ -25,6 +25,13 @@
 
       <!-- Plugin body — only visible when enabled -->
       <div v-if="weixinEnabled" class="plugin-body">
+        <el-alert
+          v-if="weixinPausedByMxc"
+          :title="t('plugins.weixinPausedByMxc')"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
         <div class="plugin-section">
           <div class="plugin-section-title">{{ t("plugins.channelLogin") }}</div>
           <div class="plugin-section-desc">
@@ -132,6 +139,7 @@ const chatStore = useChatStore();
 const gatewayStore = useGatewayStore();
 
 const weixinEnabled = ref(false);
+const weixinPausedByMxc = ref(false);
 const weixinInstalled = ref(true);
 const toggling = ref(false);
 const loginActive = ref(false);
@@ -160,6 +168,7 @@ onMounted(async () => {
   try {
     const status = await window.openclaw.plugin.weixin.getStatus();
     weixinEnabled.value = status.enabled;
+    weixinPausedByMxc.value = status.pausedByMxc ?? false;
     weixinInstalled.value = status.installed;
     loginSuccess.value = status.loggedIn;
     gatewayStore.weixinLoggedIn = status.loggedIn;

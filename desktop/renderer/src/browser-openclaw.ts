@@ -315,6 +315,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       weixin: {
         getStatus: async () => ({
           enabled: false,
+          requestedEnabled: false,
+          effectiveEnabled: false,
+          pausedByMxc: false,
           installed: false,
           loggedIn: false,
           loginInProgress: false,

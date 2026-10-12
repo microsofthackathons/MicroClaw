@@ -14,7 +14,12 @@ export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
   ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
   WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
 ] as const;
-export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = ["exec", "web_search", "web_fetch"] as const;
+export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = [
+  "exec",
+  "web_search",
+  "web_fetch",
+  "message",
+] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
 ] as const;
@@ -501,7 +506,11 @@ export function applyWindowsNodeMxcGatewayPolicy(
   config.channels = Object.fromEntries(
     Object.entries(channels).map(([channelId, value]) => [
       channelId,
-      { ...asRecord(value), enabled: false },
+      {
+        ...asRecord(value),
+        enabled:
+          channelId === "openclaw-weixin" && asRecord(value).enabled === true,
+      },
     ]),
   );
   const hooks = asRecord(config.hooks);
@@ -513,13 +522,30 @@ export function applyWindowsNodeMxcGatewayPolicy(
   config.cron = { ...asRecord(config.cron), enabled: false };
   const plugins = asRecord(config.plugins);
   const pluginEntries = asRecord(plugins.entries);
+  const weixinRequested = asRecord(pluginEntries["openclaw-weixin"]).enabled === true;
+  const configuredPluginAllow = plugins.allow;
+  const pluginAllowPresent = Array.isArray(configuredPluginAllow);
+  const pluginAllow = Array.isArray(configuredPluginAllow)
+    ? configuredPluginAllow.filter((value): value is string => typeof value === "string")
+    : [];
   config.plugins = {
     ...plugins,
-    enabled: false,
+    enabled: weixinRequested,
+    ...(weixinRequested || pluginAllowPresent
+      ? {
+          allow:
+            weixinRequested && !pluginAllow.includes("openclaw-weixin")
+              ? [...pluginAllow, "openclaw-weixin"]
+              : pluginAllow,
+        }
+      : {}),
     entries: Object.fromEntries(
       Object.entries(pluginEntries).map(([pluginId, value]) => [
         pluginId,
-        { ...asRecord(value), enabled: false },
+        {
+          ...asRecord(value),
+          enabled: pluginId === "openclaw-weixin" && weixinRequested,
+        },
       ]),
     ),
   };
@@ -657,15 +683,35 @@ export function validateWindowsNodeMxcGatewayPolicy(
     blockers.push("Gateway internal-hook ingress must remain disabled");
   }
   const channels = asRecord(root.channels);
+  let weixinChannelEnabled = false;
   for (const [channelId, value] of Object.entries(channels)) {
+    if (channelId === "openclaw-weixin") {
+      weixinChannelEnabled = asRecord(value).enabled === true;
+      continue;
+    }
     if (asRecord(value).enabled !== false) {
       blockers.push(`Gateway channel "${channelId}" must remain disabled`);
     }
   }
   const plugins = asRecord(root.plugins);
-  if (plugins.enabled !== false) blockers.push("Gateway plugins must remain disabled");
+  const weixinPluginEnabled =
+    asRecord(asRecord(plugins.entries)["openclaw-weixin"]).enabled === true;
+  if (plugins.enabled !== weixinPluginEnabled) {
+    blockers.push("Gateway plugin host must match the requested WeChat lifecycle");
+  }
+  if (weixinChannelEnabled && !weixinPluginEnabled) {
+    blockers.push("Gateway WeChat channel cannot be enabled while its plugin is disabled");
+  }
+  const pluginAllow = Array.isArray(plugins.allow) ? plugins.allow : [];
+  const pluginDeny = Array.isArray(plugins.deny) ? plugins.deny : [];
+  if (
+    weixinPluginEnabled &&
+    (!pluginAllow.includes("openclaw-weixin") || pluginDeny.includes("openclaw-weixin"))
+  ) {
+    blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
+  }
   for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
-    if (asRecord(value).enabled !== false) {
+    if (pluginId !== "openclaw-weixin" && asRecord(value).enabled !== false) {
       blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
     }
   }

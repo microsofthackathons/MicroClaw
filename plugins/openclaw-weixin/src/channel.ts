@@ -33,26 +33,26 @@ import { applyWeixinMessageSendingHook, emitWeixinMessageSent } from "./messagin
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import { sendMessageWeixin, StreamingMarkdownFilter } from "./messaging/send.js";
 import { downloadRemoteImageToTemp } from "./cdn/upload.js";
+import {
+  assertMxcWeixinIngressReleased,
+  authorizeMxcWeixinOutboundMedia,
+  resolveWeixinLocalMediaPath,
+  resolveWeixinOutboundTempRoot,
+} from "./security/mxc-policy.js";
 
 /** Returns true when mediaUrl refers to a local filesystem path (absolute or relative). */
 function isLocalFilePath(mediaUrl: string): boolean {
-  // Treat anything without a URL scheme (no "://") as a local path.
-  return !mediaUrl.includes("://");
+  return mediaUrl.startsWith("file://") || !mediaUrl.includes("://");
 }
 
 function isRemoteUrl(mediaUrl: string): boolean {
   return mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 }
 
-const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
-
-/** Resolve any local path scheme to an absolute filesystem path. */
-function resolveLocalPath(mediaUrl: string): string {
-  if (mediaUrl.startsWith("file://")) return new URL(mediaUrl).pathname;
-  // Resolve any relative path (./foo, ../foo, .openclaw/foo, foo/bar) against cwd
-  if (!path.isAbsolute(mediaUrl)) return path.resolve(mediaUrl);
-  return mediaUrl;
-}
+const LEGACY_MEDIA_OUTBOUND_TEMP_DIR = path.join(
+  resolvePreferredOpenClawTmpDir(),
+  "weixin/media/outbound-temp",
+);
 
 /**
  * Resolve the effective accountId for an outbound message when the caller
@@ -113,6 +113,7 @@ async function sendWeixinOutbound(params: {
   accountId?: string | null;
   contextToken?: string;
 }): Promise<{ channel: string; messageId: string }> {
+  assertMxcWeixinIngressReleased();
   const account = resolveWeixinAccount(params.cfg, params.accountId);
   const aLog = logger.withAccount(account.accountId);
   assertSessionActive(account.accountId);
@@ -139,6 +140,7 @@ async function sendWeixinOutbound(params: {
   filteredText = sendingResult.text;
 
   try {
+    assertMxcWeixinIngressReleased();
     const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
       baseUrl: account.baseUrl,
       token: account.token,
@@ -229,6 +231,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       return result;
     },
     sendMedia: async (ctx) => {
+      assertMxcWeixinIngressReleased();
       const accountId = ctx.accountId || resolveOutboundAccountId(ctx.cfg, ctx.to);
       const account = resolveWeixinAccount(ctx.cfg, accountId);
       const aLog = logger.withAccount(account.accountId);
@@ -258,15 +261,20 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       if (mediaUrl && (isLocalFilePath(mediaUrl) || isRemoteUrl(mediaUrl))) {
         let filePath: string;
         if (isLocalFilePath(mediaUrl)) {
-          filePath = resolveLocalPath(mediaUrl);
+          filePath = resolveWeixinLocalMediaPath(mediaUrl);
           aLog.debug(`sendMedia: uploading local file ${filePath}`);
         } else {
           aLog.debug(`sendMedia: downloading remote mediaUrl=${mediaUrl.slice(0, 80)}...`);
-          filePath = await downloadRemoteImageToTemp(mediaUrl, MEDIA_OUTBOUND_TEMP_DIR);
+          filePath = await downloadRemoteImageToTemp(
+            mediaUrl,
+            resolveWeixinOutboundTempRoot(LEGACY_MEDIA_OUTBOUND_TEMP_DIR),
+          );
           aLog.debug(`sendMedia: remote image downloaded to ${filePath}`);
         }
+        filePath = await authorizeMxcWeixinOutboundMedia(filePath);
         const contextToken = getContextToken(account.accountId, ctx.to);
         try {
+          assertMxcWeixinIngressReleased();
           const result = await sendWeixinMediaFile({
             filePath,
             to: ctx.to,
@@ -284,6 +292,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
 
       const contextToken = getContextToken(account.accountId, ctx.to);
       try {
+        assertMxcWeixinIngressReleased();
         const result = await sendMessageWeixin({ to: ctx.to, text, opts: {
           baseUrl: account.baseUrl,
           token: account.token,

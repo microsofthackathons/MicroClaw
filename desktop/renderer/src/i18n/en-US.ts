@@ -210,6 +210,8 @@ export default {
   "plugins.weixinEnabled":
     "WeChat plugin enabled. Please restart the gateway for changes to take effect.",
   "plugins.weixinDisabled": "WeChat plugin disabled",
+  "plugins.weixinPausedByMxc":
+    "WeChat is requested but paused until the current MXC generation is active.",
   "plugins.operationFailed": "Operation failed: {error}",
   "plugins.loginFailed": "Login failed: {error}",
   "plugins.loginInProgress": "Login in progress, please scan the QR code with WeChat...\u200B\n",

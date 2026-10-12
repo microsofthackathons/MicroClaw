@@ -547,10 +547,10 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(selectWindowsNodeMxcGatewayStartPolicy(null, false)).toBe("locked");
   });
 
-  it("exposes contained exec and Gateway web tools while pinning exec to one stable node", () => {
+  it("exposes contained exec, Gateway web, and brokered messaging while pinning exec", () => {
     expect(buildWindowsNodeMxcToolPolicy("node-123")).toEqual({
       profile: "full",
-      allow: ["exec", "web_search", "web_fetch"],
+      allow: ["exec", "web_search", "web_fetch", "message"],
       deny: ["process", "group:fs", "group:plugins"],
       codeMode: false,
       exec: {
@@ -645,10 +645,13 @@ describe("Windows Node MXC Gateway policy", () => {
     });
   });
 
-  it("disables and restores every MicroClaw-managed external ingress surface", () => {
+  it("keeps only requested WeChat lifecycle loaded while pausing other ingress", () => {
     const source = {
       agents: { list: [{ id: "main" }] },
-      channels: { discord: { enabled: true, token: "preserved" } },
+      channels: {
+        discord: { enabled: true, token: "preserved" },
+        "openclaw-weixin": { enabled: true },
+      },
       hooks: { enabled: true, token: "preserved", internal: { enabled: true } },
       cron: { enabled: true, maxConcurrentRuns: 2 },
       plugins: {
@@ -661,13 +664,16 @@ describe("Windows Node MXC Gateway policy", () => {
     const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "locked");
 
     expect(applied.config).toMatchObject({
-      channels: { discord: { enabled: false, token: "preserved" } },
+      channels: {
+        discord: { enabled: false, token: "preserved" },
+        "openclaw-weixin": { enabled: true },
+      },
       hooks: { enabled: false, token: "preserved", internal: { enabled: false } },
       cron: { enabled: false, maxConcurrentRuns: 2 },
       plugins: {
-        enabled: false,
+        enabled: true,
         allow: ["openclaw-weixin"],
-        entries: { "openclaw-weixin": { enabled: false } },
+        entries: { "openclaw-weixin": { enabled: true } },
       },
     });
     expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123", "locked").ready).toBe(
@@ -750,8 +756,10 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(result.blockers[0]).toContain("tool policy drifted");
   });
 
-  it("requires the effective runtime inventory to contain only contained exec and Gateway web", () => {
-    expect(validateEffectiveToolNames(["exec", "web_search", "web_fetch"]).ready).toBe(true);
+  it("requires the effective inventory to contain only contained exec, Web, and messaging", () => {
+    expect(validateEffectiveToolNames(["exec", "web_search", "web_fetch", "message"]).ready).toBe(
+      true,
+    );
     expect(validateEffectiveToolNames(["exec"]).ready).toBe(false);
     expect(validateEffectiveToolNames(["exec", "read"]).ready).toBe(false);
   });
@@ -759,7 +767,7 @@ describe("Windows Node MXC Gateway policy", () => {
   it.each(["full", "limited-dacl"] as const)(
     "keeps Gateway-native filesystem tools forbidden for %s when safe capabilities are restored",
     () => {
-      const restoredCapabilities = ["exec", "web_search", "web_fetch", "weixin_send_message"];
+      const restoredCapabilities = ["exec", "web_search", "web_fetch", "message"];
       expect(validateNoGatewayNativeFilesystemTools(restoredCapabilities).ready).toBe(true);
 
       for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
@@ -773,6 +781,7 @@ describe("Windows Node MXC Gateway policy", () => {
           "exec",
           "web_search",
           "web_fetch",
+          "message",
           filesystemTool,
         ]);
         expect(effectiveCheck.ready).toBe(false);

@@ -9,6 +9,10 @@ import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "../sto
 import { logger } from "../util/logger.js";
 import type { Logger } from "../util/logger.js";
 import { redactBody } from "../util/redact.js";
+import {
+  isMxcWeixinIngressReleased,
+  waitForMxcWeixinIngressRelease,
+} from "../security/mxc-policy.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -88,6 +92,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
   while (!abortSignal?.aborted) {
     try {
+      if (!isMxcWeixinIngressReleased()) {
+        setStatus?.({ accountId, running: true, lastError: "Paused until MXC ingress release" });
+        await waitForMxcWeixinIngressRelease(abortSignal);
+        setStatus?.({ accountId, running: true, lastError: null });
+      }
       aLog.debug(
         `getUpdates: get_updates_buf=${getUpdatesBuf.substring(0, 50)}..., timeoutMs=${nextTimeoutMs}`,
       );
@@ -100,6 +109,10 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // instead of waiting for the server-side long-poll timeout.
         abortSignal,
       });
+      if (!isMxcWeixinIngressReleased()) {
+        aLog.info("getUpdates response ignored because MXC ingress was relocked");
+        continue;
+      }
       aLog.debug(
         `getUpdates response: ret=${resp.ret}, msgs=${resp.msgs?.length ?? 0}, get_updates_buf_length=${resp.get_updates_buf?.length ?? 0}`,
       );

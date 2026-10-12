@@ -198,6 +198,7 @@ export default {
   "plugins.gatewayRestarted": "✓ 网关已重启",
   "plugins.weixinEnabled": "微信插件已启用，请重启网关使配置生效",
   "plugins.weixinDisabled": "微信插件已禁用",
+  "plugins.weixinPausedByMxc": "微信已启用，但会暂停到当前 MXC 代完成激活后再收发消息。",
   "plugins.operationFailed": "操作失败: {error}",
   "plugins.loginFailed": "登录失败: {error}",
   "plugins.loginInProgress": "登录进程运行中，请用微信扫码...\u200B\n",

@@ -296,6 +296,9 @@ interface OpenClawAPI {
     weixin: {
       getStatus(): Promise<{
         enabled: boolean;
+        requestedEnabled: boolean;
+        effectiveEnabled: boolean;
+        pausedByMxc: boolean;
         installed: boolean;
         loggedIn: boolean;
         loginInProgress: boolean;

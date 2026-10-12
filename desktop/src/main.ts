@@ -218,6 +218,13 @@ import {
   type BundledWindowsNodeApprovalProofContext,
   type BundledWindowsNodeFolder,
 } from "./bundled-windows-node-host";
+import {
+  getWindowsNodeMxcWeixinEnvironment,
+  prepareWindowsNodeMxcWeixinContext,
+  releaseWindowsNodeMxcWeixinIngress,
+  revokeWindowsNodeMxcWeixinIngress,
+  type WindowsNodeMxcWeixinContext,
+} from "./windows-node-mxc-weixin";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -498,6 +505,7 @@ let windowsNodeMxcApprovalProofContext: BundledWindowsNodeApprovalProofContext |
 let windowsNodeMxcCurrentAmbientAccess: BundledWindowsNodeAmbientAccess | null = null;
 let windowsNodeMxcCurrentEffectiveTier: string | null = null;
 let windowsNodeMxcIngressGeneration: string | null = null;
+let windowsNodeMxcWeixinContext: WindowsNodeMxcWeixinContext | null = null;
 let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
 let windowsNodeMxcSecurityTransitionInProgress = false;
@@ -1117,6 +1125,24 @@ function isWindowsNodeMxcDesired(): boolean {
   return getWindowsNodeMxcRequestedMode() !== "off";
 }
 
+function closeWindowsNodeMxcIngress(): void {
+  windowsNodeMxcIngressGeneration = null;
+  revokeWindowsNodeMxcWeixinIngress(windowsNodeMxcWeixinContext);
+}
+
+function releaseWindowsNodeMxcIngress(gatewayGeneration: string): void {
+  const context = windowsNodeMxcWeixinContext;
+  if (
+    !context ||
+    context.gatewayGeneration !== gatewayGeneration ||
+    context.policyFingerprint !== windowsNodeMxcApprovalProofContext?.policyFingerprint
+  ) {
+    throw new Error("WeChat ingress release context does not match the active MXC generation");
+  }
+  releaseWindowsNodeMxcWeixinIngress(context);
+  windowsNodeMxcIngressGeneration = gatewayGeneration;
+}
+
 async function prepareWindowsNodeMxcContainment(
   requestedMode: Exclude<WindowsNodeMxcRequestedMode, "off">,
 ): Promise<{
@@ -1637,7 +1663,7 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
     closeIngress: () => {
       beginWindowsNodeMxcStartupTiming();
       windowsNodeMxcActivationInProgress = true;
-      windowsNodeMxcIngressGeneration = null;
+      closeWindowsNodeMxcIngress();
       bundledWindowsNodeHost.revokeActivationLease();
       settingsStore.delete("windowsNodeMxcSmoke");
       sendToWindow(mainWindow, "gateway:ws-disconnected", "MXC readiness attestation");
@@ -1712,7 +1738,7 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       return finalStatus;
     },
     releaseIngress: () => {
-      windowsNodeMxcIngressGeneration = activeGeneration;
+      releaseWindowsNodeMxcIngress(activeGeneration);
       windowsNodeMxcActivationInProgress = false;
       markWindowsNodeMxcStartupTiming("ingress-release");
       windowsNodeMxcStartupTiming = null;
@@ -3117,7 +3143,7 @@ async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
   if (!isWindowsNodeMxcDesired()) return;
   if (windowsNodeMxcFailClosedPromise) return windowsNodeMxcFailClosedPromise;
   const failClosed = (async () => {
-    windowsNodeMxcIngressGeneration = null;
+    closeWindowsNodeMxcIngress();
     setWindowsNodeMxcLifecycleState("locked", reason);
     sendToWindow(mainWindow, "gateway:service-loading");
     bundledWindowsNodeHost.revokeActivationLease();
@@ -3896,6 +3922,14 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
           containmentPreparation?.ambientAccess ?? null,
         )
       : null;
+    const nextWeixinContext = nextApprovalProofContext
+      ? prepareWindowsNodeMxcWeixinContext(
+          app.getPath("userData"),
+          nextApprovalProofContext.gatewayGeneration,
+          nextApprovalProofContext.policyFingerprint,
+          getBundledWindowsNodeFolders(),
+        )
+      : null;
     const gwEnv: Record<string, string> = {
       ...gatewayEnvironment,
       OPENCLAW_STATE_DIR: stateDir,
@@ -3908,6 +3942,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       OPENCLAW_NO_RESPAWN: "1",
       // HMAC key for verifying the external apps whitelist file
       OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
+      ...(nextWeixinContext ? getWindowsNodeMxcWeixinEnvironment(nextWeixinContext) : {}),
     };
 
     // Determine spawn command
@@ -4077,7 +4112,9 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     gatewayGenerationId = nextGatewayGenerationId;
     gatewayHttpReadyGeneration = null;
     windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
-    windowsNodeMxcIngressGeneration = null;
+    revokeWindowsNodeMxcWeixinIngress(windowsNodeMxcWeixinContext);
+    windowsNodeMxcWeixinContext = nextWeixinContext;
+    closeWindowsNodeMxcIngress();
     gatewaySpawnedByUs = true;
     // Only allow post-spawn restart on the very first gateway launch.
     // Do NOT reset on subsequent restarts — it causes an infinite restart loop.
@@ -4117,7 +4154,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
       if (gatewayProcess === child) {
         if (!postInstallReadySignaled) signalPostInstallFailure(err);
-        windowsNodeMxcIngressGeneration = null;
+        closeWindowsNodeMxcIngress();
         gatewayHttpReadyGeneration = null;
         windowsNodeMxcApprovalProofContext = null;
         bundledWindowsNodeHost.revokeActivationLease();
@@ -4138,7 +4175,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
             new Error("Gateway rejected its configuration (exit 78); see the desktop handoff log"),
           );
         }
-        windowsNodeMxcIngressGeneration = null;
+        closeWindowsNodeMxcIngress();
         gatewayHttpReadyGeneration = null;
         windowsNodeMxcApprovalProofContext = null;
         bundledWindowsNodeHost.revokeActivationLease();
@@ -4777,7 +4814,7 @@ function connectGatewayWs(): void {
         isWindowsNodeMxcDesired() &&
         windowsNodeMxcIngressGeneration !== null &&
         windowsNodeMxcIngressGeneration === gatewayGenerationId;
-      windowsNodeMxcIngressGeneration = null;
+      closeWindowsNodeMxcIngress();
       stopBundledWindowsNodeHost();
       sendToWindow(mainWindow, "gateway:ws-disconnected", reason);
       if (activeGeneration && !windowsNodeMxcActivationInProgress && !gatewayRestarting) {
@@ -5921,11 +5958,13 @@ function registerIpcHandlers(): void {
   // --- WeChat Plugin ---
   ipcMain.handle("plugin:weixin:get-status", () => {
     const config = readConfig();
-    const enabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
+    const requestedEnabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
+    const pausedByMxc = requestedEnabled && isWindowsNodeMxcDesired() && !isApplicationIngressReady();
+    const effectiveEnabled = requestedEnabled && !pausedByMxc;
     const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
     // Check if plugin is installed, enabled, AND has saved login accounts
     let loggedIn = false;
-    if (installed && enabled) {
+    if (installed && requestedEnabled) {
       try {
         const accountsPath = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts.json");
         if (fs.existsSync(accountsPath)) {
@@ -5941,7 +5980,15 @@ function registerIpcHandlers(): void {
         }
       } catch {}
     }
-    return { enabled, installed, loggedIn, loginInProgress: !!weixinLoginProcess };
+    return {
+      enabled: requestedEnabled,
+      requestedEnabled,
+      effectiveEnabled,
+      pausedByMxc,
+      installed,
+      loggedIn,
+      loginInProgress: !!weixinLoginProcess,
+    };
   });
 
   ipcMain.handle("plugin:weixin:set-enabled", async (_event, enabled: boolean) => {
@@ -6701,7 +6748,7 @@ function registerIpcHandlers(): void {
 
         transitionMutationStarted = true;
         setWindowsNodeMxcLifecycleState("locking");
-        windowsNodeMxcIngressGeneration = null;
+        closeWindowsNodeMxcIngress();
         windowsNodeMxcActivationInProgress = false;
         bundledWindowsNodeHost.revokeActivationLease();
         sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
@@ -7457,7 +7504,7 @@ function registerIpcHandlers(): void {
         await runWindowsNodeMxcFolderPolicyTransaction(draft, previous, {
           setPhase: setWindowsNodeMxcLifecycleState,
           closeIngress: () => {
-            windowsNodeMxcIngressGeneration = null;
+            closeWindowsNodeMxcIngress();
             sendToWindow(mainWindow, "gateway:ws-disconnected", "Applying MXC folder policy");
           },
           rejectPendingApprovals: async () => {
@@ -7597,12 +7644,12 @@ function registerIpcHandlers(): void {
             return status;
           },
           releaseIngress: (status) => {
-            windowsNodeMxcIngressGeneration = status.gatewayGeneration;
+            releaseWindowsNodeMxcIngress(status.gatewayGeneration);
             windowsNodeMxcActivationInProgress = false;
             sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
           },
           lockAfterFailure: async (error, context) => {
-            windowsNodeMxcIngressGeneration = null;
+            closeWindowsNodeMxcIngress();
             windowsNodeMxcActivationInProgress = true;
             bundledWindowsNodeHost.revokeActivationLease();
             settingsStore.delete("windowsNodeMxcSmoke");

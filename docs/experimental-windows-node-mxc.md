@@ -55,21 +55,32 @@ selection cannot reduce a broader pre-existing ACL. MicroClaw never automaticall
 Limited after an OS update, probe change, startup failure, or settings migration.
 
 Gateway-native file/process tools remain removed from the agent surface in both Full and Limited
-mode. The active Gateway surface is exactly `exec`, `web_search`, and `web_fetch`; `exec` is pinned
-to the app-owned node. The pinned OpenClaw `web_fetch` implementation is startup-attested to accept
-only HTTP(S), so `file:` and other local URL schemes remain rejected. The policy keeps `group:fs`
-denied, including at least the native `read`, `write`, `edit`, and `apply_patch` tools. This remains
-true when other reviewed capabilities such as allowlisted WeChat operations are restored: native
-Gateway filesystem tools execute on the Windows host and would bypass Windows Node/MXC. Local file
-access must use MXC-contained Windows Node `exec`, or a future MicroClaw file broker that enforces the same
-canonical RO/RW roots, scratch, generation/policy binding, reparse checks, and no-host-fallback
-contract. MXC Off restores the user's backed-up original tool policy.
+mode. The active Gateway surface is exactly `exec`, `web_search`, `web_fetch`, and `message`;
+`exec` is pinned to the app-owned node, and `message` can reach only the requested WeChat channel.
+The pinned OpenClaw `web_fetch` implementation is startup-attested to accept only HTTP(S), so
+`file:` and other local URL schemes remain rejected. The policy keeps `group:fs` denied, including
+at least the native `read`, `write`, `edit`, and `apply_patch` tools. Native Gateway filesystem
+tools execute on the Windows host and would bypass Windows Node/MXC. Local file access must use
+MXC-contained Windows Node `exec` or the MicroClaw WeChat media broker. MXC Off restores the user's
+backed-up original tool policy.
 
-The active policy also denies the runtime and plugin groups. An empty OpenClaw allowlist is
-unrestricted, so the pre-attestation state uses a non-tool lock sentinel. The Gateway node-command
-policy allowlists exactly the five bundled commands above. MicroClaw pairs/reapproves only the exact
-app-owned device identity and does not expose manual node selection, even if another Windows
-Companion is connected.
+The active policy also denies the runtime and plugin tool groups. The requested WeChat channel
+plugin may remain loaded, but its long-poll loop does not call `getUpdates` until a release record
+matches the current Gateway generation and MXC policy fingerprint. Outbound text and media use the
+same dynamic release gate. Relocking removes the record before authorization is revoked, so paused
+messages are not consumed and later replayed by MicroClaw. An empty OpenClaw allowlist is
+unrestricted, so the pre-attestation tool state uses a non-tool lock sentinel. The Gateway
+node-command policy allowlists exactly the five bundled commands above. MicroClaw pairs/reapproves
+only the exact app-owned device identity and does not expose manual node selection, even if another
+Windows Companion is connected.
+
+Inbound WeChat media is decrypted directly into an app-owned staging root that is injected into the
+same Windows Node policy as read-only. Outbound local media is brokered on the native Gateway only
+after canonical-path, regular-file, selected-root/staging-root, and reparse-component validation.
+Remote HTTP(S) media is downloaded into a broker-owned scratch root before upload. The broker policy
+is immutable environment data bound to the Gateway generation and MXC policy fingerprint; a missing,
+stale, malformed, or out-of-root policy fails closed without falling back to unrestricted host file
+access.
 
 ## CWD and approval contract
 

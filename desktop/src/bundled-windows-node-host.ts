@@ -17,6 +17,7 @@ import {
   type WindowsNodeMxcAmbientAccessCategory,
   type WindowsNodeMxcEffectiveStrength,
 } from "./windows-node-mxc-modes";
+import { resolveWindowsNodeMxcWeixinMediaRoots } from "./windows-node-mxc-weixin";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
@@ -299,15 +300,21 @@ export class BundledWindowsNodeHost {
   ): string {
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     const ambientAssessmentScratchRoot = path.join(stateRoot, "ambient-scratch");
+    const { inboundRoot: weixinInboundRoot } = resolveWindowsNodeMxcWeixinMediaRoots(
+      app.getPath("userData"),
+    );
     return JSON.stringify(
       {
         policySchemaVersion: 2,
         requestedStrength,
         effectiveTier,
-        approvedRoots: folders.map((folder) => ({
-          path: folder.path,
-          access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
-        })),
+        approvedRoots: [
+          ...folders.map((folder) => ({
+            path: folder.path,
+            access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
+          })),
+          { path: weixinInboundRoot, access: "ReadOnly" },
+        ],
         deniedRoots: sensitiveWindowsRoots(stateRoot, openClawStateRoot),
         wxcExecPath: this.wxcExecPath,
         networkAllowed: true,
