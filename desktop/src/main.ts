@@ -350,12 +350,13 @@ let modelConfigurationMutationInProgress = false;
 let githubCopilotLoginInProgress = false;
 const modelChatKey = (key: string) =>
   sessionModelChatKey(readConfig(), key, gwClient?.mainSessionKey);
+const modelGatewayIdentity = () =>
+  createHash("sha256")
+    .update(`${getOpenClawStateDir()}\n${gatewayPort}\n${gatewayToken}`)
+    .digest("hex");
 const localModelService = new LocalModelService({
   gateway: () => gwClient,
-  identity: () =>
-    createHash("sha256")
-      .update(`${getOpenClawStateDir()}\n${gatewayPort}\n${gatewayToken}`)
-      .digest("hex"),
+  identity: modelGatewayIdentity,
   assertMutable: () => {
     sessionModelService.assertIdle();
     if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
@@ -393,6 +394,29 @@ const localModelService = new LocalModelService({
 });
 const sessionModelService = new SessionModelService({
   gateway: () => gwClient,
+  runtime: () => {
+    const child = gatewayProcess;
+    if (!gatewaySpawnedByUs || !child?.pid || !gatewayGenerationId) return null;
+    return {
+      identity: modelGatewayIdentity(),
+      generation: gatewayGenerationId,
+      isStopped: () => child.exitCode != null || child.signalCode != null,
+    };
+  },
+  restartGateway: async () => {
+    await restartManagedGateway(
+      "Recovering an uncertain session model selection without retrying it",
+      false,
+      () => stopGatewayForSecurityTransition(gatewayPort),
+    );
+    const deadline = Date.now() + GATEWAY_READY_TIMEOUT_MS;
+    while (!gwClient?.connected) {
+      if (Date.now() >= deadline)
+        throw new Error("Gateway did not reconnect for session model recovery");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  },
+  onRecoveryChanged: () => sendToWindow(mainWindow, "model:session:recovery-changed", null),
   readConfig,
   assertMutable: () => {
     localModelService.assertIdle();
@@ -2970,6 +2994,7 @@ async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
 async function restartManagedGateway(
   reason: string,
   allowDuringSecurityTransition = false,
+  stopProcess: () => void | Promise<void> = stopGatewayProcess,
 ): Promise<void> {
   if (windowsNodeMxcSecurityTransitionInProgress && !allowDuringSecurityTransition) {
     throw new Error("Gateway restart is blocked during a Windows Node + MXC lifecycle operation");
@@ -2982,7 +3007,7 @@ async function restartManagedGateway(
     try {
       await hardRestartGateway({
         stopClient: () => gwClient?.stop(),
-        stopProcess: stopGatewayProcess,
+        stopProcess,
         isPortOccupied: () => isGatewayPortOccupied(gatewayPort),
         startGateway,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

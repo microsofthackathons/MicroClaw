@@ -20,7 +20,15 @@
         @keydown.esc.stop.prevent="closePicker"
       >
         <span v-if="switching || opening" class="model-pill-label" role="status">
-          {{ t(switching ? "modelManager.switching" : "modelManager.loading") }}
+          {{
+            t(
+              recovering
+                ? "modelManager.recovering"
+                : switching
+                  ? "modelManager.switching"
+                  : "modelManager.loading",
+            )
+          }}
         </span>
         <span v-else class="model-pill-label">{{ currentName }}</span>
         <span v-if="currentFileStatus === 'missing'" class="missing-indicator" aria-hidden="true"
@@ -47,6 +55,12 @@
       <p v-if="error || catalogError" class="menu-error" role="alert">
         {{ error || catalogError }}
       </p>
+      <SessionModelRecoveryNotice
+        :disabled="disabled || !connected || changing || localSelecting || Boolean(operation?.busy)"
+        @state="recovery = $event"
+        @busy="handleRecoveryBusy"
+        @recovered="handleRecovered"
+      />
       <p v-if="!connected" class="menu-hint" role="status">{{ t("modelManager.offline") }}</p>
       <p v-else-if="disabled" class="menu-hint" role="status">{{ t("localModel.streaming") }}</p>
       <p v-if="operation?.busy" class="menu-hint" role="status">
@@ -101,7 +115,7 @@
     :session-key="localSelectionSession"
     :streaming="disabled"
     @busy="handleLocalBusy"
-    @close="localSelection = ''"
+    @close="closeLocalSelection"
     @selected="loadCurrent"
   />
 </template>
@@ -113,7 +127,7 @@ import { useLocalModelOperation } from "@/composables/use-local-model-operation"
 import { mergeGitHubCopilotModelEntries } from "@/utils/auth-managed-models";
 import { getModelRef, readConfiguredModels, type ConfiguredModel } from "@/utils/configured-models";
 import type { LocalModelFileStatus } from "../../../../src/local-model-types";
-import type { SessionModelState } from "../../../../src/session-model-types";
+import type { SessionModelRecovery, SessionModelState } from "../../../../src/session-model-types";
 import {
   isManagedLocalModel,
   type LocalModelCatalogEntry,
@@ -121,6 +135,7 @@ import {
 import { mergeLocalModelCatalog } from "@/utils/local-model-catalog";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import ModelProviderGroups from "@/components/ModelProviderGroups.vue";
+import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
 
 const props = defineProps<{ sessionKey: string; disabled: boolean; connected: boolean }>();
 const emit = defineEmits<{ manage: [provider?: string]; busy: [value: boolean] }>();
@@ -138,6 +153,8 @@ const localProviderReady = ref(false);
 const localSelection = ref("");
 const localSelectionSession = ref("");
 const localSelecting = ref(false);
+const recovering = ref(false);
+const recovery = ref<SessionModelRecovery | null>(null);
 const localFilesKnown = ref(false);
 const loading = ref(false);
 const changing = ref(false);
@@ -148,10 +165,11 @@ let stateRevision = 0;
 let catalogRevision = 0;
 let openRevision = 0;
 let catalogTask: Promise<void> | undefined;
-const switching = computed(() => changing.value || localSelecting.value);
+const switching = computed(() => changing.value || localSelecting.value || recovering.value);
 const selectionBlocked = computed(
   () =>
     switching.value ||
+    Boolean(recovery.value) ||
     !catalogValid.value ||
     props.disabled ||
     !props.connected ||
@@ -262,7 +280,7 @@ async function setOpen(visible: boolean) {
 }
 
 function loadCatalog(): Promise<void> {
-  if (switching.value) return Promise.resolve();
+  if (changing.value || localSelecting.value) return Promise.resolve();
   catalogTask ??= refreshCatalog().finally(() => {
     catalogTask = undefined;
   });
@@ -383,6 +401,24 @@ function handleLocalBusy(busy: boolean) {
   emit("busy", busy);
 }
 
+function handleRecoveryBusy(busy: boolean) {
+  recovering.value = busy;
+  emit("busy", busy);
+}
+
+async function handleRecovered() {
+  await catalogTask;
+  if (!disposed) await loadCatalog();
+}
+
+function closeLocalSelection() {
+  localSelection.value = "";
+  if (recovery.value) {
+    open.value = true;
+    void loadCurrent();
+  }
+}
+
 function manage(provider?: string) {
   if (switching.value) return;
   closePicker();
@@ -433,6 +469,8 @@ onUnmounted(() => {
 .model-menu {
   text-align: left;
   color: var(--el-text-color-primary);
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
 }
 .menu-heading,
 .menu-footer {

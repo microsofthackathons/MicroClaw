@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { randomUUID } from "node:crypto";
 import { inspectLocalModelFiles } from "./local-model-files";
 import { GatewayRequestError } from "./gateway-client";
 import { supportsLocalModelVersion, validateLocalModelUrl } from "./local-model-service";
@@ -7,7 +8,7 @@ import {
   parseGitHubCopilotGatewayModels,
 } from "./github-copilot-auth";
 import type { LocalModelGateway } from "./local-model-service";
-import type { SessionModelState } from "./session-model-types";
+import type { SessionModelRecovery, SessionModelState } from "./session-model-types";
 
 type JsonObject = Record<string, unknown>;
 
@@ -20,12 +21,23 @@ interface Dependencies {
   readConfig(): unknown;
   /** Must synchronously reject active chats, other model operations and locked configurations. */
   assertMutable(): void;
+  runtime(): SessionModelRuntime | null;
+  restartGateway(): Promise<void>;
+  onRecoveryChanged(): void;
+}
+
+export interface SessionModelRuntime {
+  identity: string;
+  generation: string;
+  /** Bound to the captured child process, not a reused PID or a WebSocket reconnect. */
+  isStopped(): boolean;
 }
 
 interface Context {
   gateway: SessionModelGateway;
   generation: number | undefined;
   localConfig: unknown;
+  runtime: SessionModelRuntime | null;
 }
 
 interface SelectionState {
@@ -240,20 +252,27 @@ function assertSessionOnly(config: JsonObject): void {
 
 export class SessionModelService {
   private selecting = false;
+  private recovering = false;
   // An uncertain write must be reconciled by a fresh read, never retried automatically.
-  private uncertain: { sessionKey: string; modelRef: string | null } | null = null;
+  private uncertain: {
+    id: string;
+    sessionKey: string;
+    agentId: string;
+    runtime: SessionModelRuntime;
+    requestSettled: boolean;
+  } | null = null;
 
   constructor(private readonly deps: Dependencies) {}
 
   get busy(): boolean {
-    return this.selecting || this.uncertain !== null;
+    return this.selecting || this.recovering || this.uncertain !== null;
   }
 
   assertIdle(): void {
-    if (this.selecting) throw new Error("A session model change is in progress");
+    if (this.selecting || this.recovering) throw new Error("A session model change is in progress");
     if (this.uncertain)
       throw new Error(
-        "Session model change outcome is unknown; reload the session model before continuing",
+        "Session model change outcome is unknown; use model selection recovery before continuing",
       );
   }
 
@@ -274,6 +293,7 @@ export class SessionModelService {
       gateway,
       generation: gateway.connectionGeneration,
       localConfig: structuredClone(this.deps.readConfig()),
+      runtime: this.deps.runtime(),
     };
   }
 
@@ -351,18 +371,90 @@ export class SessionModelService {
 
   async get(input: unknown): Promise<SessionModelState> {
     const key = sessionKey(input);
-    if (this.selecting) throw new Error("A session model change is in progress");
+    if (this.selecting || this.recovering) throw new Error("A session model change is in progress");
     const ctx = this.context();
     const result = await this.read(ctx, key);
-    if (
-      this.uncertain?.sessionKey === result.state.sessionKey &&
-      (this.uncertain.modelRef === null
-        ? !result.state.overridden
-        : result.state.modelRef === this.uncertain.modelRef)
-    ) {
+    if (this.uncertain?.sessionKey === result.state.sessionKey && this.canReconcile(ctx.runtime)) {
       this.uncertain = null;
+      this.deps.onRecoveryChanged();
     }
     return result.state;
+  }
+
+  private canReconcile(runtime = this.deps.runtime()): boolean {
+    const pending = this.uncertain;
+    return Boolean(
+      pending &&
+      runtime &&
+      !runtime.isStopped() &&
+      runtime.identity === pending.runtime.identity &&
+      (pending.requestSettled ||
+        (runtime.generation !== pending.runtime.generation && pending.runtime.isStopped())),
+    );
+  }
+
+  getRecovery(): SessionModelRecovery | null {
+    const pending = this.uncertain;
+    if (!pending) return null;
+    let blockedReason: string | undefined;
+    try {
+      if (this.selecting || this.recovering)
+        throw new Error("Session model recovery is in progress");
+      this.deps.assertMutable();
+      const runtime = this.deps.runtime();
+      if (!this.deps.gateway()?.connected || !runtime || runtime.isStopped())
+        throw new Error("Reconnect to MicroClaw's managed Gateway before recovering");
+      if (runtime.identity !== pending.runtime.identity)
+        throw new Error("Return to the original Gateway configuration before recovering");
+    } catch (cause) {
+      blockedReason = cause instanceof Error ? cause.message : String(cause);
+    }
+    return {
+      id: pending.id,
+      requiresRestart: !this.canReconcile(),
+      recovering: this.recovering,
+      canRecover: blockedReason === undefined,
+      ...(blockedReason ? { blockedReason } : {}),
+    };
+  }
+
+  async recover(input: unknown): Promise<void> {
+    const params = response(input);
+    if (
+      Object.keys(params).some((key) => !["recoveryId", "confirmed", "restart"].includes(key)) ||
+      params.confirmed !== true ||
+      typeof params.restart !== "boolean"
+    )
+      throw new Error("Confirm session model recovery explicitly before continuing");
+    const pending = this.uncertain;
+    if (!pending || params.recoveryId !== pending.id)
+      throw new Error("The pending model selection changed; refresh before recovering");
+    const recovery = this.getRecovery()!;
+    if (!recovery.canRecover) throw new Error(recovery.blockedReason);
+    if (recovery.requiresRestart && params.restart !== true)
+      throw new Error(
+        "Stopping the previous request requires an explicitly confirmed Gateway restart",
+      );
+    this.recovering = true;
+    this.deps.onRecoveryChanged();
+    try {
+      if (recovery.requiresRestart) await this.deps.restartGateway();
+      const ctx = this.context();
+      if (!this.canReconcile(ctx.runtime))
+        throw new Error(
+          "The previous Gateway request has not been proven stopped; recovery remains blocked",
+        );
+      const cfg = response((await this.config(ctx)).config);
+      // A removed owner cannot receive a late patch after its Gateway has stopped.
+      // Otherwise read its actual saved state; never replay the requested model.
+      if (agentEntries(cfg).some(([id]) => id === pending.agentId))
+        await this.read(ctx, pending.sessionKey, cfg);
+      this.assertCurrent(ctx);
+      this.uncertain = null;
+    } finally {
+      this.recovering = false;
+      this.deps.onRecoveryChanged();
+    }
   }
 
   private assertLocalFiles(config: JsonObject, ref: string): void {
@@ -433,16 +525,21 @@ export class SessionModelService {
     this.assertIdle();
     this.deps.assertMutable();
     const ctx = this.context();
+    const runtime = ctx.runtime;
+    if (!runtime || runtime.isStopped())
+      throw new Error("Session model selection requires a running managed Gateway");
     this.selecting = true;
     let submitted = false;
     let acknowledged = false;
     let targetKey = key;
+    let targetAgent = "";
     try {
       const snapshot = await this.config(ctx);
       const cfg = response(snapshot.config);
       assertSessionOnly(cfg);
       const before = await this.read(ctx, key, cfg);
       targetKey = before.state.sessionKey;
+      targetAgent = before.agentId;
       if (before.row?.modelSelectionLocked === true)
         throw new Error("This session's model selection is locked");
       if (
@@ -483,8 +580,10 @@ export class SessionModelService {
       if (before.row?.lifecycleRevision)
         patch.expectedLifecycleRevision = before.row.lifecycleRevision;
       submitted = true;
-      const applied = await this.request(ctx, "sessions.patch", patch);
+      const raw = await ctx.gateway.request("sessions.patch", patch);
       acknowledged = true;
+      this.assertCurrent(ctx);
+      const applied = response(raw);
       if (applied.ok !== true || applied.key !== before.state.sessionKey) {
         throw new Error("Gateway did not confirm the session model selection");
       }
@@ -513,15 +612,22 @@ export class SessionModelService {
         throw error;
       }
       if (submitted) {
-        this.uncertain = { sessionKey: targetKey, modelRef: ref };
+        this.uncertain = {
+          id: randomUUID(),
+          sessionKey: targetKey,
+          agentId: targetAgent,
+          runtime,
+          requestSettled: acknowledged || error instanceof GatewayRequestError,
+        };
         throw new Error(
-          "Session model change could not be confirmed. It may have been saved; reload the session model before continuing. No rollback or retry was attempted.",
+          "Session model change could not be confirmed. It may have been saved; open the model picker to recover before continuing. No rollback or retry was attempted.",
           { cause: error },
         );
       }
       throw error;
     } finally {
       this.selecting = false;
+      if (this.uncertain) this.deps.onRecoveryChanged();
     }
   }
 }

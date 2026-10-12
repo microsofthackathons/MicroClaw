@@ -231,6 +231,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         select: async () => {
           throw new Error("Session model selection requires the desktop application");
         },
+        getRecovery: async () => null,
+        recover: async () => {
+          throw new Error("Session model recovery requires the desktop application");
+        },
+        onRecoveryChanged: noopSub,
       },
       local: {
         getSnapshot: async () => ({ ok: true, value: { models: [] } }),

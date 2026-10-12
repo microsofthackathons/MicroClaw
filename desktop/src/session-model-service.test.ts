@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectLocalModelFiles } from "./local-model-files";
 import { GatewayRequestError } from "./gateway-client";
-import { SessionModelService, sessionModelChatKey } from "./session-model-service";
+import {
+  SessionModelService,
+  sessionModelChatKey,
+  type SessionModelRuntime,
+} from "./session-model-service";
 
 vi.mock("./local-model-files", () => ({ inspectLocalModelFiles: vi.fn(() => new Map()) }));
 
@@ -99,10 +103,30 @@ function fixture() {
   };
   let current: typeof gateway | null = gateway;
   const assertMutable = vi.fn();
+  let processNumber = 1;
+  let stopped = { value: false };
+  const runtime = (generation: string, identity = "fixture-profile"): SessionModelRuntime => {
+    const captured = stopped;
+    return { identity, generation, isStopped: () => captured.value };
+  };
+  let currentRuntime: SessionModelRuntime | null = runtime("process-1");
+  const replaceRuntime = (stopPrevious = true, identity = "fixture-profile") => {
+    if (stopPrevious) stopped.value = true;
+    stopped = { value: false };
+    currentRuntime = runtime(`process-${++processNumber}`, identity);
+    gateway.connectionGeneration++;
+  };
+  const restartGateway = vi.fn(async () => {
+    replaceRuntime();
+  });
+  const onRecoveryChanged = vi.fn();
   const service = new SessionModelService({
     gateway: () => current,
     readConfig: () => config,
     assertMutable,
+    runtime: () => currentRuntime,
+    restartGateway,
+    onRecoveryChanged,
   });
   return {
     service,
@@ -112,6 +136,12 @@ function fixture() {
     config,
     sessions,
     assertMutable,
+    restartGateway,
+    onRecoveryChanged,
+    replaceRuntime,
+    setRuntime: (value: SessionModelRuntime | null) => {
+      currentRuntime = value;
+    },
     setGateway: (next: typeof gateway | null) => {
       current = next;
     },
@@ -616,7 +646,7 @@ describe("session model selection", () => {
     },
   );
 
-  it("does not retry or roll back an ambiguous patch and only reconciles the same confirmed selection", async () => {
+  it("does not treat a matching value as proof that an unacknowledged patch has stopped", async () => {
     const f = fixture();
     f.request.mockImplementation(async (method, params) => {
       if (method === "sessions.patch") throw new Error("request timed out");
@@ -634,7 +664,200 @@ describe("session model selection", () => {
     );
     await f.handle("sessions.patch", { key: "agent:main:chat", model: "cloud/b" });
     await f.service.get("chat");
+    expect(() => f.service.assertChatAllowed()).toThrow(/unknown/);
+    await f.service.recover({
+      recoveryId: f.service.getRecovery()!.id,
+      confirmed: true,
+      restart: true,
+    });
     expect(() => f.service.assertChatAllowed()).not.toThrow();
+    expect((await f.service.get("chat")).modelRef).toBe("cloud/b");
+    expect(f.patches()).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "recovers a lost patch without replay or rollback (late write persisted: %s)",
+    async (lateApplied) => {
+      const f = fixture();
+      f.request.mockImplementation((method, params) => {
+        if (method === "sessions.patch") throw new Error("request timed out");
+        return f.handle(method, params);
+      });
+      await expect(f.service.select({ sessionKey: "chat", modelRef: "cloud/b" })).rejects.toThrow(
+        /may have been saved/,
+      );
+      f.gateway.connectionGeneration++;
+      expect((await f.service.get("chat")).modelRef).toBe("cloud/a");
+      expect(f.service.getRecovery()).toMatchObject({ requiresRestart: true, canRecover: true });
+      const id = f.service.getRecovery()!.id;
+      if (lateApplied)
+        await f.handle("sessions.patch", { key: "agent:main:chat", model: "cloud/b" });
+      await f.service.recover({ recoveryId: id, confirmed: true, restart: true });
+      expect(f.restartGateway).toHaveBeenCalledOnce();
+      expect(f.service.getRecovery()).toBeNull();
+      expect(f.service.busy).toBe(false);
+      expect(() => f.service.assertChatAllowed()).not.toThrow();
+      expect((await f.service.get("chat")).modelRef).toBe(lateApplied ? "cloud/b" : "cloud/a");
+      expect((await f.service.get("agent:writer:other")).modelRef).toBe("cloud/b");
+      expect(f.patches()).toHaveLength(1);
+    },
+  );
+
+  it("can reconcile the original model after a definitive server reply without restarting", async () => {
+    const f = fixture();
+    f.request.mockImplementation((method, params) => {
+      if (method === "sessions.patch")
+        throw new GatewayRequestError("Store unavailable", "UNAVAILABLE");
+      return f.handle(method, params);
+    });
+    await expect(f.service.select({ sessionKey: "chat", modelRef: "cloud/b" })).rejects.toThrow(
+      /may have been saved/,
+    );
+    expect(f.service.getRecovery()?.requiresRestart).toBe(false);
+    const current = await f.service.get("chat");
+    expect(current.modelRef).toBe("cloud/a");
+    expect(f.service.busy).toBe(false);
+    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.patches()).toHaveLength(1);
+  });
+
+  it("reconciles a newer saved model after an acknowledged write's readback failed", async () => {
+    const f = fixture();
+    let acknowledged = false;
+    f.request.mockImplementation(async (method, params) => {
+      if (acknowledged && method === "sessions.describe") throw new Error("Readback failed");
+      const result = await f.handle(method, params);
+      if (method === "sessions.patch") acknowledged = true;
+      return result;
+    });
+    await expect(f.service.select({ sessionKey: "chat", modelRef: "cloud/b" })).rejects.toThrow(
+      /may have been saved/,
+    );
+    expect(f.service.getRecovery()?.requiresRestart).toBe(false);
+    await f.handle("sessions.patch", { key: "agent:main:chat", model: "cloud/a" });
+    f.request.mockImplementation(f.handle);
+    await f.service.recover({
+      recoveryId: f.service.getRecovery()!.id,
+      confirmed: true,
+      restart: false,
+    });
+    expect((await f.service.get("chat")).modelRef).toBe("cloud/a");
+    expect(f.service.busy).toBe(false);
+    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.patches()).toHaveLength(1);
+  });
+
+  it("accepts a fresh read after a proven process replacement, not merely a reconnect or new label", async () => {
+    const f = fixture();
+    f.request.mockImplementation((method, params) => {
+      if (method === "sessions.patch") throw new Error("connection lost");
+      return f.handle(method, params);
+    });
+    await expect(f.service.select({ sessionKey: "chat", modelRef: "cloud/b" })).rejects.toThrow();
+    f.replaceRuntime(false);
+    await f.service.get("chat");
+    expect(f.service.busy).toBe(true);
+    const id = f.service.getRecovery()!.id;
+    f.restartGateway.mockResolvedValueOnce();
+    await expect(
+      f.service.recover({ recoveryId: id, confirmed: true, restart: true }),
+    ).rejects.toThrow(/not been proven stopped/);
+    expect(f.service.busy).toBe(true);
+    const replacement = fixture();
+    replacement.request.mockImplementation((method, params) => {
+      if (method === "sessions.patch") throw new Error("connection lost");
+      return replacement.handle(method, params);
+    });
+    await expect(
+      replacement.service.select({ sessionKey: "chat", modelRef: "cloud/b" }),
+    ).rejects.toThrow();
+    replacement.replaceRuntime();
+    expect((await replacement.service.get("chat")).modelRef).toBe("cloud/a");
+    expect(replacement.service.busy).toBe(false);
+    expect(replacement.restartGateway).not.toHaveBeenCalled();
+  });
+
+  it("requires the current recovery ID, restart consent and the original Gateway profile", async () => {
+    const f = fixture();
+    f.request.mockImplementation((method, params) => {
+      if (method === "sessions.patch") throw new Error("connection lost");
+      return f.handle(method, params);
+    });
+    await expect(f.service.select({ sessionKey: "chat", modelRef: "cloud/b" })).rejects.toThrow();
+    const id = f.service.getRecovery()!.id;
+    await expect(
+      f.service.recover({ recoveryId: id, confirmed: false, restart: true }),
+    ).rejects.toThrow(/explicitly/);
+    await expect(
+      f.service.recover({ recoveryId: "stale", confirmed: true, restart: true }),
+    ).rejects.toThrow(/changed/);
+    await expect(
+      f.service.recover({ recoveryId: id, confirmed: true, restart: false }),
+    ).rejects.toThrow(/confirmed Gateway restart/);
+    f.assertMutable.mockImplementationOnce(() => {
+      throw new Error("Chat is still active");
+    });
+    await expect(
+      f.service.recover({ recoveryId: id, confirmed: true, restart: true }),
+    ).rejects.toThrow(/Chat is still active/);
+    f.replaceRuntime(true, "different-profile");
+    await f.service.get("chat");
+    await expect(
+      f.service.recover({ recoveryId: id, confirmed: true, restart: true }),
+    ).rejects.toThrow(/original Gateway/);
+    expect(f.service.busy).toBe(true);
+    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.patches()).toHaveLength(1);
+  });
+
+  it("keeps the fence on failed restart/readback and blocks concurrent recovery", async () => {
+    const f = fixture();
+    f.request.mockImplementation((method, params) => {
+      if (method === "sessions.patch") throw new Error("connection lost");
+      return f.handle(method, params);
+    });
+    await expect(f.service.select({ sessionKey: "chat", modelRef: "cloud/b" })).rejects.toThrow();
+    const params = { recoveryId: f.service.getRecovery()!.id, confirmed: true, restart: true };
+    f.restartGateway.mockRejectedValueOnce(new Error("Could not stop Gateway"));
+    await expect(f.service.recover(params)).rejects.toThrow(/Could not stop/);
+    expect(f.service.busy).toBe(true);
+    let restarted!: () => void;
+    f.restartGateway.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          restarted = () => {
+            f.replaceRuntime();
+            resolve();
+          };
+        }),
+    );
+    const pending = f.service.recover(params);
+    expect(f.service.getRecovery()).toMatchObject({ recovering: true, canRecover: false });
+    await expect(f.service.recover(params)).rejects.toThrow(/in progress/);
+    expect(() => f.service.assertChatAllowed()).toThrow(/in progress/);
+    restarted();
+    await pending;
+    expect(f.service.busy).toBe(false);
+    expect(f.patches()).toHaveLength(1);
+  });
+
+  it("does not leave other conversations locked when the original owner was removed", async () => {
+    const f = fixture();
+    f.request.mockImplementation((method, params) => {
+      if (method === "sessions.patch") throw new Error("connection lost");
+      return f.handle(method, params);
+    });
+    await expect(
+      f.service.select({ sessionKey: "agent:writer:chat", modelRef: "cloud/a" }),
+    ).rejects.toThrow();
+    (f.config.agents as Row).list = [{ id: "main", default: true }];
+    await f.service.recover({
+      recoveryId: f.service.getRecovery()!.id,
+      confirmed: true,
+      restart: true,
+    });
+    expect(f.service.busy).toBe(false);
+    expect((await f.service.get("chat")).modelRef).toBe("cloud/a");
     expect(f.patches()).toHaveLength(1);
   });
 

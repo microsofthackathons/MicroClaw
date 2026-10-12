@@ -17,7 +17,13 @@ it("exposes the agreed narrow session model API without a generic Gateway bridge
       ): Promise<{ modelRef: string }>;
     };
   };
-  expect(Object.keys(api.model.session)).toEqual(["get", "select"]);
+  expect(Object.keys(api.model.session)).toEqual([
+    "get",
+    "select",
+    "getRecovery",
+    "recover",
+    "onRecoveryChanged",
+  ]);
   const state = { sessionKey: "agent:main:chat", modelRef: "cloud/a", overridden: false };
   electron.ipcRenderer.invoke.mockResolvedValueOnce(state).mockResolvedValueOnce(state);
   await expect(api.model.session.get("chat")).resolves.toEqual(state);
@@ -37,4 +43,19 @@ it("exposes the agreed narrow session model API without a generic Gateway bridge
   electron.ipcRenderer.invoke.mockResolvedValueOnce({ modelRef: params.modelRef });
   await expect(api.model.selectDefault(params)).resolves.toEqual({ modelRef: params.modelRef });
   expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith("model:select-default", params);
+  electron.ipcRenderer.invoke.mockResolvedValueOnce(null).mockResolvedValueOnce(undefined);
+  await expect(api.model.session.getRecovery()).resolves.toBeNull();
+  const recovery = { recoveryId: "uncertain", confirmed: true as const, restart: true };
+  await expect(api.model.session.recover(recovery)).resolves.toBeUndefined();
+  expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith("model:session:recover", recovery);
+  const changed = vi.fn();
+  const unsubscribe = api.model.session.onRecoveryChanged(changed);
+  const listener = electron.ipcRenderer.on.mock.calls.at(-1)![1];
+  listener({});
+  expect(changed).toHaveBeenCalledOnce();
+  unsubscribe();
+  expect(electron.ipcRenderer.removeListener).toHaveBeenLastCalledWith(
+    "model:session:recovery-changed",
+    listener,
+  );
 });

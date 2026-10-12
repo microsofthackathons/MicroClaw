@@ -1,6 +1,6 @@
 export type GatewayRestartDependencies = {
   stopClient: () => void;
-  stopProcess: () => void;
+  stopProcess: () => void | Promise<void>;
   isPortOccupied: () => Promise<boolean>;
   startGateway: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
@@ -95,7 +95,7 @@ export async function hardRestartGateway(dependencies: GatewayRestartDependencie
     throw new Error("gateway restart poll interval must be positive");
   }
   dependencies.stopClient();
-  dependencies.stopProcess();
+  await dependencies.stopProcess();
   const attempts = Math.max(1, Math.ceil(dependencies.timeoutMs / dependencies.pollMs));
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!(await dependencies.isPortOccupied())) {

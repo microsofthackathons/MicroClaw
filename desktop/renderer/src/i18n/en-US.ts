@@ -582,6 +582,15 @@ export default {
   "modelManager.sessionModel": "Model for this conversation",
   "modelManager.switching": "Switching...",
   "modelManager.loading": "Loading models...",
+  "modelManager.recoveryRequired":
+    "A previous model change could not be confirmed. Recovery keeps the Gateway's saved selection; it does not retry or roll back that change.",
+  "modelManager.recoverWithRestart": "Restart Gateway and recover",
+  "modelManager.recoverCurrent": "Confirm saved state and recover",
+  "modelManager.recovering": "Recovering model state...",
+  "modelManager.recoveryConfirm":
+    "The previous request might still finish later. Recovery will stop and restart MicroClaw's local Gateway, then read the saved model state. This may take a few minutes. It will not resend the change, choose another model, or delete conversations. Continue?",
+  "modelManager.recoveryChanged":
+    "The pending model change has changed. Refresh its state before recovering.",
   "modelManager.sessionHint":
     "Only this conversation changes. Defaults and other conversations stay unchanged.",
   "modelManager.search": "Search models and providers",

@@ -8,6 +8,7 @@ import ChatModelPicker from "./ChatModelPicker.vue";
 import { LOCAL_MODEL_PRESETS } from "../../../../src/local-model-catalog";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import { useChatStore } from "@/stores/chat";
+import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
 
 const Popover = defineComponent({
   props: { visible: Boolean },
@@ -78,6 +79,35 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     return wrapper;
   }
+
+  it("blocks selection while another session's outcome is unknown and reloads after recovery", async () => {
+    let changed!: () => void;
+    window.openclaw.model.session.onRecoveryChanged = vi.fn((callback) => {
+      changed = callback;
+      return () => {};
+    });
+    window.openclaw.model.session.getRecovery = vi.fn().mockResolvedValue({
+      id: "other-session",
+      requiresRestart: true,
+      canRecover: true,
+      recovering: false,
+    });
+    const wrapper = await open();
+    expect(wrapper.findComponent(SessionModelRecoveryNotice).exists()).toBe(true);
+    expect(wrapper.get('[data-testid="recover-session-model"]').text()).toContain(
+      "Restart Gateway",
+    );
+    const model = wrapper.get('[data-model-ref="cloud/remote"]');
+    expect(model.attributes("disabled")).toBeDefined();
+    await model.trigger("click");
+    expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
+    vi.mocked(window.openclaw.model.session.getRecovery).mockResolvedValue(null);
+    const reads = vi.mocked(window.openclaw.model.session.get).mock.calls.length;
+    changed();
+    await flushPromises();
+    expect(window.openclaw.model.session.get).toHaveBeenCalledTimes(reads + 1);
+    expect(model.attributes("disabled")).toBeUndefined();
+  });
 
   function fixedCatalog() {
     const preset = LOCAL_MODEL_PRESETS[0];

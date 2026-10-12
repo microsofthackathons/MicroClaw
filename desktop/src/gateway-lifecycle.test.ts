@@ -66,13 +66,42 @@ describe("requiresExternalGatewayStop", () => {
 });
 
 describe("hardRestartGateway", () => {
+  it("waits for verified asynchronous shutdown and does not start after a shutdown failure", async () => {
+    let stopped!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      stopped = resolve;
+    });
+    const startGateway = vi.fn(async () => {});
+    const dependencies = {
+      stopClient: vi.fn(),
+      stopProcess: vi.fn(() => shutdown),
+      isPortOccupied: vi.fn(async () => false),
+      startGateway,
+      sleep: vi.fn(async () => {}),
+      timeoutMs: 1000,
+      pollMs: 100,
+    };
+    const restart = hardRestartGateway(dependencies);
+    await Promise.resolve();
+    expect(startGateway).not.toHaveBeenCalled();
+    stopped();
+    await restart;
+    expect(startGateway).toHaveBeenCalledOnce();
+    startGateway.mockClear();
+    dependencies.stopProcess.mockRejectedValueOnce(new Error("Old Gateway is still alive"));
+    await expect(hardRestartGateway(dependencies)).rejects.toThrow("still alive");
+    expect(startGateway).not.toHaveBeenCalled();
+  });
+
   it("stops the client and process, waits for the port, then starts", async () => {
     const order: string[] = [];
     const occupied = [true, true, false];
 
     await hardRestartGateway({
       stopClient: () => order.push("client"),
-      stopProcess: () => order.push("process"),
+      stopProcess: () => {
+        order.push("process");
+      },
       isPortOccupied: async () => occupied.shift() ?? false,
       startGateway: async () => {
         order.push("start");

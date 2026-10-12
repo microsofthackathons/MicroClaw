@@ -545,6 +545,14 @@ export default {
   "modelManager.sessionModel": "当前会话模型",
   "modelManager.switching": "切换中…",
   "modelManager.loading": "读取模型中…",
+  "modelManager.recoveryRequired":
+    "上一次模型切换的结果尚未确认。恢复只确认网关已保存的选择，不会重试或回滚那次切换。",
+  "modelManager.recoverWithRestart": "重启网关并恢复",
+  "modelManager.recoverCurrent": "确认当前状态并恢复",
+  "modelManager.recovering": "正在恢复模型状态…",
+  "modelManager.recoveryConfirm":
+    "旧请求可能仍在执行。恢复会停止并重新启动 MicroClaw 的本地网关，再读取已保存的模型状态，可能需要几分钟。不会重发切换请求、另选模型或删除对话。是否继续？",
+  "modelManager.recoveryChanged": "待确认的模型切换已发生变化，请刷新状态后再恢复。",
   "modelManager.sessionHint": "只影响当前会话，不改变默认模型或其他会话。",
   "modelManager.search": "搜索模型或提供商",
   "modelManager.noMatches": "没有匹配的模型。",

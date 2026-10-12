@@ -114,26 +114,52 @@ it.skipIf(!entry).each(["single", "legacy-multiple", "explicit-multiple"] as con
       MICROCLAW_OPENCLAW_PACKAGE_DIR: path.dirname(entry!),
     });
     let log = "";
-    const child = spawn(
-      process.execPath,
-      [
-        "--import",
-        pathToFileURL(path.join(__dirname, "openclaw-fs-safe-compat.mjs")).href,
-        entry!,
-        "gateway",
-        "run",
-        "--port",
-        String(port),
-      ],
-      { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
-    );
     const capture = (chunk: Buffer) => {
       log = (log + chunk.toString()).slice(-12_000);
     };
-    child.stdout.on("data", capture);
-    child.stderr.on("data", capture);
+    function startFixtureGateway() {
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          pathToFileURL(path.join(__dirname, "openclaw-fs-safe-compat.mjs")).href,
+          entry!,
+          "gateway",
+          "run",
+          "--port",
+          String(port),
+        ],
+        { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      child.stdout.on("data", capture);
+      child.stderr.on("data", capture);
+      return child;
+    }
+    let child = startFixtureGateway();
+    let processGeneration = 1;
     const client = new GatewayClient({ port, token });
+    const realRequest = client.request.bind(client);
     const request = vi.spyOn(client, "request");
+    async function stopFixtureGateway() {
+      client.stop();
+      if (child.pid && child.exitCode === null && child.signalCode === null) {
+        if (process.platform === "win32") {
+          spawnSync(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-Command",
+              `Stop-Process -Id ${child.pid} -Force -ErrorAction SilentlyContinue`,
+            ],
+            { windowsHide: true, stdio: "ignore" },
+          );
+        } else child.kill("SIGTERM");
+        await new Promise<void>((resolve) => {
+          if (child.exitCode !== null || child.signalCode !== null) resolve();
+          else child.once("exit", () => resolve());
+        });
+      }
+    }
     try {
       client.start();
       await vi.waitFor(
@@ -150,6 +176,25 @@ it.skipIf(!entry).each(["single", "legacy-multiple", "explicit-multiple"] as con
         gateway: () => client,
         readConfig,
         assertMutable: () => {},
+        runtime: () => {
+          const currentChild = child;
+          return {
+            identity: root,
+            generation: String(processGeneration),
+            isStopped: () => currentChild.exitCode !== null || currentChild.signalCode !== null,
+          };
+        },
+        restartGateway: async () => {
+          await stopFixtureGateway();
+          child = startFixtureGateway();
+          processGeneration++;
+          client.start();
+          await vi.waitFor(() => expect(client.connected).toBe(true), {
+            timeout: 90_000,
+            interval: 500,
+          });
+        },
+        onRecoveryChanged: () => {},
       });
       // Startup config migrations are outside the selection API; compare the settled config.
       const baseline = readConfig();
@@ -274,6 +319,49 @@ it.skipIf(!entry).each(["single", "legacy-multiple", "explicit-multiple"] as con
       expect(client.connectionGeneration).toBe(generation);
       expect(client.connected).toBe(true);
       expect(child.exitCode).toBeNull();
+      if (mode === "explicit-multiple") {
+        for (const failure of ["before-delivery", "after-commit"] as const) {
+          const savedBefore = await service.get(main);
+          const configBefore = readConfig();
+          const patchesBefore = request.mock.calls.filter(
+            ([method]) => method === "sessions.patch",
+          ).length;
+          let inject = true;
+          request.mockImplementation(
+            async <T = unknown>(
+              method: string,
+              params?: unknown,
+              timeout?: number | null,
+            ): Promise<T> => {
+              if (method === "sessions.patch" && inject) {
+                inject = false;
+                if (failure === "after-commit") await realRequest(method, params, timeout);
+                throw new Error("Simulated lost response");
+              }
+              return realRequest<T>(method, params, timeout);
+            },
+          );
+          await expect(
+            service.select({ sessionKey: main, modelRef: "llama-cpp/local" }),
+          ).rejects.toThrow(/may have been saved/);
+          await service.get(main);
+          expect(service.busy).toBe(true);
+          const recovery = service.getRecovery()!;
+          expect(recovery.requiresRestart).toBe(true);
+          const previous = child;
+          await service.recover({ recoveryId: recovery.id, confirmed: true, restart: true });
+          expect(previous.exitCode !== null || previous.signalCode !== null).toBe(true);
+          expect(service.busy).toBe(false);
+          expect(service.getRecovery()).toBeNull();
+          expect((await service.get(main)).modelRef).toBe(
+            failure === "after-commit" ? "llama-cpp/local" : savedBefore.modelRef,
+          );
+          expect(readConfig()).toEqual(configBefore);
+          expect(request.mock.calls.filter(([method]) => method === "sessions.patch")).toHaveLength(
+            patchesBefore + 1,
+          );
+        }
+      }
       expect(endpointRequests).toBe(0);
       expect(
         request.mock.calls.every(([method]) =>
@@ -288,24 +376,7 @@ it.skipIf(!entry).each(["single", "legacy-multiple", "explicit-multiple"] as con
         ),
       ).toBe(true);
     } finally {
-      client.stop();
-      if (child.pid && child.exitCode === null) {
-        if (process.platform === "win32") {
-          spawnSync(
-            "powershell.exe",
-            [
-              "-NoProfile",
-              "-Command",
-              `Stop-Process -Id ${child.pid} -Force -ErrorAction SilentlyContinue`,
-            ],
-            { windowsHide: true, stdio: "ignore" },
-          );
-        } else child.kill("SIGTERM");
-        await new Promise<void>((resolve) => {
-          if (child.exitCode !== null || child.signalCode !== null) resolve();
-          else child.once("exit", () => resolve());
-        });
-      }
+      await stopFixtureGateway();
       await new Promise<void>((resolve) => endpoint.close(() => resolve()));
       request.mockRestore();
       vi.unstubAllEnvs();

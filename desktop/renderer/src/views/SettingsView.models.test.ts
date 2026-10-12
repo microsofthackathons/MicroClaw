@@ -12,6 +12,7 @@ import type { LocalModelOperation } from "../../../src/local-model-types";
 import { LOCAL_MODEL_PRESETS } from "../../../src/local-model-catalog";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
+import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
 import { selectPrimaryModelConfig } from "@/utils/model-provider";
 
 vi.mock("vue-router", () => ({ useRoute: () => ({ params: { section: "models" } }) }));
@@ -119,6 +120,26 @@ describe("SettingsView model integration", () => {
     await flushPromises();
     return { wrapper, chat: useChatStore(pinia) };
   }
+
+  it("exposes the shared recovery entry and blocks default changes until saved state is confirmed", async () => {
+    const { wrapper } = await open();
+    const recovery = wrapper.getComponent(SessionModelRecoveryNotice);
+    recovery.vm.$emit("state", {
+      id: "unknown",
+      requiresRestart: true,
+      recovering: false,
+      canRecover: true,
+    });
+    await flushPromises();
+    expect(wrapper.get("select.model-picker-select").attributes("disabled")).toBeDefined();
+    wrapper.getComponent(DefaultPickerStub).vm.$emit("change", "cloud/remote");
+    await flushPromises();
+    expect(window.openclaw.model.selectDefault).not.toHaveBeenCalled();
+    recovery.vm.$emit("state", null);
+    recovery.vm.$emit("recovered");
+    await flushPromises();
+    expect(wrapper.get("select.model-picker-select").attributes("disabled")).toBeUndefined();
+  });
 
   it("switches a prepared local default inline and confirms the selection instead of provider setup", async () => {
     const preset = LOCAL_MODEL_PRESETS[0];

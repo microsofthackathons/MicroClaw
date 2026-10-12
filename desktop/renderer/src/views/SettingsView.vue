@@ -226,6 +226,12 @@
         </div>
         <p class="provider-description">{{ t("modelManager.providersHint") }}</p>
         <p v-if="modelStatusError" class="provider-error" role="alert">{{ modelStatusError }}</p>
+        <SessionModelRecoveryNotice
+          :disabled="chatStore.streaming || Boolean(switchingModelRef || localSelecting)"
+          @state="sessionRecovery = $event"
+          @busy="sessionRecovering = $event"
+          @recovered="refreshModelsConfig"
+        />
         <div class="card-group default-model-card">
           <template v-if="modelOptions.length">
             <div class="card-row no-border">
@@ -238,7 +244,7 @@
                   :model-status="modelOptionStatus"
                   :loading="copilotModelsLoading || modelActionBusy"
                   :switching="Boolean(switchingModelRef) || localSelecting"
-                  :disabled="modelActionBusy || chatStore.streaming"
+                  :disabled="modelActionBusy || chatStore.streaming || Boolean(sessionRecovery)"
                   @change="selectModel"
                 />
               </div>
@@ -1329,6 +1335,8 @@ import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
+import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
+import type { SessionModelRecovery } from "../../../src/session-model-types";
 import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
 import { mergeLocalModelCatalog } from "@/utils/local-model-catalog";
 import { isManagedLocalModel, type LocalModelCatalogEntry } from "../../../src/local-model-catalog";
@@ -1943,6 +1951,8 @@ const localCatalog = ref<LocalModelCatalogEntry[]>([]);
 const localProviderReady = ref(false);
 const localSelection = ref("");
 const localSelecting = ref(false);
+const sessionRecovery = ref<SessionModelRecovery | null>(null);
+const sessionRecovering = ref(false);
 const modelOptions = computed(() => mergeLocalModelCatalog(customModels.value, localCatalog.value));
 function modelOptionStatus(model: ConfiguredModel): string {
   const preset = localCatalog.value.find((entry) => entry.modelRef === getModelRef(model));
@@ -2034,6 +2044,7 @@ const modelActionBusy = computed(() =>
     copilotDisconnecting.value ||
     cloudTransition.value ||
     providerSaving.value ||
+    sessionRecovering.value ||
     localSelecting.value,
   ),
 );
@@ -2044,6 +2055,8 @@ const modelMutationBlocked = computed(() =>
     copilotDisconnecting.value ||
     cloudTransition.value ||
     providerSaving.value ||
+    sessionRecovery.value ||
+    sessionRecovering.value ||
     localSelecting.value ||
     chatStore.streaming ||
     localOperation.value?.busy,
@@ -2471,7 +2484,7 @@ async function restartGatewayAfterModelConfig(
 }
 
 async function selectModel(modelRef: string) {
-  if (modelActionBusy.value || chatStore.streaming) return;
+  if (modelActionBusy.value || chatStore.streaming || sessionRecovery.value) return;
   if (!modelOptions.value.some((model) => getModelRef(model) === modelRef)) {
     ElMessage.error(t("settings.configSaveFailed", { error: `Unknown model "${modelRef}"` }));
     return;

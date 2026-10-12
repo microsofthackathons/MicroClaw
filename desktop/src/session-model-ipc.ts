@@ -8,6 +8,8 @@ export function registerSessionModelHandlers(
   const handlers = {
     "model:session:get": (input: unknown) => service.get(input),
     "model:session:select": (input: unknown) => service.select(input),
+    "model:session:get-recovery": () => service.getRecovery(),
+    "model:session:recover": (input: unknown) => service.recover(input),
   };
   for (const [channel, handler] of Object.entries(handlers)) {
     ipc.handle(channel, async (_event, input: unknown) => {

@@ -241,6 +241,13 @@ contextBridge.exposeInMainWorld("openclaw", {
     session: {
       get: (sessionKey) => ipcRenderer.invoke("model:session:get", sessionKey),
       select: (params) => ipcRenderer.invoke("model:session:select", params),
+      getRecovery: () => ipcRenderer.invoke("model:session:get-recovery"),
+      recover: (params) => ipcRenderer.invoke("model:session:recover", params),
+      onRecoveryChanged: (callback) => {
+        const listener = () => callback();
+        ipcRenderer.on("model:session:recovery-changed", listener);
+        return () => ipcRenderer.removeListener("model:session:recovery-changed", listener);
+      },
     } satisfies SessionModelAPI,
     local: {
       getSnapshot: () => ipcRenderer.invoke("model:local:get-snapshot"),
