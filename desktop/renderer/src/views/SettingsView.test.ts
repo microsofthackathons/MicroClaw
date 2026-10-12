@@ -95,6 +95,13 @@ describe("SettingsView", () => {
     effectiveTier: null,
     desiredEnabled: true,
     effectiveEnabled: false,
+    hooks: {
+      requestedExternalEnabled: false,
+      requestedInternalEnabled: false,
+      effectiveExternalEnabled: false,
+      effectiveInternalEnabled: false,
+      pausedByMxc: false,
+    },
     lifecycleState: {
       phase: "locked",
       detail: null,
@@ -329,6 +336,29 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-add-rw"]').exists()).toBe(true);
     expect(wrapper.find(".mxc-card").text()).toContain("Remembered exact commands");
     expect(wrapper.find(".mxc-card").text()).not.toContain("Gateway generation");
+  });
+
+  it("shows backed-up requested Hooks as paused while MXC is active", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      hooks: {
+        requestedExternalEnabled: true,
+        requestedInternalEnabled: true,
+        effectiveExternalEnabled: false,
+        effectiveInternalEnabled: false,
+        pausedByMxc: true,
+      },
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-hooks-paused"]').text()).toBe(
+      "Webhooks and internal hooks are paused while containment is active.",
+    );
   });
 
   it("expands and collapses the accessible MXC technical disclosure", async () => {

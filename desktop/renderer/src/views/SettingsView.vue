@@ -605,6 +605,13 @@
               {{ windowsNodeMxcProtectionDetail }}
             </div>
             <div
+              v-if="windowsNodeMxcHooksPausedSummary"
+              class="mxc-alert mxc-alert-warning"
+              data-testid="mxc-hooks-paused"
+            >
+              {{ windowsNodeMxcHooksPausedSummary }}
+            </div>
+            <div
               v-if="
                 windowsNodeMxcStatus.requestedMode === 'limited-dacl' ||
                 windowsNodeMxcStatus.effectiveStrength === 'limited-dacl'
@@ -1806,6 +1813,17 @@ const windowsNodeMxcProtectionDetail = computed(() => {
   }
   const phase = t(`settings.windowsNodeMxcLifecyclePhase.${status.lifecycleState.phase}`);
   return status.lifecycleState.detail ? `${phase} · ${status.lifecycleState.detail}` : phase;
+});
+
+const windowsNodeMxcHooksPausedSummary = computed(() => {
+  const hooks = windowsNodeMxcStatus.value?.hooks;
+  if (!hooks?.pausedByMxc) return "";
+  if (hooks.requestedExternalEnabled && hooks.requestedInternalEnabled) {
+    return t("settings.windowsNodeMxcHooksPausedBoth");
+  }
+  return hooks.requestedExternalEnabled
+    ? t("settings.windowsNodeMxcHooksPausedExternal")
+    : t("settings.windowsNodeMxcHooksPausedInternal");
 });
 
 const windowsNodeMxcLimitedMode = computed(() => {

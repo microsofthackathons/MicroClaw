@@ -79,6 +79,13 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         effectiveTier: null,
         desiredEnabled: false,
         effectiveEnabled: false,
+        hooks: {
+          requestedExternalEnabled: false,
+          requestedInternalEnabled: false,
+          effectiveExternalEnabled: false,
+          effectiveInternalEnabled: false,
+          pausedByMxc: false,
+        },
         lifecycleState: {
           phase: "idle" as const,
           detail: null,

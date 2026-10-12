@@ -396,11 +396,21 @@ const INGRESS_BACKUP_KEYS = {
   hooks: "$microclaw.ingress.hooks",
   plugins: "$microclaw.ingress.plugins",
 } as const;
+export type WindowsNodeMxcIngressField = keyof typeof INGRESS_BACKUP_KEYS;
 
 export interface WindowsNodeMxcPolicyApplication {
   config: Record<string, unknown>;
   backups: AgentToolsBackup;
   agentIds: string[];
+}
+
+export function getWindowsNodeMxcIngressBackup(
+  backups: AgentToolsBackup,
+  field: WindowsNodeMxcIngressField,
+): unknown {
+  const backupKey = INGRESS_BACKUP_KEYS[field];
+  if (!Object.hasOwn(backups, backupKey)) return undefined;
+  return structuredClone(backups[backupKey]);
 }
 
 export function migrateWindowsNodeMxcToolBackupAliases(

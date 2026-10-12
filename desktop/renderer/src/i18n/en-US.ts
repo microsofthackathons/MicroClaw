@@ -321,6 +321,12 @@ export default {
   "settings.windowsNodeMxcStatusActive": "Active",
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "Containment — Off",
+  "settings.windowsNodeMxcHooksPausedBoth":
+    "Webhooks and internal hooks are paused while containment is active.",
+  "settings.windowsNodeMxcHooksPausedExternal":
+    "Webhooks are paused while containment is active.",
+  "settings.windowsNodeMxcHooksPausedInternal":
+    "Internal hooks are paused while containment is active.",
   "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
   "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
   "settings.windowsNodeMxcEffective": "Effective state",

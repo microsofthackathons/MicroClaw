@@ -158,6 +158,7 @@ import {
   WINDOWS_NODE_MXC_NODE_COMMANDS,
   applyWindowsNodeMxcGatewayPolicy,
   assertWindowsNodeMxcFolderPolicyMutable,
+  getWindowsNodeMxcIngressBackup,
   getWindowsNodeMxcGatewayPolicyState,
   isWindowsNodeMxcFolderConfigured,
   isWindowsNodeMxcIngressReleased,
@@ -180,6 +181,12 @@ import {
   parseWindowsNodeMxcCronResumeFence,
   type WindowsNodeMxcCronResumeFence,
 } from "./windows-node-mxc-cron";
+import {
+  createWindowsNodeMxcHooksGatePolicy,
+  getWindowsNodeMxcHooksEnvironment,
+  inspectWindowsNodeMxcHooksStatus,
+  type WindowsNodeMxcHooksStatus,
+} from "./windows-node-mxc-hooks";
 import {
   commitWindowsNodeMxcFolderPolicyAtomically,
   runWindowsNodeMxcFolderPolicyTransaction,
@@ -1268,8 +1275,16 @@ async function getWindowsNodeMxcStatus(): Promise<
     };
     folderPolicyRecovery: WindowsNodeMxcFolderPolicyRecovery | null;
     durableApprovals: WindowsNodeMxcDurableApprovalInspection;
+    hooks: WindowsNodeMxcHooksStatus;
   }
 > {
+  const config = readConfig();
+  const requestedMode = getWindowsNodeMxcRequestedMode();
+  const backups = settingsStore.get("windowsNodeMxcToolBackups");
+  const hooksConfig =
+    requestedMode === "off"
+      ? config.hooks
+      : getWindowsNodeMxcIngressBackup(backups, "hooks");
   const bundledFolders = getBundledWindowsNodeFolders();
   const bundledHost = bundledWindowsNodeHost.status();
   let runtimeIntegrityError: string | undefined;
@@ -1279,10 +1294,10 @@ async function getWindowsNodeMxcStatus(): Promise<
     runtimeIntegrityError = error instanceof Error ? error.message : String(error);
   }
   const status = await inspectWindowsNodeMxc({
-    requestedMode: getWindowsNodeMxcRequestedMode(),
+    requestedMode,
     desiredEnabled: isWindowsNodeMxcDesired(),
     selectedNodeId: settingsStore.get("windowsNodeMxcNodeId"),
-    config: readConfig(),
+    config,
     gateway: gwClient,
     managedGateway: gatewaySpawnedByUs && isManagedGatewayProcessAlive(),
     gatewayGeneration: gatewayGenerationId,
@@ -1310,6 +1325,7 @@ async function getWindowsNodeMxcStatus(): Promise<
     },
     folderPolicyRecovery: settingsStore.get("windowsNodeMxcFolderPolicyRecovery") ?? null,
     durableApprovals: durable,
+    hooks: inspectWindowsNodeMxcHooksStatus(hooksConfig, requestedMode),
   };
 }
 
@@ -3982,6 +3998,20 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
           getBundledWindowsNodeFolders(),
         )
       : null;
+    const nextHooksEnvironment =
+      nextApprovalProofContext && windowsNodeMxcRequestedMode !== "off"
+        ? getWindowsNodeMxcHooksEnvironment(
+            createWindowsNodeMxcHooksGatePolicy({
+              gatewayGeneration: nextApprovalProofContext.gatewayGeneration,
+              policyFingerprint: nextApprovalProofContext.policyFingerprint,
+              requestedMode: windowsNodeMxcRequestedMode,
+              hooksConfig: getWindowsNodeMxcIngressBackup(
+                settingsStore.get("windowsNodeMxcToolBackups"),
+                "hooks",
+              ),
+            }),
+          )
+        : {};
     const gwEnv: Record<string, string> = {
       ...gatewayEnvironment,
       OPENCLAW_STATE_DIR: stateDir,
@@ -4002,10 +4032,12 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       "MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS",
       "MICROCLAW_MXC_CRON_RESUME_ACK_PATH",
       "MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN",
+      "MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64",
     ]) {
       delete gwEnv[reservedName];
     }
     if (windowsNodeMxcDesired) gwEnv.MICROCLAW_MXC_CRON_PAUSED = "1";
+    Object.assign(gwEnv, nextHooksEnvironment);
     if (cronResumeFence) {
       Object.assign(gwEnv, getWindowsNodeMxcCronResumeEnvironment(cronResumeFence));
     }

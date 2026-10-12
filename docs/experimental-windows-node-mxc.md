@@ -72,6 +72,15 @@ or before that fence, then allows ordinary startup recovery for later due times.
 It durably acknowledges completion only after the scheduler resumes, so jobs missed during the
 containment interval are not replayed without suppressing later work.
 
+External webhooks and internal Hooks follow the same requested-versus-effective model. Their
+original configuration remains in the MXC backup while the effective Gateway config keeps both
+surfaces disabled. A generation- and policy-bound compatibility gate returns HTTP 503 at the
+original webhook base path before reading a request body or admitting work, and drops internal
+events before listener lookup or handler execution. Neither surface queues paused work, so there
+is no replay when MXC is turned Off. Settings reports the backed-up requested state as paused;
+the original configuration is restored only after the Off transition. Any drift that enables
+either hook surface while Full or Limited is requested fails policy validation and relocks.
+
 The active policy also denies the runtime and plugin tool groups. The requested WeChat channel
 plugin may remain loaded, but its long-poll loop does not call `getUpdates` until a release record
 matches the current Gateway generation and MXC policy fingerprint. Outbound text and media use the

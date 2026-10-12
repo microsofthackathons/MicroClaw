@@ -16,6 +16,8 @@ const {
   PINNED_CRON_STARTUP_ACK_SOURCE,
   PINNED_CRON_HANDLER_MAP_SOURCE,
   PINNED_CRON_MUTATION_HANDLER_SOURCES,
+  PINNED_EXTERNAL_HOOK_HANDLER_SOURCE,
+  PINNED_INTERNAL_HOOK_TRIGGER_SOURCE,
   PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
   PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
@@ -23,9 +25,12 @@ const {
   attestPinnedOpenClawWebFetchHttpOnly,
   createWindowsNodeMxcApprovalProofMinter,
   computeWindowsNodeMxcApprovalPlanSha256,
+  createWindowsNodeMxcHooksGate,
   patchPinnedOpenClawExecApproval,
   patchPinnedOpenClawCronService,
   patchPinnedOpenClawCronHandlers,
+  patchPinnedOpenClawExternalHooks,
+  patchPinnedOpenClawInternalHooks,
   patchPinnedOpenClawNodeGateway,
   patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
@@ -75,6 +80,7 @@ describe("pinned OpenClaw package validation", () => {
         approval: true,
         cronPause: true,
         cronResume: true,
+        hooksPause: true,
       });
       expect(targets.map((target: { module: string }) => target.module)).toEqual([
         "nodes-CUbe_1MQ.mjs",
@@ -83,6 +89,8 @@ describe("pinned OpenClaw package validation", () => {
         "openclaw-tools-Dxfbrtff.mjs",
         "service-31u04axN.mjs",
         "cron-D3Bd3ZFt.mjs",
+        "server-start-DfGddYU-.mjs",
+        "internal-hooks-DfVqU7ax.mjs",
       ]);
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));
@@ -189,6 +197,64 @@ describe("pinned OpenClaw web fetch contract", () => {
       expect(patched.indexOf("nowMs: microclawCronResumeFenceUnixMs")).toBeLessThan(
         patched.indexOf("await runMissedJobs(state"),
       );
+    });
+
+    describe("pinned OpenClaw Hooks pause contract", () => {
+      it("rejects the configured external hook path before reading or dispatching the request", () => {
+        const patched = patchPinnedOpenClawExternalHooks(PINNED_EXTERNAL_HOOK_HANDLER_SOURCE);
+        expect(patched).toContain("microclawMxcHooksGate?.rejectExternal(req, res)");
+        expect(patched.indexOf("rejectExternal(req, res)")).toBeLessThan(
+          patched.indexOf("params.hooksConfig()"),
+        );
+      });
+
+      it("drops internal hook events before listener lookup or handler execution", () => {
+        const patched = patchPinnedOpenClawInternalHooks(PINNED_INTERNAL_HOOK_TRIGGER_SOURCE);
+        expect(patched).toContain("microclawMxcHooksGate?.dropInternal(event)");
+        expect(patched.indexOf("dropInternal(event)")).toBeLessThan(
+          patched.indexOf("internalHooksEnabledState.enabled"),
+        );
+      });
+
+      it("returns an explicit unavailable response only for the backed-up external path", () => {
+        const gate = createWindowsNodeMxcHooksGate({
+          contract: "microclaw.windows-node-mxc.hooks-gate.v1",
+          gatewayGeneration: "generation",
+          policyFingerprint: "a".repeat(64),
+          requestedMode: "limited-dacl",
+          externalRequested: true,
+          internalRequested: true,
+          basePath: "/hooks",
+        });
+        const headers: Record<string, string> = {};
+        let body = "";
+        const response = {
+          statusCode: 200,
+          setHeader(name: string, value: string) {
+            headers[name] = value;
+          },
+          end(value: string) {
+            body = value;
+          },
+        };
+
+        expect(gate.rejectExternal({ url: "/health" }, response)).toBe(false);
+        expect(gate.rejectExternal({ url: "/hooks/agent?token=secret" }, response)).toBe(true);
+        expect(response.statusCode).toBe(503);
+        expect(headers["Cache-Control"]).toBe("no-store");
+        expect(JSON.parse(body)).toMatchObject({ ok: false, code: "MXC_HOOKS_PAUSED" });
+        expect(body).not.toContain("secret");
+        expect(gate.dropInternal({ type: "command:new" })).toBe(true);
+      });
+
+      it("fails closed when either pinned hook boundary drifts", () => {
+        expect(() => patchPinnedOpenClawExternalHooks("unrecognized source")).toThrow(
+          /did not match exactly once/,
+        );
+        expect(() => patchPinnedOpenClawInternalHooks("unrecognized source")).toThrow(
+          /did not match exactly once/,
+        );
+      });
     });
 
     it("blocks every Cron mutation and run-now handler while MXC is requested", () => {
@@ -442,6 +508,12 @@ describe("Windows Node MXC approval proof minter", () => {
         ),
       ).toBe(true);
       expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CRON_PAUSED: "1" }, true)).toBe(true);
+      expect(
+        shouldInitializeApprovalPreload(
+          { MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64: "e30=" },
+          true,
+        ),
+      ).toBe(true);
       expect(shouldInitializeApprovalPreload({}, true)).toBe(false);
     });
   });

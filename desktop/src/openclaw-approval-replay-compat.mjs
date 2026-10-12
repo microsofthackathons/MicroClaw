@@ -26,10 +26,17 @@ const EXPECTED_CRON_SERVICE_SHA256 =
 const EXPECTED_CRON_HANDLERS_MODULE = "cron-D3Bd3ZFt.mjs";
 const EXPECTED_CRON_HANDLERS_SHA256 =
   "3dd84c2aebf7cfe326f1ae4d3f40e5c68e4c897a623d834c60a613888c1f6ea1";
+const EXPECTED_HOOKS_SERVER_MODULE = "server-start-DfGddYU-.mjs";
+const EXPECTED_HOOKS_SERVER_SHA256 =
+  "86b9912a5458cd617e22dcdb24cc8ba757ea2206b298bf8831b22cd874e5efae";
+const EXPECTED_INTERNAL_HOOKS_MODULE = "internal-hooks-DfVqU7ax.mjs";
+const EXPECTED_INTERNAL_HOOKS_SHA256 =
+  "3e0200cbe95b537ac5c4fc36509197b2d13700a72688e26839620248c6c967d0";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
+const HOOKS_GATE_SYMBOL = Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
 
 export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
@@ -347,6 +354,38 @@ export function patchPinnedOpenClawCronHandlers(source) {
   return patched;
 }
 
+export const PINNED_EXTERNAL_HOOK_HANDLER_SOURCE = `\tconst handleHooksRequest = async (req, res) => {
+\t\tconst hooksConfig = params.hooksConfig();`;
+const PATCHED_EXTERNAL_HOOK_HANDLER_SOURCE = `\tconst handleHooksRequest = async (req, res) => {
+\t\tconst microclawMxcHooksGate = globalThis[Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1")];
+\t\tif (microclawMxcHooksGate?.rejectExternal(req, res)) return true;
+\t\tconst hooksConfig = params.hooksConfig();`;
+
+export function patchPinnedOpenClawExternalHooks(source) {
+  return replaceExactlyOnce(
+    source,
+    PINNED_EXTERNAL_HOOK_HANDLER_SOURCE,
+    PATCHED_EXTERNAL_HOOK_HANDLER_SOURCE,
+    "external Hooks admission gate",
+  );
+}
+
+export const PINNED_INTERNAL_HOOK_TRIGGER_SOURCE = `async function triggerInternalHook(event) {
+\tif (!internalHooksEnabledState.enabled) return;`;
+const PATCHED_INTERNAL_HOOK_TRIGGER_SOURCE = `async function triggerInternalHook(event) {
+\tconst microclawMxcHooksGate = globalThis[Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1")];
+\tif (microclawMxcHooksGate?.dropInternal(event)) return;
+\tif (!internalHooksEnabledState.enabled) return;`;
+
+export function patchPinnedOpenClawInternalHooks(source) {
+  return replaceExactlyOnce(
+    source,
+    PINNED_INTERNAL_HOOK_TRIGGER_SOURCE,
+    PATCHED_INTERNAL_HOOK_TRIGGER_SOURCE,
+    "internal Hooks dispatch gate",
+  );
+}
+
 function encodeField(name, value) {
   return `${name}=${Buffer.byteLength(value, "utf8")}:${value}`;
 }
@@ -526,9 +565,78 @@ function installApprovalProofMinter() {
   });
 }
 
+export function createWindowsNodeMxcHooksGate(policy) {
+  if (
+    !policy ||
+    typeof policy !== "object" ||
+    Array.isArray(policy) ||
+    policy.contract !== "microclaw.windows-node-mxc.hooks-gate.v1" ||
+    typeof policy.gatewayGeneration !== "string" ||
+    !policy.gatewayGeneration ||
+    !/^[a-f0-9]{64}$/i.test(policy.policyFingerprint ?? "") ||
+    (policy.requestedMode !== "full" && policy.requestedMode !== "limited-dacl") ||
+    typeof policy.externalRequested !== "boolean" ||
+    typeof policy.internalRequested !== "boolean" ||
+    typeof policy.basePath !== "string" ||
+    !policy.basePath.startsWith("/") ||
+    policy.basePath === "/" ||
+    policy.basePath.endsWith("/")
+  ) {
+    throw new Error("MicroClaw MXC Hooks gate policy is invalid");
+  }
+  const immutablePolicy = Object.freeze({ ...policy });
+  return Object.freeze({
+    policy: immutablePolicy,
+    rejectExternal(req, res) {
+      if (!immutablePolicy.externalRequested) return false;
+      const pathname = new URL(req?.url ?? "/", "http://127.0.0.1").pathname;
+      if (
+        pathname !== immutablePolicy.basePath &&
+        !pathname.startsWith(`${immutablePolicy.basePath}/`)
+      ) {
+        return false;
+      }
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: "Hooks and webhooks are paused while MicroClaw MXC is enabled",
+          code: "MXC_HOOKS_PAUSED",
+        }),
+      );
+      return true;
+    },
+    dropInternal() {
+      return true;
+    },
+  });
+}
+
+function installWindowsNodeMxcHooksGate() {
+  const encoded = readRequiredEnvironment("MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64", true);
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) {
+    throw new Error("MicroClaw MXC Hooks gate policy encoding is invalid");
+  }
+  let policy;
+  try {
+    policy = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("MicroClaw MXC Hooks gate policy JSON is invalid");
+  }
+  Object.defineProperty(globalThis, HOOKS_GATE_SYMBOL, {
+    value: createWindowsNodeMxcHooksGate(policy),
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+}
+
 export function validatePinnedOpenClawApprovalPackage(
   packageDir,
-  capabilities = { approval: true, cronPause: false, cronResume: false },
+  capabilities = { approval: true, cronPause: false, cronResume: false, hooksPause: false },
 ) {
   if (!packageDir || !isAbsolute(packageDir)) {
     throw new Error("MICROCLAW_OPENCLAW_PACKAGE_DIR must be an absolute path");
@@ -581,6 +689,20 @@ export function validatePinnedOpenClawApprovalPackage(
       patch: patchPinnedOpenClawCronHandlers,
     });
   }
+  if (capabilities.hooksPause) {
+    requestedTargets.push(
+      {
+        module: EXPECTED_HOOKS_SERVER_MODULE,
+        sha256: EXPECTED_HOOKS_SERVER_SHA256,
+        patch: patchPinnedOpenClawExternalHooks,
+      },
+      {
+        module: EXPECTED_INTERNAL_HOOKS_MODULE,
+        sha256: EXPECTED_INTERNAL_HOOKS_SHA256,
+        patch: patchPinnedOpenClawInternalHooks,
+      },
+    );
+  }
 
   return requestedTargets.map((target) => {
     const targetPath = realpathSync(join(canonicalPackageDir, "dist", target.module));
@@ -603,6 +725,7 @@ function initialize() {
   const cronPauseEnabled = process.env.MICROCLAW_MXC_CRON_PAUSED === "1";
   const cronResumeFence = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
   const cronResumeEnabled = cronResumeFence !== void 0;
+  const hooksPauseEnabled = process.env.MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64 !== void 0;
   if (cronResumeEnabled) {
     const parsedFence = Number(cronResumeFence);
     const acknowledgementPath = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
@@ -624,9 +747,11 @@ function initialize() {
       approval: approvalEnabled,
       cronPause: cronPauseEnabled,
       cronResume: cronResumeEnabled,
+      hooksPause: hooksPauseEnabled,
     },
   );
   if (approvalEnabled) installApprovalProofMinter();
+  if (hooksPauseEnabled) installWindowsNodeMxcHooksGate();
 
   registerHooks({
     load(url, context, nextLoad) {
@@ -648,6 +773,7 @@ function initialize() {
       approvalEnabled ? "one-use node proof and prepared-plan backports" : null,
       cronPauseEnabled ? "MXC Cron mutation pause fence" : null,
       cronResumeEnabled ? "MXC Cron no-catch-up resume fence" : null,
+      hooksPauseEnabled ? "MXC Hooks/Webhooks admission and dispatch pause" : null,
     ]
       .filter(Boolean)
       .join("; ")}`,
@@ -658,7 +784,8 @@ export function shouldInitializeApprovalPreload(environment, mainThread) {
   if (
     environment.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1" &&
     environment.MICROCLAW_MXC_CRON_PAUSED !== "1" &&
-    environment.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS === void 0
+    environment.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS === void 0 &&
+    environment.MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64 === void 0
   ) {
     return false;
   }

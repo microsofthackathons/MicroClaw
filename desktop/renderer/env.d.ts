@@ -376,6 +376,13 @@ interface OpenClawAPI {
       effectiveTier: string | null;
       desiredEnabled: boolean;
       effectiveEnabled: boolean;
+      hooks: {
+        requestedExternalEnabled: boolean;
+        requestedInternalEnabled: boolean;
+        effectiveExternalEnabled: boolean;
+        effectiveInternalEnabled: boolean;
+        pausedByMxc: boolean;
+      };
       lifecycleState: {
         phase:
           | "idle"
