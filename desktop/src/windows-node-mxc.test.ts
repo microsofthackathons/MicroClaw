@@ -23,10 +23,12 @@ import {
   restoreWindowsNodeMxcGatewayPolicy,
   selectWindowsNodeMxcGatewayStartPolicy,
   validateEffectiveToolNames,
+  validateNoGatewayNativeFilesystemTools,
   validateSelectedWindowsNode,
   validateWindowsNodeMxcGatewayPolicy,
   validateWindowsNodeMxcFolderPath,
   validateWindowsNodeMxcSettings,
+  WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
 } from "./windows-node-mxc";
 import {
   classifyDeniedCwdSmoke,
@@ -563,7 +565,10 @@ describe("Windows Node MXC Gateway policy", () => {
     const source = {
       agents: {
         list: [
-          { id: "main", tools: { allow: ["read"] } },
+          {
+            id: "main",
+            tools: { allow: [...WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS] },
+          },
           { id: "coder", name: "Coder" },
         ],
       },
@@ -699,7 +704,31 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(validateEffectiveToolNames(["exec"], "locked").ready).toBe(false);
   });
 
-  it("detects file-tool, plugin, or host-exec policy drift", () => {
+  it.each(WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS)(
+    "fails closed when policy drift enables the Gateway-native %s tool",
+    (filesystemTool) => {
+      const config = {
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: {
+                ...buildWindowsNodeMxcToolPolicy("node-123"),
+                allow: ["exec", filesystemTool],
+              },
+            },
+          ],
+        },
+      };
+      const result = validateWindowsNodeMxcGatewayPolicy(config, "node-123");
+      expect(result.ready).toBe(false);
+      expect(result.blockers).toContain(
+        `Agent "main" enables Gateway-native filesystem tools while MXC is enabled: ${filesystemTool}`,
+      );
+    },
+  );
+
+  it("detects plugin or host-exec policy drift", () => {
     const config = {
       agents: {
         list: [
@@ -707,7 +736,6 @@ describe("Windows Node MXC Gateway policy", () => {
             id: "main",
             tools: {
               ...buildWindowsNodeMxcToolPolicy("node-123"),
-              allow: ["exec", "read"],
               exec: { host: "gateway" },
             },
           },
@@ -722,6 +750,48 @@ describe("Windows Node MXC Gateway policy", () => {
   it("requires the effective runtime inventory to contain only exec", () => {
     expect(validateEffectiveToolNames(["exec"]).ready).toBe(true);
     expect(validateEffectiveToolNames(["exec", "read"]).ready).toBe(false);
+  });
+
+  it.each(["full", "limited-dacl"] as const)(
+    "keeps Gateway-native filesystem tools forbidden for %s when safe capabilities are restored",
+    () => {
+      const restoredCapabilities = ["exec", "web_search", "weixin_send_message"];
+      expect(validateNoGatewayNativeFilesystemTools(restoredCapabilities).ready).toBe(true);
+
+      for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
+        const check = validateNoGatewayNativeFilesystemTools([
+          ...restoredCapabilities,
+          filesystemTool,
+        ]);
+        expect(check.ready).toBe(false);
+        expect(check.blockers[0]).toContain(filesystemTool);
+        const effectiveCheck = validateEffectiveToolNames(["exec", filesystemTool]);
+        expect(effectiveCheck.ready).toBe(false);
+        expect(validateEffectiveToolNames([filesystemTool], "locked").ready).toBe(false);
+        expect(
+          shouldStopManagedGatewayForWindowsNodeMxc({
+            effectiveEnabled: false,
+            effectiveToolsState: effectiveCheck.ready ? "verified" : "drift",
+            gatewayPolicyState: "active",
+          }),
+        ).toBe(true);
+      }
+    },
+  );
+
+  it("fails closed when the filesystem group denial is removed", () => {
+    const policy = buildWindowsNodeMxcToolPolicy("node-123") as {
+      deny: string[];
+    };
+    policy.deny = policy.deny.filter((entry) => entry !== "group:fs");
+    const result = validateWindowsNodeMxcGatewayPolicy(
+      { agents: { list: [{ id: "main", tools: policy }] } },
+      "node-123",
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain(
+      'Agent "main" does not deny the Gateway-native filesystem tool group',
+    );
   });
 
   it("parses pinned OpenClaw grouped tool IDs and rejects unknown payloads", () => {

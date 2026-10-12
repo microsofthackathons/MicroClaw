@@ -18,6 +18,12 @@ export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = ["exec"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
 ] as const;
+export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+] as const;
 export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs", "group:plugins"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
   "group:runtime",
@@ -599,6 +605,18 @@ export function validateWindowsNodeMxcGatewayPolicy(
         : expectedState === "active"
           ? matchesActive
           : matchesLocked;
+    const tools = asRecord(entry.tools);
+    const allow = Array.isArray(tools?.allow) ? tools.allow : [];
+    const deny = Array.isArray(tools?.deny) ? tools.deny : [];
+    const forbiddenFilesystemTools = findGatewayNativeFilesystemTools(allow);
+    if (forbiddenFilesystemTools.length > 0) {
+      blockers.push(
+        `Agent "${id}" enables Gateway-native filesystem tools while MXC is enabled: ${forbiddenFilesystemTools.join(", ")}`,
+      );
+    }
+    if (!deny.includes("group:fs")) {
+      blockers.push(`Agent "${id}" does not deny the Gateway-native filesystem tool group`);
+    }
     if (!matchesExpected) {
       blockers.push(`Agent "${id}" tool policy drifted from exec-only Windows-node routing`);
     }
@@ -797,14 +815,44 @@ export function validateEffectiveToolNames(
 ): WindowsNodeReadiness {
   const unique = [...new Set(toolNames)].sort();
   const expected = expectedState === "active" ? ["exec"] : [];
-  const blockers = isDeepStrictEqual(unique, expected)
-    ? []
-    : [
-        `Effective Gateway tools must be ${
-          expectedState === "active" ? 'exactly "exec"' : "empty while readiness is locked"
-        }; observed: ${unique.join(", ") || "none"}`,
-      ];
+  const filesystemCheck = validateNoGatewayNativeFilesystemTools(unique);
+  const blockers = [...filesystemCheck.blockers];
+  if (!isDeepStrictEqual(unique, expected)) {
+    blockers.push(
+      `Effective Gateway tools must be ${
+        expectedState === "active" ? 'exactly "exec"' : "empty while readiness is locked"
+      }; observed: ${unique.join(", ") || "none"}`,
+    );
+  }
   return { ready: blockers.length === 0, blockers, warnings: [] };
+}
+
+function findGatewayNativeFilesystemTools(toolNames: readonly unknown[]): string[] {
+  const forbidden = new Set<string>(WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS);
+  return [
+    ...new Set(
+      toolNames
+        .filter((toolName): toolName is string => typeof toolName === "string")
+        .map((toolName) => toolName.trim())
+        .filter((toolName) => forbidden.has(toolName)),
+    ),
+  ].sort();
+}
+
+export function validateNoGatewayNativeFilesystemTools(
+  toolNames: readonly string[],
+): WindowsNodeReadiness {
+  const forbidden = findGatewayNativeFilesystemTools(toolNames);
+  return {
+    ready: forbidden.length === 0,
+    blockers:
+      forbidden.length === 0
+        ? []
+        : [
+            `Gateway-native filesystem tools are forbidden while MXC is enabled: ${forbidden.join(", ")}`,
+          ],
+    warnings: [],
+  };
 }
 
 export function classifyMissingEffectiveToolSession(

@@ -51,8 +51,16 @@ Selected RO/RW folders therefore **add access** and are not an exclusive allowli
 selection cannot reduce a broader pre-existing ACL. MicroClaw never automatically changes Full to
 Limited after an OS update, probe change, startup failure, or settings migration.
 
-Gateway-native file/process tools remain removed from the agent surface. The policy pins `exec` to
-the app-owned node and denies the runtime/filesystem/plugin groups. An empty OpenClaw allowlist is
+Gateway-native file/process tools remain removed from the agent surface in both Full and Limited
+mode. The policy pins `exec` to the app-owned node and keeps `group:fs` denied, including at least
+the native `read`, `write`, `edit`, and `apply_patch` tools. This remains true when other reviewed
+capabilities such as Web or allowlisted WeChat operations are restored: native Gateway filesystem
+tools execute on the Windows host and would bypass Windows Node/MXC. Local file access must use
+MXC-contained Windows Node `exec`, or a future MicroClaw file broker that enforces the same
+canonical RO/RW roots, scratch, generation/policy binding, reparse checks, and no-host-fallback
+contract. MXC Off restores the user's backed-up original tool policy.
+
+The active policy also denies the runtime and plugin groups. An empty OpenClaw allowlist is
 unrestricted, so the pre-attestation state uses a non-tool lock sentinel. The Gateway node-command
 policy allowlists exactly the five bundled commands above. MicroClaw pairs/reapproves only the exact
 app-owned device identity and does not expose manual node selection, even if another Windows
