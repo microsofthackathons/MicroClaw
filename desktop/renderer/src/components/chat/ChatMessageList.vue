@@ -461,7 +461,12 @@
     </div>
 
     <!-- Error -->
-    <div v-if="chatStore.lastError" class="chat-error" role="alert">
+    <div
+      v-if="chatStore.lastError"
+      class="chat-error"
+      :class="{ 'chat-error--waiting': chatStore.lastError.code === 'response_delayed' }"
+      :role="chatStore.lastError.code === 'response_delayed' ? 'status' : 'alert'"
+    >
       <div class="chat-error__header">
         <svg
           class="chat-error__icon"
@@ -490,7 +495,11 @@
         <pre class="chat-error__raw">{{ chatStore.lastError.raw }}</pre>
       </details>
       <div class="chat-error__actions">
-        <button class="chat-error__btn chat-error__btn--primary" @click="openModelSettings">
+        <button
+          v-if="chatStore.lastError.code !== 'response_delayed'"
+          class="chat-error__btn chat-error__btn--primary"
+          @click="openModelSettings"
+        >
           {{ t("chat.error.openSettings") }}
         </button>
         <button class="chat-error__btn" @click="chatStore.lastError = null">
@@ -1354,6 +1363,13 @@ function handleEditKeydown(e: KeyboardEvent) {
   gap: 8px;
   color: var(--danger);
   font-weight: 600;
+}
+.chat-error--waiting {
+  background: rgba(74, 144, 217, 0.06);
+  border-color: rgba(74, 144, 217, 0.2);
+}
+.chat-error--waiting .chat-error__header {
+  color: var(--text-secondary);
 }
 .chat-error__icon {
   flex-shrink: 0;

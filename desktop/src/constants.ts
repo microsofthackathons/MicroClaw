@@ -112,6 +112,8 @@ export const WS_RECONNECT_MULTIPLIER = 1.7;
 /** Per-request timeout for gateway WS RPC calls (ms). */
 export const WS_REQUEST_TIMEOUT_MS = 30_000;
 
+export const MODEL_APPLY_SETTLE_TIMEOUT_MS = 30_000;
+
 /** Reserved throwaway session used to pre-warm the main agent. */
 export const AGENT_WARMUP_SESSION_KEY = "agent:main:__microclaw_warmup__";
 

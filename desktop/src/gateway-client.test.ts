@@ -3,6 +3,7 @@ import {
   extractMainSessionKey,
   buildSessionTitlePrompt,
   GatewayClient,
+  GatewayRequestError,
   isAgentWarmupEvent,
   normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
@@ -12,6 +13,69 @@ import {
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
 
 describe("GatewayClient approval capability", () => {
+  it("retains the negotiated version and advertised methods", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, {
+      opts: {},
+      connectSent: false,
+      connectTimer: null,
+      connectNonce: "test",
+      deviceIdentity: {
+        deviceId: "test",
+        publicKey: "test",
+        privateKey: Buffer.alloc(32, 1).toString("base64url"),
+      },
+      ws: { readyState: 1 },
+    });
+    vi.spyOn(client, "request").mockResolvedValue({
+      server: { version: "2026.9.3" },
+      features: { methods: ["models.list", "wizard.next", 42] },
+    });
+    client["sendConnect"]();
+    await Promise.resolve();
+    expect(client.serverVersion).toBe("2026.9.3");
+    expect(client.methods).toEqual(["models.list", "wizard.next"]);
+    expect(client.connectionGeneration).toBe(1);
+    client["connectSent"] = false;
+    client["sendConnect"]();
+    await Promise.resolve();
+    expect(client.connectionGeneration).toBe(2);
+  });
+
+  it("retains setup replies without a transport deadline and preserves typed errors", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const request = client.request("openclaw.setup.prepare.start", {}, null);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client["pending"].size).toBe(1);
+      const frame = JSON.parse(send.mock.calls[0][0]);
+      const rejected = expect(request).rejects.toMatchObject({
+        name: "GatewayRequestError",
+        code: "INVALID_REQUEST",
+        details: { code: "WIZARD_NOT_FOUND" },
+      });
+      client["handleMessage"](
+        JSON.stringify({
+          type: "res",
+          id: frame.id,
+          ok: false,
+          error: {
+            message: "Not found",
+            code: "INVALID_REQUEST",
+            details: { code: "WIZARD_NOT_FOUND" },
+          },
+        }),
+      );
+      await rejected;
+      expect(new GatewayRequestError("error")).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([true, false])(
     "passes the handler capability through the connect handshake: %s",
     async (supportsExecApprovals) => {

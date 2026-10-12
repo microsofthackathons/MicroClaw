@@ -65,6 +65,13 @@
             </svg>
           </button>
           <div class="home-input-right">
+            <ChatModelPicker
+              :session-key="chatStore.sessionKey"
+              :connected="chatStore.wsConnected"
+              :disabled="chatStore.streaming || submittingMessage"
+              @busy="modelChanging = $event"
+              @manage="openModelSettings"
+            />
             <button
               v-if="chatStore.streaming"
               class="home-input-send home-input-send--stop"
@@ -99,6 +106,7 @@
     <ModelSetupDialog
       v-model="modelSetupVisible"
       :initial-family="modelSetupInitialFamily"
+      :streaming="chatStore.streaming"
       @configured="handleModelConfigured"
     />
   </div>
@@ -124,9 +132,11 @@ import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ChatAttachments from "@/components/chat/ChatAttachments.vue";
 import ChatWelcome from "@/components/ChatWelcome.vue";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
-import { useRoute } from "vue-router";
+import ChatModelPicker from "@/components/chat/ChatModelPicker.vue";
+import { useRoute, useRouter } from "vue-router";
 
 const route = useRoute();
+const router = useRouter();
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
 
@@ -143,6 +153,10 @@ const pendingAttachments = ref<ChatAttachment[]>([]);
 const pickingFiles = ref(false);
 const importingClipboardImages = ref(0);
 const submittingMessage = ref(false);
+const modelChanging = ref(false);
+function openModelSettings(provider?: string) {
+  void router.push({ path: "/settings/models", query: provider ? { provider } : {} });
+}
 let isUserScrolledUp = false;
 let attachmentImportQueue: Promise<void> = Promise.resolve();
 
@@ -211,6 +225,7 @@ const canSend = computed(
   () =>
     chatStore.wsConnected &&
     !submittingMessage.value &&
+    !modelChanging.value &&
     !pickingFiles.value &&
     importingClipboardImages.value === 0 &&
     (inputText.value.trim().length > 0 || pendingAttachments.value.length > 0),
@@ -328,6 +343,7 @@ async function handleSend() {
     (!text && pendingAttachments.value.length === 0) ||
     !chatStore.wsConnected ||
     submittingMessage.value ||
+    modelChanging.value ||
     pickingFiles.value ||
     importingClipboardImages.value > 0
   ) {
@@ -360,6 +376,8 @@ async function sendText(text: string, attachments: ChatAttachment[]): Promise<bo
 
 async function needsModelSetupBeforeSend(): Promise<boolean> {
   try {
+    const current = await window.openclaw.model.session.get(chatStore.sessionKey);
+    if (current.overridden && current.modelRef) return false;
     return await window.openclaw.config.needsSetup();
   } catch {
     return false;

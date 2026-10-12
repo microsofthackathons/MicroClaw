@@ -51,6 +51,12 @@ extraResources:
     to: github-copilot-auth-worker.js
   - from: src/openclaw-approval-replay-compat.mjs
     to: openclaw-approval-replay-compat.mjs
+  - from: src/openclaw-fs-safe-compat.mjs
+    to: openclaw-fs-safe-compat.mjs
+  - from: src/openclaw-local-model-compat.mjs
+    to: openclaw-local-model-compat.mjs
+  - from: ../NOTICE
+    to: NOTICE
   - from: resources/node.exe
     to: node.exe
   - from: resources/openclaw/

@@ -69,6 +69,10 @@ MIRROR_FALLBACK = MIRROR_NPMMIRROR
 NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
 _PARALLEL_PLUGIN_ID = "parallel"
 _PARALLEL_PLUGIN_PACKAGE = "@openclaw/parallel-plugin"
+_LOCAL_MODEL_PLUGIN_ID = "llama-cpp"
+_LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider"
+_LOCAL_MODEL_PLUGIN_VERSION = "2026.9.3"
+_LOCAL_MODEL_PLUGIN_SHA256 = "0092cdf1656a013d6028f5e238eaf21fb41b1459facde3a3ea563a7567a846aa"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
 _SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
 
@@ -2017,6 +2021,8 @@ class WindowsSetup:
                 selected_managed_paths = managed_state_paths(
                     include_uninstaller=not self._uninstaller_current_for_upgrade
                 )
+                if not (Path.home() / ".openclaw" / "extensions" / _LOCAL_MODEL_PLUGIN_ID).exists():
+                    selected_managed_paths += (Path("extensions") / _LOCAL_MODEL_PLUGIN_ID,)
             transaction = OpenClawUpgradeTransaction.create(
                 microclaw_root=DEFAULT_DESKTOP_DIR,
                 state_dir=Path.home() / ".openclaw",
@@ -3821,6 +3827,130 @@ class WindowsSetup:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+
+    def _local_model_provider_is_current(self, state_dir: Path) -> bool:
+        plugin = state_dir / "extensions" / _LOCAL_MODEL_PLUGIN_ID
+        if not plugin.exists():
+            return False
+        try:
+            package = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+            manifest = json.loads((plugin / "openclaw.plugin.json").read_text(encoding="utf-8"))
+            return (
+                package.get("name") == _LOCAL_MODEL_PLUGIN_PACKAGE
+                and package.get("version") == _LOCAL_MODEL_PLUGIN_VERSION
+                and manifest.get("id") == _LOCAL_MODEL_PLUGIN_ID
+                and _LOCAL_MODEL_PLUGIN_ID in manifest.get("providers", [])
+                and hashlib.sha256((plugin / "dist" / "index.js").read_bytes()).hexdigest()
+                == _LOCAL_MODEL_PLUGIN_SHA256
+            )
+        except (OSError, ValueError, TypeError) as error:
+            self.log.error(f"Could not verify the local model provider: {error}")
+            return False
+
+    def install_local_model_provider(self) -> bool:
+        """Prepare the reviewed official provider, never model weights or model selection."""
+        state_dir = Path.home() / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            plugins = config.get("plugins", {})
+            if (
+                plugins.get("enabled") is False
+                or _LOCAL_MODEL_PLUGIN_ID in plugins.get("deny", [])
+                or plugins.get("entries", {}).get(_LOCAL_MODEL_PLUGIN_ID, {}).get("enabled")
+                is False
+            ):
+                self.log.info("Preserving the user's disabled local provider policy")
+                return True
+            current = self._local_model_provider_is_current(state_dir)
+            enabled = (
+                plugins.get("entries", {}).get(_LOCAL_MODEL_PLUGIN_ID, {}).get("enabled") is True
+            )
+            allowed = not plugins.get("allow") or _LOCAL_MODEL_PLUGIN_ID in plugins["allow"]
+            if current and enabled and allowed:
+                self.log.info("The official Qwen 4B/9B provider is already ready")
+                return True
+            if not current and (state_dir / "extensions" / _LOCAL_MODEL_PLUGIN_ID).exists():
+                self.log.error(
+                    "The installed llama.cpp provider is not the pinned supported package. Review or remove that provider before updating."
+                )
+                return False
+            context = self._weixin_cli_context(state_dir)
+            installation = self._detect_openclaw_installation()
+            preload = DEFAULT_DESKTOP_DIR / "resources" / "openclaw-fs-safe-compat.mjs"
+            if context is None or installation is None or not preload.is_file():
+                self.log.error(
+                    "The OpenClaw runtime or filesystem compatibility preload is unavailable"
+                )
+                return False
+            command, env = context
+            env["MICROCLAW_FS_SAFE_COMPAT"] = "1"
+            env["MICROCLAW_OPENCLAW_PACKAGE_DIR"] = str(installation.package_dir)
+            env["NODE_OPTIONS"] = (
+                env.get("NODE_OPTIONS", "") + f' --import "{preload.as_uri()}"'
+            ).strip()
+            if not current:
+                result = self._run(
+                    command
+                    + [
+                        "plugins",
+                        "install",
+                        f"clawhub:{_LOCAL_MODEL_PLUGIN_PACKAGE}@{_LOCAL_MODEL_PLUGIN_VERSION}",
+                        "--accept-capabilities",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    env=env,
+                )
+                if result.returncode != 0:
+                    self.log.error(
+                        f"Local provider installation failed: {(result.stderr or result.stdout).strip()}"
+                    )
+                    return False
+                if not self._local_model_provider_is_current(state_dir):
+                    self.log.error(
+                        "The installed local provider does not match the supported official source"
+                    )
+                    return False
+            result = self._run(
+                command + ["plugins", "enable", _LOCAL_MODEL_PLUGIN_ID, "--accept-capabilities"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                env=env,
+            )
+            if result.returncode != 0:
+                self.log.error(
+                    f"Local provider enablement failed: {(result.stderr or result.stdout).strip()}"
+                )
+                return False
+            after = json.loads(config_path.read_text(encoding="utf-8"))
+            if after.get("agents") != config.get("agents") or after.get("models") != config.get(
+                "models"
+            ):
+                self.log.error(
+                    "Local provider preparation unexpectedly changed model selection; installation stopped"
+                )
+                return False
+            if (
+                after.get("plugins", {})
+                .get("entries", {})
+                .get(_LOCAL_MODEL_PLUGIN_ID, {})
+                .get("enabled")
+                is not True
+            ):
+                self.log.error("The official local provider was not enabled")
+                return False
+            self.log.success("Local provider ready; 4B/9B weights remain opt-in")
+            return True
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
+            self.log.error(f"Local provider preparation failed: {error}")
+            return False
 
     def install_search_provider_plugin(self) -> bool:
         """Install the keyless Parallel provider selected by a fresh install."""

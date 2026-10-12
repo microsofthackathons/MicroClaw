@@ -51,6 +51,7 @@ _UNINSTALLER_STATE_PATHS = (
     Path("_internal"),
 )
 _MANAGED_STATE_PATHS = _MANAGED_STATE_CORE_PATHS + _UNINSTALLER_STATE_PATHS
+_ALLOWED_MANAGED_STATE_PATHS = _MANAGED_STATE_PATHS + (Path("extensions") / "llama-cpp",)
 
 
 def managed_state_paths(*, include_uninstaller: bool) -> tuple[Path, ...]:
@@ -726,7 +727,7 @@ class OpenClawUpgradeTransaction:
             paths = self.manifest.managed_paths
             if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
                 raise ValueError("schema 2 manifest must declare managed paths")
-            allowed = {path.as_posix() for path in _MANAGED_STATE_PATHS}
+            allowed = {path.as_posix() for path in _ALLOWED_MANAGED_STATE_PATHS}
             if len(paths) != len(set(paths)) or any(path not in allowed for path in paths):
                 raise ValueError("manifest contains an invalid managed path")
             if self.manifest.backup_mode == UpgradeBackupMode.FULL and paths:

@@ -47,6 +47,7 @@ const managedStatePaths = new Set([
   "MicroClawInstaller.exe",
   "_internal",
 ]);
+const allowedManagedStatePaths = new Set([...managedStatePaths, "extensions/llama-cpp"]);
 
 type ClaimedLock = {
   complete(success: boolean): void;
@@ -324,7 +325,9 @@ function validateManifest(
     const managedPaths = manifest.managed_paths;
     if (
       !Array.isArray(managedPaths) ||
-      managedPaths.some((value) => typeof value !== "string" || !managedStatePaths.has(value)) ||
+      managedPaths.some(
+        (value) => typeof value !== "string" || !allowedManagedStatePaths.has(value),
+      ) ||
       new Set(managedPaths).size !== managedPaths.length
     ) {
       throw new Error("schema 2 manifest contains invalid managed paths");

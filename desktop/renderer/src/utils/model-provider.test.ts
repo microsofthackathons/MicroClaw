@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   getCredentialReferenceName,
+  getDefaultAgentModelOverride,
   isValidHttpUrl,
   mergeModelProviderConfig,
   normalizeModelInput,
   removeModelProviderConfig,
   resolveApiValue,
-  retainOnlyProvider,
   selectPrimaryModelConfig,
   updateModelProviderConfig,
   validateModelProviderInput,
@@ -20,6 +20,50 @@ const validInput: ModelProviderInput = {
   apiFormat: "openai-chat",
   modelName: "gpt-4o",
 };
+
+describe("default-agent model override notice", () => {
+  it("uses the explicitly marked default agent without changing entries", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "first", model: "cloud/first" },
+          { id: "default", default: true, model: { primary: "llama-cpp/overridden" } },
+        ],
+      },
+    };
+    const original = structuredClone(config);
+    expect(getDefaultAgentModelOverride(config)).toEqual({
+      agentId: "default",
+      modelRef: "llama-cpp/overridden",
+    });
+    expect(config).toEqual(original);
+  });
+
+  it("uses the first configured agent when no explicit default is marked", () => {
+    expect(
+      getDefaultAgentModelOverride({
+        agents: {
+          list: [
+            { id: "first", model: "cloud/first" },
+            { id: "other", model: "cloud/other" },
+          ],
+        },
+      }),
+    ).toEqual({ agentId: "first", modelRef: "cloud/first" });
+  });
+
+  it("does not invent a primary override from global defaults or a fallback-only agent setting", () => {
+    expect(getDefaultAgentModelOverride(null)).toBeNull();
+    expect(
+      getDefaultAgentModelOverride({
+        agents: {
+          defaults: { model: "cloud/global" },
+          list: [{ id: "main", model: { fallbacks: ["cloud/other"] } }],
+        },
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("model provider validation", () => {
   it("accepts an HTTP endpoint and credential reference", () => {
@@ -345,12 +389,7 @@ describe("model provider config", () => {
       hooks: { mappings: [{ model: "custom/model-a" }] },
     };
 
-    const result = removeModelProviderConfig(
-      existing,
-      "custom",
-      "model-a",
-      "custom/model-b",
-    );
+    const result = removeModelProviderConfig(existing, "custom", "model-a", "custom/model-b");
     expect(result).toMatchObject({
       models: {
         providers: {
@@ -375,8 +414,8 @@ describe("model provider config", () => {
   });
 });
 
-describe("retainOnlyProvider", () => {
-  it("keeps only the active model's provider", () => {
+describe("provider retention when selecting a default", () => {
+  it("keeps all providers and changes only the default", () => {
     const existing = {
       models: {
         mode: "merge",
@@ -388,16 +427,14 @@ describe("retainOnlyProvider", () => {
       agents: { defaults: { model: { primary: "custom/model-a" } } },
     };
 
-    const result = retainOnlyProvider(existing, "custom");
-    expect(result.models).toEqual({
-      mode: "merge",
-      providers: { custom: { models: [{ id: "model-a" }] } },
-    });
-    expect(result.agents).toBe(existing.agents);
+    const result = selectPrimaryModelConfig(existing, "stale/old");
+    expect(result.models).toBe(existing.models);
+    expect(result.agents).toEqual({ defaults: { model: { primary: "stale/old" } } });
   });
 
-  it("clears all providers when the active model is auth-managed", () => {
+  it("preserves providers and profiles when switching to an auth-managed model", () => {
     const existing = {
+      auth: { profiles: { "github-copilot:github": { provider: "github-copilot" } } },
       models: {
         mode: "merge",
         providers: { custom: { models: [{ id: "model-a" }] } },
@@ -405,19 +442,10 @@ describe("retainOnlyProvider", () => {
       agents: { defaults: { model: { primary: "github-copilot/gpt-5.4" } } },
     };
 
-    const result = retainOnlyProvider(existing, "github-copilot");
-    expect(result.models).toEqual({ mode: "merge" });
-  });
-
-  it("returns the config unchanged when only the active provider exists", () => {
-    const existing = {
-      models: { providers: { custom: { models: [{ id: "model-a" }] } } },
-    };
-    expect(retainOnlyProvider(existing, "custom")).toBe(existing);
-  });
-
-  it("returns the config unchanged when no providers are configured", () => {
-    const existing = { models: { mode: "merge" } };
-    expect(retainOnlyProvider(existing, "custom")).toBe(existing);
+    const result = selectPrimaryModelConfig(existing, "github-copilot/gpt-5.4", {
+      ensureAllowed: true,
+    });
+    expect(result.models).toBe(existing.models);
+    expect(result.auth).toBe(existing.auth);
   });
 });

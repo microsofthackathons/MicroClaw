@@ -875,12 +875,26 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         )
         self.assertEqual((self.package / "old.txt").read_text(), "changed-package")
 
+    def test_local_provider_addition_rolls_back_without_touching_other_extensions(self) -> None:
+        other = self.state / "extensions" / "other-plugin"
+        other.mkdir(parents=True)
+        (other / "keep.txt").write_text("keep", encoding="utf-8")
+        tx = self._create(
+            backup_mode=UpgradeBackupMode.MANAGED_STATE,
+            managed_paths=(Path("openclaw.json"), Path("extensions") / "llama-cpp"),
+        )
+        tx.backup()
+        local = self.state / "extensions" / "llama-cpp"
+        local.mkdir()
+        (local / "new.js").write_text("new", encoding="utf-8")
+        tx.rollback()
+        self.assertFalse(local.exists())
+        self.assertEqual((other / "keep.txt").read_text(encoding="utf-8"), "keep")
+
     def test_schema_v2_managed_paths_leave_unchanged_uninstaller_outside_rollback(self) -> None:
         (self.state / "MicroClawInstaller.exe").write_text("old-installer", encoding="utf-8")
         (self.state / "_internal").mkdir()
-        (self.state / "_internal" / "runtime.dll").write_text(
-            "old-runtime", encoding="utf-8"
-        )
+        (self.state / "_internal" / "runtime.dll").write_text("old-runtime", encoding="utf-8")
         tx = self._create(
             backup_mode=UpgradeBackupMode.MANAGED_STATE,
             managed_paths=upgrade.managed_state_paths(include_uninstaller=False),
@@ -893,9 +907,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
         (self.state / "openclaw.json").write_text('{"changed":true}', encoding="utf-8")
         (self.state / "MicroClawInstaller.exe").write_text("new-installer", encoding="utf-8")
-        (self.state / "_internal" / "runtime.dll").write_text(
-            "new-runtime", encoding="utf-8"
-        )
+        (self.state / "_internal" / "runtime.dll").write_text("new-runtime", encoding="utf-8")
         tx.rollback()
 
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
@@ -905,9 +917,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_schema_v1_manifest_uses_legacy_managed_paths(self) -> None:
         (self.state / "MicroClawInstaller.exe").write_text("old-installer", encoding="utf-8")
         (self.state / "_internal").mkdir()
-        (self.state / "_internal" / "runtime.dll").write_text(
-            "old-runtime", encoding="utf-8"
-        )
+        (self.state / "_internal" / "runtime.dll").write_text("old-runtime", encoding="utf-8")
         created = self._create(backup_mode=UpgradeBackupMode.MANAGED_STATE)
         created.close()
         payload = json.loads(created.manifest_path.read_text(encoding="utf-8"))

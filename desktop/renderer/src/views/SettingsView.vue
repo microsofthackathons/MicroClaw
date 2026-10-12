@@ -220,96 +220,168 @@
       </div>
 
       <!-- Models -->
-      <div v-if="activeSection === 'models'" class="section">
-        <!-- Model -->
+      <div v-if="activeSection === 'models'" class="section model-settings-section">
         <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.customModels") }}</span>
-          <div v-if="customModels.length" class="sub-label-actions">
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="
-                Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-              "
-              @click="showProviderSetup = true"
-            >
-              {{ t("settings.setUpProvider") }}
-            </el-button>
-            <el-button
-              v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
-              size="small"
-              type="danger"
-              plain
-              :loading="removingModelRef === selectedModel"
-              :disabled="Boolean(switchingModelRef) || Boolean(removingModelRef)"
-              @click="removeCustomModel(selectedModelIndex)"
-            >
-              {{ t("settings.delete") }}
-            </el-button>
-            <el-button
-              v-else-if="selectedModelEntry?.providerKey === 'github-copilot'"
-              size="small"
-              type="danger"
-              plain
-              :loading="copilotDisconnecting"
-              :disabled="Boolean(switchingModelRef) || Boolean(removingModelRef)"
-              @click="disconnectGitHubCopilot"
-            >
-              {{ t("settings.disconnect") }}
-            </el-button>
-          </div>
+          <h2 class="model-section-title">{{ t("modelManager.providers") }}</h2>
         </div>
-        <div class="card-group">
-          <template v-if="customModels.length">
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.provider") }}</span>
-              <span class="row-value">{{ currentProviderName }}</span>
-            </div>
+        <p class="provider-description">{{ t("modelManager.providersHint") }}</p>
+        <p v-if="modelStatusError" class="provider-error" role="alert">{{ modelStatusError }}</p>
+        <div class="card-group default-model-card">
+          <template v-if="modelOptions.length">
             <div class="card-row no-border">
-              <span class="row-label">{{ t("settings.currentModel") }}</span>
+              <span class="row-label">{{ t("modelManager.defaultModel") }}</span>
               <div class="model-picker-actions">
-                <el-select
+                <DefaultModelPicker
                   class="model-picker-select"
                   :model-value="selectedModel"
-                  :loading="
-                    Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-                  "
-                  :disabled="
-                    Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-                  "
-                  filterable
+                  :models="modelOptions"
+                  :model-status="modelOptionStatus"
+                  :loading="copilotModelsLoading || modelActionBusy"
+                  :switching="Boolean(switchingModelRef) || localSelecting"
+                  :disabled="modelActionBusy || chatStore.streaming"
                   @change="selectModel"
-                >
-                  <el-option
-                    v-for="model in customModels"
-                    :key="getModelRef(model)"
-                    :label="model.name"
-                    :value="getModelRef(model)"
-                  />
-                </el-select>
+                />
               </div>
             </div>
           </template>
           <div v-else-if="!copilotModelsLoading" class="card-row no-border">
             <span class="placeholder-text">{{ t("settings.noProviderConfigured") }}</span>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="
-                Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-              "
-              @click="showProviderSetup = true"
-            >
-              {{ t("settings.setUpModelProvider") }}
-            </el-button>
           </div>
+        </div>
+        <div class="provider-cards">
+          <section
+            v-for="provider in providerCards"
+            :key="provider.key"
+            class="provider-card"
+            :data-provider="provider.key"
+          >
+            <header class="provider-card-heading">
+              <div class="provider-card-title">
+                <strong>{{ provider.label }}</strong>
+                <span v-if="provider.key === 'llama-cpp'" class="provider-runtime">llama.cpp</span>
+                <p>
+                  {{
+                    provider.key === "llama-cpp"
+                      ? t("modelManager.localHint")
+                      : provider.key === "github-copilot"
+                        ? t("modelManager.copilotHint")
+                        : t("modelManager.apiHint")
+                  }}
+                </p>
+              </div>
+              <span class="provider-state" :class="{ warning: provider.missing }">
+                {{
+                  t(
+                    provider.key === "llama-cpp" && localProviderReady
+                      ? "settings.connected"
+                      : provider.missing
+                        ? "localModel.filesMissing"
+                        : provider.models.length
+                          ? "localModel.configured"
+                          : "modelManager.notConfigured",
+                  )
+                }}
+              </span>
+              <el-button
+                :data-testid="
+                  provider.key === 'llama-cpp'
+                    ? 'add-local-model'
+                    : `manage-provider-${provider.key}`
+                "
+                size="small"
+                :disabled="modelActionBusy"
+                @click="
+                  provider.key === 'llama-cpp' ? openLocalModel() : openCloudSetup(provider.key)
+                "
+                >{{
+                  t(
+                    provider.key === "llama-cpp"
+                      ? localProviderReady
+                        ? "modelManager.configure"
+                        : "fixedLocal.enable"
+                      : provider.models.length
+                        ? "modelManager.configure"
+                        : "modelManager.add",
+                  )
+                }}</el-button
+              >
+            </header>
+            <LocalModelSetupDialog
+              v-if="provider.key === 'llama-cpp' && showLocalSetup"
+              inline
+              :target-model-ref="localTargetModel"
+              :default-agent-override="defaultAgentOverride"
+              :streaming="chatStore.streaming"
+              :removable-connections="removableLocalConnections"
+              :connection-mutation-busy="Boolean(removingModelRef)"
+              @close="showLocalSetup = false"
+              @configured="handleProviderConfigured"
+              @remove-connection="removeLocalConnection"
+            />
+            <div
+              v-if="provider.key === editingProviderKey && provider.key !== 'llama-cpp'"
+              class="provider-editor"
+            >
+              <div
+                v-for="model in provider.editableModels"
+                :key="getModelRef(model)"
+                class="provider-model-row"
+              >
+                <span>{{ model.name }}</span>
+                <span v-if="getModelRef(model) === selectedModel" class="provider-state">{{
+                  t("modelManager.defaultModel")
+                }}</span>
+                <el-button
+                  v-if="model.source !== 'auth-managed'"
+                  size="small"
+                  text
+                  :disabled="modelActionBusy"
+                  @click="openCloudSetup(provider.key, model)"
+                  >{{ t("modelManager.edit") }}</el-button
+                >
+                <el-button
+                  v-if="model.source !== 'auth-managed'"
+                  size="small"
+                  text
+                  type="danger"
+                  :disabled="modelMutationBlocked"
+                  @click="removeCustomModel(customModels.indexOf(model))"
+                  >{{ t("localModel.removeConnection") }}</el-button
+                >
+              </div>
+              <el-button
+                v-if="provider.key === 'github-copilot' && provider.models.length"
+                size="small"
+                text
+                type="danger"
+                :disabled="modelMutationBlocked"
+                @click="disconnectGitHubCopilot"
+                >{{ t("settings.disconnect") }}</el-button
+              >
+              <ModelSetupDialog
+                :key="editingModelRef"
+                v-model="showProviderSetup"
+                inline
+                manage-only
+                :initial-family="editingFamily"
+                :current-provider="providerPrefill"
+                :streaming="chatStore.streaming"
+                @busy="providerSaving = $event"
+                @configured="handleProviderConfigured"
+              />
+            </div>
+          </section>
+        </div>
+        <div v-if="localOperation?.busy" class="local-setup-status" role="status">
+          <span>{{ t("localModel.setupPending") }}</span>
+          <el-button size="small" text @click="openLocalModel()">
+            {{ t("localModel.viewSetup") }}
+          </el-button>
         </div>
 
         <!-- Web search -->
         <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.webSearch") }}</span>
+          <h2 class="model-section-title">{{ t("settings.webSearch") }}</h2>
           <div class="sub-label-actions">
             <el-button
               size="small"
@@ -322,12 +394,17 @@
             >
           </div>
         </div>
-        <div class="card-group">
-          <div class="card-row">
+        <div class="card-group" data-testid="web-search-settings">
+          <div class="card-row" :class="{ 'no-border': !activeSearchProvider.requiresKey }">
             <span class="row-label">{{ t("settings.provider") }}</span>
-            <el-select v-model="searchProvider" style="width: 130px">
-              <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
-            </el-select>
+            <div class="model-search-selector">
+              <span v-if="!activeSearchProvider.requiresKey" class="model-search-hint">
+                {{ t("settings.noApiKeyRequired") }}
+              </span>
+              <el-select v-model="searchProvider" style="width: 130px">
+                <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
+              </el-select>
+            </div>
           </div>
           <div v-if="activeSearchProvider.requiresKey" class="card-row no-border api-key-row">
             <span class="row-label">{{ t("settings.apiKey") }}</span>
@@ -345,12 +422,17 @@
               class="provider-key-input"
             />
           </div>
-          <div v-else class="card-row no-border">
-            <span class="row-label">{{ t("settings.apiKey") }}</span>
-            <span class="placeholder-text">{{ t("settings.noApiKeyRequired") }}</span>
-          </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
+        <LocalModelDownloadDialog
+          v-if="localSelection"
+          :key="localSelection"
+          :model-ref="localSelection"
+          :streaming="chatStore.streaming"
+          @close="localSelection = ''"
+          @busy="localSelecting = $event"
+          @selected="handleLocalModelSelected"
+        />
       </div>
 
       <!-- Channels -->
@@ -1230,12 +1312,6 @@
           </a>
         </div>
       </div>
-
-      <ModelSetupDialog
-        v-model="showProviderSetup"
-        single-provider
-        @configured="handleProviderConfigured"
-      />
     </div>
   </div>
 </template>
@@ -1251,20 +1327,26 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
-import {
-  normalizeModelInput,
-  removeModelProviderConfig,
-  selectPrimaryModelConfig,
-  retainOnlyProvider,
-  type ModelApiFormat,
-  type ModelInputCapability,
-  type ModelReasoningEffort,
-} from "@/utils/model-provider";
+import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
+import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
+import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
+import { mergeLocalModelCatalog } from "@/utils/local-model-catalog";
+import { isManagedLocalModel, type LocalModelCatalogEntry } from "../../../src/local-model-catalog";
+import { useLocalModelOperation } from "@/composables/use-local-model-operation";
+import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
+import { getDefaultAgentModelOverride, removeModelProviderConfig } from "@/utils/model-provider";
 import {
   mergeGitHubCopilotModelEntries,
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
-import { getManagedModelProvider } from "@/utils/managed-model-providers";
+import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
+import {
+  readConfiguredModels,
+  getModelRef,
+  providerName,
+  type ConfiguredModel,
+} from "@/utils/configured-models";
+import type { LocalModelFileStatus } from "../../../src/local-model-types";
 import {
   hydratePrivacyControls,
   type PrivacyControls,
@@ -1273,6 +1355,7 @@ import {
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const { operation: localOperation, refresh: refreshLocalOperation } = useLocalModelOperation();
 const devSettingsEnabled =
   import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_SETTINGS === "true";
 const SkillsDevPanel = devSettingsEnabled
@@ -1843,72 +1926,169 @@ const piiToggles = reactive({
 });
 
 // --- Models & API state ---
-type ApiFormat = ModelApiFormat;
-type ReasoningEffort = ModelReasoningEffort;
-
-interface ModelEntry {
-  providerKey: string;
-  id: string;
-  name: string;
-  source: "managed" | "custom" | "auth-managed";
-  baseUrl?: string;
-  apiKey?: string;
-  apiFormat?: ApiFormat;
-  reasoningEffort?: ReasoningEffort;
-  input?: ModelInputCapability[];
-}
-
-function normalizeApiFormat(api?: string): ApiFormat {
-  if (api === "anthropic-messages") return "anthropic";
-  if (api === "openai-responses") return "openai-responses";
-  return "openai-chat";
-}
-
-function normalizeReasoningEffort(
-  value: unknown,
-  fallback: ReasoningEffort = "off",
-): ReasoningEffort {
-  const normalized = typeof value === "string" ? value.toLowerCase() : "";
-  if (
-    normalized === "off" ||
-    normalized === "minimal" ||
-    normalized === "low" ||
-    normalized === "medium" ||
-    normalized === "high" ||
-    normalized === "xhigh" ||
-    normalized === "adaptive"
-  ) {
-    return normalized;
-  }
-  return fallback;
-}
-
-function getModelRef(model: Pick<ModelEntry, "providerKey" | "id">): string {
-  return `${model.providerKey}/${model.id}`;
-}
-
-const customModels = ref<ModelEntry[]>([]);
-const selectedModel = ref("Pony-Alpha-2");
+const customModels = ref<ConfiguredModel[]>([]);
+const selectedModel = ref("");
 const copilotModelsLoading = ref(false);
 const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 const removingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const showProviderSetup = ref(false);
-const selectedModelEntry = computed(
-  () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
-);
-const selectedModelIndex = computed(() =>
-  customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
-);
-
-// Display name of the configured provider shown in the Model section.
-const currentProviderName = computed(() => {
-  const entry = selectedModelEntry.value;
-  if (!entry) return "";
-  if (entry.providerKey === "github-copilot") return "GitHub Copilot";
-  return getManagedModelProvider(entry.providerKey)?.label ?? entry.providerKey;
+const editingProviderKey = ref("");
+const editingModelRef = ref("");
+const providerSaving = ref(false);
+const modelStatusError = ref("");
+const localFileStatus = ref(new Map<string, LocalModelFileStatus>());
+const localCatalog = ref<LocalModelCatalogEntry[]>([]);
+const localProviderReady = ref(false);
+const localSelection = ref("");
+const localSelecting = ref(false);
+const modelOptions = computed(() => mergeLocalModelCatalog(customModels.value, localCatalog.value));
+function modelOptionStatus(model: ConfiguredModel): string {
+  const preset = localCatalog.value.find((entry) => entry.modelRef === getModelRef(model));
+  if (preset && localOperation.value?.busy && localOperation.value.modelRef === preset.modelRef) {
+    return t(
+      localOperation.value.download && localOperation.value.step?.type !== "confirm"
+        ? "fixedLocal.downloading"
+        : "fixedLocal.preparing",
+    );
+  }
+  const status = preset
+    ? t(
+        preset.fileStatus === "external"
+          ? "modelManager.external"
+          : preset.fileStatus === "present"
+            ? "modelManager.downloaded"
+            : preset.fileStatus === "unknown"
+              ? "localModel.filesUnknown"
+              : "fixedLocal.notDownloaded",
+      )
+    : localFileStatus.value.get(getModelRef(model)) === "missing"
+      ? t("localModel.filesMissing")
+      : "";
+  return status;
+}
+let localSnapshotRevision = 0;
+const providerCards = computed(() => {
+  const keys = new Set([
+    "github-copilot",
+    ...MANAGED_MODEL_PROVIDERS.map((provider) => provider.id),
+    "llama-cpp",
+    ...customModels.value.map((model) => model.providerKey),
+  ]);
+  return [...keys].map((key) => {
+    const models = customModels.value.filter((model) => model.providerKey === key);
+    return {
+      key,
+      label:
+        key === "llama-cpp"
+          ? t("localModel.title")
+          : key === "custom"
+            ? t("modelManager.compatibleApi")
+            : providerName(key),
+      models,
+      editableModels: key === "github-copilot" ? [] : models,
+      missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
+    };
+  });
 });
+const editingFamily = computed(
+  () =>
+    getManagedModelProvider(editingProviderKey.value)?.id ??
+    (editingProviderKey.value === "github-copilot" ? "github-copilot" : "custom"),
+);
+const providerPrefill = computed(() => {
+  const model = customModels.value.find((item) => getModelRef(item) === editingModelRef.value);
+  if (!model) return null;
+  return {
+    familyId: editingFamily.value,
+    providerKey: model.providerKey,
+    modelName: model.id,
+    displayName: model.name,
+    baseUrl: model.baseUrl ?? "",
+    apiKey: model.apiKey ?? "",
+    apiFormat: model.apiFormat ?? ("openai-chat" as const),
+    reasoningEffort: model.reasoningEffort,
+    input: model.input,
+  };
+});
+const showLocalSetup = ref(false);
+const localTargetModel = ref<string>();
+const defaultAgentOverride = ref<ReturnType<typeof getDefaultAgentModelOverride>>(null);
+const removableLocalConnections = computed(() =>
+  customModels.value
+    .filter(
+      (model) =>
+        model.providerKey === "llama-cpp" &&
+        getModelRef(model) !== selectedModel.value &&
+        getModelRef(model) !== defaultAgentOverride.value?.modelRef,
+    )
+    .map((model) => ({ modelRef: getModelRef(model), name: model.name })),
+);
+const cloudTransition = ref(false);
+let modelViewDisposed = false;
+const modelActionBusy = computed(() =>
+  Boolean(
+    switchingModelRef.value ||
+    removingModelRef.value ||
+    copilotDisconnecting.value ||
+    cloudTransition.value ||
+    providerSaving.value ||
+    localSelecting.value,
+  ),
+);
+const modelMutationBlocked = computed(() =>
+  Boolean(
+    switchingModelRef.value ||
+    removingModelRef.value ||
+    copilotDisconnecting.value ||
+    cloudTransition.value ||
+    providerSaving.value ||
+    localSelecting.value ||
+    chatStore.streaming ||
+    localOperation.value?.busy,
+  ),
+);
+function openLocalModel(modelRef?: string) {
+  if (modelActionBusy.value) return;
+  localTargetModel.value = modelRef;
+  showLocalSetup.value = true;
+}
+
+async function prepareCloudChange(): Promise<boolean> {
+  cloudTransition.value = true;
+  try {
+    const release = await releaseLocalModelSetup(
+      window.openclaw.model.local,
+      confirmLocalModelSwitch,
+      () => !modelViewDisposed,
+    );
+    await refreshLocalOperation();
+    if (release === "pending") {
+      ElMessage.info(t("localModel.setupFinishing"));
+      showLocalSetup.value = true;
+      return false;
+    }
+    return release === "ready" && !modelViewDisposed;
+  } finally {
+    cloudTransition.value = false;
+  }
+}
+
+function openCloudSetup(providerKey: string, model?: ConfiguredModel): void {
+  if (modelActionBusy.value) return;
+  editingProviderKey.value = providerKey;
+  const entry = model ?? customModels.value.find((item) => item.providerKey === providerKey);
+  editingModelRef.value = entry ? getModelRef(entry) : `new:${providerKey}`;
+  showProviderSetup.value = true;
+}
+watch(
+  () => route.query?.provider,
+  (provider) => {
+    if (provider === "llama-cpp") openLocalModel();
+  },
+  { immediate: true },
+);
 
 // --- Web search providers ---
 type SearchProviderId = "parallel-free" | "brave" | "tavily";
@@ -2139,60 +2319,36 @@ watch(activeSection, (v) => {
 });
 
 function applyModelsConfig(config: any): void {
-  const providers = config.models?.providers ?? {};
-  const modelDefaults = config.agents?.defaults?.models ?? {};
-  const defaultModelConfig = config.agents?.defaults?.model;
-  const primary =
-    typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
-  const loaded: ModelEntry[] = [];
-  for (const [key, val] of Object.entries(providers) as [string, any][]) {
-    const managedProvider = getManagedModelProvider(key);
-    const models = val.models ?? [];
-    for (const m of models) {
-      const modelId = m.id ?? key;
-      const modelRef = `${key}/${modelId}`;
-      const managedModel = managedProvider?.models.find((model) => model.id === modelId);
-      const apiFormat = normalizeApiFormat(val.api);
-      const reasoningFallback =
-        m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
-      loaded.push({
-        providerKey: key,
-        id: modelId,
-        name: m.name ?? managedModel?.name ?? modelId ?? key,
-        source: managedProvider ? "managed" : "custom",
-        baseUrl: val.baseUrl ?? "",
-        apiKey: val.apiKey ?? "",
-        apiFormat,
-        reasoningEffort: normalizeReasoningEffort(
-          modelDefaults[modelRef]?.params?.thinking,
-          reasoningFallback,
-        ),
-        input: normalizeModelInput(m.input ?? managedModel?.input),
-      });
-    }
-  }
-  if (
-    typeof primary === "string" &&
-    primary.startsWith("github-copilot/") &&
-    !loaded.some((model) => getModelRef(model) === primary)
-  ) {
-    const modelId = primary.slice("github-copilot/".length);
-    loaded.unshift({
-      providerKey: "github-copilot",
-      id: modelId,
-      name: modelId,
-      source: "auth-managed",
-    });
-  }
-  customModels.value = loaded;
+  defaultAgentOverride.value = getDefaultAgentModelOverride(config);
+  const parsed = readConfiguredModels(config);
+  customModels.value = parsed.models;
+  selectedModel.value = parsed.primary;
+  void loadLocalFileStatus();
+}
 
-  if (primary) {
-    const matched = loaded.find((model) => getModelRef(model) === primary);
-    selectedModel.value = matched ? getModelRef(matched) : primary;
-  } else if (loaded.length > 0) {
-    selectedModel.value = getModelRef(loaded[0]);
-  } else {
-    selectedModel.value = "";
+async function loadLocalFileStatus(): Promise<void> {
+  const revision = ++localSnapshotRevision;
+  localFileStatus.value = new Map();
+  localProviderReady.value = false;
+  try {
+    const [result, capabilities] = await Promise.all([
+      window.openclaw.model.local.getSnapshot(),
+      window.openclaw.model.local.getCapabilities(),
+    ]);
+    if (modelViewDisposed || revision !== localSnapshotRevision) return;
+    if (!result.ok) throw new Error(result.error);
+    localCatalog.value = result.value.catalog ?? [];
+    localFileStatus.value = new Map(
+      result.value.models.map((model) => [model.modelRef, model.fileStatus ?? "unknown"]),
+    );
+    if (!capabilities.ok) throw new Error(capabilities.error);
+    localProviderReady.value =
+      capabilities.value.supported &&
+      capabilities.value.plugin.installed &&
+      capabilities.value.plugin.enabled;
+  } catch (error) {
+    if (!modelViewDisposed && revision === localSnapshotRevision)
+      modelStatusError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -2216,6 +2372,7 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
   } catch (error) {
     if (generation !== copilotModelsGeneration) return;
     console.warn("[settings] Could not load GitHub Copilot models:", error);
+    modelStatusError.value = error instanceof Error ? error.message : String(error);
   } finally {
     if (generation === copilotModelsGeneration) copilotModelsLoading.value = false;
   }
@@ -2223,12 +2380,14 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
 
 async function refreshModelsConfig(): Promise<void> {
   try {
+    modelStatusError.value = "";
     const config = await window.openclaw.config.read();
     if (!config) return;
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
   } catch (error) {
     console.warn("[settings] Failed to refresh model configuration:", error);
+    modelStatusError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -2241,6 +2400,12 @@ function handleSettingsWindowFocus(): void {
 }
 
 watch(showProviderSetup, (visible, wasVisible) => {
+  if (wasVisible && !visible) {
+    editingProviderKey.value = "";
+    void refreshModelsConfig();
+  }
+});
+watch(showLocalSetup, (visible, wasVisible) => {
   if (wasVisible && !visible) void refreshModelsConfig();
 });
 
@@ -2279,6 +2444,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
+  localSnapshotRevision += 1;
+  modelViewDisposed = true;
 });
 
 // --- Model & Gateway actions ---
@@ -2286,6 +2453,12 @@ onUnmounted(() => {
 async function handleProviderConfigured(): Promise<void> {
   await refreshModelsConfig();
   ElMessage.success(t("settings.providerConfigured"));
+}
+
+async function handleLocalModelSelected(): Promise<void> {
+  const model = localSelection.value;
+  await refreshModelsConfig();
+  ElMessage.success(t("settings.modelSwitched", { model }));
 }
 
 async function restartGatewayAfterModelConfig(
@@ -2297,58 +2470,45 @@ async function restartGatewayAfterModelConfig(
   }
 }
 
-async function persistAndRestart(
-  mutate: (config: Record<string, unknown>) => Record<string, unknown>,
-  successMsg: string,
-): Promise<boolean> {
-  try {
-    const existing = await window.openclaw.config.read();
-    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
-      throw new Error("OpenClaw configuration is unavailable");
-    }
-    const nextConfig = mutate(existing);
-    await window.openclaw.config.write(nextConfig);
-  } catch (err: any) {
-    ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
-    await refreshModelsConfig();
-    return false;
-  }
-  try {
-    await restartGatewayAfterModelConfig();
-  } catch (err: any) {
-    ElMessage.error(t("settings.restartFailed", { error: err.message || err }));
-    await refreshModelsConfig();
-    return false;
-  }
-  await refreshModelsConfig();
-  ElMessage.success(successMsg);
-  return true;
-}
-
 async function selectModel(modelRef: string) {
-  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
-  if (!customModels.value.some((model) => getModelRef(model) === modelRef)) {
+  if (modelActionBusy.value || chatStore.streaming) return;
+  if (!modelOptions.value.some((model) => getModelRef(model) === modelRef)) {
     ElMessage.error(t("settings.configSaveFailed", { error: `Unknown model "${modelRef}"` }));
     return;
   }
-  switchingModelRef.value = modelRef;
+  if (modelRef.startsWith("llama-cpp/")) {
+    if (isManagedLocalModel(modelRef)) {
+      if (!localProviderReady.value) {
+        openLocalModel();
+        return;
+      }
+      localSelection.value = modelRef;
+      return;
+    }
+    openLocalModel(modelRef);
+    return;
+  }
   try {
-    await persistAndRestart(
-      (config) => {
-        const selected = selectPrimaryModelConfig(config, modelRef);
-        // Keep only the active model's provider so the config never accumulates stale providers.
-        const providerKey = modelRef.split("/")[0];
-        return retainOnlyProvider(selected, providerKey);
-      },
-      t("settings.modelSwitched", { model: modelRef }),
-    );
+    if (!(await prepareCloudChange())) return;
+    switchingModelRef.value = modelRef;
+    const expectedConfig = await window.openclaw.config.read();
+    if (chatStore.streaming || localOperation.value?.busy)
+      throw new Error(t("localModel.operationBusy"));
+    const selected = await window.openclaw.model.selectDefault({ modelRef, expectedConfig });
+    if (selected.modelRef !== modelRef)
+      throw new Error("The Gateway did not confirm the selected default model");
+    await refreshModelsConfig();
+    ElMessage.success(t("settings.modelSwitched", { model: modelRef }));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await refreshModelsConfig();
   } finally {
     switchingModelRef.value = "";
   }
 }
 
 async function removeCustomModel(idx: number) {
-  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
+  if (modelMutationBlocked.value) return;
   const removed = customModels.value[idx];
   if (!removed || removed.source === "auth-managed") return;
   const modelRef = getModelRef(removed);
@@ -2361,13 +2521,24 @@ async function removeCustomModel(idx: number) {
     if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
       throw new Error("OpenClaw configuration is unavailable");
     }
+    const defaultSelector = existing.agents?.defaults?.model;
+    const primary =
+      typeof defaultSelector === "string" ? defaultSelector : defaultSelector?.primary;
+    if (removed.providerKey === "llama-cpp" && primary === modelRef) {
+      throw new Error(t("localModel.selectBeforeRemove"));
+    }
+    if (primary === modelRef && fallback?.providerKey === "llama-cpp") {
+      throw new Error(t("localModel.selectBeforeRemove"));
+    }
+    if (chatStore.streaming || localOperation.value?.busy)
+      throw new Error(t("localModel.operationBusy"));
     const nextConfig = removeModelProviderConfig(
       existing,
       removed.providerKey,
       removed.id,
       fallback ? getModelRef(fallback) : undefined,
     );
-    await window.openclaw.config.write(nextConfig);
+    await window.openclaw.config.write(nextConfig, existing);
     applyModelsConfig(nextConfig);
     ElMessage.success(t("settings.customModelDeleted"));
   } catch (err: any) {
@@ -2387,8 +2558,15 @@ async function removeCustomModel(idx: number) {
   }
 }
 
+async function removeLocalConnection(modelRef: string): Promise<void> {
+  if (!removableLocalConnections.value.some((model) => model.modelRef === modelRef)) return;
+  await removeCustomModel(customModels.value.findIndex((model) => getModelRef(model) === modelRef));
+  if (!customModels.value.some((model) => getModelRef(model) === modelRef))
+    showLocalSetup.value = false;
+}
+
 async function disconnectGitHubCopilot() {
-  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
+  if (modelMutationBlocked.value) return;
   try {
     await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
       type: "warning",
@@ -2396,9 +2574,13 @@ async function disconnectGitHubCopilot() {
   } catch {
     return;
   }
+  if (modelMutationBlocked.value) return;
 
   const fallbackModel = customModels.value.find(
-    (model) => model.providerKey !== "github-copilot" && model.source !== "auth-managed",
+    (model) =>
+      model.providerKey !== "github-copilot" &&
+      model.providerKey !== "llama-cpp" &&
+      model.source !== "auth-managed",
   );
   const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
   copilotDisconnecting.value = true;
@@ -2411,7 +2593,7 @@ async function disconnectGitHubCopilot() {
       throw new Error(t("settings.copilotConfigUnavailable"));
     }
     const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
-    await window.openclaw.config.write(nextConfig);
+    await window.openclaw.config.write(nextConfig, existingConfig);
 
     await window.openclaw.model.disconnectGitHubCopilot();
 
@@ -2577,6 +2759,114 @@ async function clearChatHistory() {
 </script>
 
 <style scoped>
+.model-settings-section {
+  max-width: 1040px;
+}
+.model-section-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.provider-description {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin: 0 0 16px;
+}
+.provider-error {
+  color: var(--el-color-danger);
+  font-size: 13px;
+}
+.provider-cards {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 28px;
+}
+.provider-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  background: var(--el-fill-color-blank);
+  overflow: hidden;
+}
+.provider-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+}
+.provider-card-title {
+  flex: 1;
+  min-width: 0;
+}
+.provider-card-title strong {
+  font-size: 16px;
+}
+.provider-runtime {
+  margin-left: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.provider-card-title p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin: 6px 0 0;
+}
+.provider-state {
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.provider-state.warning {
+  color: var(--el-color-warning-dark-2);
+}
+.provider-editor {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.provider-model-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 24px;
+  font-size: 13px;
+}
+.provider-model-row > span:first-child {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.default-model-card {
+  margin-bottom: 12px;
+}
+.model-search-selector {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.model-search-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+@media (max-width: 700px) {
+  .provider-card-heading {
+    gap: 8px;
+    padding: 14px;
+    flex-wrap: wrap;
+  }
+  .provider-card-title {
+    flex-basis: 60%;
+  }
+}
+.local-setup-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 4px 20px;
+  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #666);
+  font-size: 13px;
+}
+
 .settings-view {
   display: flex;
   flex: 1;

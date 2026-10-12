@@ -223,6 +223,56 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     cron: { list: async () => ({ jobs: [] }) },
     channels: { list: async () => ({ channels: [] }) },
     model: {
+      selectDefault: async () => {
+        throw new Error("Default model selection requires the desktop application");
+      },
+      session: {
+        get: async (sessionKey) => ({ sessionKey, modelRef: null, overridden: false }),
+        select: async () => {
+          throw new Error("Session model selection requires the desktop application");
+        },
+      },
+      local: {
+        getSnapshot: async () => ({ ok: true, value: { models: [] } }),
+        getCapabilities: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        detect: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        inspectProvider: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        installProvider: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        prepare: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        activate: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        answer: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        cancel: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        getOperation: async () => ({ ok: true, value: null }),
+        resume: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        onEvent: noopSub,
+      },
       testConnection: async () => ({ ok: true, message: "Connection successful" }),
       prepareGitHubCopilot: async () => ({ restartRequired: false }),
       startGitHubCopilotLogin: async () => ({ sessionId: "browser-dev" }),

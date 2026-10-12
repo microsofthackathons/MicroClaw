@@ -10,6 +10,25 @@ included below or can be found in the respective project repositories.
 - Source: https://github.com/openclaw
 - License: See OpenClaw repository for license details
 
+## OpenClaw fs-safe Windows move compatibility backport
+- Source: https://github.com/openclaw/fs-safe
+- Revision: 6ae2e2e5086f2c48b813f78cb65fd787c9879a3f
+- Copyright: Copyright (c) 2026 openclaw
+- License: MIT License (text below)
+- Use: in-memory backport of Windows read-open timestamp handling for the exact fs-safe 0.8.5
+  module, with MicroClaw's digest-bound cleanup extension for deferred Windows metadata changes.
+  Both move and cleanup modules are source-hash pinned. Installed files are unchanged; path,
+  file identity and post-copy checks remain active.
+
+## OpenClaw llama.cpp exact-model setup adapter
+- Source: https://github.com/openclaw/openclaw
+- Package: @openclaw/llama-cpp-provider@2026.9.3
+- Use: source-hash-pinned in-memory model-chooser adaptation for Qwen3.5 4B and 9B.
+  Adds bounded Windows runtime-directory publication retries after transient locks,
+  retaining directory-identity checks and official pre/post-install validation.
+  Artifact verification, runtime management and config persistence remain OpenClaw-owned.
+  Installed provider files are unchanged.
+
 ## OpenClaw Windows Node
 - Source: https://github.com/openclaw/openclaw-windows-node
 - Revision: fc9add75eda78daf548d80a55ffb64e63b159961

@@ -485,6 +485,14 @@ class WebInstallerBridgeTests(unittest.TestCase):
             self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
             self.assertLess(search_index, labels.index("Installing uninstaller..."))
             self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
+            actions = [step[2] for step in steps]
+            self.assertGreater(
+                actions.index(setup.install_local_model_provider), actions.index(setup.write_config)
+            )
+            self.assertLess(
+                actions.index(setup.install_local_model_provider),
+                actions.index(setup.provision_appcontainer),
+            )
 
     def test_both_installers_exclude_wechat_installation(self):
         setup = unittest.mock.Mock()

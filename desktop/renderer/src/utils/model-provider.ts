@@ -52,6 +52,17 @@ function getPrimaryModel(value: unknown): string | undefined {
   return typeof selector.primary === "string" ? selector.primary : undefined;
 }
 
+export function getDefaultAgentModelOverride(
+  config: unknown,
+): { agentId: string; modelRef: string } | null {
+  const agents = asJsonObject(asJsonObject(config).agents);
+  const entries = Array.isArray(agents.list) ? agents.list.filter(isJsonObject) : [];
+  const defaultAgent = entries.find((agent) => agent.default === true) ?? entries[0];
+  const modelRef = getPrimaryModel(defaultAgent?.model);
+  if (typeof defaultAgent?.id !== "string" || !modelRef?.trim()) return null;
+  return { agentId: defaultAgent.id, modelRef };
+}
+
 function replacePrimaryModel(value: unknown, modelRef?: string): unknown {
   if (typeof value === "string") return modelRef;
   const selector = { ...asJsonObject(value) };
@@ -145,7 +156,12 @@ function updateModelDefaults(
     else delete nextEntry.params;
   }
 
-  if (Object.keys(nextEntry).length > 0) nextModelDefaults[newModelRef] = nextEntry;
+  if (
+    Object.keys(nextEntry).length > 0 ||
+    Object.hasOwn(existingModelDefaults, oldModelRef) ||
+    Object.hasOwn(existingModelDefaults, newModelRef)
+  )
+    nextModelDefaults[newModelRef] = nextEntry;
   else delete nextModelDefaults[newModelRef];
   if (Object.keys(nextModelDefaults).length > 0) nextDefaults.models = nextModelDefaults;
   else delete nextDefaults.models;
@@ -199,8 +215,7 @@ function writeProviderModel(
     (entry) => isJsonObject(entry) && entry.id === modelName,
   );
   const providerModels = existingProviderModels.filter(
-    (entry) =>
-      !isJsonObject(entry) || (entry.id !== originalModelName && entry.id !== modelName),
+    (entry) => !isJsonObject(entry) || (entry.id !== originalModelName && entry.id !== modelName),
   );
   const insertionIndex =
     originalModelIndex >= 0
@@ -218,6 +233,10 @@ function writeProviderModel(
     newModelRef,
     options.reasoningEffort,
   );
+  const allowed = asJsonObject(nextDefaults.models);
+  if (!options.select && Object.keys(allowed).length && !Object.hasOwn(allowed, newModelRef)) {
+    nextDefaults.models = { ...allowed, [newModelRef]: {} };
+  }
   if (options.select) {
     nextDefaults = {
       ...nextDefaults,
@@ -251,45 +270,13 @@ function writeProviderModel(
 export function mergeModelProviderConfig(
   existing: JsonObject,
   input: ModelProviderInput,
+  options: { select?: boolean; displayName?: string } = {},
 ): JsonObject {
   return writeProviderModel(existing, input, {
     originalModelName: input.modelName,
-    displayName: input.modelName,
-    select: true,
+    displayName: options.displayName ?? input.modelName,
+    select: options.select ?? true,
   });
-}
-
-/**
- * Removes every configured model provider (the `models.providers` map). The single-provider
- * setup flow calls this before writing so that only the newly configured provider survives.
- */
-export function clearModelProviders(existing: JsonObject): JsonObject {
-  const existingModels = asJsonObject(existing.models);
-  if (!isJsonObject(existingModels.providers)) return existing;
-  const nextModels = { ...existingModels };
-  delete nextModels.providers;
-  return { ...existing, models: nextModels };
-}
-
-/**
- * Keeps only `providerKey` in the `models.providers` map, dropping every other configured
- * provider so a single active provider remains. When the active model is auth-managed and has no
- * `providers` entry (e.g. GitHub Copilot), pass its key and all providers are cleared.
- */
-export function retainOnlyProvider(existing: JsonObject, providerKey: string): JsonObject {
-  const existingModels = asJsonObject(existing.models);
-  if (!isJsonObject(existingModels.providers)) return existing;
-  const existingProviders = existingModels.providers;
-  const providerKeys = Object.keys(existingProviders);
-  if (providerKeys.length === 0) return existing;
-  if (providerKeys.length === 1 && providerKeys[0] === providerKey) return existing;
-  const nextModels = { ...existingModels };
-  if (Object.prototype.hasOwnProperty.call(existingProviders, providerKey)) {
-    nextModels.providers = { [providerKey]: existingProviders[providerKey] };
-  } else {
-    delete nextModels.providers;
-  }
-  return { ...existing, models: nextModels };
 }
 
 export function updateModelProviderConfig(
@@ -362,7 +349,8 @@ export function removeModelProviderConfig(
   const existingDefaults = asJsonObject(existingAgents.defaults);
   const nextDefaults = { ...existingDefaults };
   if (getPrimaryModel(existingDefaults.model) === modelRef) {
-    const replacement = fallbackModelRef && fallbackModelRef !== modelRef ? fallbackModelRef : undefined;
+    const replacement =
+      fallbackModelRef && fallbackModelRef !== modelRef ? fallbackModelRef : undefined;
     const nextSelector = replacePrimaryModel(existingDefaults.model, replacement);
     if (nextSelector === undefined) delete nextDefaults.model;
     else nextDefaults.model = nextSelector;

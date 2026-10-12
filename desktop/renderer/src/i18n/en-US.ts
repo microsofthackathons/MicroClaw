@@ -169,6 +169,9 @@ export default {
   "chat.error.model_not_found.hint":
     "The model name in your settings was not recognized by the endpoint. Double-check the Model Name in Model Settings.",
   "chat.error.network.title": "Cannot reach the model endpoint",
+  "chat.error.response_delayed.title": "The reply is taking longer",
+  "chat.error.response_delayed.hint":
+    "The model may still be processing, especially on a local first reply. You can keep waiting or stop generation.",
   "chat.error.network.hint":
     "A network error occurred before reaching the model. Check your internet connection and the Base URL in Model Settings.",
   "chat.error.server_error.title": "Model provider returned a server error",
@@ -530,6 +533,67 @@ export default {
   "settings.restartFailed": "Restart failed: {error}",
   "settings.connectionFailed": "Connection failed: {error}",
 
+  "modelManager.providers": "Model providers",
+  "modelManager.saving": "Saving...",
+  "modelManager.localEntryHint": "Use the llama.cpp card to manage official local models.",
+  "modelManager.structuredSecret":
+    "This provider uses a structured secret reference. Supply a replacement credential or edit the reference in OpenClaw.",
+  "modelManager.providersHint":
+    "Manage connections here. Choose a model for each conversation next to the message box.",
+  "modelManager.defaultModel": "Default model",
+  "modelManager.compatibleApi": "OpenAI-compatible API",
+  "modelManager.configure": "Manage",
+  "modelManager.add": "Configure",
+  "modelManager.edit": "Edit",
+  "modelManager.notConfigured": "Not configured",
+  "modelManager.localHint":
+    "Qwen3.5 4B and 9B on this computer. Confirm the download on first use.",
+  "fixedLocal.downloadConsent":
+    "Prepare this exact model and any missing components? Your current model stays selected until preparation succeeds.",
+  "fixedLocal.modelDownload": "Model download",
+  "fixedLocal.embeddingDownload": "Embedding download",
+  "fixedLocal.runtimeSpace": "Runtime disk reserve",
+  "fixedLocal.execution": "Execution",
+  "fixedLocal.cpuWarning":
+    "CPU inference can be slow, especially with 9B. 4B is the lightweight choice.",
+  "fixedLocal.downloadAndUse": "Download and select",
+  "fixedLocal.selecting": "Applying model selection...",
+  "fixedLocal.confirming": "Starting the confirmed download...",
+  "fixedLocal.confirmationExpired":
+    "This download confirmation is no longer active. Refresh the setup status before retrying.",
+  "fixedLocal.preparing": "Preparing the selected model...",
+  "fixedLocal.downloading": "Downloading / preparing",
+  "fixedLocal.cached": "Already available",
+  "fixedLocal.unsupportedModel": "Only the Qwen3.5 4B and 9B managed presets are supported.",
+  "fixedLocal.providerRequired":
+    "Enable the official local provider in model settings before preparing a model.",
+  "fixedLocal.agentRequired": "Select an agent conversation before preparing a local model.",
+  "fixedLocal.enableFirst": "Enable local provider first",
+  "fixedLocal.enable": "Enable",
+  "fixedLocal.notDownloaded": "Not downloaded",
+  "fixedLocal.lightweight": "Lightweight",
+  "fixedLocal.prepareModel": "Prepare",
+  "fixedLocal.connectedHint":
+    "The provider is connected. Select 4B or 9B from the model list; weights download only after confirmation.",
+  "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
+  "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
+  "modelManager.saveOnlyHint":
+    "Save connection settings without changing the default model or sending a test prompt.",
+  "modelManager.sessionModel": "Model for this conversation",
+  "modelManager.switching": "Switching...",
+  "modelManager.loading": "Loading models...",
+  "modelManager.sessionHint":
+    "Only this conversation changes. Defaults and other conversations stay unchanged.",
+  "modelManager.search": "Search models and providers",
+  "modelManager.noMatches": "No matching models.",
+  "modelManager.clearSearch": "Clear search",
+  "modelManager.refresh": "Refresh",
+  "modelManager.offline": "Connect to the Gateway to change the conversation model.",
+  "modelManager.downloaded": "Downloaded",
+  "modelManager.external": "External server",
+  "modelManager.useInherited": "Use agent default",
+  "modelManager.manage": "Manage model providers",
+
   // ── GatewayLoading ──
   "gateway.retry": "Retry",
   "gateway.disableMxc": "Turn off Windows Node + MXC",
@@ -569,6 +633,153 @@ export default {
   "setup.saveFailed": "Save failed: {error}",
 
   // ── ModelSetupDialog ──
+  "localModel.title": "Local model",
+  "localModel.subtitle": "Run a model on this computer.",
+  "localModel.trial": "Preview",
+  "localModel.details": "View details",
+  "localModel.advanced": "Advanced options and information",
+  "localModel.recommended": "Recommended for this computer",
+  "localModel.downloadSize": "Model download",
+  "localModel.downloadAmount": "About {size} GB",
+  "localModel.runMode": "Run using",
+  "localModel.cpuMode": "Standard",
+  "localModel.gpuMode": "GPU acceleration",
+  "localModel.cpuDownloadHint":
+    "CPU replies may be slower. Runtime components are an additional download.",
+  "localModel.gpuDownloadHint":
+    "Compatibility is checked before use. Runtime components are an additional download.",
+  "localModel.startDownload": "Start download",
+  "localModel.notNow": "Not now",
+  "localModel.prepareIntro": "Choose Qwen3.5 4B or 9B from the model list.",
+  "localModel.preparedHint":
+    "The model is prepared. Select it as the default without an AI connection test.",
+  "localModel.useModel": "Start using",
+  "localModel.finish": "Done",
+  "localModel.cancelSetup": "Cancel",
+  "localModel.setupPending": "Local model setup is unfinished",
+  "localModel.viewSetup": "View progress",
+  "localModel.switchCloudConfirm":
+    "Local model setup is unfinished. Cancel it before configuring a cloud model?",
+  "localModel.switchCloudContinue": "Cancel local setup and continue",
+  "localModel.keepLocalSetup": "Keep local setup",
+  "localModel.setupFinishing":
+    "Local setup is still finishing. No model was switched; try again when it finishes.",
+  "localModel.setupChanged": "Local setup changed. Please try again.",
+  "localModel.switchBeforeSave": "Local setup is unfinished. Saving will ask whether to cancel it.",
+  "localModel.noSelection": "Not selected",
+  "localModel.selectModel": "Select a model",
+  "localModel.configure": "Set up a local model",
+  "localModel.addCloud": "Add cloud connection",
+  "localModel.addLocal": "Add local model",
+  "localModel.defaultModel": "Default model",
+  "localModel.defaultAgentOverride":
+    "The default agent {agent} has its own model override ({model}). Changing the global default does not change this override; conversations using it may keep that model.",
+  "localModel.defaultNotice":
+    "Changes the default model only. Existing agent and session overrides remain unchanged. Other provider connections are kept.",
+  "localModel.experimental":
+    "Experimental compatibility: official llama.cpp setup still requires validation on your Windows installation. Plugin installation does not guarantee GPU acceleration or model readiness.",
+  "localModel.privacy":
+    "MicroClaw does not add automatic cloud fallback. Existing OpenClaw fallback settings may still route requests to other providers. Local inference does not make search, skills, or integrations offline.",
+  "localModel.streaming": "Wait for the current reply to finish before changing models.",
+  "localModel.operationBusy":
+    "A local-model operation is active or needs recovery. Open Local model to check or resume it before changing configuration.",
+  "localModel.checking": "Checking this computer…",
+  "localModel.readingConfig": "Reading saved configuration…",
+  "localModel.refreshingStatus": "Refreshing status in the background…",
+  "localModel.configuredHint":
+    "Save the model selection directly, without an AI connection or tool-use test.",
+  "localModel.reconfigure": "Reconfigure local model",
+  "localModel.discoverModels": "Run full model discovery",
+  "localModel.filesMissing": "Download needed",
+  "localModel.filesUnknown": "File status unknown",
+  "localModel.filesMissingHint":
+    "The configuration is saved, but the local model files are missing. Download them again before use.",
+  "localModel.downloadAgain": "Download model again",
+  "localModel.gatewayVersion": "Gateway version",
+  "localModel.unknown": "Unknown",
+  "localModel.unsupported":
+    "This Gateway does not support the required local-model setup capabilities.",
+  "localModel.readOnly":
+    "Configuration changes are locked. Check Gateway policy and Windows Node + MXC settings.",
+  "localModel.installUnavailable":
+    "Official provider installation is unavailable for this deployment.",
+  "localModel.providerRequired":
+    "The official llama.cpp provider must be installed and enabled before setup.",
+  "localModel.reviewProvider": "Review official provider",
+  "localModel.reviewAgain": "Review provider again",
+  "localModel.reviewAgainNotice":
+    "Review the provider again before retrying installation. Any newly staged capabilities or policy warnings need a fresh, explicit confirmation.",
+  "localModel.capabilitiesUnreviewed":
+    "No capability details were returned. This is a source/version review, not a full permissions review. Installation may require another review of the staged manifest.",
+  "localModel.installSourceConsent":
+    "I have reviewed the source and version and authorize attempting this official installation. Additional capabilities or warnings require a separate review.",
+  "localModel.providerReview": "Provider source and capabilities",
+  "localModel.provider": "Provider",
+  "localModel.version": "Version",
+  "localModel.source": "Source",
+  "localModel.installConsent":
+    "I have reviewed the source, version, and capabilities and authorize installation or enabling of this provider.",
+  "localModel.installProvider": "Install / enable provider",
+  "localModel.prepareTitle": "Prepare a connection",
+  "localModel.managed": "Prepare Qwen3.5 4B",
+  "localModel.existing": "Connect an existing llama.cpp server",
+  "localModel.ownership":
+    "OpenClaw manages automatic setup. An existing server remains user-managed. Switching modes replaces the llama.cpp connection, not your cloud connections.",
+  "localModel.loopback":
+    "For an existing server, use a loopback address such as http://127.0.0.1:8080. Remote and LAN endpoints are not supported by this flow.",
+  "localModel.activationTitle": "Get ready to use",
+  "localModel.preparedNotice":
+    "Preparation does not change your default. Select the exact model below; connection errors are reported when you chat.",
+  "localModel.exactModel": "Model",
+  "localModel.chooseCandidate": "Choose a model to use",
+  "localModel.noExactCandidate":
+    "No unique exact candidate is selected. Refresh detection or explicitly choose the intended candidate; nothing will be selected automatically from an ambiguous list.",
+  "localModel.verifyUse": "Use this model",
+  "localModel.cancel": "Request cancellation",
+  "localModel.cancelProtected":
+    "Cancellation is pending. The Gateway is finishing a protected step; it has not confirmed cancellation. No process will be killed.",
+  "localModel.resume": "Resume / check operation",
+  "localModel.refresh": "Refresh status",
+  "localModel.readyNotice":
+    "The default model has been updated without an AI test. Existing agent and session overrides remain unchanged.",
+  "localModel.notSwitched":
+    "Activation was rejected before promotion. The default model was not switched.",
+  "localModel.checkAfterError":
+    "The operation failed. Configuration may already have been applied; refresh state before retrying. No automatic rollback is assumed; existing fallback settings are unchanged.",
+  "localModel.phase.starting": "Starting official setup…",
+  "localModel.phase.step": "Continue setup",
+  "localModel.phase.prepared": "Prepared — not enabled",
+  "localModel.phase.activating": "Selecting the model…",
+  "localModel.phase.applying": "Applying configuration / waiting for runtime…",
+  "localModel.phase.ready": "Selected",
+  "localModel.phase.cancelled": "Cancellation confirmed",
+  "localModel.phase.error": "Operation failed",
+  "localModel.phase.interrupted": "Connection interrupted — check before continuing",
+  "localModel.gatewayStep": "Setup instructions",
+  "localModel.waiting":
+    "Waiting for the Gateway. Progress text below is provided by the official setup flow.",
+  "localModel.answer": "Your answer",
+  "localModel.chooseOption": "Choose an option",
+  "localModel.chooseOptions": "Choose options",
+  "localModel.confirm": "Confirm",
+  "localModel.decline": "Decline",
+  "localModel.continue": "Continue",
+  "localModel.refreshCatalog": "Refresh model catalog",
+  "localModel.currentDefault": "Current default",
+  "localModel.configured": "Configured connection",
+  "localModel.tools": "Tools",
+  "localModel.images": "Images",
+  "localModel.context": "Context limit",
+  "localModel.availability": "Catalog availability",
+  "localModel.yes": "Yes",
+  "localModel.no": "No",
+  "localModel.catalogNotice":
+    "Catalog availability is not a running-service or GPU-readiness indicator. Unknown capabilities are not inferred.",
+  "localModel.removeConnection": "Remove connection",
+  "localModel.selectBeforeRemove":
+    "Select and apply another default model explicitly before removing this connection.",
+  "localModel.removalNotice":
+    "Removing a connection does not delete model files, caches, or the runtime. Select another default before removing the active local model.",
   "modelSetup.title": "Set Up Model",
   "modelSetup.selectDesc":
     "Choose a guided provider, connect an account, or configure any compatible model endpoint.",

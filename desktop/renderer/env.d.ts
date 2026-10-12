@@ -9,7 +9,7 @@ declare module "*.vue" {
 interface ChatEventPayload {
   runId: string;
   sessionKey: string;
-  state: "delta" | "final" | "aborted" | "error";
+  state: "status" | "delta" | "final" | "aborted" | "error";
   message?: unknown;
   deltaText?: string;
   replace?: boolean;
@@ -190,7 +190,7 @@ interface OpenClawAPI {
     needsSetup(): Promise<boolean>;
     read(): Promise<any>;
     readEnv(): Promise<Record<string, string>>;
-    write(config: any): Promise<void>;
+    write(config: any, expectedConfig?: any): Promise<void>;
   };
   settings: {
     get(): Promise<AppSettings>;
@@ -301,6 +301,11 @@ interface OpenClawAPI {
     };
   };
   model: {
+    selectDefault(
+      params: import("../src/default-model-selection").DefaultModelSelection,
+    ): Promise<{ modelRef: string }>;
+    session: import("../src/session-model-types").SessionModelAPI;
+    local: import("../src/local-model-types").LocalModelAPI;
     testConnection(params: {
       baseUrl: string;
       apiKey: string;

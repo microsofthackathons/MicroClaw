@@ -247,7 +247,7 @@ _STRINGS = {
     "zh": {
         "language": "语言",
         "welcomeTitle": "欢迎来到 MicroClaw",
-        "legalLine": "点击“快速安装”，即表示你同意 MicroClaw",
+        "legalLine": "安装包含官方 llama.cpp 提供商及其声明能力；模型与推理运行时在首次选用时另行确认下载。点击“快速安装”，即表示你同意 MicroClaw",
         "serviceAgreement": "MicroClaw 最终用户许可协议",
         "and": "和",
         "privacyStatement": "隐私声明",
@@ -286,6 +286,7 @@ _STRINGS = {
             "config": "正在写入 MicroClaw 配置…",
             "compileCache": "正在预热启动缓存…",
             "searchProvider": "正在安装网络搜索插件…",
+            "localProvider": "正在准备本地模型提供商（不下载模型）…",
             "sandbox": "正在配置 AppContainer 沙箱…",
             "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
@@ -302,7 +303,7 @@ _STRINGS = {
     "en": {
         "language": "Language",
         "welcomeTitle": "Welcome to MicroClaw",
-        "legalLine": 'By clicking "Quick Install", you agree to the MicroClaw',
+        "legalLine": 'Includes the official llama.cpp provider and its declared capabilities. Model and inference runtime downloads require separate first-use confirmation. By clicking "Quick Install", you agree to the MicroClaw',
         "serviceAgreement": "MicroClaw End User License Agreement",
         "and": "and",
         "privacyStatement": "Privacy Statement",
@@ -341,6 +342,7 @@ _STRINGS = {
             "config": "Writing MicroClaw configuration...",
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
+            "localProvider": "Preparing local model provider (no model download)...",
             "sandbox": "Provisioning AppContainer sandbox...",
             "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
@@ -598,6 +600,7 @@ class WebInstallerBridge:
             (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
             (65, steps["apiKeys"], lambda: self._write_env_file(), LOCAL_RETRIES),
             (70, steps["config"], ws.write_config, LOCAL_RETRIES),
+            (76, steps["localProvider"], ws.install_local_model_provider, NETWORK_RETRIES),
             (
                 80,
                 steps["searchProvider"],

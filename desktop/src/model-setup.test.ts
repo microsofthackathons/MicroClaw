@@ -1,5 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { hasConfiguredModel } from "./model-setup";
+import { assertModelConfigUnchanged, hasConfiguredModel } from "./model-setup";
+
+describe("assertModelConfigUnchanged", () => {
+  it("accepts first-run normalization and an unchanged existing configuration", () => {
+    expect(() => assertModelConfigUnchanged({}, null)).not.toThrow();
+    expect(() =>
+      assertModelConfigUnchanged({ gateway: { port: 18789 } }, { gateway: { port: 18789 } }),
+    ).not.toThrow();
+  });
+
+  it("rejects a stale snapshot after an official provider setup writes configuration", () => {
+    expect(() =>
+      assertModelConfigUnchanged(
+        {},
+        {
+          models: { providers: { "llama-cpp": { localService: { command: "C:\\server.exe" } } } },
+        },
+      ),
+    ).toThrow("changed while editing");
+  });
+});
 
 describe("hasConfiguredModel", () => {
   it("recognizes an explicit custom provider", () => {

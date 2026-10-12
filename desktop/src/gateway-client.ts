@@ -43,13 +43,24 @@ export type GatewayResponseFrame = {
   id: string;
   ok: boolean;
   payload?: unknown;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: unknown };
 };
+
+export class GatewayRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "GatewayRequestError";
+  }
+}
 
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
-  state: "delta" | "final" | "aborted" | "error";
+  state: "status" | "delta" | "final" | "aborted" | "error";
   message?: unknown;
   deltaText?: string;
   replace?: boolean;
@@ -216,6 +227,9 @@ export class GatewayClient {
   private closed = false;
   private backoffMs = WS_RECONNECT_INITIAL_MS;
   private _connected = false;
+  private _serverVersion: string | null = null;
+  private _methods: string[] = [];
+  private _connectionGeneration = 0;
   private connectNonce: string | null = null;
   private connectSent = false;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -237,6 +251,18 @@ export class GatewayClient {
 
   get mainSessionKey() {
     return this._mainSessionKey;
+  }
+
+  get serverVersion() {
+    return this._serverVersion;
+  }
+
+  get methods(): readonly string[] {
+    return this._methods;
+  }
+
+  get connectionGeneration(): number {
+    return this._connectionGeneration;
   }
 
   start() {
@@ -263,7 +289,7 @@ export class GatewayClient {
   async request<T = unknown>(
     method: string,
     params?: unknown,
-    timeoutMs = WS_REQUEST_TIMEOUT_MS,
+    timeoutMs: number | null = WS_REQUEST_TIMEOUT_MS,
   ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("gateway not connected");
@@ -272,11 +298,14 @@ export class GatewayClient {
     const frame = { type: "req", id, method, params };
     return new Promise<T>((resolve, reject) => {
       // Auto-reject after timeout to prevent hung promises
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`request '${method}' timed out after ${timeoutMs}ms`));
-        }
-      }, timeoutMs);
+      const timer =
+        timeoutMs === null
+          ? undefined
+          : setTimeout(() => {
+              if (this.pending.delete(id)) {
+                reject(new Error(`request '${method}' timed out after ${timeoutMs}ms`));
+              }
+            }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => {
           clearTimeout(timer);
@@ -643,6 +672,13 @@ export class GatewayClient {
     this.request<Record<string, unknown>>("connect", params)
       .then((hello) => {
         this._connected = true;
+        this._connectionGeneration = (this._connectionGeneration ?? 0) + 1;
+        const server = hello.server as { version?: unknown } | undefined;
+        const features = hello.features as { methods?: unknown } | undefined;
+        this._serverVersion = typeof server?.version === "string" ? server.version : null;
+        this._methods = Array.isArray(features?.methods)
+          ? features.methods.filter((method): method is string => typeof method === "string")
+          : [];
         this.backoffMs = WS_RECONNECT_INITIAL_MS;
         this._mainSessionKey = extractMainSessionKey(hello);
         this.opts.onConnected?.(hello ?? {});
@@ -749,7 +785,13 @@ export class GatewayClient {
       if (res.ok) {
         p.resolve(res.payload);
       } else {
-        p.reject(new Error(res.error?.message ?? "request failed"));
+        p.reject(
+          new GatewayRequestError(
+            res.error?.message ?? "request failed",
+            res.error?.code,
+            res.error?.details,
+          ),
+        );
       }
     }
   }

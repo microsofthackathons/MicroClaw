@@ -217,7 +217,7 @@ describe("validateInstallerOwnedUpgrade", () => {
     const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
     manifest.schema_version = 2;
     manifest.backup_mode = "managed-state";
-    manifest.managed_paths = ["openclaw.json", "skills"];
+    manifest.managed_paths = ["openclaw.json", "skills", "extensions/llama-cpp"];
     fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
 
     expect(

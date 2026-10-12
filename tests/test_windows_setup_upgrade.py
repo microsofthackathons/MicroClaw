@@ -1905,6 +1905,95 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin"],
         )
 
+    def test_local_model_provider_installs_only_pinned_component_and_preserves_model_selection(
+        self,
+    ):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True)
+        config = {
+            "agents": {"defaults": {"model": {"primary": "cloud/keep"}}},
+            "models": {"mode": "merge"},
+        }
+        (state / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+        resources = self.root / ".microclaw" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "openclaw-fs-safe-compat.mjs").write_text("", encoding="utf-8")
+        self.ws._local_model_provider_is_current = unittest.mock.Mock(side_effect=[False, True])
+        self.ws._weixin_cli_context = unittest.mock.Mock(return_value=(["openclaw.cmd"], {}))
+        self.ws._detect_openclaw_installation = unittest.mock.Mock(
+            return_value=SimpleNamespace(package_dir=self.root / "runtime")
+        )
+
+        def run(command, **kwargs):
+            if "enable" in command:
+                (state / "openclaw.json").write_text(
+                    json.dumps(
+                        {**config, "plugins": {"entries": {"llama-cpp": {"enabled": True}}}}
+                    ),
+                    encoding="utf-8",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.ws._run = unittest.mock.Mock(side_effect=run)
+        self.assertTrue(self.ws.install_local_model_provider())
+        install = self.ws._run.call_args_list[0]
+        self.assertEqual(
+            install.args[0][1:],
+            [
+                "plugins",
+                "install",
+                "clawhub:@openclaw/llama-cpp-provider@2026.9.3",
+                "--accept-capabilities",
+            ],
+        )
+        self.assertEqual(install.kwargs["env"]["MICROCLAW_FS_SAFE_COMPAT"], "1")
+        self.assertIn("--import", install.kwargs["env"]["NODE_OPTIONS"])
+        self.assertNotIn("--acknowledge-install-policy-warning", install.args[0])
+        self.assertEqual(
+            json.loads((state / "openclaw.json").read_text())["agents"], config["agents"]
+        )
+
+    def test_local_model_provider_preserves_explicit_disable_and_avoids_network_when_ready(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True)
+        config_path = state / "openclaw.json"
+        self.ws._run = unittest.mock.Mock()
+        for plugins in (
+            {"enabled": False},
+            {"deny": ["llama-cpp"]},
+            {"entries": {"llama-cpp": {"enabled": False}}},
+        ):
+            config_path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+            self.assertTrue(self.ws.install_local_model_provider())
+        self.ws._run.assert_not_called()
+        config_path.write_text(
+            json.dumps(
+                {"plugins": {"entries": {"llama-cpp": {"enabled": True}}, "allow": ["llama-cpp"]}}
+            ),
+            encoding="utf-8",
+        )
+        self.ws._local_model_provider_is_current = unittest.mock.Mock(return_value=True)
+        self.assertTrue(self.ws.install_local_model_provider())
+        self.ws._run.assert_not_called()
+
+    def test_local_model_provider_fails_if_install_policy_rejects_the_component(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True)
+        (state / "openclaw.json").write_text("{}", encoding="utf-8")
+        resources = self.root / ".microclaw" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "openclaw-fs-safe-compat.mjs").write_text("", encoding="utf-8")
+        self.ws._local_model_provider_is_current = unittest.mock.Mock(return_value=False)
+        self.ws._weixin_cli_context = unittest.mock.Mock(return_value=(["openclaw.cmd"], {}))
+        self.ws._detect_openclaw_installation = unittest.mock.Mock(
+            return_value=SimpleNamespace(package_dir=self.root / "runtime")
+        )
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="policy blocked")
+        )
+        self.assertFalse(self.ws.install_local_model_provider())
+        self.ws._run.assert_called_once()
+
     def test_install_search_provider_plugin_uses_verified_local_fast_path(self):
         state_dir = self.home / ".openclaw"
         config_path = state_dir / "openclaw.json"

@@ -5,9 +5,14 @@ import * as http from "http";
 import * as net from "net";
 import * as os from "os";
 import { pathToFileURL } from "node:url";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
+import { hasLocalModelPrimary, LocalModelService } from "./local-model-service";
+import { registerLocalModelHandlers } from "./local-model-ipc";
+import { SessionModelService, sessionModelChatKey } from "./session-model-service";
+import { registerSessionModelHandlers } from "./session-model-ipc";
+import type { LocalModelReceipt } from "./local-model-types";
 import {
   applyAgentRosterReload,
   hardRestartGateway,
@@ -84,7 +89,8 @@ import {
   requestModelEndpoint,
   resolveModelApiKey,
 } from "./model-connection";
-import { hasConfiguredModel } from "./model-setup";
+import { assertModelConfigUnchanged, hasConfiguredModel } from "./model-setup";
+import { selectDefaultModel } from "./default-model-selection";
 import {
   disconnectGitHubCopilot,
   getGitHubCopilotAuthStatus,
@@ -254,6 +260,7 @@ const settingsStore = new Store<{
   minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
+  localModelOperation?: LocalModelReceipt;
   /** Apps that bypass AppContainer sandbox (need COM/RPC/named-pipes). */
   sandboxExternalApps: string[];
   /** Whether the sandbox is enabled. */
@@ -338,6 +345,100 @@ let gwClient: GatewayClient | null = null;
 let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
+const activeModelSessions = new Set<string>();
+let modelConfigurationMutationInProgress = false;
+let githubCopilotLoginInProgress = false;
+const modelChatKey = (key: string) =>
+  sessionModelChatKey(readConfig(), key, gwClient?.mainSessionKey);
+const localModelService = new LocalModelService({
+  gateway: () => gwClient,
+  identity: () =>
+    createHash("sha256")
+      .update(`${getOpenClawStateDir()}\n${gatewayPort}\n${gatewayToken}`)
+      .digest("hex"),
+  assertMutable: () => {
+    sessionModelService.assertIdle();
+    if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
+      throw new Error("A model configuration change is in progress");
+    }
+    if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
+      throw new Error(
+        "This Gateway configuration is locked while Windows Node + MXC mode is enabled",
+      );
+    }
+    if (activeModelSessions.size > 0) {
+      throw new Error("Wait for the active chat response before changing the model");
+    }
+    if (!gatewaySpawnedByUs) {
+      throw new Error("Local model setup requires the Gateway managed by MicroClaw");
+    }
+  },
+  readConfig,
+  stateDir: getOpenClawStateDir,
+  readReceipt: () => settingsStore.get("localModelOperation"),
+  saveReceipt: (receipt) => {
+    if (receipt) settingsStore.set("localModelOperation", receipt);
+    else settingsStore.delete("localModelOperation");
+  },
+  restartGateway: async () => {
+    await restartManagedGateway("Applying official local model setup");
+    const deadline = Date.now() + GATEWAY_READY_TIMEOUT_MS;
+    while (!gwClient?.connected) {
+      if (Date.now() >= deadline)
+        throw new Error("Gateway did not reconnect after local model setup");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  },
+  onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
+});
+const sessionModelService = new SessionModelService({
+  gateway: () => gwClient,
+  readConfig,
+  assertMutable: () => {
+    localModelService.assertIdle();
+    if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
+      throw new Error("A model configuration change is in progress");
+    }
+    if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
+      throw new Error(
+        "This Gateway configuration is locked while Windows Node + MXC mode is enabled",
+      );
+    }
+    if (activeModelSessions.size > 0) {
+      throw new Error("Wait for the active chat response before changing the model");
+    }
+    if (!gatewaySpawnedByUs || gatewayRestarting) {
+      throw new Error("Session model selection requires MicroClaw's connected managed Gateway");
+    }
+  },
+});
+async function withModelConfigurationMutation<T>(operation: () => Promise<T>): Promise<T> {
+  localModelService.assertIdle();
+  sessionModelService.assertIdle();
+  if (modelConfigurationMutationInProgress) {
+    throw new Error("A model configuration change is in progress");
+  }
+  modelConfigurationMutationInProgress = true;
+  try {
+    return await operation();
+  } finally {
+    modelConfigurationMutationInProgress = false;
+  }
+}
+
+async function withInternalModelChat<T>(operation: () => Promise<T>): Promise<T> {
+  if (modelConfigurationMutationInProgress)
+    throw new Error("A model configuration change is being applied; wait for it to finish");
+  localModelService.assertChatAllowed();
+  sessionModelService.assertChatAllowed();
+  const key = `internal:model-operation:${randomUUID()}`;
+  activeModelSessions.add(key);
+  try {
+    return await operation();
+  } finally {
+    activeModelSessions.delete(key);
+  }
+}
 const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
@@ -522,6 +623,7 @@ function signalPostInstallFailure(error: unknown): void {
 let toolSandbox: ToolSandbox | null = null;
 const githubCopilotAuthManager = new GitHubCopilotAuthManager(
   (event) => {
+    if (event.status !== "code") githubCopilotLoginInProgress = false;
     mainWindow?.webContents.send("model:github-copilot:login-event", event);
     if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
   },
@@ -1164,6 +1266,11 @@ function getPendingWindowsNodeMxcApprovalForRenderer() {
 }
 
 function assertWindowsNodeMxcConfigurationMutable(): void {
+  localModelService.assertIdle();
+  sessionModelService.assertIdle();
+  if (activeModelSessions.size > 0) {
+    throw new Error("Wait for the active chat response before changing Gateway configuration");
+  }
   if (isWindowsNodeMxcDesired()) {
     throw new Error(
       "This Gateway configuration is locked while Windows Node + MXC mode is enabled",
@@ -1874,7 +1981,13 @@ function needsSetup(): boolean {
 
 type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type AutoConfigReasoningEffort =
-  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "adaptive";
 
 function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
   const normalized = (value || "").trim().toLowerCase();
@@ -3692,6 +3805,21 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     const approvalCompatPath = app.isPackaged
       ? path.join(process.resourcesPath, "openclaw-approval-replay-compat.mjs")
       : path.join(__dirname, "..", "src", "openclaw-approval-replay-compat.mjs");
+    const fsSafeCompatPath = app.isPackaged
+      ? path.join(process.resourcesPath, "openclaw-fs-safe-compat.mjs")
+      : path.join(__dirname, "..", "src", "openclaw-fs-safe-compat.mjs");
+    const localModelCompatPath = app.isPackaged
+      ? path.join(process.resourcesPath, "openclaw-local-model-compat.mjs")
+      : path.join(__dirname, "..", "src", "openclaw-local-model-compat.mjs");
+    if (!fs.existsSync(localModelCompatPath))
+      throw new Error("The exact local model adapter is missing");
+    gwEnv.MICROCLAW_EXACT_LOCAL_MODELS = "1";
+    gwEnv.MICROCLAW_LOCAL_MODEL_PLUGIN_DIR = path.join(stateDir, "extensions", "llama-cpp");
+    if (!fs.existsSync(fsSafeCompatPath)) {
+      throw new Error(`OpenClaw filesystem compatibility preload is missing: ${fsSafeCompatPath}`);
+    }
+    gwEnv.MICROCLAW_FS_SAFE_COMPAT = "1";
+    gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
     if (windowsNodeMxcDesired) {
       if (!fs.existsSync(approvalCompatPath)) {
         const msg = `[error] Windows Node + MXC approval compatibility preload is missing: ${approvalCompatPath}`;
@@ -3702,7 +3830,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
         return;
       }
       gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
-      gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
       if (!nextApprovalProofContext) {
         throw new Error("Windows Node + MXC approval proof context is unavailable");
       }
@@ -3715,6 +3842,10 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     }
 
     const gwArgs = [
+      "--import",
+      pathToFileURL(fsSafeCompatPath).href,
+      "--import",
+      pathToFileURL(localModelCompatPath).href,
       ...(windowsNodeMxcDesired ? ["--import", pathToFileURL(approvalCompatPath).href] : []),
       entryPath,
       "gateway",
@@ -4367,6 +4498,7 @@ function connectGatewayWs(): void {
       notifyRendererApplicationReady();
     },
     onDisconnected: (reason) => {
+      activeModelSessions.clear();
       console.log(`[gateway-ws] disconnected: ${reason}`);
       const activeGeneration =
         isWindowsNodeMxcDesired() &&
@@ -4454,6 +4586,15 @@ function connectGatewayWs(): void {
       if (evt.event === "chat") {
         const payload = evt.payload as ChatEventPayload | undefined;
         if (!payload) return;
+        if (payload.state === "delta" || payload.state === "status")
+          activeModelSessions.add(modelChatKey(payload.sessionKey));
+        else if (
+          payload.state === "final" ||
+          payload.state === "error" ||
+          payload.state === "aborted"
+        ) {
+          activeModelSessions.delete(modelChatKey(payload.sessionKey));
+        }
         console.log(`[chat:event] state=${payload.state} sessionKey=${payload.sessionKey}`);
 
         // Track active session for per-session sandbox deny list
@@ -4481,7 +4622,7 @@ function requestGatewayModelCatalog(): Promise<unknown> {
   const client = gwClient;
   if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
 
-  const request = client.request("models.list", { view: "all" });
+  const request = client.request("models.list", { view: "all", preparedOnly: true });
   gatewayModelCatalogRequest = request;
   void request.then(
     () => {
@@ -4752,14 +4893,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:needs-setup", () => needsSetup());
   ipcMain.handle("config:read", () => readConfig());
   ipcMain.handle("config:read-env", () => loadStateDirEnv());
-  ipcMain.handle("config:write", async (_event, config: any) => {
-    const stateDir = getOpenClawStateDir();
-    await fs.promises.mkdir(stateDir, { recursive: true });
-    assertConfigWriteAllowed(config, readConfig());
-    if (isWindowsNodeMxcDesired()) {
-      throw new Error("config:write is blocked while Windows Node + MXC mode is enabled");
-    }
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  ipcMain.handle("config:write", async (_event, config: any, expectedConfig?: unknown) => {
+    return withModelConfigurationMutation(async () => {
+      const stateDir = getOpenClawStateDir();
+      await fs.promises.mkdir(stateDir, { recursive: true });
+      assertConfigWriteAllowed(config, readConfig());
+      if (isWindowsNodeMxcDesired()) {
+        throw new Error("config:write is blocked while Windows Node + MXC mode is enabled");
+      }
+      if (expectedConfig !== undefined) assertModelConfigUnchanged(expectedConfig, readConfig());
+      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    });
   });
 
   // --- Skills ---
@@ -5345,13 +5489,24 @@ function registerIpcHandlers(): void {
     "chat:send-message",
     async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
+      if (modelConfigurationMutationInProgress)
+        throw new Error("A model configuration change is being applied; wait for it to finish");
+      localModelService.assertChatAllowed();
+      sessionModelService.assertChatAllowed();
       // Mark that the latest input is from the local desktop UI.
       lastInputFromRemote = false;
-      await gwClient.sendChat(
-        params.sessionKey,
-        params.message,
-        validateChatAttachments(params.attachments),
-      );
+      const activeKey = modelChatKey(params.sessionKey);
+      activeModelSessions.add(activeKey);
+      try {
+        await gwClient.sendChat(
+          params.sessionKey,
+          params.message,
+          validateChatAttachments(params.attachments),
+        );
+      } catch (error) {
+        activeModelSessions.delete(activeKey);
+        throw error;
+      }
     },
   );
 
@@ -5367,7 +5522,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("chat:generate-session-title", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
-    return await gwClient.generateSessionTitle(params.sessionKey);
+    sessionModelService.assertChatAllowed();
+    const client = gwClient;
+    return withInternalModelChat(() => client.generateSessionTitle(params.sessionKey));
   });
 
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
@@ -5377,16 +5534,23 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
+    sessionModelService.assertIdle();
     await gwClient.deleteSession(params.sessionKey);
   });
 
   ipcMain.handle("chat:clear-history", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
+    sessionModelService.assertIdle();
     return await gwClient.clearAllHistory();
   });
 
   ipcMain.handle("gateway:warm-up-agent", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (modelConfigurationMutationInProgress || localModelService.busy || sessionModelService.busy)
+      return { outcome: "skipped", transcriptDeleted: true };
+    if (hasLocalModelPrimary(readConfig())) {
+      return { outcome: "skipped", transcriptDeleted: true };
+    }
     if (
       isWindowsNodeMxcDesired() &&
       !isWindowsNodeMxcIngressReleased(
@@ -5403,7 +5567,8 @@ function registerIpcHandlers(): void {
       console.log("[gateway-ws] agent warm-up skipped: no model is configured");
       return { outcome: "skipped", transcriptDeleted: true };
     }
-    return await gwClient.warmUpAgent();
+    const client = gwClient;
+    return withInternalModelChat(() => client.warmUpAgent());
   });
 
   // Report as "not connected" while the post-spawn restart is pending.
@@ -5717,6 +5882,9 @@ function registerIpcHandlers(): void {
     }
   });
 
+  registerLocalModelHandlers(ipcMain, localModelService);
+  registerSessionModelHandlers(ipcMain, sessionModelService);
+
   // --- Model connection test (runs in main process to avoid CORS) ---
   ipcMain.handle(
     "model:test-connection",
@@ -5833,32 +6001,74 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:prepare", async () => {
     assertWindowsNodeMxcConfigurationMutable();
-    const config = readConfig();
-    if (!config || typeof config !== "object" || Array.isArray(config)) {
-      throw new Error("OpenClaw configuration is unavailable");
-    }
-    const restartRequired = ensureGitHubCopilotProviderPlugin(config);
-    if (restartRequired) {
-      await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      invalidateGitHubCopilotAuthStatusCache();
-    }
-    return { restartRequired };
+    return withModelConfigurationMutation(async () => {
+      const config = readConfig();
+      if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error("OpenClaw configuration is unavailable");
+      }
+      const restartRequired = ensureGitHubCopilotProviderPlugin(config);
+      if (restartRequired) {
+        await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+        invalidateGitHubCopilotAuthStatusCache();
+      }
+      return { restartRequired };
+    });
   });
 
-  ipcMain.handle("model:github-copilot:start-login", () => ({
-    sessionId: githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime()),
-  }));
+  ipcMain.handle("model:github-copilot:start-login", () => {
+    assertWindowsNodeMxcConfigurationMutable();
+    if (modelConfigurationMutationInProgress) {
+      throw new Error("A model configuration change is in progress");
+    }
+    const sessionId = githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime());
+    githubCopilotLoginInProgress = true;
+    return { sessionId };
+  });
 
   ipcMain.handle("model:github-copilot:cancel-login", (_event, sessionId?: string) => ({
     cancelled: githubCopilotAuthManager.cancel(sessionId),
   }));
 
   ipcMain.handle("model:github-copilot:disconnect", async () => {
+    sessionModelService.assertIdle();
     githubCopilotAuthManager.stop();
-    const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
-    await refreshGatewayGitHubCopilotAuthStatus();
-    return result;
+    githubCopilotLoginInProgress = false;
+    return withModelConfigurationMutation(async () => {
+      const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
+      await refreshGatewayGitHubCopilotAuthStatus();
+      return result;
+    });
   });
+
+  ipcMain.handle("model:select-default", async (_event, params: unknown) =>
+    withModelConfigurationMutation(async () => {
+      const startedAt = Date.now();
+      try {
+        const selected = await selectDefaultModel(
+          {
+            gateway: () => gwClient,
+            readConfig,
+            assertMutable: () => {
+              assertWindowsNodeMxcConfigurationMutable();
+              if (githubCopilotLoginInProgress)
+                throw new Error("GitHub Copilot sign-in is still in progress");
+              if (!gatewaySpawnedByUs || gatewayRestarting)
+                throw new Error(
+                  "Default model selection requires MicroClaw's connected managed Gateway",
+                );
+            },
+          },
+          params,
+        );
+        console.info(`[model:select-default] applied in ${Date.now() - startedAt}ms`);
+        return selected;
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "Default model selection failed";
+        console.warn(`[model:select-default] failed after ${Date.now() - startedAt}ms: ${message}`);
+        throw new Error(message, { cause });
+      }
+    }),
+  );
 
   ipcMain.handle("model:github-copilot:status", () => {
     const client = gwClient;
@@ -6158,6 +6368,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "windows-node-mxc:set-enabled",
     async (_event, params: { enabled: boolean; nodeId?: string }) => {
+      localModelService.assertIdle();
+      sessionModelService.assertIdle();
       beginWindowsNodeMxcLifecycleOperation();
       let transitionSucceeded = false;
       let automaticReadinessStarted = false;
@@ -6372,7 +6584,8 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      { width?: number; height?: number; x?: number; y?: number } | undefined;
+      | { width?: number; height?: number; x?: number; y?: number }
+      | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);
@@ -6418,6 +6631,8 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("sandbox:set-enabled", async (_event, enabled: boolean) => {
+    localModelService.assertIdle();
+    sessionModelService.assertIdle();
     if (isWindowsNodeMxcDesired()) {
       throw new Error(
         "AppContainer and Windows Node + MXC modes are mutually exclusive; disable the experimental mode first",
@@ -7786,13 +8001,22 @@ function registerIpcHandlers(): void {
                   }
                   // Nudge the model to retry — user granted permission but the original
                   // command already failed, so the model doesn't know to try again.
-                  if (activeChatSession && gwClient?.connected) {
+                  if (
+                    activeChatSession &&
+                    gwClient?.connected &&
+                    !sessionModelService.busy &&
+                    !localModelService.blocksChat
+                  ) {
                     const lang = settingsStore.get("language") ?? "en-US";
                     const accessLabel = mainT(lang, isRW ? "perm.accessRW" : "perm.accessRO");
                     const retryMsg = mainT(lang, "perm.retryNudge")
                       .replace("{dir}", dirToAdd)
                       .replace("{access}", accessLabel);
-                    gwClient.sendChat(activeChatSession, retryMsg).catch(() => {});
+                    const activeKey = modelChatKey(activeChatSession);
+                    activeModelSessions.add(activeKey);
+                    gwClient.sendChat(activeChatSession, retryMsg).catch(() => {
+                      activeModelSessions.delete(activeKey);
+                    });
                   }
                 })
                 .catch(() => {

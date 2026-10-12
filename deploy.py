@@ -447,7 +447,9 @@ class DeployerApp(tk.Tk):
             page,
             text=(
                 "This will install the MicroClaw desktop app\n"
-                "and configure skills, sandbox, and plugins."
+                "and configure skills, sandbox, and plugins.\n"
+                "Includes official llama.cpp provider capabilities.\n"
+                "Models and runtime downloads require separate confirmation."
             ),
             font=self._font_subtitle,
             bg=CARD_BG,
@@ -927,6 +929,11 @@ class DeployerApp(tk.Tk):
             (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(ws)),
             (65, "Writing API keys...", lambda: self._write_env_file()),
             (70, "Writing MicroClaw configuration...", ws.write_config),
+            (
+                76,
+                "Preparing official local provider (no model download)...",
+                ws.install_local_model_provider,
+            ),
             (80, "Installing web search provider...", ws.install_search_provider_plugin),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (94, "Validating MicroClaw update...", ws.verify_openclaw_upgrade),

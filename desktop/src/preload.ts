@@ -5,6 +5,8 @@ import type {
   PrepareChatAttachmentsResult,
 } from "./chat-attachments";
 import type { OpenAttachmentRequest } from "./attachment-open";
+import type { LocalModelAPI, LocalModelOperation } from "./local-model-types";
+import type { SessionModelAPI } from "./session-model-types";
 
 contextBridge.exposeInMainWorld("openclaw", {
   // --- Gateway lifecycle ---
@@ -48,7 +50,8 @@ contextBridge.exposeInMainWorld("openclaw", {
     needsSetup: () => ipcRenderer.invoke("config:needs-setup"),
     read: () => ipcRenderer.invoke("config:read"),
     readEnv: () => ipcRenderer.invoke("config:read-env"),
-    write: (config: any) => ipcRenderer.invoke("config:write", config),
+    write: (config: any, expectedConfig?: unknown) =>
+      ipcRenderer.invoke("config:write", config, expectedConfig),
   },
 
   // --- Settings ---
@@ -233,6 +236,31 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   // --- Model testing ---
   model: {
+    selectDefault: (params: import("./default-model-selection").DefaultModelSelection) =>
+      ipcRenderer.invoke("model:select-default", params),
+    session: {
+      get: (sessionKey) => ipcRenderer.invoke("model:session:get", sessionKey),
+      select: (params) => ipcRenderer.invoke("model:session:select", params),
+    } satisfies SessionModelAPI,
+    local: {
+      getSnapshot: () => ipcRenderer.invoke("model:local:get-snapshot"),
+      getCapabilities: () => ipcRenderer.invoke("model:local:get-capabilities"),
+      detect: (options) => ipcRenderer.invoke("model:local:detect", options),
+      inspectProvider: () => ipcRenderer.invoke("model:local:inspect-provider"),
+      installProvider: (params) => ipcRenderer.invoke("model:local:install-provider", params),
+      prepare: (params) => ipcRenderer.invoke("model:local:prepare", params),
+      activate: (params) => ipcRenderer.invoke("model:local:activate", params),
+      answer: (params) => ipcRenderer.invoke("model:local:answer", params),
+      cancel: (operationId) => ipcRenderer.invoke("model:local:cancel", operationId),
+      getOperation: () => ipcRenderer.invoke("model:local:get-operation"),
+      resume: () => ipcRenderer.invoke("model:local:resume"),
+      onEvent: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, operation: LocalModelOperation) =>
+          callback(operation);
+        ipcRenderer.on("model:local:event", listener);
+        return () => ipcRenderer.removeListener("model:local:event", listener);
+      },
+    } satisfies LocalModelAPI,
     testConnection: (params: {
       baseUrl: string;
       apiKey: string;
