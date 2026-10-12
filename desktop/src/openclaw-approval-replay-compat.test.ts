@@ -216,7 +216,7 @@ describe("pinned OpenClaw web fetch contract", () => {
         );
       });
 
-      it("returns an explicit unavailable response only for the backed-up external path", () => {
+      it("returns an explicit unavailable response only at the protected external path", () => {
         const gate = createWindowsNodeMxcHooksGate({
           contract: "microclaw.windows-node-mxc.hooks-gate.v1",
           gatewayGeneration: "generation",
@@ -245,6 +245,26 @@ describe("pinned OpenClaw web fetch contract", () => {
         expect(JSON.parse(body)).toMatchObject({ ok: false, code: "MXC_HOOKS_PAUSED" });
         expect(body).not.toContain("secret");
         expect(gate.dropInternal({ type: "command:new" })).toBe(true);
+      });
+
+      it("returns explicit unavailability at the default hook path even when none was configured", () => {
+        const gate = createWindowsNodeMxcHooksGate({
+          contract: "microclaw.windows-node-mxc.hooks-gate.v1",
+          gatewayGeneration: "generation",
+          policyFingerprint: "a".repeat(64),
+          requestedMode: "full",
+          externalRequested: false,
+          internalRequested: false,
+          basePath: "/hooks",
+        });
+        const response = {
+          statusCode: 200,
+          setHeader() {},
+          end() {},
+        };
+
+        expect(gate.rejectExternal({ url: "/hooks/wake" }, response)).toBe(true);
+        expect(response.statusCode).toBe(503);
       });
 
       it("fails closed when either pinned hook boundary drifts", () => {

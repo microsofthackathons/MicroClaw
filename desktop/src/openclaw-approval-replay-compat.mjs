@@ -588,7 +588,6 @@ export function createWindowsNodeMxcHooksGate(policy) {
   return Object.freeze({
     policy: immutablePolicy,
     rejectExternal(req, res) {
-      if (!immutablePolicy.externalRequested) return false;
       const pathname = new URL(req?.url ?? "/", "http://127.0.0.1").pathname;
       if (
         pathname !== immutablePolicy.basePath &&
