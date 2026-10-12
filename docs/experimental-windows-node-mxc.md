@@ -25,9 +25,11 @@ listener; MicroClaw stops and recreates the helper for each Gateway generation.
 
 The helper advertises only `system.run`, proof-only `system.run.readiness`, `system.run.prepare`,
 `system.which`, and `system.run.cwd-policy`. It contains no host command runner and cannot fall back
-when MXC is absent or fails. Network, clipboard, input injection, MCP, screen, camera, canvas,
-browser, location, and speech capabilities are absent. `allowWindowsUi=true` is required for
-PowerShell compatibility with MXC 0.7; it does not activate any UI capture or input capability.
+when MXC is absent or fails. Contained commands receive unrestricted public outbound network access
+through MXC's `internetClient` capability, without a host fallback or host allowlist. Clipboard,
+input injection, MCP, screen, camera, canvas, browser, location, and speech capabilities are absent.
+`allowWindowsUi=true` is required for PowerShell compatibility with MXC 0.7; it does not activate
+any UI capture or input capability.
 
 MicroClaw exposes three explicit requested states:
 
@@ -44,19 +46,22 @@ precedence, and out-of-root denial invariants.
 
 Limited containment is a separate, explicitly acknowledged threat model. It accepts only a
 probe-attested `appcontainer-dacl` tier and sets `fallback.allowDaclMutation=true` for the reviewed
-MXC DACL path. AppContainer process isolation, network denial, clipboard denial, input-injection
-denial, pinned-node execution, and strict no-host-fallback remain enforced. However, Windows ACLs
+MXC DACL path. AppContainer process isolation, contained public outbound networking, clipboard
+denial, input-injection denial, pinned-node execution, and strict no-host-fallback remain enforced.
+However, Windows ACLs
 may already allow the contained identity to access user folders outside the selected grants.
 Selected RO/RW folders therefore **add access** and are not an exclusive allowlist; a read-only
 selection cannot reduce a broader pre-existing ACL. MicroClaw never automatically changes Full to
 Limited after an OS update, probe change, startup failure, or settings migration.
 
 Gateway-native file/process tools remain removed from the agent surface in both Full and Limited
-mode. The policy pins `exec` to the app-owned node and keeps `group:fs` denied, including at least
-the native `read`, `write`, `edit`, and `apply_patch` tools. This remains true when other reviewed
-capabilities such as Web or allowlisted WeChat operations are restored: native Gateway filesystem
-tools execute on the Windows host and would bypass Windows Node/MXC. Local file access must use
-MXC-contained Windows Node `exec`, or a future MicroClaw file broker that enforces the same
+mode. The active Gateway surface is exactly `exec`, `web_search`, and `web_fetch`; `exec` is pinned
+to the app-owned node. The pinned OpenClaw `web_fetch` implementation is startup-attested to accept
+only HTTP(S), so `file:` and other local URL schemes remain rejected. The policy keeps `group:fs`
+denied, including at least the native `read`, `write`, `edit`, and `apply_patch` tools. This remains
+true when other reviewed capabilities such as allowlisted WeChat operations are restored: native
+Gateway filesystem tools execute on the Windows host and would bypass Windows Node/MXC. Local file
+access must use MXC-contained Windows Node `exec`, or a future MicroClaw file broker that enforces the same
 canonical RO/RW roots, scratch, generation/policy binding, reparse checks, and no-host-fallback
 contract. MXC Off restores the user's backed-up original tool policy.
 

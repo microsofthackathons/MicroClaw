@@ -212,7 +212,7 @@ export async function inspectWindowsNodeMxc(
         SystemRunSandboxEnabled: true,
         SystemRunBlockHostFallbackWhenMxcUnavailable: true,
         SystemRunAllowWindowsUi: true,
-        SystemRunAllowOutbound: false,
+        SystemRunAllowOutbound: true,
         SandboxClipboard: 0,
       } satisfies WindowsNodeMxcSettings)
     : await readWindowsNodeSettings(settingsPath);
@@ -673,6 +673,7 @@ export function validateBundledCwdAttestation(
     folderPolicyIsExclusiveBoundary: requestedMode === "full",
     durableApprovalsAllowed: requestedMode === "full",
     ambientAssessmentBound: requestedMode === "limited-dacl",
+    outboundNetworkEnabled: true,
   };
   const blockers = Object.entries(expected)
     .filter(([key, expectedValue]) => record?.[key] !== expectedValue)

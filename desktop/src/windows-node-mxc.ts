@@ -14,7 +14,7 @@ export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
   ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
   WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
 ] as const;
-export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = ["exec"] as const;
+export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = ["exec", "web_search", "web_fetch"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
 ] as const;
@@ -618,7 +618,9 @@ export function validateWindowsNodeMxcGatewayPolicy(
       blockers.push(`Agent "${id}" does not deny the Gateway-native filesystem tool group`);
     }
     if (!matchesExpected) {
-      blockers.push(`Agent "${id}" tool policy drifted from exec-only Windows-node routing`);
+      blockers.push(
+        `Agent "${id}" tool policy drifted from contained exec and Gateway web routing`,
+      );
     }
   }
 
@@ -711,13 +713,16 @@ export function validateWindowsNodeMxcSettings(
       "SystemRunAllowWindowsUi",
       "Windows UI APIs must be allowed for PowerShell compatibility with MXC 0.7",
     ],
+    [
+      "SystemRunAllowOutbound",
+      "Contained outbound network access must be enabled for this mode",
+    ],
   ];
   for (const [property, message] of requiredTrue) {
     if (settings[property] !== true) blockers.push(message);
   }
 
   const requiredFalse: Array<[keyof WindowsNodeMxcSettings, string]> = [
-    ["SystemRunAllowOutbound", "Outbound network access must remain blocked"],
     ["EnableMcpServer", "Local MCP must remain disabled for this mode"],
     ["NodeCanvasEnabled", "Canvas capability must be disabled"],
     ["NodeScreenEnabled", "Screen capability must be disabled"],
@@ -814,13 +819,16 @@ export function validateEffectiveToolNames(
   expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift"> = "active",
 ): WindowsNodeReadiness {
   const unique = [...new Set(toolNames)].sort();
-  const expected = expectedState === "active" ? ["exec"] : [];
+  const expected =
+    expectedState === "active" ? [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST].sort() : [];
   const filesystemCheck = validateNoGatewayNativeFilesystemTools(unique);
   const blockers = [...filesystemCheck.blockers];
   if (!isDeepStrictEqual(unique, expected)) {
     blockers.push(
       `Effective Gateway tools must be ${
-        expectedState === "active" ? 'exactly "exec"' : "empty while readiness is locked"
+        expectedState === "active"
+          ? `exactly ${expected.map((tool) => `"${tool}"`).join(", ")}`
+          : "empty while readiness is locked"
       }; observed: ${unique.join(", ") || "none"}`,
     );
   }

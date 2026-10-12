@@ -10,11 +10,13 @@ import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
+  PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
   PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
   PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
   PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
   PINNED_SYSTEM_RUN_PLAN_SOURCE,
+  attestPinnedOpenClawWebFetchHttpOnly,
   createWindowsNodeMxcApprovalProofMinter,
   computeWindowsNodeMxcApprovalPlanSha256,
   patchPinnedOpenClawExecApproval,
@@ -68,6 +70,7 @@ describe("pinned OpenClaw package validation", () => {
         "nodes-CUbe_1MQ.mjs",
         "system-run-approval-plan-Cu-Ftdkp.mjs",
         "exec-approval-mGU7M4-K.mjs",
+        "openclaw-tools-Dxfbrtff.mjs",
       ]);
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));
@@ -119,6 +122,19 @@ assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-p
       expect(initialized.status, initialized.stderr).toBe(0);
       expect(initialized.stdout).toContain("enabled one-use node proof");
     });
+  });
+});
+
+describe("pinned OpenClaw web fetch contract", () => {
+  it("attests the HTTP(S)-only URL scheme guard", () => {
+    expect(attestPinnedOpenClawWebFetchHttpOnly(PINNED_WEB_FETCH_HTTP_ONLY_SOURCE)).toBe(
+      PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
+    );
+    expect(() =>
+      attestPinnedOpenClawWebFetchHttpOnly(
+        'if (parsedUrl.protocol === "file:") return readFile(parsedUrl);',
+      ),
+    ).toThrow(/no longer rejects non-HTTP URL schemes/);
   });
 });
 

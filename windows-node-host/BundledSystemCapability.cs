@@ -470,7 +470,7 @@ internal sealed class BundledSystemCapability(
             ProcessContainer = new MxcProcessContainer
             {
                 LeastPrivilege = false,
-                Capabilities = [],
+                Capabilities = policy.NetworkAllowed ? ["internetClient"] : [],
                 Ui = new MxcBaseProcessUi
                 {
                     Isolation = "desktop",
@@ -486,7 +486,7 @@ internal sealed class BundledSystemCapability(
             },
             Network = new MxcNetwork
             {
-                DefaultPolicy = "block",
+                DefaultPolicy = policy.NetworkAllowed ? "allow" : "block",
                 EnforcementMode = "capabilities",
             },
             Ui = new MxcUi { Disable = false, Clipboard = "none", Injection = false },

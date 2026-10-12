@@ -215,6 +215,7 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(attestation.ReadinessProofBindsPreparedPlan);
         Assert.True(attestation.ReadinessProofExactBuiltInsOnly);
         Assert.True(attestation.ReadinessProofOneUse);
+        Assert.True(attestation.OutboundNetworkEnabled);
         Assert.False(attestation.DurableApprovalsPresent);
     }
 
@@ -276,7 +277,7 @@ public sealed class CwdPolicyTests : IDisposable
             approvedRoots = new[] { new { path = _root, access = "ReadOnly" } },
             deniedRoots = Array.Empty<string>(),
             wxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
-            networkAllowed = false,
+            networkAllowed = true,
             allowWindowsUi = true,
             clipboard = "none",
             inputInjection = false,
@@ -409,7 +410,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
-              "networkAllowed": false,
+              "networkAllowed": true,
               "allowWindowsUi": true,
               "clipboard": "none",
               "inputInjection": false,
@@ -421,6 +422,36 @@ public sealed class CwdPolicyTests : IDisposable
         var policy = await HostPolicy.LoadAsync(policyPath);
 
         Assert.Equal(FolderAccess.ReadOnly, Assert.Single(policy.ApprovedRoots).Access);
+        Assert.True(policy.NetworkAllowed);
+    }
+
+    [Fact]
+    public async Task RejectsPolicyWithoutContainedOutboundNetwork()
+    {
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var policyPath = Path.Combine(_root, "network-disabled-policy.json");
+        await File.WriteAllTextAsync(
+            policyPath,
+            $$"""
+            {
+              "approvedRoots": [
+                { "path": {{System.Text.Json.JsonSerializer.Serialize(_root)}}, "access": "ReadOnly" }
+              ],
+              "deniedRoots": [],
+              "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "networkAllowed": false,
+              "allowWindowsUi": true,
+              "clipboard": "none",
+              "inputInjection": false,
+              "strictNoHostFallback": true
+            }
+            """,
+            TestContext.Current.CancellationToken);
+
+        var error = await Assert.ThrowsAsync<HostPolicyException>(
+            () => HostPolicy.LoadAsync(policyPath));
+
+        Assert.Equal("outbound-network-disabled", error.Code);
     }
 
     [Fact]
@@ -459,7 +490,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [{{System.Text.Json.JsonSerializer.Serialize(protectedRoot)}}],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
-              "networkAllowed": false,
+              "networkAllowed": true,
               "allowWindowsUi": true,
               "clipboard": "none",
               "inputInjection": false,
@@ -490,7 +521,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [{{System.Text.Json.JsonSerializer.Serialize(protectedRoot)}}],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
-              "networkAllowed": false,
+              "networkAllowed": true,
               "allowWindowsUi": true,
               "clipboard": "none",
               "inputInjection": false,
@@ -740,6 +771,11 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.DoesNotContain(
             readonlyPaths.Concat(readwritePaths),
             item => string.Equals(item, outside, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            ["internetClient"],
+            Assert.IsType<string[]>(config.ProcessContainer!.Capabilities));
+        Assert.Equal("allow", config.Network!.DefaultPolicy);
+        Assert.Equal("capabilities", config.Network.EnforcementMode);
     }
 
     [Fact]
@@ -1449,6 +1485,7 @@ public sealed class CwdPolicyTests : IDisposable
             ApprovedRoots = roots,
             DeniedRoots = denied ?? [],
             WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            NetworkAllowed = true,
             AllowWindowsUi = true,
             StrictNoHostFallback = true,
         };

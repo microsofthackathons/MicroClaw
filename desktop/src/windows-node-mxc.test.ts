@@ -53,7 +53,7 @@ const strictSettings = {
   EnableMcpServer: false,
   SystemRunSandboxEnabled: true,
   SystemRunBlockHostFallbackWhenMxcUnavailable: true,
-  SystemRunAllowOutbound: false,
+  SystemRunAllowOutbound: true,
   SystemRunAllowWindowsUi: true,
   SandboxClipboard: 0,
 };
@@ -334,6 +334,7 @@ describe("bundled Windows Node CWD attestation", () => {
           folderPolicyIsExclusiveBoundary: true,
           durableApprovalsAllowed: true,
           ambientAssessmentBound: false,
+          outboundNetworkEnabled: true,
         },
       }),
     ).toEqual({ ready: true, blockers: [], durableApprovalsPresent: true });
@@ -356,6 +357,7 @@ describe("bundled Windows Node CWD attestation", () => {
     "durableApprovalStoreProtected",
     "folderPolicyIsExclusiveBoundary",
     "durableApprovalsAllowed",
+    "outboundNetworkEnabled",
   ])("fails closed when %s is not attested", (property) => {
     const payload = {
       contract: "microclaw.windows-cwd.v1",
@@ -393,6 +395,7 @@ describe("bundled Windows Node CWD attestation", () => {
       folderPolicyIsExclusiveBoundary: true,
       durableApprovalsAllowed: true,
       ambientAssessmentBound: false,
+      outboundNetworkEnabled: true,
     };
 
     expect(
@@ -544,10 +547,10 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(selectWindowsNodeMxcGatewayStartPolicy(null, false)).toBe("locked");
   });
 
-  it("exposes only exec and pins it to one stable node", () => {
+  it("exposes contained exec and Gateway web tools while pinning exec to one stable node", () => {
     expect(buildWindowsNodeMxcToolPolicy("node-123")).toEqual({
       profile: "full",
-      allow: ["exec"],
+      allow: ["exec", "web_search", "web_fetch"],
       deny: ["process", "group:fs", "group:plugins"],
       codeMode: false,
       exec: {
@@ -747,15 +750,16 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(result.blockers[0]).toContain("tool policy drifted");
   });
 
-  it("requires the effective runtime inventory to contain only exec", () => {
-    expect(validateEffectiveToolNames(["exec"]).ready).toBe(true);
+  it("requires the effective runtime inventory to contain only contained exec and Gateway web", () => {
+    expect(validateEffectiveToolNames(["exec", "web_search", "web_fetch"]).ready).toBe(true);
+    expect(validateEffectiveToolNames(["exec"]).ready).toBe(false);
     expect(validateEffectiveToolNames(["exec", "read"]).ready).toBe(false);
   });
 
   it.each(["full", "limited-dacl"] as const)(
     "keeps Gateway-native filesystem tools forbidden for %s when safe capabilities are restored",
     () => {
-      const restoredCapabilities = ["exec", "web_search", "weixin_send_message"];
+      const restoredCapabilities = ["exec", "web_search", "web_fetch", "weixin_send_message"];
       expect(validateNoGatewayNativeFilesystemTools(restoredCapabilities).ready).toBe(true);
 
       for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
@@ -765,7 +769,12 @@ describe("Windows Node MXC Gateway policy", () => {
         ]);
         expect(check.ready).toBe(false);
         expect(check.blockers[0]).toContain(filesystemTool);
-        const effectiveCheck = validateEffectiveToolNames(["exec", filesystemTool]);
+        const effectiveCheck = validateEffectiveToolNames([
+          "exec",
+          "web_search",
+          "web_fetch",
+          filesystemTool,
+        ]);
         expect(effectiveCheck.ready).toBe(false);
         expect(validateEffectiveToolNames([filesystemTool], "locked").ready).toBe(false);
         expect(
@@ -847,11 +856,11 @@ describe("Windows Node strict settings", () => {
     expect(validateWindowsNodeMxcSettings(strictSettings).ready).toBe(true);
   });
 
-  it("blocks host fallback, network, clipboard, MCP, and peripheral drift", () => {
+  it("blocks host fallback, missing contained network, clipboard, MCP, and peripheral drift", () => {
     const result = validateWindowsNodeMxcSettings({
       ...strictSettings,
       SystemRunBlockHostFallbackWhenMxcUnavailable: false,
-      SystemRunAllowOutbound: true,
+      SystemRunAllowOutbound: false,
       SandboxClipboard: 1,
       EnableMcpServer: true,
       NodeScreenEnabled: true,
@@ -860,7 +869,7 @@ describe("Windows Node strict settings", () => {
     expect(result.blockers).toEqual(
       expect.arrayContaining([
         "Strict MXC host-fallback blocking is disabled",
-        "Outbound network access must remain blocked",
+        "Contained outbound network access must be enabled for this mode",
         "Sandbox clipboard policy must be None",
         "Local MCP must remain disabled for this mode",
         "Screen capability must be disabled",

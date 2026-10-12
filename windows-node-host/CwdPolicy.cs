@@ -47,7 +47,8 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("requestedContainmentStrength")] string RequestedContainmentStrength,
     [property: JsonPropertyName("folderPolicyIsExclusiveBoundary")] bool FolderPolicyIsExclusiveBoundary,
     [property: JsonPropertyName("durableApprovalsAllowed")] bool DurableApprovalsAllowed,
-    [property: JsonPropertyName("ambientAssessmentBound")] bool AmbientAssessmentBound)
+    [property: JsonPropertyName("ambientAssessmentBound")] bool AmbientAssessmentBound,
+    [property: JsonPropertyName("outboundNetworkEnabled")] bool OutboundNetworkEnabled)
 {
     public static readonly CwdPolicyAttestation Current = new(
         CwdPolicyContract.Version,
@@ -84,7 +85,8 @@ public sealed record CwdPolicyAttestation(
         RequestedContainmentStrength: "full",
         FolderPolicyIsExclusiveBoundary: true,
         DurableApprovalsAllowed: true,
-        AmbientAssessmentBound: false);
+        AmbientAssessmentBound: false,
+        OutboundNetworkEnabled: true);
 
     public static CwdPolicyAttestation ForPolicy(HostPolicy policy) =>
         Current with
@@ -174,8 +176,14 @@ public sealed class HostPolicy
             throw new HostPolicyException("host-fallback-enabled", "Strict no-host-fallback must be enabled.");
         if (!input.AllowWindowsUi)
             throw new HostPolicyException("windows-ui-disabled", "allowWindowsUi must be enabled for MXC 0.7.");
-        if (input.NetworkAllowed || input.InputInjection || !string.Equals(input.Clipboard, "none", StringComparison.Ordinal))
-            throw new HostPolicyException("unsafe-capability", "Network, clipboard, and input injection must remain disabled.");
+        if (!input.NetworkAllowed)
+            throw new HostPolicyException(
+                "outbound-network-disabled",
+                "Contained outbound network access must be enabled.");
+        if (input.InputInjection || !string.Equals(input.Clipboard, "none", StringComparison.Ordinal))
+            throw new HostPolicyException(
+                "unsafe-capability",
+                "Clipboard and input injection must remain disabled.");
         if (input.RequestedStrength is not ("full" or "limited-dacl"))
             throw new HostPolicyException(
                 "containment-strength-invalid",
@@ -237,7 +245,7 @@ public sealed class HostPolicy
             ApprovedRoots = approved,
             DeniedRoots = denied,
             WxcExecPath = wxc,
-            NetworkAllowed = false,
+            NetworkAllowed = true,
             AllowWindowsUi = true,
             Clipboard = "none",
             InputInjection = false,

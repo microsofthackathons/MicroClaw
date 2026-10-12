@@ -17,11 +17,24 @@ const EXPECTED_SYSTEM_RUN_SHA256 =
 const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-mGU7M4-K.mjs";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
   "aacf6a38e1ea77a9ce02fc4f60069230eec6b9c0a2e7123d35032eb105253267";
+const EXPECTED_WEB_TOOLS_MODULE = "openclaw-tools-Dxfbrtff.mjs";
+const EXPECTED_WEB_TOOLS_SHA256 =
+  "181c5f9673480fbdacfa3ff88ae83686d8d1cb6402f583c3546d87b6e468d53e";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
+
+export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
+  'if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("Invalid URL: must be http or https");';
+
+export function attestPinnedOpenClawWebFetchHttpOnly(source) {
+  if (!source.includes(PINNED_WEB_FETCH_HTTP_ONLY_SOURCE)) {
+    throw new Error("Pinned OpenClaw web_fetch no longer rejects non-HTTP URL schemes");
+  }
+  return source;
+}
 
 export const PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE =
   "async function sanitizeSystemRunParamsForForwarding(opts) {";
@@ -441,6 +454,11 @@ export function validatePinnedOpenClawApprovalPackage(packageDir) {
       module: EXPECTED_EXEC_APPROVAL_MODULE,
       sha256: EXPECTED_EXEC_APPROVAL_SHA256,
       patch: patchPinnedOpenClawExecApproval,
+    },
+    {
+      module: EXPECTED_WEB_TOOLS_MODULE,
+      sha256: EXPECTED_WEB_TOOLS_SHA256,
+      patch: attestPinnedOpenClawWebFetchHttpOnly,
     },
   ].map((target) => {
     const targetPath = realpathSync(join(canonicalPackageDir, "dist", target.module));

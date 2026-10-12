@@ -310,7 +310,7 @@ export class BundledWindowsNodeHost {
         })),
         deniedRoots: sensitiveWindowsRoots(stateRoot, openClawStateRoot),
         wxcExecPath: this.wxcExecPath,
-        networkAllowed: false,
+        networkAllowed: true,
         allowWindowsUi: true,
         clipboard: "none",
         inputInjection: false,
