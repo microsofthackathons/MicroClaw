@@ -4,7 +4,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { isAbsolute, join, relative } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { URL, fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
 const EXPECTED_VERSION = "2026.10.2";
