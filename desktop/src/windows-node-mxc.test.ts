@@ -677,6 +677,7 @@ describe("Windows Node MXC Gateway policy", () => {
         entries: {
           "openclaw-weixin": { enabled: true },
           canvas: { enabled: true },
+          "memory-core": { enabled: false },
         },
       },
     });
@@ -701,6 +702,15 @@ describe("Windows Node MXC Gateway policy", () => {
     for (const drift of drifts) {
       expect(validateWindowsNodeMxcGatewayPolicy(drift, "node-123", "active").ready).toBe(false);
     }
+    const implicitMemoryCore = structuredClone(baseline);
+    (
+      implicitMemoryCore.plugins as {
+        entries: Record<string, { enabled?: boolean }>;
+      }
+    ).entries["memory-core"] = {};
+    expect(
+      validateWindowsNodeMxcGatewayPolicy(implicitMemoryCore, "node-123", "active").blockers,
+    ).toContain('Gateway plugin "memory-core" must remain explicitly disabled');
   });
 
   it("uses an empty locked tool inventory until all readiness proofs pass", () => {

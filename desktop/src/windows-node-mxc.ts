@@ -43,6 +43,7 @@ export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
   "apply_patch",
 ] as const;
 export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs"] as const;
+export const WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS = ["memory-core"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
   "group:runtime",
   "group:fs",
@@ -567,6 +568,15 @@ export function applyWindowsNodeMxcGatewayPolicy(
         ...asRecord(pluginEntries.canvas),
         enabled: true,
       },
+      ...Object.fromEntries(
+        WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.map((pluginId) => [
+          pluginId,
+          {
+            ...asRecord(pluginEntries[pluginId]),
+            enabled: false,
+          },
+        ]),
+      ),
     },
   };
   return { config, backups, agentIds };
@@ -742,10 +752,18 @@ export function validateWindowsNodeMxcGatewayPolicy(
   ) {
     blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
   }
+  for (const pluginId of WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS) {
+    if (asRecord(asRecord(plugins.entries)[pluginId]).enabled !== false) {
+      blockers.push(`Gateway plugin "${pluginId}" must remain explicitly disabled`);
+    }
+  }
   for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
     if (
       pluginId !== "canvas" &&
       pluginId !== "openclaw-weixin" &&
+      !WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.includes(
+        pluginId as (typeof WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS)[number],
+      ) &&
       asRecord(value).enabled !== false
     ) {
       blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
