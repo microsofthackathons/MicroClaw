@@ -28,6 +28,7 @@ import {
   validateWindowsNodeMxcGatewayPolicy,
   validateWindowsNodeMxcFolderPath,
   validateWindowsNodeMxcSettings,
+  WINDOWS_NODE_MXC_CANVAS_COMMANDS,
   WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
 } from "./windows-node-mxc";
 import {
@@ -43,7 +44,7 @@ import {
 const strictSettings = {
   EnableNodeMode: true,
   NodeSystemRunEnabled: true,
-  NodeCanvasEnabled: false,
+  NodeCanvasEnabled: true,
   NodeScreenEnabled: false,
   NodeCameraEnabled: false,
   NodeLocationEnabled: false,
@@ -547,11 +548,11 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(selectWindowsNodeMxcGatewayStartPolicy(null, false)).toBe("locked");
   });
 
-  it("exposes contained exec, Gateway web, and brokered messaging while pinning exec", () => {
+  it("exposes contained exec, Gateway web, brokered messaging, and reviewed Canvas while pinning exec", () => {
     expect(buildWindowsNodeMxcToolPolicy("node-123")).toEqual({
       profile: "full",
-      allow: ["exec", "web_search", "web_fetch", "message"],
-      deny: ["process", "group:fs", "group:plugins"],
+      allow: ["exec", "web_search", "web_fetch", "message", "canvas"],
+      deny: ["process", "group:fs"],
       codeMode: false,
       exec: {
         host: "node",
@@ -672,8 +673,11 @@ describe("Windows Node MXC Gateway policy", () => {
       cron: { enabled: false, maxConcurrentRuns: 2 },
       plugins: {
         enabled: true,
-        allow: ["openclaw-weixin"],
-        entries: { "openclaw-weixin": { enabled: true } },
+        allow: ["canvas", "openclaw-weixin"],
+        entries: {
+          "openclaw-weixin": { enabled: true },
+          canvas: { enabled: true },
+        },
       },
     });
     expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123", "locked").ready).toBe(
@@ -756,10 +760,10 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(result.blockers[0]).toContain("tool policy drifted");
   });
 
-  it("requires the effective inventory to contain only contained exec, Web, and messaging", () => {
-    expect(validateEffectiveToolNames(["exec", "web_search", "web_fetch", "message"]).ready).toBe(
-      true,
-    );
+  it("requires the effective inventory to contain only contained exec, Web, messaging, and Canvas", () => {
+    expect(
+      validateEffectiveToolNames(["exec", "web_search", "web_fetch", "message", "canvas"]).ready,
+    ).toBe(true);
     expect(validateEffectiveToolNames(["exec"]).ready).toBe(false);
     expect(validateEffectiveToolNames(["exec", "read"]).ready).toBe(false);
   });
@@ -767,7 +771,7 @@ describe("Windows Node MXC Gateway policy", () => {
   it.each(["full", "limited-dacl"] as const)(
     "keeps Gateway-native filesystem tools forbidden for %s when safe capabilities are restored",
     () => {
-      const restoredCapabilities = ["exec", "web_search", "web_fetch", "message"];
+      const restoredCapabilities = ["exec", "web_search", "web_fetch", "message", "canvas"];
       expect(validateNoGatewayNativeFilesystemTools(restoredCapabilities).ready).toBe(true);
 
       for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
@@ -1229,7 +1233,18 @@ describe("selected node readiness", () => {
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
 
-    node!.commands.push("system.run.readiness", "system.which", "system.run.cwd-policy");
+    node!.commands.push(
+      "system.run.readiness",
+      "system.which",
+      "system.run.cwd-policy",
+      ...WINDOWS_NODE_MXC_CANVAS_COMMANDS,
+    );
     expect(validateSelectedWindowsNode(node).ready).toBe(true);
+
+    node!.commands.push("canvas.eval");
+    expect(validateSelectedWindowsNode(node)).toMatchObject({
+      ready: false,
+      blockers: ["Selected node declares unexpected commands: canvas.eval"],
+    });
   });
 });

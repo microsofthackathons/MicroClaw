@@ -98,6 +98,7 @@ if (upstreamRevision.stdout.trim() !== expectedWindowsNodeRevision) {
 
 const resourceRoot = path.join(desktopDir, "resources", "windows-node");
 const hostOutput = path.join(resourceRoot, "host");
+const canvasHostOutput = path.join(resourceRoot, "canvas-host");
 const patchedHostPrepOutput = path.join(resourceRoot, "host-prep");
 const mxcOutput = path.join(resourceRoot, "mxc");
 rmSync(resourceRoot, { recursive: true, force: true });
@@ -127,6 +128,30 @@ const publish = spawnSync(
 );
 if (publish.error) throw publish.error;
 if (publish.status !== 0) process.exit(publish.status ?? 1);
+
+const canvasHostPublish = spawnSync(
+  "dotnet",
+  [
+    "publish",
+    path.join(repositoryDir, "windows-node-canvas-host", "MicroClaw.WindowsNodeCanvasHost.csproj"),
+    "--configuration",
+    "Release",
+    "--runtime",
+    rid,
+    "--self-contained",
+    "true",
+    "--output",
+    canvasHostOutput,
+    "-p:DebugType=None",
+    "-p:ImportDirectoryBuildProps=false",
+    "-p:ImportDirectoryBuildTargets=false",
+    "-p:DisableGitVersionTask=true",
+    "-m:1",
+  ],
+  { stdio: "inherit" },
+);
+if (canvasHostPublish.error) throw canvasHostPublish.error;
+if (canvasHostPublish.status !== 0) process.exit(canvasHostPublish.status ?? 1);
 
 const hostPrepPublish = spawnSync(
   "dotnet",
@@ -183,6 +208,12 @@ for (const entry of readdirSync(hostOutput)) {
     rmSync(path.join(hostOutput, entry), { recursive: true, force: true });
   }
 }
+const canvasHostExe = path.join(canvasHostOutput, "microclaw-windows-node-canvas-host.exe");
+if (!existsSync(canvasHostExe)) {
+  throw new Error(`Canvas host publish did not produce ${canvasHostExe}`);
+}
+const canvasHostHash = createHash("sha256").update(readFileSync(canvasHostExe)).digest("hex");
+const canvasHostTreeHash = hashDirectoryTree(canvasHostOutput);
 const patchedHostPrepExe = path.join(patchedHostPrepOutput, "microclaw-mxc-host-prep.exe");
 if (!existsSync(patchedHostPrepExe)) {
   throw new Error(`Patched host-prep publish did not produce ${patchedHostPrepExe}`);
@@ -214,6 +245,9 @@ writeFileSync(
       wxcExecSha256: actualWxcExecHash,
       officialWxcHostPrepSha256: actualOfficialWxcHostPrepHash,
       windowsNodeRevision: expectedWindowsNodeRevision,
+      canvasContract: "microclaw.windows-node-mxc.canvas.v1",
+      canvasHostSha256: canvasHostHash,
+      canvasHostTreeSha256: canvasHostTreeHash,
       mxcHostPrepPatchRevision: expectedMxcHostPrepPatchRevision,
       microclawHostPrepSha256: actualPatchedHostPrepHash,
       microclawHostPrepOperations: ["prepare-system-drive", "unprepare-system-drive"],
@@ -226,5 +260,44 @@ writeFileSync(
 console.log(
   `[windows-node] staged ${rid}, MXC ${packageJson.version}, ` +
     `wxc-exec sha256=${actualWxcExecHash}, ` +
+    `canvas-host sha256=${canvasHostHash}, ` +
+    `canvas-host-tree sha256=${canvasHostTreeHash}, ` +
     `microclaw-mxc-host-prep sha256=${actualPatchedHostPrepHash}`,
 );
+
+function hashDirectoryTree(root) {
+  const files = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      compareOrdinal(left.name, right.name),
+    )) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Canvas host resource tree contains a link: ${fullPath}`);
+      }
+      if (entry.isDirectory()) visit(fullPath);
+      else if (entry.isFile()) files.push(fullPath);
+      else throw new Error("Canvas host resource tree contains an unsupported entry");
+    }
+  };
+  visit(root);
+  files.sort((left, right) =>
+    compareOrdinal(
+      path.relative(root, left).split(path.sep).join("/"),
+      path.relative(root, right).split(path.sep).join("/"),
+    ),
+  );
+  const hash = createHash("sha256");
+  for (const filePath of files) {
+    const relative = path.relative(root, filePath).split(path.sep).join("/");
+    const bytes = readFileSync(filePath);
+    hash.update(`${relative}\0${bytes.byteLength}\0`, "utf8");
+    hash.update(bytes);
+    hash.update(Buffer.from([0]));
+  }
+  return hash.digest("hex");
+}
+
+function compareOrdinal(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}

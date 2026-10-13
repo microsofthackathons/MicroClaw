@@ -201,7 +201,7 @@ export async function inspectWindowsNodeMxc(
     ? ({
         EnableNodeMode: true,
         NodeSystemRunEnabled: true,
-        NodeCanvasEnabled: false,
+        NodeCanvasEnabled: true,
         NodeScreenEnabled: false,
         NodeCameraEnabled: false,
         NodeLocationEnabled: false,
@@ -275,12 +275,8 @@ export async function inspectWindowsNodeMxc(
   }
   warnings.push(...probe.warnings);
   if (bundled && desiredEnabled) {
-    const expectedStrength =
-      options.requestedMode === "limited-dacl" ? "limited-dacl" : "full";
-    if (
-      bundled.requestedStrength !== null &&
-      bundled.requestedStrength !== expectedStrength
-    ) {
+    const expectedStrength = options.requestedMode === "limited-dacl" ? "limited-dacl" : "full";
+    if (bundled.requestedStrength !== null && bundled.requestedStrength !== expectedStrength) {
       blockers.push(
         `Bundled node containment strength drifted from ${expectedStrength} to ${bundled.requestedStrength}`,
       );
@@ -290,9 +286,7 @@ export async function inspectWindowsNodeMxc(
       probe.tier !== null &&
       bundled.effectiveTier.toLowerCase() !== probe.tier.toLowerCase()
     ) {
-      blockers.push(
-        `Bundled node MXC tier drifted from ${bundled.effectiveTier} to ${probe.tier}`,
-      );
+      blockers.push(`Bundled node MXC tier drifted from ${bundled.effectiveTier} to ${probe.tier}`);
     }
     if (
       options.requestedMode === "limited-dacl" &&
@@ -588,8 +582,7 @@ export function isWindowsNodeMxcSmokePassed(smoke: StoredWindowsNodeMxcSmoke): b
   if (smoke.execution.outcome !== "passed") return false;
   return smoke.profile === "limited-minimal-smoke"
     ? smoke.containmentStrength === "limited-dacl" && smoke.deniedOutsideRoot === null
-    : smoke.containmentStrength === "full" &&
-        smoke.deniedOutsideRoot?.outcome === "passed";
+    : smoke.containmentStrength === "full" && smoke.deniedOutsideRoot?.outcome === "passed";
 }
 
 export function selectCurrentWindowsNodeMxcSmoke(
@@ -735,8 +728,7 @@ export async function runWindowsNodeMxcSmoke(
   const minter = createWindowsNodeMxcReadinessProofMinter(authorization.proofContext, {
     now: dependencies.now,
   });
-  const profile =
-    containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke";
+  const profile = containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke";
   const deniedOutsideRoot =
     containmentStrength === "full" ? await invokeDeniedCwdSmoke(gateway, nodeId) : null;
   const execution = await invokeInternalReadinessProbe(

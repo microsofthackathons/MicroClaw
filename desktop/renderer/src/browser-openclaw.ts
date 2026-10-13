@@ -86,6 +86,12 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           effectiveInternalEnabled: false,
           pausedByMxc: false,
         },
+        canvas: {
+          state: "off" as const,
+          commandCount: 8 as const,
+          nativeA2uiOnly: true as const,
+          localFilesAllowed: false as const,
+        },
         lifecycleState: {
           phase: "idle" as const,
           detail: null,

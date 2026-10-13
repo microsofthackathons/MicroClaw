@@ -81,6 +81,7 @@ describe("pinned OpenClaw package validation", () => {
         cronPause: true,
         cronResume: true,
         hooksPause: true,
+        canvasPhase1: true,
       });
       expect(targets.map((target: { module: string }) => target.module)).toEqual([
         "nodes-CUbe_1MQ.mjs",
@@ -91,6 +92,9 @@ describe("pinned OpenClaw package validation", () => {
         "cron-D3Bd3ZFt.mjs",
         "server-start-DfGddYU-.mjs",
         "internal-hooks-DfVqU7ax.mjs",
+        "extensions/canvas/index.js",
+        "tool-CpRzQ0s7.mjs",
+        "node-eligibility-UXb9xB0F.mjs",
       ]);
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));
@@ -105,6 +109,24 @@ describe("pinned OpenClaw package validation", () => {
           expect(patched.indexOf("manager.projectDecisionIfActive")).toBeLessThan(
             patched.indexOf("next.microclawApprovalProof ="),
           );
+        }
+        if (target.module === "extensions/canvas/index.js") {
+          expect(patched).toContain('"canvas.snapshot"');
+          expect(patched).not.toContain('"canvas.navigate"');
+          expect(patched).toContain('defaultPlatforms: ["windows"]');
+        }
+        if (target.module === "tool-CpRzQ0s7.mjs") {
+          expect(patched).not.toContain('case "navigate"');
+          expect(patched).not.toContain("presentTarget");
+          expect(patched).toContain('case "a2ui_push"');
+          expect(patched).toContain('"canvas.snapshot"');
+        }
+        if (target.module === "node-eligibility-UXb9xB0F.mjs") {
+          expect(patched).toContain("/^windows(?:\\s|$)/i");
+          expect(patched).not.toContain('"navigate"');
+          expect(patched).toContain('"a2ui_push"');
+          expect(patched).not.toContain("target: Type.Optional");
+          expect(patched).not.toContain("url: Type.Optional");
         }
       }
     });
@@ -127,6 +149,7 @@ assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-p
           env: {
             ...process.env,
             MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "1",
+            MICROCLAW_MXC_CANVAS_PHASE1: "1",
             MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
             MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
             MICROCLAW_MXC_APPROVAL_PROOF_SECRET: Buffer.alloc(32, 1).toString("base64"),
@@ -152,10 +175,7 @@ assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-p
           MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
           MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
           MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS: "1735689600000",
-          MICROCLAW_MXC_CRON_RESUME_ACK_PATH: join(
-            tmpdir(),
-            "microclaw-cron-resume-test.json",
-          ),
+          MICROCLAW_MXC_CRON_RESUME_ACK_PATH: join(tmpdir(), "microclaw-cron-resume-test.json"),
           MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN: "test-token",
           MICROCLAW_MXC_APPROVAL_PROOF_SECRET: "",
         },
@@ -529,11 +549,11 @@ describe("Windows Node MXC approval proof minter", () => {
       ).toBe(true);
       expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CRON_PAUSED: "1" }, true)).toBe(true);
       expect(
-        shouldInitializeApprovalPreload(
-          { MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64: "e30=" },
-          true,
-        ),
+        shouldInitializeApprovalPreload({ MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64: "e30=" }, true),
       ).toBe(true);
+      expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CANVAS_PHASE1: "1" }, true)).toBe(
+        true,
+      );
       expect(shouldInitializeApprovalPreload({}, true)).toBe(false);
     });
   });

@@ -10,9 +10,11 @@ It remains independent of the Docker and direct-MXC experiments.
 MicroClaw Electron
   -> app-owned loopback OpenClaw Gateway
   -> bundled MicroClaw Windows Node Host
-  -> exact proof-only startup probes or attended normal-command approval
-  -> official @microsoft/mxc-sdk@0.7.0 wxc-exec.exe
-  -> MXC-contained child process
+     -> exact proof-only startup probes or attended normal-command approval
+     -> official @microsoft/mxc-sdk@0.7.0 wxc-exec.exe
+     -> MXC-contained child process
+     -> authenticated managed Canvas child
+     -> pinned native A2UI surface
 ```
 
 OpenClaw Companion, its tray UI, setup code, and local MCP endpoint are not used. The helper has a
@@ -23,13 +25,13 @@ The managed Gateway PID is also passed in bootstrap metadata. Before every crede
 handshake or reconnect, the helper verifies that this exact process still owns the IPv4 loopback
 listener; MicroClaw stops and recreates the helper for each Gateway generation.
 
-The helper advertises only `system.run`, proof-only `system.run.readiness`, `system.run.prepare`,
-`system.which`, and `system.run.cwd-policy`. It contains no host command runner and cannot fall back
+The helper advertises the five reviewed system commands plus the exact Canvas Phase 1 command set
+documented below. It contains no host command runner and cannot fall back
 when MXC is absent or fails. Contained commands receive unrestricted public outbound network access
 through MXC's `internetClient` capability, without a host fallback or host allowlist. Clipboard,
-input injection, MCP, screen, camera, canvas, browser, location, and speech capabilities are absent.
+input injection, MCP, screen, camera, browser, location, and speech capabilities are absent.
 `allowWindowsUi=true` is required for PowerShell compatibility with MXC 0.7; it does not activate
-any UI capture or input capability.
+any screen capture or input capability.
 
 MicroClaw exposes three explicit requested states:
 
@@ -55,7 +57,8 @@ selection cannot reduce a broader pre-existing ACL. MicroClaw never automaticall
 Limited after an OS update, probe change, startup failure, or settings migration.
 
 Gateway-native file/process tools remain removed from the agent surface in both Full and Limited
-mode. The active Gateway surface is exactly `exec`, `web_search`, `web_fetch`, and `message`;
+mode. The active Gateway surface is exactly `exec`, `web_search`, `web_fetch`, `message`, and the
+reviewed `canvas` tool;
 `exec` is pinned to the app-owned node, and `message` can reach only the requested WeChat channel.
 The pinned OpenClaw `web_fetch` implementation is startup-attested to accept only HTTP(S), so
 `file:` and other local URL schemes remain rejected. The policy keeps `group:fs` denied, including
@@ -63,6 +66,51 @@ at least the native `read`, `write`, `edit`, and `apply_patch` tools. Native Gat
 tools execute on the Windows host and would bypass Windows Node/MXC. Local file access must use
 MXC-contained Windows Node `exec` or the MicroClaw WeChat media broker. MXC Off restores the user's
 backed-up original tool policy.
+
+## Canvas Phase 1
+
+Canvas Phase 1 is available only while Full or Limited MXC is **Active**. It is a Windows Node UI
+capability, not an MXC-contained `system.run` child. The same Gateway generation, policy
+fingerprint, node identity, and signed active lease gate every Canvas command and action. The
+bundled node launches a dedicated authenticated child that reuses the pinned native WinUI A2UI
+renderer. It does not launch OpenClaw Companion or the legacy WebView Canvas.
+
+The exact node command set is:
+
+- `canvas.present`
+- `canvas.hide`
+- `canvas.snapshot`
+- `canvas.caps`
+- `canvas.a2ui.push`
+- `canvas.a2ui.pushJSONL`
+- `canvas.a2ui.reset`
+- `canvas.a2ui.dump`
+
+The agent-facing `canvas` tool maps only to the eight reviewed operations: `present`, `hide`,
+`snapshot`, `caps`, `a2ui_push`, `a2ui_push_jsonl`, `a2ui_reset`, and `a2ui_dump`.
+`canvas.navigate` and `canvas.eval` are neither advertised nor accepted. Presentation opens only
+the managed native A2UI
+shell: URL, HTML, file URI, UNC, absolute/relative local path, `javascript:`, arbitrary `data:`,
+and unknown-scheme navigation are unavailable. A2UI pushes must be inline; `jsonlPath` is rejected.
+Phase 1 media is restricted to bounded base64 inline PNG/JPEG/WebP image payloads. HTTPS media hosts
+and staged local artifacts are intentionally deferred rather than widening the filesystem boundary.
+
+Only `click`, `submit`, `confirm`, and `cancel` A2UI callbacks are forwarded. They re-enter the
+normal Gateway as `agent.request` events after immediate lease and identity revalidation; they do
+not directly invoke process, filesystem, config, Cron, Hooks, plugin, MCP, browser, screen, camera,
+or node commands. Each surface is bound to the agent session that created it; a different session
+cannot update, delete, or receive actions from that surface. There is no offline action queue or
+relock replay. Snapshot captures only the managed XAML Canvas surface and returns in-memory image
+data; `NodeScreenEnabled` remains false and no arbitrary local path is returned.
+
+Locked startup, transitions, stale generation/policy/node/lease, node loss, or policy drift reject
+Canvas before UI work. The broker rechecks immediately before host-side actions. Lease loss closes
+the current Canvas and clears its surfaces; subsequent A2UI work remains rejected until a new
+current-generation active lease exists. The exact command/action sets, native renderer, executable
+hash, complete published Canvas-host code/resource tree hash, and all negative capability flags are
+fingerprinted into the same policy and attestation used for activation. Unexpected command, action,
+plugin, binary/resource, or local-capability drift relocks fail closed. The Canvas child also binds
+to the exact node-host process identity and exits if that parent is lost.
 
 Scheduled tasks keep their stored definitions while MXC is requested, but the effective Gateway
 Cron scheduler remains disabled. Cron mutation, scratch-write, and run-now RPCs reject while MXC
@@ -326,12 +374,12 @@ Activation is an automatic fail-closed transaction:
    by the explicitly requested mode.
 2. Start and attest the locked generation and its smoke record.
 3. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
-4. Write an active policy that exposes only node-pinned `exec` and disables configured channels,
-   webhooks, internal hooks, cron, plugin loading, and plugin entries.
+4. Write an active policy that exposes only node-pinned `exec`, reviewed Web/WeChat routing, and
+   the exact Canvas tool; disable other channels, webhooks, internal hooks, cron, and plugins.
 5. Start a new managed loopback Gateway generation and pair the exact bundled node.
 6. Verify the node declaration, requested/effective containment strength, exact tier, CWD contract,
-   strict helper policy, Limited assessment hash if applicable, and effective `exec`-only tool
-   inventory.
+   strict helper policy, Limited assessment hash if applicable, and exact effective tool/Canvas
+   command inventory.
 7. Repeat the mode-specific contained smoke profile for the active generation under a diagnostic
    lease.
 8. Issue an active lease, perform a final attestation, then release MicroClaw chat ingress.
@@ -340,8 +388,8 @@ Any restart, disconnect, timeout, policy/tool/tier/assessment drift, missing or 
 helper failure, or attestation error revokes the lease, clears the smoke proof, rewrites the locked
 policy, and stops the managed Gateway. A new probe never authorizes a Full-to-Limited downgrade.
 Configuration and restart operations that could invalidate an active transaction are rejected while
-this mode is enabled. External channel, hook, cron, and plugin entry points remain disabled, and
-inventory APIs return no active ingress. The loading screen shows the requested mode, attested
+this mode is enabled. Unreviewed external channels, hooks, cron, and plugins remain disabled. The
+loading screen shows the requested mode, attested
 effective strength/tier, failed MXC phase, and recovery detail;
 the user may retry the same serialized transaction or turn MXC off. Toggling either direction
 returns to loading immediately, rejects chat during the transition, and releases ingress only after

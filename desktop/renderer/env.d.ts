@@ -383,6 +383,12 @@ interface OpenClawAPI {
         effectiveInternalEnabled: boolean;
         pausedByMxc: boolean;
       };
+      canvas: {
+        state: "off" | "paused" | "active";
+        commandCount: 8;
+        nativeA2uiOnly: true;
+        localFilesAllowed: false;
+      };
       lifecycleState: {
         phase:
           | "idle"

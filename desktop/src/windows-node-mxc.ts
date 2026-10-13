@@ -10,15 +10,28 @@ export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
   "system.which",
 ] as const;
 export const WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND = "system.run.cwd-policy";
+export const WINDOWS_NODE_MXC_CANVAS_COMMANDS = [
+  "canvas.present",
+  "canvas.hide",
+  "canvas.snapshot",
+  "canvas.caps",
+  "canvas.a2ui.push",
+  "canvas.a2ui.pushJSONL",
+  "canvas.a2ui.reset",
+  "canvas.a2ui.dump",
+] as const;
+export const WINDOWS_NODE_MXC_CANVAS_ACTIONS = ["cancel", "click", "confirm", "submit"] as const;
 export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
   ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
   WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+  ...WINDOWS_NODE_MXC_CANVAS_COMMANDS,
 ] as const;
 export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = [
   "exec",
   "web_search",
   "web_fetch",
   "message",
+  "canvas",
 ] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
@@ -29,7 +42,7 @@ export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
   "edit",
   "apply_patch",
 ] as const;
-export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs", "group:plugins"] as const;
+export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
   "group:runtime",
   "group:fs",
@@ -518,8 +531,7 @@ export function applyWindowsNodeMxcGatewayPolicy(
       channelId,
       {
         ...asRecord(value),
-        enabled:
-          channelId === "openclaw-weixin" && asRecord(value).enabled === true,
+        enabled: channelId === "openclaw-weixin" && asRecord(value).enabled === true,
       },
     ]),
   );
@@ -533,31 +545,29 @@ export function applyWindowsNodeMxcGatewayPolicy(
   const plugins = asRecord(config.plugins);
   const pluginEntries = asRecord(plugins.entries);
   const weixinRequested = asRecord(pluginEntries["openclaw-weixin"]).enabled === true;
-  const configuredPluginAllow = plugins.allow;
-  const pluginAllowPresent = Array.isArray(configuredPluginAllow);
-  const pluginAllow = Array.isArray(configuredPluginAllow)
-    ? configuredPluginAllow.filter((value): value is string => typeof value === "string")
-    : [];
+  const pluginAllow = ["canvas", ...(weixinRequested ? ["openclaw-weixin"] : [])];
   config.plugins = {
     ...plugins,
-    enabled: weixinRequested,
-    ...(weixinRequested || pluginAllowPresent
-      ? {
-          allow:
-            weixinRequested && !pluginAllow.includes("openclaw-weixin")
-              ? [...pluginAllow, "openclaw-weixin"]
-              : pluginAllow,
-        }
-      : {}),
-    entries: Object.fromEntries(
-      Object.entries(pluginEntries).map(([pluginId, value]) => [
-        pluginId,
-        {
-          ...asRecord(value),
-          enabled: pluginId === "openclaw-weixin" && weixinRequested,
-        },
-      ]),
-    ),
+    enabled: true,
+    allow: pluginAllow,
+    deny: Array.isArray(plugins.deny)
+      ? plugins.deny.filter((value) => value !== "canvas" && value !== "openclaw-weixin")
+      : [],
+    entries: {
+      ...Object.fromEntries(
+        Object.entries(pluginEntries).map(([pluginId, value]) => [
+          pluginId,
+          {
+            ...asRecord(value),
+            enabled: pluginId === "canvas" || (pluginId === "openclaw-weixin" && weixinRequested),
+          },
+        ]),
+      ),
+      canvas: {
+        ...asRecord(pluginEntries.canvas),
+        enabled: true,
+      },
+    },
   };
   return { config, backups, agentIds };
 }
@@ -668,6 +678,9 @@ export function validateWindowsNodeMxcGatewayPolicy(
   if (globalDeny.some((value) => value === "exec" || value === "group:runtime")) {
     blockers.push("Global Gateway tool policy blocks node exec");
   }
+  if (globalDeny.some((value) => value === "canvas" || value === "group:plugins")) {
+    blockers.push("Global Gateway tool policy blocks the reviewed Canvas tool");
+  }
   const gateway =
     root.gateway && typeof root.gateway === "object" && !Array.isArray(root.gateway)
       ? (root.gateway as Record<string, unknown>)
@@ -680,10 +693,14 @@ export function validateWindowsNodeMxcGatewayPolicy(
   const allowCommands = Array.isArray(commands.allow) ? commands.allow : [];
   const denyCommands = Array.isArray(commands.deny) ? commands.deny : [];
   if (!isDeepStrictEqual(allowCommands, [...WINDOWS_NODE_MXC_NODE_COMMANDS])) {
-    blockers.push("Gateway node command allowlist drifted from the bundled system-only surface");
+    blockers.push(
+      "Gateway node command allowlist drifted from the bundled system and Canvas surface",
+    );
   }
   if (!isDeepStrictEqual(denyCommands, [])) {
-    blockers.push("Gateway node command denylist conflicts with the bundled system-only surface");
+    blockers.push(
+      "Gateway node command denylist conflicts with the bundled system and Canvas surface",
+    );
   }
   const cron = asRecord(root.cron);
   if (cron.enabled !== false) blockers.push("Gateway cron ingress must remain disabled");
@@ -704,16 +721,21 @@ export function validateWindowsNodeMxcGatewayPolicy(
     }
   }
   const plugins = asRecord(root.plugins);
+  const canvasPluginEnabled = asRecord(asRecord(plugins.entries).canvas).enabled === true;
   const weixinPluginEnabled =
     asRecord(asRecord(plugins.entries)["openclaw-weixin"]).enabled === true;
-  if (plugins.enabled !== weixinPluginEnabled) {
-    blockers.push("Gateway plugin host must match the requested WeChat lifecycle");
+  if (plugins.enabled !== true || !canvasPluginEnabled) {
+    blockers.push("Gateway Canvas plugin must remain enabled under MXC");
   }
   if (weixinChannelEnabled && !weixinPluginEnabled) {
     blockers.push("Gateway WeChat channel cannot be enabled while its plugin is disabled");
   }
   const pluginAllow = Array.isArray(plugins.allow) ? plugins.allow : [];
   const pluginDeny = Array.isArray(plugins.deny) ? plugins.deny : [];
+  const expectedPluginAllow = ["canvas", ...(weixinPluginEnabled ? ["openclaw-weixin"] : [])];
+  if (!isDeepStrictEqual(pluginAllow, expectedPluginAllow) || pluginDeny.includes("canvas")) {
+    blockers.push("Gateway plugin policy drifted from the reviewed Canvas/WeChat surface");
+  }
   if (
     weixinPluginEnabled &&
     (!pluginAllow.includes("openclaw-weixin") || pluginDeny.includes("openclaw-weixin"))
@@ -721,7 +743,11 @@ export function validateWindowsNodeMxcGatewayPolicy(
     blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
   }
   for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
-    if (pluginId !== "openclaw-weixin" && asRecord(value).enabled !== false) {
+    if (
+      pluginId !== "canvas" &&
+      pluginId !== "openclaw-weixin" &&
+      asRecord(value).enabled !== false
+    ) {
       blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
     }
   }
@@ -760,6 +786,7 @@ export function validateWindowsNodeMxcSettings(
   const requiredTrue: Array<[keyof WindowsNodeMxcSettings, string]> = [
     ["EnableNodeMode", "Windows Companion node mode is disabled"],
     ["NodeSystemRunEnabled", "Windows node system.run is disabled"],
+    ["NodeCanvasEnabled", "Reviewed Canvas Phase 1 capability is disabled"],
     ["SystemRunSandboxEnabled", "Windows node MXC sandbox is disabled"],
     [
       "SystemRunBlockHostFallbackWhenMxcUnavailable",
@@ -769,10 +796,7 @@ export function validateWindowsNodeMxcSettings(
       "SystemRunAllowWindowsUi",
       "Windows UI APIs must be allowed for PowerShell compatibility with MXC 0.7",
     ],
-    [
-      "SystemRunAllowOutbound",
-      "Contained outbound network access must be enabled for this mode",
-    ],
+    ["SystemRunAllowOutbound", "Contained outbound network access must be enabled for this mode"],
   ];
   for (const [property, message] of requiredTrue) {
     if (settings[property] !== true) blockers.push(message);
@@ -780,7 +804,6 @@ export function validateWindowsNodeMxcSettings(
 
   const requiredFalse: Array<[keyof WindowsNodeMxcSettings, string]> = [
     ["EnableMcpServer", "Local MCP must remain disabled for this mode"],
-    ["NodeCanvasEnabled", "Canvas capability must be disabled"],
     ["NodeScreenEnabled", "Screen capability must be disabled"],
     ["NodeCameraEnabled", "Camera capability must be disabled"],
     ["NodeLocationEnabled", "Location capability must be disabled"],
@@ -795,7 +818,7 @@ export function validateWindowsNodeMxcSettings(
   if (settings.SandboxClipboard !== 0) blockers.push("Sandbox clipboard policy must be None");
 
   warnings.push(
-    "allowWindowsUi is a PowerShell compatibility relaxation; it does not enable screen, input, canvas, camera, microphone, browser, location, or speech capabilities.",
+    "allowWindowsUi is a PowerShell compatibility relaxation; it does not enable screen, input, camera, microphone, browser, location, or speech capabilities. Canvas is separately restricted to the reviewed native A2UI subset.",
   );
   return { ready: blockers.length === 0, blockers, warnings };
 }
@@ -862,6 +885,10 @@ export function validateSelectedWindowsNode(
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
   }
+  for (const command of WINDOWS_NODE_MXC_CANVAS_COMMANDS) {
+    if (!node.commands.includes(command))
+      blockers.push(`Selected node does not declare ${command}`);
+  }
   const allowedCommands = new Set<string>(WINDOWS_NODE_MXC_NODE_COMMANDS);
   const unexpectedCommands = node.commands.filter((command) => !allowedCommands.has(command));
   if (unexpectedCommands.length > 0) {
@@ -875,8 +902,7 @@ export function validateEffectiveToolNames(
   expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift"> = "active",
 ): WindowsNodeReadiness {
   const unique = [...new Set(toolNames)].sort();
-  const expected =
-    expectedState === "active" ? [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST].sort() : [];
+  const expected = expectedState === "active" ? [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST].sort() : [];
   const filesystemCheck = validateNoGatewayNativeFilesystemTools(unique);
   const blockers = [...filesystemCheck.blockers];
   if (!isDeepStrictEqual(unique, expected)) {
@@ -1150,10 +1176,7 @@ export function describeMxcExactBackendEligibility(
       remediation.push(
         "Do not copy bfscfg.exe onto the host: it cannot enable BFS in this runtime. Use only a future reviewed and signed MXC release that enables an exact backend on a documented supported Windows build.",
       );
-    } else if (
-      probe.probes.bfsCompiledIn === true &&
-      probe.probes.bfscfgPresent === false
-    ) {
+    } else if (probe.probes.bfsCompiledIn === true && probe.probes.bfscfgPresent === false) {
       blockers.push(
         "The MXC runtime supports appcontainer-bfs, but the required bfscfg.exe host component is unavailable.",
       );

@@ -1209,9 +1209,8 @@ async function prepareWindowsNodeMxcContainment(
     return { effectiveTier: probe.tier, ambientAccess: null };
   }
 
-  const ambientAccess = await bundledWindowsNodeHost.assessLimitedAmbientAccess(
-    getOpenClawStateDir(),
-  );
+  const ambientAccess =
+    await bundledWindowsNodeHost.assessLimitedAmbientAccess(getOpenClawStateDir());
   const summary = summarizeWindowsNodeMxcAmbientAccess(ambientAccess);
   if (summary.sensitiveAccessible.length > 0) {
     throw new Error(
@@ -1276,15 +1275,19 @@ async function getWindowsNodeMxcStatus(): Promise<
     folderPolicyRecovery: WindowsNodeMxcFolderPolicyRecovery | null;
     durableApprovals: WindowsNodeMxcDurableApprovalInspection;
     hooks: WindowsNodeMxcHooksStatus;
+    canvas: {
+      state: "off" | "paused" | "active";
+      commandCount: 8;
+      nativeA2uiOnly: true;
+      localFilesAllowed: false;
+    };
   }
 > {
   const config = readConfig();
   const requestedMode = getWindowsNodeMxcRequestedMode();
   const backups = settingsStore.get("windowsNodeMxcToolBackups");
   const hooksConfig =
-    requestedMode === "off"
-      ? config.hooks
-      : getWindowsNodeMxcIngressBackup(backups, "hooks");
+    requestedMode === "off" ? config.hooks : getWindowsNodeMxcIngressBackup(backups, "hooks");
   const bundledFolders = getBundledWindowsNodeFolders();
   const bundledHost = bundledWindowsNodeHost.status();
   let runtimeIntegrityError: string | undefined;
@@ -1326,6 +1329,12 @@ async function getWindowsNodeMxcStatus(): Promise<
     folderPolicyRecovery: settingsStore.get("windowsNodeMxcFolderPolicyRecovery") ?? null,
     durableApprovals: durable,
     hooks: inspectWindowsNodeMxcHooksStatus(hooksConfig, requestedMode),
+    canvas: {
+      state: requestedMode === "off" ? "off" : status.effectiveEnabled ? "active" : "paused",
+      commandCount: 8,
+      nativeA2uiOnly: true,
+      localFilesAllowed: false,
+    },
   };
 }
 
@@ -1656,10 +1665,7 @@ async function runCurrentWindowsNodeMxcSmoke(
   status: WindowsNodeMxcRuntimeStatus,
 ): Promise<StoredWindowsNodeMxcSmoke> {
   if (!gwClient?.connected) throw new Error("MicroClaw managed Gateway is not connected");
-  if (
-    !status.settingsFingerprint ||
-    !status.probe.tier
-  ) {
+  if (!status.settingsFingerprint || !status.probe.tier) {
     throw new Error(
       status.probe.reason ??
         "Current MXC settings and an exact filesystem isolation tier are required",
@@ -4033,10 +4039,14 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       "MICROCLAW_MXC_CRON_RESUME_ACK_PATH",
       "MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN",
       "MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64",
+      "MICROCLAW_MXC_CANVAS_PHASE1",
     ]) {
       delete gwEnv[reservedName];
     }
-    if (windowsNodeMxcDesired) gwEnv.MICROCLAW_MXC_CRON_PAUSED = "1";
+    if (windowsNodeMxcDesired) {
+      gwEnv.MICROCLAW_MXC_CRON_PAUSED = "1";
+      gwEnv.MICROCLAW_MXC_CANVAS_PHASE1 = "1";
+    }
     Object.assign(gwEnv, nextHooksEnvironment);
     if (cronResumeFence) {
       Object.assign(gwEnv, getWindowsNodeMxcCronResumeEnvironment(cronResumeFence));
@@ -6068,7 +6078,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle("plugin:weixin:get-status", () => {
     const config = readConfig();
     const requestedEnabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
-    const pausedByMxc = requestedEnabled && isWindowsNodeMxcDesired() && !isApplicationIngressReady();
+    const pausedByMxc =
+      requestedEnabled && isWindowsNodeMxcDesired() && !isApplicationIngressReady();
     const effectiveEnabled = requestedEnabled && !pausedByMxc;
     const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
     // Check if plugin is installed, enabled, AND has saved login accounts

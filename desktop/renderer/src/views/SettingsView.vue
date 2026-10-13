@@ -469,7 +469,10 @@
                 <span class="mxc-mode-badge">{{ t("settings.windowsNodeMxcFullBadge") }}</span>
               </div>
               <p>{{ t("settings.windowsNodeMxcModeFullDesc") }}</p>
-              <p v-if="windowsNodeMxcStatus.fullAvailability.summary" class="mxc-availability-summary">
+              <p
+                v-if="windowsNodeMxcStatus.fullAvailability.summary"
+                class="mxc-availability-summary"
+              >
                 {{ windowsNodeMxcStatus.fullAvailability.summary }}
               </p>
               <ul
@@ -524,8 +527,13 @@
                 }}</span>
               </div>
               <p>{{ t("settings.windowsNodeMxcModeLimitedDesc") }}</p>
-              <p class="mxc-mode-warning">{{ t("settings.windowsNodeMxcLimitedFilesystemWarning") }}</p>
-              <p v-if="windowsNodeMxcStatus.limitedAvailability.summary" class="mxc-availability-summary">
+              <p class="mxc-mode-warning">
+                {{ t("settings.windowsNodeMxcLimitedFilesystemWarning") }}
+              </p>
+              <p
+                v-if="windowsNodeMxcStatus.limitedAvailability.summary"
+                class="mxc-availability-summary"
+              >
                 {{ windowsNodeMxcStatus.limitedAvailability.summary }}
               </p>
               <ul
@@ -582,9 +590,7 @@
                 plain
                 data-testid="mxc-select-off"
                 :loading="windowsNodeMxcApplying"
-                :disabled="
-                  windowsNodeMxcApplying || windowsNodeMxcStatus.requestedMode === 'off'
-                "
+                :disabled="windowsNodeMxcApplying || windowsNodeMxcStatus.requestedMode === 'off'"
                 @click="selectWindowsNodeMxcMode('off')"
               >
                 {{
@@ -610,6 +616,22 @@
               data-testid="mxc-hooks-paused"
             >
               {{ windowsNodeMxcHooksPausedSummary }}
+            </div>
+            <div
+              v-if="windowsNodeMxcStatus.canvas.state !== 'off'"
+              class="mxc-alert"
+              :class="
+                windowsNodeMxcStatus.canvas.state === 'active'
+                  ? 'mxc-alert-success'
+                  : 'mxc-alert-warning'
+              "
+              data-testid="mxc-canvas-status"
+            >
+              {{
+                windowsNodeMxcStatus.canvas.state === "active"
+                  ? t("settings.windowsNodeMxcCanvasActive")
+                  : t("settings.windowsNodeMxcCanvasPaused")
+              }}
             </div>
             <div
               v-if="
@@ -877,9 +899,7 @@
                 class="card-row mxc-ambient-diagnostics"
                 data-testid="mxc-ambient-diagnostics"
               >
-                <span class="row-label">{{
-                  t("settings.windowsNodeMxcAmbientBeforeGrants")
-                }}</span>
+                <span class="row-label">{{ t("settings.windowsNodeMxcAmbientBeforeGrants") }}</span>
                 <template v-if="windowsNodeMxcStatus.ambientAccess">
                   <div class="mxc-ambient-grid">
                     <span
@@ -1756,8 +1776,9 @@ const capsRestarting = ref(false);
 const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
-type WindowsNodeMxcAmbientEntry =
-  NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"][number];
+type WindowsNodeMxcAmbientEntry = NonNullable<
+  WindowsNodeMxcStatus["ambientAccess"]
+>["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
@@ -1828,9 +1849,7 @@ const windowsNodeMxcHooksPausedSummary = computed(() => {
 
 const windowsNodeMxcLimitedMode = computed(() => {
   const status = windowsNodeMxcStatus.value;
-  return (
-    status?.requestedMode === "limited-dacl" || status?.effectiveStrength === "limited-dacl"
-  );
+  return status?.requestedMode === "limited-dacl" || status?.effectiveStrength === "limited-dacl";
 });
 
 const windowsNodeMxcRequestedModeLabel = computed(() =>
@@ -2010,9 +2029,7 @@ async function applyWindowsNodeMxcMode(
     chatStore.wsConnected = false;
     const status = await window.openclaw.windowsNodeMxc.setEnabled({
       requestedMode,
-      ...(requestedMode === "limited-dacl"
-        ? { acknowledgeLimitedFilesystem }
-        : {}),
+      ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),
     });
     updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();
@@ -4243,6 +4260,10 @@ async function clearChatHistory() {
 .mxc-alert-warning {
   border-color: rgba(230, 162, 60, 0.45);
   background: rgba(230, 162, 60, 0.08);
+}
+.mxc-alert-success {
+  border-color: rgba(103, 194, 58, 0.45);
+  background: rgba(103, 194, 58, 0.08);
 }
 .mxc-alert-error {
   border-color: color-mix(in srgb, var(--settings-action-danger) 45%, transparent);

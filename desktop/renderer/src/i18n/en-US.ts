@@ -323,10 +323,13 @@ export default {
   "settings.windowsNodeMxcCompactOff": "Containment — Off",
   "settings.windowsNodeMxcHooksPausedBoth":
     "Webhooks and internal hooks are paused while containment is active.",
-  "settings.windowsNodeMxcHooksPausedExternal":
-    "Webhooks are paused while containment is active.",
+  "settings.windowsNodeMxcHooksPausedExternal": "Webhooks are paused while containment is active.",
   "settings.windowsNodeMxcHooksPausedInternal":
     "Internal hooks are paused while containment is active.",
+  "settings.windowsNodeMxcCanvasActive":
+    "Canvas Phase 1 — Active. Managed native A2UI only; navigation, eval, local files, and screen capture remain unavailable.",
+  "settings.windowsNodeMxcCanvasPaused":
+    "Canvas Phase 1 is requested but unavailable until MXC reaches Active.",
   "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
   "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
   "settings.windowsNodeMxcEffective": "Effective state",
@@ -374,8 +377,7 @@ export default {
   "settings.windowsNodeMxcConfiguredFoldersHint":
     "These folders will be used when Full or Limited containment is selected.",
   "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
-  "settings.windowsNodeMxcAmbientBeforeGrants":
-    "Ambient access before selected-folder grants",
+  "settings.windowsNodeMxcAmbientBeforeGrants": "Ambient access before selected-folder grants",
   "settings.windowsNodeMxcAmbientAllDenied":
     "No inherited filesystem access detected ({denied}/{total} denied)",
   "settings.windowsNodeMxcAmbientExceptions":
@@ -385,15 +387,13 @@ export default {
   "settings.windowsNodeMxcAmbientCheckedAt": "Assessed at",
   "settings.windowsNodeMxcAmbientAccessHint":
     "This assessment runs before MicroClaw adds the selected folder grants. Category-level attestation only; absolute paths are intentionally not displayed.",
-  "settings.windowsNodeMxcAmbientUnavailable":
-    "Ambient access attestation is not available.",
+  "settings.windowsNodeMxcAmbientUnavailable": "Ambient access attestation is not available.",
   "settings.windowsNodeMxcAmbientCategory.desktop": "Desktop",
   "settings.windowsNodeMxcAmbientCategory.documents": "Documents",
   "settings.windowsNodeMxcAmbientCategory.downloads": "Downloads",
   "settings.windowsNodeMxcAmbientCategory.microclaw-state": "MicroClaw state",
   "settings.windowsNodeMxcAmbientCategory.openclaw-state": "OpenClaw state",
-  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state":
-    "OpenClaw roaming state",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state": "OpenClaw roaming state",
   "settings.windowsNodeMxcAmbientCategory.ssh": "SSH",
   "settings.windowsNodeMxcAmbientCategory.gnupg": "GnuPG",
   "settings.windowsNodeMxcAmbientCategory.aws": "AWS credentials",
@@ -458,8 +458,7 @@ export default {
   "settings.windowsNodeMxcLimitedCommandApprovals": "Per-command approval only",
   "settings.windowsNodeMxcLimitedCommandApprovalsHint":
     "Limited containment does not offer Allow always. Every command requires a visible per-command approval.",
-  "settings.windowsNodeMxcLimitedAcknowledgeTitle":
-    "Enable Limited filesystem containment?",
+  "settings.windowsNodeMxcLimitedAcknowledgeTitle": "Enable Limited filesystem containment?",
   "settings.windowsNodeMxcLimitedAcknowledgeBody":
     "Limited containment relies on additive Windows DACL grants. It is not an exclusive filesystem allowlist, and a read-only grant cannot remove access already available through ambient ACLs.",
   "settings.windowsNodeMxcLimitedAcknowledgeCheckbox":
@@ -1008,8 +1007,7 @@ export default {
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
   "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
-  "perm.mxcLimitedDesc":
-    "AI wants to run this command with Limited filesystem containment.",
+  "perm.mxcLimitedDesc": "AI wants to run this command with Limited filesystem containment.",
   "perm.mxcAccessLabel": "Declared folder use",
   "perm.mxcAdditionalAccessLabel": "Additional filesystem grants",
   "perm.mxcAccessRo": "Read only",
@@ -1026,8 +1024,7 @@ export default {
   "perm.mxcLimitedScope":
     "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist, and read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
   "perm.mxcAmbientAccess": "Ambient filesystem access",
-  "perm.mxcAmbientAccessHint":
-    "Category-level summary only; absolute paths are not displayed.",
+  "perm.mxcAmbientAccessHint": "Category-level summary only; absolute paths are not displayed.",
   "perm.mxcAmbientUnavailable": "Ambient access attestation is unavailable.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",

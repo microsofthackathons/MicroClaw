@@ -10,7 +10,11 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
+import {
+  WINDOWS_NODE_MXC_CANVAS_ACTIONS,
+  WINDOWS_NODE_MXC_CANVAS_COMMANDS,
+  WINDOWS_NODE_MXC_NODE_COMMANDS,
+} from "./windows-node-mxc";
 import {
   validateWindowsNodeMxcAmbientAccessAssessment,
   type WindowsNodeMxcAmbientAccessAssessment,
@@ -22,6 +26,7 @@ import { resolveWindowsNodeMxcWeixinMediaRoots } from "./windows-node-mxc-weixin
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
 export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
+export const BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT = "microclaw.windows-node-mxc.canvas.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
@@ -140,6 +145,11 @@ export class BundledWindowsNodeHost {
     "microclaw-windows-node-host.exe",
   );
   private readonly wxcExecPath = path.join(this.resourceRoot, "mxc", "wxc-exec.exe");
+  private readonly canvasHostPath = path.join(
+    this.resourceRoot,
+    "canvas-host",
+    "microclaw-windows-node-canvas-host.exe",
+  );
 
   createApprovalProofContext(
     gatewayGeneration: string,
@@ -179,7 +189,7 @@ export class BundledWindowsNodeHost {
     this.startOptions = options;
     this.lastError = null;
     assertLoopbackGateway(options.gatewayUrl);
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath);
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
 
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     const identityDirectory = path.join(stateRoot, "identity");
@@ -317,6 +327,21 @@ export class BundledWindowsNodeHost {
         ],
         deniedRoots: sensitiveWindowsRoots(stateRoot, openClawStateRoot),
         wxcExecPath: this.wxcExecPath,
+        canvas: {
+          enabled: true,
+          contract: BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
+          hostPath: this.canvasHostPath,
+          hostSha256: sha256File(this.canvasHostPath),
+          hostTreeSha256: sha256DirectoryTree(path.dirname(this.canvasHostPath)),
+          renderer: "native-a2ui",
+          commands: [...WINDOWS_NODE_MXC_CANVAS_COMMANDS],
+          actions: [...WINDOWS_NODE_MXC_CANVAS_ACTIONS],
+          allowEval: false,
+          allowNavigation: false,
+          allowLocalFiles: false,
+          allowRemoteMedia: false,
+          snapshotSurfaceOnly: true,
+        },
         networkAllowed: true,
         allowWindowsUi: true,
         clipboard: "none",
@@ -344,7 +369,7 @@ export class BundledWindowsNodeHost {
   async assessLimitedAmbientAccess(
     openClawStateRoot: string,
   ): Promise<BundledWindowsNodeAmbientAccess> {
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath);
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     const scratchRoot = path.join(stateRoot, "ambient-scratch");
     await fs.promises.mkdir(scratchRoot, { recursive: true });
@@ -524,7 +549,7 @@ export class BundledWindowsNodeHost {
   }
 
   ensureIdentityNodeId(): string {
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath);
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
     const identityDirectory = path.join(app.getPath("userData"), "windows-node", "identity");
     const nodeId = execFileSync(this.hostPath, ["--identity", identityDirectory], {
       encoding: "utf8",
@@ -620,7 +645,6 @@ export class BundledWindowsNodeHost {
       return null;
     }
   }
-
 }
 
 function resolveAmbientAccessTargets(
@@ -967,6 +991,11 @@ export function validateBundledWindowsNodeRuntimeManifest(
     manifest.mxcExactBackendProvisioning !== MXC_EXACT_BACKEND_PROVISIONING ||
     manifest.wxcExecSha256 !== MXC_WXC_EXEC_SHA256[architecture] ||
     manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION ||
+    manifest.canvasContract !== BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT ||
+    typeof manifest.canvasHostSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(manifest.canvasHostSha256) ||
+    typeof manifest.canvasHostTreeSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(manifest.canvasHostTreeSha256) ||
     manifest.mxcHostPrepPatchRevision !== MXC_HOST_PREP_PATCH_REVISION ||
     manifest.microclawHostPrepOrigin !== "microclaw-built" ||
     JSON.stringify(manifest.microclawHostPrepOperations) !==
@@ -976,9 +1005,15 @@ export function validateBundledWindowsNodeRuntimeManifest(
   }
 }
 
-function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
+function assertBundledArtifacts(
+  hostPath: string,
+  wxcExecPath: string,
+  canvasHostPath: string,
+): void {
   if (!fs.existsSync(hostPath))
     throw new Error(`Bundled Windows node host is missing: ${hostPath}`);
+  if (!fs.existsSync(canvasHostPath))
+    throw new Error(`Bundled Windows node Canvas host is missing: ${canvasHostPath}`);
   const architecture = assertBundledMxcProbeArtifact(wxcExecPath);
   const resourceRoot = path.dirname(path.dirname(hostPath));
   const patchedHostPrepPath = path.join(resourceRoot, "host-prep", "microclaw-mxc-host-prep.exe");
@@ -1010,6 +1045,57 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   ) {
     throw new Error(`MicroClaw MXC host-prep hash mismatch: ${patchedHostPrepHash}`);
   }
+  const canvasHostHash = sha256File(canvasHostPath);
+  if (manifest.canvasHostSha256 !== canvasHostHash) {
+    throw new Error(`Bundled Windows node Canvas host hash mismatch: ${canvasHostHash}`);
+  }
+  const canvasHostTreeHash = sha256DirectoryTree(path.dirname(canvasHostPath));
+  if (manifest.canvasHostTreeSha256 !== canvasHostTreeHash) {
+    throw new Error(
+      `Bundled Windows node Canvas host resource tree hash mismatch: ${canvasHostTreeHash}`,
+    );
+  }
+}
+
+function sha256File(filePath: string): string {
+  return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+export function sha256DirectoryTree(root: string): string {
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of fs
+      .readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => compareOrdinal(left.name, right.name))) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Bundled Windows node Canvas host tree contains a link: ${fullPath}`);
+      }
+      if (entry.isDirectory()) visit(fullPath);
+      else if (entry.isFile()) files.push(fullPath);
+      else throw new Error(`Bundled Windows node Canvas host tree contains an unsupported entry`);
+    }
+  };
+  visit(root);
+  files.sort((left, right) =>
+    compareOrdinal(
+      path.relative(root, left).replaceAll(path.sep, "/"),
+      path.relative(root, right).replaceAll(path.sep, "/"),
+    ),
+  );
+  const hash = createHash("sha256");
+  for (const filePath of files) {
+    const relative = path.relative(root, filePath).replaceAll(path.sep, "/");
+    const bytes = fs.readFileSync(filePath);
+    hash.update(`${relative}\0${bytes.byteLength}\0`, "utf8");
+    hash.update(bytes);
+    hash.update(Buffer.from([0]));
+  }
+  return hash.digest("hex");
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function assertBundledMxcProbeArtifact(wxcExecPath: string): "x64" | "arm64" {

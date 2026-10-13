@@ -216,6 +216,15 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(attestation.ReadinessProofExactBuiltInsOnly);
         Assert.True(attestation.ReadinessProofOneUse);
         Assert.True(attestation.OutboundNetworkEnabled);
+        Assert.True(attestation.CanvasPhase1Enabled);
+        Assert.True(attestation.CanvasExactCommandSet);
+        Assert.True(attestation.CanvasExactActionSet);
+        Assert.True(attestation.CanvasNativeA2uiOnly);
+        Assert.True(attestation.CanvasHostTreeBound);
+        Assert.True(attestation.CanvasEvalAbsent);
+        Assert.True(attestation.CanvasNavigationAbsent);
+        Assert.True(attestation.CanvasLocalFilesAbsent);
+        Assert.True(attestation.CanvasSurfaceOnlySnapshot);
         Assert.False(attestation.DurableApprovalsPresent);
     }
 
@@ -277,6 +286,7 @@ public sealed class CwdPolicyTests : IDisposable
             approvedRoots = new[] { new { path = _root, access = "ReadOnly" } },
             deniedRoots = Array.Empty<string>(),
             wxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            canvas = CreateCanvasPolicyInput(Path.Combine(Environment.SystemDirectory, "hostname.exe")),
             networkAllowed = true,
             allowWindowsUi = true,
             clipboard = "none",
@@ -410,6 +420,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
               "networkAllowed": true,
               "allowWindowsUi": true,
               "clipboard": "none",
@@ -439,6 +450,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
               "networkAllowed": false,
               "allowWindowsUi": true,
               "clipboard": "none",
@@ -490,6 +502,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [{{System.Text.Json.JsonSerializer.Serialize(protectedRoot)}}],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
               "networkAllowed": true,
               "allowWindowsUi": true,
               "clipboard": "none",
@@ -521,6 +534,7 @@ public sealed class CwdPolicyTests : IDisposable
               ],
               "deniedRoots": [{{System.Text.Json.JsonSerializer.Serialize(protectedRoot)}}],
               "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
               "networkAllowed": true,
               "allowWindowsUi": true,
               "clipboard": "none",
@@ -971,6 +985,7 @@ public sealed class CwdPolicyTests : IDisposable
             ApprovedRoots = [],
             DeniedRoots = [],
             WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            Canvas = CreateCanvasHostPolicy(),
             AllowWindowsUi = true,
             StrictNoHostFallback = true,
             RequestedStrength = "limited-dacl",
@@ -1485,9 +1500,36 @@ public sealed class CwdPolicyTests : IDisposable
             ApprovedRoots = roots,
             DeniedRoots = denied ?? [],
             WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            Canvas = CreateCanvasHostPolicy(),
             NetworkAllowed = true,
             AllowWindowsUi = true,
             StrictNoHostFallback = true,
+        };
+
+    private static CanvasHostPolicy CreateCanvasHostPolicy() =>
+        new(
+            Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            new string('0', 64),
+            new string('1', 64),
+            CanvasPhase1Policy.Commands,
+            CanvasPhase1Policy.Actions);
+
+    private static object CreateCanvasPolicyInput(string hostPath) =>
+        new
+        {
+            enabled = true,
+            contract = CanvasPhase1Policy.Contract,
+            hostPath,
+            hostSha256 = new string('0', 64),
+            hostTreeSha256 = new string('1', 64),
+            renderer = CanvasPhase1Policy.Renderer,
+            commands = CanvasPhase1Policy.Commands,
+            actions = CanvasPhase1Policy.Actions,
+            allowEval = false,
+            allowNavigation = false,
+            allowLocalFiles = false,
+            allowRemoteMedia = false,
+            snapshotSurfaceOnly = true,
         };
 
     private BundledSystemCapability Capability(HostPolicy policy, string uiLocale = "en-US") =>

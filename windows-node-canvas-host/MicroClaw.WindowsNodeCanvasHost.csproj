@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>microclaw-windows-node-canvas-host</AssemblyName>
+    <RootNamespace>MicroClaw.WindowsNodeCanvasHost</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
+      AdditionalProperties="ImportDirectoryBuildProps=false;ImportDirectoryBuildTargets=false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2526" />
+    <PackageReference Include="WinUIEx" Version="2.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\A2UI\**\*.cs"
+      Exclude="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\A2UI\Actions\GatewayActionTransport.cs"
+      Link="PinnedA2UI\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Windows\A2UICanvasWindow.xaml.cs"
+      Link="PinnedA2UI\Windows\A2UICanvasWindow.xaml.cs" />
+    <Compile
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Helpers\FluentIconCatalog.cs"
+      Link="PinnedA2UI\Helpers\FluentIconCatalog.cs" />
+    <Page
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Windows\A2UICanvasWindow.xaml"
+      Link="PinnedA2UI\Windows\A2UICanvasWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Content
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Assets\openclaw.ico"
+      Link="Assets\openclaw.ico"
+      CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

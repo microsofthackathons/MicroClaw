@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Microsoft.Win32.SafeHandles;
 
 namespace MicroClaw.WindowsNodeHost;
@@ -48,7 +49,17 @@ public sealed record CwdPolicyAttestation(
     [property: JsonPropertyName("folderPolicyIsExclusiveBoundary")] bool FolderPolicyIsExclusiveBoundary,
     [property: JsonPropertyName("durableApprovalsAllowed")] bool DurableApprovalsAllowed,
     [property: JsonPropertyName("ambientAssessmentBound")] bool AmbientAssessmentBound,
-    [property: JsonPropertyName("outboundNetworkEnabled")] bool OutboundNetworkEnabled)
+    [property: JsonPropertyName("outboundNetworkEnabled")] bool OutboundNetworkEnabled,
+    [property: JsonPropertyName("canvasContract")] string CanvasContract,
+    [property: JsonPropertyName("canvasPhase1Enabled")] bool CanvasPhase1Enabled,
+    [property: JsonPropertyName("canvasExactCommandSet")] bool CanvasExactCommandSet,
+    [property: JsonPropertyName("canvasExactActionSet")] bool CanvasExactActionSet,
+    [property: JsonPropertyName("canvasNativeA2uiOnly")] bool CanvasNativeA2uiOnly,
+    [property: JsonPropertyName("canvasHostTreeBound")] bool CanvasHostTreeBound,
+    [property: JsonPropertyName("canvasEvalAbsent")] bool CanvasEvalAbsent,
+    [property: JsonPropertyName("canvasNavigationAbsent")] bool CanvasNavigationAbsent,
+    [property: JsonPropertyName("canvasLocalFilesAbsent")] bool CanvasLocalFilesAbsent,
+    [property: JsonPropertyName("canvasSurfaceOnlySnapshot")] bool CanvasSurfaceOnlySnapshot)
 {
     public static readonly CwdPolicyAttestation Current = new(
         CwdPolicyContract.Version,
@@ -86,7 +97,17 @@ public sealed record CwdPolicyAttestation(
         FolderPolicyIsExclusiveBoundary: true,
         DurableApprovalsAllowed: true,
         AmbientAssessmentBound: false,
-        OutboundNetworkEnabled: true);
+        OutboundNetworkEnabled: true,
+        CanvasContract: global::MicroClaw.WindowsNodeHost.CanvasPhase1Policy.Contract,
+        CanvasPhase1Enabled: true,
+        CanvasExactCommandSet: true,
+        CanvasExactActionSet: true,
+        CanvasNativeA2uiOnly: true,
+        CanvasHostTreeBound: true,
+        CanvasEvalAbsent: true,
+        CanvasNavigationAbsent: true,
+        CanvasLocalFilesAbsent: true,
+        CanvasSurfaceOnlySnapshot: true);
 
     public static CwdPolicyAttestation ForPolicy(HostPolicy policy) =>
         Current with
@@ -136,6 +157,7 @@ public sealed class HostPolicy
     public string EffectiveTier { get; init; } = "base-container";
     public AmbientAccessPolicy? AmbientAccess { get; init; }
     public string AmbientAssessmentScratchRoot { get; init; } = Path.GetTempPath();
+    public required CanvasHostPolicy Canvas { get; init; }
     public bool DurableApprovalsAllowed =>
         string.Equals(RequestedStrength, "full", StringComparison.Ordinal);
     public CwdPolicyAttestation Attestation => CwdPolicyAttestation.ForPolicy(this);
@@ -216,6 +238,24 @@ public sealed class HostPolicy
                 "ambient-assessment-unexpected",
                 "Full containment must not carry a Limited-mode ambient-access assessment.");
         }
+        if (input.Canvas is null
+            || !input.Canvas.Enabled
+            || !string.Equals(input.Canvas.Contract, CanvasPhase1Policy.Contract, StringComparison.Ordinal)
+            || !string.Equals(input.Canvas.Renderer, CanvasPhase1Policy.Renderer, StringComparison.Ordinal)
+            || !input.Canvas.Commands.SequenceEqual(CanvasPhase1Policy.Commands, StringComparer.Ordinal)
+            || !input.Canvas.Actions.SequenceEqual(CanvasPhase1Policy.Actions, StringComparer.Ordinal)
+            || input.Canvas.AllowEval
+            || input.Canvas.AllowNavigation
+            || input.Canvas.AllowLocalFiles
+            || input.Canvas.AllowRemoteMedia
+            || !input.Canvas.SnapshotSurfaceOnly
+            || !Regex.IsMatch(input.Canvas.HostSha256, "^[a-f0-9]{64}$")
+            || !Regex.IsMatch(input.Canvas.HostTreeSha256, "^[a-f0-9]{64}$"))
+        {
+            throw new HostPolicyException(
+                "canvas-policy-invalid",
+                "The Canvas policy does not match the reviewed Phase 1 capability surface.");
+        }
 
         var approved = (input.ApprovedRoots ?? [])
             .Select(root => new ApprovedRoot(
@@ -234,6 +274,7 @@ public sealed class HostPolicy
                 "Approved folders must not contain or be contained by a protected root.");
         }
         var wxc = WindowsPathCanonicalizer.CanonicalizeFile(input.WxcExecPath);
+        var canvasHost = WindowsPathCanonicalizer.CanonicalizeFile(input.Canvas.HostPath);
         var ambientScratch =
             input.RequestedStrength == "limited-dacl"
                 ? WindowsPathCanonicalizer.CanonicalizeDirectory(
@@ -254,6 +295,12 @@ public sealed class HostPolicy
             EffectiveTier = input.EffectiveTier.ToLowerInvariant(),
             AmbientAccess = input.AmbientAccess,
             AmbientAssessmentScratchRoot = ambientScratch,
+            Canvas = new CanvasHostPolicy(
+                canvasHost,
+                input.Canvas.HostSha256,
+                input.Canvas.HostTreeSha256,
+                input.Canvas.Commands.ToArray(),
+                input.Canvas.Actions.ToArray()),
         };
     }
 
@@ -301,6 +348,7 @@ public sealed class HostPolicy
         public string EffectiveTier { get; init; } = "base-container";
         public AmbientAccessPolicy? AmbientAccess { get; init; }
         public string AmbientAssessmentScratchRoot { get; init; } = Path.GetTempPath();
+        public CanvasHostPolicyInput? Canvas { get; init; }
     }
 
     private sealed class ApprovedRootInput
@@ -308,7 +356,31 @@ public sealed class HostPolicy
         public string Path { get; init; } = string.Empty;
         public FolderAccess Access { get; init; }
     }
+
+    private sealed class CanvasHostPolicyInput
+    {
+        public bool Enabled { get; init; }
+        public string Contract { get; init; } = string.Empty;
+        public string HostPath { get; init; } = string.Empty;
+        public string HostSha256 { get; init; } = string.Empty;
+        public string HostTreeSha256 { get; init; } = string.Empty;
+        public string Renderer { get; init; } = string.Empty;
+        public List<string> Commands { get; init; } = [];
+        public List<string> Actions { get; init; } = [];
+        public bool AllowEval { get; init; }
+        public bool AllowNavigation { get; init; }
+        public bool AllowLocalFiles { get; init; }
+        public bool AllowRemoteMedia { get; init; }
+        public bool SnapshotSurfaceOnly { get; init; }
+    }
 }
+
+public sealed record CanvasHostPolicy(
+    string HostPath,
+    string HostSha256,
+    string HostTreeSha256,
+    IReadOnlyList<string> Commands,
+    IReadOnlyList<string> Actions);
 
 public static class WindowsPathCanonicalizer
 {

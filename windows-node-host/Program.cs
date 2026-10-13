@@ -130,15 +130,26 @@ internal static class Program
                             "The expected MicroClaw Gateway process does not own the loopback listener."));
             client.HandshakeAuthorizationAsync = AuthorizeGatewayAsync;
             client.ReconnectAuthorizationAsync = AuthorizeGatewayAsync;
+            var activationLease = new ActivationLeaseGuard(
+                bootstrap.ActivationLeasePath,
+                bootstrap.ActivationLeaseSecret,
+                bootstrap.GatewayGeneration,
+                bootstrap.PolicyFingerprint);
+            using var canvasBroker = new CanvasHostBroker(
+                policy,
+                bootstrap.ActivationLeasePath,
+                bootstrap.ActivationLeaseSecret,
+                bootstrap.GatewayGeneration,
+                bootstrap.PolicyFingerprint,
+                bootstrap.NodeId,
+                bootstrap.UiLocale,
+                activationLease,
+                payload => client.SendNodeEventAsync("agent.request", payload));
             client.RegisterCapability(new BundledSystemCapability(
                 policy,
                 bootstrap.ApprovalPipeName,
                 bootstrap.ApprovalsPath,
-                new ActivationLeaseGuard(
-                    bootstrap.ActivationLeasePath,
-                    bootstrap.ActivationLeaseSecret,
-                    bootstrap.GatewayGeneration,
-                    bootstrap.PolicyFingerprint),
+                activationLease,
                 bootstrap.UiLocale,
                 new ApprovalProofVerifier(
                     bootstrap.ApprovalProofSecret,
@@ -151,6 +162,7 @@ internal static class Program
                     bootstrap.PolicyFingerprint,
                     bootstrap.NodeId,
                     bootstrap.ReadinessTransitionId)));
+            client.RegisterCapability(new BundledCanvasCapability(canvasBroker, activationLease));
             var connect = client.ConnectAsync();
             if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)
                 return 0;

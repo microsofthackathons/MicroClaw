@@ -102,6 +102,12 @@ describe("SettingsView", () => {
       effectiveInternalEnabled: false,
       pausedByMxc: false,
     },
+    canvas: {
+      state: "paused",
+      commandCount: 8,
+      nativeA2uiOnly: true,
+      localFilesAllowed: false,
+    },
     lifecycleState: {
       phase: "locked",
       detail: null,
@@ -171,11 +177,13 @@ describe("SettingsView", () => {
     preflightWindowsNodeMxc.mockReset().mockResolvedValue(undefined);
     setWindowsNodeMxcEnabled
       .mockReset()
-      .mockImplementation(async ({ requestedMode }: { requestedMode: WindowsNodeMxcStatus["requestedMode"] }) => ({
-        ...status("node-local"),
-        requestedMode,
-        desiredEnabled: requestedMode !== "off",
-      }));
+      .mockImplementation(
+        async ({ requestedMode }: { requestedMode: WindowsNodeMxcStatus["requestedMode"] }) => ({
+          ...status("node-local"),
+          requestedMode,
+          desiredEnabled: requestedMode !== "off",
+        }),
+      );
     addUserDir.mockReset().mockResolvedValue({ ok: false, dirs: { rw: [], ro: [] } });
     stageUserDir.mockReset().mockResolvedValue({
       ok: false,
@@ -437,6 +445,12 @@ describe("SettingsView", () => {
       effectiveStrength: "limited-dacl",
       effectiveTier: "appcontainer-dacl",
       effectiveEnabled: true,
+      canvas: {
+        state: "active",
+        commandCount: 8,
+        nativeA2uiOnly: true,
+        localFilesAllowed: false,
+      },
       ambientAccess: ambientAccess(),
       lifecycleState: {
         phase: "active",
@@ -460,6 +474,9 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toBe(
       "Limited containment (DACL) — Active",
     );
+    expect(wrapper.find('[data-testid="mxc-canvas-status"]').text()).toContain(
+      "Canvas Phase 1 — Active",
+    );
     expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
     expect(wrapper.find(".mxc-card").text()).not.toContain(
       "Requested modeLimited containment (DACL)",
@@ -467,17 +484,24 @@ describe("SettingsView", () => {
 
     await wrapper.find('[data-testid="mxc-technical-details-toggle"]').trigger("click");
     const diagnostics = wrapper.find('[data-testid="mxc-technical-details"]');
-    expect(diagnostics.text()).toContain(
-      "Requested modeLimited containment (DACL)",
-    );
-    expect(diagnostics.text()).toContain(
-      "Attested effective strengthLimited containment (DACL)",
-    );
-    expect(diagnostics.text()).toContain(
-      "Attested effective tierappcontainer-dacl",
-    );
+    expect(diagnostics.text()).toContain("Requested modeLimited containment (DACL)");
+    expect(diagnostics.text()).toContain("Attested effective strengthLimited containment (DACL)");
+    expect(diagnostics.text()).toContain("Attested effective tierappcontainer-dacl");
     expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').text()).toContain(
       "Security diagnostics",
+    );
+  });
+
+  it("shows Canvas as paused while requested MXC remains locked", async () => {
+    routeState.section = "security";
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-canvas-status"]').text()).toContain(
+      "unavailable until MXC reaches Active",
     );
   });
 
@@ -513,9 +537,7 @@ describe("SettingsView", () => {
       global: { plugins: [createPinia()] },
     });
     await flushPromises();
-    expect(off.find('[data-testid="mxc-status-summary"]').text()).toBe(
-      "Containment — Off",
-    );
+    expect(off.find('[data-testid="mxc-status-summary"]').text()).toBe("Containment — Off");
   });
 
   it("returns to the loading gate before turning containment off", async () => {
@@ -986,12 +1008,8 @@ describe("SettingsView", () => {
       "MicroClaw End User License Agreement",
       "Privacy Statement",
     ]);
-    expect(links[0].attributes("href")).toBe(
-      "https://microclaw.microsoft.com/eula.en.html",
-    );
-    expect(links[1].attributes("href")).toBe(
-      "https://www.microsoft.com/privacy/privacystatement",
-    );
+    expect(links[0].attributes("href")).toBe("https://microclaw.microsoft.com/eula.en.html");
+    expect(links[1].attributes("href")).toBe("https://www.microsoft.com/privacy/privacystatement");
 
     await links[0].trigger("click");
     await links[1].trigger("click");

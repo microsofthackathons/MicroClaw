@@ -283,8 +283,7 @@ export default {
     "使用经证明的 MXC 文件系统边界。批准的文件夹构成排他的文件系统能力上限。",
   "settings.windowsNodeMxcModeLimited": "有限隔离（DACL）",
   "settings.windowsNodeMxcLimitedBadge": "有限",
-  "settings.windowsNodeMxcModeLimitedDesc":
-    "完整 MXC 边界不可用时，使用基于 DACL 的文件系统隔离。",
+  "settings.windowsNodeMxcModeLimitedDesc": "完整 MXC 边界不可用时，使用基于 DACL 的文件系统隔离。",
   "settings.windowsNodeMxcLimitedFilesystemWarning":
     "额外文件夹授权是叠加式授权，并非排他允许列表。只读授权无法降低 Windows 环境 ACL 已允许的访问。",
   "settings.windowsNodeMxcModeOff": "关闭",
@@ -305,6 +304,9 @@ export default {
   "settings.windowsNodeMxcHooksPausedBoth": "隔离启用期间，Webhook 和内部钩子已暂停。",
   "settings.windowsNodeMxcHooksPausedExternal": "隔离启用期间，Webhook 已暂停。",
   "settings.windowsNodeMxcHooksPausedInternal": "隔离启用期间，内部钩子已暂停。",
+  "settings.windowsNodeMxcCanvasActive":
+    "画布第一阶段 — 已启用。仅限托管原生 A2UI；导航、脚本求值、本地文件和屏幕捕获仍不可用。",
+  "settings.windowsNodeMxcCanvasPaused": "已请求画布第一阶段，但在 MXC 达到“已启用”前不可用。",
   "settings.windowsNodeMxcSelectedNode": "已选择的本地 Windows 节点",
   "settings.windowsNodeMxcSelectNode": "请选择一个已配对的 Windows 节点",
   "settings.windowsNodeMxcEffective": "实际状态",
@@ -349,8 +351,7 @@ export default {
     "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。",
   "settings.windowsNodeMxcLimitedFoldersHint":
     "这些授权会在有限模式中增加访问权限，并非排他允许列表。只读无法降低环境 Windows ACL 已提供的访问。",
-  "settings.windowsNodeMxcConfiguredFoldersHint":
-    "选择完整或有限隔离时将使用这些文件夹。",
+  "settings.windowsNodeMxcConfiguredFoldersHint": "选择完整或有限隔离时将使用这些文件夹。",
   "settings.windowsNodeMxcAmbientAccess": "环境文件系统访问",
   "settings.windowsNodeMxcAmbientBeforeGrants": "所选文件夹授权前的环境访问",
   "settings.windowsNodeMxcAmbientAllDenied":
@@ -962,8 +963,7 @@ export default {
   "perm.riskCommandRW": "高风险：该命令可能修改文件或系统状态。",
   "perm.riskApp": "高风险：该应用将在沙箱外运行。",
   "perm.riskMxc": "由 MXC 隔离：允许前请检查命令和声明的文件夹用途。",
-  "perm.riskMxcLimited":
-    "有限文件系统隔离：允许前请检查命令、额外授权和环境访问。",
+  "perm.riskMxcLimited": "有限文件系统隔离：允许前请检查命令、额外授权和环境访问。",
   "perm.commandLabel": "命令",
   "perm.allowAlways": "始终允许",
   "perm.callerLabel": "调用者",
