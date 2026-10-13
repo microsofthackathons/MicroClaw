@@ -554,6 +554,10 @@ export function applyWindowsNodeMxcGatewayPolicy(
     deny: Array.isArray(plugins.deny)
       ? plugins.deny.filter((value) => value !== "canvas" && value !== "openclaw-weixin")
       : [],
+    slots: {
+      ...asRecord(plugins.slots),
+      memory: "none",
+    },
     entries: {
       ...Object.fromEntries(
         Object.entries(pluginEntries).map(([pluginId, value]) => [
@@ -568,15 +572,6 @@ export function applyWindowsNodeMxcGatewayPolicy(
         ...asRecord(pluginEntries.canvas),
         enabled: true,
       },
-      ...Object.fromEntries(
-        WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.map((pluginId) => [
-          pluginId,
-          {
-            ...asRecord(pluginEntries[pluginId]),
-            enabled: false,
-          },
-        ]),
-      ),
     },
   };
   return { config, backups, agentIds };
@@ -752,10 +747,11 @@ export function validateWindowsNodeMxcGatewayPolicy(
   ) {
     blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
   }
-  for (const pluginId of WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS) {
-    if (asRecord(asRecord(plugins.entries)[pluginId]).enabled !== false) {
-      blockers.push(`Gateway plugin "${pluginId}" must remain explicitly disabled`);
-    }
+  const memorySlot = asRecord(plugins.slots).memory;
+  if (memorySlot !== "none" && memorySlot !== null) {
+    blockers.push(
+      'Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"',
+    );
   }
   for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
     if (

@@ -674,10 +674,12 @@ describe("Windows Node MXC Gateway policy", () => {
       plugins: {
         enabled: true,
         allow: ["canvas", "openclaw-weixin"],
+        slots: {
+          memory: "none",
+        },
         entries: {
           "openclaw-weixin": { enabled: true },
           canvas: { enabled: true },
-          "memory-core": { enabled: false },
         },
       },
     });
@@ -705,12 +707,12 @@ describe("Windows Node MXC Gateway policy", () => {
     const implicitMemoryCore = structuredClone(baseline);
     (
       implicitMemoryCore.plugins as {
-        entries: Record<string, { enabled?: boolean }>;
+        slots: Record<string, string>;
       }
-    ).entries["memory-core"] = {};
+    ).slots = {};
     expect(
       validateWindowsNodeMxcGatewayPolicy(implicitMemoryCore, "node-123", "active").blockers,
-    ).toContain('Gateway plugin "memory-core" must remain explicitly disabled');
+    ).toContain('Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"');
   });
 
   it("uses an empty locked tool inventory until all readiness proofs pass", () => {
