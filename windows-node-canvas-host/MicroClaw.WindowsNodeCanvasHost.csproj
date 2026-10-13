@@ -36,11 +36,6 @@
     <Compile
       Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Helpers\FluentIconCatalog.cs"
       Link="PinnedA2UI\Helpers\FluentIconCatalog.cs" />
-    <Page
-      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Windows\A2UICanvasWindow.xaml"
-      Link="PinnedA2UI\Windows\A2UICanvasWindow.xaml">
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
     <Content
       Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Tray.WinUI\Assets\openclaw.ico"
       Link="Assets\openclaw.ico"

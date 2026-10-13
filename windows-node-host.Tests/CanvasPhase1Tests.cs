@@ -57,6 +57,32 @@ public sealed class CanvasPhase1Tests : IDisposable
         Assert.NotEqual(original, CanvasHostBroker.ComputeDirectoryTreeHash(hostDirectory));
     }
 
+    [Fact]
+    public void StandaloneCanvasShellDoesNotLoadPinnedWindowXamlOrTabView()
+    {
+        var repoRoot = FindRepoRoot();
+        var project = File.ReadAllText(
+            Path.Combine(
+                repoRoot,
+                "windows-node-canvas-host",
+                "MicroClaw.WindowsNodeCanvasHost.csproj"));
+        var compatibilityShell = File.ReadAllText(
+            Path.Combine(
+                repoRoot,
+                "windows-node-canvas-host",
+                "A2UICanvasWindow.Compatibility.cs"));
+        var projectXml = System.Xml.Linq.XDocument.Parse(project);
+        Assert.DoesNotContain(
+            projectXml.Descendants().Where(element => element.Name.LocalName == "Page"),
+            element => element.Attribute("Include")?.Value.EndsWith(
+                "A2UICanvasWindow.xaml",
+                StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains("void InitializeComponent()", compatibilityShell);
+        Assert.Contains("private StandaloneTabView MultiSurfaceTabs", compatibilityShell);
+        Assert.Contains("internal sealed class TabViewItem : StackPanel", compatibilityShell);
+        Assert.DoesNotContain("Microsoft.UI.Xaml.Controls.TabView", compatibilityShell);
+    }
+
     [Theory]
     [InlineData("""{"url":"file:///C:/secret.txt"}""")]
     [InlineData("""{"target":"https://example.com"}""")]
@@ -251,6 +277,23 @@ public sealed class CanvasPhase1Tests : IDisposable
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
+
+    private static string FindRepoRoot()
+    {
+        for (var current = new DirectoryInfo(AppContext.BaseDirectory);
+             current != null;
+             current = current.Parent)
+        {
+            if ((Directory.Exists(Path.Combine(current.FullName, ".git"))
+                    || File.Exists(Path.Combine(current.FullName, ".git")))
+                && Directory.Exists(Path.Combine(current.FullName, "windows-node-canvas-host")))
+            {
+                return current.FullName;
+            }
+        }
+
+        throw new DirectoryNotFoundException("Could not locate the MicroClaw repository root.");
+    }
 
     public void Dispose()
     {

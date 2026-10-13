@@ -73,7 +73,10 @@ Canvas Phase 1 is available only while Full or Limited MXC is **Active**. It is 
 capability, not an MXC-contained `system.run` child. The same Gateway generation, policy
 fingerprint, node identity, and signed active lease gate every Canvas command and action. The
 bundled node launches a dedicated authenticated child that reuses the pinned native WinUI A2UI
-renderer. It does not launch OpenClaw Companion or the legacy WebView Canvas.
+router, component renderers, action bridge, and managed-surface snapshot implementation. The
+standalone child constructs its window shell programmatically instead of loading the Companion
+window XAML, so it does not activate unrelated Companion resources or capabilities. It does not
+launch OpenClaw Companion or the legacy WebView Canvas.
 
 The exact node command set is:
 
@@ -94,6 +97,10 @@ shell: URL, HTML, file URI, UNC, absolute/relative local path, `javascript:`, ar
 and unknown-scheme navigation are unavailable. A2UI pushes must be inline; `jsonlPath` is rejected.
 Phase 1 media is restricted to bounded base64 inline PNG/JPEG/WebP image payloads. HTTPS media hosts
 and staged local artifacts are intentionally deferred rather than widening the filesystem boundary.
+Multiple surfaces are presented in a simple stacked layout in Phase 1. Tabbed surface chrome is
+deferred because the unpackaged standalone host cannot reliably activate the pinned `TabView`
+resource stack. This presentation limitation does not change the command, action, media, lease, or
+snapshot boundaries.
 
 Only `click`, `submit`, `confirm`, and `cancel` A2UI callbacks are forwarded. They re-enter the
 normal Gateway as `agent.request` events after immediate lease and identity revalidation; they do

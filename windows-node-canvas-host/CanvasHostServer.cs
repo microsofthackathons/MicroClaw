@@ -158,6 +158,7 @@ internal sealed class CanvasHostServer
         }
         catch (Exception ex)
         {
+            Console.Error.WriteLine($"[canvas-host] command failed: {ex}");
             return new { ok = false, error = $"CANVAS_HOST_FAILURE: {ex.GetType().Name}: {ex.Message}" };
         }
     }
