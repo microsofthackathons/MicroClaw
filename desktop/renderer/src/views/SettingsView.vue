@@ -1598,6 +1598,13 @@
           </a>
         </div>
       </div>
+      <MxcCapabilityConsentDialog
+        v-model="windowsNodeMxcConsentVisible"
+        :target-mode="windowsNodeMxcConsentTarget"
+        :submitting="windowsNodeMxcConsentSubmitting"
+        @accept="acceptWindowsNodeMxcCapabilityConsent"
+        @cancel="cancelWindowsNodeMxcCapabilityConsent"
+      />
       <el-dialog
         v-model="windowsNodeMxcLimitedAcknowledgementVisible"
         :title="t('settings.windowsNodeMxcLimitedAcknowledgeTitle')"
@@ -1651,6 +1658,8 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
+import type { WindowsNodeMxcDisclosureTargetMode } from "../../../src/windows-node-mxc-disclosure";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
@@ -1783,6 +1792,9 @@ const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
 const windowsNodeMxcTechnicalDetailsOpen = ref(false);
+const windowsNodeMxcConsentVisible = ref(false);
+const windowsNodeMxcConsentTarget = ref<WindowsNodeMxcDisclosureTargetMode | null>(null);
+const windowsNodeMxcConsentSubmitting = ref(false);
 const windowsNodeMxcLimitedAcknowledgementVisible = ref(false);
 const windowsNodeMxcLimitedAcknowledged = ref(false);
 const windowsNodeMxcTransitionPhases = new Set([
@@ -1999,17 +2011,49 @@ async function loadWindowsNodeMxcStatus() {
 }
 
 function selectWindowsNodeMxcMode(mode: WindowsNodeMxcMode) {
-  if (windowsNodeMxcApplying.value || windowsNodeMxcStatus.value?.requestedMode === mode) return;
-  if (mode === "limited-dacl") {
-    windowsNodeMxcLimitedAcknowledged.value = false;
-    windowsNodeMxcLimitedAcknowledgementVisible.value = true;
+  if (
+    windowsNodeMxcApplying.value ||
+    windowsNodeMxcConsentVisible.value ||
+    windowsNodeMxcLimitedAcknowledgementVisible.value ||
+    windowsNodeMxcStatus.value?.requestedMode === mode
+  ) {
     return;
   }
-  void applyWindowsNodeMxcMode(mode);
+  if (mode === "off") {
+    void applyWindowsNodeMxcMode(mode);
+    return;
+  }
+  windowsNodeMxcConsentTarget.value = mode;
+  windowsNodeMxcConsentVisible.value = true;
+}
+
+function cancelWindowsNodeMxcCapabilityConsent() {
+  if (windowsNodeMxcConsentSubmitting.value) return;
+  windowsNodeMxcConsentVisible.value = false;
+  windowsNodeMxcConsentTarget.value = null;
+}
+
+async function acceptWindowsNodeMxcCapabilityConsent() {
+  const requestedMode = windowsNodeMxcConsentTarget.value;
+  if (!requestedMode || windowsNodeMxcConsentSubmitting.value) return;
+
+  windowsNodeMxcConsentSubmitting.value = true;
+  windowsNodeMxcConsentVisible.value = false;
+  windowsNodeMxcConsentTarget.value = null;
+  try {
+    if (requestedMode === "limited-dacl") {
+      windowsNodeMxcLimitedAcknowledged.value = false;
+      windowsNodeMxcLimitedAcknowledgementVisible.value = true;
+      return;
+    }
+    await applyWindowsNodeMxcMode(requestedMode);
+  } finally {
+    windowsNodeMxcConsentSubmitting.value = false;
+  }
 }
 
 async function confirmWindowsNodeMxcLimitedMode() {
-  if (!windowsNodeMxcLimitedAcknowledged.value) return;
+  if (!windowsNodeMxcLimitedAcknowledged.value || windowsNodeMxcApplying.value) return;
   await applyWindowsNodeMxcMode("limited-dacl", true);
   if (windowsNodeMxcStatus.value?.requestedMode === "limited-dacl") {
     windowsNodeMxcLimitedAcknowledgementVisible.value = false;

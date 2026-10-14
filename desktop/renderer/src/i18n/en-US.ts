@@ -314,6 +314,44 @@ export default {
   "settings.windowsNodeMxcUseFull": "Use Full containment",
   "settings.windowsNodeMxcUseLimited": "Use Limited containment",
   "settings.windowsNodeMxcUseOff": "Turn containment off",
+  "settings.windowsNodeMxcConsent.title": "Enable {mode}?",
+  "settings.windowsNodeMxcConsent.summary":
+    "Before MicroClaw changes any setting or lifecycle state, review what {mode} makes unavailable, pauses, and keeps available with restrictions.",
+  "settings.windowsNodeMxcConsent.group.disabled": "Disabled while MXC is requested",
+  "settings.windowsNodeMxcConsent.group.paused": "Paused while MXC is active",
+  "settings.windowsNodeMxcConsent.group.available-restricted":
+    "Available with restrictions",
+  "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
+    "Gateway-native filesystem tools are disabled: read, write, edit, and apply_patch.",
+  "settings.windowsNodeMxcConsent.item.browser-automation":
+    "Browser automation is disabled.",
+  "settings.windowsNodeMxcConsent.item.mcp": "MCP is disabled.",
+  "settings.windowsNodeMxcConsent.item.screen": "Screen access is disabled.",
+  "settings.windowsNodeMxcConsent.item.camera": "Camera access is disabled.",
+  "settings.windowsNodeMxcConsent.item.location": "Location access is disabled.",
+  "settings.windowsNodeMxcConsent.item.tts": "Text-to-speech (TTS) is disabled.",
+  "settings.windowsNodeMxcConsent.item.stt": "Speech-to-text (STT) is disabled.",
+  "settings.windowsNodeMxcConsent.item.gateway-memory":
+    "The default Gateway memory plugin and memory slot are disabled.",
+  "settings.windowsNodeMxcConsent.item.cron":
+    "Cron and scheduled jobs are preserved but paused, with no catch-up for work missed during containment.",
+  "settings.windowsNodeMxcConsent.item.hooks-webhooks":
+    "Hooks and Webhooks are paused. Webhooks return 503, internal events are dropped, and neither is replayed later.",
+  "settings.windowsNodeMxcConsent.item.exec":
+    "exec remains available only through the app-owned Windows node, MXC policy, and command approval flow.",
+  "settings.windowsNodeMxcConsent.item.gateway-web":
+    "web_search and HTTP(S)-only web_fetch remain available through the Gateway.",
+  "settings.windowsNodeMxcConsent.item.wechat-message":
+    "Allowlisted WeChat/message remains available only after the local release gate and approval/media broker checks.",
+  "settings.windowsNodeMxcConsent.item.canvas-phase-1":
+    "Canvas Phase 1 remains available only for reviewed native A2UI operations. General navigation, eval, and external or local content remain unavailable.",
+  "settings.windowsNodeMxcConsent.fullNote":
+    "Full containment is the exact filesystem boundary. Confirmation does not guarantee activation; backend preflight can still fail.",
+  "settings.windowsNodeMxcConsent.limitedNote":
+    "Limited containment adds DACL grants and is not an exclusive filesystem boundary. A separate Limited acknowledgement is still required before activation.",
+  "settings.windowsNodeMxcConsent.repeatNote":
+    "MicroClaw asks again for every explicit enable or switch between Full and Limited containment.",
+  "settings.windowsNodeMxcConsent.enable": "Enable MXC",
   "settings.windowsNodeMxcRequestedMode": "Requested mode",
   "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
   "settings.windowsNodeMxcAttestedTier": "Attested effective tier",

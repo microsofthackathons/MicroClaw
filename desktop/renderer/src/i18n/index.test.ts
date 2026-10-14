@@ -210,4 +210,43 @@ describe("i18n", () => {
     expect(t("perm.riskMxcLimited")).toContain("环境访问");
     setLocale("en-US");
   });
+
+  it("localizes the complete MXC capability consent in English and Chinese", () => {
+    setLocale("en-US");
+    expect(
+      t("settings.windowsNodeMxcConsent.title", {
+        mode: t("settings.windowsNodeMxcModeFull"),
+      }),
+    ).toBe("Enable Full containment?");
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-native-filesystem")).toContain(
+      "apply_patch",
+    );
+    expect(t("settings.windowsNodeMxcConsent.item.cron")).toContain("no catch-up");
+    expect(t("settings.windowsNodeMxcConsent.item.hooks-webhooks")).toContain("503");
+    expect(t("settings.windowsNodeMxcConsent.item.canvas-phase-1")).toContain(
+      "General navigation, eval",
+    );
+    expect(t("settings.windowsNodeMxcConsent.fullNote")).toContain(
+      "backend preflight can still fail",
+    );
+    expect(t("settings.windowsNodeMxcConsent.limitedNote")).toContain(
+      "separate Limited acknowledgement",
+    );
+
+    setLocale("zh-CN");
+    expect(
+      t("settings.windowsNodeMxcConsent.title", {
+        mode: t("settings.windowsNodeMxcModeLimited"),
+      }),
+    ).toBe("启用有限隔离（DACL）？");
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-native-filesystem")).toContain(
+      "apply_patch",
+    );
+    expect(t("settings.windowsNodeMxcConsent.item.cron")).toContain("不会补跑");
+    expect(t("settings.windowsNodeMxcConsent.item.hooks-webhooks")).toContain("503");
+    expect(t("settings.windowsNodeMxcConsent.item.canvas-phase-1")).toContain("通用导航");
+    expect(t("settings.windowsNodeMxcConsent.fullNote")).toContain("后端预检仍可能失败");
+    expect(t("settings.windowsNodeMxcConsent.limitedNote")).toContain("单独的有限模式确认");
+    setLocale("en-US");
+  });
 });

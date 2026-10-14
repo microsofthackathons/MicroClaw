@@ -5,6 +5,7 @@ import { ElMessageBox } from "element-plus";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
 import SettingsView from "./SettingsView.vue";
 
 const routeState = vi.hoisted(() => ({ section: "skills" }));
@@ -583,6 +584,9 @@ describe("SettingsView", () => {
     chat.wsConnected = true;
 
     await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await flushPromises();
 
     expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
@@ -595,8 +599,8 @@ describe("SettingsView", () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
-      requestedMode: "off",
-      desiredEnabled: false,
+      requestedMode: "full",
+      desiredEnabled: true,
     });
     const wrapper = shallowMount(SettingsView, {
       global: {
@@ -612,7 +616,13 @@ describe("SettingsView", () => {
     await flushPromises();
 
     await wrapper.find('[data-testid="mxc-select-limited"]').trigger("click");
+    expect(
+      wrapper.findComponent(MxcCapabilityConsentDialog).props("targetMode"),
+    ).toBe("limited-dacl");
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await wrapper.vm.$nextTick();
 
     const confirm = wrapper.find('[data-testid="mxc-confirm-limited"]');
     expect(confirm.attributes("disabled")).toBe("true");
@@ -627,6 +637,130 @@ describe("SettingsView", () => {
       requestedMode: "limited-dacl",
       acknowledgeLimitedFilesystem: true,
     });
+  });
+
+  it("cancels capability disclosure without changing mode, UI selection, or lifecycle state", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const pinia = createPinia();
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [pinia] },
+    });
+    await flushPromises();
+    const gateway = useGatewayStore(pinia);
+    const chat = useChatStore(pinia);
+    gateway.markReady();
+    chat.wsConnected = true;
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
+    expect(consent.props("modelValue")).toBe(true);
+    expect(consent.props("targetMode")).toBe("full");
+    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+
+    consent.vm.$emit("cancel");
+    await wrapper.vm.$nextTick();
+
+    expect(consent.props("modelValue")).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates disclosure requests and double-submit before applying Full once", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    let releasePreflight!: () => void;
+    preflightWindowsNodeMxc.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        releasePreflight = resolve;
+      }),
+    );
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    const full = wrapper.find('[data-testid="mxc-select-full"]');
+    await full.trigger("click");
+    await full.trigger("click");
+    const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
+    expect(consent.props("targetMode")).toBe("full");
+
+    consent.vm.$emit("accept");
+    consent.vm.$emit("accept");
+    expect(preflightWindowsNodeMxc).toHaveBeenCalledTimes(1);
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+
+    releasePreflight();
+    await flushPromises();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
+  });
+
+  it("prompts and applies an explicit Limited to Full switch", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "limited-dacl",
+      effectiveStrength: "limited-dacl",
+      desiredEnabled: true,
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
+    expect(consent.props("targetMode")).toBe("full");
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+
+    consent.vm.$emit("accept");
+    await flushPromises();
+
+    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
+  });
+
+  it("does not prompt during status refresh or internal recovery updates", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "full",
+      effectiveStrength: "off",
+      lifecycleState: {
+        phase: "locked",
+        detail: "Recovered fail closed",
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    window.dispatchEvent(new Event("focus"));
+    await flushPromises();
+
+    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(false);
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain(
+      "Full containment",
+    );
   });
 
   it("disables unavailable Full containment and shows exact availability guidance", async () => {

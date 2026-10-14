@@ -41,6 +41,17 @@ MicroClaw exposes three explicit requested states:
 | **Limited containment (DACL)** | `appcontainer-dacl` only | Selected roots are additive ACL grants; ambient Windows ACL access can remain |
 | **Off** | No bundled MXC host | Restore the remembered standard sandbox route; it may be unsandboxed if that setting is off |
 
+Every explicit user transition from Off to Full or Limited, and every explicit switch between Full
+and Limited, first opens an in-app capability-disclosure consent dialog for the target mode. The
+dialog appears before backend preflight, requested-mode persistence, Gateway or Node shutdown,
+configuration rewriting, or any other lifecycle side effect. Canceling with the button, close
+control, Escape, or backdrop leaves the requested and effective mode, persisted configuration,
+Gateway readiness, and visible mode selection unchanged. Accepting continues the existing
+transition once; Limited still requires its separate additive-DACL warning acknowledgement.
+MicroClaw does not offer a "don't ask again" option and repeats the disclosure for every explicit
+enable or Full/Limited switch. Internal refresh, relock, startup recovery, and fail-closed repair do
+not prompt because they do not represent a new user-selected capability boundary.
+
 Full containment is the security contract established by
 [#224](https://github.com/microsofthackathons/MicroClaw/pull/224). It rejects DACL augmentation,
 sets `fallback.allowDaclMutation=false`, and preserves the exact RO/RW ceiling, denied-root

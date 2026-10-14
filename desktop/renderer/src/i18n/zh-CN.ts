@@ -294,6 +294,42 @@ export default {
   "settings.windowsNodeMxcUseFull": "使用完整隔离",
   "settings.windowsNodeMxcUseLimited": "使用有限隔离",
   "settings.windowsNodeMxcUseOff": "关闭隔离",
+  "settings.windowsNodeMxcConsent.title": "启用{mode}？",
+  "settings.windowsNodeMxcConsent.summary":
+    "在 MicroClaw 更改任何设置或生命周期状态之前，请确认{mode}会禁用、暂停以及受限保留哪些能力。",
+  "settings.windowsNodeMxcConsent.group.disabled": "请求 MXC 时禁用",
+  "settings.windowsNodeMxcConsent.group.paused": "MXC 活动期间暂停",
+  "settings.windowsNodeMxcConsent.group.available-restricted": "受限可用",
+  "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
+    "禁用网关原生文件系统工具：read、write、edit 和 apply_patch。",
+  "settings.windowsNodeMxcConsent.item.browser-automation": "禁用浏览器自动化。",
+  "settings.windowsNodeMxcConsent.item.mcp": "禁用 MCP。",
+  "settings.windowsNodeMxcConsent.item.screen": "禁用屏幕访问。",
+  "settings.windowsNodeMxcConsent.item.camera": "禁用摄像头访问。",
+  "settings.windowsNodeMxcConsent.item.location": "禁用位置访问。",
+  "settings.windowsNodeMxcConsent.item.tts": "禁用文本转语音（TTS）。",
+  "settings.windowsNodeMxcConsent.item.stt": "禁用语音转文本（STT）。",
+  "settings.windowsNodeMxcConsent.item.gateway-memory":
+    "禁用默认网关内存插件和内存槽位。",
+  "settings.windowsNodeMxcConsent.item.cron":
+    "保留但暂停 Cron 和计划任务；隔离期间错过的任务不会补跑。",
+  "settings.windowsNodeMxcConsent.item.hooks-webhooks":
+    "暂停 Hooks 和 Webhook。Webhook 返回 503，内部事件被丢弃，之后均不会重放。",
+  "settings.windowsNodeMxcConsent.item.exec":
+    "exec 仅可通过应用自有 Windows 节点、MXC 策略和命令批准流程使用。",
+  "settings.windowsNodeMxcConsent.item.gateway-web":
+    "web_search 和仅限 HTTP(S) 的 web_fetch 仍可通过网关使用。",
+  "settings.windowsNodeMxcConsent.item.wechat-message":
+    "允许列表内的微信/message 仅在本地释放门控以及批准/媒体代理检查后可用。",
+  "settings.windowsNodeMxcConsent.item.canvas-phase-1":
+    "画布第一阶段仅保留已审查的原生 A2UI 操作。通用导航、脚本求值以及外部或本地内容仍不可用。",
+  "settings.windowsNodeMxcConsent.fullNote":
+    "完整隔离提供精确文件系统边界。确认不保证能够激活；后端预检仍可能失败。",
+  "settings.windowsNodeMxcConsent.limitedNote":
+    "有限隔离会叠加 DACL 授权，并非排他文件系统边界。激活前仍必须完成单独的有限模式确认。",
+  "settings.windowsNodeMxcConsent.repeatNote":
+    "每次明确启用 MXC，或在完整与有限隔离之间切换时，MicroClaw 都会再次询问。",
+  "settings.windowsNodeMxcConsent.enable": "启用 MXC",
   "settings.windowsNodeMxcRequestedMode": "请求的模式",
   "settings.windowsNodeMxcAttestedStrength": "经证明的实际强度",
   "settings.windowsNodeMxcAttestedTier": "经证明的实际层级",
