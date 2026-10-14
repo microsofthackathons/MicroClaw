@@ -19,7 +19,7 @@ describe("desktop startup order", () => {
     expect(rendererIndex).toBeGreaterThan(gatewayIndex);
   });
 
-  it("stops the standard Gateway before Off-to-MXC containment preflight", () => {
+  it("stops the standard Gateway before Off-to-MXC preflight so paused ingress cannot race", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const handler = source.slice(
       source.indexOf('ipcMain.handle(\n    "windows-node-mxc:set-enabled"'),
@@ -36,8 +36,35 @@ describe("desktop startup order", () => {
     );
 
     expect(suspensionBranch).toBeGreaterThan(-1);
+    expect(handler.indexOf("closeWindowsNodeMxcIngress()", suspensionBranch)).toBeGreaterThan(
+      suspensionBranch,
+    );
     expect(gatewayStop).toBeGreaterThan(suspensionBranch);
     expect(preflight).toBeGreaterThan(gatewayStop);
     expect(handler).toContain("Restoring standard Gateway after MXC preflight failure");
+  });
+
+  it("blocks Gateway restart and generic config mutation before they can change Hooks state", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const restartHandler = source.slice(
+      source.indexOf('ipcMain.handle("gateway:restart"'),
+      source.indexOf("// --- Config ---"),
+    );
+    const configWriteHandler = source.slice(
+      source.indexOf('ipcMain.handle("config:write"'),
+      source.indexOf("// --- Skills ---"),
+    );
+    const restartGuard = restartHandler.indexOf("assertWindowsNodeMxcConfigurationMutable()");
+    const restartMutation = restartHandler.indexOf("restartManagedGateway");
+    const configGuard = configWriteHandler.indexOf("isWindowsNodeMxcDesired()");
+    const configMutation = configWriteHandler.indexOf("fs.writeFileSync");
+
+    expect(restartGuard).toBeGreaterThan(-1);
+    expect(restartMutation).toBeGreaterThan(restartGuard);
+    expect(configGuard).toBeGreaterThan(-1);
+    expect(configMutation).toBeGreaterThan(configGuard);
+    expect(configWriteHandler).toContain(
+      "config:write is blocked while Windows Node + MXC mode is enabled",
+    );
   });
 });

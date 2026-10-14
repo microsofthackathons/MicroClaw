@@ -40,10 +40,7 @@ describe("Windows Node MXC Hooks pause policy", () => {
 
   it("reports backed-up requested hooks as paused rather than disabled by the user", () => {
     expect(
-      inspectWindowsNodeMxcHooksStatus(
-        { enabled: true, internal: { enabled: true } },
-        "full",
-      ),
+      inspectWindowsNodeMxcHooksStatus({ enabled: true, internal: { enabled: true } }, "full"),
     ).toEqual({
       requestedExternalEnabled: true,
       requestedInternalEnabled: true,
@@ -55,10 +52,7 @@ describe("Windows Node MXC Hooks pause policy", () => {
 
   it("reports restored effective state only when MXC is Off", () => {
     expect(
-      inspectWindowsNodeMxcHooksStatus(
-        { enabled: true, internal: { enabled: false } },
-        "off",
-      ),
+      inspectWindowsNodeMxcHooksStatus({ enabled: true, internal: { enabled: false } }, "off"),
     ).toEqual({
       requestedExternalEnabled: true,
       requestedInternalEnabled: false,
@@ -68,7 +62,22 @@ describe("Windows Node MXC Hooks pause policy", () => {
     });
   });
 
-  it("rejects an unsafe root hook path and malformed generation binding", () => {
+  it("preserves an explicitly disabled Hooks configuration without a paused-shaped status", () => {
+    expect(
+      inspectWindowsNodeMxcHooksStatus(
+        { enabled: false, internal: { enabled: false } },
+        "limited-dacl",
+      ),
+    ).toEqual({
+      requestedExternalEnabled: false,
+      requestedInternalEnabled: false,
+      effectiveExternalEnabled: false,
+      effectiveInternalEnabled: false,
+      pausedByMxc: false,
+    });
+  });
+
+  it("rejects ambiguous hook paths and malformed generation binding", () => {
     expect(() =>
       createWindowsNodeMxcHooksGatePolicy({
         gatewayGeneration: "",
@@ -85,5 +94,20 @@ describe("Windows Node MXC Hooks pause policy", () => {
         hooksConfig: { enabled: true, path: "/" },
       }),
     ).toThrow(/root HTTP path/);
+    for (const unsafePath of [
+      "/hooks/%68idden",
+      "/hooks?token=x",
+      "/hooks#fragment",
+      "/a/../hooks",
+    ]) {
+      expect(() =>
+        createWindowsNodeMxcHooksGatePolicy({
+          gatewayGeneration: "generation",
+          policyFingerprint: "a".repeat(64),
+          requestedMode: "full",
+          hooksConfig: { enabled: true, path: unsafePath },
+        }),
+      ).toThrow(/unambiguous local HTTP path/);
+    }
   });
 });

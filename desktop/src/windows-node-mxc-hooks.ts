@@ -1,7 +1,6 @@
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
-export const WINDOWS_NODE_MXC_HOOKS_GATE_CONTRACT =
-  "microclaw.windows-node-mxc.hooks-gate.v1";
+export const WINDOWS_NODE_MXC_HOOKS_GATE_CONTRACT = "microclaw.windows-node-mxc.hooks-gate.v1";
 
 export interface WindowsNodeMxcHooksGatePolicy {
   contract: typeof WINDOWS_NODE_MXC_HOOKS_GATE_CONTRACT;
@@ -32,6 +31,12 @@ function normalizeHooksPath(value: unknown): string {
   const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
   const normalized = withSlash.length > 1 ? withSlash.replace(/\/+$/, "") : withSlash;
   if (normalized === "/") throw new Error("MXC Hooks gate cannot protect the root HTTP path");
+  if (
+    /[%?#\\]/.test(normalized) ||
+    normalized.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error("MXC Hooks gate path must be an unambiguous local HTTP path");
+  }
   return normalized;
 }
 
@@ -91,9 +96,8 @@ export function getWindowsNodeMxcHooksEnvironment(
   policy: WindowsNodeMxcHooksGatePolicy,
 ): Record<string, string> {
   return {
-    MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64: Buffer.from(
-      JSON.stringify(policy),
-      "utf8",
-    ).toString("base64"),
+    MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64: Buffer.from(JSON.stringify(policy), "utf8").toString(
+      "base64",
+    ),
   };
 }

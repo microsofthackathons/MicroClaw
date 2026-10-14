@@ -360,10 +360,11 @@ export default {
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "Containment — Off",
   "settings.windowsNodeMxcHooksPausedBoth":
-    "Webhooks and internal hooks are paused while containment is active.",
-  "settings.windowsNodeMxcHooksPausedExternal": "Webhooks are paused while containment is active.",
+    "Webhooks and internal hooks stay paused in MXC Locked and Active states. Requests are rejected, internal events are dropped, and neither is replayed.",
+  "settings.windowsNodeMxcHooksPausedExternal":
+    "Webhooks stay paused in MXC Locked and Active states. Requests are rejected and are not replayed.",
   "settings.windowsNodeMxcHooksPausedInternal":
-    "Internal hooks are paused while containment is active.",
+    "Internal hooks stay paused in MXC Locked and Active states. Events are dropped and are not replayed.",
   "settings.windowsNodeMxcCanvasActive":
     "Canvas Phase 1 — Active. Managed native A2UI only; navigation, eval, local files, and screen capture remain unavailable.",
   "settings.windowsNodeMxcCanvasPaused":

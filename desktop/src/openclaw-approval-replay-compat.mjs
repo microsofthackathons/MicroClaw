@@ -793,6 +793,35 @@ function installApprovalProofMinter() {
   });
 }
 
+export function isWindowsNodeMxcProtectedHooksPath(rawUrl, basePath) {
+  let pathname;
+  try {
+    pathname = new URL(rawUrl ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return false;
+  }
+  const candidates = new Set();
+  const addCandidate = (candidate) => {
+    candidates.add(candidate);
+    candidates.add(candidate.replaceAll("\\", "/"));
+  };
+  addCandidate(pathname);
+  let decoded = pathname;
+  for (let depth = 0; depth < 3; depth += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      addCandidate(next);
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return [...candidates].some(
+    (candidate) => candidate === basePath || candidate.startsWith(`${basePath}/`),
+  );
+}
+
 export function createWindowsNodeMxcHooksGate(policy) {
   if (
     !policy ||
@@ -808,7 +837,9 @@ export function createWindowsNodeMxcHooksGate(policy) {
     typeof policy.basePath !== "string" ||
     !policy.basePath.startsWith("/") ||
     policy.basePath === "/" ||
-    policy.basePath.endsWith("/")
+    policy.basePath.endsWith("/") ||
+    /[%?#\\]/.test(policy.basePath) ||
+    policy.basePath.split("/").some((segment) => segment === "." || segment === "..")
   ) {
     throw new Error("MicroClaw MXC Hooks gate policy is invalid");
   }
@@ -816,11 +847,7 @@ export function createWindowsNodeMxcHooksGate(policy) {
   return Object.freeze({
     policy: immutablePolicy,
     rejectExternal(req, res) {
-      const pathname = new URL(req?.url ?? "/", "http://127.0.0.1").pathname;
-      if (
-        pathname !== immutablePolicy.basePath &&
-        !pathname.startsWith(`${immutablePolicy.basePath}/`)
-      ) {
+      if (!isWindowsNodeMxcProtectedHooksPath(req?.url, immutablePolicy.basePath)) {
         return false;
       }
       res.statusCode = 503;

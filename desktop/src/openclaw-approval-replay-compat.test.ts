@@ -27,6 +27,7 @@ const {
   createWindowsNodeMxcApprovalProofMinter,
   computeWindowsNodeMxcApprovalPlanSha256,
   createWindowsNodeMxcHooksGate,
+  isWindowsNodeMxcProtectedHooksPath,
   patchPinnedOpenClawExecApproval,
   patchPinnedOpenClawCronService,
   patchPinnedOpenClawCronHandlers,
@@ -268,6 +269,38 @@ describe("pinned OpenClaw web fetch contract", () => {
         expect(gate.dropInternal({ type: "command:new" })).toBe(true);
       });
 
+      it("rejects encoded protected paths without reading or admitting request content", () => {
+        expect(isWindowsNodeMxcProtectedHooksPath("/%68ooks/agent", "/hooks")).toBe(true);
+        expect(isWindowsNodeMxcProtectedHooksPath("/%2568ooks/agent", "/hooks")).toBe(true);
+        expect(isWindowsNodeMxcProtectedHooksPath("/hooks%5Cagent", "/hooks")).toBe(true);
+        expect(isWindowsNodeMxcProtectedHooksPath("/hooks/%E0", "/hooks")).toBe(true);
+        expect(isWindowsNodeMxcProtectedHooksPath("/health/%68ooks", "/hooks")).toBe(false);
+
+        const gate = createWindowsNodeMxcHooksGate({
+          contract: "microclaw.windows-node-mxc.hooks-gate.v1",
+          gatewayGeneration: "generation",
+          policyFingerprint: "a".repeat(64),
+          requestedMode: "full",
+          externalRequested: true,
+          internalRequested: true,
+          basePath: "/hooks",
+        });
+        const request = {
+          url: "/%68ooks/agent",
+          get body() {
+            throw new Error("request body must not be read");
+          },
+        };
+        const response = {
+          statusCode: 200,
+          setHeader() {},
+          end() {},
+        };
+
+        expect(gate.rejectExternal(request, response)).toBe(true);
+        expect(response.statusCode).toBe(503);
+      });
+
       it("returns explicit unavailability at the default hook path even when none was configured", () => {
         const gate = createWindowsNodeMxcHooksGate({
           contract: "microclaw.windows-node-mxc.hooks-gate.v1",
@@ -295,6 +328,22 @@ describe("pinned OpenClaw web fetch contract", () => {
         expect(() => patchPinnedOpenClawInternalHooks("unrecognized source")).toThrow(
           /did not match exactly once/,
         );
+      });
+
+      it("rejects ambiguous gate policy paths", () => {
+        for (const basePath of ["/hooks/%68idden", "/hooks?token=x", "/a/../hooks"]) {
+          expect(() =>
+            createWindowsNodeMxcHooksGate({
+              contract: "microclaw.windows-node-mxc.hooks-gate.v1",
+              gatewayGeneration: "generation",
+              policyFingerprint: "a".repeat(64),
+              requestedMode: "limited-dacl",
+              externalRequested: true,
+              internalRequested: true,
+              basePath,
+            }),
+          ).toThrow(/policy is invalid/);
+        }
       });
     });
 

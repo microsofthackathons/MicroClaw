@@ -146,9 +146,16 @@ is a separate agent-default setting rather than this Cron scheduler path and is 
 External webhooks and internal Hooks follow the same requested-versus-effective model. Their
 original configuration remains in the MXC backup while the effective Gateway config keeps both
 surfaces disabled. A generation- and policy-bound compatibility gate returns HTTP 503 at the
-configured (or default) webhook base path before reading a request body or admitting work, and drops internal
-events before listener lookup or handler execution. Neither surface queues paused work, so there
-is no replay when MXC is turned Off. Settings reports the backed-up requested state as paused;
+configured (or default) webhook base path before reading a request body or admitting work. The
+gate also recognizes bounded percent-decoded forms of the protected path and rejects ambiguous
+configured paths rather than permitting a routing mismatch. Internal events are dropped before
+listener lookup or handler execution. Neither surface queues paused work, so there is no replay
+when MXC is turned Off; only newly arriving requests and events after restoration may run. The
+same managed-Gateway stop that suspends Cron before Off-to-MXC preflight also closes these ingress
+paths before containment validation, and a failed preflight restores the unchanged standard
+Gateway. MicroClaw exposes no Hooks mutation bridge while MXC is requested, generic config writes
+and Gateway restarts are blocked, and unreviewed hook plugins remain outside the exact plugin
+allowlist. Settings reports the backed-up requested state as paused in both Locked and Active;
 the original configuration is restored only after the Off transition. Any drift that enables
 either hook surface while Full or Limited is requested fails policy validation and relocks.
 

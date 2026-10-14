@@ -366,7 +366,31 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="mxc-hooks-paused"]').text()).toBe(
-      "Webhooks and internal hooks are paused while containment is active.",
+      "Webhooks and internal hooks stay paused in MXC Locked and Active states. Requests are rejected, internal events are dropped, and neither is replayed.",
+    );
+  });
+
+  it("localizes the fail-closed Hooks pause and no-replay status", async () => {
+    routeState.section = "security";
+    setLocale("zh-CN");
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      hooks: {
+        requestedExternalEnabled: true,
+        requestedInternalEnabled: false,
+        effectiveExternalEnabled: false,
+        effectiveInternalEnabled: false,
+        pausedByMxc: true,
+      },
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-hooks-paused"]').text()).toBe(
+      "MXC 处于已锁定或已激活状态时，Webhook 始终暂停。请求会被拒绝且不会重放。",
     );
   });
 

@@ -337,9 +337,12 @@ export default {
   "settings.windowsNodeMxcStatusActive": "已启用",
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "隔离 — 已关闭",
-  "settings.windowsNodeMxcHooksPausedBoth": "隔离启用期间，Webhook 和内部钩子已暂停。",
-  "settings.windowsNodeMxcHooksPausedExternal": "隔离启用期间，Webhook 已暂停。",
-  "settings.windowsNodeMxcHooksPausedInternal": "隔离启用期间，内部钩子已暂停。",
+  "settings.windowsNodeMxcHooksPausedBoth":
+    "MXC 处于已锁定或已激活状态时，Webhook 和内部钩子始终暂停。请求会被拒绝，内部事件会被丢弃，且均不会重放。",
+  "settings.windowsNodeMxcHooksPausedExternal":
+    "MXC 处于已锁定或已激活状态时，Webhook 始终暂停。请求会被拒绝且不会重放。",
+  "settings.windowsNodeMxcHooksPausedInternal":
+    "MXC 处于已锁定或已激活状态时，内部钩子始终暂停。事件会被丢弃且不会重放。",
   "settings.windowsNodeMxcCanvasActive":
     "画布第一阶段 — 已启用。仅限托管原生 A2UI；导航、脚本求值、本地文件和屏幕捕获仍不可用。",
   "settings.windowsNodeMxcCanvasPaused": "已请求画布第一阶段，但在 MXC 达到“已启用”前不可用。",
