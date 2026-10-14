@@ -3,6 +3,13 @@ import { isAbsolute } from "node:path";
 
 export const WINDOWS_NODE_MXC_CRON_RESUME_FENCE_CONTRACT =
   "microclaw.windows-node-mxc.cron-resume.v1";
+export const WINDOWS_NODE_MXC_BLOCKED_CRON_METHODS = [
+  "cron.scratch.set",
+  "cron.add",
+  "cron.update",
+  "cron.remove",
+  "cron.run",
+] as const;
 
 export interface WindowsNodeMxcCronResumeFence {
   contract: typeof WINDOWS_NODE_MXC_CRON_RESUME_FENCE_CONTRACT;
@@ -10,6 +17,13 @@ export interface WindowsNodeMxcCronResumeFence {
   createdAt: string;
   acknowledgementPath: string;
   acknowledgementToken: string;
+}
+
+export function shouldSuspendWindowsNodeMxcCronBeforePreflight(
+  currentMode: WindowsNodeMxcRequestedMode,
+  requestedMode: WindowsNodeMxcRequestedMode,
+): boolean {
+  return currentMode === "off" && requestedMode !== "off";
 }
 
 export function createWindowsNodeMxcCronResumeFence(
@@ -53,9 +67,7 @@ export function parseWindowsNodeMxcCronResumeFence(
   return candidate as unknown as WindowsNodeMxcCronResumeFence;
 }
 
-export function getWindowsNodeMxcCronResumeEnvironment(
-  value: unknown,
-): Record<string, string> {
+export function getWindowsNodeMxcCronResumeEnvironment(value: unknown): Record<string, string> {
   const fence = parseWindowsNodeMxcCronResumeFence(value);
   if (!fence) throw new Error("Stored MXC Cron resume fence is invalid");
   return {
@@ -88,16 +100,17 @@ export function annotateWindowsNodeMxcPausedCronJobs(
     throw new Error("MXC Cron pause metadata requires an active containment mode");
   }
   return {
-    jobs: (Array.isArray(result.jobs) ? result.jobs : []).map((job) =>
-      job && typeof job === "object" && !Array.isArray(job)
-        ? {
-            ...job,
-            pausedByMxc: true,
-            effectiveEnabled: false,
-            requestedMode,
-          }
-        : job,
-    ),
+    jobs: (Array.isArray(result.jobs) ? result.jobs : []).map((job) => {
+      if (!job || typeof job !== "object" || Array.isArray(job)) return job;
+      const requestedEnabled = (job as Record<string, unknown>).enabled !== false;
+      return {
+        ...job,
+        requestedEnabled,
+        pausedByMxc: requestedEnabled,
+        effectiveEnabled: false,
+        requestedMode,
+      };
+    }),
     pausedByMxc: true,
     requestedMode,
   };

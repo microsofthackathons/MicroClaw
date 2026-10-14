@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WINDOWS_NODE_MXC_BLOCKED_CRON_METHODS } from "./windows-node-mxc-cron";
 // @ts-expect-error The compatibility preload is intentionally external ESM for the Gateway child.
 import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 
@@ -309,6 +310,11 @@ describe("pinned OpenClaw web fetch contract", () => {
           `rejectMicroclawMxcPausedCronMutation("${method}", ${respondExpression})`,
         );
       }
+      expect(
+        PINNED_CRON_MUTATION_HANDLER_SOURCES.map(
+          (handler: string) => handler.match(/"([^"]+)"/)?.[1],
+        ),
+      ).toEqual(WINDOWS_NODE_MXC_BLOCKED_CRON_METHODS);
       expect(patched).toContain("MICROCLAW_MXC_CRON_PAUSED");
     });
 

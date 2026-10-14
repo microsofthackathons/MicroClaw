@@ -922,7 +922,7 @@ export default {
 
   // ── TasksView ──
   "tasks.title": "定时任务",
-  "tasks.desc": "查看和管理 OpenClaw 中已配置的定时任务",
+  "tasks.desc": "查看 OpenClaw 中已配置的定时任务",
   "tasks.refresh": "刷新",
   "tasks.loadFailed": "加载失败",
   "tasks.loading": "加载中…",
@@ -936,6 +936,9 @@ export default {
   "tasks.enabled": "启用",
   "tasks.disabled": "禁用",
   "tasks.pausedByMxc": "已由 MXC 暂停",
+  "tasks.mxcPausedTitle": "MXC 已暂停定时任务",
+  "tasks.mxcPausedDesc":
+    "已保存的任务会保留。MXC 开启期间无法修改或立即运行；关闭 MXC 后，原本启用的任务会从下一个未来计划时间恢复，不会补跑错过的任务。",
 
   // ── Common ──
   "common.close": "关闭",

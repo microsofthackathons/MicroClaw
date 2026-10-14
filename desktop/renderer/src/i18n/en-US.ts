@@ -991,7 +991,7 @@ export default {
 
   // ── TasksView ──
   "tasks.title": "Scheduled Tasks",
-  "tasks.desc": "View and manage scheduled tasks configured in OpenClaw",
+  "tasks.desc": "View scheduled tasks configured in OpenClaw",
   "tasks.refresh": "Refresh",
   "tasks.loadFailed": "Failed to Load",
   "tasks.loading": "Loading…",
@@ -1005,6 +1005,9 @@ export default {
   "tasks.enabled": "Enabled",
   "tasks.disabled": "Disabled",
   "tasks.pausedByMxc": "Paused by MXC",
+  "tasks.mxcPausedTitle": "Scheduled tasks paused by MXC",
+  "tasks.mxcPausedDesc":
+    "Saved jobs are preserved. Changes and run-now are unavailable; enabled jobs resume at their next future schedule after MXC is turned off, without catch-up.",
 
   // ── Common ──
   "common.close": "Close",

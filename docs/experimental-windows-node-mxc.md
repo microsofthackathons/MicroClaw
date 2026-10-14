@@ -132,11 +132,16 @@ to the exact node-host process identity and exits if that parent is lost.
 
 Scheduled tasks keep their stored definitions while MXC is requested, but the effective Gateway
 Cron scheduler remains disabled. Cron mutation, scratch-write, and run-now RPCs reject while MXC
-is requested, and the Tasks view labels preserved jobs as paused by MXC. Leaving MXC records a
+is requested. The managed standard Gateway is stopped before the Off-to-MXC containment preflight,
+so an already queued occurrence cannot race the transition; if preflight fails, MicroClaw restores
+the unchanged standard Gateway before surfacing the failure. The Tasks view keeps listing saved
+jobs, shows an MXC pause banner, labels requested-enabled jobs as paused, and leaves user-disabled
+jobs disabled. Leaving MXC records a
 one-shot durable resume fence; the pinned OpenClaw compatibility preload advances schedules due at
 or before that fence, then allows ordinary startup recovery for later due times.
 It durably acknowledges completion only after the scheduler resumes, so jobs missed during the
-containment interval are not replayed without suppressing later work.
+containment interval are not replayed without suppressing later work. OpenClaw heartbeat selection
+is a separate agent-default setting rather than this Cron scheduler path and is unchanged.
 
 External webhooks and internal Hooks follow the same requested-versus-effective model. Their
 original configuration remains in the MXC backup while the effective Gateway config keeps both

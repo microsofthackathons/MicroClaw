@@ -257,7 +257,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onToolEvent: noopSub,
       onExecCommand: noopSub,
     },
-    cron: { list: async () => ({ jobs: [] }) },
+    cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },
     model: {
       selectDefault: async () => {

@@ -179,6 +179,7 @@ import {
   getWindowsNodeMxcCronResumeEnvironment,
   isWindowsNodeMxcCronResumeAcknowledgement,
   parseWindowsNodeMxcCronResumeFence,
+  shouldSuspendWindowsNodeMxcCronBeforePreflight,
   type WindowsNodeMxcCronResumeFence,
 } from "./windows-node-mxc-cron";
 import {
@@ -6830,6 +6831,8 @@ function registerIpcHandlers(): void {
       let transitionSucceeded = false;
       let automaticReadinessStarted = false;
       let transitionMutationStarted = false;
+      let cronSuspendedBeforePreflight = false;
+      let standardRuntimeRecovered = false;
       try {
         const requestedMode =
           params?.requestedMode ??
@@ -6861,18 +6864,37 @@ function registerIpcHandlers(): void {
         }
 
         const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+        const suspendCronBeforePreflight = shouldSuspendWindowsNodeMxcCronBeforePreflight(
+          getWindowsNodeMxcRequestedMode(),
+          requestedMode,
+        );
+        if (suspendCronBeforePreflight) {
+          transitionMutationStarted = true;
+          setWindowsNodeMxcLifecycleState("locking");
+          closeWindowsNodeMxcIngress();
+          windowsNodeMxcActivationInProgress = false;
+          bundledWindowsNodeHost.revokeActivationLease();
+          sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
+          sendToWindow(mainWindow, "gateway:service-loading");
+          await stopGatewayForSecurityTransition(configuredPort);
+          cronSuspendedBeforePreflight = true;
+        }
         if (enabled) {
           setWindowsNodeMxcLifecycleState("validating");
           await prepareWindowsNodeMxcContainment(requestedMode);
         }
 
-        transitionMutationStarted = true;
-        setWindowsNodeMxcLifecycleState("locking");
-        closeWindowsNodeMxcIngress();
-        windowsNodeMxcActivationInProgress = false;
-        bundledWindowsNodeHost.revokeActivationLease();
-        sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
-        sendToWindow(mainWindow, "gateway:service-loading");
+        if (!cronSuspendedBeforePreflight) {
+          transitionMutationStarted = true;
+          setWindowsNodeMxcLifecycleState("locking");
+          closeWindowsNodeMxcIngress();
+          windowsNodeMxcActivationInProgress = false;
+          bundledWindowsNodeHost.revokeActivationLease();
+          sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
+          sendToWindow(mainWindow, "gateway:service-loading");
+        } else {
+          setWindowsNodeMxcLifecycleState("locking");
+        }
         if (enabled) {
           const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
           const applied = applyWindowsNodeMxcGatewayPolicy(
@@ -6881,7 +6903,9 @@ function registerIpcHandlers(): void {
             settingsStore.get("windowsNodeMxcToolBackups"),
             "locked",
           );
-          await stopGatewayForSecurityTransition(configuredPort);
+          if (!cronSuspendedBeforePreflight) {
+            await stopGatewayForSecurityTransition(configuredPort);
+          }
           if (!isWindowsNodeMxcDesired()) {
             settingsStore.set(
               "windowsNodeMxcPreviousSandboxEnabled",
@@ -6965,17 +6989,46 @@ function registerIpcHandlers(): void {
           }
         } else {
           setWindowsNodeMxcLifecycleState("failed", detail);
-          if (!transitionMutationStarted) throw error;
-          try {
-            await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
-          } finally {
-            setGatewayStatus("failed");
+          if (cronSuspendedBeforePreflight && !automaticReadinessStarted) {
+            try {
+              setWindowsNodeMxcLifecycleState("starting-standard");
+              postSpawnRestartDone = false;
+              mainWindow?.webContents.send(
+                "gateway:log",
+                "[start] Restoring standard Gateway after MXC preflight failure",
+              );
+              await startGateway();
+              await waitForManagedGatewayConnection();
+              setWindowsNodeMxcLifecycleState("idle");
+              standardRuntimeRecovered = true;
+            } catch (recoveryError) {
+              const recoveryDetail =
+                recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+              setWindowsNodeMxcLifecycleState(
+                "failed",
+                `MXC preflight failed and the standard Gateway could not be restored: ${recoveryDetail}`,
+              );
+              setGatewayStatus("failed");
+              throw new AggregateError(
+                [error, recoveryError],
+                `MXC preflight failed and the standard Gateway could not be restored: ${recoveryDetail}`,
+                { cause: recoveryError },
+              );
+            }
+          } else if (transitionMutationStarted) {
+            try {
+              await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+            } finally {
+              setGatewayStatus("failed");
+            }
+          } else {
+            throw error;
           }
         }
         throw error;
       } finally {
         endWindowsNodeMxcLifecycleOperation();
-        if (transitionSucceeded) notifyRendererApplicationReady();
+        if (transitionSucceeded || standardRuntimeRecovered) notifyRendererApplicationReady();
       }
     },
   );

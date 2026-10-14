@@ -276,7 +276,11 @@ interface OpenClawAPI {
     onExecCommand?(callback: (data: { shell: string; command: string }) => void): () => void;
   };
   cron: {
-    list(): Promise<{ jobs?: unknown[] }>;
+    list(): Promise<{
+      jobs?: unknown[];
+      pausedByMxc?: boolean;
+      requestedMode?: "off" | "full" | "limited-dacl";
+    }>;
   };
   agents: {
     list(): Promise<{ agents?: { id: string; name: string; description?: string }[] }>;

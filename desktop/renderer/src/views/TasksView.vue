@@ -12,6 +12,16 @@
       >
     </div>
 
+    <el-alert
+      v-if="taskStore.pausedByMxc"
+      class="mxc-pause-alert"
+      type="warning"
+      show-icon
+      :closable="false"
+      :title="t('tasks.mxcPausedTitle')"
+      :description="t('tasks.mxcPausedDesc')"
+    />
+
     <div v-if="taskStore.error" class="empty-state">
       <div class="empty-title">{{ t("tasks.loadFailed") }}</div>
       <div class="empty-desc">{{ taskStore.error }}</div>
@@ -39,7 +49,10 @@
       <el-table-column prop="agentId" :label="t('tasks.colAgent')" width="150" />
       <el-table-column :label="t('tasks.colStatus')" width="100">
         <template #default="{ row }">
-          <el-tag :type="row.pausedByMxc ? 'warning' : row.enabled ? 'success' : 'info'" size="small">
+          <el-tag
+            :type="row.pausedByMxc ? 'warning' : row.enabled ? 'success' : 'info'"
+            size="small"
+          >
             {{
               row.pausedByMxc
                 ? t("tasks.pausedByMxc")
@@ -85,6 +98,10 @@ onActivated(() => {
 
 .view-header {
   margin-bottom: 24px;
+}
+
+.mxc-pause-alert {
+  margin-bottom: 20px;
 }
 
 .view-header h2 {

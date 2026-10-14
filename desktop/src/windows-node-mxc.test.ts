@@ -30,6 +30,8 @@ import {
   validateWindowsNodeMxcSettings,
   WINDOWS_NODE_MXC_CANVAS_COMMANDS,
   WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
+  WINDOWS_NODE_MXC_OPTIONAL_PLUGIN_IDS,
+  WINDOWS_NODE_MXC_TOOL_ALLOWLIST,
 } from "./windows-node-mxc";
 import {
   classifyDeniedCwdSmoke,
@@ -713,6 +715,27 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(
       validateWindowsNodeMxcGatewayPolicy(implicitMemoryCore, "node-123", "active").blockers,
     ).toContain('Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"');
+  });
+
+  it("never exposes Cron or automations tools and preserves native filesystem denial", () => {
+    expect(WINDOWS_NODE_MXC_TOOL_ALLOWLIST).not.toContain("cron");
+    expect(WINDOWS_NODE_MXC_TOOL_ALLOWLIST).not.toContain("automations");
+
+    for (const forbiddenTool of ["cron", "automations"]) {
+      const source = { agents: { list: [{ id: "main" }] } };
+      const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "active").config;
+      const agent = (applied.agents as { list: Array<{ tools: { allow: string[] } }> }).list[0];
+      agent.tools.allow.push(forbiddenTool);
+
+      const result = validateWindowsNodeMxcGatewayPolicy(applied, "node-123", "active");
+      expect(result.ready).toBe(false);
+    }
+
+    const policy = buildWindowsNodeMxcToolPolicy("node-123");
+    expect(policy.deny).toContain("group:fs");
+    for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
+      expect(policy.allow).not.toContain(filesystemTool);
+    }
   });
 
   it("uses an empty locked tool inventory until all readiness proofs pass", () => {
