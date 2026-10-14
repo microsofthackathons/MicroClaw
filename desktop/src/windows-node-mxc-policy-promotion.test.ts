@@ -1,45 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  buildWindowsNodeMxcLockedToolPolicy,
-  buildWindowsNodeMxcToolPolicy,
-} from "./windows-node-mxc";
+import { applyWindowsNodeMxcGatewayPolicy } from "./windows-node-mxc";
 import { promoteWindowsNodeMxcPolicy } from "./windows-node-mxc-policy-promotion";
 
 const nodeId = "a".repeat(64);
 const generation = "generation-1";
 
 function config(state: "locked" | "active") {
-  return {
+  const baseline = {
     agents: {
       ownership: "explicit",
       entries: {
         main: {
-          tools:
-            state === "locked"
-              ? buildWindowsNodeMxcLockedToolPolicy(nodeId)
-              : buildWindowsNodeMxcToolPolicy(nodeId),
+          tools: {
+            allow: ["read"],
+            deny: [],
+          },
         },
       },
     },
-    gateway: {
-      nodes: {
-        commands: {
-          allow: [
-            "system.run",
-            "system.run.readiness",
-            "system.run.prepare",
-            "system.which",
-            "system.run.cwd-policy",
-          ],
-          deny: [],
-        },
-      },
-    },
+    gateway: {},
     channels: {},
-    cron: { enabled: false },
-    hooks: { enabled: false, internal: { enabled: false } },
-    plugins: { enabled: false, entries: {} },
+    cron: { enabled: true },
+    hooks: { enabled: true, internal: { enabled: true } },
+    plugins: { enabled: true, entries: {}, slots: {} },
   };
+  return applyWindowsNodeMxcGatewayPolicy(baseline, nodeId, {}, state).config;
 }
 
 function snapshot(state: "locked" | "active", hash: string) {
@@ -59,10 +44,9 @@ function legacyConfig(state: "locked" | "active") {
       list: [
         {
           id: "main",
-          tools:
-            state === "locked"
-              ? buildWindowsNodeMxcLockedToolPolicy(nodeId)
-              : buildWindowsNodeMxcToolPolicy(nodeId),
+          tools: (
+            (base.agents as { entries: Record<string, { tools: unknown }> }).entries.main
+          ).tools,
         },
       ],
     },
