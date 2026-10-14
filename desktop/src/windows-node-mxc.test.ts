@@ -30,7 +30,6 @@ import {
   validateWindowsNodeMxcSettings,
   WINDOWS_NODE_MXC_CANVAS_COMMANDS,
   WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
-  WINDOWS_NODE_MXC_OPTIONAL_PLUGIN_IDS,
   WINDOWS_NODE_MXC_TOOL_ALLOWLIST,
 } from "./windows-node-mxc";
 import {
