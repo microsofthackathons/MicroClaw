@@ -19,6 +19,139 @@ export interface WindowsNodeMxcWeixinContext {
   mediaPolicyBase64: string;
 }
 
+type JsonRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function safeAccountKey(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  const safe = trimmed.replace(/[\\/:*?"<>|]/g, "_").replace(/\.\./g, "_");
+  if (!safe || safe === "_") throw new Error("MXC WeChat account id is invalid");
+  return safe;
+}
+
+function readJsonRecord(filePath: string): JsonRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as JsonRecord)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readAllowFrom(filePath: string): string[] {
+  const allowFrom = readJsonRecord(filePath)?.allowFrom;
+  return Array.isArray(allowFrom)
+    ? allowFrom
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function resolveStoredAccountPath(stateDir: string, accountId: string): string {
+  const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
+  const primary = path.join(accountsDir, `${accountId}.json`);
+  if (fs.existsSync(primary)) return primary;
+  if (accountId.endsWith("-im-bot")) {
+    return path.join(accountsDir, `${accountId.slice(0, -7)}@im.bot.json`);
+  }
+  if (accountId.endsWith("-im-wechat")) {
+    return path.join(accountsDir, `${accountId.slice(0, -10)}@im.wechat.json`);
+  }
+  return primary;
+}
+
+export function preflightWindowsNodeMxcWeixinAuthorization(params: {
+  stateDir: string;
+  credentialsDir?: string;
+  config: unknown;
+}): { migratedAccountIds: string[] } {
+  const root = asRecord(params.config);
+  const plugins = asRecord(root.plugins);
+  const pluginEntries = asRecord(plugins.entries);
+  if (asRecord(pluginEntries["openclaw-weixin"]).enabled !== true) {
+    return { migratedAccountIds: [] };
+  }
+
+  const accountsPath = path.join(params.stateDir, "openclaw-weixin", "accounts.json");
+  if (!fs.existsSync(accountsPath)) return { migratedAccountIds: [] };
+  let accountIds: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(accountsPath, "utf8"));
+    if (
+      !Array.isArray(parsed) ||
+      parsed.some((value) => typeof value !== "string" || value.trim().length === 0)
+    ) {
+      throw new Error("account index is invalid");
+    }
+    accountIds = parsed;
+  } catch (error) {
+    throw new Error(
+      `MXC WeChat authorization preflight failed: account index is unreadable: ${String(error)}`,
+    );
+  }
+
+  const channel = asRecord(asRecord(root.channels)["openclaw-weixin"]);
+  const configuredAccounts = asRecord(channel.accounts);
+  const credentialsDir =
+    params.credentialsDir?.trim() || path.join(params.stateDir, "credentials");
+  const migratedAccountIds: string[] = [];
+  const blockedAccountIds: string[] = [];
+
+  for (const accountId of accountIds) {
+    const accountConfig =
+      Object.prototype.hasOwnProperty.call(configuredAccounts, accountId)
+        ? asRecord(configuredAccounts[accountId])
+        : channel;
+    if (accountConfig.enabled === false) continue;
+
+    const allowFromPath = path.join(
+      credentialsDir,
+      `openclaw-weixin-${safeAccountKey(accountId)}-allowFrom.json`,
+    );
+    if (readAllowFrom(allowFromPath).length > 0) continue;
+
+    const account = readJsonRecord(resolveStoredAccountPath(params.stateDir, accountId));
+    const ownerUserId =
+      typeof account?.userId === "string" ? account.userId.trim() : "";
+    if (!ownerUserId) {
+      blockedAccountIds.push(accountId);
+      continue;
+    }
+
+    fs.mkdirSync(credentialsDir, { recursive: true });
+    const existing = readJsonRecord(allowFromPath) ?? {};
+    fs.writeFileSync(
+      allowFromPath,
+      JSON.stringify(
+        {
+          ...existing,
+          version: typeof existing.version === "number" ? existing.version : 1,
+          allowFrom: [ownerUserId],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    migratedAccountIds.push(accountId);
+  }
+
+  if (blockedAccountIds.length > 0) {
+    throw new Error(
+      `MXC WeChat authorization preflight failed: enabled account(s) lack an explicit sender allowlist or stored owner userId: ${blockedAccountIds.join(", ")}`,
+    );
+  }
+  return { migratedAccountIds };
+}
+
 export function resolveWindowsNodeMxcWeixinMediaRoots(userDataPath: string): {
   inboundRoot: string;
   outboundTempRoot: string;

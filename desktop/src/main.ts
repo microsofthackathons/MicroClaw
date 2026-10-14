@@ -236,6 +236,7 @@ import {
 } from "./bundled-windows-node-host";
 import {
   getWindowsNodeMxcWeixinEnvironment,
+  preflightWindowsNodeMxcWeixinAuthorization,
   prepareWindowsNodeMxcWeixinContext,
   releaseWindowsNodeMxcWeixinIngress,
   revokeWindowsNodeMxcWeixinIngress,
@@ -1188,6 +1189,16 @@ function releaseWindowsNodeMxcIngress(gatewayGeneration: string): void {
   ) {
     throw new Error("WeChat ingress release context does not match the active MXC generation");
   }
+  const stateDir = getOpenClawStateDir();
+  const gatewayEnvironment = loadGatewayEnvironment(stateDir);
+  const oauthDir = gatewayEnvironment.OPENCLAW_OAUTH_DIR?.trim();
+  preflightWindowsNodeMxcWeixinAuthorization({
+    stateDir,
+    credentialsDir: oauthDir
+      ? path.resolve(path.dirname(resolveOpenClawEntry()), oauthDir)
+      : undefined,
+    config: readConfig(),
+  });
   releaseWindowsNodeMxcWeixinIngress(context);
   windowsNodeMxcIngressGeneration = gatewayGeneration;
 }

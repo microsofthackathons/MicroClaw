@@ -56,6 +56,30 @@ export function assertMxcWeixinIngressReleased(): void {
   }
 }
 
+export function isWeixinSenderAllowedByPolicy(
+  senderId: string,
+  allowFrom: string[],
+): boolean {
+  if (allowFrom.includes(senderId)) return true;
+  return !isMxcManagedWeixin() && allowFrom.length === 0;
+}
+
+export function assertMxcWeixinOutboundMediaSource(mediaSource: string): void {
+  if (isMxcManagedWeixin() && /^https?:\/\//i.test(mediaSource.trim())) {
+    throw new Error(
+      "MXC WeChat blocks remote HTTP(S) media; use a broker-approved local file",
+    );
+  }
+}
+
+export async function fetchWeixinRemoteMediaWithPolicy(
+  url: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<Response> {
+  assertMxcWeixinOutboundMediaSource(url);
+  return fetchImplementation(url);
+}
+
 export async function waitForMxcWeixinIngressRelease(
   signal?: AbortSignal,
   intervalMs = 1000,

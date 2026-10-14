@@ -1,11 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  assertMxcWeixinOutboundMediaSource,
   authorizeMxcWeixinOutboundMedia,
+  fetchWeixinRemoteMediaWithPolicy,
   isMxcWeixinIngressReleased,
+  isWeixinSenderAllowedByPolicy,
   stageMxcWeixinInboundMedia,
 } from "./mxc-policy.js";
 
@@ -78,6 +81,27 @@ describe("MXC WeChat policy", () => {
     expect(isMxcWeixinIngressReleased()).toBe(false);
   });
 
+  it("fails closed for empty MXC sender policy while preserving legacy behavior", () => {
+    process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+    expect(isWeixinSenderAllowedByPolicy("sender@im.wechat", [])).toBe(false);
+    expect(
+      isWeixinSenderAllowedByPolicy("owner@im.wechat", ["owner@im.wechat"]),
+    ).toBe(true);
+
+    delete process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT;
+    expect(isWeixinSenderAllowedByPolicy("sender@im.wechat", [])).toBe(true);
+  });
+
+  it("rejects remote outbound media under MXC before fetch", async () => {
+    process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await expect(
+      fetchWeixinRemoteMediaWithPolicy("https://example.test/image.png", fetchMock),
+    ).rejects.toThrow(/blocks remote HTTP\(S\) media/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("stages inbound media and permits selected or staged files only", async () => {
     const policy = configure();
     const selectedFile = path.join(policy.selected, "report.txt");
@@ -98,6 +122,17 @@ describe("MXC WeChat policy", () => {
     );
     expect(path.dirname(staged.path)).toBe(fs.realpathSync(policy.inbound));
     expect(path.extname(staged.path)).toBe(".png");
+  });
+
+  it("permits local outbound media sources to continue through broker policy", async () => {
+    const policy = configure();
+    const selectedFile = path.join(policy.selected, "photo.png");
+    fs.writeFileSync(selectedFile, "image");
+
+    expect(() => assertMxcWeixinOutboundMediaSource(selectedFile)).not.toThrow();
+    await expect(authorizeMxcWeixinOutboundMedia(selectedFile)).resolves.toBe(
+      fs.realpathSync(selectedFile),
+    );
   });
 
   it("rejects reparse-point escapes without falling back to host access", async () => {

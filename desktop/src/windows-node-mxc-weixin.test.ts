@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   getWindowsNodeMxcWeixinEnvironment,
+  preflightWindowsNodeMxcWeixinAuthorization,
   prepareWindowsNodeMxcWeixinContext,
   releaseWindowsNodeMxcWeixinIngress,
   revokeWindowsNodeMxcWeixinIngress,
@@ -59,5 +60,73 @@ describe("Windows Node MXC WeChat lifecycle", () => {
     });
     revokeWindowsNodeMxcWeixinIngress(context);
     expect(fs.existsSync(context.releasePath)).toBe(false);
+  });
+
+  it("migrates a stored owner id and accepts explicit allowlists for enabled accounts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-auth-"));
+    roots.push(root);
+    const accountsDir = path.join(root, "openclaw-weixin", "accounts");
+    const credentialsDir = path.join(root, "credentials");
+    fs.mkdirSync(accountsDir, { recursive: true });
+    fs.mkdirSync(credentialsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "openclaw-weixin", "accounts.json"),
+      JSON.stringify(["owner-im-bot", "paired-im-bot", "disabled-im-bot"]),
+    );
+    fs.writeFileSync(
+      path.join(accountsDir, "owner-im-bot.json"),
+      JSON.stringify({ userId: "owner@im.wechat" }),
+    );
+    fs.writeFileSync(
+      path.join(credentialsDir, "openclaw-weixin-paired-im-bot-allowFrom.json"),
+      JSON.stringify({ version: 1, allowFrom: ["paired@im.wechat"] }),
+    );
+
+    expect(
+      preflightWindowsNodeMxcWeixinAuthorization({
+        stateDir: root,
+        credentialsDir,
+        config: {
+          plugins: { entries: { "openclaw-weixin": { enabled: true } } },
+          channels: {
+            "openclaw-weixin": {
+              accounts: { "disabled-im-bot": { enabled: false } },
+            },
+          },
+        },
+      }),
+    ).toEqual({ migratedAccountIds: ["owner-im-bot"] });
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(credentialsDir, "openclaw-weixin-owner-im-bot-allowFrom.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({ version: 1, allowFrom: ["owner@im.wechat"] });
+  });
+
+  it("blocks ingress release when an enabled account has no explicit sender identity", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-auth-"));
+    roots.push(root);
+    const accountsDir = path.join(root, "openclaw-weixin", "accounts");
+    fs.mkdirSync(accountsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "openclaw-weixin", "accounts.json"),
+      JSON.stringify(["unknown-im-bot"]),
+    );
+    fs.writeFileSync(
+      path.join(accountsDir, "unknown-im-bot.json"),
+      JSON.stringify({ token: "token-without-owner" }),
+    );
+
+    expect(() =>
+      preflightWindowsNodeMxcWeixinAuthorization({
+        stateDir: root,
+        config: {
+          plugins: { entries: { "openclaw-weixin": { enabled: true } } },
+        },
+      }),
+    ).toThrow(/unknown-im-bot/);
   });
 });

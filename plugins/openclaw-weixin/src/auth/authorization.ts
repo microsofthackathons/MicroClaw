@@ -4,15 +4,15 @@ import {
   shouldComputeCommandAuthorized,
 } from "openclaw/plugin-sdk/command-auth-native";
 
+import { isWeixinSenderAllowedByPolicy } from "../security/mxc-policy.js";
+
 export function resolveWeixinCommandAuthorization(
   cfg: OpenClawConfig,
   rawBody: string,
   senderId: string,
   allowFrom: string[],
 ): { senderAllowedForCommands: boolean; commandAuthorized: boolean | undefined } {
-  // Preserve the released plugin's empty-list legacy DM behavior; command
-  // access remains subject to the host's access-groups policy.
-  const senderAllowedForCommands = allowFrom.length === 0 || allowFrom.includes(senderId);
+  const senderAllowedForCommands = isWeixinSenderAllowedByPolicy(senderId, allowFrom);
   const commandAuthorized = shouldComputeCommandAuthorized(rawBody, cfg)
     ? resolveCommandAuthorizedFromAuthorizers({
         useAccessGroups: cfg.commands?.useAccessGroups !== false,

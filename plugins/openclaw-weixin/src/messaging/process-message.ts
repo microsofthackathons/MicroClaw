@@ -34,6 +34,7 @@ import { WeixinReplyProgressSender } from "./reply-progress-sender.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import {
   assertMxcWeixinIngressReleased,
+  assertMxcWeixinOutboundMediaSource,
   authorizeMxcWeixinOutboundMedia,
   hasMxcWeixinMediaPolicy,
   resolveWeixinLocalMediaPath,
@@ -327,11 +328,13 @@ export async function processOneMessage(
       typingCallbacks,
       deliver: async (payload) => {
         const rawText = payload.text ?? "";
+        const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
+        assertMxcWeixinIngressReleased();
+        if (mediaUrl) assertMxcWeixinOutboundMediaSource(mediaUrl);
         let text = (() => {
           const f = new StreamingMarkdownFilter();
           return f.feed(rawText) + f.flush();
         })();
-        const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
         logger.debug(`outbound payload: ${redactBody(JSON.stringify(payload))}`);
         logger.info(
           `outbound: to=${ctx.To} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`,
