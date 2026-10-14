@@ -281,6 +281,15 @@
               <div v-if="isCustomProvider" class="field-hint">
                 {{ t("modelSetup.credentialHint") }}
               </div>
+              <button
+                v-if="selectedManagedProvider"
+                class="text-action provider-api-key-link"
+                type="button"
+                :disabled="configMutationInProgress"
+                @click.stop="openProviderSignup"
+              >
+                {{ t("modelSetup.getApiKey") }}
+              </button>
             </el-form-item>
           </template>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
@@ -624,14 +633,32 @@ function handlePrimaryAction() {
 }
 
 function handleGetApiKey() {
+  void openProviderSignup();
+  goToKeyForm();
+}
+
+async function openProviderSignup() {
   const signupUrl = selectedManagedProvider.value?.signupUrl;
   if (!signupUrl) return;
+  const family = selectedFamilyId.value;
+  const generation = submissionGeneration;
   try {
-    window.openclaw?.shell?.openExternal?.(signupUrl);
-  } catch {
-    window.open(signupUrl, "_blank", "noopener,noreferrer");
+    if (window.openclaw?.shell?.openExternal) {
+      await window.openclaw.shell.openExternal(signupUrl);
+    } else {
+      window.open(signupUrl, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    if (
+      props.modelValue &&
+      selectedFamilyId.value === family &&
+      submissionGeneration === generation
+    ) {
+      errorMsg.value = t("modelSetup.openProviderFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  goToKeyForm();
 }
 
 function goToSelectStep() {

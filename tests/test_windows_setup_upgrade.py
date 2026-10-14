@@ -276,6 +276,91 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws.check_openclaw_windows())
 
+    def test_gateway_validation_uses_cold_start_rpc_timeout_and_requires_rpc(self):
+        self.ws._run_openclaw_json = unittest.mock.Mock(return_value={})
+        self.assertTrue(self.ws._validate_gateway_status())
+        self.ws._run_openclaw_json.assert_called_with(
+            ["gateway", "status", "--require-rpc", "--timeout", "30000", "--json"]
+        )
+        self.assertTrue(self.ws._validate_gateway_rpc("config.get"))
+        self.ws._run_openclaw_json.assert_called_with(
+            ["gateway", "call", "config.get", "--timeout", "30000", "--json"]
+        )
+
+    def test_appcontainer_provisions_actual_runtime_prefix_and_native_ancestor_grants(self):
+        prefix = self.appdata / "npm"
+        package = self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_appcontainer_launcher = unittest.mock.Mock(return_value=Path("launcher.exe"))
+        self.ws._appcontainer_access_is_sufficient = unittest.mock.Mock(return_value=False)
+        sid = "S-1-15-2-12345"
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, stdout=sid, stderr=""),
+        ) as run:
+            self.assertTrue(self.ws.provision_appcontainer())
+        grant = next(
+            call
+            for call in run.call_args_list
+            if "grant" in call.args[0] and str(package) in call.args[0]
+        )
+        self.assertEqual(grant.args[0][-2:], ["--access", "r"])
+        self.assertEqual(grant.kwargs["timeout"], 300)
+        self.assertFalse(any(call.args[0][0] == "icacls" for call in run.call_args_list))
+        sandbox = str(self.home / ".openclaw" / "sandbox")
+        sandbox_calls = [
+            call
+            for call in run.call_args_list
+            if "grant" in call.args[0] and sandbox in call.args[0]
+        ]
+        self.assertEqual(len(sandbox_calls), 2)
+
+    def test_appcontainer_does_not_report_success_when_required_grant_fails(self):
+        self.ws._find_appcontainer_launcher = unittest.mock.Mock(return_value=Path("launcher.exe"))
+        self.ws._appcontainer_access_is_sufficient = unittest.mock.Mock(return_value=False)
+        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=False)
+
+        def run(command, **_kwargs):
+            failed = "grant" in command
+            return subprocess.CompletedProcess(
+                command,
+                1 if failed else 0,
+                stdout="S-1-15-2-12345",
+                stderr="access denied" if failed else "",
+            )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.run", side_effect=run):
+            self.assertFalse(self.ws.provision_appcontainer())
+        self.ws._validate_appcontainer_smoke.assert_called_once()
+        self.ws._validate_appcontainer_smoke.reset_mock(return_value=True)
+        self.ws._validate_appcontainer_smoke.return_value = True
+        with unittest.mock.patch("deployer.windows_setup.subprocess.run", side_effect=run):
+            self.assertTrue(self.ws.provision_appcontainer())
+        self.ws._validate_appcontainer_smoke.assert_called_once()
+
+    def test_appcontainer_smoke_checks_actual_node_runtime_and_sandbox_write(self):
+        prefix = self.appdata / "npm"
+        package = self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws.appcontainer_enabled = True
+        self.ws._find_appcontainer_launcher = unittest.mock.Mock(return_value=Path("launcher.exe"))
+        node = self.program_files / "nodejs" / "node.exe"
+        self.ws._resolve_validation_node = unittest.mock.Mock(return_value=node)
+        self.ws._run = unittest.mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout="microclaw-sandbox-ok", stderr=""
+            )
+        )
+        self.assertTrue(self.ws._validate_appcontainer_smoke())
+        command = self.ws._run.call_args.args[0]
+        self.assertEqual(command[command.index("--exe") + 1], str(node))
+        self.assertEqual(command[-2], str(package / "package.json"))
+        self.assertEqual(command[-1], str(self.home / ".openclaw" / "sandbox"))
+        self.assertIn("fs.readFileSync(process.argv[1])", command[command.index("-e") + 1])
+        self.assertIn("fs.writeFileSync", command[command.index("-e") + 1])
+        self.ws._run.return_value = subprocess.CompletedProcess([], 1, stdout="", stderr="denied")
+        self.assertFalse(self.ws._validate_appcontainer_smoke())
+
     def test_source_installer_requires_compatible_staged_weixin_runtime(self):
         project = self.root / "project"
         source = project / "plugins" / "openclaw-weixin"
@@ -1109,6 +1194,28 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             run.call_args.kwargs["env"]["OPENCLAW_STATE_DIR"],
             str(self.home / ".openclaw"),
         )
+
+    def test_same_version_desktop_update_does_not_migrate_unbacked_databases(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._openclaw_upgrade_required = False
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.migrate_openclaw_state())
+        self.ws._run.assert_not_called()
+
+    def test_same_version_migration_skip_rejects_runtime_version_drift(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, "2026.8.2")
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._openclaw_upgrade_required = False
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertFalse(self.ws.migrate_openclaw_state())
+        self.ws._run.assert_not_called()
 
     def test_migrate_openclaw_state_fails_closed_when_doctor_rejects_state(self):
         prefix = self.appdata / "npm"
@@ -1969,7 +2076,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._run.assert_called_once()
         self.assertEqual(
             self.ws._run.call_args.args[0],
-            ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin"],
+            ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin@2026.10.2"],
         )
 
     def test_local_model_provider_installs_only_pinned_component_and_preserves_model_selection(

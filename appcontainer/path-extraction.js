@@ -138,6 +138,17 @@ function extractShellPayload(cmd, args) {
   } else {
     for (var i = 0; i < argArr.length; i++) {
       if (!/^[-\/]/.test(argArr[i])) {
+        if (bn === "node" && /^[a-zA-Z]:[\\/]/.test(String(argArr[i]))) {
+          return argArr
+            .slice(i)
+            .map(function (arg) {
+              var value = String(arg);
+              return /^[a-zA-Z]:[\\/]/.test(value) && /\s/.test(value) && !/["'\r\n]/.test(value)
+                ? '"' + value + '"'
+                : value;
+            })
+            .join(" ");
+        }
         payload = argArr.slice(i).join(" ");
         break;
       }
@@ -360,7 +371,7 @@ var READ_PATTERNS = [
   // .NET read methods
   /\[?System\.IO\.(?:File|Directory)\]?::(?:Read|Get|Exists|Open)\w*\s*\(\s*["']([a-zA-Z]:\\[^"']+)/gi,
   // Generic fallback: quoted path
-  /["']([a-zA-Z]:\\[^"'\s]+)["']/g,
+  /["']([a-zA-Z]:\\[^"'\r\n]+)["']/g,
   // Generic fallback: unquoted path (comma = separator)
   /(?:^|[\s,])([a-zA-Z]:\\[^\s|;>"'(),]+)/g,
 ];

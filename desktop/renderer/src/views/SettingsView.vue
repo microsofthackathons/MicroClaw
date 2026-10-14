@@ -271,7 +271,9 @@
                       ? t("modelManager.localHint")
                       : provider.key === "github-copilot"
                         ? t("modelManager.copilotHint")
-                        : t("modelManager.apiHint")
+                        : provider.signupUrl
+                          ? t("modelManager.apiKeyHint")
+                          : t("modelManager.apiHint")
                   }}
                 </p>
               </div>
@@ -288,6 +290,16 @@
                   )
                 }}
               </span>
+              <el-button
+                v-if="provider.signupUrl"
+                :data-testid="`provider-signup-${provider.key}`"
+                size="small"
+                type="primary"
+                plain
+                @click="openExternal(provider.signupUrl)"
+              >
+                {{ t("modelSetup.getApiKey") }}
+              </el-button>
               <el-button
                 :data-testid="
                   provider.key === 'llama-cpp'
@@ -1997,6 +2009,7 @@ const providerCards = computed(() => {
             ? t("modelManager.compatibleApi")
             : providerName(key),
       models,
+      signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
       editableModels: key === "github-copilot" ? [] : models,
       missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
     };
@@ -2688,8 +2701,16 @@ async function saveSearchSettings(): Promise<void> {
   }
 }
 
-function openExternal(url: string) {
-  window.openclaw.shell.openExternal(url);
+async function openExternal(url: string) {
+  try {
+    await window.openclaw.shell.openExternal(url);
+  } catch (error) {
+    ElMessage.error(
+      t("settings.openLinkFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
 }
 
 const privacyStatementUrl = "https://www.microsoft.com/privacy/privacystatement";

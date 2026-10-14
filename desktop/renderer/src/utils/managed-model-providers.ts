@@ -39,7 +39,7 @@ export const MANAGED_MODEL_PROVIDERS: ManagedModelProvider[] = [
     ],
     defaultModel: "qwen3.7-plus",
     apiKeyPlaceholder: "sk-...",
-    signupUrl: "https://click.qianwenai.com/m/20000000741/",
+    signupUrl: "https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key",
   },
   {
     id: "minimax",
@@ -53,7 +53,7 @@ export const MANAGED_MODEL_PROVIDERS: ManagedModelProvider[] = [
     ],
     defaultModel: "MiniMax-M3",
     apiKeyPlaceholder: "sk-...",
-    signupUrl: "https://platform.minimaxi.com/byok-trial?source=microclaw",
+    signupUrl: "https://platform.minimax.cn/user-center/basic-information/interface-key",
   },
 ];
 

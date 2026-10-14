@@ -6619,10 +6619,11 @@ function registerIpcHandlers(): void {
   });
 
   // --- Shell ---
-  ipcMain.handle("shell:open-external", (_event, url: string) => {
-    if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
-      shell.openExternal(url);
+  ipcMain.handle("shell:open-external", (_event, url: unknown) => {
+    if (typeof url !== "string" || (!url.startsWith("https://") && !url.startsWith("http://"))) {
+      throw new Error("Only HTTP(S) links can be opened");
     }
+    return shell.openExternal(url);
   });
 
   ipcMain.handle("attachment:open", async (_event, request: unknown) => {

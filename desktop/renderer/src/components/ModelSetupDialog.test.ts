@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import type { LocalModelOperation } from "../../../src/local-model-types";
+import { MANAGED_MODEL_PROVIDERS } from "@/utils/managed-model-providers";
 import ModelSetupDialog from "./ModelSetupDialog.vue";
 
 const InputStub = defineComponent({
@@ -266,8 +267,62 @@ describe("ModelSetupDialog", () => {
     await wrapper.find(".primary-action").trigger("click");
 
     expect(openExternal).toHaveBeenCalledOnce();
-    expect(openExternal.mock.calls[0][0]).toContain("minimaxi.com");
+    expect(openExternal.mock.calls[0][0]).toBe(
+      MANAGED_MODEL_PROVIDERS.find((provider) => provider.id === "minimax")!.signupUrl,
+    );
     expect(wrapper.find(".model-key-form").exists()).toBe(true);
+  });
+
+  it.each(MANAGED_MODEL_PROVIDERS)(
+    "opens $id signup from its inline editor without losing input, then saves without inference",
+    async (provider) => {
+      const before = {
+        gateway: { port: 18789 },
+        agents: { defaults: { model: { primary: "cloud/keep" } } },
+        models: { providers: { cloud: { models: [{ id: "keep" }] } } },
+      };
+      read.mockResolvedValue(before);
+      const wrapper = mountDialog({
+        inline: true,
+        manageOnly: true,
+        initialFamily: provider.id,
+      });
+      await flushPromises();
+      const model = provider.models.find((item) => item.id !== provider.defaultModel)!;
+      await wrapper.get("select").setValue(model.id);
+      await wrapper.get('input[placeholder="sk-..."]').setValue("sk-test-fixture");
+      await wrapper.get(".provider-api-key-link").trigger("click");
+      await flushPromises();
+      expect(openExternal).toHaveBeenCalledWith(provider.signupUrl);
+      expect((wrapper.get("select").element as HTMLSelectElement).value).toBe(model.id);
+      expect((wrapper.get('input[placeholder="sk-..."]').element as HTMLInputElement).value).toBe(
+        "sk-test-fixture",
+      );
+      expect(write).not.toHaveBeenCalled();
+      await wrapper.get(".primary-action").trigger("mousedown");
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(write).toHaveBeenCalledOnce();
+      const saved = write.mock.calls[0][0];
+      expect(saved.models.providers[provider.id].baseUrl).toBe(provider.baseUrl);
+      expect(saved.models.providers[provider.id].models[0].id).toBe(model.id);
+      expect(saved.models.providers.cloud).toEqual(before.models.providers.cloud);
+      expect(saved.agents.defaults.model).toEqual(before.agents.defaults.model);
+      expect(testConnection).not.toHaveBeenCalled();
+      expect(restart).toHaveBeenCalledOnce();
+      wrapper.unmount();
+    },
+  );
+
+  it("surfaces failures opening a provider website", async () => {
+    openExternal.mockRejectedValueOnce(new Error("Browser unavailable"));
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "minimax" });
+    await flushPromises();
+    await wrapper.get(".provider-api-key-link").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Could not open the provider website: Browser unavailable");
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
   });
 
   it("returns to a clean provider selection when reopened", async () => {

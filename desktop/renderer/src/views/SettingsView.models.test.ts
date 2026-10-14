@@ -14,6 +14,7 @@ import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue"
 import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
 import { selectPrimaryModelConfig } from "@/utils/model-provider";
+import { MANAGED_MODEL_PROVIDERS } from "@/utils/managed-model-providers";
 
 vi.mock("vue-router", () => ({ useRoute: () => ({ params: { section: "models" } }) }));
 
@@ -584,6 +585,36 @@ describe("SettingsView model integration", () => {
       modelName: "remote",
       baseUrl: "https://cloud.example/v1",
     });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("shows direct API-key links on cloud cards before opening any editor", async () => {
+    const openExternal = vi.spyOn(window.openclaw.shell, "openExternal").mockResolvedValue();
+    const { wrapper } = await open();
+    expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
+    for (const provider of MANAGED_MODEL_PROVIDERS) {
+      const button = wrapper.get(`[data-testid="provider-signup-${provider.id}"]`);
+      expect(button.text()).toBe("Get API Key");
+      await button.trigger("click");
+      await flushPromises();
+      expect(openExternal).toHaveBeenLastCalledWith(provider.signupUrl);
+    }
+    expect(wrapper.find('[data-testid="provider-signup-llama-cpp"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="provider-signup-cloud"]').exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+  });
+
+  it("reports a card link-opening failure without changing configuration", async () => {
+    vi.spyOn(window.openclaw.shell, "openExternal").mockRejectedValue(
+      new Error("Browser unavailable"),
+    );
+    const notify = vi.spyOn(ElMessage, "error").mockReturnValue({ close: vi.fn() });
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="provider-signup-qwen"]').trigger("click");
+    await flushPromises();
+    expect(notify).toHaveBeenCalledWith("Could not open the link: Browser unavailable");
     expect(write).not.toHaveBeenCalled();
   });
 

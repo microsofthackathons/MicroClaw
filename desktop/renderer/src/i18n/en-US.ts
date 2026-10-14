@@ -466,6 +466,7 @@ export default {
   "settings.searchNotConfigured": "Not configured",
   "settings.searchDefault": "Default",
   "settings.saveFailed": "Save failed: {error}",
+  "settings.openLinkFailed": "Could not open the link: {error}",
   "settings.clearHistoryConfirm":
     "Are you sure you want to clear all chat history? This action cannot be undone.",
   "settings.confirm": "Confirm",
@@ -577,6 +578,7 @@ export default {
     "The provider is connected. Select 4B or 9B from the model list; weights download only after confirmation.",
   "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
   "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
+  "modelManager.apiKeyHint": "Get an API key from the provider, then configure the connection.",
   "modelManager.saveOnlyHint":
     "Save connection settings without changing the default model or sending a test prompt.",
   "modelManager.sessionModel": "Model for this conversation",
@@ -800,6 +802,7 @@ export default {
   "modelSetup.otherModel": "Other model",
   "modelSetup.configureCustom": "Configure custom provider",
   "modelSetup.getApiKey": "Get API Key",
+  "modelSetup.openProviderFailed": "Could not open the provider website: {error}",
   "modelSetup.haveApiKey": "I already have an API Key",
   "modelSetup.providerId": "Provider ID",
   "modelSetup.providerIdPlaceholder": "e.g. openai, deepseek, or ollama",
