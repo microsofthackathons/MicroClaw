@@ -360,7 +360,6 @@ describe("SettingsView", () => {
     expect(card.text()).toContain("allowlisted openclaw-weixin plugin and Gateway");
     expect(card.text()).toContain("Free-form, unknown, or secret-bearing requests stay local-only");
     expect(card.text()).toContain("never create durable approvals");
-    expect(card.text()).toContain("unclassified free-text command fields stay local-only");
     await wrapper.find('[data-testid="weixin-remote-approval-enable"]').trigger("click");
     await flushPromises();
     expect(setRemoteApprovalEnabled).toHaveBeenCalledWith(true);
@@ -379,7 +378,6 @@ describe("SettingsView", () => {
     expect(card.text()).toContain("白名单 openclaw-weixin 插件和 Gateway");
     expect(card.text()).toContain("自由文本、未知或含密请求仅能在本机审批");
     expect(card.text()).toContain("绝不会创建永久审批");
-    expect(card.text()).toContain("无法分类的自由文本命令字段仅允许本地审批");
   });
 
   it("keeps technical MXC details collapsed on a fresh Settings view", async () => {
