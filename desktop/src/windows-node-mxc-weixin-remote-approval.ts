@@ -17,13 +17,31 @@ const MAX_PROMPT_LINE = 160;
 const MAX_PROMPT_LENGTH = 6_000;
 const DANGEROUS_PROMPT_UNICODE_PATTERN =
   /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
-const SECRET_NAME_PATTERN =
-  /(?:^|[^a-z0-9])(?:api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|id[-_\s]?token|client[-_\s]?secret|private[-_\s]?key|password|passwd|secret|token|authorization|proxy[-_\s]?authorization|cookie|set[-_\s]?cookie|credential)(?:$|[^a-z0-9])/i;
-const SECRET_COMPOUND_NAME_PATTERN =
-  /(?:apikey|accesstoken|refreshtoken|idtoken|clientsecret|privatekey|password|passwd|authorization|proxyauthorization|setcookie|cookie|credential|secret|token)/i;
-const SECRET_VALUE_PATTERN =
-  /\b(?:Bearer|Basic|ApiKey)\s+\S+|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,})/i;
-const CREDENTIAL_URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+const SAFE_SIMPLE_ARGUMENT_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,15}$/;
+const SAFE_NUMERIC_ARGUMENT_PATTERN = /^-?(?:0|[1-9][0-9]{0,18})(?:\.[0-9]{1,8})?$/;
+const SAFE_SWITCH_PATTERN =
+  /^(?:--?[A-Za-z][A-Za-z0-9-]{0,31}|\/[A-Za-z][A-Za-z0-9-]{0,31})$/;
+const SAFE_RELATIVE_FILE_PATTERN =
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.[A-Za-z0-9]{1,8}$/;
+const SAFE_STRUCTURAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,159}$/;
+const SENSITIVE_SEMANTIC_PATTERN =
+  /(?:accountkey|authorization|auth|bearer|clientsecret|cookie|credential|key|passphrase|passwd|password|privatekey|proxyauthorization|sas|secret|setcookie|signature|sig|token)/i;
+const SAFE_PATH_VALUE_SWITCHES = new Set([
+  "-File",
+  "--file",
+  "--output",
+  "--project",
+  "--cwd",
+  "-o",
+]);
+const SAFE_ENUM_VALUE_SWITCHES = new Set([
+  "--color",
+  "--configuration",
+  "--format",
+  "--mode",
+  "--target",
+]);
+const SAFE_LITERAL_ARGUMENTS = new Set(["false", "null", "true"]);
 
 export interface WeixinRemoteApprovalOwnerBinding {
   contract: typeof WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT;
@@ -310,20 +328,130 @@ function exactPromptValue(value: string): string {
   return JSON.stringify(value);
 }
 
-function canSafelyRenderPromptValue(value: string): boolean {
-  const normalizedName = value.normalize("NFKC");
-  const compactName = normalizedName.replace(/[^a-z0-9]/gi, "");
+function isSafeAsciiDisplayValue(value: string): boolean {
   return (
-    !DANGEROUS_PROMPT_UNICODE_PATTERN.test(value) &&
-    !SECRET_NAME_PATTERN.test(normalizedName) &&
-    !SECRET_COMPOUND_NAME_PATTERN.test(compactName) &&
-    !SECRET_VALUE_PATTERN.test(value) &&
-    !CREDENTIAL_URL_PATTERN.test(value)
+    value.length > 0 &&
+    /^[\x20-\x7e]+$/.test(value) &&
+    !DANGEROUS_PROMPT_UNICODE_PATTERN.test(value)
+  );
+}
+
+function hasSensitiveSemantics(value: string): boolean {
+  return SENSITIVE_SEMANTIC_PATTERN.test(value.replace(/[^A-Za-z0-9]/g, ""));
+}
+
+function isSafeWindowsPath(value: string): boolean {
+  if (
+    !isSafeAsciiDisplayValue(value) ||
+    !/^[A-Za-z]:\\/.test(value) ||
+    /["'<>|?*=;&]/.test(value)
+  ) {
+    return false;
+  }
+  const segments = value.slice(3).split("\\");
+  return segments.every(
+    (segment) =>
+      segment.length > 0 &&
+      segment.length <= 80 &&
+      !segment.endsWith(" ") &&
+      !segment.endsWith(".") &&
+      !hasSensitiveSemantics(segment),
+  );
+}
+
+function isSafeRelativeFile(value: string): boolean {
+  return (
+    isSafeAsciiDisplayValue(value) &&
+    SAFE_RELATIVE_FILE_PATTERN.test(value) &&
+    !hasSensitiveSemantics(value)
+  );
+}
+
+function isSafeSimpleArgument(value: string): boolean {
+  return (
+    isSafeAsciiDisplayValue(value) &&
+    (SAFE_LITERAL_ARGUMENTS.has(value.toLowerCase()) ||
+      SAFE_NUMERIC_ARGUMENT_PATTERN.test(value) ||
+      (SAFE_SIMPLE_ARGUMENT_PATTERN.test(value) && !hasSensitiveSemantics(value)))
+  );
+}
+
+function isSafeSwitch(value: string): boolean {
+  return (
+    isSafeAsciiDisplayValue(value) &&
+    SAFE_SWITCH_PATTERN.test(value) &&
+    !hasSensitiveSemantics(value)
   );
 }
 
 function argumentsCanBeSafelyRendered(values: string[]): boolean {
-  return values.every(canSafelyRenderPromptValue);
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (isSafeWindowsPath(value) || isSafeRelativeFile(value)) continue;
+    if (isSafeSwitch(value)) {
+      if (SAFE_PATH_VALUE_SWITCHES.has(value)) {
+        const pathValue = values[index + 1];
+        if (
+          pathValue === undefined ||
+          (!isSafeWindowsPath(pathValue) && !isSafeRelativeFile(pathValue))
+        ) {
+          return false;
+        }
+        index += 1;
+      } else if (SAFE_ENUM_VALUE_SWITCHES.has(value)) {
+        const enumValue = values[index + 1];
+        if (enumValue === undefined || !isSafeSimpleArgument(enumValue)) return false;
+        index += 1;
+      } else if (values[index + 1] !== undefined && !isSafeSwitch(values[index + 1])) {
+        return false;
+      }
+      continue;
+    }
+    if (SAFE_LITERAL_ARGUMENTS.has(value.toLowerCase())) continue;
+    return false;
+  }
+  return true;
+}
+
+function quoteWindowsArgument(value: string): string {
+  if (value.length > 0 && !/\s/.test(value) && !value.includes('"')) return value;
+  let output = '"';
+  let slashes = 0;
+  for (const character of value) {
+    if (character === "\\") {
+      slashes += 1;
+      continue;
+    }
+    if (character === '"') {
+      output += `${"\\".repeat(slashes * 2 + 1)}"`;
+      slashes = 0;
+      continue;
+    }
+    output += `${"\\".repeat(slashes)}${character}`;
+    slashes = 0;
+  }
+  return `${output}${"\\".repeat(slashes * 2)}"`;
+}
+
+function exactWindowsCommand(values: string[]): string {
+  return values.map(quoteWindowsArgument).join(" ");
+}
+
+function approvalHasSafeStructuredPresentation(
+  approval: WindowsNodeMxcGatewayApproval,
+): boolean {
+  const canonicalCwdIsSafe =
+    approval.canonicalCwd === "isolated-scratch:v1" || isSafeWindowsPath(approval.canonicalCwd);
+  return (
+    (isSafeRelativeFile(approval.executable) || isSafeWindowsPath(approval.executable)) &&
+    isSafeWindowsPath(approval.executablePath) &&
+    canonicalCwdIsSafe &&
+    SAFE_STRUCTURAL_ID_PATTERN.test(approval.sessionKey) &&
+    (approval.agent === null || SAFE_STRUCTURAL_ID_PATTERN.test(approval.agent)) &&
+    argumentsCanBeSafelyRendered(approval.arguments) &&
+    approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
+    approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path))
+  );
 }
 
 function renderExactArguments(values: string[]): string {
@@ -339,21 +467,11 @@ function renderExactDeclarations(values: Array<{ access: string; path: string }>
 function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]): boolean {
   if (requests.length === 0 || requests.length > MAX_PROMPT_REQUESTS) return false;
   return requests.every(({ approval }) => {
-    const displayedValues = [
-      approval.command,
-      approval.executablePath || approval.executable,
-      approval.executableSha256,
-      approval.canonicalCwd,
-      approval.agent ?? "",
-      approval.sessionKey,
-      ...approval.arguments,
-      ...approval.declaredAccess.map((entry) => entry.path),
-    ];
     if (
       approval.arguments.length > MAX_PROMPT_ARGUMENTS ||
       approval.declaredAccess.length > MAX_PROMPT_DECLARATIONS ||
       !/^[a-f0-9]{64}$/i.test(approval.executableSha256) ||
-      !argumentsCanBeSafelyRendered(displayedValues)
+      !approvalHasSafeStructuredPresentation(approval)
     ) {
       return false;
     }
@@ -496,7 +614,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       !Number.isSafeInteger(input.source.cursor) ||
       input.source.cursor < 0 ||
       !promptCanRepresentRequests(input.requests) ||
-      !canSafelyRenderPromptValue(input.security.effectiveMode)
+      !SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode)
     ) {
       return null;
     }

@@ -13,15 +13,15 @@ import {
 
 const approval: WindowsNodeMxcGatewayApproval = {
   id: "approval-1",
-  command: "powershell.exe -File task.ps1",
-  executable: "powershell.exe",
-  arguments: ["-File", "task.ps1", "--mode", "safe"],
-  executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  command: "whoami.exe /all",
+  executable: "whoami.exe",
+  arguments: ["/all"],
+  executablePath: "C:\\Windows\\System32\\whoami.exe",
   executableSha256: "a".repeat(64),
-  canonicalCwd: "C:\\Users\\other-user\\Documents",
+  canonicalCwd: "isolated-scratch:v1",
   agent: "main",
   sessionKey: "agent:main:weixin:owner",
-  declaredAccess: [{ access: "ro", path: "C:\\Users\\other-user\\Documents\\input.txt" }],
+  declaredAccess: [],
   hasMutableFileOperand: false,
   allowedDecisions: ["allow-once", "deny"],
 };
@@ -172,10 +172,10 @@ describe("WeChat remote approval broker", () => {
         approval: {
           ...approval,
           id: "approval-2",
-          command: "cmd.exe /c echo second",
-          executable: "cmd.exe",
-          executablePath: "C:\\Windows\\System32\\cmd.exe",
-          arguments: ["/c", "echo", "second"],
+          command: "hostname.exe",
+          executable: "hostname.exe",
+          executablePath: "C:\\Windows\\System32\\hostname.exe",
+          arguments: [],
         },
       },
     ];
@@ -324,26 +324,42 @@ describe("WeChat remote approval broker", () => {
     ).toMatchObject({ status: "rejected", reason: "stale" });
   });
 
-  it("renders exact values without normalization, path rewriting, JSON parsing, or number conversion", () => {
+  it("renders safely classified values without trimming, path rewriting, or number conversion", () => {
     const broker = configuredBroker();
     const exact = input();
-    const duplicateJson = '{"safe":1,"safe":2,"number":9007199254740993}';
-    const decomposed = "Cafe\u0301";
+    const exactPath = "C:\\Users\\other-user\\Documents\\Data-01.txt";
     exact.requests = [
       {
         approval: {
           ...approval,
-          command: `tool.exe "${decomposed}"`,
-          arguments: ["C:\\Users\\other-user\\Documents\\data.txt", duplicateJson, decomposed],
+          command: `whoami.exe ${exactPath} --mode -7.50`,
+          arguments: [exactPath, "--mode", "-7.50"],
         },
       },
     ];
     const delivery = broker.createChallenge(exact)!;
-    expect(delivery.text).toContain(JSON.stringify("C:\\Users\\other-user\\Documents\\data.txt"));
-    expect(delivery.text).toContain(JSON.stringify(duplicateJson));
-    expect(delivery.text).toContain(JSON.stringify(decomposed));
+    expect(delivery.text).toContain(JSON.stringify(exactPath));
+    expect(delivery.text).toContain(JSON.stringify("-7.50"));
     expect(delivery.text).not.toContain("%USERPROFILE%");
-    expect(delivery.text).not.toContain("\u00e9");
+  });
+
+  it.each([
+    '{"safe":1,"safe":2,"number":9007199254740993}',
+    "Cafe\u0301",
+    "任意文本",
+  ])("keeps unclassified exact text local-only without transforming it: %s", (value) => {
+    const broker = configuredBroker();
+    const exact = input();
+    exact.requests = [
+      {
+        approval: {
+          ...approval,
+          command: `whoami.exe "${value}"`,
+          arguments: [value],
+        },
+      },
+    ];
+    expect(broker.createChallenge(exact)).toBeNull();
   });
 
   it.each([
@@ -372,6 +388,21 @@ describe("WeChat remote approval broker", () => {
   });
 
   it.each([
+    "--******",
+    "--passphrase=correct-horse-battery-staple",
+    "AccountKey=abcdefghijklmnopqrstuvwxyz0123456789+/=",
+    "sv=2026-01-01&sig=abcdefghijklmnopqrstuvwxyz0123456789",
+    "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+    ["xoxb", "123456789012", "123456789012", "abcdefghijklmnopqrstuvwxyz"].join("-"),
+  ])("keeps known missed credential forms local-only: %s", (secretValue) => {
+    const broker = configuredBroker();
+    const unsafe = input();
+    unsafe.requests = [{ approval: { ...approval, arguments: [secretValue] } }];
+    expect(broker.createChallenge(unsafe)).toBeNull();
+    expect(JSON.stringify(broker.getAuditEvents())).not.toContain(secretValue);
+  });
+
+  it.each([
     "--token=inline-secret",
     "--password adjacent-secret",
     "Authorization: Bearer abcdef",
@@ -390,6 +421,32 @@ describe("WeChat remote approval broker", () => {
     unsafe.requests = [{ approval: { ...approval, arguments: [secretValue] } }];
     expect(broker.createChallenge(unsafe)).toBeNull();
     expect(JSON.stringify(broker.getAuditEvents())).not.toContain(secretValue);
+  });
+
+  it.each([
+    "--opaque=value",
+    "hunter2",
+    "shortvalue",
+    "123456",
+    "654321",
+    "correct horse battery staple",
+    "abcdefghijklmnopqrstuvwxyz0123456789",
+    "https://example.test/path",
+    '{"unknown":"free-text"}',
+  ])("keeps unknown free-form value local-only: %s", (unknownValue) => {
+    const broker = configuredBroker();
+    const unsafe = input();
+    unsafe.requests = [{ approval: { ...approval, arguments: [unknownValue] } }];
+    expect(broker.createChallenge(unsafe)).toBeNull();
+  });
+
+  it("keeps an unknown switch value local-only even when both tokens look harmless", () => {
+    const broker = configuredBroker();
+    const unsafe = input();
+    unsafe.requests = [
+      { approval: { ...approval, arguments: ["--opaque", "shortvalue"] } },
+    ];
+    expect(broker.createChallenge(unsafe)).toBeNull();
   });
 
   it("enforces deterministic request, argument, declaration, line, and total caps", () => {

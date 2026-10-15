@@ -218,6 +218,15 @@ If those exact fields exceed deterministic request/argument/declaration/line/tot
 control, C0/C1, surrogate, bidi/format/default-ignorable, line/paragraph separator, zero-width,
 variation-selector, or similar concealment characters, or appear secret-bearing or ambiguously
 redacted, MicroClaw creates no remote challenge and leaves the normal local approval pending.
+OpenClaw 2026.10.2 does not carry reliable sensitive-value provenance for every command display
+field, so Phase 1 additionally uses a fail-closed structured presentation allowlist. The full
+command must exactly reconstruct from the signed argv; executable/CWD/declaration values must be
+canonical local paths or fixed structural bindings; and arguments are limited to bounded
+parameterless switches, explicitly classified path/enum switch values, boolean literals, and short
+relative filenames. Arbitrary positional text or numbers, inline option values, URLs, long opaque
+values, credential-semantic names, and every other unknown form remain local-only.
+This is intentionally conservative: a non-secret command may still require local approval when its
+display sensitivity cannot be proven from the current execution contract.
 
 - `1 CODE` approves the exact first/current request once.
 - `2 CODE` denies the exact request.

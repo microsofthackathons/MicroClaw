@@ -287,7 +287,7 @@ export default {
   "settings.weixinRemoteApprovalRequiresOwner":
     "必须且只能存在一个已登录微信账户，且其所有者必须位于显式发送者白名单中。",
   "settings.weixinRemoteApprovalOnceOnly":
-    "回复仅一次性批准当前列出的请求；绝不会创建永久审批、文件夹授权或未来请求授权。",
+    "回复仅一次性批准当前列出的请求；绝不会创建永久审批、文件夹授权或未来请求授权。包含秘密或无法分类的自由文本命令字段仅允许本地审批。",
   "settings.weixinRemoteApprovalEnable": "在本机确认启用并绑定",
   "settings.weixinRemoteApprovalDisable": "禁用",
   "settings.weixinRemoteApprovalRevoke": "撤销所有者绑定",

@@ -306,7 +306,7 @@ export default {
   "settings.weixinRemoteApprovalRequiresOwner":
     "Exactly one authenticated WeChat account whose owner is in the explicit sender allowlist is required.",
   "settings.weixinRemoteApprovalOnceOnly":
-    "Replies approve only the currently listed request(s) once. They never create durable approvals, folder grants, or future approval.",
+    "Replies approve only the currently listed request(s) once. They never create durable approvals, folder grants, or future approval. Secret-bearing or unclassified free-text command fields stay local-only.",
   "settings.weixinRemoteApprovalEnable": "Enable and bind locally",
   "settings.weixinRemoteApprovalDisable": "Disable",
   "settings.weixinRemoteApprovalRevoke": "Revoke owner binding",
