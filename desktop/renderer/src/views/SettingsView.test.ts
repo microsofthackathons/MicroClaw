@@ -358,6 +358,7 @@ describe("SettingsView", () => {
     expect(card.text()).toContain("WeChat remote approval (Experimental)");
     expect(card.text()).toContain("owner@im.wechat");
     expect(card.text()).toContain("allowlisted openclaw-weixin plugin and Gateway");
+    expect(card.text()).toContain("Free-form, unknown, or secret-bearing requests stay local-only");
     expect(card.text()).toContain("never create durable approvals");
     expect(card.text()).toContain("unclassified free-text command fields stay local-only");
     await wrapper.find('[data-testid="weixin-remote-approval-enable"]').trigger("click");
@@ -376,6 +377,7 @@ describe("SettingsView", () => {
     const card = wrapper.find('[data-testid="weixin-remote-approval"]');
     expect(card.text()).toContain("微信远程审批（实验性）");
     expect(card.text()).toContain("白名单 openclaw-weixin 插件和 Gateway");
+    expect(card.text()).toContain("自由文本、未知或含密请求仅能在本机审批");
     expect(card.text()).toContain("绝不会创建永久审批");
     expect(card.text()).toContain("无法分类的自由文本命令字段仅允许本地审批");
   });

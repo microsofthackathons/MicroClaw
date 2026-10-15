@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import {
+  classifyWeixinRemoteApprovalPresentation,
   migrateWeixinRemoteApprovalConfiguration,
   normalizeWeixinRemoteApprovalOwner,
   renderWeixinRemoteApprovalPrompt,
@@ -13,10 +14,10 @@ import {
 
 const approval: WindowsNodeMxcGatewayApproval = {
   id: "approval-1",
-  command: "whoami.exe /all",
-  executable: "whoami.exe",
-  arguments: ["/all"],
-  executablePath: "C:\\Windows\\System32\\whoami.exe",
+  command: "hostname.exe",
+  executable: "hostname.exe",
+  arguments: [],
+  executablePath: "C:\\Windows\\System32\\hostname.exe",
   executableSha256: "a".repeat(64),
   canonicalCwd: "isolated-scratch:v1",
   agent: "main",
@@ -134,6 +135,61 @@ describe("WeChat remote approval broker", () => {
   });
 
   it.each([
+    ["hostname.exe", "C:\\Windows\\System32\\hostname.exe", [], "hostname.exe"],
+    ["whoami.exe", "C:\\Windows\\System32\\whoami.exe", [], "whoami.exe"],
+    ["whoami.exe", "C:\\Windows\\System32\\whoami.exe", ["/user"], "whoami.exe /user"],
+    ["whoami.exe", "C:\\Windows\\System32\\whoami.exe", ["/groups"], "whoami.exe /groups"],
+    ["whoami.exe", "C:\\Windows\\System32\\whoami.exe", ["/priv"], "whoami.exe /priv"],
+    ["ipconfig.exe", "C:\\Windows\\System32\\ipconfig.exe", [], "ipconfig.exe"],
+    ["ipconfig.exe", "C:\\Windows\\System32\\ipconfig.exe", ["/all"], "ipconfig.exe /all"],
+    ["systeminfo.exe", "C:\\Windows\\System32\\systeminfo.exe", [], "systeminfo.exe"],
+  ] as const)(
+    "allows only the exact predefined tuple %s %j",
+    (executable, executablePath, argumentsValue, command) => {
+      const broker = configuredBroker();
+      const allowed = input();
+      allowed.requests = [
+        {
+          approval: {
+            ...approval,
+            executable,
+            executablePath,
+            arguments: [...argumentsValue],
+            command,
+          },
+        },
+      ];
+      expect(broker.createChallenge(allowed)).not.toBeNull();
+    },
+  );
+
+  it.each([
+    ["unknown executable", { executable: "curl.exe" }],
+    ["unknown executable path", { executablePath: "C:\\Tools\\hostname.exe" }],
+    ["unknown argument", { arguments: ["/unknown"] }],
+    ["command drift", { command: "hostname.exe " }],
+    ["declaration", { declaredAccess: [{ access: "ro" as const, path: "C:\\safe" }] }],
+    ["non-scratch CWD", { canonicalCwd: "C:\\Temp" }],
+    ["mutable operand", { hasMutableFileOperand: true }],
+    [
+      "missing one-use decision",
+      { allowedDecisions: ["deny"] as WindowsNodeMxcGatewayApproval["allowedDecisions"] },
+    ],
+  ])("keeps structurally unrecognized %s requests local-only", (_name, approvalOverride) => {
+    const broker = configuredBroker();
+    const blocked = input();
+    blocked.requests = [{ approval: { ...approval, ...approvalOverride } }];
+    expect(broker.createChallenge(blocked)).toBeNull();
+  });
+
+  it("keeps unknown effective containment modes local-only", () => {
+    const broker = configuredBroker();
+    const blocked = input();
+    blocked.security = { ...blocked.security, effectiveMode: "future-tier" };
+    expect(broker.createChallenge(blocked)).toBeNull();
+  });
+
+  it.each([
     ["1", "allow-once", ["approval-1"]],
     ["2", "deny", ["approval-1"]],
     ["3", "allow-once", ["approval-1"]],
@@ -172,10 +228,10 @@ describe("WeChat remote approval broker", () => {
         approval: {
           ...approval,
           id: "approval-2",
-          command: "hostname.exe",
-          executable: "hostname.exe",
-          executablePath: "C:\\Windows\\System32\\hostname.exe",
-          arguments: [],
+          command: "whoami.exe /groups",
+          executable: "whoami.exe",
+          executablePath: "C:\\Windows\\System32\\whoami.exe",
+          arguments: ["/groups"],
         },
       },
     ];
@@ -324,42 +380,37 @@ describe("WeChat remote approval broker", () => {
     ).toMatchObject({ status: "rejected", reason: "stale" });
   });
 
-  it("renders safely classified values without trimming, path rewriting, or number conversion", () => {
+  it("never sends raw authorization fields and keeps arbitrary free text local-only", () => {
     const broker = configuredBroker();
-    const exact = input();
-    const exactPath = "C:\\Users\\other-user\\Documents\\Data-01.txt";
-    exact.requests = [
-      {
-        approval: {
-          ...approval,
-          command: `whoami.exe ${exactPath} --mode -7.50`,
-          arguments: [exactPath, "--mode", "-7.50"],
-        },
-      },
-    ];
-    const delivery = broker.createChallenge(exact)!;
-    expect(delivery.text).toContain(JSON.stringify(exactPath));
-    expect(delivery.text).toContain(JSON.stringify("-7.50"));
-    expect(delivery.text).not.toContain("%USERPROFILE%");
-  });
+    const delivery = broker.createChallenge(input())!;
+    expect(delivery.text).toContain("Windows host name");
+    for (const rawValue of [
+      approval.command,
+      approval.executable,
+      approval.executablePath,
+      approval.executableSha256,
+      approval.canonicalCwd,
+      approval.agent!,
+      approval.sessionKey,
+    ]) {
+      expect(delivery.text).not.toContain(rawValue);
+    }
 
-  it.each([
-    '{"safe":1,"safe":2,"number":9007199254740993}',
-    "Cafe\u0301",
-    "任意文本",
-  ])("keeps unclassified exact text local-only without transforming it: %s", (value) => {
-    const broker = configuredBroker();
-    const exact = input();
-    exact.requests = [
+    const arbitrary = input();
+    const duplicateJson = '{"safe":1,"safe":2,"number":9007199254740993}';
+    const decomposed = "Cafe\u0301";
+    arbitrary.requests = [
       {
         approval: {
           ...approval,
-          command: `whoami.exe "${value}"`,
-          arguments: [value],
+          command: `tool.exe "${decomposed}"`,
+          executable: "tool.exe",
+          executablePath: "C:\\Tools\\tool.exe",
+          arguments: ["C:\\Users\\other-user\\Documents\\data.txt", duplicateJson, decomposed],
         },
       },
     ];
-    expect(broker.createChallenge(exact)).toBeNull();
+    expect(broker.createChallenge(arbitrary)).toBeNull();
   });
 
   it.each([
@@ -388,21 +439,14 @@ describe("WeChat remote approval broker", () => {
   });
 
   it.each([
-    "--******",
-    "--passphrase=correct-horse-battery-staple",
-    "AccountKey=abcdefghijklmnopqrstuvwxyz0123456789+/=",
-    "sv=2026-01-01&sig=abcdefghijklmnopqrstuvwxyz0123456789",
-    "npm_abcdefghijklmnopqrstuvwxyz0123456789",
-    ["xoxb", "123456789012", "123456789012", "abcdefghijklmnopqrstuvwxyz"].join("-"),
-  ])("keeps known missed credential forms local-only: %s", (secretValue) => {
-    const broker = configuredBroker();
-    const unsafe = input();
-    unsafe.requests = [{ approval: { ...approval, arguments: [secretValue] } }];
-    expect(broker.createChallenge(unsafe)).toBeNull();
-    expect(JSON.stringify(broker.getAuditEvents())).not.toContain(secretValue);
-  });
-
-  it.each([
+    "opaque-positional-password-value",
+    "--passphrase=hunter2",
+    "AccountKey=azure-storage-secret",
+    "sv=2024-01-01&sig=azure-sas-secret",
+    "//registry.npmjs.org/:_authToken=npm-secret",
+    "xoxb-1234567890-1234567890-opaque",
+    "X-Auth: custom-credential",
+    "dGhpcy1pcy1hbi11bmtub3duLWNyZWRlbnRpYWw=",
     "--token=inline-secret",
     "--password adjacent-secret",
     "Authorization: Bearer abcdef",
@@ -421,32 +465,6 @@ describe("WeChat remote approval broker", () => {
     unsafe.requests = [{ approval: { ...approval, arguments: [secretValue] } }];
     expect(broker.createChallenge(unsafe)).toBeNull();
     expect(JSON.stringify(broker.getAuditEvents())).not.toContain(secretValue);
-  });
-
-  it.each([
-    "--opaque=value",
-    "hunter2",
-    "shortvalue",
-    "123456",
-    "654321",
-    "correct horse battery staple",
-    "abcdefghijklmnopqrstuvwxyz0123456789",
-    "https://example.test/path",
-    '{"unknown":"free-text"}',
-  ])("keeps unknown free-form value local-only: %s", (unknownValue) => {
-    const broker = configuredBroker();
-    const unsafe = input();
-    unsafe.requests = [{ approval: { ...approval, arguments: [unknownValue] } }];
-    expect(broker.createChallenge(unsafe)).toBeNull();
-  });
-
-  it("keeps an unknown switch value local-only even when both tokens look harmless", () => {
-    const broker = configuredBroker();
-    const unsafe = input();
-    unsafe.requests = [
-      { approval: { ...approval, arguments: ["--opaque", "shortvalue"] } },
-    ];
-    expect(broker.createChallenge(unsafe)).toBeNull();
   });
 
   it("enforces deterministic request, argument, declaration, line, and total caps", () => {
@@ -488,19 +506,21 @@ describe("WeChat remote approval broker", () => {
   });
 
   it("renders truthful English and Chinese one-use option copy", () => {
+    const presentation = classifyWeixinRemoteApprovalPresentation([{ approval }], input().security);
+    expect(presentation).not.toBeNull();
     for (const locale of ["en-US", "zh-CN"] as const) {
       const prompt = renderWeixinRemoteApprovalPrompt({
         code: "23456789",
         expiresAtUnixMs: 123_000,
-        requests: [{ approval }],
-        security: input().security,
+        presentation: presentation!,
         locale,
       });
       expect(prompt).toContain(`1 23456789`);
       expect(prompt).toContain(`2 23456789`);
       expect(prompt).toContain(`3 23456789`);
-      expect(prompt).toContain(approval.executableSha256);
-      expect(prompt).toContain(JSON.stringify(approval.canonicalCwd));
+      expect(prompt).not.toContain(approval.executableSha256);
+      expect(prompt).not.toContain(approval.canonicalCwd);
+      expect(prompt).not.toContain(approval.sessionKey);
       expect(prompt).toMatch(
         locale === "zh-CN" ? /不会创建永久授权/ : /no durable or future approval/,
       );
