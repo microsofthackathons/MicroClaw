@@ -467,6 +467,29 @@ describe("WeChat remote approval broker", () => {
     expect(JSON.stringify(broker.getAuditEvents())).not.toContain(secretValue);
   });
 
+  it.each([
+    "hunter2",
+    "shortvalue",
+    "123456",
+    "654321",
+    "correct horse battery staple",
+    "abcdefghijklmnopqrstuvwxyz0123456789",
+    "https://example.test/path",
+    '{"unknown":"free-text"}',
+  ])("keeps unknown free-form value local-only: %s", (unknownValue) => {
+    const broker = configuredBroker();
+    const unsafe = input();
+    unsafe.requests = [{ approval: { ...approval, arguments: [unknownValue] } }];
+    expect(broker.createChallenge(unsafe)).toBeNull();
+  });
+
+  it("keeps an unknown switch value local-only even when both tokens look harmless", () => {
+    const broker = configuredBroker();
+    const unsafe = input();
+    unsafe.requests = [{ approval: { ...approval, arguments: ["--opaque", "shortvalue"] } }];
+    expect(broker.createChallenge(unsafe)).toBeNull();
+  });
+
   it("enforces deterministic request, argument, declaration, line, and total caps", () => {
     const broker = configuredBroker();
     const tooManyArguments = input();
