@@ -162,6 +162,15 @@ export default {
   "chat.error.unauthorized.title": "Authentication failed",
   "chat.error.unauthorized.hint":
     "The API key was rejected by the model provider. Verify the API key in Model Settings and make sure it has not expired or been revoked.",
+  "chat.error.provider_access.title": "The provider rejected access to this model",
+  "chat.error.provider_access.hint":
+    "A model appearing in the catalog does not guarantee access. Check the API key's region, model permissions, and billing or quota in the provider console. This does not necessarily mean the key is invalid.",
+  "chat.error.unsupported_model.title": "This model requires a different API",
+  "chat.error.unsupported_model.hint":
+    "This conversation uses the chat-completions API. Choose a compatible chat model; realtime, embedding, speech and media-generation models require separate integrations.",
+  "chat.error.request_rejected.title": "The provider could not accept the request",
+  "chat.error.request_rejected.hint":
+    "Check whether the model supports the chat API, the requested input and tools, and the conversation length. A new conversation will not fix an incompatible API.",
   "chat.error.rate_limited.title": "Rate limited by the model provider",
   "chat.error.rate_limited.hint":
     "Too many requests — try again shortly, or check your quota / billing status with the provider.",
@@ -578,7 +587,35 @@ export default {
     "The provider is connected. Select 4B or 9B from the model list; weights download only after confirmation.",
   "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
   "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
-  "modelManager.apiKeyHint": "Get an API key from the provider, then configure the connection.",
+  "modelManager.apiKeyHint": "Expand to get an API key and configure the connection.",
+  "modelManager.expandProvider": "Expand {provider}",
+  "modelManager.collapseProvider": "Collapse {provider}",
+  "modelSetup.catalogLoading": "Fetching the provider's model list…",
+  "modelSetup.catalogLoaded":
+    "Models returned by the provider. Individual access may depend on your account permissions.",
+  "modelSetup.catalogNeedsKey":
+    "Enter a complete API key to fetch models. The model list stays disabled until the request succeeds.",
+  "modelSetup.catalogRefresh": "Refresh model list",
+  "modelSetup.incompatible.realtime": "Requires realtime API",
+  "modelSetup.incompatible.embedding": "Embedding model, not chat",
+  "modelSetup.incompatible.rerank": "Reranking model, not chat",
+  "modelSetup.incompatible.speech": "Requires speech API",
+  "modelSetup.incompatible.image": "Requires image-generation API",
+  "modelSetup.incompatible.video": "Requires video-generation API",
+  "modelSetup.catalogChoose": "Fetch the model list and select a model before saving.",
+  "modelSetup.catalogError.credentials":
+    "Enter an API key, or check that its environment variable is defined.",
+  "modelSetup.catalogError.maskedKey":
+    "This looks like a masked key. Use the provider's copy button to obtain the complete API key.",
+  "modelSetup.catalogError.endpoint": "The provider endpoint is invalid.",
+  "modelSetup.catalogError.authentication":
+    "The provider rejected the API key. Check the complete key, endpoint region and account permissions.",
+  "modelSetup.catalogError.unavailable":
+    "The provider did not return a model catalog. Check endpoint availability and retry; no preset list was substituted.",
+  "modelSetup.catalogError.response": "The provider returned an invalid model catalog.",
+  "modelSetup.catalogError.empty": "The provider returned no models for this connection.",
+  "modelSetup.catalogError.network":
+    "Could not fetch models. Check the network or endpoint and retry.",
   "modelManager.saveOnlyHint":
     "Save connection settings without changing the default model or sending a test prompt.",
   "modelManager.sessionModel": "Model for this conversation",

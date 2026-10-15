@@ -77,6 +77,12 @@ function fixture(target = "cloud/b") {
 afterEach(() => vi.useRealTimers());
 
 describe("default model hot selection", () => {
+  it("rejects realtime models before any default-model RPC", async () => {
+    const f = fixture("qwen/qwen3.8-omni-flash-realtime");
+    await expect(f.select()).rejects.toThrow("UNSUPPORTED_CHAT_MODEL");
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
   it.each(["2026.9.3", "2026.10.2"])(
     "writes only the primary using CAS on %s without inference or restart",
     async (version) => {

@@ -61,6 +61,8 @@ describe("ModelSetupDialog", () => {
   const write = vi.fn();
   const restart = vi.fn();
   const testConnection = vi.fn();
+  const discoverModels = vi.fn();
+  const registerCatalogModel = vi.fn();
   const openExternal = vi.fn();
   const prepareGitHubCopilot = vi.fn();
   const startGitHubCopilotLogin = vi.fn();
@@ -80,6 +82,11 @@ describe("ModelSetupDialog", () => {
       message: "Connection successful",
       baseUrl: "http://localhost:11434/v1",
     });
+    discoverModels.mockResolvedValue({
+      ok: true,
+      models: ["qwen", "qwen3.7-plus", "MiniMax-M3", "MiniMax-M1"],
+    });
+    registerCatalogModel.mockResolvedValue(undefined);
     prepareGitHubCopilot.mockResolvedValue({ restartRequired: false });
     startGitHubCopilotLogin.mockResolvedValue({ sessionId: "copilot-session" });
     cancelGitHubCopilotLogin.mockResolvedValue({ cancelled: true });
@@ -90,6 +97,8 @@ describe("ModelSetupDialog", () => {
       config: { read, write },
       gateway: { restart },
       model: {
+        discoverModels,
+        registerCatalogModel,
         testConnection,
         prepareGitHubCopilot,
         startGitHubCopilotLogin,
@@ -116,6 +125,13 @@ describe("ModelSetupDialog", () => {
     await cards[3].trigger("click");
     expect(wrapper.text()).toContain("Configure custom provider");
     await wrapper.find(".primary-action").trigger("click");
+  }
+
+  async function enterCloudKey(wrapper: ReturnType<typeof mountDialog>) {
+    await wrapper.findAll("input")[1].setValue("new-key");
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    await wrapper.get("select").setValue("qwen3.7-plus");
   }
 
   async function openGitHubCopilotForm(wrapper: ReturnType<typeof mountDialog>) {
@@ -145,6 +161,117 @@ describe("ModelSetupDialog", () => {
     expect(copilotLogo).toContain("fill='black'");
     expect(wrapper.text()).not.toContain("OpenClaw catalog");
   });
+
+  it.each([
+    ["qwen", "千问"],
+    ["minimax", "MiniMax"],
+  ] as const)(
+    "keeps the inline %s editor focused on fields without duplicate dialog chrome",
+    async (family, label) => {
+      const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: family });
+      await flushPromises();
+      const panel = wrapper.get('[role="region"]');
+      expect(panel.attributes("aria-label")).toBe(label);
+      expect(panel.find("h2").exists()).toBe(false);
+      expect(panel.find(".model-setup-desc").exists()).toBe(false);
+      expect(panel.find(".model-setup-close").exists()).toBe(false);
+      expect(panel.element.firstElementChild?.classList.contains("model-key-form")).toBe(true);
+      expect(panel.find('[data-testid="provider-key-field"]').exists()).toBe(true);
+      expect(panel.find('[data-testid="provider-model-field"]').exists()).toBe(true);
+      wrapper.unmount();
+    },
+  );
+
+  it("retains the title, instructions and close button for standalone setup", async () => {
+    const wrapper = mountDialog({ initialFamily: "qwen" });
+    await wrapper.get(".text-action").trigger("click");
+    const panel = wrapper.get('[role="dialog"]');
+    expect(panel.get("h2").text()).not.toBe("");
+    expect(panel.get(".model-setup-desc").text()).not.toBe("");
+    await panel.get(".model-setup-close").trigger("click");
+    expect(wrapper.emitted("update:modelValue")).toEqual([[false]]);
+    wrapper.unmount();
+  });
+
+  it("keeps realtime models in the full catalog but disables their use for chat", async () => {
+    const realtime = "qwen3.8-omni-flash-realtime";
+    discoverModels.mockResolvedValue({ ok: true, models: ["qwen3.7-plus", realtime] });
+    const wrapper = mountDialog({
+      inline: true,
+      manageOnly: true,
+      currentProvider: {
+        familyId: "qwen",
+        providerKey: "qwen",
+        modelName: realtime,
+        baseUrl: MANAGED_MODEL_PROVIDERS[0].baseUrl,
+        apiKey: "fixture",
+        apiFormat: "openai-chat",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(wrapper.findAll("option")).toHaveLength(2);
+    expect(wrapper.get(`option[value="${realtime}"]`).attributes("disabled")).toBeDefined();
+    expect(wrapper.get(`option[value="${realtime}"]`).text()).toContain("Requires realtime API");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
+    await wrapper.get(".primary-action").trigger("click");
+    expect(write).not.toHaveBeenCalled();
+    expect(registerCatalogModel).not.toHaveBeenCalled();
+    await wrapper.get("select").setValue("qwen3.7-plus");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it.each([false, true])(
+    "does not restart or rewrite a connection when only its model changes (failure: %s)",
+    async (fail) => {
+      const baseUrl = MANAGED_MODEL_PROVIDERS[0].baseUrl;
+      const config = {
+        models: {
+          providers: {
+            qwen: {
+              baseUrl,
+              apiKey: "existing-key",
+              api: "openai-completions",
+              models: [{ id: "qwen", name: "Qwen" }],
+            },
+          },
+        },
+        agents: { defaults: { model: { primary: "qwen/qwen" } } },
+      };
+      read.mockResolvedValue(config);
+      if (fail)
+        registerCatalogModel.mockRejectedValueOnce(new Error("Catalog could not be applied"));
+      const wrapper = mountDialog({
+        inline: true,
+        manageOnly: true,
+        currentProvider: {
+          familyId: "qwen",
+          providerKey: "qwen",
+          modelName: "qwen",
+          baseUrl,
+          apiKey: "existing-key",
+          apiFormat: "openai-chat",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(600);
+      await flushPromises();
+      await wrapper.get("select").setValue("qwen3.7-plus");
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      expect(registerCatalogModel).toHaveBeenCalledWith({
+        modelRef: "qwen/qwen3.7-plus",
+        expectedConfig: config,
+      });
+      expect(write).not.toHaveBeenCalled();
+      expect(restart).not.toHaveBeenCalled();
+      if (fail) {
+        expect(wrapper.text()).toContain("Catalog could not be applied");
+        expect(wrapper.emitted("configured")).toBeUndefined();
+      } else expect(wrapper.emitted("configured")).toHaveLength(1);
+      wrapper.unmount();
+    },
+  );
 
   it("edits a custom connection inline without inference or changing the default and preserves its ID", async () => {
     const config = {
@@ -184,7 +311,7 @@ describe("ModelSetupDialog", () => {
     await flushPromises();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect(wrapper.find('[role="region"]').exists()).toBe(true);
-    await wrapper.get(".primary-action").trigger("mousedown");
+    await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
     expect(testConnection).not.toHaveBeenCalled();
@@ -289,8 +416,10 @@ describe("ModelSetupDialog", () => {
       });
       await flushPromises();
       const model = provider.models.find((item) => item.id !== provider.defaultModel)!;
-      await wrapper.get("select").setValue(model.id);
       await wrapper.get('input[placeholder="sk-..."]').setValue("sk-test-fixture");
+      await vi.advanceTimersByTimeAsync(600);
+      await flushPromises();
+      await wrapper.get("select").setValue(model.id);
       await wrapper.get(".provider-api-key-link").trigger("click");
       await flushPromises();
       expect(openExternal).toHaveBeenCalledWith(provider.signupUrl);
@@ -299,7 +428,7 @@ describe("ModelSetupDialog", () => {
         "sk-test-fixture",
       );
       expect(write).not.toHaveBeenCalled();
-      await wrapper.get(".primary-action").trigger("mousedown");
+      await wrapper.get(".primary-action").trigger("click");
       await flushPromises();
       await vi.runAllTimersAsync();
       expect(write).toHaveBeenCalledOnce();
@@ -322,6 +451,121 @@ describe("ModelSetupDialog", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("Could not open the provider website: Browser unavailable");
     expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("disables model selection until a key fetch returns live IDs", async () => {
+    discoverModels.mockResolvedValue({ ok: true, models: ["account-model-2026"] });
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
+    await flushPromises();
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.findAll("option")).toHaveLength(0);
+    expect(discoverModels).not.toHaveBeenCalled();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture-key");
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(discoverModels).toHaveBeenCalledWith({
+      baseUrl: MANAGED_MODEL_PROVIDERS[0].baseUrl,
+      apiKey: "fixture-key",
+    });
+    expect(wrapper.get("select").attributes("disabled")).toBeUndefined();
+    expect(wrapper.findAll("option").map((o) => o.attributes("value"))).toEqual([
+      "account-model-2026",
+    ]);
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
+    await wrapper.get("select").setValue("account-model-2026");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+    expect(testConnection).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it.each(["qwen", "minimax"] as const)(
+    "places %s credentials before models with adjacent key and refresh actions",
+    async (provider) => {
+      const response = deferred<{ ok: true; models: string[] }>();
+      discoverModels.mockReturnValueOnce(response.promise);
+      const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: provider });
+      await flushPromises();
+      const fields = wrapper
+        .findAll('[data-testid$="-field"]')
+        .map((field) => field.attributes("data-testid"));
+      expect(fields).toEqual(["provider-base-field", "provider-key-field", "provider-model-field"]);
+      const keyRow = wrapper.get('[data-testid="provider-key-field"] .model-field-row');
+      expect(keyRow.findAll("input")).toHaveLength(1);
+      expect(keyRow.get(".provider-api-key-link").text()).toBe("Get API Key");
+      const modelRow = wrapper.get('[data-testid="provider-model-field"] .model-field-row');
+      expect(modelRow.find("select").exists()).toBe(true);
+      const refresh = modelRow.get('[data-testid="refresh-provider-models"]');
+      expect(refresh.text()).toBe("");
+      expect(refresh.attributes("aria-label")).toBe("Refresh model list");
+      expect(refresh.attributes("title")).toBe("Refresh model list");
+      expect(refresh.attributes("disabled")).toBeDefined();
+      await keyRow.get("input").setValue("fixture-key");
+      await vi.advanceTimersByTimeAsync(600);
+      expect(refresh.attributes("aria-busy")).toBe("true");
+      expect(refresh.get("svg").classes()).toContain("refresh-spinning");
+      expect(refresh.attributes("disabled")).toBeDefined();
+      response.resolve({ ok: true, models: ["remote-model"] });
+      await flushPromises();
+      expect(refresh.attributes("aria-busy")).toBe("false");
+      expect(refresh.attributes("disabled")).toBeUndefined();
+      await refresh.trigger("click");
+      await flushPromises();
+      expect(discoverModels).toHaveBeenCalledTimes(2);
+      expect(write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("discards a stale key's response and never falls back to presets on auth failure", async () => {
+    const first = deferred<{ ok: true; models: string[] }>();
+    discoverModels
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ ok: false, error: "authentication" });
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("old-key");
+    await vi.advanceTimersByTimeAsync(600);
+    await wrapper.get('input[placeholder="sk-..."]').setValue("new-key");
+    await vi.advanceTimersByTimeAsync(600);
+    first.resolve({ ok: true, models: ["stale-model"] });
+    await flushPromises();
+    expect(wrapper.findAll("option")).toHaveLength(0);
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("provider rejected the API key");
+    await wrapper.get(".primary-action").trigger("keydown", { key: "Enter" });
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("invalidates a fetched catalog immediately when the key is cleared", async () => {
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "minimax" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture");
+    await vi.advanceTimersByTimeAsync(600);
+    await wrapper.get("select").setValue("MiniMax-M3");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("");
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.findAll("option")).toHaveLength(0);
+    await wrapper.get(".primary-action").trigger("keydown", { key: "Enter" });
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("never reuses one provider's key when switching to another provider", async () => {
+    const wrapper = mountDialog();
+    await wrapper.find(".text-action").trigger("click");
+    await wrapper.get('input[placeholder="sk-..."]').setValue("qwen-only-key");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(discoverModels).toHaveBeenCalledOnce();
+    await wrapper.get(".text-action--back").trigger("click");
+    await wrapper.findAll(".model-family-card")[1].trigger("click");
+    await wrapper.find(".text-action").trigger("click");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(discoverModels).toHaveBeenCalledOnce();
+    expect((wrapper.get('input[placeholder="sk-..."]').element as HTMLInputElement).value).toBe("");
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
     wrapper.unmount();
   });
 
@@ -369,8 +613,8 @@ describe("ModelSetupDialog", () => {
     const wrapper = mountDialog({ singleProvider: true });
 
     await wrapper.find(".text-action").trigger("click");
-    await wrapper.findAll("input")[1].setValue("new-key");
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
 
@@ -407,8 +651,8 @@ describe("ModelSetupDialog", () => {
     });
     const wrapper = mountDialog({ singleProvider: true });
     await wrapper.find(".text-action").trigger("click");
-    await wrapper.findAll("input")[1].setValue("new-key");
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
     const next = write.mock.calls[0][0];
@@ -422,7 +666,7 @@ describe("ModelSetupDialog", () => {
     const wrapper = mountDialog();
     await openCustomForm(wrapper);
     await wrapper.findAll("input")[0].setValue("llama-cpp");
-    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
     await flushPromises();
     expect(wrapper.find(".local-model-panel").exists()).toBe(true);
     expect(testConnection).not.toHaveBeenCalled();
@@ -440,7 +684,7 @@ describe("ModelSetupDialog", () => {
     const wrapper = mountDialog({ initialFamily: "github-copilot", singleProvider: true });
     await flushPromises();
     await wrapper.find("select").setValue("github-copilot/gpt-5.4");
-    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
     expect(write.mock.calls[0][0].models.providers).toEqual(providers);
@@ -451,8 +695,8 @@ describe("ModelSetupDialog", () => {
     read.mockResolvedValue(null);
     const wrapper = mountDialog();
     await wrapper.find(".text-action").trigger("click");
-    await wrapper.findAll("input")[1].setValue("new-key");
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
     expect(write.mock.calls[0][1]).toBeNull();
@@ -462,8 +706,8 @@ describe("ModelSetupDialog", () => {
     write.mockRejectedValueOnce(new Error("Configuration changed; reload before saving"));
     const wrapper = mountDialog();
     await wrapper.find(".text-action").trigger("click");
-    await wrapper.findAll("input")[1].setValue("new-key");
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("Configuration changed; reload before saving");
     expect(restart).not.toHaveBeenCalled();
@@ -486,7 +730,7 @@ describe("ModelSetupDialog", () => {
     await wrapper.find(".text-action").trigger("click");
     await wrapper.findAll("input")[1].setValue("new-key");
     expect(wrapper.find(".key-actions .primary-action").attributes("disabled")).toBeDefined();
-    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
     expect(testConnection).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
   });
@@ -521,7 +765,7 @@ describe("ModelSetupDialog", () => {
       await inputs[1].setValue("model");
       await inputs[2].setValue("https://model.example/v1");
       await inputs[3].setValue("key");
-      await wrapper.get(".key-actions .primary-action").trigger("mousedown");
+      await wrapper.get(".key-actions .primary-action").trigger("click");
       await flushPromises();
       await vi.runAllTimersAsync();
       expect(testConnection).toHaveBeenCalledBefore(vi.mocked(local.cancel));
@@ -554,7 +798,7 @@ describe("ModelSetupDialog", () => {
     expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
     expect(listGitHubCopilotModels).not.toHaveBeenCalled();
     expect(wrapper.find(".primary-action").text()).toContain("Sign in with GitHub");
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
     expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
 
@@ -578,7 +822,7 @@ describe("ModelSetupDialog", () => {
     expect(wrapper.text()).toContain("GitHub Copilot connected");
     expect(wrapper.find("select").element.value).toBe("github-copilot/gpt-5.4");
 
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
 
@@ -598,7 +842,7 @@ describe("ModelSetupDialog", () => {
   it("cancels an in-progress GitHub device login when the dialog closes", async () => {
     const wrapper = mountDialog();
     await openGitHubCopilotForm(wrapper);
-    await wrapper.find(".primary-action").trigger("mousedown");
+    await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
 
     await wrapper.find(".model-setup-close").trigger("click");
@@ -616,7 +860,7 @@ describe("ModelSetupDialog", () => {
     await inputs[0].setValue("ollama");
     await inputs[1].setValue("llama3.2");
     await inputs[2].setValue("http://localhost:11434");
-    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
     await flushPromises();
     await vi.runAllTimersAsync();
 
@@ -661,7 +905,7 @@ describe("ModelSetupDialog", () => {
     await inputs[0].setValue("ollama");
     await inputs[1].setValue("llama3.2");
     await inputs[2].setValue("http://localhost:11434");
-    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
     await wrapper.find(".model-setup-close").trigger("click");
     connection.resolve({
       ok: true,
@@ -685,7 +929,7 @@ describe("ModelSetupDialog", () => {
     await inputs[0].setValue("ollama");
     await inputs[1].setValue("llama3.2");
     await inputs[2].setValue("http://localhost:11434");
-    await wrapper.find(".key-actions .primary-action").trigger("mousedown");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
     await flushPromises();
 
     expect(write).toHaveBeenCalledOnce();

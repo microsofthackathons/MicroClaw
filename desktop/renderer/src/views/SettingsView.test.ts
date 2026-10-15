@@ -6,6 +6,7 @@ import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import SettingsView from "./SettingsView.vue";
+import { createBrowserOpenClawMock } from "@/browser-openclaw";
 
 const routeState = vi.hoisted(() => ({ section: "skills" }));
 vi.mock("vue-router", () => ({
@@ -118,6 +119,7 @@ describe("SettingsView", () => {
     validateFolderPolicy.mockReset().mockImplementation(async (draft) => draft);
     applyFolderPolicy.mockReset();
     window.openclaw = {
+      model: createBrowserOpenClawMock().model,
       config: {
         read: vi.fn().mockResolvedValue(null),
       },
@@ -579,12 +581,8 @@ describe("SettingsView", () => {
       "MicroClaw End User License Agreement",
       "Privacy Statement",
     ]);
-    expect(links[0].attributes("href")).toBe(
-      "https://microclaw.microsoft.com/eula.en.html",
-    );
-    expect(links[1].attributes("href")).toBe(
-      "https://www.microsoft.com/privacy/privacystatement",
-    );
+    expect(links[0].attributes("href")).toBe("https://microclaw.microsoft.com/eula.en.html");
+    expect(links[1].attributes("href")).toBe("https://www.microsoft.com/privacy/privacystatement");
 
     await links[0].trigger("click");
     await links[1].trigger("click");

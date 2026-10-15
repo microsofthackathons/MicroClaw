@@ -8,7 +8,12 @@ import { pathToFileURL } from "node:url";
 import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
-import { hasLocalModelPrimary, LocalModelService } from "./local-model-service";
+import {
+  hasLocalModelPrimary,
+  LocalModelService,
+  supportsLocalModelGatewayVersion,
+} from "./local-model-service";
+import { assertChatModelSupported } from "./provider-model-capabilities";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
 import { registerSessionModelHandlers } from "./session-model-ipc";
@@ -21,7 +26,12 @@ import {
   requiresExternalGatewayStop,
 } from "./gateway-lifecycle";
 import { createTray, destroyTray, updateTrayMenu } from "./tray";
-import { minimizeWindow, sendToWindow, showAndFocusWindow } from "./window-lifecycle";
+import {
+  minimizeWindow,
+  sendToWindow,
+  showAndFocusWindow,
+  showStartupWindow,
+} from "./window-lifecycle";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
@@ -91,6 +101,11 @@ import {
 } from "./model-connection";
 import { assertModelConfigUnchanged, hasConfiguredModel } from "./model-setup";
 import { selectDefaultModel } from "./default-model-selection";
+import { discoverProviderModels } from "./provider-model-catalog";
+import {
+  registerProviderCatalogModel,
+  parseProviderCatalogSelection,
+} from "./provider-model-registration";
 import {
   disconnectGitHubCopilot,
   getGitHubCopilotAuthStatus,
@@ -261,6 +276,7 @@ const settingsStore = new Store<{
   themeMode: string;
   accentColor: string;
   localModelOperation?: LocalModelReceipt;
+  modelFormSelections?: Record<string, string>;
   /** Apps that bypass AppContainer sandbox (need COM/RPC/named-pipes). */
   sandboxExternalApps: string[];
   /** Whether the sandbox is enabled. */
@@ -394,6 +410,10 @@ const localModelService = new LocalModelService({
 });
 const sessionModelService = new SessionModelService({
   gateway: () => gwClient,
+  prepareModel: (modelRef) =>
+    withModelConfigurationMutation(async () => {
+      await prepareProviderCatalogModel(modelRef, readConfig());
+    }),
   runtime: () => {
     const child = gatewayProcess;
     if (!gatewaySpawnedByUs || !child?.pid || !gatewayGenerationId) return null;
@@ -448,6 +468,28 @@ async function withModelConfigurationMutation<T>(operation: () => Promise<T>): P
   } finally {
     modelConfigurationMutationInProgress = false;
   }
+}
+
+function assertCloudModelMutable(): void {
+  assertWindowsNodeMxcConfigurationMutable();
+  if (githubCopilotLoginInProgress) throw new Error("GitHub Copilot sign-in is still in progress");
+  if (!gatewaySpawnedByUs || gatewayRestarting)
+    throw new Error("Model selection requires MicroClaw's connected managed Gateway");
+  if (activeModelSessions.size > 0)
+    throw new Error("Wait for the active chat response before changing the model");
+}
+
+function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown): Promise<unknown> {
+  return registerProviderCatalogModel(
+    {
+      gateway: () => gwClient,
+      readConfig,
+      assertMutable: assertCloudModelMutable,
+      discover: (input) => discoverProviderModels(input, { ...process.env, ...loadStateDirEnv() }),
+    },
+    modelRef,
+    expectedConfig,
+  );
 }
 
 async function withInternalModelChat<T>(operation: () => Promise<T>): Promise<T> {
@@ -2626,6 +2668,7 @@ function _getRendererURL(): string {
 // Window creation
 // ---------------------------------------------------------------------------
 function createMainWindow(): BrowserWindow {
+  const backgroundLaunch = process.env.MICROCLAW_BACKGROUND === "1";
   const win = new BrowserWindow({
     width: LOADING_WINDOW_WIDTH,
     height: LOADING_WINDOW_HEIGHT,
@@ -2642,6 +2685,7 @@ function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: !backgroundLaunch,
     },
   });
 
@@ -2682,7 +2726,7 @@ function createMainWindow(): BrowserWindow {
 
   Menu.setApplicationMenu(null);
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
-  const showWindowOnStartup = () => showAndFocusWindow(win);
+  const showWindowOnStartup = () => showStartupWindow(win, backgroundLaunch);
   win.once("ready-to-show", showWindowOnStartup);
   win.webContents.once("did-finish-load", showWindowOnStartup);
 
@@ -5523,6 +5567,10 @@ function registerIpcHandlers(): void {
       const activeKey = modelChatKey(params.sessionKey);
       activeModelSessions.add(activeKey);
       try {
+        if (supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
+          const selection = await sessionModelService.get(params.sessionKey);
+          if (selection.modelRef) assertChatModelSupported(selection.modelRef);
+        }
         await gwClient.sendChat(
           params.sessionKey,
           params.message,
@@ -5911,6 +5959,19 @@ function registerIpcHandlers(): void {
   registerSessionModelHandlers(ipcMain, sessionModelService);
 
   // --- Model connection test (runs in main process to avoid CORS) ---
+  ipcMain.handle("model:discover-models", (_event, params: unknown) =>
+    discoverProviderModels(params, { ...process.env, ...loadStateDirEnv() }),
+  );
+  ipcMain.handle("model:register-catalog-model", (_event, input: unknown) =>
+    withModelConfigurationMutation(async () => {
+      const params = parseProviderCatalogSelection(input);
+      await prepareProviderCatalogModel(params.modelRef, params.expectedConfig);
+      settingsStore.set("modelFormSelections", {
+        ...settingsStore.get("modelFormSelections"),
+        [params.modelRef.split("/", 1)[0]]: params.modelRef,
+      });
+    }),
+  );
   ipcMain.handle(
     "model:test-connection",
     async (
@@ -6073,15 +6134,8 @@ function registerIpcHandlers(): void {
           {
             gateway: () => gwClient,
             readConfig,
-            assertMutable: () => {
-              assertWindowsNodeMxcConfigurationMutable();
-              if (githubCopilotLoginInProgress)
-                throw new Error("GitHub Copilot sign-in is still in progress");
-              if (!gatewaySpawnedByUs || gatewayRestarting)
-                throw new Error(
-                  "Default model selection requires MicroClaw's connected managed Gateway",
-                );
-            },
+            assertMutable: assertCloudModelMutable,
+            prepareModel: prepareProviderCatalogModel,
           },
           params,
         );

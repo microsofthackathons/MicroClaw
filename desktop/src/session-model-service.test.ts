@@ -244,6 +244,19 @@ describe("session model reads", () => {
 });
 
 describe("session model selection", () => {
+  it("rejects realtime selection before any session mutation or provider request", async () => {
+    const f = fixture();
+    await expect(
+      f.service.select({
+        sessionKey: "agent:main:main",
+        modelRef: "qwen/qwen3.8-omni-flash-realtime",
+      }),
+    ).rejects.toThrow("UNSUPPORTED_CHAT_MODEL");
+    expect(f.request).not.toHaveBeenCalled();
+    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.sessions.size).toBe(0);
+  });
+
   it.each(["2026.9.3", "2026.10.2"])(
     "selects a configured cloud model on %s with only an official metadata patch",
     async (version) => {

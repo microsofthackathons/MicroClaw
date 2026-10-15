@@ -174,7 +174,7 @@ def _center_native_window(hwnd, logger=None):
     except Exception:
         pass
 
-    user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004)
+    user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010)
 
 
 def _normalize_lang(lang):
@@ -1144,8 +1144,9 @@ def run_web_installer(mode="install"):
             else INSTALLER_WINDOW_HEIGHT
         )
         x, y = _get_centered_window_position(width, height)
+        window_title = "MicroClaw Uninstall" if is_uninstall_confirmation else "MicroClaw Setup"
         window = webview.create_window(
-            "MicroClaw",
+            window_title,
             url=html_path.as_uri(),
             js_api=bridge,
             width=width,
@@ -1156,6 +1157,7 @@ def run_web_installer(mode="install"):
             text_select=False,
             frameless=True,
             transparent=True,
+            focus=os.environ.get("MICROCLAW_BACKGROUND") != "1",
         )
         bridge.attach_window(window)
 
@@ -1174,7 +1176,7 @@ def run_web_installer(mode="install"):
                     time.sleep(0.1)
 
                     # Retrieve the native window handle (HWND)
-                    hwnd = ctypes.windll.user32.FindWindowW(None, "MicroClaw")
+                    hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
                     if not hwnd:
                         return
 

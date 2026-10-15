@@ -10,6 +10,7 @@ export interface AppWindow {
   restore(): void;
   setSkipTaskbar(skip: boolean): void;
   show(): void;
+  showInactive(): void;
   focus(): void;
 }
 
@@ -38,6 +39,16 @@ export function showAndFocusWindow(window: AppWindow | null): void {
   window.setSkipTaskbar(false);
   window.show();
   window.focus();
+}
+
+export function showStartupWindow(window: AppWindow | null, background: boolean): void {
+  if (!background) {
+    showAndFocusWindow(window);
+    return;
+  }
+  if (!window || window.isDestroyed()) return;
+  window.setSkipTaskbar(false);
+  window.showInactive();
 }
 
 export function minimizeWindow(window: AppWindow | null, minimizeToTray: boolean): void {

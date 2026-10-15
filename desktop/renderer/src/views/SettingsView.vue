@@ -225,7 +225,9 @@
           <h2 class="model-section-title">{{ t("modelManager.providers") }}</h2>
         </div>
         <p class="provider-description">{{ t("modelManager.providersHint") }}</p>
-        <p v-if="modelStatusError" class="provider-error" role="alert">{{ modelStatusError }}</p>
+        <p v-if="modelStatusError || providerCatalogError" class="provider-error" role="alert">
+          {{ [modelStatusError, providerCatalogError].filter(Boolean).join("; ") }}
+        </p>
         <SessionModelRecoveryNotice
           :disabled="chatStore.streaming || Boolean(switchingModelRef || localSelecting)"
           @state="sessionRecovery = $event"
@@ -242,7 +244,7 @@
                   :model-value="selectedModel"
                   :models="modelOptions"
                   :model-status="modelOptionStatus"
-                  :loading="copilotModelsLoading || modelActionBusy"
+                  :loading="copilotModelsLoading || providerCatalogLoading || modelActionBusy"
                   :switching="Boolean(switchingModelRef) || localSelecting"
                   :disabled="modelActionBusy || chatStore.streaming || Boolean(sessionRecovery)"
                   @change="selectModel"
@@ -290,42 +292,47 @@
                   )
                 }}
               </span>
-              <el-button
-                v-if="provider.signupUrl"
-                :data-testid="`provider-signup-${provider.key}`"
-                size="small"
-                type="primary"
-                plain
-                @click="openExternal(provider.signupUrl)"
-              >
-                {{ t("modelSetup.getApiKey") }}
-              </el-button>
-              <el-button
+              <button
+                type="button"
+                class="provider-toggle"
                 :data-testid="
                   provider.key === 'llama-cpp'
                     ? 'add-local-model'
                     : `manage-provider-${provider.key}`
                 "
-                size="small"
-                :disabled="modelActionBusy"
-                @click="
-                  provider.key === 'llama-cpp' ? openLocalModel() : openCloudSetup(provider.key)
-                "
-                >{{
+                :aria-expanded="isProviderExpanded(provider.key)"
+                :aria-controls="`provider-panel-${provider.key}`"
+                :aria-label="
                   t(
-                    provider.key === "llama-cpp"
-                      ? localProviderReady
-                        ? "modelManager.configure"
-                        : "fixedLocal.enable"
-                      : provider.models.length
-                        ? "modelManager.configure"
-                        : "modelManager.add",
+                    isProviderExpanded(provider.key)
+                      ? 'modelManager.collapseProvider'
+                      : 'modelManager.expandProvider',
+                    { provider: provider.label },
                   )
-                }}</el-button
+                "
+                :disabled="
+                  modelActionBusy ||
+                  (provider.key === 'llama-cpp' && showLocalSetup && localOperation?.busy)
+                "
+                @click="toggleProvider(provider.key)"
               >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  aria-hidden="true"
+                  :class="{ 'provider-chevron-up': isProviderExpanded(provider.key) }"
+                >
+                  <path d="m4 6 4 4 4-4" />
+                </svg>
+              </button>
             </header>
             <LocalModelSetupDialog
               v-if="provider.key === 'llama-cpp' && showLocalSetup"
+              :id="`provider-panel-${provider.key}`"
               inline
               :target-model-ref="localTargetModel"
               :default-agent-override="defaultAgentOverride"
@@ -337,7 +344,12 @@
               @remove-connection="removeLocalConnection"
             />
             <div
-              v-if="provider.key === editingProviderKey && provider.key !== 'llama-cpp'"
+              v-if="
+                provider.key === editingProviderKey &&
+                showProviderSetup &&
+                provider.key !== 'llama-cpp'
+              "
+              :id="`provider-panel-${provider.key}`"
               class="provider-editor"
             >
               <div
@@ -1361,6 +1373,11 @@ import {
 } from "@/utils/auth-managed-models";
 import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
 import {
+  useProviderModelCatalog,
+  readConfiguredCatalogs,
+  type ConfiguredCatalogs,
+} from "@/composables/use-provider-model-catalog";
+import {
   readConfiguredModels,
   getModelRef,
   providerName,
@@ -1947,6 +1964,7 @@ const piiToggles = reactive({
 
 // --- Models & API state ---
 const customModels = ref<ConfiguredModel[]>([]);
+const modelFormSelections = ref<Record<string, string>>({});
 const selectedModel = ref("");
 const copilotModelsLoading = ref(false);
 const copilotDisconnecting = ref(false);
@@ -1965,7 +1983,17 @@ const localSelection = ref("");
 const localSelecting = ref(false);
 const sessionRecovery = ref<SessionModelRecovery | null>(null);
 const sessionRecovering = ref(false);
-const modelOptions = computed(() => mergeLocalModelCatalog(customModels.value, localCatalog.value));
+const providerCatalog = useProviderModelCatalog();
+const providerCatalogInputs = ref<ConfiguredCatalogs>({});
+const providerCatalogLoading = ref(false);
+let providerCatalogRevision = 0;
+const providerCatalogError = computed(() => providerCatalog.errors(providerCatalogInputs.value));
+const modelOptions = computed(() =>
+  mergeLocalModelCatalog(
+    providerCatalog.merge(customModels.value, providerCatalogInputs.value),
+    localCatalog.value,
+  ),
+);
 function modelOptionStatus(model: ConfiguredModel): string {
   const preset = localCatalog.value.find((entry) => entry.modelRef === getModelRef(model));
   if (preset && localOperation.value?.busy && localOperation.value.modelRef === preset.modelRef) {
@@ -2010,7 +2038,7 @@ const providerCards = computed(() => {
             : providerName(key),
       models,
       signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
-      editableModels: key === "github-copilot" ? [] : models,
+      editableModels: key === "github-copilot" || getManagedModelProvider(key) ? [] : models,
       missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
     };
   });
@@ -2101,10 +2129,32 @@ async function prepareCloudChange(): Promise<boolean> {
   }
 }
 
+function isProviderExpanded(key: string): boolean {
+  return key === "llama-cpp"
+    ? showLocalSetup.value
+    : showProviderSetup.value && editingProviderKey.value === key;
+}
+
+function toggleProvider(key: string): void {
+  if (modelActionBusy.value) return;
+  if (isProviderExpanded(key)) {
+    if (key === "llama-cpp") showLocalSetup.value = false;
+    else showProviderSetup.value = false;
+  } else if (key === "llama-cpp") openLocalModel();
+  else openCloudSetup(key);
+}
+
 function openCloudSetup(providerKey: string, model?: ConfiguredModel): void {
   if (modelActionBusy.value) return;
   editingProviderKey.value = providerKey;
-  const entry = model ?? customModels.value.find((item) => item.providerKey === providerKey);
+  const entry =
+    model ??
+    customModels.value.find(
+      (item) =>
+        item.providerKey === providerKey &&
+        getModelRef(item) === modelFormSelections.value[providerKey],
+    ) ??
+    customModels.value.find((item) => item.providerKey === providerKey);
   editingModelRef.value = entry ? getModelRef(entry) : `new:${providerKey}`;
   showProviderSetup.value = true;
 }
@@ -2349,6 +2399,13 @@ function applyModelsConfig(config: any): void {
   const parsed = readConfiguredModels(config);
   customModels.value = parsed.models;
   selectedModel.value = parsed.primary;
+  providerCatalogInputs.value = readConfiguredCatalogs(config);
+  const revision = ++providerCatalogRevision;
+  providerCatalogLoading.value = true;
+  void providerCatalog.loadConfigured(providerCatalogInputs.value).finally(() => {
+    if (!modelViewDisposed && revision === providerCatalogRevision)
+      providerCatalogLoading.value = false;
+  });
   void loadLocalFileStatus();
 }
 
@@ -2407,7 +2464,11 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
 async function refreshModelsConfig(): Promise<void> {
   try {
     modelStatusError.value = "";
-    const config = await window.openclaw.config.read();
+    const [config, saved] = await Promise.all([
+      window.openclaw.config.read(),
+      window.openclaw.settings.get(),
+    ]);
+    modelFormSelections.value = saved?.modelFormSelections ?? {};
     if (!config) return;
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
@@ -2440,6 +2501,7 @@ onMounted(async () => {
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
+    modelFormSelections.value = saved.modelFormSelections ?? {};
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
     settings.minimizeToTray = saved.minimizeToTray ?? false;
@@ -2471,6 +2533,7 @@ onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
   localSnapshotRevision += 1;
+  providerCatalogRevision += 1;
   modelViewDisposed = true;
 });
 
@@ -2828,6 +2891,31 @@ async function clearChatHistory() {
   align-items: center;
   gap: 16px;
   padding: 14px 18px;
+}
+.provider-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+}
+.provider-toggle:hover {
+  background: var(--el-fill-color-light);
+}
+.provider-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+}
+.provider-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.provider-chevron-up {
+  transform: rotate(180deg);
 }
 .provider-card-title {
   flex: 1;

@@ -278,6 +278,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         }),
         onEvent: noopSub,
       },
+      discoverModels: async () => ({ ok: false, error: "unavailable" }),
+      registerCatalogModel: async () => {
+        throw new Error("Model registration requires the desktop Gateway");
+      },
       testConnection: async () => ({ ok: true, message: "Connection successful" }),
       prepareGitHubCopilot: async () => ({ restartRequired: false }),
       startGitHubCopilotLogin: async () => ({ sessionId: "browser-dev" }),

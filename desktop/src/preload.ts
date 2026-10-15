@@ -268,6 +268,13 @@ contextBridge.exposeInMainWorld("openclaw", {
         return () => ipcRenderer.removeListener("model:local:event", listener);
       },
     } satisfies LocalModelAPI,
+    discoverModels: (params: import("./provider-model-catalog").ProviderCatalogInput) =>
+      ipcRenderer.invoke("model:discover-models", params) as Promise<
+        import("./provider-model-catalog").ProviderCatalogResult
+      >,
+    registerCatalogModel: (
+      params: import("./provider-model-registration").ProviderCatalogSelection,
+    ) => ipcRenderer.invoke("model:register-catalog-model", params) as Promise<void>,
     testConnection: (params: {
       baseUrl: string;
       apiKey: string;

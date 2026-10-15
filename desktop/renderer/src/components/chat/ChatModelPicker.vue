@@ -2,6 +2,9 @@
   <el-popover
     :visible="open"
     trigger="click"
+    role="dialog"
+    :title="t('modelManager.sessionModel')"
+    popper-class="model-picker-dialog"
     placement="top-end"
     :width="360"
     :popper-style="{ maxWidth: 'calc(100vw - 32px)' }"
@@ -52,8 +55,8 @@
         :placeholder="t('modelManager.search')"
         :aria-label="t('modelManager.search')"
       />
-      <p v-if="error || catalogError" class="menu-error" role="alert">
-        {{ error || catalogError }}
+      <p v-if="error || catalogError || providerCatalogError" class="menu-error" role="alert">
+        {{ error || [catalogError, providerCatalogError].filter(Boolean).join("; ") }}
       </p>
       <SessionModelRecoveryNotice
         :disabled="disabled || !connected || changing || localSelecting || Boolean(operation?.busy)"
@@ -133,6 +136,11 @@ import {
   type LocalModelCatalogEntry,
 } from "../../../../src/local-model-catalog";
 import { mergeLocalModelCatalog } from "@/utils/local-model-catalog";
+import {
+  useProviderModelCatalog,
+  readConfiguredCatalogs,
+  type ConfiguredCatalogs,
+} from "@/composables/use-provider-model-catalog";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import ModelProviderGroups from "@/components/ModelProviderGroups.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
@@ -145,7 +153,11 @@ const opening = ref(false);
 const catalogLoaded = ref(false);
 const catalogValid = ref(false);
 const query = ref("");
-const models = ref<ConfiguredModel[]>([]);
+const baseModels = ref<ConfiguredModel[]>([]);
+const providerCatalog = useProviderModelCatalog();
+const providerCatalogInputs = ref<ConfiguredCatalogs>({});
+const models = computed(() => providerCatalog.merge(baseModels.value, providerCatalogInputs.value));
+const providerCatalogError = computed(() => providerCatalog.errors(providerCatalogInputs.value));
 const state = ref<SessionModelState | null>(null);
 const files = ref(new Map<string, LocalModelFileStatus | "not-downloaded">());
 const localCatalog = ref<LocalModelCatalogEntry[]>([]);
@@ -293,7 +305,9 @@ async function refreshCatalog() {
   const current = () => !disposed && revision === catalogRevision;
   const currentSelection = loadCurrent();
   try {
-    const config = readConfiguredModels(await window.openclaw.config.read());
+    const rawConfig = await window.openclaw.config.read();
+    const config = readConfiguredModels(rawConfig);
+    const catalogInputs = readConfiguredCatalogs(rawConfig);
     if (!current()) return;
     const loadCopilot = async () => {
       const status = await window.openclaw.model.getGitHubCopilotStatus();
@@ -307,6 +321,7 @@ async function refreshCatalog() {
         window.openclaw.model.local.getCapabilities(),
       ]),
       loadCopilot(),
+      providerCatalog.loadConfigured(catalogInputs),
     ]);
     await currentSelection;
     if (!current()) return;
@@ -344,7 +359,8 @@ async function refreshCatalog() {
 
     // Publish one complete snapshot; replacing providers as each request finishes
     // makes Popper repeatedly resize and re-anchor an already-visible menu.
-    models.value = nextModels;
+    baseModels.value = nextModels;
+    providerCatalogInputs.value = catalogInputs;
     localCatalog.value = nextCatalog;
     files.value = nextFiles;
     localFilesKnown.value = filesKnown;
