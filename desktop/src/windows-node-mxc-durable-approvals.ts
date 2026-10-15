@@ -172,7 +172,8 @@ export function durableApprovalIdentityFromGateway(
     !/^[a-f0-9]{64}$/i.test(approval.executableSha256) ||
     !/^[a-f0-9]{64}$/i.test(policyFingerprint) ||
     !path.win32.isAbsolute(approval.executablePath) ||
-    !approval.sessionKey
+    !approval.sessionKey ||
+    approval.hasMutableFileOperand
   ) {
     return null;
   }

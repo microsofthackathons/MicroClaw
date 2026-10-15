@@ -41,6 +41,49 @@ public sealed class ActivationLeaseGuard(
 
     public ValidatedActivationLease Validate(IReadOnlyList<string> argv)
     {
+        var lease = ValidateCore();
+        if (lease.Mode is ActivationLeaseMode.Diagnostic
+            && !ReadinessProbeContract.Probes.Values.Any(expected =>
+                ReadinessProbeContract.Matches(argv, expected)))
+        {
+            throw new HostPolicyException(
+                "activation-lease-diagnostic-scope",
+                "The diagnostic activation lease permits only MicroClaw's fixed contained smokes.");
+        }
+
+        return lease;
+    }
+
+    public ValidatedActivationLease ValidateActive()
+    {
+        var lease = ValidateCore();
+        if (lease.Mode is not ActivationLeaseMode.Active)
+            throw new HostPolicyException(
+                "activation-lease-active-required",
+                "This capability is available only while MXC is Active.");
+        return lease;
+    }
+
+    public void RevalidateActive(ValidatedActivationLease expected)
+    {
+        var current = ValidateActive();
+        if (current != expected)
+            throw new HostPolicyException(
+                "activation-lease-changed",
+                "The MicroClaw activation lease changed before capability execution.");
+    }
+
+    public void Revalidate(ValidatedActivationLease expected, IReadOnlyList<string> argv)
+    {
+        var current = Validate(argv);
+        if (current != expected)
+            throw new HostPolicyException(
+                "activation-lease-changed",
+                "The MicroClaw activation lease changed before process launch.");
+    }
+
+    private ValidatedActivationLease ValidateCore()
+    {
         ActivationLeaseRecord lease;
         try
         {
@@ -108,30 +151,12 @@ public sealed class ActivationLeaseGuard(
                 "activation-lease-signature",
                 "The activation lease signature is invalid.");
 
-        if (lease.Mode is ActivationLeaseMode.Diagnostic
-            && !ReadinessProbeContract.Probes.Values.Any(expected =>
-                ReadinessProbeContract.Matches(argv, expected)))
-        {
-            throw new HostPolicyException(
-                "activation-lease-diagnostic-scope",
-                "The diagnostic activation lease permits only MicroClaw's fixed contained smokes.");
-        }
-
         return new ValidatedActivationLease(
             lease.Mode,
             lease.GatewayGeneration,
             lease.PolicyFingerprint,
             lease.ExpiresAtUnixMs,
             lease.Signature);
-    }
-
-    public void Revalidate(ValidatedActivationLease expected, IReadOnlyList<string> argv)
-    {
-        var current = Validate(argv);
-        if (current != expected)
-            throw new HostPolicyException(
-                "activation-lease-changed",
-                "The MicroClaw activation lease changed before process launch.");
     }
 
     public static string ComputeSignature(

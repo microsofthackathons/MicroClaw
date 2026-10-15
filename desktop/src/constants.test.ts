@@ -7,6 +7,10 @@ import {
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
   HEALTH_CHECK_BUSY_GRACE_MS,
   GATEWAY_READY_TIMEOUT_MS,
+  MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS,
+  MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
+  MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
+  MXC_GATEWAY_RPC_READY_TIMEOUT_MS,
   PORT_WAIT_TIMEOUT_MS,
   MODEL_CONNECTION_TEST_TIMEOUT_MS,
   POST_SPAWN_CHANNEL_READY_TIMEOUT_MS,
@@ -56,6 +60,14 @@ describe("constants", () => {
       expect(GATEWAY_READY_TIMEOUT_MS).toBe(300_000);
       expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(PORT_WAIT_TIMEOUT_MS);
       expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_BUSY_GRACE_MS);
+    });
+
+    it("gates bundled-node startup on a bounded long-running authenticated RPC", () => {
+      expect(MXC_GATEWAY_RPC_READY_TIMEOUT_MS).toBeLessThanOrEqual(GATEWAY_READY_TIMEOUT_MS);
+      expect(MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS).toBeLessThan(MXC_GATEWAY_RPC_READY_TIMEOUT_MS);
+      expect(MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS).toBeLessThanOrEqual(
+        MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
+      );
     });
 
     it("model connection test has a finite timeout", () => {

@@ -8,10 +8,13 @@
     :status="gateway.status"
     :connected="chatStore.wsConnected"
     :warming="gateway.warming"
-    :errorMessage="gateway.lastError"
-    :mxcDesired="windowsNodeMxcStatus?.desiredEnabled ?? false"
-    :mxcPhase="windowsNodeMxcStatus?.lifecycleState.phase"
-    :mxcDetail="windowsNodeMxcStatus?.lifecycleState.detail"
+    :error-message="gateway.lastError"
+    :mxc-desired="windowsNodeMxcStatus?.requestedMode !== 'off'"
+    :mxc-phase="windowsNodeMxcStatus?.lifecycleState.phase"
+    :mxc-detail="windowsNodeMxcStatus?.lifecycleState.detail"
+    :mxc-requested-mode="windowsNodeMxcStatus?.requestedMode"
+    :mxc-effective-strength="windowsNodeMxcStatus?.effectiveStrength"
+    :mxc-effective-tier="windowsNodeMxcStatus?.effectiveTier"
     @retry="handleRetry"
     @disable-mxc="disableWindowsNodeMxc"
   />
@@ -239,7 +242,7 @@ async function handleRetry() {
   if (windowsNodeMxcStatus.value?.desiredEnabled) {
     try {
       windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-        enabled: true,
+        requestedMode: windowsNodeMxcStatus.value.requestedMode,
       });
     } catch (error) {
       gateway.addLog(
@@ -256,7 +259,7 @@ async function disableWindowsNodeMxc() {
   chatStore.wsConnected = false;
   try {
     windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-      enabled: false,
+      requestedMode: "off",
     });
   } catch (error) {
     gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
@@ -280,6 +283,8 @@ interface PermissionRequestData {
   source?: "sandbox" | "windows-node-mxc";
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  containmentStrength?: "full" | "limited-dacl";
+  ambientAccess?: NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"];
 }
 const permissionQueue = ref<PermissionRequestData[]>([]);
 const currentPermission = computed(() =>
@@ -290,7 +295,7 @@ type WindowsNodeMxcApproval = NonNullable<
   Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getPendingApproval>>
 >;
 
-function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | null) {
+async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | null) {
   if (!request) {
     permissionQueue.value = permissionQueue.value.filter(
       (pending) => pending.source !== "windows-node-mxc",
@@ -305,6 +310,31 @@ function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | null) {
   ) {
     return;
   }
+  if (!windowsNodeMxcStatus.value) {
+    try {
+      applyWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.getStatus());
+    } catch (error) {
+      gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (
+    permissionQueue.value.some(
+      (pending) =>
+        pending.source === "windows-node-mxc" && pending.requestId === request.id,
+    )
+  ) {
+    return;
+  }
+  const containmentStrength =
+    windowsNodeMxcStatus.value &&
+    windowsNodeMxcStatus.value.effectiveStrength !== "limited-dacl" &&
+    windowsNodeMxcStatus.value.requestedMode !== "limited-dacl"
+      ? "full"
+      : "limited-dacl";
+  const allowedDecisions =
+    containmentStrength === "limited-dacl"
+      ? request.allowedDecisions.filter((decision) => decision !== "allow-always")
+      : request.allowedDecisions;
   const command = request.commandText ?? [request.executable, ...request.arguments].join(" ");
   permissionQueue.value.push({
     requestId: request.id,
@@ -314,10 +344,20 @@ function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | null) {
     command,
     declaredAccess: request.declaredAccess,
     source: "windows-node-mxc",
-    allowedDecisions: request.allowedDecisions,
+    containmentStrength,
+    ambientAccess:
+      containmentStrength === "limited-dacl"
+        ? (windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [])
+        : undefined,
+    allowedDecisions,
   });
   if (chatStore.streaming) {
-    chatStore.addPendingToolCall(request.id, "Contained MXC command approval");
+    chatStore.addPendingToolCall(
+      request.id,
+      containmentStrength === "limited-dacl"
+        ? "Limited filesystem containment approval"
+        : "Contained MXC command approval",
+    );
   }
 }
 

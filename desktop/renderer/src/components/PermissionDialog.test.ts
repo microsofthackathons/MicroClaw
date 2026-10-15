@@ -112,6 +112,50 @@ describe("PermissionDialog", () => {
     ]);
   });
 
+  it("labels Limited filesystem containment, summarizes ambient access, and omits Allow always", () => {
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        request: {
+          requestId: "mxc-limited-request",
+          type: "mxc-approval",
+          command: "Get-ChildItem",
+          dirPath: "isolated-scratch:v1",
+          containmentStrength: "limited-dacl",
+          declaredAccess: [{ access: "ro", path: String.raw`C:\Work` }],
+          ambientAccess: [
+            { category: "desktop", status: "read-write" },
+            { category: "ssh", status: "denied" },
+          ],
+          allowedDecisions: ["deny", "allow-once", "allow-always"],
+        },
+      },
+    });
+
+    expect(wrapper.find(".perm-title").text()).toBe("Limited filesystem containment");
+    expect(wrapper.find(".perm-subtitle").text()).toContain(
+      "Limited filesystem containment",
+    );
+    expect(wrapper.findAll(".perm-body")[0].text()).toBe(
+      "AI wants to run this command with Limited filesystem containment.",
+    );
+    expect(wrapper.find(".perm-command-label").text()).toBe(
+      "Additional filesystem grants",
+    );
+    expect(wrapper.findAll(".perm-mxc-ambient").map((entry) => entry.text())).toEqual([
+      "DesktopRead/write",
+      "SSHDenied",
+    ]);
+    expect(wrapper.text()).toContain("absolute paths are not displayed");
+    expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
+      "Deny",
+      "Allow once",
+    ]);
+    expect(wrapper.text()).not.toContain("Allow always");
+    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
+      "additive, not an exclusive allowlist",
+    );
+  });
+
   it("keeps high-risk actions visible without optional semantic color tokens", () => {
     const globalStyles = readFileSync(resolve(process.cwd(), "src/styles/global.css"), "utf8");
 

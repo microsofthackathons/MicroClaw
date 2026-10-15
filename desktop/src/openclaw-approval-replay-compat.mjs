@@ -2,9 +2,9 @@ import { Buffer } from "node:buffer";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { URL, fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
 const EXPECTED_VERSION = "2026.10.2";
@@ -17,11 +17,46 @@ const EXPECTED_SYSTEM_RUN_SHA256 =
 const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-mGU7M4-K.mjs";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
   "aacf6a38e1ea77a9ce02fc4f60069230eec6b9c0a2e7123d35032eb105253267";
+const EXPECTED_WEB_TOOLS_MODULE = "openclaw-tools-Dxfbrtff.mjs";
+const EXPECTED_WEB_TOOLS_SHA256 =
+  "181c5f9673480fbdacfa3ff88ae83686d8d1cb6402f583c3546d87b6e468d53e";
+const EXPECTED_CRON_SERVICE_MODULE = "service-31u04axN.mjs";
+const EXPECTED_CRON_SERVICE_SHA256 =
+  "5f3fda2b466273f79606dbccb53e2952d3c33e198d32c8a0eed30f7be5cda3ab";
+const EXPECTED_CRON_HANDLERS_MODULE = "cron-D3Bd3ZFt.mjs";
+const EXPECTED_CRON_HANDLERS_SHA256 =
+  "3dd84c2aebf7cfe326f1ae4d3f40e5c68e4c897a623d834c60a613888c1f6ea1";
+const EXPECTED_HOOKS_SERVER_MODULE = "server-start-DfGddYU-.mjs";
+const EXPECTED_HOOKS_SERVER_SHA256 =
+  "86b9912a5458cd617e22dcdb24cc8ba757ea2206b298bf8831b22cd874e5efae";
+const EXPECTED_INTERNAL_HOOKS_MODULE = "internal-hooks-DfVqU7ax.mjs";
+const EXPECTED_INTERNAL_HOOKS_SHA256 =
+  "3e0200cbe95b537ac5c4fc36509197b2d13700a72688e26839620248c6c967d0";
+const EXPECTED_CANVAS_EXTENSION_MODULE = "extensions/canvas/index.js";
+const EXPECTED_CANVAS_EXTENSION_SHA256 =
+  "81a8476cf4bdf208710f7be014aa2bb72321399d2b46f3d8101826223182b9df";
+const EXPECTED_CANVAS_TOOL_MODULE = "tool-CpRzQ0s7.mjs";
+const EXPECTED_CANVAS_TOOL_SHA256 =
+  "2e45e3320ec6f3e8eb6005b06b90a29f1e620541079cf2b0f14d4342be60056a";
+const EXPECTED_CANVAS_ELIGIBILITY_MODULE = "node-eligibility-UXb9xB0F.mjs";
+const EXPECTED_CANVAS_ELIGIBILITY_SHA256 =
+  "4e80d6add8a2cd46f315e1698b65001fe837d1b16056a8255d34f546358c6431";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
+const HOOKS_GATE_SYMBOL = Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
+
+export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
+  'if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("Invalid URL: must be http or https");';
+
+export function attestPinnedOpenClawWebFetchHttpOnly(source) {
+  if (!source.includes(PINNED_WEB_FETCH_HTTP_ONLY_SOURCE)) {
+    throw new Error("Pinned OpenClaw web_fetch no longer rejects non-HTTP URL schemes");
+  }
+  return source;
+}
 
 export const PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE =
   "async function sanitizeSystemRunParamsForForwarding(opts) {";
@@ -234,6 +269,351 @@ export function patchPinnedOpenClawExecApproval(source) {
   );
 }
 
+export const PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE = `\t\tawait runMissedJobs(state, {
+\t\t\tskipJobIds: skipJobIds.size > 0 ? skipJobIds : void 0,
+\t\t\tdeferAgentWork: true
+\t\t});`;
+const PATCHED_CRON_STARTUP_MISSED_JOBS_SOURCE = `\t\tconst microclawCronResumeFenceRaw = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\t\tconst microclawCronResumeFenceUnixMs = microclawCronResumeFenceRaw === void 0 ? void 0 : Number(microclawCronResumeFenceRaw);
+\t\tif (microclawCronResumeFenceUnixMs !== void 0 && Number.isSafeInteger(microclawCronResumeFenceUnixMs) && microclawCronResumeFenceUnixMs >= 0 && microclawCronResumeFenceUnixMs <= state.deps.nowMs()) {
+\t\t\tawait recomputeUnownedCronSchedules(state, {
+\t\t\t\trecomputeExpired: true,
+\t\t\t\tnowMs: microclawCronResumeFenceUnixMs
+\t\t\t});
+\t\t\tstate.deps.log.info({
+\t\t\t\tresumeFenceUnixMs: microclawCronResumeFenceUnixMs
+\t\t\t}, "cron: advanced schedules missed during MXC pause");
+\t\t}
+\t\tawait runMissedJobs(state, {
+\t\t\tskipJobIds: skipJobIds.size > 0 ? skipJobIds : void 0,
+\t\t\tdeferAgentWork: true
+\t\t});`;
+
+export function patchPinnedOpenClawCronService(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
+    PATCHED_CRON_STARTUP_MISSED_JOBS_SOURCE,
+    "Cron startup missed-job fence",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_CRON_STARTUP_ACK_SOURCE,
+    PATCHED_CRON_STARTUP_ACK_SOURCE,
+    "Cron startup resume acknowledgement",
+  );
+  return patched;
+}
+
+export const PINNED_CRON_STARTUP_ACK_SOURCE = `\t\tarmTimer(state);
+\t\tresumeForeignReceiptMonitor(state);
+\t\tstate.deps.log.info({`;
+const PATCHED_CRON_STARTUP_ACK_SOURCE = `\t\tarmTimer(state);
+\t\tresumeForeignReceiptMonitor(state);
+\t\tconst microclawCronResumeAckPath = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
+\t\tconst microclawCronResumeAckToken = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN;
+\t\tconst microclawCronResumeFenceRaw = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\t\tif (microclawCronResumeAckPath !== void 0 && microclawCronResumeAckToken !== void 0 && microclawCronResumeFenceRaw !== void 0) {
+\t\t\tconst microclawCronResumeFenceUnixMs = Number(microclawCronResumeFenceRaw);
+\t\t\tawait (await import("node:fs/promises")).writeFile(microclawCronResumeAckPath, JSON.stringify({
+\t\t\t\tcontract: "microclaw.windows-node-mxc.cron-resume.v1",
+\t\t\t\tresumeAfterUnixMs: microclawCronResumeFenceUnixMs,
+\t\t\t\tacknowledgementToken: microclawCronResumeAckToken,
+\t\t\t\tcompletedAtUnixMs: state.deps.nowMs()
+\t\t\t}), { encoding: "utf8", flag: "wx" });
+\t\t\tdelete process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\t\t\tdelete process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
+\t\t\tdelete process.env.MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN;
+\t\t}
+\t\tstate.deps.log.info({`;
+
+export const PINNED_CRON_HANDLER_MAP_SOURCE = "const cronHandlers = {";
+const PATCHED_CRON_HANDLER_MAP_SOURCE = `function rejectMicroclawMxcPausedCronMutation(method, respond) {
+\tif (process.env.MICROCLAW_MXC_CRON_PAUSED !== "1") return false;
+\trespond(false, void 0, errorShape(ErrorCodes.INVALID_REQUEST, \`\${method} is paused while MicroClaw MXC is enabled\`));
+\treturn true;
+}
+const cronHandlers = {`;
+export const PINNED_CRON_MUTATION_HANDLER_SOURCES = [
+  '\t"cron.scratch.set": scopedCronJobHandler("cron.scratch.set", validateCronScratchSetParams, async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }, { jobId, callerScope }) => {',
+  '\t"cron.add": async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }) => {',
+  '\t"cron.update": async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }) => {',
+  '\t"cron.remove": scopedCronJobHandler("cron.remove", validateCronRemoveParams, async ({ respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }, { jobId, callerScope, job }) => {',
+  '\t"cron.run": scopedCronJobHandler("cron.run", validateCronRunParams, async (options, { jobId, callerScope, job }) => {',
+];
+
+export function patchPinnedOpenClawCronHandlers(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_CRON_HANDLER_MAP_SOURCE,
+    PATCHED_CRON_HANDLER_MAP_SOURCE,
+    "Cron handler map",
+  );
+  for (const handlerSource of PINNED_CRON_MUTATION_HANDLER_SOURCES) {
+    const method = handlerSource.match(/"([^"]+)"/)?.[1];
+    if (!method) throw new Error("Pinned OpenClaw Cron mutation handler name is invalid");
+    const respondExpression = method === "cron.run" ? "options.respond" : "respond";
+    patched = replaceExactlyOnce(
+      patched,
+      handlerSource,
+      `${handlerSource}\n\t\tif (rejectMicroclawMxcPausedCronMutation("${method}", ${respondExpression})) return;`,
+      `${method} MXC pause fence`,
+    );
+  }
+  return patched;
+}
+
+export const PINNED_EXTERNAL_HOOK_HANDLER_SOURCE = `\tconst handleHooksRequest = async (req, res) => {
+\t\tconst hooksConfig = params.hooksConfig();`;
+const PATCHED_EXTERNAL_HOOK_HANDLER_SOURCE = `\tconst handleHooksRequest = async (req, res) => {
+\t\tconst microclawMxcHooksGate = globalThis[Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1")];
+\t\tif (microclawMxcHooksGate?.rejectExternal(req, res)) return true;
+\t\tconst hooksConfig = params.hooksConfig();`;
+
+export function patchPinnedOpenClawExternalHooks(source) {
+  return replaceExactlyOnce(
+    source,
+    PINNED_EXTERNAL_HOOK_HANDLER_SOURCE,
+    PATCHED_EXTERNAL_HOOK_HANDLER_SOURCE,
+    "external Hooks admission gate",
+  );
+}
+
+export const PINNED_INTERNAL_HOOK_TRIGGER_SOURCE = `async function triggerInternalHook(event) {
+\tif (!internalHooksEnabledState.enabled) return;`;
+const PATCHED_INTERNAL_HOOK_TRIGGER_SOURCE = `async function triggerInternalHook(event) {
+\tconst microclawMxcHooksGate = globalThis[Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1")];
+\tif (microclawMxcHooksGate?.dropInternal(event)) return;
+\tif (!internalHooksEnabledState.enabled) return;`;
+
+export function patchPinnedOpenClawInternalHooks(source) {
+  return replaceExactlyOnce(
+    source,
+    PINNED_INTERNAL_HOOK_TRIGGER_SOURCE,
+    PATCHED_INTERNAL_HOOK_TRIGGER_SOURCE,
+    "internal Hooks dispatch gate",
+  );
+}
+
+const PINNED_CANVAS_EXTENSION_COMMANDS = `const CANVAS_NODE_COMMANDS = [
+\t"canvas.present",
+\t"canvas.hide",
+\t"canvas.navigate"
+];`;
+const PATCHED_CANVAS_EXTENSION_COMMANDS = `const CANVAS_NODE_COMMANDS = [
+\t"canvas.present",
+\t"canvas.hide",
+\t"canvas.snapshot",
+\t"canvas.caps",
+\t"canvas.a2ui.push",
+\t"canvas.a2ui.pushJSONL",
+\t"canvas.a2ui.reset",
+\t"canvas.a2ui.dump"
+];`;
+
+export function patchPinnedOpenClawCanvasExtension(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_CANVAS_EXTENSION_COMMANDS,
+    PATCHED_CANVAS_EXTENSION_COMMANDS,
+    "Canvas Phase 1 command registration",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    'description: "Presents hosted widget documents on paired macOS panels.",',
+    'description: "Presents the managed native A2UI Canvas on paired MicroClaw Windows nodes.",',
+    "Canvas Phase 1 plugin description",
+  );
+  return replaceExactlyOnce(
+    patched,
+    'defaultPlatforms: ["macos"],',
+    'defaultPlatforms: ["windows"],',
+    "Canvas Windows platform registration",
+  );
+}
+
+const PINNED_CANVAS_TOOL_PRESENT_CASE = `\t\t\t\tcase "present": {
+\t\t\t\t\tconst placement = {
+\t\t\t\t\t\tx: readFiniteNumberParam(params, "x"),
+\t\t\t\t\t\ty: readFiniteNumberParam(params, "y"),
+\t\t\t\t\t\twidth: readFiniteNumberParam(params, "width"),
+\t\t\t\t\t\theight: readFiniteNumberParam(params, "height")
+\t\t\t\t\t};
+\t\t\t\t\tconst invokeParams = {};
+\t\t\t\t\tconst presentTarget = readToolStringParam(params, "target", { trim: true }) ?? readToolStringParam(params, "url", { trim: true });
+\t\t\t\t\tif (presentTarget) invokeParams.url = presentTarget;
+\t\t\t\t\tif (Object.values(placement).some(Number.isFinite)) invokeParams.placement = placement;
+\t\t\t\t\tconst node = await invoke(CANVAS_PRESENT_COMMAND, invokeParams);
+\t\t\t\t\treturn jsonResult({
+\t\t\t\t\t\tok: true,
+\t\t\t\t\t\tnode,
+\t\t\t\t\t\t...presentTarget ? { url: presentTarget } : {}
+\t\t\t\t\t});
+\t\t\t\t}`;
+const PATCHED_CANVAS_TOOL_PRESENT_CASE = `\t\t\t\tcase "present": {
+\t\t\t\t\tconst { node } = await invoke(CANVAS_PRESENT_COMMAND, {});
+\t\t\t\t\treturn jsonResult({
+\t\t\t\t\t\tok: true,
+\t\t\t\t\t\tnode
+\t\t\t\t\t});
+\t\t\t\t}`;
+const PINNED_CANVAS_TOOL_NAVIGATE_CASE = `\t\t\t\tcase "navigate": {
+\t\t\t\t\tconst url = readToolStringParam(params, "url", { trim: true }) ?? readToolStringParam(params, "target", {
+\t\t\t\t\t\trequired: true,
+\t\t\t\t\t\ttrim: true,
+\t\t\t\t\t\tlabel: "url"
+\t\t\t\t\t});
+\t\t\t\t\tconst node = await invoke("canvas.navigate", { url });
+\t\t\t\t\treturn jsonResult({
+\t\t\t\t\t\tok: true,
+\t\t\t\t\t\tnode,
+\t\t\t\t\t\turl
+\t\t\t\t\t});
+\t\t\t\t}`;
+
+export function patchPinnedOpenClawCanvasTool(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    '\t\t\t\tawait callGatewayTool("node.invoke", {',
+    '\t\t\t\tconst result = await callGatewayTool("node.invoke", {',
+    "Canvas invocation result capture",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    "\t\t\t\treturn nodeId;\n\t\t\t};",
+    "\t\t\t\treturn { node: nodeId, result };\n\t\t\t};",
+    "Canvas invocation result projection",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_CANVAS_TOOL_PRESENT_CASE,
+    PATCHED_CANVAS_TOOL_PRESENT_CASE,
+    "Canvas present target removal",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_CANVAS_TOOL_NAVIGATE_CASE,
+    "",
+    "Canvas navigate removal",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    'const node = await invoke("canvas.hide");',
+    'const { node } = await invoke("canvas.hide");',
+    "Canvas hide result projection",
+  );
+  return replaceExactlyOnce(
+    patched,
+    "\t\t\t\tdefault: throw new Error(`Unknown action: ${action}`);",
+    `\t\t\t\tcase "snapshot": {
+\t\t\t\t\tconst format = readToolStringParam(params, "format", { trim: true });
+\t\t\t\t\tconst { node, result } = await invoke("canvas.snapshot", format ? { format } : {});
+\t\t\t\t\treturn jsonResult({ ok: true, node, result });
+\t\t\t\t}
+\t\t\t\tcase "caps": {
+\t\t\t\t\tconst { node, result } = await invoke("canvas.caps", {});
+\t\t\t\t\treturn jsonResult({ ok: true, node, result });
+\t\t\t\t}
+\t\t\t\tcase "a2ui_push":
+\t\t\t\tcase "a2ui_push_jsonl": {
+\t\t\t\t\tconst jsonl = readToolStringParam(params, "jsonl", { required: true });
+\t\t\t\t\tconst command = action === "a2ui_push" ? "canvas.a2ui.push" : "canvas.a2ui.pushJSONL";
+\t\t\t\t\tconst { node, result } = await invoke(command, {
+\t\t\t\t\t\tjsonl,
+\t\t\t\t\t\tprops: options?.agentSessionKey ? { sessionKey: options.agentSessionKey } : {}
+\t\t\t\t\t});
+\t\t\t\t\treturn jsonResult({ ok: true, node, result });
+\t\t\t\t}
+\t\t\t\tcase "a2ui_reset": {
+\t\t\t\t\tconst { node, result } = await invoke("canvas.a2ui.reset", {});
+\t\t\t\t\treturn jsonResult({ ok: true, node, result });
+\t\t\t\t}
+\t\t\t\tcase "a2ui_dump": {
+\t\t\t\t\tconst { node, result } = await invoke("canvas.a2ui.dump", {});
+\t\t\t\t\treturn jsonResult({ ok: true, node, result });
+\t\t\t\t}
+\t\t\t\tdefault: throw new Error(\`Unknown action: \${action}\`);`,
+    "Canvas Phase 1 safe tool actions",
+  );
+}
+
+const PINNED_CANVAS_TOOL_SCHEMA = `parameters: Type.Object({
+\t\taction: stringEnum([
+\t\t\t"present",
+\t\t\t"hide",
+\t\t\t"navigate"
+\t\t]),
+\t\tgatewayUrl: Type.Optional(Type.String()),
+\t\tgatewayToken: Type.Optional(Type.String()),
+\t\ttimeoutMs: optionalPositiveIntegerSchema(),
+\t\tnode: Type.Optional(Type.String()),
+\t\ttarget: Type.Optional(Type.String()),
+\t\tx: optionalFiniteNumberSchema(),
+\t\ty: optionalFiniteNumberSchema(),
+\t\twidth: optionalFiniteNumberSchema(),
+\t\theight: optionalFiniteNumberSchema(),
+\t\turl: Type.Optional(Type.String())
+\t})`;
+const PATCHED_CANVAS_TOOL_SCHEMA = `parameters: Type.Object({
+\t\taction: stringEnum([
+\t\t\t"present",
+\t\t\t"hide",
+\t\t\t"snapshot",
+\t\t\t"caps",
+\t\t\t"a2ui_push",
+\t\t\t"a2ui_push_jsonl",
+\t\t\t"a2ui_reset",
+\t\t\t"a2ui_dump"
+\t\t]),
+\t\tgatewayUrl: Type.Optional(Type.String()),
+\t\tgatewayToken: Type.Optional(Type.String()),
+\t\ttimeoutMs: optionalPositiveIntegerSchema(),
+\t\tnode: Type.Optional(Type.String()),
+\t\tjsonl: Type.Optional(Type.String()),
+\t\tformat: Type.Optional(Type.String())
+\t})`;
+const PINNED_CANVAS_ELIGIBILITY = `function isEligibleCanvasNode(node) {
+\tconst commands = node.invocableCommands ?? node.commands ?? [];
+\treturn /^macos(?:\\s|$)/i.test(node.platform ?? "") && node.connected === true && commands.includes("canvas.present");
+}
+const CANVAS_NODE_MESSAGES = {
+\tineligibleExact: (query, eligibleIds) => \`node "\${query}" is not an eligible Canvas panel (requires a connected macOS node advertising \${CANVAS_PRESENT_COMMAND}; eligible node ids: \${eligibleIds})\`,
+\tnameResolveFailed: (reason, eligibleIds) => \`\${reason} (eligible Canvas panel node ids: \${eligibleIds})\`,
+\tnoneEligible: () => \`no eligible Canvas panel (requires a connected macOS node advertising \${CANVAS_PRESENT_COMMAND})\`,
+\tmultipleEligible: (eligible) => \`multiple eligible Canvas panels connected; pass node explicitly: \${eligible.map((node) => node.nodeId).join(", ")}\`
+};`;
+const PATCHED_CANVAS_ELIGIBILITY = `function isEligibleCanvasNode(node) {
+\tconst commands = node.invocableCommands ?? node.commands ?? [];
+\treturn /^windows(?:\\s|$)/i.test(node.platform ?? "") && node.connected === true && commands.includes("canvas.present");
+}
+const CANVAS_NODE_MESSAGES = {
+\tineligibleExact: (query, eligibleIds) => \`node "\${query}" is not an eligible MicroClaw Canvas (requires a connected Windows node advertising \${CANVAS_PRESENT_COMMAND}; eligible node ids: \${eligibleIds})\`,
+\tnameResolveFailed: (reason, eligibleIds) => \`\${reason} (eligible MicroClaw Canvas node ids: \${eligibleIds})\`,
+\tnoneEligible: () => \`no eligible MicroClaw Canvas (requires a connected Windows node advertising \${CANVAS_PRESENT_COMMAND})\`,
+\tmultipleEligible: (eligible) => \`multiple eligible MicroClaw Canvas nodes connected; pass node explicitly: \${eligible.map((node) => node.nodeId).join(", ")}\`
+};`;
+
+export function patchPinnedOpenClawCanvasEligibility(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    'description: "Present, hide, or navigate the widget panel on a paired macOS node.",',
+    'description: "Present, update, inspect, snapshot, or hide the managed native A2UI Canvas on a paired MicroClaw Windows node.",',
+    "Canvas Phase 1 tool description",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_CANVAS_TOOL_SCHEMA,
+    PATCHED_CANVAS_TOOL_SCHEMA,
+    "Canvas Phase 1 tool schema",
+  );
+  return replaceExactlyOnce(
+    patched,
+    PINNED_CANVAS_ELIGIBILITY,
+    PATCHED_CANVAS_ELIGIBILITY,
+    "Canvas Windows node eligibility",
+  );
+}
+
 function encodeField(name, value) {
   return `${name}=${Buffer.byteLength(value, "utf8")}:${value}`;
 }
@@ -413,7 +793,111 @@ function installApprovalProofMinter() {
   });
 }
 
-export function validatePinnedOpenClawApprovalPackage(packageDir) {
+export function isWindowsNodeMxcProtectedHooksPath(rawUrl, basePath) {
+  let pathname;
+  try {
+    pathname = new URL(rawUrl ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return false;
+  }
+  const candidates = new Set();
+  const addCandidate = (candidate) => {
+    candidates.add(candidate);
+    candidates.add(candidate.replaceAll("\\", "/"));
+  };
+  addCandidate(pathname);
+  let decoded = pathname;
+  for (let depth = 0; depth < 3; depth += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      addCandidate(next);
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return [...candidates].some(
+    (candidate) => candidate === basePath || candidate.startsWith(`${basePath}/`),
+  );
+}
+
+export function createWindowsNodeMxcHooksGate(policy) {
+  if (
+    !policy ||
+    typeof policy !== "object" ||
+    Array.isArray(policy) ||
+    policy.contract !== "microclaw.windows-node-mxc.hooks-gate.v1" ||
+    typeof policy.gatewayGeneration !== "string" ||
+    !policy.gatewayGeneration ||
+    !/^[a-f0-9]{64}$/i.test(policy.policyFingerprint ?? "") ||
+    (policy.requestedMode !== "full" && policy.requestedMode !== "limited-dacl") ||
+    typeof policy.externalRequested !== "boolean" ||
+    typeof policy.internalRequested !== "boolean" ||
+    typeof policy.basePath !== "string" ||
+    !policy.basePath.startsWith("/") ||
+    policy.basePath === "/" ||
+    policy.basePath.endsWith("/") ||
+    /[%?#\\]/.test(policy.basePath) ||
+    policy.basePath.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error("MicroClaw MXC Hooks gate policy is invalid");
+  }
+  const immutablePolicy = Object.freeze({ ...policy });
+  return Object.freeze({
+    policy: immutablePolicy,
+    rejectExternal(req, res) {
+      if (!isWindowsNodeMxcProtectedHooksPath(req?.url, immutablePolicy.basePath)) {
+        return false;
+      }
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: "Hooks and webhooks are paused while MicroClaw MXC is enabled",
+          code: "MXC_HOOKS_PAUSED",
+        }),
+      );
+      return true;
+    },
+    dropInternal() {
+      return true;
+    },
+  });
+}
+
+function installWindowsNodeMxcHooksGate() {
+  const encoded = readRequiredEnvironment("MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64", true);
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) {
+    throw new Error("MicroClaw MXC Hooks gate policy encoding is invalid");
+  }
+  let policy;
+  try {
+    policy = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("MicroClaw MXC Hooks gate policy JSON is invalid");
+  }
+  Object.defineProperty(globalThis, HOOKS_GATE_SYMBOL, {
+    value: createWindowsNodeMxcHooksGate(policy),
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+}
+
+export function validatePinnedOpenClawApprovalPackage(
+  packageDir,
+  capabilities = {
+    approval: true,
+    cronPause: false,
+    cronResume: false,
+    hooksPause: false,
+    canvasPhase1: false,
+  },
+) {
   if (!packageDir || !isAbsolute(packageDir)) {
     throw new Error("MICROCLAW_OPENCLAW_PACKAGE_DIR must be an absolute path");
   }
@@ -426,24 +910,82 @@ export function validatePinnedOpenClawApprovalPackage(packageDir) {
     );
   }
 
-  return [
-    {
-      module: EXPECTED_NODE_GATEWAY_MODULE,
-      sha256: EXPECTED_NODE_GATEWAY_SHA256,
-      patch: patchPinnedOpenClawNodeGateway,
-    },
-    {
-      module: EXPECTED_SYSTEM_RUN_MODULE,
-      sha256: EXPECTED_SYSTEM_RUN_SHA256,
-      patch: patchPinnedOpenClawSystemRun,
-    },
-    {
-      module: EXPECTED_EXEC_APPROVAL_MODULE,
-      sha256: EXPECTED_EXEC_APPROVAL_SHA256,
-      patch: patchPinnedOpenClawExecApproval,
-    },
-  ].map((target) => {
-    const targetPath = realpathSync(join(canonicalPackageDir, "dist", target.module));
+  const requestedTargets = [];
+  if (capabilities.approval) {
+    requestedTargets.push(
+      {
+        module: EXPECTED_NODE_GATEWAY_MODULE,
+        sha256: EXPECTED_NODE_GATEWAY_SHA256,
+        patch: patchPinnedOpenClawNodeGateway,
+      },
+      {
+        module: EXPECTED_SYSTEM_RUN_MODULE,
+        sha256: EXPECTED_SYSTEM_RUN_SHA256,
+        patch: patchPinnedOpenClawSystemRun,
+      },
+      {
+        module: EXPECTED_EXEC_APPROVAL_MODULE,
+        sha256: EXPECTED_EXEC_APPROVAL_SHA256,
+        patch: patchPinnedOpenClawExecApproval,
+      },
+      {
+        module: EXPECTED_WEB_TOOLS_MODULE,
+        sha256: EXPECTED_WEB_TOOLS_SHA256,
+        patch: attestPinnedOpenClawWebFetchHttpOnly,
+      },
+    );
+  }
+  if (capabilities.cronResume) {
+    requestedTargets.push({
+      module: EXPECTED_CRON_SERVICE_MODULE,
+      sha256: EXPECTED_CRON_SERVICE_SHA256,
+      patch: patchPinnedOpenClawCronService,
+    });
+  }
+  if (capabilities.cronPause) {
+    requestedTargets.push({
+      module: EXPECTED_CRON_HANDLERS_MODULE,
+      sha256: EXPECTED_CRON_HANDLERS_SHA256,
+      patch: patchPinnedOpenClawCronHandlers,
+    });
+  }
+  if (capabilities.hooksPause) {
+    requestedTargets.push(
+      {
+        module: EXPECTED_HOOKS_SERVER_MODULE,
+        sha256: EXPECTED_HOOKS_SERVER_SHA256,
+        patch: patchPinnedOpenClawExternalHooks,
+      },
+      {
+        module: EXPECTED_INTERNAL_HOOKS_MODULE,
+        sha256: EXPECTED_INTERNAL_HOOKS_SHA256,
+        patch: patchPinnedOpenClawInternalHooks,
+      },
+    );
+  }
+  if (capabilities.canvasPhase1) {
+    requestedTargets.push(
+      {
+        module: EXPECTED_CANVAS_EXTENSION_MODULE,
+        sha256: EXPECTED_CANVAS_EXTENSION_SHA256,
+        patch: patchPinnedOpenClawCanvasExtension,
+      },
+      {
+        module: EXPECTED_CANVAS_TOOL_MODULE,
+        sha256: EXPECTED_CANVAS_TOOL_SHA256,
+        patch: patchPinnedOpenClawCanvasTool,
+      },
+      {
+        module: EXPECTED_CANVAS_ELIGIBILITY_MODULE,
+        sha256: EXPECTED_CANVAS_ELIGIBILITY_SHA256,
+        patch: patchPinnedOpenClawCanvasEligibility,
+      },
+    );
+  }
+
+  return requestedTargets.map((target) => {
+    const modulePath = join(canonicalPackageDir, "dist", target.module);
+    const targetPath = realpathSync(modulePath);
     const targetRelative = relative(canonicalPackageDir, targetPath);
     if (targetRelative.startsWith("..") || isAbsolute(targetRelative)) {
       throw new Error("Pinned OpenClaw approval module escaped its package directory");
@@ -454,36 +996,89 @@ export function validatePinnedOpenClawApprovalPackage(packageDir) {
       throw new Error(`Pinned OpenClaw approval module hash mismatch (${target.module}): ${hash}`);
     }
     target.patch(original.toString("utf8"));
-    return { ...target, targetPath, original };
+    return { ...target, modulePath, targetPath, original };
   });
 }
 
 function initialize() {
-  const targets = validatePinnedOpenClawApprovalPackage(process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR);
-  installApprovalProofMinter();
+  const approvalEnabled = process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1";
+  const cronPauseEnabled = process.env.MICROCLAW_MXC_CRON_PAUSED === "1";
+  const cronResumeFence = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+  const cronResumeEnabled = cronResumeFence !== void 0;
+  const hooksPauseEnabled = process.env.MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64 !== void 0;
+  const canvasPhase1Enabled = process.env.MICROCLAW_MXC_CANVAS_PHASE1 === "1";
+  if (cronResumeEnabled) {
+    const parsedFence = Number(cronResumeFence);
+    const acknowledgementPath = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
+    const acknowledgementToken = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_TOKEN;
+    if (
+      !Number.isSafeInteger(parsedFence) ||
+      parsedFence < 0 ||
+      parsedFence > Date.now() ||
+      !acknowledgementPath ||
+      !isAbsolute(acknowledgementPath) ||
+      !acknowledgementToken
+    ) {
+      throw new Error("MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS is invalid");
+    }
+  }
+  const targets = validatePinnedOpenClawApprovalPackage(
+    process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR,
+    {
+      approval: approvalEnabled,
+      cronPause: cronPauseEnabled,
+      cronResume: cronResumeEnabled,
+      hooksPause: hooksPauseEnabled,
+      canvasPhase1: canvasPhase1Enabled,
+    },
+  );
+  if (approvalEnabled) installApprovalProofMinter();
+  if (hooksPauseEnabled) installWindowsNodeMxcHooksGate();
 
   registerHooks({
     load(url, context, nextLoad) {
       const result = nextLoad(url, context);
-      const loadedPath = url.startsWith("file:") ? realpathSync(fileURLToPath(url)) : null;
-      const target = targets.find((candidate) => candidate.targetPath === loadedPath);
+      const requestedPath = url.startsWith("file:") ? resolve(fileURLToPath(url)) : null;
+      const lexicalTarget = targets.find(
+        (candidate) => resolve(candidate.modulePath) === requestedPath,
+      );
+      const loadedPath = requestedPath ? realpathSync(requestedPath) : null;
+      if (lexicalTarget && lexicalTarget.targetPath !== loadedPath) {
+        throw new Error(
+          `Pinned OpenClaw module changed after validation (${lexicalTarget.module})`,
+        );
+      }
+      const target =
+        lexicalTarget ?? targets.find((candidate) => candidate.targetPath === loadedPath);
       if (target) {
-        const source =
-          typeof result.source === "string"
-            ? result.source
-            : Buffer.from(result.source ?? target.original).toString("utf8");
-        return { ...result, source: target.patch(source) };
+        return { ...result, source: target.patch(target.original.toString("utf8")) };
       }
       return result;
     },
   });
   globalThis.console.log(
-    "[microclaw-openclaw-compat] enabled one-use node proof and prepared-plan backports",
+    `[microclaw-openclaw-compat] enabled ${[
+      approvalEnabled ? "one-use node proof and prepared-plan backports" : null,
+      cronPauseEnabled ? "MXC Cron mutation pause fence" : null,
+      cronResumeEnabled ? "MXC Cron no-catch-up resume fence" : null,
+      hooksPauseEnabled ? "MXC Hooks/Webhooks admission and dispatch pause" : null,
+      canvasPhase1Enabled ? "MXC Canvas Phase 1 exact tool and command surface" : null,
+    ]
+      .filter(Boolean)
+      .join("; ")}`,
   );
 }
 
 export function shouldInitializeApprovalPreload(environment, mainThread) {
-  if (environment.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1") return false;
+  if (
+    environment.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1" &&
+    environment.MICROCLAW_MXC_CRON_PAUSED !== "1" &&
+    environment.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS === void 0 &&
+    environment.MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64 === void 0 &&
+    environment.MICROCLAW_MXC_CANVAS_PHASE1 !== "1"
+  ) {
+    return false;
+  }
   if (environment[PRELOAD_INITIALIZED_ENV] === "1") return false;
   if (!mainThread) {
     throw new Error("MicroClaw approval preload must initialize on the Gateway main thread");

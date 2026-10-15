@@ -22,6 +22,8 @@ describe("GatewayLoading MXC lifecycle", () => {
         warming: false,
         mxcDesired: true,
         mxcPhase: "smoking-locked",
+        mxcRequestedMode: "limited-dacl",
+        mxcEffectiveStrength: "off",
       },
     });
 
@@ -29,7 +31,28 @@ describe("GatewayLoading MXC lifecycle", () => {
       "Running internal probes in locked generation",
     );
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
+    expect(wrapper.find(".loading-mxc-strength").text()).toBe(
+      "Limited containment (DACL) — Starting",
+    );
+    expect(wrapper.find(".loading-mxc-strength").text()).not.toContain("Attested");
     expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
+  });
+
+  it("shows in-process policy promotion as a guarded startup phase", () => {
+    const wrapper = shallowMount(GatewayLoading, {
+      props: {
+        status: "running",
+        connected: true,
+        warming: false,
+        mxcDesired: true,
+        mxcPhase: "promoting-active",
+      },
+    });
+
+    expect(wrapper.find(".loading-status").text()).toContain(
+      "Promoting verified policy in the current generation",
+    );
+    expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
   });
 
   it("shows fail-closed recovery without labeling MXC failure as a Gateway outage", async () => {

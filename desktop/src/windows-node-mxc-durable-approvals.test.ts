@@ -102,6 +102,7 @@ describe("WindowsNodeMxcDurableApprovalStore", () => {
       agent: identity.agentId,
       sessionKey: identity.sessionKey,
       declaredAccess: identity.declaredAccess,
+      hasMutableFileOperand: false,
       allowedDecisions: ["deny", "allow-once", "allow-always"],
     };
     expect(durableApprovalIdentityFromGateway(approval, identity.policyFingerprint)).toEqual(
@@ -110,6 +111,12 @@ describe("WindowsNodeMxcDurableApprovalStore", () => {
     expect(
       durableApprovalIdentityFromGateway(
         { ...approval, executableSha256: "not-a-hash" },
+        identity.policyFingerprint,
+      ),
+    ).toBeNull();
+    expect(
+      durableApprovalIdentityFromGateway(
+        { ...approval, hasMutableFileOperand: true },
         identity.policyFingerprint,
       ),
     ).toBeNull();

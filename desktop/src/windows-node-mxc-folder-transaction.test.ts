@@ -20,6 +20,7 @@ function createHooks(log: string[]): WindowsNodeMxcFolderTransactionHooks<string
     closeIngress: step("closeIngress"),
     rejectPendingApprovals: step("rejectPendingApprovals"),
     revokeAuthorization: step("revokeAuthorization"),
+    preflightExactBackend: step("preflightExactBackend"),
     validatePolicy: step("validatePolicy", draft),
     stopCurrentGeneration: step("stopCurrentGeneration"),
     persistPolicy: step("persistPolicy"),
@@ -52,6 +53,7 @@ describe("runWindowsNodeMxcFolderPolicyTransaction", () => {
       "rejectPendingApprovals",
       "revokeAuthorization",
       "phase:validating",
+      "preflightExactBackend",
       "validatePolicy",
       "stopCurrentGeneration",
       "phase:persisting",
@@ -119,6 +121,7 @@ describe("runWindowsNodeMxcFolderPolicyTransaction", () => {
     "closeIngress",
     "rejectPendingApprovals",
     "revokeAuthorization",
+    "preflightExactBackend",
     "validatePolicy",
     "stopCurrentGeneration",
     "persistPolicy",
@@ -144,9 +147,13 @@ describe("runWindowsNodeMxcFolderPolicyTransaction", () => {
       expect.objectContaining({
         previous,
         draft,
-        applied: ["closeIngress", "rejectPendingApprovals", "revokeAuthorization", "validatePolicy"].includes(
-          failure,
-        )
+        applied: [
+          "closeIngress",
+          "rejectPendingApprovals",
+          "revokeAuthorization",
+          "preflightExactBackend",
+          "validatePolicy",
+        ].includes(failure)
           ? null
           : draft,
         persisted: [

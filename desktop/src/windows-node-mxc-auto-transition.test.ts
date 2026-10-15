@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { runWindowsNodeMxcAutomaticTransition } from "./windows-node-mxc-auto-transition";
 
 describe("automatic Windows Node + MXC transition", () => {
-  it("keeps ingress closed until both internally probed generations verify", async () => {
+  it("keeps one generation locked until its policy is promoted and verified", async () => {
     const calls: string[] = [];
     const status = await runWindowsNodeMxcAutomaticTransition({
       setPhase: (phase) => calls.push(`phase:${phase}`),
       closeIngress: async () => {
         calls.push("close");
+      },
+      preflightExactBackend: async () => {
+        calls.push("preflight");
       },
       startLockedGeneration: async () => {
         calls.push("start-locked");
@@ -16,11 +19,11 @@ describe("automatic Windows Node + MXC transition", () => {
       smokeLockedGeneration: async () => {
         calls.push("smoke-locked");
       },
-      startActiveGeneration: async () => {
-        calls.push("start-active");
+      promoteActivePolicy: async () => {
+        calls.push("promote-active");
         return "active";
       },
-      smokeActiveGeneration: async () => {
+      smokeActivePolicy: async () => {
         calls.push("smoke-active");
       },
       mintActivationLease: async () => {
@@ -39,12 +42,14 @@ describe("automatic Windows Node + MXC transition", () => {
     expect(status).toBe("verified");
     expect(calls).toEqual([
       "close",
+      "phase:validating",
+      "preflight",
       "phase:starting-locked",
       "start-locked",
       "phase:smoking-locked",
       "smoke-locked",
-      "phase:starting-active",
-      "start-active",
+      "phase:promoting-active",
+      "promote-active",
       "phase:smoking-active",
       "smoke-active",
       "lease",
@@ -55,7 +60,53 @@ describe("automatic Windows Node + MXC transition", () => {
     ]);
   });
 
-  it.each(["start-locked", "smoke-locked", "start-active", "smoke-active", "lease", "verify"])(
+  it("does not start or pair a node when exact-backend preflight fails", async () => {
+    const startLockedGeneration = vi.fn();
+    const smokeLockedGeneration = vi.fn();
+    const promoteActivePolicy = vi.fn();
+    const smokeActivePolicy = vi.fn();
+    const mintActivationLease = vi.fn();
+    const verifyActiveGeneration = vi.fn();
+    const releaseIngress = vi.fn();
+    const lockAfterFailure = vi.fn();
+
+    await expect(
+      runWindowsNodeMxcAutomaticTransition({
+        setPhase: vi.fn(),
+        closeIngress: vi.fn(),
+        preflightExactBackend: async () => {
+          throw new Error("exact backend unavailable");
+        },
+        startLockedGeneration,
+        smokeLockedGeneration,
+        promoteActivePolicy,
+        smokeActivePolicy,
+        mintActivationLease,
+        verifyActiveGeneration,
+        releaseIngress,
+        lockAfterFailure,
+      }),
+    ).rejects.toThrow("exact backend unavailable");
+
+    expect(startLockedGeneration).not.toHaveBeenCalled();
+    expect(smokeLockedGeneration).not.toHaveBeenCalled();
+    expect(promoteActivePolicy).not.toHaveBeenCalled();
+    expect(smokeActivePolicy).not.toHaveBeenCalled();
+    expect(mintActivationLease).not.toHaveBeenCalled();
+    expect(verifyActiveGeneration).not.toHaveBeenCalled();
+    expect(releaseIngress).not.toHaveBeenCalled();
+    expect(lockAfterFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "preflight",
+    "start-locked",
+    "smoke-locked",
+    "promote-active",
+    "smoke-active",
+    "lease",
+    "verify",
+  ])(
     "fails locked without releasing ingress when %s fails",
     async (failure) => {
       const releaseIngress = vi.fn();
@@ -69,16 +120,17 @@ describe("automatic Windows Node + MXC transition", () => {
         runWindowsNodeMxcAutomaticTransition({
           setPhase: (phase, detail) => phases.push({ phase, detail }),
           closeIngress: vi.fn(),
+          preflightExactBackend: async () => fail("preflight"),
           startLockedGeneration: async () => {
             fail("start-locked");
             return "locked";
           },
           smokeLockedGeneration: async () => fail("smoke-locked"),
-          startActiveGeneration: async () => {
-            fail("start-active");
+          promoteActivePolicy: async () => {
+            fail("promote-active");
             return "active";
           },
-          smokeActiveGeneration: async () => fail("smoke-active"),
+          smokeActivePolicy: async () => fail("smoke-active"),
           mintActivationLease: async () => fail("lease"),
           verifyActiveGeneration: async () => {
             fail("verify");

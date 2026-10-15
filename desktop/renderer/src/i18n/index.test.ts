@@ -119,7 +119,19 @@ describe("i18n", () => {
 
   it("localizes the global MXC folder policy and remediation", () => {
     setLocale("en-US");
-    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("Technical details");
+    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("Security diagnostics");
+    expect(
+      t("settings.windowsNodeMxcCompactStatus", {
+        mode: t("settings.windowsNodeMxcModeLimited"),
+        state: t("settings.windowsNodeMxcStatusActive"),
+      }),
+    ).toBe("Limited containment (DACL) — Active");
+    expect(
+      t("settings.windowsNodeMxcAmbientAllDenied", { denied: 18, total: 18 }),
+    ).toBe("No inherited filesystem access detected (18/18 denied)");
+    expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe(
+      "Ambient access before selected-folder grants",
+    );
     expect(t("settings.windowsNodeMxcProtected")).toBe("Protected");
     expect(t("settings.windowsNodeMxcStarting")).toBe("Starting");
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("Action required");
@@ -127,9 +139,42 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("global capability ceiling");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("never grant access");
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("Disable Windows Node + MXC");
+    expect(t("settings.windowsNodeMxcModeFull")).toBe("Full containment");
+    expect(t("settings.windowsNodeMxcModeLimited")).toBe("Limited containment (DACL)");
+    expect(t("settings.windowsNodeMxcOffWarning")).toContain(
+      "remembered standard sandbox setting",
+    );
+    expect(t("settings.windowsNodeMxcFullFolders")).toBe(
+      "Full hard-boundary approved folders",
+    );
+    expect(t("settings.windowsNodeMxcLimitedFolders")).toBe(
+      "Limited additional filesystem grants",
+    );
+    expect(t("settings.windowsNodeMxcLimitedFoldersHint")).toContain(
+      "not an exclusive allowlist",
+    );
+    expect(t("settings.windowsNodeMxcLimitedFoldersHint")).toContain(
+      "Read-only cannot reduce",
+    );
+    expect(t("settings.windowsNodeMxcLimitedCommandApprovalsHint")).toContain(
+      "does not offer Allow always",
+    );
+    expect(t("settings.windowsNodeMxcAmbientCategory.browser-edge")).toBe("Edge data");
 
     setLocale("zh-CN");
-    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("技术详情");
+    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("安全诊断");
+    expect(
+      t("settings.windowsNodeMxcCompactStatus", {
+        mode: t("settings.windowsNodeMxcModeLimited"),
+        state: t("settings.windowsNodeMxcStatusActive"),
+      }),
+    ).toBe("有限隔离（DACL） — 已启用");
+    expect(
+      t("settings.windowsNodeMxcAmbientAllDenied", { denied: 18, total: 18 }),
+    ).toBe("未检测到继承的文件系统访问（18/18 均被拒绝）");
+    expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe(
+      "所选文件夹授权前的环境访问",
+    );
     expect(t("settings.windowsNodeMxcProtected")).toBe("已保护");
     expect(t("settings.windowsNodeMxcStarting")).toBe("正在启动");
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("需要操作");
@@ -137,6 +182,71 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("全局能力上限");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("绝不会授予访问权限");
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("请先禁用 Windows Node + MXC");
+    expect(t("settings.windowsNodeMxcModeFull")).toBe("完整隔离");
+    expect(t("settings.windowsNodeMxcModeLimited")).toBe("有限隔离（DACL）");
+    expect(t("settings.windowsNodeMxcOffWarning")).toContain("之前记住的标准沙箱设置");
+    expect(t("settings.windowsNodeMxcFullFolders")).toBe("完整强边界批准文件夹");
+    expect(t("settings.windowsNodeMxcLimitedFolders")).toBe(
+      "有限模式额外文件系统授权",
+    );
+    expect(t("settings.windowsNodeMxcLimitedFoldersHint")).toContain("并非排他允许列表");
+    expect(t("settings.windowsNodeMxcLimitedFoldersHint")).toContain("只读无法降低");
+    expect(t("settings.windowsNodeMxcLimitedCommandApprovalsHint")).toContain(
+      "不提供“始终允许”",
+    );
+    expect(t("settings.windowsNodeMxcAmbientCategory.browser-edge")).toBe("Edge 数据");
+    setLocale("en-US");
+  });
+
+  it("localizes Limited MXC approval warnings", () => {
+    setLocale("en-US");
+    expect(t("perm.titleMxcLimited")).toBe("Limited filesystem containment");
+    expect(t("perm.mxcLimitedScope")).toContain("additive, not an exclusive allowlist");
+    expect(t("perm.riskMxcLimited")).toContain("ambient access");
+
+    setLocale("zh-CN");
+    expect(t("perm.titleMxcLimited")).toBe("有限文件系统隔离");
+    expect(t("perm.mxcLimitedScope")).toContain("叠加式授权");
+    expect(t("perm.riskMxcLimited")).toContain("环境访问");
+    setLocale("en-US");
+  });
+
+  it("localizes the complete MXC capability consent in English and Chinese", () => {
+    setLocale("en-US");
+    expect(
+      t("settings.windowsNodeMxcConsent.title", {
+        mode: t("settings.windowsNodeMxcModeFull"),
+      }),
+    ).toBe("Enable Full containment?");
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-native-filesystem")).toContain(
+      "apply_patch",
+    );
+    expect(t("settings.windowsNodeMxcConsent.item.cron")).toContain("no catch-up");
+    expect(t("settings.windowsNodeMxcConsent.item.hooks-webhooks")).toContain("503");
+    expect(t("settings.windowsNodeMxcConsent.item.canvas-phase-1")).toContain(
+      "General navigation, eval",
+    );
+    expect(t("settings.windowsNodeMxcConsent.fullNote")).toContain(
+      "backend preflight can still fail",
+    );
+    expect(t("settings.windowsNodeMxcConsent.limitedNote")).toContain(
+      "separate Limited acknowledgement",
+    );
+
+    setLocale("zh-CN");
+    expect(
+      t("settings.windowsNodeMxcConsent.title", {
+        mode: t("settings.windowsNodeMxcModeLimited"),
+      }),
+    ).toBe("启用有限隔离（DACL）？");
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-native-filesystem")).toContain(
+      "apply_patch",
+    );
+    expect(t("settings.windowsNodeMxcConsent.item.cron")).toContain("不会补跑");
+    expect(t("settings.windowsNodeMxcConsent.item.hooks-webhooks")).toContain("503");
+    expect(t("settings.windowsNodeMxcConsent.item.canvas-phase-1")).toContain("通用导航");
+    expect(t("settings.windowsNodeMxcConsent.fullNote")).toContain("后端预检仍可能失败");
+    expect(t("settings.windowsNodeMxcConsent.limitedNote")).toContain("单独的有限模式确认");
     setLocale("en-US");
   });
 });

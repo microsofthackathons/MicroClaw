@@ -19,6 +19,11 @@ interface PermissionRequest {
   accessNeeded?: string;
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  containmentStrength?: "full" | "limited-dacl";
+  ambientAccess?: Array<{
+    category: WindowsNodeMxcAmbientAccessCategory;
+    status: "denied" | "read" | "read-write";
+  }>;
 }
 
 const props = defineProps<{
@@ -91,17 +96,25 @@ const commandHtml = computed(() => {
 });
 
 const isMxcApproval = computed(() => props.request?.type === "mxc-approval");
+const isLimitedMxcApproval = computed(
+  () => isMxcApproval.value && props.request?.containmentStrength === "limited-dacl",
+);
 const isAttendedApproval = computed(
   () => props.request?.type === "app-approval" || isMxcApproval.value,
 );
 const declaredAccess = computed(() => props.request?.declaredAccess ?? []);
+const ambientAccess = computed(() => props.request?.ambientAccess ?? []);
 const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
 );
 const allowsAlways = computed(
-  () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always"),
+  () =>
+    !isLimitedMxcApproval.value &&
+    (!props.request?.allowedDecisions ||
+      props.request.allowedDecisions.includes("allow-always")),
 );
 const mxcScopeText = computed(() => {
+  if (isLimitedMxcApproval.value) return t("perm.mxcLimitedScope");
   if (declaredAccess.value.length > 0) {
     return allowsAlways.value ? t("perm.mxcScope") : t("perm.mxcScopeOnce");
   }
@@ -127,6 +140,7 @@ const dialogIcon = computed(() => {
 });
 const dialogTitle = computed(() => {
   if (!props.request) return t("perm.title");
+  if (isLimitedMxcApproval.value) return t("perm.titleMxcLimited");
   if (isMxcApproval.value) return t("perm.titleMxc");
   if (props.request.type === "app-approval") return t("perm.titleApp");
   if (isShellRequest.value) return t("perm.titleCommand");
@@ -134,6 +148,7 @@ const dialogTitle = computed(() => {
 });
 const riskHint = computed(() => {
   if (!props.request) return "";
+  if (isLimitedMxcApproval.value) return t("perm.riskMxcLimited");
   if (isMxcApproval.value) return t("perm.riskMxc");
   if (props.request.type === "app-approval") return t("perm.riskApp");
   if (isShellRequest.value)
@@ -153,6 +168,14 @@ const grantLabel = computed(() =>
 
 function respond(decision: string) {
   emit("respond", decision);
+}
+
+function ambientCategoryLabel(category: NonNullable<PermissionRequest["ambientAccess"]>[number]["category"]) {
+  return t(`settings.windowsNodeMxcAmbientCategory.${category}`);
+}
+
+function ambientStatusLabel(status: NonNullable<PermissionRequest["ambientAccess"]>[number]["status"]) {
+  return t(`settings.windowsNodeMxcAmbientStatus.${status}`);
 }
 </script>
 
@@ -183,10 +206,18 @@ function respond(decision: string) {
             </svg>
           </button>
         </div>
-        <div v-if="isMxcApproval" class="perm-body">{{ t("perm.mxcDesc") }}</div>
+        <div v-if="isMxcApproval" class="perm-body">
+          {{ isLimitedMxcApproval ? t("perm.mxcLimitedDesc") : t("perm.mxcDesc") }}
+        </div>
         <div v-else class="perm-body" v-html="descriptionHtml"></div>
         <div v-if="isMxcApproval && declaredAccess.length > 0" class="perm-mxc-detail">
-          <div class="perm-command-label">{{ t("perm.mxcAccessLabel") }}</div>
+          <div class="perm-command-label">
+            {{
+              isLimitedMxcApproval
+                ? t("perm.mxcAdditionalAccessLabel")
+                : t("perm.mxcAccessLabel")
+            }}
+          </div>
           <div
             v-for="declaration in declaredAccess"
             :key="`${declaration.access}:${declaration.path}`"
@@ -200,6 +231,21 @@ function respond(decision: string) {
             </span>
             <code>{{ declaration.path }}</code>
           </div>
+        </div>
+        <div v-if="isLimitedMxcApproval" class="perm-mxc-detail">
+          <div class="perm-command-label">{{ t("perm.mxcAmbientAccess") }}</div>
+          <div v-if="ambientAccess.length > 0" class="perm-mxc-ambient-grid">
+            <span
+              v-for="entry in ambientAccess"
+              :key="entry.category"
+              class="perm-mxc-ambient"
+            >
+              <span>{{ ambientCategoryLabel(entry.category) }}</span>
+              <strong>{{ ambientStatusLabel(entry.status) }}</strong>
+            </span>
+          </div>
+          <div v-else class="perm-mxc-hint">{{ t("perm.mxcAmbientUnavailable") }}</div>
+          <div class="perm-mxc-hint">{{ t("perm.mxcAmbientAccessHint") }}</div>
         </div>
         <div v-if="request.command" class="perm-command">
           <div class="perm-command-label">{{ t("perm.commandLabel") }}</div>
@@ -413,6 +459,29 @@ html.dark .perm-overlay--modal {
   overflow-wrap: anywhere;
   color: var(--text-primary);
   font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+}
+
+.perm-mxc-ambient-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.perm-mxc-ambient {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.perm-mxc-hint {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .perm-mxc-scope {

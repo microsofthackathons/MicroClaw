@@ -1,18 +1,37 @@
 import { app } from "electron";
-import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
+import {
+  type ChildProcessWithoutNullStreams,
+  execFile,
+  execFileSync,
+  spawn,
+} from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
+import {
+  WINDOWS_NODE_MXC_CANVAS_ACTIONS,
+  WINDOWS_NODE_MXC_CANVAS_COMMANDS,
+  WINDOWS_NODE_MXC_NODE_COMMANDS,
+} from "./windows-node-mxc";
+import {
+  validateWindowsNodeMxcAmbientAccessAssessment,
+  type WindowsNodeMxcAmbientAccessAssessment,
+  type WindowsNodeMxcAmbientAccessCategory,
+  type WindowsNodeMxcEffectiveStrength,
+} from "./windows-node-mxc-modes";
+import { resolveWindowsNodeMxcWeixinMediaRoots } from "./windows-node-mxc-weixin";
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
 export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
+export const BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT = "microclaw.windows-node-mxc.canvas.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
 export const MXC_HOST_PREP_PATCH_REVISION = "695c2b89c6142090a098ec4484f49aff8157f0b3";
+export const MXC_SDK_SOURCE_REVISION = "0e02a720e32416b151dbcb0a00e3d4ac2b891559";
+export const MXC_EXACT_BACKEND_PROVISIONING = "host-base-container-api";
 const MXC_WXC_EXEC_SHA256 = {
   x64: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
   arm64: "e430d0e4f44f616e91db684f8d825a6dc93e06a1262b8d00bcaac7522a317aab",
@@ -42,6 +61,9 @@ export interface BundledWindowsNodeHostStatus {
   gatewayGeneration: string | null;
   policyFingerprint: string | null;
   activationLease: BundledWindowsNodeActivationLease | null;
+  requestedStrength: WindowsNodeMxcEffectiveStrength | null;
+  effectiveTier: string | null;
+  ambientAccess: WindowsNodeMxcAmbientAccessAssessment | null;
 }
 
 export interface BundledWindowsNodeActivationLease {
@@ -81,8 +103,18 @@ interface StartOptions {
   uiLocale: string;
   openClawStateRoot: string;
   folders: BundledWindowsNodeFolder[];
+  requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">;
+  effectiveTier: string;
+  ambientAccess: BundledWindowsNodeAmbientAccess | null;
   approvalProof: BundledWindowsNodeApprovalProofContext;
   onApproval: (approval: BundledApprovalRequest | null) => void;
+}
+
+export interface BundledWindowsNodeAmbientAccess extends WindowsNodeMxcAmbientAccessAssessment {
+  targets: Array<{
+    category: WindowsNodeMxcAmbientAccessCategory;
+    path: string;
+  }>;
 }
 
 export interface BundledWindowsNodeGateway {
@@ -113,6 +145,11 @@ export class BundledWindowsNodeHost {
     "microclaw-windows-node-host.exe",
   );
   private readonly wxcExecPath = path.join(this.resourceRoot, "mxc", "wxc-exec.exe");
+  private readonly canvasHostPath = path.join(
+    this.resourceRoot,
+    "canvas-host",
+    "microclaw-windows-node-canvas-host.exe",
+  );
 
   createApprovalProofContext(
     gatewayGeneration: string,
@@ -120,13 +157,22 @@ export class BundledWindowsNodeHost {
     folders: BundledWindowsNodeFolder[],
     openClawStateRoot: string,
     readinessTransitionId: string,
+    requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off"> = "full",
+    effectiveTier = "base-container",
+    ambientAccess: BundledWindowsNodeAmbientAccess | null = null,
   ): BundledWindowsNodeApprovalProofContext {
     if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
     if (!/^[a-f0-9]{64}$/i.test(nodeId)) throw new Error("Bundled Windows node ID is invalid");
     if (!isUuid(readinessTransitionId)) {
       throw new Error("Bundled Windows node readiness transition ID is invalid");
     }
-    const policyJson = this.buildPolicyJson(folders, openClawStateRoot);
+    const policyJson = this.buildPolicyJson(
+      folders,
+      openClawStateRoot,
+      requestedStrength,
+      effectiveTier,
+      ambientAccess,
+    );
     return {
       contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
       secretBase64: randomBytes(32).toString("base64"),
@@ -143,7 +189,7 @@ export class BundledWindowsNodeHost {
     this.startOptions = options;
     this.lastError = null;
     assertLoopbackGateway(options.gatewayUrl);
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath);
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
 
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     const identityDirectory = path.join(stateRoot, "identity");
@@ -151,9 +197,17 @@ export class BundledWindowsNodeHost {
     const policyPath = path.join(stateRoot, "policy.json");
     const activationLeasePath = path.join(stateRoot, "activation-lease.json");
     const scratchRoot = path.join(stateRoot, "scratch");
+    const ambientScratchRoot = path.join(stateRoot, "ambient-scratch");
     await fs.promises.mkdir(stateRoot, { recursive: true });
     await fs.promises.mkdir(scratchRoot, { recursive: true });
-    const policyJson = this.buildPolicyJson(options.folders, options.openClawStateRoot);
+    await fs.promises.mkdir(ambientScratchRoot, { recursive: true });
+    const policyJson = this.buildPolicyJson(
+      options.folders,
+      options.openClawStateRoot,
+      options.requestedStrength,
+      options.effectiveTier,
+      options.ambientAccess,
+    );
     await writeTextAtomically(policyPath, policyJson);
     await fs.promises.rm(activationLeasePath, { force: true });
     const activationLeaseSecret = randomBytes(32);
@@ -247,25 +301,105 @@ export class BundledWindowsNodeHost {
     });
   }
 
-  private buildPolicyJson(folders: BundledWindowsNodeFolder[], openClawStateRoot: string): string {
+  private buildPolicyJson(
+    folders: BundledWindowsNodeFolder[],
+    openClawStateRoot: string,
+    requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">,
+    effectiveTier: string,
+    ambientAccess: BundledWindowsNodeAmbientAccess | null,
+  ): string {
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
+    const ambientAssessmentScratchRoot = path.join(stateRoot, "ambient-scratch");
+    const { inboundRoot: weixinInboundRoot } = resolveWindowsNodeMxcWeixinMediaRoots(
+      app.getPath("userData"),
+    );
     return JSON.stringify(
       {
-        approvedRoots: folders.map((folder) => ({
-          path: folder.path,
-          access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
-        })),
+        policySchemaVersion: 2,
+        requestedStrength,
+        effectiveTier,
+        approvedRoots: [
+          ...folders.map((folder) => ({
+            path: folder.path,
+            access: folder.access === "rw" ? "ReadWrite" : "ReadOnly",
+          })),
+          { path: weixinInboundRoot, access: "ReadOnly" },
+        ],
         deniedRoots: sensitiveWindowsRoots(stateRoot, openClawStateRoot),
         wxcExecPath: this.wxcExecPath,
-        networkAllowed: false,
+        canvas: {
+          enabled: true,
+          contract: BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
+          hostPath: this.canvasHostPath,
+          hostSha256: sha256File(this.canvasHostPath),
+          hostTreeSha256: sha256DirectoryTree(path.dirname(this.canvasHostPath)),
+          renderer: "native-a2ui",
+          commands: [...WINDOWS_NODE_MXC_CANVAS_COMMANDS],
+          actions: [...WINDOWS_NODE_MXC_CANVAS_ACTIONS],
+          allowEval: false,
+          allowNavigation: false,
+          allowLocalFiles: false,
+          allowRemoteMedia: false,
+          snapshotSurfaceOnly: true,
+        },
+        networkAllowed: true,
         allowWindowsUi: true,
         clipboard: "none",
         inputInjection: false,
         strictNoHostFallback: true,
+        ambientAssessmentScratchRoot,
+        ambientAccess: ambientAccess
+          ? {
+              contract: ambientAccess.contract,
+              hash: ambientAccess.hash,
+              entries: ambientAccess.entries.map((entry) => ({
+                ...entry,
+                path:
+                  ambientAccess.targets.find((target) => target.category === entry.category)
+                    ?.path ?? "",
+              })),
+            }
+          : null,
       },
       null,
       2,
     );
+  }
+
+  async assessLimitedAmbientAccess(
+    openClawStateRoot: string,
+  ): Promise<BundledWindowsNodeAmbientAccess> {
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
+    const stateRoot = path.join(app.getPath("userData"), "windows-node");
+    const scratchRoot = path.join(stateRoot, "ambient-scratch");
+    await fs.promises.mkdir(scratchRoot, { recursive: true });
+    const targets = resolveAmbientAccessTargets(openClawStateRoot);
+    const requestPath = path.join(
+      stateRoot,
+      `ambient-assessment-${process.pid}-${randomBytes(8).toString("hex")}.json`,
+    );
+    try {
+      await writeTextAtomically(
+        requestPath,
+        JSON.stringify(
+          {
+            wxcExecPath: this.wxcExecPath,
+            scratchRoot,
+            targets,
+          },
+          null,
+          2,
+        ),
+      );
+      const stdout = await execFileText(this.hostPath, ["--ambient-assess", requestPath], 180_000);
+      const parsed = JSON.parse(stdout) as unknown;
+      if (!validateWindowsNodeMxcAmbientAccessAssessment(parsed)) {
+        throw new Error("Bundled Windows node returned an invalid ambient-access assessment");
+      }
+      return { ...parsed, targets };
+    } finally {
+      await fs.promises.rm(requestPath, { force: true });
+    }
   }
 
   async setActivationLease(
@@ -415,7 +549,7 @@ export class BundledWindowsNodeHost {
   }
 
   ensureIdentityNodeId(): string {
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath);
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
     const identityDirectory = path.join(app.getPath("userData"), "windows-node", "identity");
     const nodeId = execFileSync(this.hostPath, ["--identity", identityDirectory], {
       encoding: "utf8",
@@ -426,6 +560,11 @@ export class BundledWindowsNodeHost {
       throw new Error("Bundled Windows node returned an invalid identity");
     }
     return nodeId.toLowerCase();
+  }
+
+  getValidatedMxcExecutablePath(): string {
+    assertBundledMxcProbeArtifact(this.wxcExecPath);
+    return this.wxcExecPath;
   }
 
   respond(requestId: string, decision: "deny" | "allow-once" | "allow-always"): void {
@@ -482,6 +621,16 @@ export class BundledWindowsNodeHost {
       nodeId: this.tryReadNodeId(),
       gatewayGeneration: this.gatewayGeneration,
       policyFingerprint: this.policyFingerprint,
+      requestedStrength: this.startOptions?.requestedStrength ?? null,
+      effectiveTier: this.startOptions?.effectiveTier ?? null,
+      ambientAccess: this.startOptions?.ambientAccess
+        ? {
+            contract: this.startOptions.ambientAccess.contract,
+            hash: this.startOptions.ambientAccess.hash,
+            checkedAt: this.startOptions.ambientAccess.checkedAt,
+            entries: this.startOptions.ambientAccess.entries.map((entry) => ({ ...entry })),
+          }
+        : null,
       activationLease:
         this.activationLease && this.activationLease.expiresAtUnixMs > Date.now()
           ? { ...this.activationLease }
@@ -496,6 +645,78 @@ export class BundledWindowsNodeHost {
       return null;
     }
   }
+}
+
+function resolveAmbientAccessTargets(
+  openClawStateRoot: string,
+): BundledWindowsNodeAmbientAccess["targets"] {
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
+  const roamingAppData = process.env.APPDATA ?? path.join(home, "AppData", "Roaming");
+  return [
+    { category: "desktop", path: app.getPath("desktop") },
+    { category: "documents", path: app.getPath("documents") },
+    { category: "downloads", path: app.getPath("downloads") },
+    { category: "microclaw-state", path: app.getPath("userData") },
+    { category: "openclaw-state", path: openClawStateRoot },
+    { category: "openclaw-roaming-state", path: path.join(roamingAppData, "openclaw") },
+    { category: "ssh", path: path.join(home, ".ssh") },
+    { category: "gnupg", path: path.join(home, ".gnupg") },
+    { category: "aws", path: path.join(home, ".aws") },
+    { category: "azure", path: path.join(home, ".azure") },
+    { category: "kube", path: path.join(home, ".kube") },
+    { category: "gcloud", path: path.join(home, ".config", "gcloud") },
+    {
+      category: "windows-credentials",
+      path: path.join(roamingAppData, "Microsoft", "Credentials"),
+    },
+    {
+      category: "powershell-history",
+      path: path.join(roamingAppData, "Microsoft", "Windows", "PowerShell", "PSReadLine"),
+    },
+    {
+      category: "browser-chrome",
+      path: path.join(localAppData, "Google", "Chrome", "User Data"),
+    },
+    {
+      category: "browser-edge",
+      path: path.join(localAppData, "Microsoft", "Edge", "User Data"),
+    },
+    {
+      category: "browser-brave",
+      path: path.join(localAppData, "BraveSoftware", "Brave-Browser", "User Data"),
+    },
+    {
+      category: "browser-firefox",
+      path: path.join(roamingAppData, "Mozilla", "Firefox", "Profiles"),
+    },
+  ];
+}
+
+function execFileText(executable: string, args: string[], timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      executable,
+      args,
+      {
+        windowsHide: true,
+        timeout,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf8",
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(
+            new Error(
+              `Bundled Windows node ambient assessment failed: ${stderr.trim() || error.message}`,
+            ),
+          );
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
 }
 
 function isUuid(value: string): boolean {
@@ -758,13 +979,42 @@ export function assertLoopbackGateway(gatewayUrl: string): void {
   }
 }
 
-function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
+export function validateBundledWindowsNodeRuntimeManifest(
+  manifest: Record<string, unknown>,
+  architecture: "x64" | "arm64",
+): void {
+  if (
+    manifest.architecture !== architecture ||
+    manifest.mxcVersion !== "0.7.0" ||
+    manifest.mxcSourceRevision !== MXC_SDK_SOURCE_REVISION ||
+    manifest.mxcProductionBfsCompiledIn !== false ||
+    manifest.mxcExactBackendProvisioning !== MXC_EXACT_BACKEND_PROVISIONING ||
+    manifest.wxcExecSha256 !== MXC_WXC_EXEC_SHA256[architecture] ||
+    manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION ||
+    manifest.canvasContract !== BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT ||
+    typeof manifest.canvasHostSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(manifest.canvasHostSha256) ||
+    typeof manifest.canvasHostTreeSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(manifest.canvasHostTreeSha256) ||
+    manifest.mxcHostPrepPatchRevision !== MXC_HOST_PREP_PATCH_REVISION ||
+    manifest.microclawHostPrepOrigin !== "microclaw-built" ||
+    JSON.stringify(manifest.microclawHostPrepOperations) !==
+      JSON.stringify(["prepare-system-drive", "unprepare-system-drive"])
+  ) {
+    throw new Error("Bundled Windows node runtime manifest does not match this application");
+  }
+}
+
+function assertBundledArtifacts(
+  hostPath: string,
+  wxcExecPath: string,
+  canvasHostPath: string,
+): void {
   if (!fs.existsSync(hostPath))
     throw new Error(`Bundled Windows node host is missing: ${hostPath}`);
-  if (!fs.existsSync(wxcExecPath)) throw new Error(`Pinned MXC runtime is missing: ${wxcExecPath}`);
-  if (process.arch !== "x64" && process.arch !== "arm64") {
-    throw new Error(`Bundled Windows node does not support architecture ${process.arch}`);
-  }
+  if (!fs.existsSync(canvasHostPath))
+    throw new Error(`Bundled Windows node Canvas host is missing: ${canvasHostPath}`);
+  const architecture = assertBundledMxcProbeArtifact(wxcExecPath);
   const resourceRoot = path.dirname(path.dirname(hostPath));
   const patchedHostPrepPath = path.join(resourceRoot, "host-prep", "microclaw-mxc-host-prep.exe");
   const officialHostPrepPath = path.join(path.dirname(wxcExecPath), "wxc-host-prep.exe");
@@ -774,28 +1024,14 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   if (!fs.existsSync(officialHostPrepPath)) {
     throw new Error(`Official MXC host-prep runtime is missing: ${officialHostPrepPath}`);
   }
-  const manifestPath = path.join(resourceRoot, "RUNTIME.json");
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-  if (
-    manifest.architecture !== process.arch ||
-    manifest.mxcVersion !== "0.7.0" ||
-    manifest.windowsNodeRevision !== BUNDLED_WINDOWS_NODE_REVISION ||
-    manifest.mxcHostPrepPatchRevision !== MXC_HOST_PREP_PATCH_REVISION ||
-    manifest.microclawHostPrepOrigin !== "microclaw-built" ||
-    JSON.stringify(manifest.microclawHostPrepOperations) !==
-      JSON.stringify(["prepare-system-drive", "unprepare-system-drive"])
-  ) {
-    throw new Error("Bundled Windows node runtime manifest does not match this application");
-  }
-  const actualHash = createHash("sha256").update(fs.readFileSync(wxcExecPath)).digest("hex");
-  if (actualHash !== MXC_WXC_EXEC_SHA256[process.arch]) {
-    throw new Error(`Pinned MXC runtime hash mismatch: ${actualHash}`);
-  }
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(resourceRoot, "RUNTIME.json"), "utf8"),
+  ) as Record<string, unknown>;
   const officialHostPrepHash = createHash("sha256")
     .update(fs.readFileSync(officialHostPrepPath))
     .digest("hex");
   if (
-    officialHostPrepHash !== MXC_OFFICIAL_HOST_PREP_SHA256[process.arch] ||
+    officialHostPrepHash !== MXC_OFFICIAL_HOST_PREP_SHA256[architecture] ||
     manifest.officialWxcHostPrepSha256 !== officialHostPrepHash
   ) {
     throw new Error(`Official MXC host-prep hash mismatch: ${officialHostPrepHash}`);
@@ -809,6 +1045,74 @@ function assertBundledArtifacts(hostPath: string, wxcExecPath: string): void {
   ) {
     throw new Error(`MicroClaw MXC host-prep hash mismatch: ${patchedHostPrepHash}`);
   }
+  const canvasHostHash = sha256File(canvasHostPath);
+  if (manifest.canvasHostSha256 !== canvasHostHash) {
+    throw new Error(`Bundled Windows node Canvas host hash mismatch: ${canvasHostHash}`);
+  }
+  const canvasHostTreeHash = sha256DirectoryTree(path.dirname(canvasHostPath));
+  if (manifest.canvasHostTreeSha256 !== canvasHostTreeHash) {
+    throw new Error(
+      `Bundled Windows node Canvas host resource tree hash mismatch: ${canvasHostTreeHash}`,
+    );
+  }
+}
+
+function sha256File(filePath: string): string {
+  return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+export function sha256DirectoryTree(root: string): string {
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of fs
+      .readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => compareOrdinal(left.name, right.name))) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Bundled Windows node Canvas host tree contains a link: ${fullPath}`);
+      }
+      if (entry.isDirectory()) visit(fullPath);
+      else if (entry.isFile()) files.push(fullPath);
+      else throw new Error(`Bundled Windows node Canvas host tree contains an unsupported entry`);
+    }
+  };
+  visit(root);
+  files.sort((left, right) =>
+    compareOrdinal(
+      path.relative(root, left).replaceAll(path.sep, "/"),
+      path.relative(root, right).replaceAll(path.sep, "/"),
+    ),
+  );
+  const hash = createHash("sha256");
+  for (const filePath of files) {
+    const relative = path.relative(root, filePath).replaceAll(path.sep, "/");
+    const bytes = fs.readFileSync(filePath);
+    hash.update(`${relative}\0${bytes.byteLength}\0`, "utf8");
+    hash.update(bytes);
+    hash.update(Buffer.from([0]));
+  }
+  return hash.digest("hex");
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function assertBundledMxcProbeArtifact(wxcExecPath: string): "x64" | "arm64" {
+  if (!fs.existsSync(wxcExecPath)) throw new Error(`Pinned MXC runtime is missing: ${wxcExecPath}`);
+  if (process.arch !== "x64" && process.arch !== "arm64") {
+    throw new Error(`Bundled Windows node does not support architecture ${process.arch}`);
+  }
+  const resourceRoot = path.dirname(path.dirname(wxcExecPath));
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(resourceRoot, "RUNTIME.json"), "utf8"),
+  ) as Record<string, unknown>;
+  validateBundledWindowsNodeRuntimeManifest(manifest, process.arch);
+  const actualHash = createHash("sha256").update(fs.readFileSync(wxcExecPath)).digest("hex");
+  if (actualHash !== MXC_WXC_EXEC_SHA256[process.arch]) {
+    throw new Error(`Pinned MXC runtime hash mismatch: ${actualHash}`);
+  }
+  return process.arch;
 }
 
 async function writeJsonAtomically(

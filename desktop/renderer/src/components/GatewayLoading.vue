@@ -92,6 +92,9 @@
           {{ statusText }}
           <span v-if="!isFailed" class="loading-pct">{{ Math.floor(displayProgress) }}%</span>
         </div>
+        <div v-if="props.mxcDesired" class="loading-mxc-strength">
+          {{ mxcStrengthText }}
+        </div>
 
         <!-- Error detail (shown when gateway reports an error) -->
         <div v-if="isFailed && displayError" class="loading-error-detail">
@@ -158,6 +161,9 @@ const props = defineProps<{
   mxcDesired?: boolean;
   mxcPhase?: string;
   mxcDetail?: string | null;
+  mxcRequestedMode?: "off" | "full" | "limited-dacl";
+  mxcEffectiveStrength?: "off" | "full" | "limited-dacl";
+  mxcEffectiveTier?: string | null;
 }>();
 defineEmits<{ retry: []; "disable-mxc": [] }>();
 
@@ -177,6 +183,19 @@ const isFailed = computed(
   () => isMxcFailure.value || props.status === "timeout" || props.status === "failed",
 );
 const displayError = computed(() => props.mxcDetail || props.errorMessage);
+const mxcStrengthText = computed(() => {
+  const mode =
+    props.mxcRequestedMode === "limited-dacl"
+      ? t("settings.windowsNodeMxcModeLimited")
+      : t("settings.windowsNodeMxcModeFull");
+  const state =
+    props.mxcPhase === "active"
+      ? t("settings.windowsNodeMxcStatusActive")
+      : isMxcFailure.value
+        ? t("settings.windowsNodeMxcActionRequired")
+        : t("settings.windowsNodeMxcStarting");
+  return t("settings.windowsNodeMxcCompactStatus", { mode, state });
+});
 
 // ── Window controls ──
 
@@ -207,6 +226,7 @@ const targetProgress = computed(() => {
       "smoking-locked": 80,
       "starting-active": 86,
       "smoking-active": 92,
+      "promoting-active": 92,
       "verifying-active": 97,
       "starting-standard": 88,
     };
