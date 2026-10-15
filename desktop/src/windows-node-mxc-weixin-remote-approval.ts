@@ -10,38 +10,81 @@ export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS = 3;
 const CHALLENGE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CHALLENGE_CODE_LENGTH = 8;
 const MAX_GLOBAL_ATTEMPTS_PER_MINUTE = 20;
-const MAX_PROMPT_ARGUMENTS = 8;
-const MAX_PROMPT_DECLARATIONS = 8;
 const MAX_PROMPT_REQUESTS = 8;
 const MAX_PROMPT_LINE = 160;
 const MAX_PROMPT_LENGTH = 6_000;
-const DANGEROUS_PROMPT_UNICODE_PATTERN =
-  /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
-const SAFE_SIMPLE_ARGUMENT_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,15}$/;
-const SAFE_NUMERIC_ARGUMENT_PATTERN = /^-?(?:0|[1-9][0-9]{0,18})(?:\.[0-9]{1,8})?$/;
-const SAFE_SWITCH_PATTERN =
-  /^(?:--?[A-Za-z][A-Za-z0-9-]{0,31}|\/[A-Za-z][A-Za-z0-9-]{0,31})$/;
-const SAFE_RELATIVE_FILE_PATTERN =
-  /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.[A-Za-z0-9]{1,8}$/;
-const SAFE_STRUCTURAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,159}$/;
-const SENSITIVE_SEMANTIC_PATTERN =
-  /(?:accountkey|authorization|auth|bearer|clientsecret|cookie|credential|key|passphrase|passwd|password|privatekey|proxyauthorization|sas|secret|setcookie|signature|sig|token)/i;
-const SAFE_PATH_VALUE_SWITCHES = new Set([
-  "-File",
-  "--file",
-  "--output",
-  "--project",
-  "--cwd",
-  "-o",
-]);
-const SAFE_ENUM_VALUE_SWITCHES = new Set([
-  "--color",
-  "--configuration",
-  "--format",
-  "--mode",
-  "--target",
-]);
-const SAFE_LITERAL_ARGUMENTS = new Set(["false", "null", "true"]);
+const REMOTE_APPROVAL_SCRATCH_CWD = "isolated-scratch:v1";
+
+type WeixinRemoteApprovalProgram =
+  | "windows-hostname"
+  | "windows-identity"
+  | "windows-network"
+  | "windows-system-information";
+type WeixinRemoteApprovalOption = "none" | "user" | "groups" | "privileges" | "all";
+type WeixinRemoteApprovalEffectiveMode =
+  | "base-container"
+  | "appcontainer-bfs"
+  | "appcontainer-dacl"
+  | "limited-dacl"
+  | "full";
+
+const REMOTE_APPROVAL_TUPLES: ReadonlyArray<{
+  program: WeixinRemoteApprovalProgram;
+  option: WeixinRemoteApprovalOption;
+  executable: string;
+  executablePath: string;
+  arguments: readonly string[];
+  command: string;
+}> = [
+  {
+    program: "windows-hostname",
+    option: "none",
+    executable: "hostname.exe",
+    executablePath: "C:\\Windows\\System32\\hostname.exe",
+    arguments: [],
+    command: "hostname.exe",
+  },
+  {
+    program: "windows-identity",
+    option: "none",
+    executable: "whoami.exe",
+    executablePath: "C:\\Windows\\System32\\whoami.exe",
+    arguments: [],
+    command: "whoami.exe",
+  },
+  ...(["user", "groups", "priv"] as const).map((option) => ({
+    program: "windows-identity" as const,
+    option: option === "priv" ? ("privileges" as const) : option,
+    executable: "whoami.exe",
+    executablePath: "C:\\Windows\\System32\\whoami.exe",
+    arguments: [`/${option}`],
+    command: `whoami.exe /${option}`,
+  })),
+  {
+    program: "windows-network",
+    option: "none",
+    executable: "ipconfig.exe",
+    executablePath: "C:\\Windows\\System32\\ipconfig.exe",
+    arguments: [],
+    command: "ipconfig.exe",
+  },
+  {
+    program: "windows-network",
+    option: "all",
+    executable: "ipconfig.exe",
+    executablePath: "C:\\Windows\\System32\\ipconfig.exe",
+    arguments: ["/all"],
+    command: "ipconfig.exe /all",
+  },
+  {
+    program: "windows-system-information",
+    option: "none",
+    executable: "systeminfo.exe",
+    executablePath: "C:\\Windows\\System32\\systeminfo.exe",
+    arguments: [],
+    command: "systeminfo.exe",
+  },
+];
 
 export interface WeixinRemoteApprovalOwnerBinding {
   contract: typeof WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT;
@@ -112,6 +155,15 @@ export interface WeixinRemoteApprovalCreateInput {
   security: WeixinRemoteApprovalSecurityBinding;
   locale: "en-US" | "zh-CN";
   now?: number;
+}
+
+export interface WeixinRemoteApprovalPresentation {
+  requests: Array<{
+    program: WeixinRemoteApprovalProgram;
+    option: WeixinRemoteApprovalOption;
+  }>;
+  requestedMode: "limited-dacl" | "full";
+  effectiveMode: WeixinRemoteApprovalEffectiveMode;
 }
 
 export interface WeixinRemoteApprovalDelivery {
@@ -321,225 +373,175 @@ function createCode(): string {
   return result;
 }
 
-function exactPromptValue(value: string): string {
+function exactStringArrayEquals(left: string[], right: readonly string[]): boolean {
   /*
     .replace(BEARER_PATTERN, "Bearer [REDACTED]")
   */
-  return JSON.stringify(value);
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function isSafeAsciiDisplayValue(value: string): boolean {
+function isEffectiveMode(value: string): value is WeixinRemoteApprovalEffectiveMode {
   return (
-    value.length > 0 &&
-    /^[\x20-\x7e]+$/.test(value) &&
-    !DANGEROUS_PROMPT_UNICODE_PATTERN.test(value)
+    value === "base-container" ||
+    value === "appcontainer-bfs" ||
+    value === "appcontainer-dacl" ||
+    value === "limited-dacl" ||
+    value === "full"
   );
 }
 
-function hasSensitiveSemantics(value: string): boolean {
-  return SENSITIVE_SEMANTIC_PATTERN.test(value.replace(/[^A-Za-z0-9]/g, ""));
+function findRemoteApprovalTuple(approval: WeixinRemoteApprovalBatchRequest["approval"]) {
+  return REMOTE_APPROVAL_TUPLES.find(
+    (candidate) =>
+      approval.executable === candidate.executable &&
+      approval.executablePath === candidate.executablePath &&
+      approval.command === candidate.command &&
+      exactStringArrayEquals(approval.arguments, candidate.arguments),
+  );
 }
 
-function isSafeWindowsPath(value: string): boolean {
+function isPromptLineLengthValid(lines: string[]): boolean {
+  return lines.every((line) => line.length <= MAX_PROMPT_LINE);
+}
+
+export function classifyWeixinRemoteApprovalPresentation(
+  requests: WeixinRemoteApprovalBatchRequest[],
+  security: WeixinRemoteApprovalSecurityBinding,
+): WeixinRemoteApprovalPresentation | null {
   if (
-    !isSafeAsciiDisplayValue(value) ||
-    !/^[A-Za-z]:\\/.test(value) ||
-    /["'<>|?*=;&]/.test(value)
+    requests.length === 0 ||
+    requests.length > MAX_PROMPT_REQUESTS ||
+    !isEffectiveMode(security.effectiveMode)
   ) {
-    return false;
+    return null;
   }
-  const segments = value.slice(3).split("\\");
-  return segments.every(
-    (segment) =>
-      segment.length > 0 &&
-      segment.length <= 80 &&
-      !segment.endsWith(" ") &&
-      !segment.endsWith(".") &&
-      !hasSensitiveSemantics(segment),
-  );
-}
-
-function isSafeRelativeFile(value: string): boolean {
-  return (
-    isSafeAsciiDisplayValue(value) &&
-    SAFE_RELATIVE_FILE_PATTERN.test(value) &&
-    !hasSensitiveSemantics(value)
-  );
-}
-
-function isSafeSimpleArgument(value: string): boolean {
-  return (
-    isSafeAsciiDisplayValue(value) &&
-    (SAFE_LITERAL_ARGUMENTS.has(value.toLowerCase()) ||
-      SAFE_NUMERIC_ARGUMENT_PATTERN.test(value) ||
-      (SAFE_SIMPLE_ARGUMENT_PATTERN.test(value) && !hasSensitiveSemantics(value)))
-  );
-}
-
-function isSafeSwitch(value: string): boolean {
-  return (
-    isSafeAsciiDisplayValue(value) &&
-    SAFE_SWITCH_PATTERN.test(value) &&
-    !hasSensitiveSemantics(value)
-  );
-}
-
-function argumentsCanBeSafelyRendered(values: string[]): boolean {
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (isSafeWindowsPath(value) || isSafeRelativeFile(value)) continue;
-    if (isSafeSwitch(value)) {
-      if (SAFE_PATH_VALUE_SWITCHES.has(value)) {
-        const pathValue = values[index + 1];
-        if (
-          pathValue === undefined ||
-          (!isSafeWindowsPath(pathValue) && !isSafeRelativeFile(pathValue))
-        ) {
-          return false;
-        }
-        index += 1;
-      } else if (SAFE_ENUM_VALUE_SWITCHES.has(value)) {
-        const enumValue = values[index + 1];
-        if (enumValue === undefined || !isSafeSimpleArgument(enumValue)) return false;
-        index += 1;
-      } else if (values[index + 1] !== undefined && !isSafeSwitch(values[index + 1])) {
-        return false;
-      }
-      continue;
-    }
-    if (SAFE_LITERAL_ARGUMENTS.has(value.toLowerCase())) continue;
-    return false;
-  }
-  return true;
-}
-
-function quoteWindowsArgument(value: string): string {
-  if (value.length > 0 && !/\s/.test(value) && !value.includes('"')) return value;
-  let output = '"';
-  let slashes = 0;
-  for (const character of value) {
-    if (character === "\\") {
-      slashes += 1;
-      continue;
-    }
-    if (character === '"') {
-      output += `${"\\".repeat(slashes * 2 + 1)}"`;
-      slashes = 0;
-      continue;
-    }
-    output += `${"\\".repeat(slashes)}${character}`;
-    slashes = 0;
-  }
-  return `${output}${"\\".repeat(slashes * 2)}"`;
-}
-
-function exactWindowsCommand(values: string[]): string {
-  return values.map(quoteWindowsArgument).join(" ");
-}
-
-function approvalHasSafeStructuredPresentation(
-  approval: WindowsNodeMxcGatewayApproval,
-): boolean {
-  const canonicalCwdIsSafe =
-    approval.canonicalCwd === "isolated-scratch:v1" || isSafeWindowsPath(approval.canonicalCwd);
-  return (
-    (isSafeRelativeFile(approval.executable) || isSafeWindowsPath(approval.executable)) &&
-    isSafeWindowsPath(approval.executablePath) &&
-    canonicalCwdIsSafe &&
-    SAFE_STRUCTURAL_ID_PATTERN.test(approval.sessionKey) &&
-    (approval.agent === null || SAFE_STRUCTURAL_ID_PATTERN.test(approval.agent)) &&
-    argumentsCanBeSafelyRendered(approval.arguments) &&
-    approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
-    approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path))
-  );
-}
-
-function renderExactArguments(values: string[]): string {
-  return values.map(exactPromptValue).join(" ") || "(none)";
-}
-
-function renderExactDeclarations(values: Array<{ access: string; path: string }>): string {
-  return (
-    values.map((entry) => `${entry.access}:${exactPromptValue(entry.path)}`).join(" ") || "(none)"
-  );
-}
-
-function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]): boolean {
-  if (requests.length === 0 || requests.length > MAX_PROMPT_REQUESTS) return false;
-  return requests.every(({ approval }) => {
+  const presentationRequests: WeixinRemoteApprovalPresentation["requests"] = [];
+  for (const { approval } of requests) {
     if (
-      approval.arguments.length > MAX_PROMPT_ARGUMENTS ||
-      approval.declaredAccess.length > MAX_PROMPT_DECLARATIONS ||
-      !/^[a-f0-9]{64}$/i.test(approval.executableSha256) ||
-      !approvalHasSafeStructuredPresentation(approval)
+      approval.canonicalCwd !== REMOTE_APPROVAL_SCRATCH_CWD ||
+      approval.declaredAccess.length !== 0 ||
+      approval.hasMutableFileOperand ||
+      !approval.allowedDecisions.includes("allow-once") ||
+      !approval.allowedDecisions.includes("deny") ||
+      !/^[a-f0-9]{64}$/i.test(approval.executableSha256)
     ) {
-      return false;
+      return null;
     }
-    return [
-      exactPromptValue(approval.command),
-      exactPromptValue(approval.executablePath || approval.executable),
-      approval.executableSha256,
-      renderExactArguments(approval.arguments),
-      exactPromptValue(approval.canonicalCwd),
-      renderExactDeclarations(approval.declaredAccess),
-      exactPromptValue(approval.agent ?? ""),
-      exactPromptValue(approval.sessionKey),
-      String(approval.hasMutableFileOperand),
-      approval.allowedDecisions.join(","),
-    ].every((line) => line.length <= MAX_PROMPT_LINE);
-  });
+    const tuple = findRemoteApprovalTuple(approval);
+    if (!tuple) return null;
+    presentationRequests.push({ program: tuple.program, option: tuple.option });
+  }
+  return {
+    requests: presentationRequests,
+    requestedMode: security.requestedMode,
+    effectiveMode: security.effectiveMode,
+  };
 }
+
+const PROGRAM_LABELS: Record<WeixinRemoteApprovalProgram, Record<"en-US" | "zh-CN", string>> = {
+  "windows-hostname": {
+    "en-US": "Windows host name",
+    "zh-CN": "Windows 主机名",
+  },
+  "windows-identity": {
+    "en-US": "Current Windows identity",
+    "zh-CN": "当前 Windows 身份",
+  },
+  "windows-network": {
+    "en-US": "Windows network configuration",
+    "zh-CN": "Windows 网络配置",
+  },
+  "windows-system-information": {
+    "en-US": "Windows system information",
+    "zh-CN": "Windows 系统信息",
+  },
+};
+
+const OPTION_LABELS: Record<WeixinRemoteApprovalOption, Record<"en-US" | "zh-CN", string>> = {
+  none: { "en-US": "none", "zh-CN": "无" },
+  user: { "en-US": "user details", "zh-CN": "用户详情" },
+  groups: { "en-US": "group memberships", "zh-CN": "组成员身份" },
+  privileges: { "en-US": "privileges", "zh-CN": "权限列表" },
+  all: { "en-US": "all details", "zh-CN": "全部详情" },
+};
+
+const REQUESTED_MODE_LABELS: Record<
+  WeixinRemoteApprovalPresentation["requestedMode"],
+  Record<"en-US" | "zh-CN", string>
+> = {
+  "limited-dacl": {
+    "en-US": "Limited containment (DACL)",
+    "zh-CN": "有限隔离（DACL）",
+  },
+  full: { "en-US": "Full containment", "zh-CN": "完整隔离" },
+};
+
+const EFFECTIVE_MODE_LABELS: Record<
+  WeixinRemoteApprovalEffectiveMode,
+  Record<"en-US" | "zh-CN", string>
+> = {
+  "base-container": { "en-US": "Base Container", "zh-CN": "Base Container" },
+  "appcontainer-bfs": { "en-US": "AppContainer BFS", "zh-CN": "AppContainer BFS" },
+  "appcontainer-dacl": {
+    "en-US": "AppContainer DACL",
+    "zh-CN": "AppContainer DACL",
+  },
+  "limited-dacl": {
+    "en-US": "Limited containment (DACL)",
+    "zh-CN": "有限隔离（DACL）",
+  },
+  full: { "en-US": "Full containment", "zh-CN": "完整隔离" },
+};
 
 export function renderWeixinRemoteApprovalPrompt(params: {
   code: string;
   expiresAtUnixMs: number;
-  requests: WeixinRemoteApprovalBatchRequest[];
-  security: WeixinRemoteApprovalSecurityBinding;
+  presentation: WeixinRemoteApprovalPresentation;
   locale: "en-US" | "zh-CN";
 }): string {
+  const requestLines = params.presentation.requests.flatMap((request, index) =>
+    params.locale === "zh-CN"
+      ? [
+          `请求 ${index + 1}: ${PROGRAM_LABELS[request.program]["zh-CN"]}`,
+          `选项: ${OPTION_LABELS[request.option]["zh-CN"]}`,
+        ]
+      : [
+          `Request ${index + 1}: ${PROGRAM_LABELS[request.program]["en-US"]}`,
+          `Options: ${OPTION_LABELS[request.option]["en-US"]}`,
+        ],
+  );
   const lines =
     params.locale === "zh-CN"
       ? [
           `[MicroClaw 安全审批 #${params.code}]`,
           "仅批准下列当前请求；不会创建永久授权，也不会批准未来请求。",
-          ...params.requests.flatMap(({ approval }, index) => [
-            `请求 ${index + 1} 命令: ${exactPromptValue(approval.command)}`,
-            `可执行文件: ${exactPromptValue(approval.executablePath || approval.executable)}`,
-            `SHA-256: ${approval.executableSha256}`,
-            `参数: ${renderExactArguments(approval.arguments)}`,
-            `工作目录: ${exactPromptValue(approval.canonicalCwd)}`,
-            `文件访问: ${renderExactDeclarations(approval.declaredAccess)}`,
-            `代理/会话: ${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
-            `可变文件操作数: ${approval.hasMutableFileOperand ? "是" : "否"}`,
-            `本地可用决策: ${approval.allowedDecisions.join(", ")}`,
-          ]),
-          `模式: ${params.security.requestedMode} / ${exactPromptValue(params.security.effectiveMode)}`,
+          "远程显示仅支持预定义、无不透明操作数的只读系统查询。",
+          ...requestLines,
+          `隔离模式: ${REQUESTED_MODE_LABELS[params.presentation.requestedMode]["zh-CN"]} / ${EFFECTIVE_MODE_LABELS[params.presentation.effectiveMode]["zh-CN"]}`,
           `过期时间: ${new Date(params.expiresAtUnixMs).toISOString()}`,
           `回复: 1 ${params.code}（仅批准此请求一次）`,
           `      2 ${params.code}（拒绝）`,
-          `      3 ${params.code}（仅批准本消息列出的全部 ${params.requests.length} 个请求一次）`,
+          `      3 ${params.code}（仅批准本消息列出的全部 ${params.presentation.requests.length} 个请求一次）`,
         ]
       : [
           `[MicroClaw Security Approval #${params.code}]`,
           "This approves only the current request(s); it creates no durable or future approval.",
-          ...params.requests.flatMap(({ approval }, index) => [
-            `Request ${index + 1} command: ${exactPromptValue(approval.command)}`,
-            `Executable: ${exactPromptValue(approval.executablePath || approval.executable)}`,
-            `SHA-256: ${approval.executableSha256}`,
-            `Args: ${renderExactArguments(approval.arguments)}`,
-            `CWD: ${exactPromptValue(approval.canonicalCwd)}`,
-            `File access: ${renderExactDeclarations(approval.declaredAccess)}`,
-            `Agent/session: ${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
-            `Mutable file operand: ${approval.hasMutableFileOperand ? "yes" : "no"}`,
-            `Locally available decisions: ${approval.allowedDecisions.join(", ")}`,
-          ]),
-          `Mode: ${params.security.requestedMode} / ${exactPromptValue(params.security.effectiveMode)}`,
+          "Remote display supports only predefined read-only system queries with no opaque operands.",
+          ...requestLines,
+          `Containment: ${REQUESTED_MODE_LABELS[params.presentation.requestedMode]["en-US"]} / ${EFFECTIVE_MODE_LABELS[params.presentation.effectiveMode]["en-US"]}`,
           `Expires: ${new Date(params.expiresAtUnixMs).toISOString()}`,
           `Reply: 1 ${params.code} (approve this request once)`,
           `       2 ${params.code} (deny)`,
-          `       3 ${params.code} (approve all ${params.requests.length} listed request(s) once)`,
+          `       3 ${params.code} (approve all ${params.presentation.requests.length} listed request(s) once)`,
         ];
-  return lines.join("\n");
+  if (!isPromptLineLengthValid(lines)) {
+    throw new Error("Remote approval prompt exceeded its fixed line limit");
+  }
+  const prompt = lines.join("\n");
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    throw new Error("Remote approval prompt exceeded its fixed total limit");
+  }
+  return prompt;
 }
 
 function acknowledgement(locale: "en-US" | "zh-CN", result: string): string {
@@ -602,6 +604,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   createChallenge(input: WeixinRemoteApprovalCreateInput): WeixinRemoteApprovalDelivery | null {
     const now = input.now ?? Date.now();
     const owner = this.configuration.owner;
+    const presentation = classifyWeixinRemoteApprovalPresentation(input.requests, input.security);
     if (
       !this.configuration.enabled ||
       !owner ||
@@ -613,8 +616,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       normalizeOpaqueId(input.source.conversationId) !== normalizeOpaqueId(input.source.senderId) ||
       !Number.isSafeInteger(input.source.cursor) ||
       input.source.cursor < 0 ||
-      !promptCanRepresentRequests(input.requests) ||
-      !SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode)
+      !presentation
     ) {
       return null;
     }
@@ -663,16 +665,9 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     const text = renderWeixinRemoteApprovalPrompt({
       code,
       expiresAtUnixMs,
-      requests: input.requests,
-      security: input.security,
+      presentation,
       locale: input.locale,
     });
-    if (
-      text.length > MAX_PROMPT_LENGTH ||
-      text.split("\n").some((line) => line.length > MAX_PROMPT_LINE)
-    ) {
-      return null;
-    }
     this.challengesByChat.set(chatKey, challenge);
     return {
       contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,

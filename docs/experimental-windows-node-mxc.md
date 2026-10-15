@@ -208,25 +208,25 @@ so a crash replays rather than drops them.
 
 The reserved plain-text prompt begins `[MicroClaw Security Approval #CODE]`. The code is eight
 characters from an unambiguous 32-symbol alphabet (40 bits), generated with `randomBytes`, valid for
-two minutes, one-use, and limited to three wrong attempts plus a global attempt window. The prompt
-renders authorization-relevant strings exactly and reversibly with JSON string quoting. It does not
-trim or NFC-normalize, rewrite user-profile paths, parse and reserialize JSON, convert numeric text,
-collapse duplicate keys, redact partial values, or otherwise change code points. It includes the
-complete command text, executable canonical path and hash, argv, canonical CWD, declared file
-access, agent/session, requested/effective MXC mode, expiry, and every request covered by option 3.
-If those exact fields exceed deterministic request/argument/declaration/line/total limits, contain
-control, C0/C1, surrogate, bidi/format/default-ignorable, line/paragraph separator, zero-width,
-variation-selector, or similar concealment characters, or appear secret-bearing or ambiguously
-redacted, MicroClaw creates no remote challenge and leaves the normal local approval pending.
-OpenClaw 2026.10.2 does not carry reliable sensitive-value provenance for every command display
-field, so Phase 1 additionally uses a fail-closed structured presentation allowlist. The full
-command must exactly reconstruct from the signed argv; executable/CWD/declaration values must be
-canonical local paths or fixed structural bindings; and arguments are limited to bounded
-parameterless switches, explicitly classified path/enum switch values, boolean literals, and short
-relative filenames. Arbitrary positional text or numbers, inline option values, URLs, long opaque
-values, credential-semantic names, and every other unknown form remain local-only.
-This is intentionally conservative: a non-secret command may still require local approval when its
-display sensitivity cannot be proven from the current execution contract.
+two minutes, one-use, and limited to three wrong attempts plus a global attempt window. The current
+execution approval contract does not carry trustworthy field-level sensitivity provenance, so
+remote eligibility is deliberately fail-closed rather than based on a finite secret denylist.
+Electron derives a separate presentation DTO only for exact built-in, read-only Windows query
+tuples with scratch CWD, no declared file access, no mutable file operand, recognized containment,
+and both `allow-once` and `deny` available:
+
+- `C:\Windows\System32\hostname.exe` with no arguments
+- `C:\Windows\System32\whoami.exe` with no arguments or exactly `/user`, `/groups`, or `/priv`
+- `C:\Windows\System32\ipconfig.exe` with no arguments or exactly `/all`
+- `C:\Windows\System32\systeminfo.exe` with no arguments
+
+The WeChat prompt is rendered exclusively from constant localized labels and recognized enums. It
+does not send raw command text, executable paths or hashes, argv, CWD, declarations, agent/session,
+or other free text to WeChat. Unknown executables or operands, free-form commands, declarations,
+non-scratch CWDs, mutable operands, unknown containment modes, secret-bearing requests, and any
+future tuple not explicitly added and reviewed remain local-only. The complete unmodified approval
+still remains in Electron memory and is integrity-bound below; the presentation DTO never weakens
+that exact binding. Fixed request/line/total caps apply to the final localized prompt.
 
 - `1 CODE` approves the exact first/current request once.
 - `2 CODE` denies the exact request.
