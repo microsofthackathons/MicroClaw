@@ -601,6 +601,68 @@
               </el-button>
             </section>
           </div>
+          <section
+            v-if="weixinRemoteApprovalStatus"
+            class="mxc-remote-approval"
+            data-testid="weixin-remote-approval"
+          >
+            <div class="mxc-mode-card-heading">
+              <strong>{{ t("settings.weixinRemoteApproval") }}</strong>
+            </div>
+            <p>{{ t("settings.weixinRemoteApprovalRisk") }}</p>
+            <div class="mxc-remote-owner">
+              <span>{{ t("settings.weixinRemoteApprovalOwner") }}</span>
+              <code>{{
+                weixinRemoteApprovalStatus.owner?.userId ??
+                t("settings.weixinRemoteApprovalUnbound")
+              }}</code>
+            </div>
+            <div
+              v-if="weixinRemoteApprovalStatus.blockedReason"
+              class="mxc-alert mxc-alert-warning"
+            >
+              {{
+                weixinRemoteApprovalStatus.blockedReason === "mxc-off"
+                  ? t("settings.weixinRemoteApprovalRequiresMxc")
+                  : t("settings.weixinRemoteApprovalRequiresOwner")
+              }}
+            </div>
+            <p class="mxc-mode-warning">{{ t("settings.weixinRemoteApprovalOnceOnly") }}</p>
+            <div class="mxc-remote-actions">
+              <el-button
+                v-if="!weixinRemoteApprovalStatus.enabled"
+                type="warning"
+                plain
+                data-testid="weixin-remote-approval-enable"
+                :loading="weixinRemoteApprovalApplying"
+                :disabled="
+                  weixinRemoteApprovalApplying || weixinRemoteApprovalStatus.blockedReason !== null
+                "
+                @click="setWeixinRemoteApprovalEnabled(true)"
+              >
+                {{ t("settings.weixinRemoteApprovalEnable") }}
+              </el-button>
+              <el-button
+                v-else
+                plain
+                data-testid="weixin-remote-approval-disable"
+                :loading="weixinRemoteApprovalApplying"
+                @click="setWeixinRemoteApprovalEnabled(false)"
+              >
+                {{ t("settings.weixinRemoteApprovalDisable") }}
+              </el-button>
+              <el-button
+                v-if="weixinRemoteApprovalStatus.configured"
+                type="danger"
+                plain
+                data-testid="weixin-remote-approval-revoke"
+                :loading="weixinRemoteApprovalApplying"
+                @click="revokeWeixinRemoteApproval"
+              >
+                {{ t("settings.weixinRemoteApprovalRevoke") }}
+              </el-button>
+            </div>
+          </section>
           <template v-if="windowsNodeMxcStatus">
             <div class="card-row mxc-status-summary" data-testid="mxc-status-summary">
               <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
@@ -1785,10 +1847,15 @@ const capsRestarting = ref(false);
 const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
+type WeixinRemoteApprovalStatus = Awaited<
+  ReturnType<typeof window.openclaw.plugin.weixin.getRemoteApprovalStatus>
+>;
 type WindowsNodeMxcAmbientEntry = NonNullable<
   WindowsNodeMxcStatus["ambientAccess"]
 >["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
+const weixinRemoteApprovalStatus = ref<WeixinRemoteApprovalStatus | null>(null);
+const weixinRemoteApprovalApplying = ref(false);
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
 const windowsNodeMxcTechnicalDetailsOpen = ref(false);
@@ -2007,6 +2074,44 @@ async function loadWindowsNodeMxcStatus() {
     updateWindowsNodeMxcStatus(status);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function loadWeixinRemoteApprovalStatus() {
+  try {
+    weixinRemoteApprovalStatus.value =
+      await window.openclaw.plugin.weixin.getRemoteApprovalStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function setWeixinRemoteApprovalEnabled(enabled: boolean) {
+  if (weixinRemoteApprovalApplying.value) return;
+  weixinRemoteApprovalApplying.value = true;
+  try {
+    const result = await window.openclaw.plugin.weixin.setRemoteApprovalEnabled(enabled);
+    if (!result.ok && !result.cancelled) {
+      throw new Error(result.error || t("settings.weixinRemoteApprovalFailed"));
+    }
+    await loadWeixinRemoteApprovalStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    weixinRemoteApprovalApplying.value = false;
+  }
+}
+
+async function revokeWeixinRemoteApproval() {
+  if (weixinRemoteApprovalApplying.value) return;
+  weixinRemoteApprovalApplying.value = true;
+  try {
+    await window.openclaw.plugin.weixin.revokeRemoteApproval();
+    await loadWeixinRemoteApprovalStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    weixinRemoteApprovalApplying.value = false;
   }
 }
 
@@ -2847,7 +2952,11 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    void Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
+    void Promise.all([
+      loadSandboxStatus(),
+      loadWindowsNodeMxcStatus(),
+      loadWeixinRemoteApprovalStatus(),
+    ]);
   }
 });
 
@@ -2928,7 +3037,7 @@ function handleSettingsWindowFocus(): void {
   if (activeSection.value === "models" && !showProviderSetup.value) {
     void refreshModelsConfig();
   } else if (activeSection.value === "security") {
-    void loadWindowsNodeMxcStatus();
+    void Promise.all([loadWindowsNodeMxcStatus(), loadWeixinRemoteApprovalStatus()]);
   }
 }
 
@@ -2970,7 +3079,11 @@ onMounted(async () => {
   // Load web search provider configuration
   loadSearchConfig(config);
   if (activeSection.value === "security") {
-    await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
+    await Promise.all([
+      loadSandboxStatus(),
+      loadWindowsNodeMxcStatus(),
+      loadWeixinRemoteApprovalStatus(),
+    ]);
   }
 });
 
@@ -4328,6 +4441,31 @@ async function clearChatHistory() {
 }
 .mxc-limited-checkbox input {
   margin-top: 3px;
+}
+.mxc-remote-approval {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning-color, #e6a23c) 6%, transparent);
+}
+.mxc-remote-approval p {
+  margin: 8px 0;
+}
+.mxc-remote-owner {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mxc-remote-owner code {
+  overflow-wrap: anywhere;
+}
+.mxc-remote-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 @container (max-width: 760px) {
   .mxc-mode-grid {

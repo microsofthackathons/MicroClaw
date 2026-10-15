@@ -4,10 +4,21 @@ import path from "node:path";
 
 import type { BundledWindowsNodeFolder } from "./bundled-windows-node-host";
 
-export const WINDOWS_NODE_MXC_INGRESS_RELEASE_CONTRACT =
-  "microclaw.windows-ingress-release.v1";
-export const WINDOWS_NODE_MXC_WEIXIN_MEDIA_POLICY_CONTRACT =
-  "microclaw.windows-weixin-media.v1";
+export const WINDOWS_NODE_MXC_INGRESS_RELEASE_CONTRACT = "microclaw.windows-ingress-release.v1";
+export const WINDOWS_NODE_MXC_WEIXIN_MEDIA_POLICY_CONTRACT = "microclaw.windows-weixin-media.v1";
+export const WINDOWS_NODE_MXC_WEIXIN_ENVIRONMENT_KEYS = [
+  "MICROCLAW_MXC_INGRESS_RELEASE_PATH",
+  "MICROCLAW_MXC_INGRESS_RELEASE_TOKEN",
+  "MICROCLAW_MXC_WEIXIN_MEDIA_POLICY",
+  "MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE",
+  "MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN",
+] as const;
+
+export function clearInheritedWindowsNodeMxcWeixinEnvironment(
+  environment: Record<string, string>,
+): void {
+  for (const key of WINDOWS_NODE_MXC_WEIXIN_ENVIRONMENT_KEYS) delete environment[key];
+}
 
 export interface WindowsNodeMxcWeixinContext {
   gatewayGeneration: string;
@@ -17,14 +28,14 @@ export interface WindowsNodeMxcWeixinContext {
   inboundRoot: string;
   outboundTempRoot: string;
   mediaPolicyBase64: string;
+  remoteApprovalPipe: string | null;
+  remoteApprovalToken: string | null;
 }
 
 type JsonRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
 function safeAccountKey(raw: string): string {
@@ -55,7 +66,10 @@ function readAllowFrom(filePath: string): string[] {
     : [];
 }
 
-function resolveStoredAccountPath(stateDir: string, accountId: string): string {
+export function resolveStoredWindowsNodeMxcWeixinAccountPath(
+  stateDir: string,
+  accountId: string,
+): string {
   const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
   const primary = path.join(accountsDir, `${accountId}.json`);
   if (fs.existsSync(primary)) return primary;
@@ -66,6 +80,17 @@ function resolveStoredAccountPath(stateDir: string, accountId: string): string {
     return path.join(accountsDir, `${accountId.slice(0, -10)}@im.wechat.json`);
   }
   return primary;
+}
+
+export function readWindowsNodeMxcWeixinAllowedSenders(params: {
+  stateDir: string;
+  credentialsDir?: string;
+  accountId: string;
+}): string[] {
+  const credentialsDir = params.credentialsDir?.trim() || path.join(params.stateDir, "credentials");
+  return readAllowFrom(
+    path.join(credentialsDir, `openclaw-weixin-${safeAccountKey(params.accountId)}-allowFrom.json`),
+  );
 }
 
 export function preflightWindowsNodeMxcWeixinAuthorization(params: {
@@ -82,34 +107,34 @@ export function preflightWindowsNodeMxcWeixinAuthorization(params: {
 
   const accountsPath = path.join(params.stateDir, "openclaw-weixin", "accounts.json");
   if (!fs.existsSync(accountsPath)) return { migratedAccountIds: [] };
-  let accountIds: string[] = [];
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(accountsPath, "utf8"));
-    if (
-      !Array.isArray(parsed) ||
-      parsed.some((value) => typeof value !== "string" || value.trim().length === 0)
-    ) {
-      throw new Error("account index is invalid");
+  const accountIds = (() => {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(accountsPath, "utf8"));
+      if (
+        !Array.isArray(parsed) ||
+        parsed.some((value) => typeof value !== "string" || value.trim().length === 0)
+      ) {
+        throw new Error("account index is invalid");
+      }
+      return parsed as string[];
+    } catch (error) {
+      throw new Error(
+        `MXC WeChat authorization preflight failed: account index is unreadable: ${String(error)}`,
+        { cause: error },
+      );
     }
-    accountIds = parsed;
-  } catch (error) {
-    throw new Error(
-      `MXC WeChat authorization preflight failed: account index is unreadable: ${String(error)}`,
-    );
-  }
+  })();
 
   const channel = asRecord(asRecord(root.channels)["openclaw-weixin"]);
   const configuredAccounts = asRecord(channel.accounts);
-  const credentialsDir =
-    params.credentialsDir?.trim() || path.join(params.stateDir, "credentials");
+  const credentialsDir = params.credentialsDir?.trim() || path.join(params.stateDir, "credentials");
   const migratedAccountIds: string[] = [];
   const blockedAccountIds: string[] = [];
 
   for (const accountId of accountIds) {
-    const accountConfig =
-      Object.prototype.hasOwnProperty.call(configuredAccounts, accountId)
-        ? asRecord(configuredAccounts[accountId])
-        : channel;
+    const accountConfig = Object.prototype.hasOwnProperty.call(configuredAccounts, accountId)
+      ? asRecord(configuredAccounts[accountId])
+      : channel;
     if (accountConfig.enabled === false) continue;
 
     const allowFromPath = path.join(
@@ -118,9 +143,10 @@ export function preflightWindowsNodeMxcWeixinAuthorization(params: {
     );
     if (readAllowFrom(allowFromPath).length > 0) continue;
 
-    const account = readJsonRecord(resolveStoredAccountPath(params.stateDir, accountId));
-    const ownerUserId =
-      typeof account?.userId === "string" ? account.userId.trim() : "";
+    const account = readJsonRecord(
+      resolveStoredWindowsNodeMxcWeixinAccountPath(params.stateDir, accountId),
+    );
+    const ownerUserId = typeof account?.userId === "string" ? account.userId.trim() : "";
     if (!ownerUserId) {
       blockedAccountIds.push(accountId);
       continue;
@@ -168,13 +194,13 @@ export function prepareWindowsNodeMxcWeixinContext(
   gatewayGeneration: string,
   policyFingerprint: string,
   folders: BundledWindowsNodeFolder[],
+  remoteApprovalEnabled = false,
 ): WindowsNodeMxcWeixinContext {
   if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
   if (!/^[a-f0-9]{64}$/i.test(policyFingerprint)) {
     throw new Error("MXC policy fingerprint is invalid");
   }
-  const { inboundRoot, outboundTempRoot } =
-    resolveWindowsNodeMxcWeixinMediaRoots(userDataPath);
+  const { inboundRoot, outboundTempRoot } = resolveWindowsNodeMxcWeixinMediaRoots(userDataPath);
   fs.mkdirSync(inboundRoot, { recursive: true });
   fs.mkdirSync(outboundTempRoot, { recursive: true });
   const releasePath = path.join(userDataPath, "windows-node", "ingress-release.json");
@@ -212,22 +238,29 @@ export function prepareWindowsNodeMxcWeixinContext(
     inboundRoot,
     outboundTempRoot,
     mediaPolicyBase64,
+    remoteApprovalPipe: remoteApprovalEnabled
+      ? `\\\\.\\pipe\\microclaw-weixin-remote-approval-${process.pid}-${randomBytes(12).toString("hex")}`
+      : null,
+    remoteApprovalToken: remoteApprovalEnabled ? randomBytes(32).toString("base64url") : null,
   };
 }
 
 export function getWindowsNodeMxcWeixinEnvironment(
   context: WindowsNodeMxcWeixinContext,
 ): Record<string, string> {
-  return {
+  const environment: Record<string, string> = {
     MICROCLAW_MXC_INGRESS_RELEASE_PATH: context.releasePath,
     MICROCLAW_MXC_INGRESS_RELEASE_TOKEN: context.releaseToken,
     MICROCLAW_MXC_WEIXIN_MEDIA_POLICY: context.mediaPolicyBase64,
   };
+  if (context.remoteApprovalPipe && context.remoteApprovalToken) {
+    environment.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE = context.remoteApprovalPipe;
+    environment.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN = context.remoteApprovalToken;
+  }
+  return environment;
 }
 
-export function releaseWindowsNodeMxcWeixinIngress(
-  context: WindowsNodeMxcWeixinContext,
-): void {
+export function releaseWindowsNodeMxcWeixinIngress(context: WindowsNodeMxcWeixinContext): void {
   const record = {
     contract: WINDOWS_NODE_MXC_INGRESS_RELEASE_CONTRACT,
     gatewayGeneration: context.gatewayGeneration,

@@ -4,12 +4,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  clearInheritedWindowsNodeMxcWeixinEnvironment,
   getWindowsNodeMxcWeixinEnvironment,
   preflightWindowsNodeMxcWeixinAuthorization,
   prepareWindowsNodeMxcWeixinContext,
+  readWindowsNodeMxcWeixinAllowedSenders,
   releaseWindowsNodeMxcWeixinIngress,
+  resolveStoredWindowsNodeMxcWeixinAccountPath,
   revokeWindowsNodeMxcWeixinIngress,
   WINDOWS_NODE_MXC_INGRESS_RELEASE_CONTRACT,
+  WINDOWS_NODE_MXC_WEIXIN_ENVIRONMENT_KEYS,
   WINDOWS_NODE_MXC_WEIXIN_MEDIA_POLICY_CONTRACT,
 } from "./windows-node-mxc-weixin";
 
@@ -30,11 +34,19 @@ describe("Windows Node MXC WeChat lifecycle", () => {
       "generation-1",
       "a".repeat(64),
       [{ path: selected, access: "rw" }],
+      true,
     );
 
     expect(fs.existsSync(context.releasePath)).toBe(false);
     const environment = getWindowsNodeMxcWeixinEnvironment(context);
     expect(environment.MICROCLAW_MXC_INGRESS_RELEASE_TOKEN).toBe(context.releaseToken);
+    expect(environment.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE).toBe(context.remoteApprovalPipe);
+    expect(environment.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN).toBe(
+      context.remoteApprovalToken,
+    );
+    expect(Object.keys(environment).sort()).toEqual(
+      [...WINDOWS_NODE_MXC_WEIXIN_ENVIRONMENT_KEYS].sort(),
+    );
     const policy = JSON.parse(
       Buffer.from(environment.MICROCLAW_MXC_WEIXIN_MEDIA_POLICY, "base64").toString("utf8"),
     );
@@ -60,6 +72,15 @@ describe("Windows Node MXC WeChat lifecycle", () => {
     });
     revokeWindowsNodeMxcWeixinIngress(context);
     expect(fs.existsSync(context.releasePath)).toBe(false);
+  });
+
+  it("scrubs inherited app-owned WeChat transport variables before fresh injection", () => {
+    const environment = Object.fromEntries(
+      WINDOWS_NODE_MXC_WEIXIN_ENVIRONMENT_KEYS.map((key) => [key, "attacker-controlled"]),
+    );
+    environment.UNRELATED = "preserved";
+    clearInheritedWindowsNodeMxcWeixinEnvironment(environment);
+    expect(environment).toEqual({ UNRELATED: "preserved" });
   });
 
   it("migrates a stored owner id and accepts explicit allowlists for enabled accounts", () => {
@@ -104,6 +125,30 @@ describe("Windows Node MXC WeChat lifecycle", () => {
         ),
       ),
     ).toMatchObject({ version: 1, allowFrom: ["owner@im.wechat"] });
+    expect(
+      readWindowsNodeMxcWeixinAllowedSenders({
+        stateDir: root,
+        credentialsDir,
+        accountId: "owner-im-bot",
+      }),
+    ).toEqual(["owner@im.wechat"]);
+  });
+
+  it("resolves legacy account filenames without weakening explicit sender allowlists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-legacy-"));
+    roots.push(root);
+    const accountsDir = path.join(root, "openclaw-weixin", "accounts");
+    fs.mkdirSync(accountsDir, { recursive: true });
+    const legacyPath = path.join(accountsDir, "owner@im.wechat.json");
+    fs.writeFileSync(legacyPath, JSON.stringify({ userId: "owner@im.wechat" }));
+
+    expect(resolveStoredWindowsNodeMxcWeixinAccountPath(root, "owner-im-wechat")).toBe(legacyPath);
+    expect(
+      readWindowsNodeMxcWeixinAllowedSenders({
+        stateDir: root,
+        accountId: "owner-im-wechat",
+      }),
+    ).toEqual([]);
   });
 
   it("blocks ingress release when an enabled account has no explicit sender identity", () => {

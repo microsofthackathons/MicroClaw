@@ -41,6 +41,7 @@ import {
   resolveWeixinOutboundTempRoot,
   stageMxcWeixinInboundMedia,
 } from "../security/mxc-policy.js";
+import type { WeixinRemoteApprovalTransport } from "../security/remote-approval.js";
 
 const LEGACY_MEDIA_OUTBOUND_TEMP_DIR = path.join(
   resolvePreferredOpenClawTmpDir(),
@@ -56,9 +57,34 @@ export type ProcessMessageDeps = {
   cdnBaseUrl: string;
   token?: string;
   typingTicket?: string;
+  remoteApprovalTransport?: WeixinRemoteApprovalTransport;
   log: (msg: string) => void;
   errLog: (m: string) => void;
 };
+
+export async function interceptWeixinRemoteApprovalMessage(
+  full: WeixinMessage,
+  deps: ProcessMessageDeps,
+  sourcePhase: "candidate" | "start" | "complete" = "candidate",
+): Promise<boolean> {
+  if (!deps.remoteApprovalTransport) return false;
+  const senderId = full.from_user_id?.trim() ?? "";
+  if (full.context_token && senderId) {
+    setContextToken(deps.accountId, senderId, full.context_token);
+  }
+  const route = deps.channelRuntime.routing.resolveAgentRoute({
+    cfg: deps.config,
+    channel: "openclaw-weixin",
+    accountId: deps.accountId,
+    peer: { kind: "direct", id: senderId },
+  });
+  return deps.remoteApprovalTransport.intercept({
+    message: full,
+    agentId: route.agentId ?? "",
+    sessionKey: route.sessionKey ?? "",
+    sourcePhase,
+  });
+}
 
 /** Extract text body from item_list (for slash command detection). */
 function extractTextBody(itemList?: import("../api/types.js").MessageItem[]): string {
@@ -240,6 +266,22 @@ export async function processOneMessage(
   // the correct session (matching the dmScope from config) instead of falling back
   // to agent:main:main.
   ctx.SessionKey = route.sessionKey;
+  const contextToken = getContextTokenFromMsgContext(ctx);
+  if (contextToken) {
+    setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
+  }
+  if (
+    deps.remoteApprovalTransport &&
+    (await deps.remoteApprovalTransport.intercept({
+      message: full,
+      agentId: route.agentId ?? "",
+      sessionKey: route.sessionKey ?? "",
+      sourcePhase: "start",
+    }))
+  ) {
+    logger.info("remote approval: consumed system approval reply before agent dispatch");
+    return;
+  }
   const storePath = deps.channelRuntime.session.resolveStorePath(deps.config.session?.store, {
     agentId: route.agentId,
   });
@@ -269,10 +311,6 @@ export async function processOneMessage(
     `recordInboundSession: done storePath=${storePath} sessionKey=${route.sessionKey ?? "(none)"}`,
   );
 
-  const contextToken = getContextTokenFromMsgContext(ctx);
-  if (contextToken) {
-    setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
-  }
   const runId = randomUUID();
   const replyProgressSender = resolveReplyProgressMessagesEnabled(deps.config)
     ? new WeixinReplyProgressSender({

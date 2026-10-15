@@ -295,6 +295,22 @@ export default {
   "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
+  "settings.experimental": "Experimental",
+  "settings.weixinRemoteApproval": "WeChat remote approval (Experimental)",
+  "settings.weixinRemoteApprovalRisk":
+    "Trusts normalized account, sender, direct-chat, message, and cursor metadata from the allowlisted openclaw-weixin plugin and Gateway as authentic. A compromised phone, WeChat session, plugin, or Gateway could authorize local command execution.",
+  "settings.weixinRemoteApprovalOwner": "Bound owner",
+  "settings.weixinRemoteApprovalUnbound": "Not bound",
+  "settings.weixinRemoteApprovalRequiresMxc":
+    "Enable Windows Node + MXC before enabling remote approval.",
+  "settings.weixinRemoteApprovalRequiresOwner":
+    "Exactly one authenticated WeChat account whose owner is in the explicit sender allowlist is required.",
+  "settings.weixinRemoteApprovalOnceOnly":
+    "Replies approve only the currently listed request(s) once. They never create durable approvals, folder grants, or future approval.",
+  "settings.weixinRemoteApprovalEnable": "Enable and bind locally",
+  "settings.weixinRemoteApprovalDisable": "Disable",
+  "settings.weixinRemoteApprovalRevoke": "Revoke owner binding",
+  "settings.weixinRemoteApprovalFailed": "Could not update WeChat remote approval",
   "settings.windowsNodeMxcModeFull": "Full containment",
   "settings.windowsNodeMxcFullBadge": "Hard boundary",
   "settings.windowsNodeMxcModeFullDesc":
@@ -319,12 +335,10 @@ export default {
     "Before MicroClaw changes any setting or lifecycle state, review what {mode} makes unavailable, pauses, and keeps available with restrictions.",
   "settings.windowsNodeMxcConsent.group.disabled": "Disabled while MXC is requested",
   "settings.windowsNodeMxcConsent.group.paused": "Paused while MXC is active",
-  "settings.windowsNodeMxcConsent.group.available-restricted":
-    "Available with restrictions",
+  "settings.windowsNodeMxcConsent.group.available-restricted": "Available with restrictions",
   "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
     "Gateway-native filesystem tools are disabled: read, write, edit, and apply_patch.",
-  "settings.windowsNodeMxcConsent.item.browser-automation":
-    "Browser automation is disabled.",
+  "settings.windowsNodeMxcConsent.item.browser-automation": "Browser automation is disabled.",
   "settings.windowsNodeMxcConsent.item.mcp": "MCP is disabled.",
   "settings.windowsNodeMxcConsent.item.screen": "Screen access is disabled.",
   "settings.windowsNodeMxcConsent.item.camera": "Camera access is disabled.",

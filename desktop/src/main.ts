@@ -235,13 +235,29 @@ import {
   type BundledWindowsNodeFolder,
 } from "./bundled-windows-node-host";
 import {
+  clearInheritedWindowsNodeMxcWeixinEnvironment,
   getWindowsNodeMxcWeixinEnvironment,
   preflightWindowsNodeMxcWeixinAuthorization,
   prepareWindowsNodeMxcWeixinContext,
+  readWindowsNodeMxcWeixinAllowedSenders,
   releaseWindowsNodeMxcWeixinIngress,
+  resolveStoredWindowsNodeMxcWeixinAccountPath,
   revokeWindowsNodeMxcWeixinIngress,
   type WindowsNodeMxcWeixinContext,
 } from "./windows-node-mxc-weixin";
+import {
+  migrateWeixinRemoteApprovalConfiguration,
+  normalizeWeixinRemoteApprovalOwner,
+  WindowsNodeMxcWeixinRemoteApprovalBroker,
+  type WeixinRemoteApprovalOwnerBinding,
+  type WeixinRemoteApprovalNotice,
+  type WeixinRemoteApprovalSecurityBinding,
+  type WeixinRemoteApprovalSource,
+} from "./windows-node-mxc-weixin-remote-approval";
+import {
+  WindowsNodeMxcWeixinRemoteApprovalServer,
+  type WeixinRemoteApprovalInboundEnvelope,
+} from "./windows-node-mxc-weixin-remote-approval-transport";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -335,6 +351,11 @@ const settingsStore = new Store<{
   windowsNodeMxcSmoke?: StoredWindowsNodeMxcSmoke;
   /** One-shot durable fence that prevents Cron catch-up when leaving MXC. */
   windowsNodeMxcCronResumeFence?: WindowsNodeMxcCronResumeFence;
+  /** Optional, locally confirmed owner binding for experimental WeChat remote approvals. */
+  windowsNodeMxcWeixinRemoteApproval?: {
+    enabled: boolean;
+    owner: WeixinRemoteApprovalOwnerBinding | null;
+  };
   /** Recoverable policy state retained across a failed apply/reactivate transaction. */
   windowsNodeMxcFolderPolicyRecovery?: {
     previous: WindowsNodeMxcFolderPolicy;
@@ -525,6 +546,24 @@ let windowsNodeMxcCurrentAmbientAccess: BundledWindowsNodeAmbientAccess | null =
 let windowsNodeMxcCurrentEffectiveTier: string | null = null;
 let windowsNodeMxcIngressGeneration: string | null = null;
 let windowsNodeMxcWeixinContext: WindowsNodeMxcWeixinContext | null = null;
+const windowsNodeMxcWeixinRemoteApprovalBroker = new WindowsNodeMxcWeixinRemoteApprovalBroker(
+  (event) => {
+    try {
+      const auditDir = path.join(app.getPath("userData"), "security-audit");
+      fs.mkdirSync(auditDir, { recursive: true });
+      fs.appendFileSync(
+        path.join(auditDir, "weixin-remote-approval.jsonl"),
+        `${JSON.stringify(event)}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      console.error("[weixin-remote-approval] Could not write audit event:", error);
+    }
+  },
+);
+let windowsNodeMxcWeixinRemoteApprovalServer: WindowsNodeMxcWeixinRemoteApprovalServer | null =
+  null;
+const windowsNodeMxcWeixinRemoteApprovalSources = new Map<string, WeixinRemoteApprovalSource>();
 let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
 let windowsNodeMxcSecurityTransitionInProgress = false;
@@ -547,6 +586,11 @@ let windowsNodeMxcDurableApprovalStore: WindowsNodeMxcDurableApprovalStore | nul
 let windowsNodeMxcDurableApprovalOperation: Promise<void> = Promise.resolve();
 let windowsNodeMxcApprovalResolutionInProgress = false;
 let windowsNodeMxcApprovalResolutionCompletion: Promise<void> | null = null;
+let windowsNodeMxcGatewayApprovalResolutionTarget: {
+  id: string;
+  decision: "allow-once" | "deny";
+  observedDecision: "allow-once" | "deny" | null;
+} | null = null;
 const WINDOWS_NODE_MXC_CRON_RESUME_ACK_TIMEOUT_MS = 30_000;
 type WindowsNodeMxcFolderPolicyRecovery = {
   previous: WindowsNodeMxcFolderPolicy;
@@ -1155,6 +1199,233 @@ function readConfig(): any {
   }
 }
 
+function getWindowsNodeMxcWeixinRemoteApprovalConfiguration(): {
+  enabled: boolean;
+  owner: WeixinRemoteApprovalOwnerBinding | null;
+} {
+  const stored = settingsStore.get("windowsNodeMxcWeixinRemoteApproval");
+  const migrated = migrateWeixinRemoteApprovalConfiguration(stored);
+  if (JSON.stringify(stored) !== JSON.stringify(migrated)) {
+    settingsStore.set("windowsNodeMxcWeixinRemoteApproval", migrated);
+  }
+  const configuration = {
+    enabled:
+      migrated.enabled &&
+      isWindowsNodeMxcDesired() &&
+      isAuthenticatedWeixinRemoteApprovalOwner(migrated.owner),
+    owner: migrated.owner,
+  };
+  try {
+    windowsNodeMxcWeixinRemoteApprovalBroker.configure(configuration);
+  } catch (error) {
+    console.error("[weixin-remote-approval] Invalid stored owner binding:", error);
+    settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+      enabled: false,
+      owner: null,
+    });
+    windowsNodeMxcWeixinRemoteApprovalBroker.configure({ enabled: false, owner: null });
+    return { enabled: false, owner: null };
+  }
+  return configuration;
+}
+
+function readAuthenticatedWeixinOwners(): WeixinRemoteApprovalOwnerBinding[] {
+  const stateDir = getOpenClawStateDir();
+  const root = path.join(stateDir, "openclaw-weixin");
+  const indexPath = path.join(root, "accounts.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    const owners: WeixinRemoteApprovalOwnerBinding[] = [];
+    for (const rawAccountId of parsed) {
+      if (typeof rawAccountId !== "string" || !rawAccountId.trim()) continue;
+      const accountId = rawAccountId.trim().toLowerCase();
+      const accountPath = resolveStoredWindowsNodeMxcWeixinAccountPath(stateDir, rawAccountId);
+      const account = JSON.parse(fs.readFileSync(accountPath, "utf8")) as {
+        token?: unknown;
+        userId?: unknown;
+      };
+      if (
+        typeof account.token !== "string" ||
+        !account.token.trim() ||
+        typeof account.userId !== "string" ||
+        !account.userId.trim()
+      ) {
+        continue;
+      }
+      const owner = normalizeWeixinRemoteApprovalOwner(accountId, account.userId);
+      const allowedSenders = readWindowsNodeMxcWeixinAllowedSenders({
+        stateDir,
+        accountId,
+      }).map((senderId) => senderId.trim().toLowerCase());
+      if (!allowedSenders.includes(owner.userId)) continue;
+      owners.push(owner);
+    }
+
+    return owners;
+  } catch {
+    return [];
+  }
+}
+
+function isAuthenticatedWeixinRemoteApprovalOwner(
+  owner: WeixinRemoteApprovalOwnerBinding | null,
+): owner is WeixinRemoteApprovalOwnerBinding {
+  return Boolean(
+    owner &&
+    readAuthenticatedWeixinOwners().some(
+      (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
+    ),
+  );
+}
+
+function currentWindowsNodeMxcWeixinRemoteApprovalSecurity(): WeixinRemoteApprovalSecurityBinding | null {
+  const proof = windowsNodeMxcApprovalProofContext;
+  const status = bundledWindowsNodeHost.status();
+  const lease = status.activationLease;
+  const requestedMode = getWindowsNodeMxcRequestedMode();
+  if (
+    !proof ||
+    !lease ||
+    requestedMode === "off" ||
+    proof.gatewayGeneration !== gatewayGenerationId ||
+    lease.gatewayGeneration !== gatewayGenerationId ||
+    lease.policyFingerprint !== proof.policyFingerprint
+  ) {
+    return null;
+  }
+  return {
+    gatewayGeneration: gatewayGenerationId,
+    policyFingerprint: proof.policyFingerprint,
+    nodeId: proof.nodeId,
+    activationLeaseHash: createHash("sha256").update(JSON.stringify(lease), "utf8").digest("hex"),
+    requestedMode,
+    effectiveMode: windowsNodeMxcCurrentEffectiveTier ?? status.effectiveTier ?? requestedMode,
+  };
+}
+
+function closeWindowsNodeMxcWeixinRemoteApproval(reason: string): void {
+  const notices = windowsNodeMxcWeixinRemoteApprovalBroker.invalidateAll(reason);
+  windowsNodeMxcWeixinRemoteApprovalSources.clear();
+  const server = windowsNodeMxcWeixinRemoteApprovalServer;
+  windowsNodeMxcWeixinRemoteApprovalServer = null;
+  if (!server) return;
+  if (notices.length === 0) {
+    server.close();
+    return;
+  }
+  void Promise.allSettled(
+    notices.map((notice) => deliverWindowsNodeMxcWeixinRemoteApprovalNotice(server, notice)),
+  ).finally(() => server.close());
+}
+
+async function deliverWindowsNodeMxcWeixinRemoteApprovalNotice(
+  server: WindowsNodeMxcWeixinRemoteApprovalServer,
+  notice: WeixinRemoteApprovalNotice,
+): Promise<void> {
+  await server.deliver({
+    accountId: notice.accountId,
+    to: notice.senderId,
+    text: notice.acknowledgement,
+  });
+}
+
+async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
+  inbound: WeixinRemoteApprovalInboundEnvelope,
+): Promise<{ consumed: boolean; acknowledgement?: string }> {
+  if (inbound.sourcePhase === "complete") {
+    const existing = windowsNodeMxcWeixinRemoteApprovalSources.get(inbound.sessionKey);
+    if (existing?.messageId === inbound.messageId) {
+      windowsNodeMxcWeixinRemoteApprovalSources.delete(inbound.sessionKey);
+    }
+    return { consumed: false };
+  }
+  const exactCandidate = /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.test(inbound.text);
+  const candidateLike =
+    inbound.sourcePhase === "candidate" && (exactCandidate || inbound.ambiguous);
+  const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+  if (!configuration.enabled || !configuration.owner) {
+    if (!candidateLike) return { consumed: false };
+    const inactiveResult = windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate({
+      ...inbound,
+      ambiguous: inbound.ambiguous,
+    });
+    return {
+      consumed: true,
+      acknowledgement: inactiveResult.consumed ? inactiveResult.acknowledgement : undefined,
+    };
+  }
+  const pending = pendingWindowsNodeMxcGatewayApproval;
+  if (pending && candidateLike) {
+    try {
+      await requireEffectiveWindowsNodeMxc(true, false);
+    } catch {
+      return {
+        consumed: true,
+        acknowledgement: "MicroClaw Security Approval: invalid or no longer active.",
+      };
+    }
+  }
+  const security = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
+  const candidateResult = windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate({
+    ...inbound,
+    ambiguous: inbound.ambiguous,
+    requests: pending ? [{ approval: pending.request }] : undefined,
+    security: pending ? (security ?? undefined) : undefined,
+  });
+  if (candidateResult.consumed) {
+    if (candidateResult.status === "approved" || candidateResult.status === "denied") {
+      try {
+        if (!security) {
+          throw new Error("The remote approval security binding is unavailable");
+        }
+        for (const approvalId of candidateResult.approvalIds) {
+          await resolvePendingWindowsNodeMxcGatewayApproval(
+            approvalId,
+            candidateResult.decision,
+            false,
+            security,
+          );
+        }
+        windowsNodeMxcWeixinRemoteApprovalBroker.completeResolution(
+          candidateResult.challengeId,
+          candidateResult.status,
+        );
+        return { consumed: true, acknowledgement: candidateResult.acknowledgement };
+      } catch (error) {
+        windowsNodeMxcWeixinRemoteApprovalBroker.failResolution(
+          candidateResult.challengeId,
+          "electron-resolution-failed",
+        );
+        console.error("[weixin-remote-approval] Resolution failed closed:", error);
+        return {
+          consumed: true,
+          acknowledgement: "MicroClaw Security Approval: invalid or no longer active.",
+        };
+      }
+    }
+    return { consumed: true, acknowledgement: candidateResult.acknowledgement };
+  }
+  if (
+    inbound.sourcePhase === "start" &&
+    inbound.direct &&
+    !inbound.forwarded &&
+    !inbound.quoted &&
+    inbound.accountId.trim().toLowerCase() === configuration.owner.accountId &&
+    inbound.senderId.trim().toLowerCase() === configuration.owner.userId &&
+    inbound.conversationId.trim().toLowerCase() === configuration.owner.userId &&
+    inbound.sessionKey.trim() &&
+    inbound.agentId.trim()
+  ) {
+    windowsNodeMxcWeixinRemoteApprovalSources.set(inbound.sessionKey, {
+      ...inbound,
+      accountId: inbound.accountId.trim().toLowerCase(),
+      senderId: inbound.senderId.trim().toLowerCase(),
+    });
+  }
+  return { consumed: false };
+}
+
 function getWindowsNodeMxcSelection(): WindowsNodeMxcSelection {
   const current = settingsStore.get("windowsNodeMxcSelection");
   const migrated = migrateWindowsNodeMxcSelection(
@@ -1178,6 +1449,14 @@ function isWindowsNodeMxcDesired(): boolean {
 function closeWindowsNodeMxcIngress(): void {
   windowsNodeMxcIngressGeneration = null;
   revokeWindowsNodeMxcWeixinIngress(windowsNodeMxcWeixinContext);
+  const notices = windowsNodeMxcWeixinRemoteApprovalBroker.invalidateAll("security-relock");
+  windowsNodeMxcWeixinRemoteApprovalSources.clear();
+  const server = windowsNodeMxcWeixinRemoteApprovalServer;
+  if (server) {
+    void Promise.allSettled(
+      notices.map((notice) => deliverWindowsNodeMxcWeixinRemoteApprovalNotice(server, notice)),
+    );
+  }
 }
 
 function releaseWindowsNodeMxcIngress(gatewayGeneration: string): void {
@@ -1363,7 +1642,10 @@ function getBundledWindowsNodeFolders(): BundledWindowsNodeFolder[] {
   ];
 }
 
-async function requireEffectiveWindowsNodeMxc(deferRelock = false): Promise<void> {
+async function requireEffectiveWindowsNodeMxc(
+  deferRelock = false,
+  renewActivationLease = true,
+): Promise<void> {
   if (windowsNodeMxcSecurityTransitionInProgress) {
     throw new Error("Chat ingress is locked during the security-mode transition");
   }
@@ -1402,13 +1684,15 @@ async function requireEffectiveWindowsNodeMxc(deferRelock = false): Promise<void
     await relock(`Runtime attestation drifted: ${detail}`);
     throw new Error(`Windows Node + MXC execution is blocked: ${detail}`);
   }
-  try {
-    await bundledWindowsNodeHost.setActivationLease("active", 120_000);
-  } catch (error) {
-    await relock(
-      `Activation lease renewal failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    throw error;
+  if (renewActivationLease) {
+    try {
+      await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+    } catch (error) {
+      await relock(
+        `Activation lease renewal failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
   }
 }
 
@@ -1501,6 +1785,59 @@ async function handleWindowsNodeMxcGatewayApproval(
     commandText: rendererApproval.command,
     approvalLayer: "gateway",
   });
+  const remoteConfiguration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+  const remoteSource = windowsNodeMxcWeixinRemoteApprovalSources.get(rendererApproval.sessionKey);
+  const remoteSecurity = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
+  if (
+    remoteConfiguration.enabled &&
+    remoteSource &&
+    remoteSecurity &&
+    windowsNodeMxcWeixinRemoteApprovalServer
+  ) {
+    const delivery = windowsNodeMxcWeixinRemoteApprovalBroker.createChallenge({
+      source: remoteSource,
+      requests: [{ approval: rendererApproval }],
+      security: remoteSecurity,
+      locale:
+        resolveSupportedLocale(settingsStore.get("language") ?? "en-US") === "zh-CN"
+          ? "zh-CN"
+          : "en-US",
+    });
+    if (delivery) {
+      const deliveryServer = windowsNodeMxcWeixinRemoteApprovalServer;
+      const expiryTimer = setTimeout(
+        () => {
+          const notice = windowsNodeMxcWeixinRemoteApprovalBroker.expireChallenge(
+            delivery.challengeId,
+          );
+          if (notice) {
+            void deliverWindowsNodeMxcWeixinRemoteApprovalNotice(deliveryServer, notice).catch(
+              (error) =>
+                console.error("[weixin-remote-approval] Expiry acknowledgement failed:", error),
+            );
+          }
+        },
+        Math.max(0, delivery.expiresAtUnixMs - Date.now()) + 10,
+      );
+      expiryTimer.unref();
+      void deliveryServer
+        .deliver({
+          accountId: delivery.accountId,
+          to: delivery.senderId,
+          text: delivery.text,
+        })
+        .catch((error) => {
+          console.error(
+            "[weixin-remote-approval] Prompt delivery failed; local approval remains pending:",
+            error,
+          );
+          windowsNodeMxcWeixinRemoteApprovalBroker.invalidateChallenge(
+            delivery.challengeId,
+            "prompt-send-failed",
+          );
+        });
+    }
+  }
 }
 
 function getPendingWindowsNodeMxcApprovalForRenderer() {
@@ -1520,6 +1857,113 @@ function getPendingWindowsNodeMxcApprovalForRenderer() {
         allowedDecisions: ["deny", "allow-once"] as const,
       }
     : null;
+}
+
+async function resolvePendingWindowsNodeMxcGatewayApproval(
+  requestId: string,
+  decision: WindowsNodeMxcApprovalDecision,
+  allowDurable: boolean,
+  expectedRemoteSecurity?: WeixinRemoteApprovalSecurityBinding,
+): Promise<void> {
+  if (decision === "allow-always" && !allowDurable) {
+    throw new Error("Remote approvals are one-use only");
+  }
+  if (decision === "allow-always" && getWindowsNodeMxcRequestedMode() === "limited-dacl") {
+    throw new Error("Durable command approvals are disabled under Limited filesystem containment");
+  }
+  const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
+  if (gatewayApproval?.request.id !== requestId) {
+    throw new Error("The Gateway approval is no longer pending");
+  }
+  await withWindowsNodeMxcApprovalResolution(async () => {
+    const approvalGeneration = gatewayApproval.gatewayGeneration;
+    const proofContext = windowsNodeMxcApprovalProofContext;
+    const client = gwClient;
+    if (approvalGeneration !== gatewayGenerationId || !proofContext) {
+      throw new Error("The Gateway approval belongs to a stale security generation");
+    }
+    if (!gatewayApproval.request.allowedDecisions.includes(decision)) {
+      throw new Error("The requested Gateway approval decision is unavailable");
+    }
+    if (expectedRemoteSecurity) {
+      await requireEffectiveWindowsNodeMxc(true, false);
+    } else if (decision !== "deny") {
+      await requireEffectiveWindowsNodeMxc(true);
+    }
+    if (
+      windowsNodeMxcSecurityTransitionInProgress ||
+      pendingWindowsNodeMxcGatewayApproval !== gatewayApproval ||
+      approvalGeneration !== gatewayGenerationId ||
+      proofContext !== windowsNodeMxcApprovalProofContext ||
+      !isWindowsNodeMxcIngressReleased(
+        true,
+        gatewayGenerationId,
+        windowsNodeMxcIngressGeneration,
+        windowsNodeMxcActivationInProgress,
+      ) ||
+      !client?.connected ||
+      client !== gwClient
+    ) {
+      throw new Error("The Gateway approval became stale before it could be resolved");
+    }
+    if (
+      expectedRemoteSecurity &&
+      JSON.stringify(currentWindowsNodeMxcWeixinRemoteApprovalSecurity()) !==
+        JSON.stringify(expectedRemoteSecurity)
+    ) {
+      throw new Error("The remote approval security binding drifted before resolution");
+    }
+    const durableIdentity =
+      decision === "allow-always"
+        ? durableApprovalIdentityFromGateway(
+            gatewayApproval.request,
+            proofContext.policyFingerprint,
+          )
+        : null;
+    if (decision === "allow-always" && !durableIdentity) {
+      throw new Error("This command is not eligible for an exact durable MXC approval");
+    }
+    const wireDecision = decision === "allow-always" ? "allow-once" : decision;
+    const resolutionTarget = {
+      id: requestId,
+      decision: wireDecision,
+      observedDecision: null as "allow-once" | "deny" | null,
+    };
+    windowsNodeMxcGatewayApprovalResolutionTarget = resolutionTarget;
+    try {
+      try {
+        await client.request("exec.approval.resolve", {
+          id: requestId,
+          decision: wireDecision,
+        });
+      } catch (error) {
+        if (resolutionTarget.observedDecision !== resolutionTarget.decision) throw error;
+      }
+      if (
+        resolutionTarget.observedDecision &&
+        resolutionTarget.observedDecision !== resolutionTarget.decision
+      ) {
+        throw new Error("The Gateway resolved the approval with a different decision");
+      }
+    } finally {
+      if (windowsNodeMxcGatewayApprovalResolutionTarget === resolutionTarget) {
+        windowsNodeMxcGatewayApprovalResolutionTarget = null;
+      }
+    }
+    if (durableIdentity) {
+      await withWindowsNodeMxcDurableApprovalLock(() =>
+        getWindowsNodeMxcDurableApprovalStore().add(durableIdentity),
+      );
+    }
+    pendingWindowsNodeMxcGatewayApproval = null;
+    if (!expectedRemoteSecurity) {
+      windowsNodeMxcWeixinRemoteApprovalBroker.markLocallyResolved(
+        requestId,
+        decision === "deny" ? "denied" : "approved",
+      );
+    }
+    sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
+  });
 }
 
 function assertWindowsNodeMxcConfigurationMutable(): void {
@@ -3051,6 +3495,7 @@ async function waitForGatewayReady(
 
 /** Kill the managed gateway and any listener still holding gatewayPort. */
 function stopGatewayProcess(): void {
+  closeWindowsNodeMxcWeixinRemoteApproval("gateway-stopped");
   stopBundledWindowsNodeHost();
   gatewayHttpReadyGeneration = null;
   windowsNodeMxcApprovalProofContext = null;
@@ -3164,6 +3609,7 @@ function terminateGatewayProcessTree(pid: number): void {
 }
 
 async function stopGatewayForSecurityTransition(port: number): Promise<void> {
+  closeWindowsNodeMxcWeixinRemoteApproval("security-transition");
   pendingWindowsNodeMxcGatewayApproval = null;
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
   stopBundledWindowsNodeHost(true);
@@ -4008,14 +4454,35 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
           containmentPreparation?.ambientAccess ?? null,
         )
       : null;
+    const nextRemoteApprovalConfiguration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
     const nextWeixinContext = nextApprovalProofContext
       ? prepareWindowsNodeMxcWeixinContext(
           app.getPath("userData"),
           nextApprovalProofContext.gatewayGeneration,
           nextApprovalProofContext.policyFingerprint,
           getBundledWindowsNodeFolders(),
+          nextRemoteApprovalConfiguration.enabled,
         )
       : null;
+    closeWindowsNodeMxcWeixinRemoteApproval("gateway-generation-change");
+    if (
+      nextWeixinContext?.remoteApprovalPipe &&
+      nextWeixinContext.remoteApprovalToken &&
+      nextRemoteApprovalConfiguration.enabled
+    ) {
+      const server = new WindowsNodeMxcWeixinRemoteApprovalServer(
+        nextWeixinContext.remoteApprovalPipe,
+        nextWeixinContext.remoteApprovalToken,
+        handleWindowsNodeMxcWeixinRemoteApprovalInbound,
+      );
+      try {
+        await server.start();
+        windowsNodeMxcWeixinRemoteApprovalServer = server;
+      } catch (error) {
+        server.close();
+        console.error("[weixin-remote-approval] Broker transport failed to start:", error);
+      }
+    }
     const nextHooksEnvironment =
       nextApprovalProofContext && windowsNodeMxcRequestedMode !== "off"
         ? getWindowsNodeMxcHooksEnvironment(
@@ -4030,6 +4497,9 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
             }),
           )
         : {};
+    const nextWeixinEnvironment = nextWeixinContext
+      ? getWindowsNodeMxcWeixinEnvironment(nextWeixinContext)
+      : {};
     const gwEnv: Record<string, string> = {
       ...gatewayEnvironment,
       OPENCLAW_STATE_DIR: stateDir,
@@ -4042,7 +4512,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       OPENCLAW_NO_RESPAWN: "1",
       // HMAC key for verifying the external apps whitelist file
       OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
-      ...(nextWeixinContext ? getWindowsNodeMxcWeixinEnvironment(nextWeixinContext) : {}),
     };
     for (const reservedName of [
       "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED",
@@ -4055,6 +4524,8 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     ]) {
       delete gwEnv[reservedName];
     }
+    clearInheritedWindowsNodeMxcWeixinEnvironment(gwEnv);
+    Object.assign(gwEnv, nextWeixinEnvironment);
     if (windowsNodeMxcDesired) {
       gwEnv.MICROCLAW_MXC_CRON_PAUSED = "1";
       gwEnv.MICROCLAW_MXC_CANVAS_PHASE1 = "1";
@@ -5003,11 +5474,25 @@ function connectGatewayWs(): void {
         return;
       }
       if (evt.event === "exec.approval.resolved") {
-        const id =
+        const payload =
           evt.payload && typeof evt.payload === "object" && !Array.isArray(evt.payload)
-            ? (evt.payload as Record<string, unknown>).id
+            ? (evt.payload as Record<string, unknown>)
             : null;
-        if (id === pendingWindowsNodeMxcGatewayApproval?.request.id) {
+        const id = payload?.id;
+        const decision =
+          payload?.decision === "allow-once" || payload?.decision === "deny"
+            ? payload.decision
+            : null;
+        if (typeof id === "string" && id === pendingWindowsNodeMxcGatewayApproval?.request.id) {
+          const resolutionTarget = windowsNodeMxcGatewayApprovalResolutionTarget;
+          if (resolutionTarget?.id === id) {
+            if (decision) resolutionTarget.observedDecision = decision;
+            return;
+          }
+          windowsNodeMxcWeixinRemoteApprovalBroker.markLocallyResolved(
+            id,
+            decision === "allow-once" ? "approved" : "denied",
+          );
           pendingWindowsNodeMxcGatewayApproval = null;
           mainWindow?.webContents.send("windows-node-mxc:approval-request", null);
         }
@@ -6123,6 +6608,93 @@ function registerIpcHandlers(): void {
     };
   });
 
+  ipcMain.handle("plugin:weixin:remote-approval:get-status", () => {
+    const stored = migrateWeixinRemoteApprovalConfiguration(
+      settingsStore.get("windowsNodeMxcWeixinRemoteApproval"),
+    );
+    const owners = readAuthenticatedWeixinOwners();
+    const effective = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+    return {
+      experimental: true,
+      enabled: effective.enabled,
+      configured: stored.owner != null,
+      owner: stored.owner,
+      availableOwners: owners,
+      blockedReason: !isWindowsNodeMxcDesired()
+        ? "mxc-off"
+        : owners.length !== 1
+          ? "owner-ambiguous"
+          : null,
+    };
+  });
+
+  ipcMain.handle("plugin:weixin:remote-approval:set-enabled", async (_event, enabled: boolean) => {
+    if (!enabled) {
+      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+        enabled: false,
+        owner: settingsStore.get("windowsNodeMxcWeixinRemoteApproval")?.owner ?? null,
+      });
+      closeWindowsNodeMxcWeixinRemoteApproval("feature-disabled");
+      if (gatewaySpawnedByUs) {
+        await restartManagedGateway("Disabling WeChat remote approval");
+      }
+      return { ok: true };
+    }
+    if (!isWindowsNodeMxcDesired()) {
+      return { ok: false, error: "Windows Node + MXC must be enabled first" };
+    }
+    const owners = readAuthenticatedWeixinOwners();
+    if (owners.length !== 1) {
+      return {
+        ok: false,
+        error: "Exactly one authenticated WeChat owner account is required",
+      };
+    }
+    const owner = owners[0];
+    const locale = resolveSupportedLocale(settingsStore.get("language") ?? "en-US");
+    const confirmation = await dialog.showMessageBox(mainWindow!, {
+      type: "warning",
+      title:
+        locale === "zh-CN"
+          ? "启用微信远程审批（实验性）"
+          : "Enable WeChat remote approval (Experimental)",
+      message:
+        locale === "zh-CN"
+          ? `将已登录且位于显式发送者白名单中的微信身份 ${owner.userId} 绑定为远程审批所有者。其当前私聊可批准一次性 MXC 命令；远程设备、微信会话、插件或 Gateway 被控制时可能导致本机命令执行。`
+          : `Bind the authenticated, explicitly allowlisted WeChat identity ${owner.userId} as the remote approval owner. Its current direct chat can approve one-use MXC commands; a compromised remote device, WeChat session, plugin, or Gateway could authorize local command execution.`,
+      detail:
+        locale === "zh-CN"
+          ? "产品将白名单 openclaw-weixin 插件和 Gateway 提供的标准化账户、发送者、私聊、消息及游标元数据视为真实输入，不要求独立的微信服务器签名。不会创建永久授权；错误、过期、转发、群聊或身份不匹配的回复将失败关闭。"
+          : "The product treats normalized account, sender, direct-chat, message, and cursor metadata from the allowlisted openclaw-weixin plugin and Gateway as authentic input; independent WeChat server signatures are not required. No durable approval is created, and wrong, expired, forwarded, group, or identity-mismatched replies fail closed.",
+      buttons: [locale === "zh-CN" ? "启用" : "Enable", locale === "zh-CN" ? "取消" : "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (confirmation.response !== 0) return { ok: false, cancelled: true };
+    settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+      enabled: true,
+      owner,
+    });
+    windowsNodeMxcWeixinRemoteApprovalBroker.configure({ enabled: true, owner });
+    if (gatewaySpawnedByUs) {
+      await restartManagedGateway("Applying WeChat remote approval setting");
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("plugin:weixin:remote-approval:revoke", async () => {
+    settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+      enabled: false,
+      owner: null,
+    });
+    closeWindowsNodeMxcWeixinRemoteApproval("owner-revoked");
+    if (gatewaySpawnedByUs) {
+      await restartManagedGateway("Revoking WeChat remote approval owner");
+    }
+    return { ok: true };
+  });
+
   ipcMain.handle("plugin:weixin:set-enabled", async (_event, enabled: boolean) => {
     assertWindowsNodeMxcConfigurationMutable();
     const config = readConfig() || {};
@@ -6130,6 +6702,13 @@ function registerIpcHandlers(): void {
     if (!config.plugins.entries) config.plugins.entries = {};
     if (!config.plugins.entries["openclaw-weixin"]) config.plugins.entries["openclaw-weixin"] = {};
     config.plugins.entries["openclaw-weixin"].enabled = enabled;
+    if (!enabled) {
+      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+        enabled: false,
+        owner: null,
+      });
+      closeWindowsNodeMxcWeixinRemoteApproval("weixin-disabled");
+    }
     // Ensure plugins.allow includes openclaw-weixin so the gateway loads it synchronously
     if (!config.plugins.allow) config.plugins.allow = [];
     if (enabled && !config.plugins.allow.includes("openclaw-weixin")) {
@@ -6277,6 +6856,11 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("plugin:weixin:disconnect", async (_event, params?: { accountId?: string }) => {
     assertWindowsNodeMxcConfigurationMutable();
+    settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+      enabled: false,
+      owner: null,
+    });
+    closeWindowsNodeMxcWeixinRemoteApproval("weixin-logout");
     // Remove all account files and restart gateway
     try {
       const stateDir = getOpenClawStateDir();
@@ -6974,6 +7558,11 @@ function registerIpcHandlers(): void {
           settingsStore.set("windowsNodeMxcToolBackups", {});
           settingsStore.delete("windowsNodeMxcSmoke");
           settingsStore.delete("windowsNodeMxcAmbientAccess");
+          settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+            enabled: false,
+            owner: settingsStore.get("windowsNodeMxcWeixinRemoteApproval")?.owner ?? null,
+          });
+          closeWindowsNodeMxcWeixinRemoteApproval("mxc-off");
           settingsStore.set("windowsNodeMxcSelection", nextSelection);
           settingsStore.set("securityMode", "appcontainer");
           windowsNodeMxcCurrentAmbientAccess = null;
@@ -7075,57 +7664,7 @@ function registerIpcHandlers(): void {
       }
       const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
       if (gatewayApproval?.request.id === requestId) {
-        await withWindowsNodeMxcApprovalResolution(async () => {
-          const approvalGeneration = gatewayApproval.gatewayGeneration;
-          const proofContext = windowsNodeMxcApprovalProofContext;
-          const client = gwClient;
-          if (approvalGeneration !== gatewayGenerationId || !proofContext) {
-            throw new Error("The Gateway approval belongs to a stale security generation");
-          }
-          if (!gatewayApproval.request.allowedDecisions.includes(normalizedDecision)) {
-            throw new Error("The requested Gateway approval decision is unavailable");
-          }
-          if (normalizedDecision !== "deny") await requireEffectiveWindowsNodeMxc(true);
-          if (
-            windowsNodeMxcSecurityTransitionInProgress ||
-            pendingWindowsNodeMxcGatewayApproval !== gatewayApproval ||
-            approvalGeneration !== gatewayGenerationId ||
-            proofContext !== windowsNodeMxcApprovalProofContext ||
-            !isWindowsNodeMxcIngressReleased(
-              true,
-              gatewayGenerationId,
-              windowsNodeMxcIngressGeneration,
-              windowsNodeMxcActivationInProgress,
-            ) ||
-            !client?.connected ||
-            client !== gwClient
-          ) {
-            throw new Error("The Gateway approval became stale before it could be resolved");
-          }
-          const durableIdentity =
-            normalizedDecision === "allow-always"
-              ? durableApprovalIdentityFromGateway(
-                  gatewayApproval.request,
-                  proofContext.policyFingerprint,
-                )
-              : null;
-          if (normalizedDecision === "allow-always" && !durableIdentity) {
-            throw new Error("This command is not eligible for an exact durable MXC approval");
-          }
-          await client.request("exec.approval.resolve", {
-            id: requestId,
-            // MicroClaw owns the exact durable identity. Never create an upstream
-            // allow-always entry whose scope is weaker than the prepared node plan.
-            decision: normalizedDecision === "allow-always" ? "allow-once" : normalizedDecision,
-          });
-          if (durableIdentity) {
-            await withWindowsNodeMxcDurableApprovalLock(() =>
-              getWindowsNodeMxcDurableApprovalStore().add(durableIdentity),
-            );
-          }
-          pendingWindowsNodeMxcGatewayApproval = null;
-          sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
-        });
+        await resolvePendingWindowsNodeMxcGatewayApproval(requestId, normalizedDecision, true);
         return;
       }
       if (normalizedDecision === "allow-always") {

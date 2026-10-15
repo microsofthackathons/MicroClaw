@@ -27,6 +27,9 @@ describe("SettingsView", () => {
   const getUserDirs = vi.fn();
   const validateFolderPolicy = vi.fn();
   const applyFolderPolicy = vi.fn();
+  const getRemoteApprovalStatus = vi.fn();
+  const setRemoteApprovalEnabled = vi.fn();
+  const revokeRemoteApproval = vi.fn();
 
   const localNode = {
     id: "node-local",
@@ -196,6 +199,16 @@ describe("SettingsView", () => {
     getUserDirs.mockReset().mockResolvedValue({ rw: [], ro: [] });
     validateFolderPolicy.mockReset().mockImplementation(async (draft) => draft);
     applyFolderPolicy.mockReset();
+    getRemoteApprovalStatus.mockReset().mockResolvedValue({
+      experimental: true,
+      enabled: false,
+      configured: false,
+      owner: null,
+      availableOwners: [],
+      blockedReason: "owner-ambiguous",
+    });
+    setRemoteApprovalEnabled.mockReset().mockResolvedValue({ ok: true });
+    revokeRemoteApproval.mockReset().mockResolvedValue({ ok: true });
     window.openclaw = {
       config: {
         read: vi.fn().mockResolvedValue(null),
@@ -215,6 +228,13 @@ describe("SettingsView", () => {
       },
       shell: {
         openExternal,
+      },
+      plugin: {
+        weixin: {
+          getRemoteApprovalStatus,
+          setRemoteApprovalEnabled,
+          revokeRemoteApproval,
+        },
       },
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
@@ -312,6 +332,50 @@ describe("SettingsView", () => {
     );
     expect(wrapper.find(".mxc-card").find("el-select").exists()).toBe(false);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+  });
+
+  it("shows the default-off experimental WeChat remote approval owner and controls", async () => {
+    routeState.section = "security";
+    getRemoteApprovalStatus.mockResolvedValueOnce({
+      experimental: true,
+      enabled: false,
+      configured: true,
+      owner: {
+        contract: "microclaw.windows-weixin-remote-approval.v1",
+        accountId: "bot@im.wechat",
+        userId: "owner@im.wechat",
+        boundAt: "2026-10-14T00:00:00.000Z",
+      },
+      availableOwners: [],
+      blockedReason: null,
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    const card = wrapper.find('[data-testid="weixin-remote-approval"]');
+    expect(card.text()).toContain("WeChat remote approval (Experimental)");
+    expect(card.text()).toContain("owner@im.wechat");
+    expect(card.text()).toContain("allowlisted openclaw-weixin plugin and Gateway");
+    expect(card.text()).toContain("never create durable approvals");
+    await wrapper.find('[data-testid="weixin-remote-approval-enable"]').trigger("click");
+    await flushPromises();
+    expect(setRemoteApprovalEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it("discloses the trusted plugin and Gateway metadata assumption in Chinese", async () => {
+    routeState.section = "security";
+    setLocale("zh-CN");
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    const card = wrapper.find('[data-testid="weixin-remote-approval"]');
+    expect(card.text()).toContain("微信远程审批（实验性）");
+    expect(card.text()).toContain("白名单 openclaw-weixin 插件和 Gateway");
+    expect(card.text()).toContain("绝不会创建永久审批");
   });
 
   it("keeps technical MXC details collapsed on a fresh Settings view", async () => {
@@ -640,9 +704,9 @@ describe("SettingsView", () => {
     await flushPromises();
 
     await wrapper.find('[data-testid="mxc-select-limited"]').trigger("click");
-    expect(
-      wrapper.findComponent(MxcCapabilityConsentDialog).props("targetMode"),
-    ).toBe("limited-dacl");
+    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("targetMode")).toBe(
+      "limited-dacl",
+    );
     expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
@@ -782,9 +846,7 @@ describe("SettingsView", () => {
     expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(false);
     expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
-    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain(
-      "Full containment",
-    );
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Full containment");
   });
 
   it("disables unavailable Full containment and shows exact availability guidance", async () => {

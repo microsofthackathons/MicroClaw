@@ -277,6 +277,21 @@ export default {
   "settings.windowsNodeMxc": "实验性内置 Windows Node + MXC",
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
+  "settings.experimental": "实验性",
+  "settings.weixinRemoteApproval": "微信远程审批（实验性）",
+  "settings.weixinRemoteApprovalRisk":
+    "本功能将白名单 openclaw-weixin 插件和 Gateway 提供的标准化账户、发送者、私聊、消息及游标元数据视为真实输入。手机、微信会话、插件或 Gateway 被控制时，攻击者可能授权本机命令执行。",
+  "settings.weixinRemoteApprovalOwner": "绑定所有者",
+  "settings.weixinRemoteApprovalUnbound": "未绑定",
+  "settings.weixinRemoteApprovalRequiresMxc": "请先启用 Windows Node + MXC。",
+  "settings.weixinRemoteApprovalRequiresOwner":
+    "必须且只能存在一个已登录微信账户，且其所有者必须位于显式发送者白名单中。",
+  "settings.weixinRemoteApprovalOnceOnly":
+    "回复仅一次性批准当前列出的请求；绝不会创建永久审批、文件夹授权或未来请求授权。",
+  "settings.weixinRemoteApprovalEnable": "在本机确认启用并绑定",
+  "settings.weixinRemoteApprovalDisable": "禁用",
+  "settings.weixinRemoteApprovalRevoke": "撤销所有者绑定",
+  "settings.weixinRemoteApprovalFailed": "无法更新微信远程审批",
   "settings.windowsNodeMxcModeFull": "完整隔离",
   "settings.windowsNodeMxcFullBadge": "强边界",
   "settings.windowsNodeMxcModeFullDesc":
@@ -309,8 +324,7 @@ export default {
   "settings.windowsNodeMxcConsent.item.location": "禁用位置访问。",
   "settings.windowsNodeMxcConsent.item.tts": "禁用文本转语音（TTS）。",
   "settings.windowsNodeMxcConsent.item.stt": "禁用语音转文本（STT）。",
-  "settings.windowsNodeMxcConsent.item.gateway-memory":
-    "禁用默认网关内存插件和内存槽位。",
+  "settings.windowsNodeMxcConsent.item.gateway-memory": "禁用默认网关内存插件和内存槽位。",
   "settings.windowsNodeMxcConsent.item.cron":
     "保留但暂停 Cron 和计划任务；隔离期间错过的任务不会补跑。",
   "settings.windowsNodeMxcConsent.item.hooks-webhooks":

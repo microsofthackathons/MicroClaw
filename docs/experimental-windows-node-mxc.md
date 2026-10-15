@@ -177,6 +177,74 @@ is immutable environment data bound to the Gateway generation and MXC policy fin
 stale, malformed, or out-of-root policy fails closed without falling back to unrestricted host file
 access.
 
+## WeChat remote approval (Experimental)
+
+WeChat remote approval is a separate, default-off capability under **Settings > Security**. Enabling
+or rebinding requires a local Electron confirmation and binds exactly one authenticated QR-login
+account ID plus its saved WeChat `userId`, which must also be present in the explicit sender
+allowlist; a display name is never an identity. Phase 1 accepts only that owner in a one-to-one chat.
+Group, forwarded, quoted, ambiguous-account, stale-cursor, and out-of-order forms cannot approve.
+
+The product threat model intentionally treats normalized ingress metadata from the allowlisted
+`openclaw-weixin` plugin and Gateway as authentic user input: account identity, sender identity,
+direct-chat identity, upstream message ID and cursor/order, exact content, and quote/forward/group
+metadata. This trust assumption applies to every WeChat command, not only MXC remote approval.
+MicroClaw does not require an independent WeChat server signature or immutable upstream lookup.
+Compromise of the authenticated WeChat session, the allowlisted plugin, or the Gateway therefore
+remains an explicit product risk and is disclosed in Settings.
+
+Electron main remains the sole approval authority. The WeChat plugin has a generation-local,
+token-authenticated named-pipe transport with only two operations: report a normalized inbound
+message before agent dispatch, and deliver a desktop-generated system message. It cannot list
+pending approvals, read a challenge, choose an approval ID, mutate approval state, mint execution
+proofs, or expose the path through the ordinary `message` tool. Exact candidate replies are
+intercepted before session recording and agent dispatch. Mixed, malformed, or otherwise ambiguous
+challenge-shaped replies are also consumed and fail closed, including when the broker transport is
+uncertain. Normal messages, including bare `1`, `2`, or `3`, remain ordinary conversation input.
+The long-poll loop advances its in-memory server cursor before placing ordinary messages on its
+serialized dispatch queue, allowing an exact approval reply to be consumed while the originating
+agent run is waiting. It persists the cursor only after the covered ordinary dispatches complete,
+so a crash replays rather than drops them.
+
+The reserved plain-text prompt begins `[MicroClaw Security Approval #CODE]`. The code is eight
+characters from an unambiguous 32-symbol alphabet (40 bits), generated with `randomBytes`, valid for
+two minutes, one-use, and limited to three wrong attempts plus a global attempt window. The prompt
+renders authorization-relevant strings exactly and reversibly with JSON string quoting. It does not
+trim or NFC-normalize, rewrite user-profile paths, parse and reserialize JSON, convert numeric text,
+collapse duplicate keys, redact partial values, or otherwise change code points. It includes the
+complete command text, executable canonical path and hash, argv, canonical CWD, declared file
+access, agent/session, requested/effective MXC mode, expiry, and every request covered by option 3.
+If those exact fields exceed deterministic request/argument/declaration/line/total limits, contain
+control, C0/C1, surrogate, bidi/format/default-ignorable, line/paragraph separator, zero-width,
+variation-selector, or similar concealment characters, or appear secret-bearing or ambiguously
+redacted, MicroClaw creates no remote challenge and leaves the normal local approval pending.
+
+- `1 CODE` approves the exact first/current request once.
+- `2 CODE` denies the exact request.
+- `3 CODE` approves only the explicitly enumerated requests from the same originating WeChat
+  message once. Phase 1 enumerates a one-item batch, so options 1 and 3 are equivalent.
+
+The in-memory challenge binds the authenticated sender/account/chat, source message ID and cursor,
+agent/session, exact approval IDs and batch, executable canonical path and SHA-256, argv, CWD,
+declarations, requested/effective mode, Gateway generation, policy fingerprint, node identity,
+active-lease hash, creation/expiry, challenge ID, and code hash. Electron revalidates the current
+pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
+immediately before the existing `exec.approval.resolve` call. Remote approval always sends
+`allow-once`; it never creates or consumes a durable approval, widens folders, or changes Limited
+mode's durable-approval prohibition.
+
+First resolution wins across local and remote UI. Local resolution, timeout, relock, Gateway/Node
+restart, policy or lease drift, MXC Off, logout/rebind, feature disable/revoke, shutdown, prompt-send
+failure, and excessive invalid attempts invalidate the challenge. A prompt-send failure leaves the
+normal local approval pending. Acknowledgements are system messages and never enter agent history.
+An acknowledgement delivery failure does not re-dispatch the consumed approval reply. The plugin
+advances its in-memory long-poll cursor while approval is pending, but persists each cursor only
+after every ordinary message covered by it has completed dispatch; a restart therefore replays
+rather than loses queued messages.
+The local JSONL security audit records only timestamps, hashed owner/chat/challenge, hashed approval
+and security identifiers, and result/reason; it never records the raw code, account token, challenge
+state, secrets, or full command values.
+
 ## CWD and approval contract
 
 The exact attestation contract is `microclaw.windows-cwd.v1`. A supplied CWD must:

@@ -323,6 +323,28 @@ interface OpenClawAPI {
         timeoutMs?: number;
       }): Promise<{ connected: boolean; message: string; accountId?: string }>;
       disconnect(params?: { accountId?: string }): Promise<{ ok: boolean; error?: string }>;
+      getRemoteApprovalStatus(): Promise<{
+        experimental: true;
+        enabled: boolean;
+        configured: boolean;
+        owner: {
+          contract: "microclaw.windows-weixin-remote-approval.v1";
+          accountId: string;
+          userId: string;
+          boundAt: string;
+        } | null;
+        availableOwners: Array<{
+          contract: "microclaw.windows-weixin-remote-approval.v1";
+          accountId: string;
+          userId: string;
+          boundAt: string;
+        }>;
+        blockedReason: "mxc-off" | "owner-ambiguous" | null;
+      }>;
+      setRemoteApprovalEnabled(
+        enabled: boolean,
+      ): Promise<{ ok: boolean; error?: string; cancelled?: boolean }>;
+      revokeRemoteApproval(): Promise<{ ok: boolean }>;
       onLoginOutput(callback: (text: string) => void): () => void;
       onLoginDone(callback: (result: { code: number | null }) => void): () => void;
     };
