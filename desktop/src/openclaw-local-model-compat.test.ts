@@ -1,5 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   LOCAL_MODEL_PRESETS,
@@ -8,7 +10,133 @@ import {
 } from "./local-model-catalog";
 // @ts-expect-error External ESM preload runs in the supported Gateway runtime.
 import * as compatibility from "./openclaw-local-model-compat.mjs";
-const { EXACT_SETUP_PLAN, EXACT_MODEL_SELECTION_PROMPT, patchLocalModelPlugin } = compatibility;
+const {
+  EXACT_SETUP_PLAN,
+  EXACT_MODEL_SELECTION_PROMPT,
+  patchLocalModelPlugin,
+  createLocalModelCompatibilityLoadHook,
+} = compatibility;
+
+function withProviderFiles(
+  run: (paths: { root: string; plugin: string; captured: string; entry: string }) => void,
+  source = "unverified provider source",
+) {
+  const root = mkdtempSync(join(tmpdir(), "microclaw-provider-load-"));
+  const plugin = join(root, "extensions", "llama-cpp");
+  const captured = join(
+    root,
+    "tmp",
+    "plugin-captures",
+    "generation",
+    "captures",
+    "openclaw-plugin-build-test",
+    "package-0",
+    "node_modules",
+    "llama-cpp",
+  );
+  try {
+    for (const directory of [plugin, captured]) {
+      mkdirSync(join(directory, "dist"), { recursive: true });
+      writeFileSync(join(directory, "dist", "index.js"), source);
+      writeFileSync(
+        join(directory, "package.json"),
+        JSON.stringify({ name: "@openclaw/llama-cpp-provider", version: "2026.9.3" }),
+      );
+    }
+    run({ root, plugin, captured, entry: join(captured, "dist", "index.js") });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe("local provider capture loading", () => {
+  it("leaves unrelated modules and lookalike capture roots unchanged", () => {
+    withProviderFiles(({ root, plugin }) => {
+      const load = createLocalModelCompatibilityLoadHook(plugin, root);
+      const result = { format: "module", source: "unrelated" };
+      const next = vi.fn().mockReturnValue(result);
+      for (const url of [
+        "node:fs",
+        pathToFileURL(join(root, "other", "node_modules", "llama-cpp", "dist", "index.js")).href,
+        pathToFileURL(
+          join(
+            root,
+            "tmp",
+            "plugin-captures-other",
+            "node_modules",
+            "llama-cpp",
+            "dist",
+            "index.js",
+          ),
+        ).href,
+      ]) {
+        expect(load(url, {}, next)).toBe(result);
+      }
+    });
+  });
+
+  it("recognizes capture entries but refuses unverified plugin bytes", () => {
+    withProviderFiles(({ root, plugin, entry }) => {
+      const load = createLocalModelCompatibilityLoadHook(plugin, root);
+      expect(() =>
+        load(pathToFileURL(entry).href, {}, () => ({
+          format: "module",
+          source: "unverified provider source",
+        })),
+      ).toThrow("pinned");
+    });
+  });
+
+  it("rejects snapshots that differ from their original installed source", () => {
+    withProviderFiles(({ root, plugin, entry }) => {
+      const load = createLocalModelCompatibilityLoadHook(plugin, root);
+      expect(() =>
+        load(pathToFileURL(entry).href, {}, () => ({
+          format: "module",
+          source: "different snapshot",
+        })),
+      ).toThrow("differs from its installed source");
+    });
+  });
+
+  it("rejects a capture whose provider identity changed", () => {
+    withProviderFiles(({ root, plugin, captured, entry }) => {
+      writeFileSync(
+        join(captured, "package.json"),
+        JSON.stringify({
+          name: "@openclaw/llama-cpp-provider",
+          version: "2026.10.3",
+        }),
+      );
+      const load = createLocalModelCompatibilityLoadHook(plugin, root);
+      expect(() =>
+        load(pathToFileURL(entry).href, {}, () => ({
+          format: "module",
+          source: "unverified provider source",
+        })),
+      ).toThrow("pinned official");
+    });
+  });
+
+  it("rejects redirected captured provider directories", () => {
+    withProviderFiles(({ root, plugin, captured, entry }) => {
+      rmSync(captured, { recursive: true });
+      symlinkSync(plugin, captured, "junction");
+      const load = createLocalModelCompatibilityLoadHook(plugin, root);
+      expect(() =>
+        load(pathToFileURL(entry).href, {}, () => ({
+          format: "module",
+          source: "unverified provider source",
+        })),
+      ).toThrow("must not be redirected");
+    });
+  });
+
+  it("requires absolute configured paths", () => {
+    expect(() => createLocalModelCompatibilityLoadHook(undefined)).toThrow("absolute");
+    expect(() => createLocalModelCompatibilityLoadHook("relative")).toThrow("absolute");
+  });
+});
 
 function fixture(selected = LOCAL_MODEL_PRESETS[0].modelRef as string, cached = false) {
   const recipes = [...LOCAL_MODEL_PRESETS].reverse().map((model) => ({
@@ -140,6 +268,16 @@ describe("pinned exact local model chooser", () => {
       expect(patched).not.toContain(
         "const recommendation = recommendLlamaCppModel(hardware, asset.backend",
       );
+      expect(patched).not.toContain("import { publishLlamaRuntime } from");
+      withProviderFiles(({ root, plugin, entry }) => {
+        const result = createLocalModelCompatibilityLoadHook(plugin, root)(
+          pathToFileURL(entry).href,
+          {},
+          () => ({ format: "module", source: Buffer.from(source) }),
+        );
+        expect(result.source).toContain(EXACT_MODEL_SELECTION_PROMPT);
+        expect(result.source).toContain("await publishLlamaRuntime");
+      }, source);
       expect(readFileSync(join(directory!, "dist", "index.js"), "utf8")).toBe(source);
     },
   );

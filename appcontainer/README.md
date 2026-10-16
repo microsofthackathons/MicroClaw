@@ -52,6 +52,29 @@ Loaded via `NODE_OPTIONS="--require sandbox-preload.js"` into the Gateway proces
 
 ### Activation Modes
 
+OpenClaw's internal SQLite snapshot integration recognizes both the 2026.9.x
+`openclaw-sqlite-readonly-<pid>-<uuid>` directory format and the 2026.10.2
+`openclaw-sqlite-readonly-v2-<uuid>` format under `%LOCALAPPDATA%\openclaw`.
+The internal worker exception still requires the exact Node executable, worker
+path, trusted runtime caller, supported mode, and a canonical database path
+inside the OpenClaw state directory. Redirected or malformed staging roots are
+rejected; this does not allow arbitrary Node commands outside the sandbox.
+Scoped SQLite sessions validate each IPC request before the runtime handles it;
+database requests must stay inside the canonical state directory. The separate
+state-ownership reader is restricted to its exact worker, caller, and database
+argument. Worker-thread startup uses the package root captured from the desktop
+when Node has not initialized the worker's entry arguments yet.
+
+The installer grants read-only access to the actual OpenClaw npm installation
+prefix, which may differ from the Node.js directory. Ancestor grants use numeric
+SIDs and metadata/traverse rights only. Required grants allow up to five minutes
+for Windows ACL propagation. If a shared system directory cannot be changed,
+installation must still prove that sandboxed Node can read the installed runtime
+and create/remove a file in the sandbox workspace; it fails if that check fails.
+Direct Node script arguments retain quoting around paths with spaces. This
+prevents startup probes such as `npm root -g` from requesting access to a
+nonexistent `C:\Program` path while still inspecting the complete file path.
+
 - **Main gateway** (`OPENCLAW_SANDBOX_BYPASS=1`): Sandbox activates on the next tick after HTTP server starts listening. Pre-listen startup commands (netstat, etc.) run with bypass; once the server is ready, the sandbox activates before any incoming requests are processed.
 - **Forked workers** (bypass absent): Sandbox active immediately.
 

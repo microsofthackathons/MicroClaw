@@ -119,6 +119,19 @@ export function resolveApiValue(apiFormat: ModelApiFormat): string {
   return "openai-completions";
 }
 
+export function matchesProviderConnection(config: unknown, input: ModelProviderInput): boolean {
+  const provider = asJsonObject(
+    asJsonObject(asJsonObject(asJsonObject(config).models).providers)[input.providerKey.trim()],
+  );
+  return (
+    typeof provider.baseUrl === "string" &&
+    provider.baseUrl.trim().replace(/\/+$/, "") === input.baseUrl.trim().replace(/\/+$/, "") &&
+    typeof provider.apiKey === "string" &&
+    provider.apiKey.trim() === input.apiKey.trim() &&
+    provider.api === resolveApiValue(input.apiFormat)
+  );
+}
+
 export function normalizeModelInput(value: unknown): ModelInputCapability[] {
   if (!Array.isArray(value)) return ["text"];
   const capabilities = value.filter(

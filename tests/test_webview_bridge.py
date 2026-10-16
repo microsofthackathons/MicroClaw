@@ -3,13 +3,16 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 from deploy import DeployerApp, _run_installer, main, select_installer_font_family
 from deployer.webview_bridge import (
     _STRINGS,
     InstallationCancelled,
     WebInstallerBridge,
+    _center_native_window,
     _detect_lang,
+    run_web_installer,
 )
 from deployer.windows_setup import ActiveGateway, ActiveInstallation
 
@@ -58,6 +61,74 @@ class WebInstallerBridgeTests(unittest.TestCase):
                     r'. "$PSScriptRoot\node-runtime.ps1"',
                     (destination / "setup-dependencies.ps1").read_text(encoding="utf-8"),
                 )
+
+    def test_installer_window_titles_are_distinct_from_the_desktop(self):
+        for mode, expected, background in (
+            ("install", "MicroClaw Setup", "0"),
+            ("install", "MicroClaw Setup", "1"),
+            ("uninstall-confirmation", "MicroClaw Uninstall", "0"),
+            ("uninstall-confirmation", "MicroClaw Uninstall", "1"),
+        ):
+            with self.subTest(mode=mode, background=background):
+                webview = unittest.mock.MagicMock()
+                bridge = unittest.mock.Mock()
+                bridge.write_html_file.return_value = Path(self.temp.name) / "installer.html"
+                with (
+                    unittest.mock.patch.dict("os.environ", {"MICROCLAW_BACKGROUND": background}),
+                    unittest.mock.patch.dict(
+                        "sys.modules",
+                        {
+                            "clr": SimpleNamespace(),
+                            "webview": webview,
+                            "pythonnet": SimpleNamespace(
+                                __file__=str(Path(self.temp.name) / "pythonnet" / "__init__.py")
+                            ),
+                        },
+                    ),
+                    unittest.mock.patch(
+                        "deployer.webview_bridge.DeployerLogger", return_value=_Log()
+                    ),
+                    unittest.mock.patch(
+                        "deployer.webview_bridge.WebInstallerBridge", return_value=bridge
+                    ),
+                    unittest.mock.patch(
+                        "deployer.webview_bridge.WebUninstallConfirmationBridge",
+                        return_value=bridge,
+                    ),
+                    unittest.mock.patch(
+                        "deployer.webview_bridge._get_centered_window_position",
+                        return_value=(0, 0),
+                    ),
+                ):
+                    run_web_installer(mode)
+                self.assertEqual(webview.create_window.call_args.args[0], expected)
+                self.assertNotEqual(expected, "MicroClaw")
+                self.assertEqual(webview.create_window.call_args.kwargs["focus"], background != "1")
+                webview.start.assert_called_once()
+
+    def test_native_centering_does_not_activate_the_window(self):
+        user32 = unittest.mock.Mock()
+
+        def get_rect(_handle, pointer):
+            pointer._obj.left = 0
+            pointer._obj.top = 0
+            pointer._obj.right = 640
+            pointer._obj.bottom = 480
+            return True
+
+        user32.GetWindowRect.side_effect = get_rect
+        user32.GetMonitorInfoW.return_value = False
+        user32.GetDpiForWindow.return_value = 96
+        with (
+            unittest.mock.patch("deployer.webview_bridge.sys.platform", "win32"),
+            unittest.mock.patch("ctypes.windll", SimpleNamespace(user32=user32), create=True),
+            unittest.mock.patch(
+                "deployer.webview_bridge._get_centered_window_position",
+                return_value=(10, 20),
+            ),
+        ):
+            _center_native_window(123)
+        user32.SetWindowPos.assert_called_once_with(123, 0, 10, 20, 0, 0, 0x0015)
 
     def test_prepare_upgrade_prompts_then_closes_running_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=Path("gateway.lock"))

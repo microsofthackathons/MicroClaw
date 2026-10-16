@@ -248,6 +248,20 @@ internal static class ContainerManager
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        if (!Directory.Exists(dirPath) && !File.Exists(dirPath))
+            throw new DirectoryNotFoundException($"Path not found: {dirPath}");
+
+        // Do this before recursive ACL propagation or an already-accessible fast path.
+        try
+        {
+            GrantAncestorTraverse(containerName, dirPath);
+            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] GrantAncestorTraverse done for: {dirPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] WARNING: GrantAncestorTraverse FAILED for {dirPath}: {ex.Message}");
+        }
+
         // Fast path: if ALL APPLICATION PACKAGES already has sufficient access,
         // skip per-profile ACL grant (the directory is accessible to any AppContainer).
         if (HasAllAppPackagesAccess(dirPath, readOnly))
@@ -314,18 +328,6 @@ internal static class ContainerManager
         else
         {
             throw new DirectoryNotFoundException($"Path not found: {dirPath}");
-        }
-
-        // Grant traverse on ancestor directories so the AC process can reach
-        // this path. Failures are non-fatal (e.g. drive root may need admin).
-        try
-        {
-            GrantAncestorTraverse(containerName, dirPath);
-            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] GrantAncestorTraverse done for: {dirPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] WARNING: GrantAncestorTraverse FAILED for {dirPath}: {ex.Message}");
         }
 
         Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] GrantAccess complete for: {dirPath} (readOnly={readOnly})");
@@ -601,12 +603,14 @@ internal static class ContainerManager
 
                 // Check if the SID already has traverse access
                 var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
+                var traverseRights = FileSystemRights.ReadAttributes |
+                    FileSystemRights.ReadExtendedAttributes | FileSystemRights.Traverse;
                 bool hasAccess = false;
                 foreach (FileSystemAccessRule rule in rules)
                 {
                     if (rule.IdentityReference.Value == sidStr &&
                         rule.AccessControlType == AccessControlType.Allow &&
-                        (rule.FileSystemRights & FileSystemRights.Traverse) != 0)
+                        (rule.FileSystemRights & traverseRights) == traverseRights)
                     {
                         hasAccess = true;
                         break;
@@ -627,8 +631,7 @@ internal static class ContainerManager
                         // directory contents — e.g. D:\ sibling folder names are private).
                         security.AddAccessRule(new FileSystemAccessRule(
                             sid,
-                            FileSystemRights.ReadAttributes |
-                            FileSystemRights.ReadExtendedAttributes | FileSystemRights.Traverse,
+                            traverseRights,
                             InheritanceFlags.None,
                             PropagationFlags.None,
                             AccessControlType.Allow));

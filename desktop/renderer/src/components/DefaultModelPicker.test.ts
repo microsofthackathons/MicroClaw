@@ -1,6 +1,7 @@
 import { defineComponent } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ElPopover } from "element-plus";
 import { setLocale } from "@/i18n";
 import DefaultModelPicker from "./DefaultModelPicker.vue";
 import type { ConfiguredModel } from "@/utils/configured-models";
@@ -22,7 +23,7 @@ afterEach(() => {
   wrappers.splice(0).forEach((wrapper) => wrapper.unmount());
   document.body.replaceChildren();
 });
-async function open() {
+async function open(realPopover = false) {
   const wrapper = mount(DefaultModelPicker, {
     attachTo: document.body,
     props: {
@@ -30,13 +31,53 @@ async function open() {
       modelValue: "github-copilot/gpt-5.5",
       modelStatus: (model) => (model.providerKey === "llama-cpp" ? "Not downloaded" : ""),
     },
-    global: { stubs: { "el-popover": PopoverStub } },
+    global: {
+      components: { ElPopover },
+      stubs: { "el-popover": realPopover ? false : PopoverStub },
+    },
   });
   wrappers.push(wrapper);
   await wrapper.get('[data-testid="default-model-picker"]').trigger("click");
   return wrapper;
 }
 describe("DefaultModelPicker", () => {
+  it("keeps expanded state and a named dialog with the real Element Plus popover", async () => {
+    const wrapper = await open(true);
+    const trigger = wrapper.get('[data-testid="default-model-picker"]');
+    await vi.waitFor(() => expect(trigger.attributes("aria-expanded")).toBe("true"));
+    expect(trigger.attributes("aria-haspopup")).toBe("dialog");
+    const dialogId = trigger.attributes("aria-controls");
+    expect(dialogId).toBeTruthy();
+    const dialog = dialogId ? document.getElementById(dialogId) : null;
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(dialog?.getAttribute("aria-label")).toBe("Default model");
+  });
+
+  it("keeps specialized models visible but blocks incompatible default selection", async () => {
+    const wrapper = await open();
+    await wrapper.setProps({
+      modelValue: "qwen/qwen3.7-plus",
+      models: [
+        { providerKey: "qwen", id: "qwen3.7-plus", name: "Plus", source: "managed" },
+        {
+          providerKey: "qwen",
+          id: "qwen3.8-omni-flash-realtime",
+          name: "Realtime",
+          source: "managed",
+        },
+      ],
+    });
+    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(2);
+    const incompatible = wrapper.get('[data-model-ref="qwen/qwen3.8-omni-flash-realtime"]');
+    expect(incompatible.attributes("disabled")).toBeDefined();
+    expect(incompatible.text()).toContain("Requires realtime API");
+    await incompatible.trigger("click");
+    expect(wrapper.emitted("change")).toBeUndefined();
+    expect(
+      wrapper.get('[data-model-ref="qwen/qwen3.7-plus"]').attributes("disabled"),
+    ).toBeUndefined();
+  });
+
   it("shows switching in the trigger without changing the selected model before confirmation", async () => {
     const wrapper = await open();
     await wrapper.setProps({ switching: true });

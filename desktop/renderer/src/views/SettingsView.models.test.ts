@@ -436,7 +436,6 @@ describe("SettingsView model integration", () => {
     await vi.runAllTimersAsync();
     await flushPromises();
     const beforeRemoval = structuredClone(config);
-    await wrapper.get('[data-testid="add-local-model"]').trigger("click");
     wrapper.getComponent(LocalModelSetupDialog).vm.$emit("remove-connection", "llama-cpp/saved");
     await flushPromises();
     await vi.runAllTimersAsync();
@@ -584,6 +583,136 @@ describe("SettingsView model integration", () => {
       modelName: "remote",
       baseUrl: "https://cloud.example/v1",
     });
+    const customRow = wrapper.get('[data-provider="cloud"] .provider-model-row');
+    expect(customRow.text()).toContain("Edit");
+    expect(customRow.text()).toContain("Remove connection");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it.each(["qwen", "minimax"])(
+    "uses only the %s model dropdown instead of a duplicate saved-model list",
+    async (provider) => {
+      config.models.providers[provider] = {
+        baseUrl: "https://provider.example/v1",
+        apiKey: "saved-key",
+        models: [
+          { id: "saved-one", name: "Saved model one" },
+          { id: "saved-two", name: "Saved model two" },
+        ],
+      };
+      const original = structuredClone(config);
+      const { wrapper } = await open();
+      await wrapper.get(`[data-testid="manage-provider-${provider}"]`).trigger("click");
+      await flushPromises();
+      const card = wrapper.get(`[data-provider="${provider}"]`);
+      expect(card.text()).toContain("Configured connection");
+      expect(card.find(".provider-model-row").exists()).toBe(false);
+      expect(card.text()).not.toContain("Saved model one");
+      expect(card.text()).not.toContain("Saved model two");
+      expect(card.text()).not.toContain("Remove connection");
+      expect(card.findAll("button").some((button) => button.text() === "Edit")).toBe(false);
+      expect(
+        wrapper.getComponent({ name: "ModelSetupDialog" }).props("currentProvider"),
+      ).toMatchObject({
+        providerKey: provider,
+        modelName: "saved-one",
+        apiKey: "saved-key",
+      });
+      expect(config).toEqual(original);
+      expect(write).not.toHaveBeenCalled();
+      expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses accessible arrows to expand and collapse provider editors without duplicate key links", async () => {
+    const { wrapper } = await open();
+    expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
+    for (const id of ["qwen", "minimax", "github-copilot"]) {
+      const button = wrapper.get(`[data-testid="manage-provider-${id}"]`);
+      expect(button.text()).toBe("");
+      expect(button.attributes("aria-expanded")).toBe("false");
+      await button.trigger("click");
+      await flushPromises();
+      expect(button.attributes("aria-expanded")).toBe("true");
+      expect(button.get("svg").classes()).toContain("provider-chevron-up");
+      expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(true);
+      await button.trigger("click");
+      await flushPromises();
+      expect(button.attributes("aria-expanded")).toBe("false");
+      expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
+    }
+    expect(wrapper.find('[data-testid^="provider-signup-"]').exists()).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+  });
+
+  it.each(["qwen", "minimax"])(
+    "reopens %s on its last saved form selection, not the first model",
+    async (provider) => {
+      config.models.providers[provider] = {
+        baseUrl: "https://provider.example/v1",
+        apiKey: "fixture",
+        models: [
+          { id: "first", name: "First" },
+          { id: "last-saved", name: "Last saved" },
+        ],
+      };
+      const saved = await window.openclaw.settings.get();
+      window.openclaw.settings.get = vi.fn().mockResolvedValue({
+        ...saved,
+        modelFormSelections: { [provider]: `${provider}/last-saved` },
+      });
+      const { wrapper } = await open();
+      await wrapper.get(`[data-testid="manage-provider-${provider}"]`).trigger("click");
+      expect(
+        wrapper.getComponent({ name: "ModelSetupDialog" }).props("currentProvider"),
+      ).toMatchObject({
+        providerKey: provider,
+        modelName: "last-saved",
+      });
+      expect(write).not.toHaveBeenCalled();
+      expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("shows the full live cloud catalog in the default selector and hot-selects an unsaved ID", async () => {
+    config.models.providers.qwen = {
+      baseUrl: "https://provider.example/v1",
+      apiKey: "fixture",
+      models: [{ id: "saved", name: "Saved" }],
+    };
+    window.openclaw.model.discoverModels = vi.fn().mockResolvedValue({
+      ok: true,
+      models: ["saved", "live-one", "live-two"],
+    });
+    const { wrapper } = await open();
+    const picker = wrapper.getComponent(DefaultPickerStub);
+    expect(
+      picker
+        .props("models")
+        .filter((model: { providerKey: string }) => model.providerKey === "qwen")
+        .map((model: { id: string }) => model.id),
+    ).toEqual(["saved", "live-one", "live-two"]);
+    picker.vm.$emit("change", "qwen/live-two");
+    await flushPromises();
+    expect(window.openclaw.model.selectDefault).toHaveBeenCalledWith(
+      expect.objectContaining({ modelRef: "qwen/live-two" }),
+    );
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("toggles the local provider panel with the same arrow behavior", async () => {
+    const { wrapper } = await open();
+    const button = wrapper.get('[data-testid="add-local-model"]');
+    await button.trigger("click");
+    await flushPromises();
+    expect(button.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(true);
+    await button.trigger("click");
+    await flushPromises();
+    expect(button.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(false);
     expect(write).not.toHaveBeenCalled();
   });
 

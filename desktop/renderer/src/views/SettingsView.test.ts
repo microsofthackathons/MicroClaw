@@ -7,6 +7,7 @@ import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
 import SettingsView from "./SettingsView.vue";
+import { createBrowserOpenClawMock } from "@/browser-openclaw";
 
 const routeState = vi.hoisted(() => ({ section: "skills" }));
 vi.mock("vue-router", () => ({
@@ -210,6 +211,7 @@ describe("SettingsView", () => {
     setRemoteApprovalEnabled.mockReset().mockResolvedValue({ ok: true });
     revokeRemoteApproval.mockReset().mockResolvedValue({ ok: true });
     window.openclaw = {
+      model: createBrowserOpenClawMock().model,
       config: {
         read: vi.fn().mockResolvedValue(null),
       },

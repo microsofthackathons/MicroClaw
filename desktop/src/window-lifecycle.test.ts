@@ -3,6 +3,7 @@ import {
   minimizeWindow,
   sendToWindow,
   showAndFocusWindow,
+  showStartupWindow,
   type AppWindow,
 } from "./window-lifecycle";
 
@@ -28,6 +29,7 @@ function createWindow(options?: {
     restore: vi.fn(() => calls.push("restore")),
     setSkipTaskbar: vi.fn(() => calls.push("taskbar")),
     show: vi.fn(() => calls.push("show")),
+    showInactive: vi.fn(() => calls.push("show-inactive")),
     focus: vi.fn(() => calls.push("focus")),
   };
   return { calls, window };
@@ -67,6 +69,26 @@ describe("showAndFocusWindow", () => {
     showAndFocusWindow(window);
 
     expect(calls).toEqual(["restore", "taskbar", "show", "focus"]);
+  });
+
+  describe("showStartupWindow", () => {
+    it("shows background launches without focusing or restoring the window", () => {
+      const { calls, window } = createWindow({ minimized: true });
+      showStartupWindow(window, true);
+      expect(calls).toEqual(["taskbar", "show-inactive"]);
+    });
+
+    it("retains normal foreground startup behavior", () => {
+      const { calls, window } = createWindow();
+      showStartupWindow(window, false);
+      expect(calls).toEqual(["taskbar", "show", "focus"]);
+    });
+
+    it("ignores destroyed background windows", () => {
+      const { calls, window } = createWindow({ destroyed: true });
+      showStartupWindow(window, true);
+      expect(calls).toEqual([]);
+    });
   });
 
   it("shows a hidden window without restoring it", () => {

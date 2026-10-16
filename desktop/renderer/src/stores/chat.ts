@@ -35,7 +35,10 @@ export interface ChatErrorInfo {
     | "not_found" // 404 — likely wrong Base URL / endpoint path
     | "copilot_auth" // GitHub login could not be exchanged for a Copilot API token
     | "missing_provider_auth" // current model provider has no usable credentials
-    | "unauthorized" // 401 / 403 / invalid api key
+    | "unauthorized" // 401 / invalid api key
+    | "provider_access" // 403 or upstream-normalized authentication/authorization rejection
+    | "unsupported_model"
+    | "request_rejected"
     | "rate_limited" // 429
     | "model_not_found" // model name typo
     | "network" // ECONNREFUSED / ENOTFOUND / timeout
@@ -74,20 +77,25 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
   if (/copilot token exchange failed/i.test(text)) {
     return { code: "copilot_auth", raw: text, status };
   }
+  if (/UNSUPPORTED_CHAT_MODEL/.test(text)) return { code: "unsupported_model", raw: text, status };
+  if (
+    status === 403 ||
+    /forbidden|access[_ .-]*denied|couldn['’]t sign in to the ai service/i.test(text)
+  )
+    return { code: "provider_access", raw: text, status };
   if (status === 404 || /\b404\b/.test(text) || /not\s*found/i.test(text)) {
     if (/model/i.test(text)) return { code: "model_not_found", raw: text, status };
     return { code: "not_found", raw: text, status };
   }
   if (
     status === 401 ||
-    status === 403 ||
-    /\b(401|403)\b/.test(text) ||
-    /unauthorized|forbidden|invalid[_\s-]*api[_\s-]*key|incorrect api key|authentication/i.test(
-      lower,
-    )
+    /\b401\b/.test(text) ||
+    /unauthorized|invalid[_\s-]*api[_\s-]*key|incorrect api key|authentication/i.test(lower)
   ) {
     return { code: "unauthorized", raw: text, status };
   }
+  if (status === 400 || status === 422 || /ai service couldn['’]t accept this request/i.test(text))
+    return { code: "request_rejected", raw: text, status };
   if (
     status === 429 ||
     /\b429\b/.test(text) ||

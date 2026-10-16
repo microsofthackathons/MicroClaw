@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -153,7 +153,10 @@ export function patchLocalModelPlugin(source) {
   const end = source.indexOf("async function runLlamaCppSetup(ctx) {", start);
   if (start < 0 || end < 0) throw new Error("The pinned model selection function is unavailable");
   let patched = source.slice(0, start) + EXACT_SETUP_PLAN + source.slice(end);
-  patched = `import { publishLlamaRuntime } from ${JSON.stringify(import.meta.url)};\n${patched}`;
+  patched = `import { setTimeout as microclawRuntimeDelay } from "node:timers/promises";
+const publishLlamaRuntime = (({ isAbsolute, resolve, dirname }, delay) =>
+  (${publishLlamaRuntime.toString()}))(path, microclawRuntimeDelay);
+${patched}`;
   patched = replaceExactly(
     patched,
     "\t\tawait fs.rename(extractedRoot, installDir);",
@@ -191,30 +194,57 @@ export function patchLocalModelPlugin(source) {
   return patched;
 }
 
-export function initializeLocalModelCompatibility(pluginDir) {
+export function createLocalModelCompatibilityLoadHook(
+  pluginDir,
+  stateDir = process.env.OPENCLAW_STATE_DIR || undefined,
+) {
   if (!pluginDir || !isAbsolute(pluginDir))
     throw new Error("An absolute local provider directory is required");
+  const providerStateDir = stateDir ?? dirname(dirname(pluginDir));
+  if (!providerStateDir || !isAbsolute(providerStateDir))
+    throw new Error("An absolute OpenClaw state directory is required");
   const target = join(pluginDir, "dist", "index.js");
-  registerHooks({
-    load(url, context, nextLoad) {
-      const result = nextLoad(url, context);
-      if (!url.startsWith("file:") || fileURLToPath(url) !== target) return result;
-      const metadata = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
+  const captureRoot = join(providerStateDir, "tmp", "plugin-captures");
+  return function load(url, context, nextLoad) {
+    const result = nextLoad(url, context);
+    if (!url.startsWith("file:")) return result;
+    const filename = fileURLToPath(url);
+    const candidateRoot = dirname(dirname(filename));
+    const capturedPath = relative(captureRoot, filename);
+    const captured =
+      capturedPath !== "" &&
+      !capturedPath.startsWith("..") &&
+      !isAbsolute(capturedPath) &&
+      basename(filename) === "index.js" &&
+      basename(dirname(filename)) === "dist" &&
+      basename(candidateRoot) === basename(pluginDir) &&
+      basename(dirname(candidateRoot)) === "node_modules";
+    if (filename !== target && !captured) return result;
+
+    for (const root of new Set([pluginDir, candidateRoot])) {
+      const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       if (
         metadata.name !== "@openclaw/llama-cpp-provider" ||
         metadata.version !== PINNED_LOCAL_PLUGIN_VERSION
       ) {
         throw new Error("Exact model setup requires the pinned official llama.cpp provider");
       }
-      if (realpathSync(target) !== target)
+      const entry = join(root, "dist", "index.js");
+      if (realpathSync(entry) !== entry)
         throw new Error("The local provider entry must not be redirected");
-      const source =
-        typeof result.source === "string"
-          ? result.source
-          : Buffer.from(result.source ?? "").toString();
-      return { ...result, source: patchLocalModelPlugin(source) };
-    },
-  });
+    }
+    const source =
+      typeof result.source === "string"
+        ? result.source
+        : Buffer.from(result.source ?? "").toString();
+    if (captured && source !== readFileSync(target, "utf8"))
+      throw new Error("The captured local provider differs from its installed source");
+    return { ...result, source: patchLocalModelPlugin(source) };
+  };
+}
+
+export function initializeLocalModelCompatibility(pluginDir) {
+  return registerHooks({ load: createLocalModelCompatibilityLoadHook(pluginDir) });
 }
 
 if (process.env.MICROCLAW_EXACT_LOCAL_MODELS === "1") {

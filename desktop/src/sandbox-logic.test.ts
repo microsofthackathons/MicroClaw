@@ -2475,6 +2475,30 @@ describe("checkApproval — no auto-bypass for whitelisted apps", () => {
 const pathExtraction = require("../../appcontainer/path-extraction.js");
 const sandboxState = require("../../appcontainer/sandbox-state.js");
 
+describe("direct Node script argument paths", () => {
+  const node = "C:\\Program Files\\nodejs\\node.exe";
+  const script = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+
+  it.each([[script], [script, "root", "-g"], ["--no-warnings", script, "prefix", "-g"]])(
+    "preserves script paths containing spaces without inventing C:\\Program",
+    (...args) => {
+      const payload = pathExtraction.extractShellPayload(node, args);
+      const paths = pathExtraction.extractReadPaths(payload);
+      expect(paths).toContain(script);
+      expect(paths).not.toContain("C:\\Program");
+    },
+  );
+
+  it("still extracts additional sensitive file arguments", () => {
+    const sensitivePath = "C:\\Users\\test\\.ssh\\private key";
+    const paths = pathExtraction.extractReadPaths(
+      pathExtraction.extractShellPayload(node, [script, sensitivePath]),
+    );
+    expect(paths).toContain(script);
+    expect(paths).toContain(sensitivePath);
+  });
+});
+
 describe("OpenClaw internal SQLite worker", () => {
   const packageRoot = "C:\\Users\\test\\AppData\\Roaming\\npm\\node_modules\\openclaw";
   const execPath = "C:\\Program Files\\nodejs\\node.exe";
@@ -2486,6 +2510,11 @@ describe("OpenClaw internal SQLite worker", () => {
     "openclaw",
     "openclaw-sqlite-readonly-2056-139531e6-3179-429e-90e2-f16d5a267869",
   );
+  const stagingRootV2 = path.join(
+    localAppData,
+    "openclaw",
+    "openclaw-sqlite-readonly-v2-139531e6-3179-429e-90e2-f16d5a267869",
+  );
   const workerPath = path.join(packageRoot, "dist", "infra", "sqlite-readonly-location.worker.js");
   const args = [
     workerPath,
@@ -2496,10 +2525,12 @@ describe("OpenClaw internal SQLite worker", () => {
   const stack = `Error
     at prepareSqliteReadOnlyLocation (file:///${packageRoot.replace(/\\/g, "/")}/dist/sqlite-readonly-location-AbCd1234.js:662:3)`;
   const canonical = new Map([
+    [packageRoot.toLowerCase(), packageRoot],
     [stateDir.toLowerCase(), stateDir],
     [args[3].toLowerCase(), args[3]],
     [path.join(localAppData, "openclaw").toLowerCase(), path.join(localAppData, "openclaw")],
     [stagingRoot.toLowerCase(), stagingRoot],
+    [stagingRootV2.toLowerCase(), stagingRootV2],
   ]);
   const runtime = {
     entryPath,
@@ -2518,6 +2549,179 @@ describe("OpenClaw internal SQLite worker", () => {
     expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, runtime)).toBe(
       true,
     );
+  });
+
+  it("limits snapshot reclamation to the canonical OpenClaw cache root", () => {
+    const cacheRoot = path.join(localAppData, "openclaw");
+    const reclaimArgs = [workerPath, args[1], "reclaim", cacheRoot];
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, reclaimArgs, stack, runtime),
+    ).toBe(true);
+    for (const target of [stateDir, localAppData, stagingRootV2, "relative"]) {
+      expect(
+        cpHooks.isOpenClawInternalSqliteWorkerCommand(
+          execPath,
+          [workerPath, args[1], "reclaim", target],
+          stack,
+          runtime,
+        ),
+      ).toBe(false);
+    }
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, reclaimArgs, stack, {
+        ...runtime,
+        realpath: () => stateDir,
+      }),
+    ).toBe(false);
+  });
+
+  it("limits the state ownership reader to its exact worker, caller, and state database", () => {
+    const ownershipWorker = path.join(
+      packageRoot,
+      "dist",
+      "state",
+      "openclaw-state-ownership.worker.js",
+    );
+    const ownershipStack = stack.replace(
+      "sqlite-readonly-location-AbCd1234.js",
+      "openclaw-state-ownership-AbCd1234.mjs",
+    );
+    const ownershipArgs = [ownershipWorker, args[3]];
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        ownershipArgs,
+        ownershipStack,
+        runtime,
+      ),
+    ).toBe(true);
+    for (const candidate of [
+      [ownershipWorker, path.join(localAppData, "outside.sqlite")],
+      [...ownershipArgs, "--extra"],
+      [workerPath, args[3]],
+    ]) {
+      expect(
+        cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, candidate, ownershipStack, runtime),
+      ).toBe(false);
+    }
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, ownershipArgs, "untrusted", runtime),
+    ).toBe(false);
+    expect(
+      cpHooks.buildInternalSqliteWorkerInvocation(ownershipArgs, {}).options.env
+        .MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER,
+    ).toBe("ownership");
+  });
+
+  it("recognizes the pinned SQLite store worker thread as a runtime entry", () => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+        ...runtime,
+        entryPath: path.join(packageRoot, "dist", "infra", "sqlite-store.worker.js"),
+      }),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+        ...runtime,
+        entryPath: path.join(packageRoot, "dist", "infra", "untrusted.worker.js"),
+      }),
+    ).toBe(false);
+  });
+
+  it("uses the captured package root when a worker preload has no entry argv yet", () => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+        ...runtime,
+        entryPath: "",
+        packageRoot,
+      }),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+        ...runtime,
+        entryPath: "",
+        packageRoot: path.join(stateDir, "untrusted"),
+      }),
+    ).toBe(false);
+  });
+
+  it("allows scoped sessions only from trusted callers with the fixed IPC transport", () => {
+    const sessionArgs = [workerPath, args[1], "session"];
+    const options = { stdio: ["ignore", "pipe", "pipe", "ipc"] };
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, stack, runtime, options),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, stack, runtime),
+    ).toBe(false);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        sessionArgs,
+        "untrusted",
+        runtime,
+        options,
+      ),
+    ).toBe(false);
+    const invocation = cpHooks.buildInternalSqliteWorkerInvocation(sessionArgs, {
+      ...options,
+      env: { NODE_OPTIONS: "--require evil.js" },
+    });
+    expect(invocation.options.stdio).toEqual(options.stdio);
+    expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("session");
+    expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
+  });
+
+  it("validates every session database request and staging operation", () => {
+    for (const mode of ["sync", "auth-profile-rows", "operation"]) {
+      expect(
+        cpHooks.isOpenClawInternalSqliteSessionMessage({ id: 1, args: [mode, args[3]] }, runtime),
+      ).toBe(true);
+      expect(
+        cpHooks.isOpenClawInternalSqliteSessionMessage(
+          { id: 1, args: [mode, path.join(localAppData, "outside.sqlite")] },
+          runtime,
+        ),
+      ).toBe(false);
+    }
+    expect(cpHooks.isOpenClawInternalSqliteSessionMessage("close", runtime)).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteSessionMessage(
+        { id: 1, args: ["staging-create", path.join(localAppData, "openclaw")] },
+        runtime,
+      ),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteSessionMessage(
+        { id: 1, args: ["staging-retire", stagingRootV2] },
+        runtime,
+      ),
+    ).toBe(true);
+    for (const message of [
+      null,
+      {},
+      { id: 1, args: ["write", args[3]] },
+      { id: 1, args: ["sync", "relative.sqlite"] },
+      { id: 1, args: ["sync", args[3], path.join(stateDir, "output")] },
+      { id: 1, args: ["staging-create", stateDir] },
+      { id: 1, args: ["staging-retire", path.join(localAppData, "openclaw", "credentials")] },
+      { id: 1, args: ["reclaim", localAppData] },
+      { id: 1, transfer: { type: "execute" } },
+    ]) {
+      expect(cpHooks.isOpenClawInternalSqliteSessionMessage(message, runtime)).toBe(false);
+    }
+    expect(
+      cpHooks.isOpenClawInternalSqliteSessionMessage(
+        { id: 1, args: ["sync", args[3]] },
+        {
+          ...runtime,
+          realpath: (value: string) =>
+            value.toLowerCase() === args[3].toLowerCase()
+              ? path.join(localAppData, "outside.sqlite")
+              : runtime.realpath(value),
+        },
+      ),
+    ).toBe(false);
   });
 
   it.each(["async", "sync"])("accepts the 9.3 %s worker with its owned staging root", (mode) => {
@@ -2540,12 +2744,40 @@ describe("OpenClaw internal SQLite worker", () => {
     path.join(localAppData, "openclaw", "credentials"),
     stagingRoot.replace("-2056-", "-9999-"),
     path.join(stagingRoot, "nested"),
+    stagingRootV2.replace("-v2-", "-v3-"),
+    stagingRootV2.replace("139531e6", "invalid"),
+    path.join(stagingRootV2, "nested"),
   ])("rejects an unowned 9.3 staging root: %s", (staging) => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [...args, staging], stack, {
         ...runtime,
         realpath: (value: string) => value,
       }),
+    ).toBe(false);
+  });
+
+  it.each(["async", "sync"])("accepts the 10.2 %s worker's canonical v2 staging root", (mode) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [workerPath, args[1], mode, args[3], stagingRootV2],
+        stack,
+        runtime,
+      ),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [workerPath, args[1], mode, args[3], stagingRootV2],
+        stack,
+        {
+          ...runtime,
+          realpath: (value: string) =>
+            value.toLowerCase() === stagingRootV2.toLowerCase()
+              ? path.join(stateDir, path.basename(stagingRootV2))
+              : runtime.realpath(value),
+        },
+      ),
     ).toBe(false);
   });
 
@@ -2942,6 +3174,13 @@ describe("per-path independent enforcement", () => {
         expect(sandboxState.isReadBlockedPath(lockFile, false)).toBe(false);
         expect(sandboxState.isBlockedPath(snapshotFile)).toBe(false);
         expect(sandboxState.isReadBlockedPath(snapshotFile, false)).toBe(false);
+        const snapshotFileV2 = snapshotFile.replace("-2056-", "-v2-");
+        expect(sandboxState.isBlockedPath(snapshotFileV2)).toBe(false);
+        expect(sandboxState.isReadBlockedPath(snapshotFileV2, false)).toBe(false);
+        expect(sandboxState.isBlockedPath(snapshotFileV2.replace("-v2-", "-v3-"))).toBe(true);
+        expect(sandboxState.isBlockedPath(snapshotFileV2.replace("139531e6", "invalid"))).toBe(
+          true,
+        );
         expect(
           sandboxState.isBlockedPath(path.join(localAppData, "OpenClaw", "credentials.json")),
         ).toBe(true);

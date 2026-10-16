@@ -70,6 +70,7 @@ MIRROR_FALLBACK = MIRROR_NPMMIRROR
 NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
 _PARALLEL_PLUGIN_ID = "parallel"
 _PARALLEL_PLUGIN_PACKAGE = "@openclaw/parallel-plugin"
+_PARALLEL_PLUGIN_VERSION = "2026.10.2"
 _LOCAL_MODEL_PLUGIN_ID = "llama-cpp"
 _LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider"
 _LOCAL_MODEL_PLUGIN_VERSION = "2026.9.3"
@@ -2295,6 +2296,14 @@ class WindowsSetup:
         if command is None or installation is None:
             self.log.error("OpenClaw is unavailable for state migration")
             return False
+        if not self._openclaw_upgrade_required:
+            if installation.version != OPENCLAW_TARGET_VERSION:
+                self.log.error("OpenClaw version changed during the desktop-only update")
+                return False
+            # Same-version transactions back up managed files, not the databases
+            # that doctor can migrate. Leave state migration to runtime upgrades.
+            self.log.info("OpenClaw version unchanged; skipping data migrations")
+            return True
 
         state_dir = Path.home() / ".openclaw"
         env = self._get_env()
@@ -2489,11 +2498,16 @@ class WindowsSetup:
             raise RuntimeError(f"OpenClaw returned invalid JSON for {' '.join(args)}") from error
 
     def _validate_gateway_status(self) -> bool:
-        payload = self._run_openclaw_json(["gateway", "status", "--require-rpc", "--json"])
+        payload = self._run_openclaw_json(
+            ["gateway", "status", "--require-rpc", "--timeout", "30000", "--json"]
+        )
         return isinstance(payload, dict)
 
     def _validate_gateway_rpc(self, method: str) -> bool:
-        return self._run_openclaw_json(["gateway", "call", method, "--json"]) is not None
+        return (
+            self._run_openclaw_json(["gateway", "call", method, "--timeout", "30000", "--json"])
+            is not None
+        )
 
     @staticmethod
     def _contains_enabled_weixin_plugin(value: object) -> bool:
@@ -2596,6 +2610,22 @@ class WindowsSetup:
         launcher = self._find_appcontainer_launcher()
         if launcher is None:
             return False
+        installation = self._detect_openclaw_installation()
+        if installation is None:
+            self.log.error("OpenClaw runtime is missing for the AppContainer execution check")
+            return False
+        try:
+            node = self._resolve_validation_node()
+        except FileNotFoundError as error:
+            self.log.error(str(error))
+            return False
+        script = (
+            'const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");'
+            "fs.readFileSync(process.argv[1]);"
+            'const p=path.join(process.argv[2],".ac-probe-"+crypto.randomUUID());'
+            'fs.writeFileSync(p,"ok",{flag:"wx"});fs.unlinkSync(p);'
+            'console.log("microclaw-sandbox-ok");'
+        )
         result = self._run(
             [
                 str(launcher),
@@ -2603,13 +2633,14 @@ class WindowsSetup:
                 "--name",
                 "MicroClaw",
                 "--exe",
-                os.environ.get("COMSPEC", "cmd.exe"),
+                str(node),
                 "--no-window",
                 "--quiet",
                 "--",
-                "/c",
-                "echo",
-                "microclaw-sandbox-ok",
+                "-e",
+                script,
+                str(installation.package_dir / "package.json"),
+                str(Path.home() / ".openclaw" / "sandbox"),
             ],
             capture_output=True,
             text=True,
@@ -4017,7 +4048,12 @@ class WindowsSetup:
         self.log.step("Installing Parallel web search plugin…")
         try:
             result = self._run(
-                openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_PACKAGE],
+                openclaw_cmd
+                + [
+                    "plugins",
+                    "install",
+                    f"{_PARALLEL_PLUGIN_PACKAGE}@{_PARALLEL_PLUGIN_VERSION}",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -4580,6 +4616,9 @@ class WindowsSetup:
             (str(home / ".openclaw"), "rw"),
             (str(sandbox_dir), "rw"),  # Tool execution sandbox workspace
         ]
+        install_prefix = getattr(self, "install_prefix", None)
+        if install_prefix is not None:
+            dirs_to_grant.append((str(Path(install_prefix) / "node_modules" / "openclaw"), "r"))
         # Legacy zip-extract layout — still grant if present so upgrades
         # from older builds keep working.
         for legacy in LEGACY_NODE_DIRS:
@@ -4603,7 +4642,7 @@ class WindowsSetup:
                     self.log.info(f"  AppContainer ACL already configured: {dir_path}")
                     continue
                 try:
-                    subprocess.run(
+                    grant_result = subprocess.run(
                         [
                             str(launcher),
                             "grant",
@@ -4616,31 +4655,46 @@ class WindowsSetup:
                         ],
                         capture_output=True,
                         text=True,
-                        timeout=30,
+                        timeout=300,
                         creationflags=_CREATE_NO_WINDOW,
                     )
+                    if grant_result.returncode != 0:
+                        detail = grant_result.stderr.strip() or grant_result.stdout.strip()
+                        self.log.warn(f"ACL grant failed: {dir_path} — {detail}")
+                        grant_failures.append(dir_path)
                 except subprocess.TimeoutExpired:
-                    self.log.warn(f"ACL grant 超时 (30s): {dir_path} — 将在应用启动时重试")
+                    self.log.error(f"ACL grant 超时 (300s): {dir_path}")
                     grant_failures.append(dir_path)
                 except Exception as e:
                     self.log.warn(f"ACL grant 失败: {dir_path} — {e}")
                     grant_failures.append(dir_path)
 
-        # 3b. Grant minimal traverse (no inherit) on user home and C:\Users
-        # so Node.js realpathSync() can lstat ancestor directories.
-        # This does NOT give read access to other user profile contents.
-        for ancestor in [str(home), str(home.parent)]:
-            if Path(ancestor).exists():
-                try:
-                    subprocess.run(
-                        ["icacls", ancestor, "/grant", f"{sid}:(REA,RA,X)"],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        creationflags=_CREATE_NO_WINDOW,
-                    )
-                except Exception as e:
-                    self.log.warn(f"Traverse ACL 设置失败: {ancestor} — {e}")
+        # Recheck ancestors even when the sandbox itself already has an ACL.
+        # The native helper skips existing metadata-only grants rather than
+        # rewriting the home directory DACL on every installation.
+        try:
+            traverse_result = subprocess.run(
+                [
+                    str(launcher),
+                    "grant",
+                    "--name",
+                    container_name,
+                    "--dir",
+                    str(sandbox_dir),
+                    "--access",
+                    "rw",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            if traverse_result.returncode != 0:
+                self.log.warn(f"Traverse ACL 设置失败: {traverse_result.stderr.strip()}")
+                grant_failures.append(str(sandbox_dir))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.log.warn(f"Traverse ACL 设置失败: {error}")
+            grant_failures.append(str(sandbox_dir))
 
         # 3c. Grant traverse on all fixed drive roots + C:\Users (needs admin elevation)
         # This lets AppContainer processes reach paths on any drive (e.g. D:\Documents).
@@ -4688,8 +4742,12 @@ class WindowsSetup:
 
         if grant_failures:
             self.log.warn(
-                f"部分 ACL 设置未完成 ({len(grant_failures)} 个目录)，应用启动时将自动重试"
+                f"部分 ACL 设置未完成 ({len(grant_failures)} 个目录)，验证实际沙箱读写权限"
             )
+            if not self._validate_appcontainer_smoke():
+                self.log.error("AppContainer runtime read/write verification failed")
+                return False
+            self.log.info("Existing permissions passed the sandboxed Node runtime read/write check")
         self.log.success(f"AppContainer 沙箱 '{container_name}' 配置完成")
         return True
 

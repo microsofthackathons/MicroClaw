@@ -22,6 +22,7 @@ interface AppSettings {
   minimizeToTray: boolean;
   themeMode: string;
   accentColor: string;
+  modelFormSelections?: Record<string, string>;
   privacyLevel: "basic" | "strict";
   privacyControls?: {
     phone: boolean;
@@ -355,6 +356,12 @@ interface OpenClawAPI {
     ): Promise<{ modelRef: string }>;
     session: import("../src/session-model-types").SessionModelAPI;
     local: import("../src/local-model-types").LocalModelAPI;
+    discoverModels(
+      params: import("../src/provider-model-catalog").ProviderCatalogInput,
+    ): Promise<import("../src/provider-model-catalog").ProviderCatalogResult>;
+    registerCatalogModel(
+      params: import("../src/provider-model-registration").ProviderCatalogSelection,
+    ): Promise<void>;
     testConnection(params: {
       baseUrl: string;
       apiKey: string;

@@ -195,7 +195,9 @@ function isOpenClawSqliteRuntimePath(resolvedLower) {
   var relative = resolvedLower.slice(_openClawLocalRuntimeRoot.length);
   if (relative === "locks" || relative.indexOf("locks" + path.sep) === 0) return true;
   var firstSegment = relative.split(path.sep)[0];
-  return /^openclaw-sqlite-readonly-\d+-[0-9a-f-]{36}$/i.test(firstSegment);
+  return /^openclaw-sqlite-readonly-(?:\d+|v2)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    firstSegment,
+  );
 }
 
 function isSafeReadProbe(resolvedLower) {
