@@ -341,10 +341,16 @@ export default {
   "settings.windowsNodeMxcUseOff": "Turn containment off",
   "settings.windowsNodeMxcConsent.title": "Enable {mode}?",
   "settings.windowsNodeMxcConsent.summary":
-    "Before MicroClaw changes any setting or lifecycle state, review what {mode} makes unavailable, pauses, and keeps available with restrictions.",
-  "settings.windowsNodeMxcConsent.group.disabled": "Disabled while MXC is requested",
-  "settings.windowsNodeMxcConsent.group.paused": "Paused while MXC is active",
-  "settings.windowsNodeMxcConsent.group.available-restricted": "Available with restrictions",
+    "Review the security impact of {mode} before enabling it.",
+  "settings.windowsNodeMxcConsent.group.disabled": "Unavailable",
+  "settings.windowsNodeMxcConsent.group.paused": "Paused",
+  "settings.windowsNodeMxcConsent.group.available-restricted": "Restricted",
+  "settings.windowsNodeMxcConsent.groupSummary.disabled":
+    "Gateway file tools, browser automation, MCP, screen/camera/location/speech, and Gateway memory.",
+  "settings.windowsNodeMxcConsent.groupSummary.paused":
+    "Scheduled jobs (no catch-up) and hooks/webhooks (webhooks return 503; events are dropped; no replay).",
+  "settings.windowsNodeMxcConsent.groupSummary.available-restricted":
+    "exec only through Windows Node + MXC + approval; Gateway web_search/web_fetch, allowlisted WeChat, and reviewed Canvas A2UI.",
   "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
     "Gateway-native filesystem tools are disabled: read, write, edit, and apply_patch.",
   "settings.windowsNodeMxcConsent.item.browser-automation": "Browser automation is disabled.",
@@ -369,11 +375,11 @@ export default {
   "settings.windowsNodeMxcConsent.item.canvas-phase-1":
     "Canvas Phase 1 remains available only for reviewed native A2UI operations. General navigation, eval, and external or local content remain unavailable.",
   "settings.windowsNodeMxcConsent.fullNote":
-    "Full containment is the exact filesystem boundary. Confirmation does not guarantee activation; backend preflight can still fail.",
+    "Full containment is an exclusive filesystem boundary, subject to backend preflight.",
   "settings.windowsNodeMxcConsent.limitedNote":
-    "Limited containment adds DACL grants and is not an exclusive filesystem boundary. A separate Limited acknowledgement is still required before activation.",
+    "Limited containment adds DACL grants, is not an exclusive boundary, and requires separate acknowledgement.",
   "settings.windowsNodeMxcConsent.repeatNote":
-    "MicroClaw asks again for every explicit enable or switch between Full and Limited containment.",
+    "You'll confirm each enable and every Full/Limited switch.",
   "settings.windowsNodeMxcConsent.enable": "Enable MXC",
   "settings.windowsNodeMxcRequestedMode": "Requested mode",
   "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
@@ -1065,6 +1071,7 @@ export default {
     "Saved jobs are preserved. Changes and run-now are unavailable; enabled jobs resume at their next future schedule after MXC is turned off, without catch-up.",
 
   // ── Common ──
+  "common.cancel": "Cancel",
   "common.close": "Close",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",

@@ -87,22 +87,14 @@ watch(
       :data-testid="`mxc-consent-group-${group.id}`"
     >
       <h3>{{ t(group.titleKey) }}</h3>
-      <ul>
-        <li v-for="item in group.items" :key="item.id" :data-disclosure-item="item.id">
-          {{ t(item.translationKey) }}
-        </li>
-      </ul>
+      <p>{{ t(group.summaryKey) }}</p>
     </section>
     <p class="mxc-consent-mode-note">{{ modeNote }}</p>
     <p class="mxc-consent-repeat-note">
       {{ t("settings.windowsNodeMxcConsent.repeatNote") }}
     </p>
     <template #footer>
-      <el-button
-        data-testid="mxc-consent-cancel"
-        :disabled="busy"
-        @click="cancel"
-      >
+      <el-button data-testid="mxc-consent-cancel" :disabled="busy" @click="cancel">
         {{ t("common.cancel") }}
       </el-button>
       <el-button
@@ -142,15 +134,10 @@ watch(
   font-size: 14px;
 }
 
-.mxc-consent-group ul {
+.mxc-consent-group p {
   margin: 0;
-  padding-left: 20px;
   color: var(--text-secondary);
   line-height: 1.5;
-}
-
-.mxc-consent-group li + li {
-  margin-top: 5px;
 }
 
 .mxc-consent-mode-note {

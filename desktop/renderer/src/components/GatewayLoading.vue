@@ -180,7 +180,9 @@ const isMxcTransition = computed(
     !["active", "idle", "locked", "failed"].includes(props.mxcPhase ?? ""),
 );
 const isFailed = computed(
-  () => isMxcFailure.value || props.status === "timeout" || props.status === "failed",
+  () =>
+    isMxcFailure.value ||
+    (!isMxcTransition.value && (props.status === "timeout" || props.status === "failed")),
 );
 const displayError = computed(() => props.mxcDetail || props.errorMessage);
 const mxcStrengthText = computed(() => {

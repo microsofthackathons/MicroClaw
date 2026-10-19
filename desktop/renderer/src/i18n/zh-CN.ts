@@ -319,11 +319,16 @@ export default {
   "settings.windowsNodeMxcUseLimited": "使用有限隔离",
   "settings.windowsNodeMxcUseOff": "关闭隔离",
   "settings.windowsNodeMxcConsent.title": "启用{mode}？",
-  "settings.windowsNodeMxcConsent.summary":
-    "在 MicroClaw 更改任何设置或生命周期状态之前，请确认{mode}会禁用、暂停以及受限保留哪些能力。",
-  "settings.windowsNodeMxcConsent.group.disabled": "请求 MXC 时禁用",
-  "settings.windowsNodeMxcConsent.group.paused": "MXC 活动期间暂停",
-  "settings.windowsNodeMxcConsent.group.available-restricted": "受限可用",
+  "settings.windowsNodeMxcConsent.summary": "启用{mode}前，请确认以下安全影响。",
+  "settings.windowsNodeMxcConsent.group.disabled": "不可用",
+  "settings.windowsNodeMxcConsent.group.paused": "暂停",
+  "settings.windowsNodeMxcConsent.group.available-restricted": "受限保留",
+  "settings.windowsNodeMxcConsent.groupSummary.disabled":
+    "网关文件工具、浏览器自动化、MCP、屏幕/摄像头/位置/语音及网关内存。",
+  "settings.windowsNodeMxcConsent.groupSummary.paused":
+    "定时任务（不会补跑）及 Hooks/Webhook（返回 503 或丢弃事件，且不重放）。",
+  "settings.windowsNodeMxcConsent.groupSummary.available-restricted":
+    "exec 仅经 Windows Node、MXC 和命令审批；网关 web_search/web_fetch、允许列表内微信及已审查的画布 A2UI。",
   "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
     "禁用网关原生文件系统工具：read、write、edit 和 apply_patch。",
   "settings.windowsNodeMxcConsent.item.browser-automation": "禁用浏览器自动化。",
@@ -346,12 +351,10 @@ export default {
     "允许列表内的微信/message 仅在本地释放门控以及批准/媒体代理检查后可用。",
   "settings.windowsNodeMxcConsent.item.canvas-phase-1":
     "画布第一阶段仅保留已审查的原生 A2UI 操作。通用导航、脚本求值以及外部或本地内容仍不可用。",
-  "settings.windowsNodeMxcConsent.fullNote":
-    "完整隔离提供精确文件系统边界。确认不保证能够激活；后端预检仍可能失败。",
+  "settings.windowsNodeMxcConsent.fullNote": "完整隔离提供排他文件系统边界，但仍需通过后端预检。",
   "settings.windowsNodeMxcConsent.limitedNote":
-    "有限隔离会叠加 DACL 授权，并非排他文件系统边界。激活前仍必须完成单独的有限模式确认。",
-  "settings.windowsNodeMxcConsent.repeatNote":
-    "每次明确启用 MXC，或在完整与有限隔离之间切换时，MicroClaw 都会再次询问。",
+    "有限隔离叠加 DACL 授权，并非排他边界，且仍需单独确认。",
+  "settings.windowsNodeMxcConsent.repeatNote": "每次启用或切换完整/有限隔离时都需确认。",
   "settings.windowsNodeMxcConsent.enable": "启用 MXC",
   "settings.windowsNodeMxcRequestedMode": "请求的模式",
   "settings.windowsNodeMxcAttestedStrength": "经证明的实际强度",
@@ -994,6 +997,7 @@ export default {
     "已保存的任务会保留。MXC 开启期间无法修改或立即运行；关闭 MXC 后，原本启用的任务会从下一个未来计划时间恢复，不会补跑错过的任务。",
 
   // ── Common ──
+  "common.cancel": "取消",
   "common.close": "关闭",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",

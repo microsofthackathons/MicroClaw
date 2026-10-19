@@ -211,6 +211,10 @@ import {
 } from "./windows-node-mxc-folder-transaction";
 import { runWindowsNodeMxcAutomaticTransition } from "./windows-node-mxc-auto-transition";
 import {
+  WindowsNodeMxcLifecycleOperationCoordinator,
+  type WindowsNodeMxcLifecycleOperationDescriptor,
+} from "./windows-node-mxc-lifecycle-operation";
+import {
   attestWindowsNodeMxcGatewaySnapshot,
   promoteWindowsNodeMxcPolicy,
   type GatewayConfigSnapshot,
@@ -610,6 +614,7 @@ let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
 let windowsNodeMxcSecurityTransitionInProgress = false;
 let windowsNodeMxcReadinessTransitionId: string | null = null;
+const windowsNodeMxcLifecycleOperations = new WindowsNodeMxcLifecycleOperationCoordinator();
 let windowsNodeMxcFolderPolicyMutationInProgress = false;
 let windowsNodeMxcLifecycleState: WindowsNodeMxcFolderTransactionPhase = "idle";
 let windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
@@ -711,6 +716,24 @@ function beginWindowsNodeMxcLifecycleOperation(): void {
 function endWindowsNodeMxcLifecycleOperation(): void {
   windowsNodeMxcSecurityTransitionInProgress = false;
   windowsNodeMxcReadinessTransitionId = null;
+}
+
+function windowsNodeMxcLifecycleOperationHooks() {
+  return {
+    beforeStart: beginWindowsNodeMxcLifecycleOperation,
+    afterSettled: endWindowsNodeMxcLifecycleOperation,
+  };
+}
+
+function runTrackedWindowsNodeMxcLifecycleOperation<T>(
+  descriptor: WindowsNodeMxcLifecycleOperationDescriptor,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return windowsNodeMxcLifecycleOperations.run(
+    descriptor,
+    operation,
+    windowsNodeMxcLifecycleOperationHooks(),
+  );
 }
 
 async function withWindowsNodeMxcApprovalResolution<T>(operation: () => Promise<T>): Promise<T> {
@@ -2320,12 +2343,9 @@ async function startApplicationServices(): Promise<void> {
     return;
   }
 
-  beginWindowsNodeMxcLifecycleOperation();
-  try {
-    await runAutomaticWindowsNodeMxcReadiness();
-  } finally {
-    endWindowsNodeMxcLifecycleOperation();
-  }
+  await runTrackedWindowsNodeMxcLifecycleOperation({ kind: "startup" }, () =>
+    runAutomaticWindowsNodeMxcReadiness(),
+  );
   notifyRendererApplicationReady();
 }
 
@@ -7474,25 +7494,34 @@ function registerIpcHandlers(): void {
         nodeId?: string;
       },
     ) => {
-      localModelService.assertIdle();
-      sessionModelService.assertIdle();
-      beginWindowsNodeMxcLifecycleOperation();
+      const requestedMode =
+        params?.requestedMode ??
+        (params?.enabled === true ? "full" : params?.enabled === false ? "off" : null);
+      if (
+        requestedMode !== "off" &&
+        requestedMode !== "full" &&
+        requestedMode !== "limited-dacl"
+      ) {
+        throw new Error("A valid MXC containment mode is required");
+      }
+      const lifecycleOperation = windowsNodeMxcLifecycleOperations.acquire<
+        WindowsNodeMxcRuntimeStatus
+      >(
+        { kind: "set-enabled", requestedMode },
+        windowsNodeMxcLifecycleOperationHooks(),
+      );
+      if (lifecycleOperation.joined) return lifecycleOperation.promise;
       let transitionSucceeded = false;
       let automaticReadinessStarted = false;
       let transitionMutationStarted = false;
       let cronSuspendedBeforePreflight = false;
       let standardRuntimeRecovered = false;
+      let lifecycleError: unknown = new Error(
+        "Windows Node + MXC lifecycle operation ended without a result",
+      );
       try {
-        const requestedMode =
-          params?.requestedMode ??
-          (params?.enabled === true ? "full" : params?.enabled === false ? "off" : null);
-        if (
-          requestedMode !== "off" &&
-          requestedMode !== "full" &&
-          requestedMode !== "limited-dacl"
-        ) {
-          throw new Error("A valid MXC containment mode is required");
-        }
+        localModelService.assertIdle();
+        sessionModelService.assertIdle();
         const enabled = requestedMode !== "off";
         const currentSelection = getWindowsNodeMxcSelection();
         const nextSelection = createWindowsNodeMxcSelection(
@@ -7578,6 +7607,7 @@ function registerIpcHandlers(): void {
           automaticReadinessStarted = true;
           const status = await runAutomaticWindowsNodeMxcReadiness();
           transitionSucceeded = true;
+          lifecycleOperation.succeed(status);
           return status;
         } else {
           stopBundledWindowsNodeHost();
@@ -7632,9 +7662,12 @@ function registerIpcHandlers(): void {
           await waitForWindowsNodeMxcCronResumeAcknowledgement();
           setWindowsNodeMxcLifecycleState("idle");
           transitionSucceeded = true;
-          return getWindowsNodeMxcStatus();
+          const status = await getWindowsNodeMxcStatus();
+          lifecycleOperation.succeed(status);
+          return status;
         }
       } catch (error) {
+        lifecycleError = error;
         const detail = error instanceof Error ? error.message : String(error);
         if (isWindowsNodeMxcDesired()) {
           setWindowsNodeMxcLifecycleState("locked", detail);
@@ -7663,11 +7696,13 @@ function registerIpcHandlers(): void {
                 `MXC preflight failed and the standard Gateway could not be restored: ${recoveryDetail}`,
               );
               setGatewayStatus("failed");
-              throw new AggregateError(
+              const aggregateError = new AggregateError(
                 [error, recoveryError],
                 `MXC preflight failed and the standard Gateway could not be restored: ${recoveryDetail}`,
                 { cause: recoveryError },
               );
+              lifecycleError = aggregateError;
+              throw aggregateError;
             }
           } else if (transitionMutationStarted) {
             try {
@@ -7681,7 +7716,7 @@ function registerIpcHandlers(): void {
         }
         throw error;
       } finally {
-        endWindowsNodeMxcLifecycleOperation();
+        if (!lifecycleOperation.settled) lifecycleOperation.fail(lifecycleError);
         if (transitionSucceeded || standardRuntimeRecovered) notifyRendererApplicationReady();
       }
     },
@@ -8284,7 +8319,10 @@ function registerIpcHandlers(): void {
       if (!isWindowsNodeMxcDesired()) {
         throw new Error("Apply and reactivate requires Windows Node + MXC mode");
       }
-      beginWindowsNodeMxcLifecycleOperation();
+      const lifecycleOperation = windowsNodeMxcLifecycleOperations.acquire<
+        WindowsNodeMxcRuntimeStatus
+      >({ kind: "apply-folder-policy" }, windowsNodeMxcLifecycleOperationHooks());
+      if (lifecycleOperation.joined) return lifecycleOperation.promise;
       try {
         windowsNodeMxcActivationInProgress = true;
         const previous = currentSandboxUserDirs();
@@ -8543,10 +8581,14 @@ function registerIpcHandlers(): void {
             }
           },
         });
-        return await getWindowsNodeMxcStatus();
+        const status = await getWindowsNodeMxcStatus();
+        lifecycleOperation.succeed(status);
+        return status;
+      } catch (error) {
+        lifecycleOperation.fail(error);
+        throw error;
       } finally {
         windowsNodeMxcActivationInProgress = false;
-        endWindowsNodeMxcLifecycleOperation();
       }
     },
   );

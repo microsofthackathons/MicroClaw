@@ -44,28 +44,28 @@ enableAutoUnmount(afterEach);
 afterEach(() => setLocale("en-US"));
 
 describe("MxcCapabilityConsentDialog", () => {
-  it("renders the versioned policy groups and Full boundary in English", () => {
+  it("renders compact policy groups, translated Cancel, and Full consent in English", () => {
     setLocale("en-US");
     const wrapper = mountDialog("full");
 
     expect(wrapper.find(".stub-title").text()).toBe("Enable Full containment?");
     expect(wrapper.find('[data-testid="mxc-consent-group-disabled"]').text()).toContain(
-      "read, write, edit, and apply_patch",
+      "Gateway file tools",
     );
     expect(wrapper.find('[data-testid="mxc-consent-group-disabled"]').text()).toContain(
-      "default Gateway memory plugin",
+      "Gateway memory",
     );
     expect(wrapper.find('[data-testid="mxc-consent-group-paused"]').text()).toContain(
       "no catch-up",
     );
-    expect(wrapper.find('[data-testid="mxc-consent-group-paused"]').text()).toContain(
-      "return 503",
-    );
+    expect(wrapper.find('[data-testid="mxc-consent-group-paused"]').text()).toContain("return 503");
     expect(wrapper.find('[data-testid="mxc-consent-group-available-restricted"]').text()).toContain(
-      "Canvas Phase 1",
+      "reviewed Canvas A2UI",
     );
-    expect(wrapper.text()).toContain("backend preflight can still fail");
-    expect(wrapper.text()).toContain("asks again for every explicit enable or switch");
+    expect(wrapper.text()).toContain("exclusive filesystem boundary");
+    expect(wrapper.text()).toContain("every Full/Limited switch");
+    expect(wrapper.text().length).toBeLessThan(700);
+    expect(wrapper.find('[data-testid="mxc-consent-cancel"]').text()).toBe("Cancel");
   });
 
   it("renders natural Limited disclosure and retained acknowledgement in Chinese", () => {
@@ -73,10 +73,12 @@ describe("MxcCapabilityConsentDialog", () => {
     const wrapper = mountDialog("limited-dacl");
 
     expect(wrapper.find(".stub-title").text()).toBe("启用有限隔离（DACL）？");
-    expect(wrapper.text()).toContain("暂停 Cron 和计划任务");
-    expect(wrapper.text()).toContain("仅限 HTTP(S) 的 web_fetch");
+    expect(wrapper.text()).toContain("定时任务（不会补跑）");
+    expect(wrapper.text()).toContain("web_search/web_fetch");
     expect(wrapper.text()).toContain("叠加 DACL 授权");
-    expect(wrapper.text()).toContain("仍必须完成单独的有限模式确认");
+    expect(wrapper.text()).toContain("仍需单独确认");
+    expect(wrapper.text().length).toBeLessThan(400);
+    expect(wrapper.find('[data-testid="mxc-consent-cancel"]').text()).toBe("取消");
     expect(wrapper.find('[data-testid="mxc-consent-accept"]').text()).toBe("启用 MXC");
   });
 
@@ -96,9 +98,7 @@ describe("MxcCapabilityConsentDialog", () => {
     wrapper.findComponent(dialogStub).vm.$emit("opened");
     await wrapper.vm.$nextTick();
 
-    expect(document.activeElement).toBe(
-      wrapper.find('[data-testid="mxc-consent-accept"]').element,
-    );
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="mxc-consent-accept"]').element);
   });
 
   it("cancels from the button and close, Escape, or backdrop close path", async () => {

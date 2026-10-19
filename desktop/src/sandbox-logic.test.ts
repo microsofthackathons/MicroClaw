@@ -2510,12 +2510,18 @@ describe("OpenClaw internal SQLite worker", () => {
     "openclaw",
     "openclaw-sqlite-readonly-2056-139531e6-3179-429e-90e2-f16d5a267869",
   );
-  const stagingRootV2 = path.join(
+  const v2StagingRoot = path.join(
     localAppData,
     "openclaw",
-    "openclaw-sqlite-readonly-v2-139531e6-3179-429e-90e2-f16d5a267869",
+    "openclaw-sqlite-readonly-v2-4eabcf36-115b-4364-bf51-54f01a133ae8",
   );
   const workerPath = path.join(packageRoot, "dist", "infra", "sqlite-readonly-location.worker.js");
+  const ownershipWorkerPath = path.join(
+    packageRoot,
+    "dist",
+    "state",
+    "openclaw-state-ownership.worker.js",
+  );
   const args = [
     workerPath,
     "--openclaw-sqlite-readonly-child",
@@ -2524,19 +2530,34 @@ describe("OpenClaw internal SQLite worker", () => {
   ];
   const stack = `Error
     at prepareSqliteReadOnlyLocation (file:///${packageRoot.replace(/\\/g, "/")}/dist/sqlite-readonly-location-AbCd1234.js:662:3)`;
+  const ownershipStack = `Error
+    at runOneShotSqliteInspection (file:///${packageRoot.replace(/\\/g, "/")}/dist/sqlite-readonly-worker-D332MPKZ.mjs:295:17)
+    at inspectOpenClawStateOwnershipWithWorker (file:///${packageRoot.replace(/\\/g, "/")}/dist/openclaw-state-ownership-CKhlIzK8.mjs:78:10)`;
+  const ownershipOptions = {
+    encoding: "utf8",
+    env: {
+      NODE_OPTIONS: '--require "C:\\Users\\test\\.openclaw\\payload.js"',
+      NODE_PATH: "C:\\Users\\test\\.openclaw\\modules",
+    },
+    cwd: undefined,
+    maxBuffer: 1048576,
+    timeout: 309_000,
+    killSignal: "SIGKILL",
+  };
   const canonical = new Map([
     [packageRoot.toLowerCase(), packageRoot],
     [stateDir.toLowerCase(), stateDir],
     [args[3].toLowerCase(), args[3]],
     [path.join(localAppData, "openclaw").toLowerCase(), path.join(localAppData, "openclaw")],
     [stagingRoot.toLowerCase(), stagingRoot],
-    [stagingRootV2.toLowerCase(), stagingRootV2],
+    [v2StagingRoot.toLowerCase(), v2StagingRoot],
   ]);
   const runtime = {
     entryPath,
     execPath,
     stateDir,
     localAppData,
+    cwd: packageRoot,
     pid: 2056,
     realpath: (value: string) => {
       const resolved = canonical.get(value.toLowerCase());
@@ -2557,7 +2578,7 @@ describe("OpenClaw internal SQLite worker", () => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, reclaimArgs, stack, runtime),
     ).toBe(true);
-    for (const target of [stateDir, localAppData, stagingRootV2, "relative"]) {
+    for (const target of [stateDir, localAppData, v2StagingRoot, "relative"]) {
       expect(
         cpHooks.isOpenClawInternalSqliteWorkerCommand(
           execPath,
@@ -2573,44 +2594,6 @@ describe("OpenClaw internal SQLite worker", () => {
         realpath: () => stateDir,
       }),
     ).toBe(false);
-  });
-
-  it("limits the state ownership reader to its exact worker, caller, and state database", () => {
-    const ownershipWorker = path.join(
-      packageRoot,
-      "dist",
-      "state",
-      "openclaw-state-ownership.worker.js",
-    );
-    const ownershipStack = stack.replace(
-      "sqlite-readonly-location-AbCd1234.js",
-      "openclaw-state-ownership-AbCd1234.mjs",
-    );
-    const ownershipArgs = [ownershipWorker, args[3]];
-    expect(
-      cpHooks.isOpenClawInternalSqliteWorkerCommand(
-        execPath,
-        ownershipArgs,
-        ownershipStack,
-        runtime,
-      ),
-    ).toBe(true);
-    for (const candidate of [
-      [ownershipWorker, path.join(localAppData, "outside.sqlite")],
-      [...ownershipArgs, "--extra"],
-      [workerPath, args[3]],
-    ]) {
-      expect(
-        cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, candidate, ownershipStack, runtime),
-      ).toBe(false);
-    }
-    expect(
-      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, ownershipArgs, "untrusted", runtime),
-    ).toBe(false);
-    expect(
-      cpHooks.buildInternalSqliteWorkerInvocation(ownershipArgs, {}).options.env
-        .MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER,
-    ).toBe("ownership");
   });
 
   it("recognizes the pinned SQLite store worker thread as a runtime entry", () => {
@@ -2645,33 +2628,6 @@ describe("OpenClaw internal SQLite worker", () => {
     ).toBe(false);
   });
 
-  it("allows scoped sessions only from trusted callers with the fixed IPC transport", () => {
-    const sessionArgs = [workerPath, args[1], "session"];
-    const options = { stdio: ["ignore", "pipe", "pipe", "ipc"] };
-    expect(
-      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, stack, runtime, options),
-    ).toBe(true);
-    expect(
-      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, stack, runtime),
-    ).toBe(false);
-    expect(
-      cpHooks.isOpenClawInternalSqliteWorkerCommand(
-        execPath,
-        sessionArgs,
-        "untrusted",
-        runtime,
-        options,
-      ),
-    ).toBe(false);
-    const invocation = cpHooks.buildInternalSqliteWorkerInvocation(sessionArgs, {
-      ...options,
-      env: { NODE_OPTIONS: "--require evil.js" },
-    });
-    expect(invocation.options.stdio).toEqual(options.stdio);
-    expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("session");
-    expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
-  });
-
   it("validates every session database request and staging operation", () => {
     for (const mode of ["sync", "auth-profile-rows", "operation"]) {
       expect(
@@ -2693,7 +2649,7 @@ describe("OpenClaw internal SQLite worker", () => {
     ).toBe(true);
     expect(
       cpHooks.isOpenClawInternalSqliteSessionMessage(
-        { id: 1, args: ["staging-retire", stagingRootV2] },
+        { id: 1, args: ["staging-retire", v2StagingRoot] },
         runtime,
       ),
     ).toBe(true);
@@ -2724,6 +2680,15 @@ describe("OpenClaw internal SQLite worker", () => {
     ).toBe(false);
   });
 
+  it("accepts the trusted package directory used before Node initializes argv[1]", () => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+        ...runtime,
+        entryPath: packageRoot,
+      }),
+    ).toBe(true);
+  });
+
   it.each(["async", "sync"])("accepts the 9.3 %s worker with its owned staging root", (mode) => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(
@@ -2738,15 +2703,51 @@ describe("OpenClaw internal SQLite worker", () => {
     ).toBe(true);
   });
 
+  it.each(["async", "sync"])("accepts the 10.2 %s worker with its v2 staging root", (mode) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [workerPath, args[1], mode, args[3], v2StagingRoot],
+        stack.replace(
+          "sqlite-readonly-location-AbCd1234.js",
+          "sqlite-readonly-worker-session-DK-j16po.mjs",
+        ),
+        runtime,
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a not-yet-created 10.2 v2 staging root under the canonical parent", () => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [workerPath, args[1], "sync", args[3], v2StagingRoot],
+        stack.replace(
+          "sqlite-readonly-location-AbCd1234.js",
+          "sqlite-readonly-worker-D332MPKZ.mjs",
+        ),
+        {
+          ...runtime,
+          realpath: (value: string) => {
+            if (value.toLowerCase() === v2StagingRoot.toLowerCase()) {
+              throw new Error("ENOENT");
+            }
+            return runtime.realpath(value);
+          },
+        },
+      ),
+    ).toBe(true);
+  });
+
   it.each([
     "relative",
     path.join(stateDir, "output"),
     path.join(localAppData, "openclaw", "credentials"),
     stagingRoot.replace("-2056-", "-9999-"),
+    v2StagingRoot.replace("-v2-", "-v3-"),
     path.join(stagingRoot, "nested"),
-    stagingRootV2.replace("-v2-", "-v3-"),
-    stagingRootV2.replace("139531e6", "invalid"),
-    path.join(stagingRootV2, "nested"),
+    v2StagingRoot.replace("4eabcf36", "invalid"),
+    path.join(v2StagingRoot, "nested"),
   ])("rejects an unowned 9.3 staging root: %s", (staging) => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [...args, staging], stack, {
@@ -2760,7 +2761,7 @@ describe("OpenClaw internal SQLite worker", () => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(
         execPath,
-        [workerPath, args[1], mode, args[3], stagingRootV2],
+        [workerPath, args[1], mode, args[3], v2StagingRoot],
         stack,
         runtime,
       ),
@@ -2768,13 +2769,13 @@ describe("OpenClaw internal SQLite worker", () => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(
         execPath,
-        [workerPath, args[1], mode, args[3], stagingRootV2],
+        [workerPath, args[1], mode, args[3], v2StagingRoot],
         stack,
         {
           ...runtime,
           realpath: (value: string) =>
-            value.toLowerCase() === stagingRootV2.toLowerCase()
-              ? path.join(stateDir, path.basename(stagingRootV2))
+            value.toLowerCase() === v2StagingRoot.toLowerCase()
+              ? path.join(stateDir, path.basename(v2StagingRoot))
               : runtime.realpath(value),
         },
       ),
@@ -2796,6 +2797,56 @@ describe("OpenClaw internal SQLite worker", () => {
         execPath,
         [...args, stagingRoot, "--extra"],
         stack,
+        runtime,
+      ),
+    ).toBe(false);
+  });
+
+  it.each(["managed-handoff-runtime.mjs", "package-update-activation-recovery.mjs"])(
+    "accepts the exact 10.2 synchronous bundled caller: %s",
+    (caller) => {
+      const callerStack = `Error
+    at runSqliteReadOnlyWorkerSync (file:///${packageRoot.replace(/\\/g, "/")}/dist/${caller}:68862:17)`;
+      expect(
+        cpHooks.isOpenClawInternalSqliteWorkerCommand(
+          execPath,
+          [workerPath, args[1], "sync", args[3], v2StagingRoot],
+          callerStack,
+          runtime,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("accepts the exact 10.2 native hook relay synchronous caller", () => {
+    const callerStack = `Error
+    at runSqliteReadOnlyWorkerSync (file:///${packageRoot.replace(/\\/g, "/")}/dist/native-hook-relay/sqlite-snapshot-staging-owner-CsdVvH7b.mjs:56:17)
+    at prepareSqliteReadOnlyLocationSync (file:///${packageRoot.replace(/\\/g, "/")}/dist/native-hook-relay/openclaw-state-db-ClAmqQEf.mjs:370:21)`;
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [workerPath, args[1], "sync", args[3], v2StagingRoot],
+        callerStack,
+        runtime,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    "Error\n    at otherFunction (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/managed-handoff-runtime.mjs:68862:17)",
+    "Error\n    at runSqliteReadOnlyWorkerSync (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/managed-handoff-runtime-copy.mjs:68862:17)",
+    "Error\n    at runSqliteReadOnlyWorkerSync (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/package-update-activation.mjs:69558:17)",
+    "Error\n    at prepareSqliteReadOnlyLocation (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/sqlite-readonly-location-copy.js:662:3)",
+    "Error\n    at runSqliteReadOnlyWorkerSync (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/sqlite-readonly-worker-copy.mjs:353:17)",
+    "Error\n    at otherFunction (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/native-hook-relay/sqlite-snapshot-staging-owner-CsdVvH7b.mjs:56:17)",
+    "Error\n    at runSqliteReadOnlyWorkerSync (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/native-hook-relay/sqlite-snapshot-staging-owner-copy.mjs:56:17)",
+    "Error\n    at runSqliteReadOnlyWorkerSync (file:///C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/native-hook-relay-copy/sqlite-snapshot-staging-owner-CsdVvH7b.mjs:56:17)",
+  ])("rejects a lookalike 10.2 bundled caller", (callerStack) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [workerPath, args[1], "sync", args[3], v2StagingRoot],
+        callerStack,
         runtime,
       ),
     ).toBe(false);
@@ -2871,6 +2922,293 @@ describe("OpenClaw internal SQLite worker", () => {
     expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
     expect(invocation.options.env.NODE_PATH).toBeUndefined();
     expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("1");
+  });
+
+  it("accepts only the exact 10.2 state ownership worker contract", () => {
+    const ownershipArgs = [ownershipWorkerPath, args[3]];
+    expect(
+      cpHooks.isOpenClawInternalStateOwnershipWorkerCommand(
+        execPath,
+        ownershipArgs,
+        ownershipStack,
+        runtime,
+        ownershipOptions,
+      ),
+    ).toBe(true);
+
+    const invocation = cpHooks.buildInternalStateOwnershipWorkerInvocation(
+      ownershipArgs,
+      ownershipOptions,
+    );
+    expect(invocation.args.slice(0, 2)).toEqual([
+      "--require",
+      expect.stringMatching(/sandbox-preload\.js$/),
+    ]);
+    expect(invocation.args.slice(2)).toEqual(ownershipArgs);
+    expect(invocation.options.encoding).toBe("utf8");
+    expect(invocation.options.maxBuffer).toBe(1048576);
+    expect(invocation.options.timeout).toBe(309_000);
+    expect(invocation.options.killSignal).toBe("SIGKILL");
+    expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
+    expect(invocation.options.env.NODE_PATH).toBeUndefined();
+    expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("ownership");
+  });
+
+  it.each([
+    [
+      "worker path",
+      [path.join(packageRoot, "dist", "state", "other.worker.js"), args[3]],
+      ownershipStack,
+      ownershipOptions,
+    ],
+    [
+      "database scope",
+      [
+        ownershipWorkerPath,
+        "C:\\Users\\test\\AppData\\Local\\Google\\Chrome\\User Data\\Cookies.sqlite",
+      ],
+      ownershipStack,
+      ownershipOptions,
+    ],
+    [
+      "surplus argument",
+      [ownershipWorkerPath, args[3], "--extra"],
+      ownershipStack,
+      ownershipOptions,
+    ],
+    [
+      "caller function",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack.replace(
+        "inspectOpenClawStateOwnershipWithWorker",
+        "inspectOpenClawStateOwnership",
+      ),
+      ownershipOptions,
+    ],
+    [
+      "caller bundle",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack.replace(
+        "openclaw-state-ownership-CKhlIzK8.mjs",
+        "openclaw-state-ownership-copy.mjs",
+      ),
+      ownershipOptions,
+    ],
+    [
+      "shell option",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack,
+      { ...ownershipOptions, shell: true },
+    ],
+    [
+      "detached option",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack,
+      { ...ownershipOptions, detached: true },
+    ],
+    [
+      "buffer option",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack,
+      { ...ownershipOptions, maxBuffer: 2097152 },
+    ],
+    [
+      "kill signal",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack,
+      { ...ownershipOptions, killSignal: "SIGTERM" },
+    ],
+    [
+      "working directory",
+      [ownershipWorkerPath, args[3]],
+      ownershipStack,
+      { ...ownershipOptions, cwd: stateDir },
+    ],
+  ])(
+    "rejects a malformed state ownership worker %s",
+    (_label, candidateArgs, callerStack, options) => {
+      expect(
+        cpHooks.isOpenClawInternalStateOwnershipWorkerCommand(
+          execPath,
+          candidateArgs,
+          callerStack,
+          runtime,
+          options,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("accepts the exact 10.2 IPC spawn shape", () => {
+    const options = {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: '--require "C:\\Users\\test\\.openclaw\\payload.js"',
+        NODE_PATH: "C:\\Users\\test\\.openclaw\\modules",
+      },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      windowsHide: true,
+    };
+
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerSpawnCommand(
+        execPath,
+        args,
+        stack.replace(
+          "sqlite-readonly-location-AbCd1234.js",
+          "sqlite-readonly-worker-AbCd1234.mjs",
+        ),
+        runtime,
+        options,
+      ),
+    ).toBe(true);
+
+    const invocation = cpHooks.buildInternalSqliteWorkerSpawnInvocation(args, options);
+    expect(invocation.args.slice(0, 2)).toEqual([
+      "--require",
+      expect.stringMatching(/sandbox-preload\.js$/),
+    ]);
+    expect(invocation.args.slice(2)).toEqual(args);
+    expect(invocation.options.cwd).toBe(packageRoot);
+    expect(invocation.options.stdio).toEqual(["ignore", "pipe", "pipe", "ipc"]);
+    expect(invocation.options.windowsHide).toBe(true);
+    expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
+    expect(invocation.options.env.NODE_PATH).toBeUndefined();
+    expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("1");
+  });
+
+  it("accepts the exact 10.2 reusable session worker with an implicit trusted cwd", () => {
+    const sessionArgs = [workerPath, args[1], "session"];
+    const sessionStack = `Error
+    at createSqliteReadOnlyWorkerSession (file:///${packageRoot.replace(/\\/g, "/")}/dist/sqlite-readonly-worker-session-DK-j16po.mjs:217:121)`;
+    const options = {
+      env: {
+        NODE_OPTIONS: '--require "C:\\Users\\test\\.openclaw\\payload.js"',
+        NODE_PATH: "C:\\Users\\test\\.openclaw\\modules",
+      },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    };
+
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerSpawnCommand(
+        execPath,
+        sessionArgs,
+        sessionStack,
+        runtime,
+        options,
+      ),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        sessionArgs,
+        sessionStack,
+        runtime,
+        options,
+      ),
+    ).toBe(false);
+
+    const invocation = cpHooks.buildInternalSqliteWorkerSpawnInvocation(
+      sessionArgs,
+      options,
+      runtime,
+    );
+    expect(invocation.args.slice(2)).toEqual(sessionArgs);
+    expect(invocation.options.cwd).toBe(packageRoot);
+    expect(invocation.options.stdio).toEqual(["ignore", "pipe", "pipe", "ipc"]);
+    expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
+    expect(invocation.options.env.NODE_PATH).toBeUndefined();
+    expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("session");
+  });
+
+  it.each([
+    ["wrong mode", [workerPath, args[1], "async"], "createSqliteReadOnlyWorkerSession"],
+    [
+      "surplus argument",
+      [workerPath, args[1], "session", args[3]],
+      "createSqliteReadOnlyWorkerSession",
+      "sqlite-readonly-worker-session-DK-j16po.mjs",
+    ],
+    [
+      "wrong caller",
+      [workerPath, args[1], "session"],
+      "untrustedPlugin",
+      "sqlite-readonly-worker-session-DK-j16po.mjs",
+    ],
+    [
+      "lookalike caller bundle",
+      [workerPath, args[1], "session"],
+      "createSqliteReadOnlyWorkerSession",
+      "sqlite-readonly-worker-session-copy.mjs",
+    ],
+  ])(
+    "rejects a malformed reusable session worker: %s",
+    (_label, sessionArgs, caller, callerBundle = "sqlite-readonly-worker-session-DK-j16po.mjs") => {
+      const sessionStack = `Error
+    at ${caller} (file:///${packageRoot.replace(/\\/g, "/")}/dist/${callerBundle}:217:121)`;
+      expect(
+        cpHooks.isOpenClawInternalSqliteWorkerSpawnCommand(
+          execPath,
+          sessionArgs,
+          sessionStack,
+          runtime,
+          {
+            env: {},
+            stdio: ["ignore", "pipe", "pipe", "ipc"],
+          },
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    ["missing IPC", ["ignore", "pipe", "pipe"]],
+    ["wrong IPC slot", ["ignore", "pipe", "ipc", "pipe"]],
+    ["string stdio", "pipe"],
+  ])("rejects malformed 10.2 spawn stdio: %s", (_label, stdio) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerSpawnOptions(
+        { cwd: packageRoot, env: {}, stdio },
+        runtime,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["shell", { shell: true }],
+    ["detached", { detached: true }],
+    ["untrusted cwd", { cwd: stateDir }],
+    ["hidden window disabled", { windowsHide: false }],
+  ])("rejects unsafe 10.2 spawn option: %s", (_label, override) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerSpawnOptions(
+        {
+          cwd: packageRoot,
+          env: {},
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          windowsHide: true,
+          ...override,
+        },
+        runtime,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects an untrusted worker even with the exact 10.2 spawn options", () => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerSpawnCommand(
+        execPath,
+        [path.join(packageRoot, "dist", "other.worker.js"), ...args.slice(1)],
+        stack,
+        runtime,
+        {
+          cwd: packageRoot,
+          env: {},
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        },
+      ),
+    ).toBe(false);
   });
 });
 

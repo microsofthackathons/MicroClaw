@@ -55,6 +55,27 @@ describe("GatewayLoading MXC lifecycle", () => {
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
   });
 
+  it("does not expose a conflicting retry when the Gateway timer expires mid-transition", () => {
+    const wrapper = shallowMount(GatewayLoading, {
+      props: {
+        status: "timeout",
+        connected: false,
+        warming: false,
+        mxcDesired: true,
+        mxcPhase: "starting-locked",
+        mxcRequestedMode: "limited-dacl",
+        mxcEffectiveStrength: "off",
+      },
+    });
+
+    expect(wrapper.find(".loading-status").text()).toContain("Starting locked generation");
+    expect(wrapper.find(".loading-mxc-strength").text()).toBe(
+      "Limited containment (DACL) — Starting",
+    );
+    expect(wrapper.find(".loading-retry").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Gateway startup timed out");
+  });
+
   it("shows fail-closed recovery without labeling MXC failure as a Gateway outage", async () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {

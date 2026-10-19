@@ -2,15 +2,9 @@ import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
 export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION = 1 as const;
 
-export type WindowsNodeMxcDisclosureTargetMode = Exclude<
-  WindowsNodeMxcRequestedMode,
-  "off"
->;
+export type WindowsNodeMxcDisclosureTargetMode = Exclude<WindowsNodeMxcRequestedMode, "off">;
 
-export type WindowsNodeMxcDisclosureGroupId =
-  | "disabled"
-  | "paused"
-  | "available-restricted";
+export type WindowsNodeMxcDisclosureGroupId = "disabled" | "paused" | "available-restricted";
 
 export type WindowsNodeMxcDisclosureItemId =
   | "gateway-native-filesystem"
@@ -37,6 +31,7 @@ export interface WindowsNodeMxcDisclosureItem {
 export interface WindowsNodeMxcDisclosureGroup {
   id: WindowsNodeMxcDisclosureGroupId;
   titleKey: `settings.windowsNodeMxcConsent.group.${WindowsNodeMxcDisclosureGroupId}`;
+  summaryKey: `settings.windowsNodeMxcConsent.groupSummary.${WindowsNodeMxcDisclosureGroupId}`;
   items: readonly WindowsNodeMxcDisclosureItem[];
 }
 
@@ -51,6 +46,7 @@ export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE = {
     {
       id: "disabled",
       titleKey: "settings.windowsNodeMxcConsent.group.disabled",
+      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.disabled",
       items: [
         {
           id: "gateway-native-filesystem",
@@ -75,6 +71,7 @@ export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE = {
     {
       id: "paused",
       titleKey: "settings.windowsNodeMxcConsent.group.paused",
+      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.paused",
       items: [
         { id: "cron", translationKey: "settings.windowsNodeMxcConsent.item.cron" },
         {
@@ -86,6 +83,7 @@ export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE = {
     {
       id: "available-restricted",
       titleKey: "settings.windowsNodeMxcConsent.group.available-restricted",
+      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.available-restricted",
       items: [
         { id: "exec", translationKey: "settings.windowsNodeMxcConsent.item.exec" },
         {
