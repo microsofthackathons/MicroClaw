@@ -11,6 +11,7 @@ internal static class ApprovalProofContract
     public const string PlanVersion = "microclaw.windows-node-approval-plan.v2";
     public const int MaximumLifetimeMs = 30_000;
     public const int MaximumClockSkewMs = 5_000;
+    public const int MaximumPostConsumptionLaunchDelayMs = 30_000;
 }
 
 internal sealed record ApprovalProofRecord(
@@ -29,7 +30,7 @@ internal sealed record ValidatedApprovalProof(
     string ApprovalId,
     string Nonce,
     string PlanSha256,
-    long ExpiresAtUnixMs);
+    long LaunchExpiresAtUnixMs);
 
 internal sealed class ApprovalProofVerifier
 {
@@ -170,15 +171,15 @@ internal sealed class ApprovalProofVerifier
             proof.ApprovalId,
             proof.Nonce,
             planSha256,
-            proof.ExpiresAtUnixMs);
+            checked(now + ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs));
     }
 
     public void Revalidate(ValidatedApprovalProof proof)
     {
-        if (proof.ExpiresAtUnixMs <= _nowUnixMs())
+        if (proof.LaunchExpiresAtUnixMs <= _nowUnixMs())
             throw new HostPolicyException(
                 "approval-proof-stale",
-                "The Gateway approval proof expired before process launch.");
+                "The post-approval process-launch authorization expired before process launch.");
     }
 
     public static string ComputePlanSha256(JsonElement args, DurableApproval currentIdentity)

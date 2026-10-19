@@ -58,7 +58,7 @@ public sealed class ApprovalProofTests
     }
 
     [Fact]
-    public void RevalidationRejectsProofThatExpiresBeforeLaunch()
+    public void RevalidationUsesAShortPostConsumptionLaunchWindow()
     {
         var now = IssuedAtUnixMs;
         var verifier = new ApprovalProofVerifier(
@@ -69,10 +69,36 @@ public sealed class ApprovalProofTests
             () => now);
         var validated = verifier.ValidateAndConsume(Args(VectorProof()), CurrentIdentity);
 
-        now = validated.ExpiresAtUnixMs;
+        now += ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs - 1;
+        verifier.Revalidate(validated);
+
+        now++;
         var error = Assert.Throws<HostPolicyException>(() => verifier.Revalidate(validated));
 
         Assert.Equal("approval-proof-stale", error.Code);
+    }
+
+    [Fact]
+    public void HumanApprovalDelayDoesNotConsumeThePostDecisionLaunchWindow()
+    {
+        var decisionAt = IssuedAtUnixMs + 50_000;
+        var now = decisionAt;
+        var verifier = new ApprovalProofVerifier(
+            Secret,
+            "generation-test-001",
+            PolicyFingerprint,
+            NodeId,
+            () => now);
+        var proof = Sign(VectorProof() with
+        {
+            IssuedAtUnixMs = decisionAt,
+            ExpiresAtUnixMs = decisionAt + 15_000,
+        });
+
+        var validated = verifier.ValidateAndConsume(Args(proof), CurrentIdentity);
+        now += ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs - 1;
+
+        verifier.Revalidate(validated);
     }
 
     [Fact]

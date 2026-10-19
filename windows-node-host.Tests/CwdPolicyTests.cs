@@ -1084,8 +1084,15 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(server.IsConnected, response.Error);
         var approval = await observedRequest;
 
-        Assert.False(response.Ok);
-        Assert.Contains("approval-denied", response.Error);
+        Assert.True(response.Ok);
+        using var responsePayload = JsonDocument.Parse(JsonSerializer.Serialize(response.Payload));
+        Assert.False(responsePayload.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(
+            "approval-denied",
+            responsePayload.RootElement.GetProperty("errorCode").GetString());
+        Assert.Equal(
+            "rejectedBeforeExecution",
+            responsePayload.RootElement.GetProperty("executionState").GetString());
         Assert.Equal(1, approval.GetProperty("declaredAccess").GetArrayLength());
         Assert.Equal("rw", approval.GetProperty("declaredAccess")[0].GetProperty("access").GetString());
         Assert.Equal(desktop, approval.GetProperty("declaredAccess")[0].GetProperty("path").GetString(), ignoreCase: true);

@@ -223,6 +223,7 @@ import { startAfterGatewayRpcReady } from "./gateway-rpc-readiness";
 import { waitForGatewayHttpReadiness } from "./gateway-http-readiness";
 import {
   WindowsNodeMxcDurableApprovalStore,
+  canUseWindowsNodeMxcDurableApproval,
   consumeExactDurableApproval,
   durableApprovalIdentityFromGateway,
   type WindowsNodeMxcDurableApprovalInspection,
@@ -1769,10 +1770,9 @@ async function handleWindowsNodeMxcGatewayApproval(
   const identity = proofContext
     ? durableApprovalIdentityFromGateway(approval, proofContext.policyFingerprint)
     : null;
-  const durable =
-    getWindowsNodeMxcRequestedMode() === "full" && identity
-      ? getWindowsNodeMxcDurableApprovalStore().findExact(identity)
-      : null;
+  const durable = canUseWindowsNodeMxcDurableApproval(getWindowsNodeMxcRequestedMode(), identity)
+    ? getWindowsNodeMxcDurableApprovalStore().findExact(identity)
+    : null;
   if (durable) {
     try {
       const consumed = await withWindowsNodeMxcApprovalResolution(async () => {
@@ -1832,15 +1832,7 @@ async function handleWindowsNodeMxcGatewayApproval(
     }
     return;
   }
-  const rendererApproval =
-    getWindowsNodeMxcRequestedMode() === "limited-dacl"
-      ? {
-          ...approval,
-          allowedDecisions: approval.allowedDecisions.filter(
-            (decision) => decision !== "allow-always",
-          ),
-        }
-      : approval;
+  const rendererApproval = approval;
   pendingWindowsNodeMxcGatewayApproval = {
     request: rendererApproval,
     gatewayGeneration: approvalGeneration,
@@ -1932,9 +1924,6 @@ async function resolvePendingWindowsNodeMxcGatewayApproval(
 ): Promise<void> {
   if (decision === "allow-always" && !allowDurable) {
     throw new Error("Remote approvals are one-use only");
-  }
-  if (decision === "allow-always" && getWindowsNodeMxcRequestedMode() === "limited-dacl") {
-    throw new Error("Durable command approvals are disabled under Limited filesystem containment");
   }
   const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
   if (gatewayApproval?.request.id !== requestId) {
@@ -6526,12 +6515,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     sessionModelService.assertIdle();
+    await withWindowsNodeMxcDurableApprovalLock(() =>
+      getWindowsNodeMxcDurableApprovalStore().revokeSession(params.sessionKey),
+    );
     await gwClient.deleteSession(params.sessionKey);
   });
 
   ipcMain.handle("chat:clear-history", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     sessionModelService.assertIdle();
+    await withWindowsNodeMxcDurableApprovalLock(() =>
+      getWindowsNodeMxcDurableApprovalStore().revokeAll(),
+    );
     return await gwClient.clearAllHistory();
   });
 
@@ -7743,14 +7738,6 @@ function registerIpcHandlers(): void {
         throw new Error("Invalid Windows node approval decision");
       }
       const normalizedDecision = decision as WindowsNodeMxcApprovalDecision;
-      if (
-        normalizedDecision === "allow-always" &&
-        getWindowsNodeMxcRequestedMode() === "limited-dacl"
-      ) {
-        throw new Error(
-          "Durable command approvals are disabled under Limited filesystem containment",
-        );
-      }
       const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
       if (gatewayApproval?.request.id === requestId) {
         await resolvePendingWindowsNodeMxcGatewayApproval(requestId, normalizedDecision, true);

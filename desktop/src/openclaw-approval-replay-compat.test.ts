@@ -11,7 +11,14 @@ import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
+  classifyWindowsNodeMxcInvokeFailure,
   PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
+  PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
+  PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
+  PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+  PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
+  PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+  PINNED_BASH_TOOLS_PREPARED_SOURCE,
   PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
   PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
   PINNED_CRON_STARTUP_ACK_SOURCE,
@@ -29,6 +36,7 @@ const {
   createWindowsNodeMxcHooksGate,
   isWindowsNodeMxcProtectedHooksPath,
   patchPinnedOpenClawExecApproval,
+  patchPinnedOpenClawBashTools,
   patchPinnedOpenClawCronService,
   patchPinnedOpenClawCronHandlers,
   patchPinnedOpenClawExternalHooks,
@@ -89,6 +97,7 @@ describe("pinned OpenClaw package validation", () => {
         "nodes-CUbe_1MQ.mjs",
         "system-run-approval-plan-Cu-Ftdkp.mjs",
         "exec-approval-mGU7M4-K.mjs",
+        "bash-tools-Bl8Bd3CR.mjs",
         "openclaw-tools-Dxfbrtff.mjs",
         "service-31u04axN.mjs",
         "cron-D3Bd3ZFt.mjs",
@@ -399,6 +408,80 @@ describe("pinned OpenClaw node approval proof backport", () => {
     expect(patched.indexOf("consumeAllowOnce(runId)")).toBeLessThan(
       patched.indexOf("microclawApprovalProof ="),
     );
+  });
+
+  describe("pinned OpenClaw node failure provenance and deduplication", () => {
+    const source = [
+      `//#region src/agents/bash-tools.exec-host-node-failure.ts\n${PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE}`,
+      PINNED_BASH_TOOLS_PREPARED_SOURCE,
+      PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
+      PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
+      PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+      PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+    ].join("\n");
+
+    it("classifies trusted pre-execution rejection without claiming an unknown outcome", () => {
+      const patched = patchPinnedOpenClawBashTools(source);
+
+      expect(
+        classifyWindowsNodeMxcInvokeFailure({
+          details: {
+            nodeCommandDispatched: true,
+            nodeError: {
+              code: "approval-proof-stale",
+              message: "launch authorization expired",
+              details: { executionState: "rejectedBeforeExecution" },
+            },
+          },
+        }),
+      ).toMatchObject({ reason: "policy-denied", code: "approval-proof-stale" });
+      expect(
+        classifyWindowsNodeMxcInvokeFailure({
+          details: {
+            nodeCommandDispatched: true,
+            nodeError: { code: "transport-failed", message: "connection dropped" },
+          },
+        }),
+      ).toMatchObject({ reason: "outcome-unknown", code: "transport-failed" });
+      expect(patched).toContain(
+        'nodeErrorDetails?.executionState === "rejectedBeforeExecution"',
+      );
+      expect(patched).toContain(
+        'payload.success === false && payload.executionState === "rejectedBeforeExecution"',
+      );
+      expect(patched).toContain('reason: "policy-denied"');
+    });
+
+    it("deduplicates an exact unresolved plan before approval and records both dispatch paths", () => {
+      const patched = patchPinnedOpenClawBashTools(source);
+
+      expect(patched).not.toContain("MICROCLAW_UNRESOLVED_NODE_RUN_TTL_MS");
+      expect(patched).not.toContain("expiresAt: Date.now()");
+      expect(patched).toContain(
+        "buildMicroclawUnresolvedNodeRunKey(target.nodeId, prepared.plan)",
+      );
+      expect(patched.indexOf("findMicroclawUnresolvedNodeRun")).toBeLessThan(
+        patched.indexOf("analyzeNodeApprovalRequirement"),
+      );
+      expect(patched.match(/recordMicroclawUnresolvedNodeRun/g)).toHaveLength(3);
+      expect(patched).toContain("MicroClaw blocked a duplicate approval and execution request");
+      expect(patched).toContain("microclawUnresolvedRunKey,");
+    });
+
+    it.each([
+      PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
+      PINNED_BASH_TOOLS_PREPARED_SOURCE,
+      PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
+      PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
+      PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+      PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+    ])("fails closed when a pinned bash-tools fragment drifts", (fragment) => {
+      expect(() =>
+        patchPinnedOpenClawBashTools(
+          source.replace(fragment, `${fragment.slice(0, -1)}/* drift */`),
+        ),
+      ).toThrow(/did not match exactly once/);
+    });
   });
 
   it.each([

@@ -17,6 +17,9 @@ const EXPECTED_SYSTEM_RUN_SHA256 =
 const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-mGU7M4-K.mjs";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
   "aacf6a38e1ea77a9ce02fc4f60069230eec6b9c0a2e7123d35032eb105253267";
+const EXPECTED_BASH_TOOLS_MODULE = "bash-tools-Bl8Bd3CR.mjs";
+const EXPECTED_BASH_TOOLS_SHA256 =
+  "e5fd9fdfb6815da55188856b7215c406337f45d21b89fb87bb7a8a6ca48c0c90";
 const EXPECTED_WEB_TOOLS_MODULE = "openclaw-tools-Dxfbrtff.mjs";
 const EXPECTED_WEB_TOOLS_SHA256 =
   "181c5f9673480fbdacfa3ff88ae83686d8d1cb6402f583c3546d87b6e468d53e";
@@ -47,6 +50,57 @@ export const APPROVAL_PROOF_TTL_MS = 15_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
 const HOOKS_GATE_SYMBOL = Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
+
+export function classifyWindowsNodeMxcInvokeFailure(error) {
+  const asRecord = (value) =>
+    value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const normalizeString = (value) =>
+    typeof value === "string" && value.length > 0 ? value : undefined;
+  const errorRecord = asRecord(error);
+  const details = asRecord(errorRecord?.details);
+  const nodeError = asRecord(details?.nodeError);
+  const nodeErrorDetails = asRecord(nodeError?.details);
+  const code = normalizeString(nodeError?.code);
+  const message =
+    normalizeString(nodeError?.message) ??
+    (error instanceof Error ? error.message : normalizeString(error)) ??
+    "node invoke failed";
+  const nodeCommandDispatched =
+    typeof details?.nodeCommandDispatched === "boolean"
+      ? details.nodeCommandDispatched
+      : undefined;
+  const requestSent =
+    typeof errorRecord?.requestSent === "boolean" ? errorRecord.requestSent : undefined;
+  if (
+    code === "SYSTEM_RUN_DENIED" ||
+    nodeErrorDetails?.executionState === "rejectedBeforeExecution"
+  ) {
+    return {
+      reason: "policy-denied",
+      retrySafe: false,
+      ...(code ? { code } : {}),
+      message,
+    };
+  }
+  if (code === "NOT_CONNECTED" && nodeCommandDispatched === false) {
+    return {
+      reason: "not-dispatched",
+      retrySafe: true,
+      code,
+      message,
+      nodeCommandDispatched,
+      ...(requestSent !== undefined ? { requestSent } : {}),
+    };
+  }
+  return {
+    reason: "outcome-unknown",
+    retrySafe: false,
+    ...(code ? { code } : {}),
+    message,
+    ...(nodeCommandDispatched !== undefined ? { nodeCommandDispatched } : {}),
+    ...(requestSent !== undefined ? { requestSent } : {}),
+  };
+}
 
 export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
   'if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("Invalid URL: must be http or https");';
@@ -266,6 +320,279 @@ export function patchPinnedOpenClawExecApproval(source) {
     PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
     PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE,
     "exec approval schema projection",
+  );
+}
+
+export const PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE = `/** Only NOT_CONNECTED plus explicit pre-dispatch provenance proves a retry cannot duplicate work. */
+function classifyNodeInvokeFailure(error) {
+\tconst errorRecord = asNullableRecord(error);
+\tconst details = asNullableRecord(errorRecord?.details);
+\tconst nodeError = asNullableRecord(details?.nodeError);
+\tconst code = normalizeOptionalString(nodeError?.code);
+\tconst message = normalizeOptionalString(nodeError?.message) ?? (error instanceof Error ? error.message : normalizeOptionalString(error)) ?? "node invoke failed";
+\tconst nodeCommandDispatched = typeof details?.nodeCommandDispatched === "boolean" ? details.nodeCommandDispatched : void 0;
+\tconst requestSent = typeof errorRecord?.requestSent === "boolean" ? errorRecord.requestSent : void 0;
+\tif (code === "SYSTEM_RUN_DENIED") return {
+\t\treason: "policy-denied",
+\t\tretrySafe: false,
+\t\tcode,
+\t\tmessage
+\t};
+\tif (code === "NOT_CONNECTED" && nodeCommandDispatched === false) return {
+\t\treason: "not-dispatched",
+\t\tretrySafe: true,
+\t\tcode,
+\t\tmessage,
+\t\tnodeCommandDispatched,
+\t\t...requestSent !== void 0 ? { requestSent } : {}
+\t};
+\treturn {
+\t\treason: "outcome-unknown",
+\t\tretrySafe: false,
+\t\t...code ? { code } : {},
+\t\tmessage,
+\t\t...nodeCommandDispatched !== void 0 ? { nodeCommandDispatched } : {},
+\t\t...requestSent !== void 0 ? { requestSent } : {}
+\t};
+}`;
+
+const PATCHED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE = `/** Only explicit trusted provenance can prove that node execution did not begin. */
+function classifyNodeInvokeFailure(error) {
+\tconst errorRecord = asNullableRecord(error);
+\tconst details = asNullableRecord(errorRecord?.details);
+\tconst nodeError = asNullableRecord(details?.nodeError);
+\tconst nodeErrorDetails = asNullableRecord(nodeError?.details);
+\tconst code = normalizeOptionalString(nodeError?.code);
+\tconst message = normalizeOptionalString(nodeError?.message) ?? (error instanceof Error ? error.message : normalizeOptionalString(error)) ?? "node invoke failed";
+\tconst nodeCommandDispatched = typeof details?.nodeCommandDispatched === "boolean" ? details.nodeCommandDispatched : void 0;
+\tconst requestSent = typeof errorRecord?.requestSent === "boolean" ? errorRecord.requestSent : void 0;
+\tif (code === "SYSTEM_RUN_DENIED" || nodeErrorDetails?.executionState === "rejectedBeforeExecution") return {
+\t\treason: "policy-denied",
+\t\tretrySafe: false,
+\t\t...code ? { code } : {},
+\t\tmessage
+\t};
+\tif (code === "NOT_CONNECTED" && nodeCommandDispatched === false) return {
+\t\treason: "not-dispatched",
+\t\tretrySafe: true,
+\t\tcode,
+\t\tmessage,
+\t\tnodeCommandDispatched,
+\t\t...requestSent !== void 0 ? { requestSent } : {}
+\t};
+\treturn {
+\t\treason: "outcome-unknown",
+\t\tretrySafe: false,
+\t\t...code ? { code } : {},
+\t\tmessage,
+\t\t...nodeCommandDispatched !== void 0 ? { nodeCommandDispatched } : {},
+\t\t...requestSent !== void 0 ? { requestSent } : {}
+\t};
+}`;
+
+export const PINNED_BASH_TOOLS_FAILURE_REGION_SOURCE = `//#region src/agents/bash-tools.exec-host-node-failure.ts
+/** Only explicit trusted provenance can prove that node execution did not begin. */`;
+
+const PATCHED_BASH_TOOLS_FAILURE_REGION_SOURCE = `//#region src/agents/bash-tools.exec-host-node-failure.ts
+const microclawUnresolvedNodeRuns = new Map();
+function buildMicroclawUnresolvedNodeRunKey(nodeId, plan) {
+\treturn crypto.createHash("sha256").update(JSON.stringify({
+\t\tnodeId,
+\t\tplan
+\t})).digest("hex");
+}
+function findMicroclawUnresolvedNodeRun(key) {
+\treturn microclawUnresolvedNodeRuns.get(key) ?? null;
+}
+function recordMicroclawUnresolvedNodeRun(key, failure) {
+\tif (failure.reason !== "outcome-unknown") return;
+\tmicroclawUnresolvedNodeRuns.set(key, {
+\t\tmessage: failure.message
+\t});
+}
+function formatMicroclawUnresolvedNodeRunResult(params) {
+\tconst text = [
+\t\t\`An earlier dispatch of this exact command to \${params.nodeId} still has an unresolved outcome.\`,
+\t\t"MicroClaw blocked a duplicate approval and execution request. Reconcile the target state; do not retry automatically.",
+\t\t"",
+\t\t"Command:",
+\t\tparams.command,
+\t\t"",
+\t\t\`Details: \${params.entry.message}\`
+\t].join("\\n");
+\treturn {
+\t\tcontent: [{
+\t\t\ttype: "text",
+\t\t\ttext: renderExecUpdateText({
+\t\t\t\ttailText: text,
+\t\t\t\twarnings: params.warnings ?? []
+\t\t\t})
+\t\t}],
+\t\tdetails: {
+\t\t\tstatus: "failed",
+\t\t\texitCode: null,
+\t\t\tfailureKind: "outcome-unknown-deduplicated",
+\t\t\treason: "outcome-unknown",
+\t\t\tdurationMs: 0,
+\t\t\taggregated: text,
+\t\t\tcwd: params.cwd
+\t\t}
+\t};
+}
+/** Only explicit trusted provenance can prove that node execution did not begin. */`;
+
+export const PINNED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepareNodeSystemRun({
+\t\trequest: {
+\t\t\t...params,
+\t\t\tsecurity: hostSecurity,
+\t\t\task: hostAsk
+\t\t},
+\t\ttarget
+\t});
+\tconst approvalAnalysis = await analyzeNodeApprovalRequirement({`;
+
+const PATCHED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepareNodeSystemRun({
+\t\trequest: {
+\t\t\t...params,
+\t\t\tsecurity: hostSecurity,
+\t\t\task: hostAsk
+\t\t},
+\t\ttarget
+\t});
+\tconst microclawUnresolvedRunKey = buildMicroclawUnresolvedNodeRunKey(target.nodeId, prepared.plan);
+\tconst microclawUnresolvedRun = findMicroclawUnresolvedNodeRun(microclawUnresolvedRunKey);
+\tif (microclawUnresolvedRun) return formatMicroclawUnresolvedNodeRunResult({
+\t\tentry: microclawUnresolvedRun,
+\t\tnodeId: target.nodeId,
+\t\tcommand: params.command,
+\t\tcwd: prepared.cwd,
+\t\twarnings: params.warnings
+\t});
+\tconst approvalAnalysis = await analyzeNodeApprovalRequirement({`;
+
+export const PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE = `\tif (!result.ok) return formatNodeInvokeFailureToolResult({
+\t\tfailure: result.failure,
+\t\tnodeId: params.target.nodeId,
+\t\tcommand: params.request.command,
+\t\tstartedAt,
+\t\tcwd: params.request.workdir,
+\t\twarnings: [...params.request.warnings, ...params.request.foregroundWarnings ?? []]
+\t});`;
+
+const PATCHED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE = `\tif (!result.ok) {
+\t\trecordMicroclawUnresolvedNodeRun(params.microclawUnresolvedRunKey, result.failure);
+\t\treturn formatNodeInvokeFailureToolResult({
+\t\t\tfailure: result.failure,
+\t\t\tnodeId: params.target.nodeId,
+\t\t\tcommand: params.request.command,
+\t\t\tstartedAt,
+\t\t\tcwd: params.request.workdir,
+\t\t\twarnings: [...params.request.warnings, ...params.request.foregroundWarnings ?? []]
+\t\t});
+\t}`;
+
+export const PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE = `\t\t\t\t\t\tif (!invocation.ok) {
+\t\t\t\t\t\t\tawait sendExecApprovalFollowupResult(followupTarget, formatNodeInvokeFailureFollowup({`;
+
+const PATCHED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE = `\t\t\t\t\t\tif (!invocation.ok) {
+\t\t\t\t\t\t\trecordMicroclawUnresolvedNodeRun(microclawUnresolvedRunKey, invocation.failure);
+\t\t\t\t\t\t\tawait sendExecApprovalFollowupResult(followupTarget, formatNodeInvokeFailureFollowup({`;
+
+export const PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE = `\treturn dispatchNodeSystemRun({
+\t\trequest: params,
+\t\ttarget,
+\t\tinvoke,
+\t\t...(inlineApprovedByAsk || inlineApprovalSource) && inlineApprovalId ? { scopes: APPROVED_NODE_INVOKE_SCOPES } : {}
+\t});`;
+
+const PATCHED_BASH_TOOLS_FINAL_DISPATCH_SOURCE = `\treturn dispatchNodeSystemRun({
+\t\trequest: params,
+\t\ttarget,
+\t\tinvoke,
+\t\tmicroclawUnresolvedRunKey,
+\t\t...(inlineApprovedByAsk || inlineApprovalSource) && inlineApprovalId ? { scopes: APPROVED_NODE_INVOKE_SCOPES } : {}
+\t});`;
+
+export const PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatewayTool("node.invoke", { timeoutMs: params.invokeWaitMs }, params.invoke, callOptions);
+\t\tif (typeof asNullableRecord(asNullableRecord(raw)?.payload)?.success !== "boolean") return {
+\t\t\tok: false,
+\t\t\tfailure: {
+\t\t\t\treason: "outcome-unknown",
+\t\t\t\tretrySafe: false,
+\t\t\t\tmessage: "malformed node invoke response"
+\t\t\t}
+\t\t};
+\t\treturn {
+\t\t\tok: true,
+\t\t\traw
+\t\t};`;
+
+const PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatewayTool("node.invoke", { timeoutMs: params.invokeWaitMs }, params.invoke, callOptions);
+\t\tconst payload = asNullableRecord(asNullableRecord(raw)?.payload);
+\t\tif (typeof payload?.success !== "boolean") return {
+\t\t\tok: false,
+\t\t\tfailure: {
+\t\t\t\treason: "outcome-unknown",
+\t\t\t\tretrySafe: false,
+\t\t\t\tmessage: "malformed node invoke response"
+\t\t\t}
+\t\t};
+\t\tif (payload.success === false && payload.executionState === "rejectedBeforeExecution") return {
+\t\t\tok: false,
+\t\t\tfailure: {
+\t\t\t\treason: "policy-denied",
+\t\t\t\tretrySafe: false,
+\t\t\t\t...normalizeOptionalString(payload.errorCode) ? { code: normalizeOptionalString(payload.errorCode) } : {},
+\t\t\t\tmessage: normalizeOptionalString(payload.error) ?? "node command rejected before execution"
+\t\t\t}
+\t\t};
+\t\treturn {
+\t\t\tok: true,
+\t\t\traw
+\t\t};`;
+
+export function patchPinnedOpenClawBashTools(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
+    PATCHED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
+    "node pre-execution failure classification",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_FAILURE_REGION_SOURCE,
+    PATCHED_BASH_TOOLS_FAILURE_REGION_SOURCE,
+    "node unresolved-outcome cache insertion",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_PREPARED_SOURCE,
+    PATCHED_BASH_TOOLS_PREPARED_SOURCE,
+    "node unresolved-outcome pre-approval deduplication",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
+    PATCHED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
+    "node synchronous unresolved-outcome recording",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
+    PATCHED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
+    "node approval follow-up unresolved-outcome recording",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+    PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+    "node semantic pre-execution rejection classification",
+  );
+  return replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+    PATCHED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+    "node unresolved-outcome dispatch identity",
   );
 }
 
@@ -927,6 +1254,11 @@ export function validatePinnedOpenClawApprovalPackage(
         module: EXPECTED_EXEC_APPROVAL_MODULE,
         sha256: EXPECTED_EXEC_APPROVAL_SHA256,
         patch: patchPinnedOpenClawExecApproval,
+      },
+      {
+        module: EXPECTED_BASH_TOOLS_MODULE,
+        sha256: EXPECTED_BASH_TOOLS_SHA256,
+        patch: patchPinnedOpenClawBashTools,
       },
       {
         module: EXPECTED_WEB_TOOLS_MODULE,

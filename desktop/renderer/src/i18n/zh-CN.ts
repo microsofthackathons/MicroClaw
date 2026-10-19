@@ -1042,26 +1042,25 @@ export default {
   "perm.mxcAccessRw": "读写",
   "perm.mxcCwdLabel": "规范化工作目录",
   "perm.mxcScope":
-    "批准仅授权此命令本身在 MXC 内运行。所声明的文件夹是 MXC 已有的全局授权；批准不会授予或更改文件夹访问权限。“始终允许”仅记住此确切命令、规范化工作目录和声明标识。",
+    "批准仅授权此命令本身在 MXC 内运行。所声明的文件夹是 MXC 已有的全局授权；批准不会授予或更改文件夹访问权限。对话范围授权仅记住此确切可执行文件、参数、规范化工作目录、声明访问、智能体和对话。",
   "perm.mxcScopeOnce":
     "批准仅授权此命令本身在 MXC 内运行。所声明的文件夹是 MXC 已有的全局授权；批准不会授予或更改文件夹访问权限。",
   "perm.mxcScopeNoAccess":
-    "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。“始终允许”仅记住此确切命令和规范化工作目录。",
+    "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。对话范围授权仅记住此确切可执行文件、参数、规范化工作目录、智能体和对话。",
   "perm.mxcScopeNoAccessOnce": "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。",
   "perm.mxcLimitedScope":
-    "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表；只读授权无法降低 Windows 环境 ACL 已允许的访问。",
-  "perm.mxcAmbientAccess": "环境文件系统访问",
-  "perm.mxcAmbientAccessHint": "仅显示类别级摘要；不会显示绝对路径。",
-  "perm.mxcAmbientUnavailable": "环境访问证明不可用。",
+    "额外文件夹授权是叠加式授权，并非排他允许列表。对话范围授权仅记住此确切可执行文件、参数、工作目录、声明访问、智能体和对话。",
+  "perm.mxcLimitedScopeOnce": "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表。",
   "perm.riskRead": "低风险：智能体只能查看该文件夹中的文件。",
   "perm.riskWrite": "中风险：智能体可以在该文件夹中创建或修改文件。",
   "perm.riskCommandRO": "中风险：允许前请确认该命令符合当前任务。",
   "perm.riskCommandRW": "高风险：该命令可能修改文件或系统状态。",
   "perm.riskApp": "高风险：该应用将在沙箱外运行。",
   "perm.riskMxc": "由 MXC 隔离：允许前请检查命令和声明的文件夹用途。",
-  "perm.riskMxcLimited": "有限文件系统隔离：允许前请检查命令、额外授权和环境访问。",
+  "perm.riskMxcLimited": "有限文件系统隔离：允许前请检查命令和额外请求的授权。",
   "perm.commandLabel": "命令",
   "perm.allowAlways": "始终允许",
+  "perm.mxcAllowAlways": "在此对话中始终允许",
   "perm.callerLabel": "调用者",
   "perm.autoDeny": "{seconds}秒后自动拒绝",
   "perm.aclTimeout":

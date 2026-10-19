@@ -103,18 +103,18 @@ const isAttendedApproval = computed(
   () => props.request?.type === "app-approval" || isMxcApproval.value,
 );
 const declaredAccess = computed(() => props.request?.declaredAccess ?? []);
-const ambientAccess = computed(() => props.request?.ambientAccess ?? []);
 const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
 );
 const allowsAlways = computed(
   () =>
-    !isLimitedMxcApproval.value &&
-    (!props.request?.allowedDecisions ||
-      props.request.allowedDecisions.includes("allow-always")),
+    !props.request?.allowedDecisions ||
+    props.request.allowedDecisions.includes("allow-always"),
 );
 const mxcScopeText = computed(() => {
-  if (isLimitedMxcApproval.value) return t("perm.mxcLimitedScope");
+  if (isLimitedMxcApproval.value) {
+    return allowsAlways.value ? t("perm.mxcLimitedScope") : t("perm.mxcLimitedScopeOnce");
+  }
   if (declaredAccess.value.length > 0) {
     return allowsAlways.value ? t("perm.mxcScope") : t("perm.mxcScopeOnce");
   }
@@ -170,13 +170,6 @@ function respond(decision: string) {
   emit("respond", decision);
 }
 
-function ambientCategoryLabel(category: NonNullable<PermissionRequest["ambientAccess"]>[number]["category"]) {
-  return t(`settings.windowsNodeMxcAmbientCategory.${category}`);
-}
-
-function ambientStatusLabel(status: NonNullable<PermissionRequest["ambientAccess"]>[number]["status"]) {
-  return t(`settings.windowsNodeMxcAmbientStatus.${status}`);
-}
 </script>
 
 <template>
@@ -232,21 +225,6 @@ function ambientStatusLabel(status: NonNullable<PermissionRequest["ambientAccess
             <code>{{ declaration.path }}</code>
           </div>
         </div>
-        <div v-if="isLimitedMxcApproval" class="perm-mxc-detail">
-          <div class="perm-command-label">{{ t("perm.mxcAmbientAccess") }}</div>
-          <div v-if="ambientAccess.length > 0" class="perm-mxc-ambient-grid">
-            <span
-              v-for="entry in ambientAccess"
-              :key="entry.category"
-              class="perm-mxc-ambient"
-            >
-              <span>{{ ambientCategoryLabel(entry.category) }}</span>
-              <strong>{{ ambientStatusLabel(entry.status) }}</strong>
-            </span>
-          </div>
-          <div v-else class="perm-mxc-hint">{{ t("perm.mxcAmbientUnavailable") }}</div>
-          <div class="perm-mxc-hint">{{ t("perm.mxcAmbientAccessHint") }}</div>
-        </div>
         <div v-if="request.command" class="perm-command">
           <div class="perm-command-label">{{ t("perm.commandLabel") }}</div>
           <code v-if="isMxcApproval" class="perm-command-code">{{ request.command }}</code>
@@ -287,7 +265,7 @@ function ambientStatusLabel(status: NonNullable<PermissionRequest["ambientAccess
               class="perm-btn perm-btn-filled"
               @click="respond('allow-always')"
             >
-              {{ t("perm.allowAlways") }}
+              {{ isMxcApproval ? t("perm.mxcAllowAlways") : t("perm.allowAlways") }}
             </button>
           </template>
           <template v-else>
@@ -459,29 +437,6 @@ html.dark .perm-overlay--modal {
   overflow-wrap: anywhere;
   color: var(--text-primary);
   font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
-}
-
-.perm-mxc-ambient-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.perm-mxc-ambient {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.perm-mxc-hint {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 11px;
 }
 
 .perm-mxc-scope {

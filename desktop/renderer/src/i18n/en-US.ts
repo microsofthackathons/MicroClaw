@@ -1117,18 +1117,17 @@ export default {
   "perm.mxcAccessRw": "Read and write",
   "perm.mxcCwdLabel": "Canonical working directory",
   "perm.mxcScope":
-    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Allow always” remembers this exact command, canonical working directory, and declaration identity.",
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. Conversation-scoped approval remembers only this exact executable, arguments, canonical working directory, declared access, agent, and conversation.",
   "perm.mxcScopeOnce":
     "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access.",
   "perm.mxcScopeNoAccess":
-    "Approval authorizes this command itself inside MXC with the canonical working directory shown. “Allow always” remembers this exact command and canonical working directory.",
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown. Conversation-scoped approval remembers only this exact executable, arguments, canonical working directory, agent, and conversation.",
   "perm.mxcScopeNoAccessOnce":
     "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
   "perm.mxcLimitedScope":
-    "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist, and read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
-  "perm.mxcAmbientAccess": "Ambient filesystem access",
-  "perm.mxcAmbientAccessHint": "Category-level summary only; absolute paths are not displayed.",
-  "perm.mxcAmbientUnavailable": "Ambient access attestation is unavailable.",
+    "Additional folder grants are additive, not an exclusive allowlist. Conversation-scoped approval remembers only this exact executable, arguments, working directory, declared access, agent, and conversation.",
+  "perm.mxcLimitedScopeOnce":
+    "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",
@@ -1136,9 +1135,10 @@ export default {
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
   "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
   "perm.riskMxcLimited":
-    "Limited filesystem containment: review the command, additional grants, and ambient access before allowing.",
+    "Limited filesystem containment: review the command and additional requested grants before allowing.",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Allow always",
+  "perm.mxcAllowAlways": "Always allow in this conversation",
   "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
   "perm.aclTimeout":

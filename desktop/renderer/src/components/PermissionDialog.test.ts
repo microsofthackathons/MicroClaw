@@ -80,8 +80,8 @@ describe("PermissionDialog", () => {
     ]);
     expect(wrapper.find(".perm-mxc-access script").exists()).toBe(false);
     expect(wrapper.find(".perm-mxc-value").text()).toBe("isolated-scratch:v1");
-    expect(wrapper.findAll(".perm-body")[1].text()).toBe(
-      "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Allow always” remembers this exact command, canonical working directory, and declaration identity.",
+    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
+      "Conversation-scoped approval remembers only this exact executable",
     );
     expect(wrapper.text()).not.toContain("Requested folder access");
   });
@@ -112,7 +112,7 @@ describe("PermissionDialog", () => {
     ]);
   });
 
-  it("labels Limited filesystem containment, summarizes ambient access, and omits Allow always", () => {
+  it("keeps Limited approval concise and offers exact conversation-scoped reuse", () => {
     const wrapper = mount(PermissionDialog, {
       props: {
         request: {
@@ -141,18 +141,18 @@ describe("PermissionDialog", () => {
     expect(wrapper.find(".perm-command-label").text()).toBe(
       "Additional filesystem grants",
     );
-    expect(wrapper.findAll(".perm-mxc-ambient").map((entry) => entry.text())).toEqual([
-      "DesktopRead/write",
-      "SSHDenied",
-    ]);
-    expect(wrapper.text()).toContain("absolute paths are not displayed");
+    expect(wrapper.text()).not.toContain("Ambient filesystem access");
+    expect(wrapper.find(".perm-mxc-ambient").exists()).toBe(false);
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
       "Deny",
       "Allow once",
+      "Always allow in this conversation",
     ]);
-    expect(wrapper.text()).not.toContain("Allow always");
     expect(wrapper.findAll(".perm-body")[1].text()).toContain(
       "additive, not an exclusive allowlist",
+    );
+    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
+      "exact executable, arguments, working directory, declared access, agent, and conversation",
     );
   });
 

@@ -3,6 +3,7 @@ import {
   WINDOWS_NODE_MXC_APPROVAL_PLAN_CONTRACT,
   WINDOWS_NODE_MXC_DURABLE_APPROVALS_CONTRACT,
   WindowsNodeMxcDurableApprovalStore,
+  canUseWindowsNodeMxcDurableApproval,
   consumeExactDurableApproval,
   durableApprovalIdentityFromGateway,
   durableApprovalMatches,
@@ -44,7 +45,7 @@ afterEach(() => {
 });
 
 describe("WindowsNodeMxcDurableApprovalStore", () => {
-  it("persists, matches, touches, revokes, and revokes all atomically", async () => {
+  it("persists, matches, touches, and revokes atomically", async () => {
     const approvals = store();
     const added = await approvals.add(identity);
     expect(added).toMatchObject({
@@ -60,9 +61,15 @@ describe("WindowsNodeMxcDurableApprovalStore", () => {
     expect(approvals.inspect().records).toEqual([]);
 
     await approvals.add(identity);
+    await approvals.add({ ...identity, sessionKey: "agent:main:other" });
+    await approvals.revokeSession(identity.sessionKey);
+    expect(approvals.inspect().records).toEqual([
+      expect.objectContaining({ sessionKey: "agent:main:other" }),
+    ]);
+
     await approvals.revokeAll();
     expect(approvals.inspect().records).toEqual([]);
-    expect(writes).toHaveLength(5);
+    expect(writes).toHaveLength(7);
   });
 
   it("treats legacy, malformed, and stale records as non-authorizing", () => {
@@ -120,6 +127,13 @@ describe("WindowsNodeMxcDurableApprovalStore", () => {
         identity.policyFingerprint,
       ),
     ).toBeNull();
+  });
+
+  it("allows exact conversation approvals in both MXC containment strengths", () => {
+    expect(canUseWindowsNodeMxcDurableApproval("full", identity)).toBe(true);
+    expect(canUseWindowsNodeMxcDurableApproval("limited-dacl", identity)).toBe(true);
+    expect(canUseWindowsNodeMxcDurableApproval("off", identity)).toBe(false);
+    expect(canUseWindowsNodeMxcDurableApproval("limited-dacl", null)).toBe(false);
   });
 
   it("serializes concurrent writes instead of losing records", async () => {

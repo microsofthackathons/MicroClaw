@@ -69,7 +69,10 @@ internal sealed class BundledSystemCapability(
         }
         catch (HostPolicyException ex)
         {
-            return Error($"{ex.Code}: {LocalizePolicyError(ex, uiLocale)}");
+            var error = $"{ex.Code}: {LocalizePolicyError(ex, uiLocale)}";
+            return request.Command == "system.run"
+                ? RejectedBeforeExecution(error, ex.Code)
+                : Error(error);
         }
         catch (OperationCanceledException)
         {
@@ -271,7 +274,9 @@ internal sealed class BundledSystemCapability(
                     request.DeclaredAccess),
                 cancellationToken);
             if (decision is ApprovalDecision.Deny)
-                return Error("approval-denied: The operator denied this command.");
+                return RejectedBeforeExecution(
+                    "approval-denied: The operator denied this command.",
+                    "approval-denied");
             if (decision is ApprovalDecision.AllowAlways && policy.DurableApprovalsAllowed)
             {
                 DurableApprovalFile.Add(approvalsPath, approvedIdentity);
@@ -287,10 +292,14 @@ internal sealed class BundledSystemCapability(
             currentCwd.ApprovalBinding,
             declaredApprovalAccess);
         if (!DurableApprovalIdentity.Matches(approvedIdentity, currentIdentity))
-            return Error("approval-changed-before-launch: The executable, arguments, CWD, or declared access changed after approval.");
+            return RejectedBeforeExecution(
+                "approval-changed-before-launch: The executable, arguments, CWD, or declared access changed after approval.",
+                "approval-changed-before-launch");
         if (requireDurableRecheck && !DurableApprovalIdentity.Load(approvalsPath)
             .Any(entry => DurableApprovalIdentity.Matches(entry, currentIdentity)))
-            return Error("approval-changed-before-launch: The durable approval is no longer current.");
+            return RejectedBeforeExecution(
+                "approval-changed-before-launch: The durable approval is no longer current.",
+                "approval-changed-before-launch");
 
         var scratch = Path.Combine(Path.GetTempPath(), "microclaw-mxc-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
@@ -639,6 +648,20 @@ internal sealed class BundledSystemCapability(
     }
 
     private static NodeInvokeResponse Success(object payload) => new() { Ok = true, Payload = payload };
+    private static NodeInvokeResponse RejectedBeforeExecution(string error, string code) =>
+        new()
+        {
+            Ok = true,
+            Payload = new
+            {
+                success = false,
+                exitCode = (int?)null,
+                timedOut = false,
+                error,
+                errorCode = code,
+                executionState = "rejectedBeforeExecution",
+            },
+        };
     private static NodeInvokeResponse Error(string error) => new() { Ok = false, Error = error };
     private static string LocalizePolicyError(HostPolicyException error, string locale)
     {
