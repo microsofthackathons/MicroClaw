@@ -48,6 +48,45 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Equal("stderr", payload.GetProperty("stderr").GetString());
     }
 
+    [Theory]
+    [InlineData("New-Item -ItemType Directory -Path \"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\"")]
+    [InlineData("mkdir \"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\"")]
+    public void PowerShellRunStripsDeclarationBeforeMxcCommandLine(string command)
+    {
+        var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
+        var rawCommand = $"# [declare-access]rw:{desktop}[/declare-access]\n{command}";
+        var argv = new[]
+        {
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            rawCommand,
+        };
+        var capability = Capability(Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]));
+
+        var run = capability.ParseRun(Parse(JsonSerializer.Serialize(new
+        {
+            command = argv,
+            rawCommand,
+        })));
+
+        Assert.Equal(command, run.Argv[^1]);
+        Assert.Equal(command, run.RawCommand);
+        Assert.Equal(rawCommand, run.CommandPreview);
+        var config = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]),
+            run.Argv[0],
+            run.Argv[1..],
+            desktop,
+            Path.Combine(_root, "scratch"),
+            run.TimeoutMs);
+        Assert.DoesNotContain("declare-access", config.Process.CommandLine);
+        Assert.Contains(command, config.Process.CommandLine);
+        Assert.Contains("\\\"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\\\"", config.Process.CommandLine);
+    }
+
     [Fact]
     public void OmittedCwdUsesBoundScratchSemantic()
     {

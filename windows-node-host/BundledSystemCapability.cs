@@ -500,7 +500,7 @@ internal sealed class BundledSystemCapability(
         };
     }
 
-    private RunRequest ParseRun(JsonElement args)
+    internal RunRequest ParseRun(JsonElement args)
     {
         var hasArgv = args.TryGetProperty("argv", out var argvElement);
         if (!hasArgv) hasArgv = args.TryGetProperty("command", out argvElement);
@@ -694,7 +694,7 @@ internal sealed class BundledSystemCapability(
             _ => error.Message,
         };
     }
-    private sealed record RunRequest(
+    internal sealed record RunRequest(
         string[] Argv,
         string? Cwd,
         int TimeoutMs,

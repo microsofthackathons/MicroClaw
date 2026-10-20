@@ -11,14 +11,17 @@ import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
+  buildMicroclawWindowsNodeShellCommand,
   classifyWindowsNodeMxcInvokeFailure,
-  resolveWindowsNodeSystemRunPayload,
+  describeWindowsNodeSystemRunResponseShape,
+  normalizeWindowsNodeSystemRunResponse,
   PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
   PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
   PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
   PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
   PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
   PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+  PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
   PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
   PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
   PINNED_BASH_TOOLS_PREPARED_SOURCE,
@@ -491,6 +494,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
       PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+      PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
       PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
       PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
       PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
@@ -531,7 +535,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
       expect(patched).toContain("MicroClaw MXC execution is locked to host=node.");
     });
 
-    it("accepts only an exact validated system.run result envelope", () => {
+    it("accepts only exact validated direct or RPC-wrapped system.run results", () => {
       const patched = patchPinnedOpenClawBashTools(source);
       const completed = {
         success: true,
@@ -543,25 +547,48 @@ describe("pinned OpenClaw node approval proof backport", () => {
       };
 
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           nodeId: "node",
           command: "system.run",
           payload: completed,
           payloadJSON: null,
         }),
-      ).toEqual(completed);
+      ).toEqual({
+        raw: expect.objectContaining({ command: "system.run", payload: completed }),
+        payload: completed,
+      });
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           nodeId: "node",
           command: "system.run",
           payload: completed,
           payloadJSON: JSON.stringify(completed),
         }),
-      ).toEqual(completed);
+      ).toEqual({
+        raw: expect.objectContaining({ command: "system.run", payload: completed }),
+        payload: completed,
+      });
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
+          type: "res",
+          id: "gateway-response",
+          ok: true,
+          payload: {
+            ok: true,
+            nodeId: "node",
+            command: "system.run",
+            payload: completed,
+            payloadJSON: null,
+          },
+        }),
+      ).toEqual({
+        raw: expect.objectContaining({ command: "system.run", payload: completed }),
+        payload: completed,
+      });
+      expect(
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           nodeId: "node",
           command: "system.run",
@@ -576,39 +603,41 @@ describe("pinned OpenClaw node approval proof backport", () => {
           payloadJSON: null,
         }),
       ).toMatchObject({
-        success: false,
-        executionState: "rejectedBeforeExecution",
+        payload: {
+          success: false,
+          executionState: "rejectedBeforeExecution",
+        },
       });
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run",
           payload: { stdout: "", exitCode: 0, timedOut: false },
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: false,
           command: "system.run",
           payload: completed,
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run",
           payload: { payload: completed },
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run",
           payload: { ...completed, success: true, exitCode: 7 },
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run",
           payload: {
@@ -621,7 +650,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run",
           payload: completed,
@@ -629,7 +658,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run",
           payload: completed,
@@ -637,15 +666,49 @@ describe("pinned OpenClaw node approval proof backport", () => {
         }),
       ).toBeNull();
       expect(
-        resolveWindowsNodeSystemRunPayload({
+        normalizeWindowsNodeSystemRunResponse({
           ok: true,
           command: "system.run.prepare",
           payload: completed,
         }),
       ).toBeNull();
 
-      expect(patched).toContain("resolveMicroclawNodeSystemRunPayload(raw)");
+      expect(patched).toContain("normalizeMicroclawNodeSystemRunResponse(raw)");
       expect(patched).toContain('response.command !== "system.run"');
+      expect(
+        describeWindowsNodeSystemRunResponseShape({
+          ok: true,
+          command: "system.run",
+          proof: "must-not-appear",
+          payload: {
+            success: true,
+            command: "must-not-appear",
+          },
+        }),
+      ).toBe(
+        "outer=command,ok,payload,proof outerPayload=command,success nestedPayload=null payloadJSON=undefined",
+      );
+      expect(patched).toContain("describeMicroclawNodeSystemRunResponseShape(raw)");
+    });
+
+    it.each([
+      String.raw`New-Item -ItemType Directory -Path "C:\Users\sunt\Desktop\MXC-Approval-Smoke-20261020-1150"`,
+      String.raw`mkdir "C:\Users\sunt\Desktop\MXC-Approval-Smoke-20261020-1150"`,
+    ])("uses PowerShell for Windows node shell payloads: %s", (command) => {
+      expect(
+        buildMicroclawWindowsNodeShellCommand(command, { SystemRoot: "D:\\Windows\\" }),
+      ).toEqual([
+        "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        command,
+      ]);
+
+      const patched = patchPinnedOpenClawBashTools(source);
+      expect(patched).toContain("buildMicroclawWindowsNodeShellCommand(command, process.env)");
+      expect(patched).not.toContain(PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE);
     });
 
     it("deduplicates an exact unresolved plan before approval and records both dispatch paths", () => {
@@ -670,6 +733,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
       PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+      PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
       PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
       PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
       PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,

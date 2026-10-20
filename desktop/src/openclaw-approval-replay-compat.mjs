@@ -108,7 +108,7 @@ export function classifyWindowsNodeMxcInvokeFailure(error) {
   };
 }
 
-export function resolveWindowsNodeSystemRunPayload(raw) {
+export function normalizeWindowsNodeSystemRunResponse(raw) {
   const asRecord = (value) =>
     value && typeof value === "object" && !Array.isArray(value) ? value : null;
   const jsonEqual = (left, right) => {
@@ -135,7 +135,20 @@ export function resolveWindowsNodeSystemRunPayload(raw) {
     );
   };
 
-  const response = asRecord(raw);
+  const outer = asRecord(raw);
+  const nested = asRecord(outer?.payload);
+  const response =
+    outer?.command === "system.run"
+      ? outer
+      : outer?.ok === true &&
+          (outer.type === undefined || outer.type === "res") &&
+          outer.error == null &&
+          outer.command === undefined &&
+          outer.nodeId === undefined &&
+          outer.payloadJSON === undefined &&
+          nested?.command === "system.run"
+        ? nested
+        : null;
   const payload = asRecord(response?.payload);
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   if (
@@ -180,7 +193,48 @@ export function resolveWindowsNodeSystemRunPayload(raw) {
     }
     if (!jsonEqual(payload, serializedPayload)) return null;
   }
-  return payload;
+  return { raw: response, payload };
+}
+
+export function describeWindowsNodeSystemRunResponseShape(raw) {
+  const describe = (value) => {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    if (typeof value !== "object") return typeof value;
+    return Object.keys(value).sort().join(",");
+  };
+  const outer = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
+  const outerPayload =
+    outer?.payload && typeof outer.payload === "object" && !Array.isArray(outer.payload)
+      ? outer.payload
+      : null;
+  const nestedPayload =
+    outerPayload?.payload &&
+    typeof outerPayload.payload === "object" &&
+    !Array.isArray(outerPayload.payload)
+      ? outerPayload.payload
+      : null;
+  return [
+    `outer=${describe(raw)}`,
+    `outerPayload=${describe(outer?.payload)}`,
+    `nestedPayload=${describe(nestedPayload)}`,
+    `payloadJSON=${describe(outer?.payloadJSON ?? outerPayload?.payloadJSON)}`,
+  ].join(" ");
+}
+
+export function buildMicroclawWindowsNodeShellCommand(command, env = process.env) {
+  const windowsRoot = (env.SystemRoot ?? env.WINDIR ?? "C:\\Windows").replace(
+    /[\\/]+$/,
+    "",
+  );
+  return [
+    `${windowsRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    command,
+  ];
 }
 
 export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
@@ -800,17 +854,32 @@ export const PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await cal
 \t\t\traw
 \t\t};`;
 
+export const PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE = `\tif (normalized.startsWith("win")) return [
+\t\t"cmd.exe",
+\t\t"/d",
+\t\t"/s",
+\t\t"/c",
+\t\tcommand
+\t];`;
+
+const PATCHED_BASH_TOOLS_WINDOWS_SHELL_SOURCE = `\tif (normalized.startsWith("win")) {
+\t\tconst buildMicroclawWindowsNodeShellCommand = ${buildMicroclawWindowsNodeShellCommand.toString()};
+\t\treturn buildMicroclawWindowsNodeShellCommand(command, process.env);
+\t}`;
+
 const PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatewayTool("node.invoke", { timeoutMs: params.invokeWaitMs }, params.invoke, callOptions);
-\t\tconst resolveMicroclawNodeSystemRunPayload = ${resolveWindowsNodeSystemRunPayload.toString()};
-\t\tconst payload = resolveMicroclawNodeSystemRunPayload(raw);
-\t\tif (!payload) return {
+\t\tconst normalizeMicroclawNodeSystemRunResponse = ${normalizeWindowsNodeSystemRunResponse.toString()};
+\t\tconst describeMicroclawNodeSystemRunResponseShape = ${describeWindowsNodeSystemRunResponseShape.toString()};
+\t\tconst normalized = normalizeMicroclawNodeSystemRunResponse(raw);
+\t\tif (!normalized) return {
 \t\t\tok: false,
 \t\t\tfailure: {
 \t\t\t\treason: "outcome-unknown",
 \t\t\t\tretrySafe: false,
-\t\t\t\tmessage: "malformed node invoke response"
+\t\t\t\tmessage: \`malformed node invoke response (\${describeMicroclawNodeSystemRunResponseShape(raw)})\`
 \t\t\t}
 \t\t};
+\t\tconst { payload } = normalized;
 \t\tif (payload.success === false && payload.executionState === "rejectedBeforeExecution") return {
 \t\t\tok: false,
 \t\t\tfailure: {
@@ -822,7 +891,7 @@ const PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatew
 \t\t};
 \t\treturn {
 \t\t\tok: true,
-\t\t\traw
+\t\t\traw: normalized.raw
 \t\t};`;
 
 export function patchPinnedOpenClawBashTools(source) {
@@ -867,6 +936,12 @@ export function patchPinnedOpenClawBashTools(source) {
     PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
     PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
     "node semantic pre-execution rejection classification",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
+    PATCHED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
+    "Windows node PowerShell selection",
   );
   patched = replaceExactlyOnce(
     patched,
