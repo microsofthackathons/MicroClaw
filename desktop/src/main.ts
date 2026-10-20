@@ -5510,6 +5510,12 @@ function connectGatewayWs(): void {
             effectiveTier: windowsNodeMxcCurrentEffectiveTier ?? "",
             ambientAccess: windowsNodeMxcCurrentAmbientAccess,
             approvalProof,
+            onDiagnostic: (
+              event: string,
+              details: Record<string, string | number | boolean | null>,
+            ) => {
+              electronLifecycleDiagnostics.log(`bundled-node-${event}`, details);
+            },
             onApproval: (approval: BundledApprovalRequest | null) => {
               if (
                 !isCurrentBundledWindowsNodeApprovalCallback({

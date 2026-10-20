@@ -98,6 +98,7 @@ internal static class Program
                     "The app-owned Gateway process identity is missing.");
             if (string.IsNullOrWhiteSpace(bootstrap.GatewayToken))
                 throw new HostPolicyException("gateway-token-missing", "The app-owned Gateway credential is missing.");
+            using var gatewayIdentity = GatewayProcessIdentity.Capture(bootstrap.GatewayProcessId);
 
             var policy = await HostPolicy.LoadVerifiedAsync(
                 bootstrap.PolicyPath,
@@ -113,67 +114,118 @@ internal static class Program
                     "approval-path-invalid",
                     "The durable approval store has no parent directory.");
             SecureStateDirectory.Ensure(approvalDirectory);
-            using var client = new WindowsNodeClient(
-                gatewayUrl: gatewayUri.ToString(),
-                token: bootstrap.GatewayToken,
-                dataPath: bootstrap.IdentityDirectory,
-                logger: new StderrLogger());
             Task<ReconnectAuthorizationResult> AuthorizeGatewayAsync(CancellationToken _) =>
                 Task.FromResult(
-                    GatewayListenerOwnership.IsLoopbackListenerOwnedBy(
-                        gatewayUri.Port,
-                        bootstrap.GatewayProcessId)
+                    gatewayIdentity.IsCurrentLoopbackListenerOwner(gatewayUri.Port)
                         ? ReconnectAuthorizationResult.AllowedResult
                         : new ReconnectAuthorizationResult(
                             false,
                             GatewayErrorKind.LocalPortConflict,
                             "The expected MicroClaw Gateway process does not own the loopback listener."));
-            client.HandshakeAuthorizationAsync = AuthorizeGatewayAsync;
-            client.ReconnectAuthorizationAsync = AuthorizeGatewayAsync;
             var activationLease = new ActivationLeaseGuard(
                 bootstrap.ActivationLeasePath,
                 bootstrap.ActivationLeaseSecret,
                 bootstrap.GatewayGeneration,
                 bootstrap.PolicyFingerprint);
-            using var canvasBroker = new CanvasHostBroker(
-                policy,
-                bootstrap.ActivationLeasePath,
-                bootstrap.ActivationLeaseSecret,
-                bootstrap.GatewayGeneration,
-                bootstrap.PolicyFingerprint,
-                bootstrap.NodeId,
-                bootstrap.UiLocale,
-                activationLease,
-                payload => client.SendNodeEventAsync("agent.request", payload));
-            client.RegisterCapability(new BundledSystemCapability(
-                policy,
-                bootstrap.ApprovalPipeName,
-                bootstrap.ApprovalsPath,
-                activationLease,
-                bootstrap.UiLocale,
-                new ApprovalProofVerifier(
-                    bootstrap.ApprovalProofSecret,
-                    bootstrap.GatewayGeneration,
-                    bootstrap.PolicyFingerprint,
-                    bootstrap.NodeId),
-                new ReadinessProofVerifier(
-                    bootstrap.ApprovalProofSecret,
-                    bootstrap.GatewayGeneration,
-                    bootstrap.PolicyFingerprint,
-                    bootstrap.NodeId,
-                    bootstrap.ReadinessTransitionId)));
-            client.RegisterCapability(new BundledCanvasCapability(canvasBroker, activationLease));
-            var connect = client.ConnectAsync();
-            if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)
-                return 0;
-            await connect;
-            await ownerLifetime;
-            return 0;
+            var logger = new StderrLogger();
+            var identity = new DeviceIdentity(bootstrap.IdentityDirectory, logger);
+            identity.Initialize();
+            if (!string.Equals(identity.DeviceId, bootstrap.NodeId, StringComparison.OrdinalIgnoreCase))
+                throw new HostPolicyException(
+                    "node-identity-mismatch",
+                    "The persisted bundled node identity does not match the configured MicroClaw node.");
+
+            var recovery = new NodeDeviceTokenRecovery();
+            while (true)
+            {
+                GatewayErrorKind failureKind;
+                {
+                    var tokenMismatch = new TaskCompletionSource<GatewayErrorKind>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    using var connection = new WindowsNodeClient(
+                        gatewayUrl: gatewayUri.ToString(),
+                        token: bootstrap.GatewayToken,
+                        dataPath: bootstrap.IdentityDirectory,
+                        logger: logger);
+                    connection.HandshakeAuthorizationAsync = AuthorizeGatewayAsync;
+                    connection.ReconnectAuthorizationAsync = AuthorizeGatewayAsync;
+                    connection.ConnectionFailure += (_, kind) =>
+                    {
+                        Console.Error.WriteLine($"node-connection-failure: {kind}");
+                        if (kind == GatewayErrorKind.DeviceTokenMismatch)
+                            tokenMismatch.TrySetResult(kind);
+                    };
+                    using var canvasBroker = new CanvasHostBroker(
+                        policy,
+                        bootstrap.ActivationLeasePath,
+                        bootstrap.ActivationLeaseSecret,
+                        bootstrap.GatewayGeneration,
+                        bootstrap.PolicyFingerprint,
+                        bootstrap.NodeId,
+                        bootstrap.UiLocale,
+                        activationLease,
+                        payload => connection.SendNodeEventAsync("agent.request", payload));
+                    connection.RegisterCapability(new BundledSystemCapability(
+                        policy,
+                        bootstrap.ApprovalPipeName,
+                        bootstrap.ApprovalsPath,
+                        activationLease,
+                        bootstrap.UiLocale,
+                        new ApprovalProofVerifier(
+                            bootstrap.ApprovalProofSecret,
+                            bootstrap.GatewayGeneration,
+                            bootstrap.PolicyFingerprint,
+                            bootstrap.NodeId),
+                        new ReadinessProofVerifier(
+                            bootstrap.ApprovalProofSecret,
+                            bootstrap.GatewayGeneration,
+                            bootstrap.PolicyFingerprint,
+                            bootstrap.NodeId,
+                            bootstrap.ReadinessTransitionId)));
+                    connection.RegisterCapability(
+                        new BundledCanvasCapability(canvasBroker, activationLease));
+
+                    var connect = connection.ConnectAsync();
+                    if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)
+                    {
+                        await ownerLifetime;
+                        return 0;
+                    }
+                    await connect;
+                    if (await Task.WhenAny(ownerLifetime, tokenMismatch.Task) == ownerLifetime)
+                    {
+                        await ownerLifetime;
+                        return 0;
+                    }
+
+                    failureKind = await tokenMismatch.Task;
+                }
+                if (!recovery.TryRecover(
+                        failureKind,
+                        bootstrap.IdentityDirectory,
+                        bootstrap.NodeId,
+                        () => gatewayIdentity.IsCurrentLoopbackListenerOwner(gatewayUri.Port),
+                        logger,
+                        out var rejectionReason))
+                {
+                    throw new HostPolicyException(
+                        "node-device-token-recovery-rejected",
+                        $"The bundled node could not recover its stale credential: {rejectionReason}.");
+                }
+                Console.Error.WriteLine(
+                    "node-device-token-recovery: cleared the exact bundled node token and reconnecting");
+            }
         }
         catch (HostPolicyException ex)
         {
             Console.Error.WriteLine($"{ex.Code}: {ex.Message}");
             return 2;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"host-unhandled: {ex.GetType().Name}: {TokenSanitizer.Sanitize(ex.Message)}");
+            return 3;
         }
     }
 

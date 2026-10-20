@@ -108,6 +108,10 @@ interface StartOptions {
   ambientAccess: BundledWindowsNodeAmbientAccess | null;
   approvalProof: BundledWindowsNodeApprovalProofContext;
   onApproval: (approval: BundledApprovalRequest | null) => void;
+  onDiagnostic?: (
+    event: string,
+    details: Record<string, string | number | boolean | null>,
+  ) => void;
 }
 
 export interface BundledWindowsNodeAmbientAccess extends WindowsNodeMxcAmbientAccessAssessment {
@@ -138,6 +142,14 @@ export class BundledWindowsNodeHost {
   private activationLease: BundledWindowsNodeActivationLease | null = null;
   private activationLeaseEpoch = 0;
   private activationLeaseWriteQueue: Promise<void> = Promise.resolve();
+  private hostStderrTail: string[] = [];
+  private hostExit:
+    | {
+        processId: number | null;
+        exitCode: number | null;
+        signal: NodeJS.Signals | null;
+      }
+    | null = null;
   private readonly resourceRoot = resolveBundledWindowsNodeResourceRoot();
   private readonly hostPath = path.join(
     this.resourceRoot,
@@ -188,6 +200,8 @@ export class BundledWindowsNodeHost {
     this.stop(true);
     this.startOptions = options;
     this.lastError = null;
+    this.hostStderrTail = [];
+    this.hostExit = null;
     assertLoopbackGateway(options.gatewayUrl);
     assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
 
@@ -270,15 +284,50 @@ export class BundledWindowsNodeHost {
       env: createBundledWindowsNodeEnvironment(process.env.SystemRoot, scratchRoot),
     });
     this.process = child;
+    options.onDiagnostic?.("spawned", {
+      processId: child.pid ?? null,
+      gatewayProcessId: options.gatewayProcessId,
+      gatewayGeneration: options.gatewayGeneration,
+      expectedNodeIdPrefix: options.approvalProof.nodeId.slice(0, 12),
+    });
     child.stdout.on("data", () => undefined);
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (data: string) => {
-      const line = data.trim();
-      if (line) console.warn(`[bundled-windows-node] ${line}`);
+      for (const rawLine of data.split(/\r?\n/)) {
+        const line = sanitizeBundledHostDiagnostic(rawLine);
+        if (!line) continue;
+        const diagnostic = classifyBundledHostDiagnostic(line);
+        if (diagnostic) {
+          this.hostStderrTail.push(diagnostic);
+          this.hostStderrTail.splice(0, Math.max(0, this.hostStderrTail.length - 12));
+          options.onDiagnostic?.("stderr", {
+            processId: child.pid ?? null,
+            detail: diagnostic,
+          });
+        }
+        console.warn(`[bundled-windows-node] ${line}`);
+      }
     });
-    child.once("exit", (code) => {
+    child.once("error", (error) => {
       if (this.process !== child) return;
-      if (code && code !== 0) this.lastError = `Bundled Windows node exited with code ${code}`;
+      this.lastError = `Bundled Windows node failed to start: ${sanitizeBundledHostDiagnostic(error.message)}`;
+      options.onDiagnostic?.("spawn-error", {
+        processId: child.pid ?? null,
+        error: this.lastError,
+      });
+    });
+    child.once("exit", (code, signal) => {
+      if (this.process !== child) return;
+      this.hostExit = {
+        processId: child.pid ?? null,
+        exitCode: code,
+        signal,
+      };
+      this.lastError = formatBundledHostExitError(this.hostExit, this.hostStderrTail);
+      options.onDiagnostic?.("exit", {
+        ...this.hostExit,
+        error: this.lastError,
+      });
       this.process = null;
       this.stop();
     });
@@ -500,11 +549,13 @@ export class BundledWindowsNodeHost {
     }
     const nodeId = this.ensureIdentityNodeId();
     let approved = false;
+    let lastForeignNodeCount = -1;
     const deadline = Date.now() + 5 * 60_000;
 
     while (Date.now() < deadline) {
-      if (this.process !== expectedProcess || expectedProcess.exitCode !== null) {
-        throw new Error("Bundled Windows node generation changed during pairing");
+      const processError = this.describePairingProcessChange(expectedProcess);
+      if (processError) {
+        throw new Error(processError);
       }
       try {
         if (!approved) {
@@ -523,7 +574,17 @@ export class BundledWindowsNodeHost {
         }
 
         const nodes = await gateway.request<unknown>("node.list", {});
-        const connected = findBundledNode(nodes, nodeId);
+        const observation = inspectBundledNodeList(nodes, nodeId);
+        if (observation.foreignNodeCount !== lastForeignNodeCount) {
+          lastForeignNodeCount = observation.foreignNodeCount;
+          this.startOptions?.onDiagnostic?.("pairing-node-list", {
+            expectedNodeIdPrefix: nodeId.slice(0, 12),
+            exactNodePresent: observation.node !== null,
+            exactNodeConnected: observation.node?.connected ?? false,
+            foreignNodeCount: observation.foreignNodeCount,
+          });
+        }
+        const connected = observation.node;
         if (connected?.connected) {
           if (connected.displayName !== BUNDLED_WINDOWS_NODE_DISPLAY_NAME) {
             await gateway.request("node.rename", {
@@ -546,6 +607,28 @@ export class BundledWindowsNodeHost {
     this.lastError = message;
     if (this.process === expectedProcess) this.stop();
     throw new Error(message);
+  }
+
+  private describePairingProcessChange(
+    expectedProcess: ChildProcessWithoutNullStreams,
+  ): string | null {
+    if (expectedProcess.exitCode !== null || expectedProcess.signalCode !== null) {
+      return (
+        this.lastError ??
+        formatBundledHostExitError(
+          {
+            processId: expectedProcess.pid ?? null,
+            exitCode: expectedProcess.exitCode,
+            signal: expectedProcess.signalCode,
+          },
+          this.hostStderrTail,
+        )
+      );
+    }
+    if (this.process !== expectedProcess) {
+      return "Bundled Windows node process was replaced during pairing";
+    }
+    return null;
   }
 
   ensureIdentityNodeId(): string {
@@ -889,19 +972,30 @@ export function assertApprovalResponseMatches(pendingRequestId: string, response
   }
 }
 
-function findBundledNode(
+export function inspectBundledNodeList(
   payload: unknown,
   nodeId: string,
-): { connected: boolean; displayName: string; commands: string[] } | null {
+): {
+  node: { connected: boolean; displayName: string; commands: string[] } | null;
+  foreignNodeCount: number;
+} {
   const nodes = Array.isArray(payload)
     ? records(payload)
     : getRecordArray(payload, "nodes", "paired");
-  const match = nodes.find((node) => {
+  const matches = nodes.filter((node) => {
     const id = stringField(node, "nodeId") || stringField(node, "id");
     return id.toLowerCase() === nodeId.toLowerCase();
   });
-  if (!match) return null;
-  return {
+  if (matches.length > 1) {
+    throw new Error("Multiple Gateway node records claimed the app-owned Windows node identity");
+  }
+  const foreignNodeCount = nodes.filter((node) => {
+    const id = stringField(node, "nodeId") || stringField(node, "id");
+    return id.length > 0 && id.toLowerCase() !== nodeId.toLowerCase();
+  }).length;
+  const match = matches[0];
+  if (!match) return { node: null, foreignNodeCount };
+  const node = {
     connected:
       match.connected === true ||
       match.isConnected === true ||
@@ -909,6 +1003,51 @@ function findBundledNode(
     displayName: stringField(match, "displayName") || stringField(match, "name"),
     commands: stringArrayField(match, "commands"),
   };
+  if (node.connected && !hasExactBundledCommands(node.commands)) {
+    throw new Error("Connected app-owned Windows node declared an unexpected command surface");
+  }
+  return { node, foreignNodeCount };
+}
+
+export function sanitizeBundledHostDiagnostic(value: string): string {
+  let sanitized = value
+    .trim()
+    .replace(/([A-Za-z0-9_-]*(?:token|secret|proof)[A-Za-z0-9_-]*\s*[=:]\s*)\S+/gi, "$1[redacted]")
+    .replace(/[A-Za-z0-9+/=_-]{80,}/g, "[redacted]");
+  const userProfile = process.env.USERPROFILE?.trim();
+  if (userProfile) {
+    sanitized = sanitized.replaceAll(userProfile, "<home>");
+  }
+  return sanitized.slice(0, 1_000);
+}
+
+export function classifyBundledHostDiagnostic(value: string): string | null {
+  const connectionFailure = /^node-connection-failure:\s*([A-Za-z]+)$/i.exec(value);
+  if (connectionFailure) return `node-connection-failure: ${connectionFailure[1]}`;
+  if (value === "node-device-token-recovery: cleared the exact bundled node token and reconnecting") {
+    return value;
+  }
+  const policyFailure = /^([a-z][a-z0-9-]+):/i.exec(value);
+  if (policyFailure) return `host-policy-failure: ${policyFailure[1].toLowerCase()}`;
+  const unhandled = /^host-unhandled:\s*([A-Za-z0-9_.]+)/i.exec(value);
+  if (unhandled) return `host-unhandled: ${unhandled[1]}`;
+  return null;
+}
+
+function formatBundledHostExitError(
+  exit: { processId: number | null; exitCode: number | null; signal: NodeJS.Signals | null },
+  stderrTail: readonly string[],
+): string {
+  const outcome =
+    exit.exitCode !== null
+      ? `code ${exit.exitCode}`
+      : exit.signal
+        ? `signal ${exit.signal}`
+        : "an unknown status";
+  const detail = stderrTail.at(-1);
+  return `Bundled Windows node process ${exit.processId ?? "unknown"} exited with ${outcome}${
+    detail ? `: ${detail}` : ""
+  }`;
 }
 
 function getRecordArray(payload: unknown, ...keys: string[]): Record<string, unknown>[] {

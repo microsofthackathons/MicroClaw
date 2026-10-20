@@ -83,7 +83,7 @@ public sealed class CwdPolicyTests : IDisposable
             Path.Combine(_root, "scratch"),
             run.TimeoutMs);
         Assert.DoesNotContain("declare-access", config.Process.CommandLine);
-        Assert.Contains(command, config.Process.CommandLine);
+        Assert.Equal(WindowsCommandLine.Join(run.Argv), config.Process.CommandLine);
         Assert.Contains("\\\"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\\\"", config.Process.CommandLine);
     }
 
@@ -785,8 +785,7 @@ public sealed class CwdPolicyTests : IDisposable
                 },
                 TestContext.Current.CancellationToken);
 
-            Assert.False(response.Ok);
-            Assert.Contains(expectedCode, response.Error);
+            AssertRejectedBeforeExecution(response, expectedCode);
             Assert.False(File.Exists(approvalsPath));
         }
         finally
@@ -1215,8 +1214,7 @@ public sealed class CwdPolicyTests : IDisposable
             TestContext.Current.CancellationToken);
         var approval = await observedRequest;
 
-        Assert.False(response.Ok);
-        Assert.Contains("approval-denied", response.Error);
+        AssertRejectedBeforeExecution(response, "approval-denied");
         Assert.Equal(command[0], approval.GetProperty("executable").GetString(), ignoreCase: true);
         Assert.Equal("main", approval.GetProperty("agent").GetString());
         Assert.False(File.Exists(approvalsPath));
@@ -1388,8 +1386,7 @@ public sealed class CwdPolicyTests : IDisposable
             },
             TestContext.Current.CancellationToken);
 
-        Assert.False(response.Ok);
-        Assert.Contains("approval-proof-required", response.Error);
+        AssertRejectedBeforeExecution(response, "approval-proof-required");
         Assert.False(server.IsConnected);
         Assert.False(File.Exists(approvalsPath));
     }
@@ -1465,8 +1462,7 @@ public sealed class CwdPolicyTests : IDisposable
             new NodeInvokeRequest { Command = "system.run", Args = args },
             TestContext.Current.CancellationToken);
 
-        Assert.False(response.Ok);
-        Assert.Contains("mxc-filesystem-isolation-insufficient", response.Error);
+        AssertRejectedBeforeExecution(response, "mxc-filesystem-isolation-insufficient");
         Assert.False(File.Exists(approvalsPath));
     }
 
@@ -1500,8 +1496,7 @@ public sealed class CwdPolicyTests : IDisposable
             },
             TestContext.Current.CancellationToken);
 
-        Assert.False(response.Ok);
-        Assert.Contains("declare-access-position-invalid", response.Error);
+        AssertRejectedBeforeExecution(response, "declare-access-position-invalid");
     }
 
     [Theory]
@@ -1565,6 +1560,20 @@ public sealed class CwdPolicyTests : IDisposable
     {
         if (Directory.Exists(_root))
             Directory.Delete(_root, recursive: true);
+    }
+
+    private static void AssertRejectedBeforeExecution(
+        NodeInvokeResponse response,
+        string expectedCode)
+    {
+        Assert.True(response.Ok, response.Error);
+        using var payload = JsonDocument.Parse(JsonSerializer.Serialize(response.Payload));
+        Assert.False(payload.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(expectedCode, payload.RootElement.GetProperty("errorCode").GetString());
+        Assert.Equal(
+            "rejectedBeforeExecution",
+            payload.RootElement.GetProperty("executionState").GetString());
+        Assert.Contains(expectedCode, payload.RootElement.GetProperty("error").GetString());
     }
 
     private static HostPolicy Policy(IReadOnlyList<ApprovedRoot> roots, IReadOnlyList<string>? denied = null)

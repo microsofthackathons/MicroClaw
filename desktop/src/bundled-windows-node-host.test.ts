@@ -15,10 +15,13 @@ import {
   assertLoopbackGateway,
   createBundledWindowsNodeEnvironment,
   endBundledWindowsNodeBootstrap,
+  classifyBundledHostDiagnostic,
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
+  inspectBundledNodeList,
   replaceFileWithRetry,
   revokeActivationLeaseFile,
+  sanitizeBundledHostDiagnostic,
   sha256DirectoryTree,
   terminateBundledWindowsNodeProcessTree,
   sensitiveWindowsRoots,
@@ -430,6 +433,120 @@ describe("bundled Windows node host", () => {
         nodeId,
       ),
     ).toBe("owned");
+  });
+
+  it("selects only the exact bundled identity and ignores foreign same-name records", () => {
+    const nodeId = "d".repeat(64);
+    const foreignId = "e".repeat(64);
+
+    const observation = inspectBundledNodeList(
+      {
+        nodes: [
+          {
+            id: foreignId,
+            displayName: "MicroClaw Bundled Windows Node",
+            platform: "windows",
+            connected: true,
+            commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+          },
+          {
+            id: nodeId.toUpperCase(),
+            displayName: "Old bundled name",
+            platform: "windows",
+            connected: true,
+            commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+          },
+        ],
+      },
+      nodeId,
+    );
+
+    expect(observation.foreignNodeCount).toBe(1);
+    expect(observation.node).toEqual({
+      connected: true,
+      displayName: "Old bundled name",
+      commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+    });
+  });
+
+  it("does not let a stale foreign paired record satisfy bundled readiness", () => {
+    const observation = inspectBundledNodeList(
+      {
+        nodes: [
+          {
+            id: "e".repeat(64),
+            displayName: "MicroClaw Bundled Windows Node",
+            connected: false,
+            commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+          },
+        ],
+      },
+      "d".repeat(64),
+    );
+
+    expect(observation).toEqual({ node: null, foreignNodeCount: 1 });
+  });
+
+  it("rejects a connected exact identity with a broadened command surface", () => {
+    expect(() =>
+      inspectBundledNodeList(
+        {
+          nodes: [
+            {
+              id: "d".repeat(64),
+              connected: true,
+              commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS, "device.info"],
+            },
+          ],
+        },
+        "d".repeat(64),
+      ),
+    ).toThrow(/unexpected command surface/);
+  });
+
+  it("rejects duplicate records for the exact bundled identity", () => {
+    expect(() =>
+      inspectBundledNodeList(
+        {
+          nodes: [
+            {
+              id: "d".repeat(64),
+              connected: false,
+              commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+            },
+            {
+              nodeId: "D".repeat(64),
+              connected: true,
+              commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+            },
+          ],
+        },
+        "d".repeat(64),
+      ),
+    ).toThrow(/Multiple Gateway node records/);
+  });
+
+  it("redacts credential-shaped host diagnostics before persistence", () => {
+    expect(
+      sanitizeBundledHostDiagnostic(
+        "gatewayToken=super-secret NodeDeviceToken: abcdef secretBase64=qwerty",
+      ),
+    ).toBe("gatewayToken=[redacted] NodeDeviceToken: [redacted] secretBase64=[redacted]");
+  });
+
+  it("persists only classified host lifecycle diagnostics", () => {
+    expect(classifyBundledHostDiagnostic("node-connection-failure: DeviceTokenMismatch")).toBe(
+      "node-connection-failure: DeviceTokenMismatch",
+    );
+    expect(
+      classifyBundledHostDiagnostic(
+        "node-device-token-recovery: cleared the exact bundled node token and reconnecting",
+      ),
+    ).toBe("node-device-token-recovery: cleared the exact bundled node token and reconnecting");
+    expect(classifyBundledHostDiagnostic("node-identity-mismatch: local path details")).toBe(
+      "host-policy-failure: node-identity-mismatch",
+    );
+    expect(classifyBundledHostDiagnostic("[canvas-host] user-provided canvas content")).toBeNull();
   });
 
   function createPolicyHost(): BundledWindowsNodeHost {
