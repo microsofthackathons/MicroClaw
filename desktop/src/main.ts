@@ -84,6 +84,8 @@ import {
   DEFAULT_WINDOW_WIDTH,
   DEFAULT_WINDOW_HEIGHT,
   GATEWAY_READY_TIMEOUT_MS,
+  MXC_AGENT_DATABASE_READY_POLL_INTERVAL_MS,
+  MXC_AGENT_DATABASE_READY_TIMEOUT_MS,
   MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS,
   MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
   MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
@@ -2333,18 +2335,21 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
       if (!gateway || !gatewayProcessAtPromotion) {
         throw new Error("Managed Gateway is unavailable for MXC policy promotion");
       }
+      const isCurrent = () =>
+        gwClient === gateway &&
+        gateway.connected &&
+        gatewayProcess === gatewayProcessAtPromotion &&
+        isManagedGatewayProcessAlive();
       const promoted = await promoteWindowsNodeMxcPolicy({
         gateway,
         nodeId,
         backups: settingsStore.get("windowsNodeMxcToolBackups"),
         expectedGeneration: generation,
         currentGeneration: () => gatewayGenerationId,
-        isCurrent: () =>
-          gwClient === gateway &&
-          gateway.connected &&
-          gatewayProcess === gatewayProcessAtPromotion &&
-          isManagedGatewayProcessAlive(),
+        isCurrent,
         requestTimeoutMs: MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
+        agentReadinessTimeoutMs: MXC_AGENT_DATABASE_READY_TIMEOUT_MS,
+        agentReadinessPollIntervalMs: MXC_AGENT_DATABASE_READY_POLL_INTERVAL_MS,
       });
       settingsStore.set("windowsNodeMxcToolBackups", promoted.backups);
       activeGeneration = generation;

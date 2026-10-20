@@ -64,6 +64,12 @@ export const MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS = 120_000;
 export const MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS = 500;
 export const MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS = 5_000;
 
+/** Max time to keep the locked policy while agent databases finish startup preparation. */
+export const MXC_AGENT_DATABASE_READY_TIMEOUT_MS = 180_000;
+
+/** Poll cadence for per-agent database admission readiness. */
+export const MXC_AGENT_DATABASE_READY_POLL_INTERVAL_MS = 250;
+
 /** Max time to wait for the gateway port to become free (ms). */
 export const PORT_WAIT_TIMEOUT_MS = 30_000;
 
