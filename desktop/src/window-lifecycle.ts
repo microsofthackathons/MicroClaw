@@ -14,6 +14,28 @@ export interface AppWindow {
   focus(): void;
 }
 
+export interface WindowLifecycleState {
+  lifecycleActive: boolean;
+  recoveryActive?: boolean;
+  explicitQuitRequested: boolean;
+}
+
+export function shouldPreventWindowClose(state: WindowLifecycleState): boolean {
+  return (state.lifecycleActive || state.recoveryActive === true) && !state.explicitQuitRequested;
+}
+
+export function shouldRecoverWindow(state: WindowLifecycleState): boolean {
+  return (state.lifecycleActive || state.recoveryActive === true) && !state.explicitQuitRequested;
+}
+
+export function shouldQuitAfterAllWindowsClosed(
+  platform: NodeJS.Platform,
+  state: WindowLifecycleState,
+): boolean {
+  if (platform === "darwin") return false;
+  return state.explicitQuitRequested || (!state.lifecycleActive && state.recoveryActive !== true);
+}
+
 export function sendToWindow(
   window: Pick<AppWindow, "isDestroyed" | "webContents"> | null,
   channel: string,

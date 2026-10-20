@@ -12,7 +12,7 @@ describe("desktop startup order", () => {
 
     const integrityIndex = lifecycle.indexOf("verifySkillIntegrity()");
     const servicesIndex = lifecycle.indexOf("startApplicationServices().catch");
-    const rendererIndex = lifecycle.indexOf("mainWindow.loadFile(indexPath)");
+    const rendererIndex = lifecycle.indexOf("await loadMainWindowRenderer(initialWindow)");
 
     expect(integrityIndex).toBeGreaterThan(-1);
     expect(servicesIndex).toBeGreaterThan(integrityIndex);
@@ -72,5 +72,32 @@ describe("desktop startup order", () => {
     expect(configWriteHandler).toContain(
       "config:write is blocked while Windows Node + MXC mode is enabled",
     );
+  });
+
+  it("keeps an in-progress MXC lifecycle alive across renderer loss", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const createWindow = source.slice(
+      source.indexOf("function createMainWindow()"),
+      source.indexOf(
+        "// ---------------------------------------------------------------------------\n// Gateway management",
+      ),
+    );
+    const applyHandler = source.slice(
+      source.indexOf('"windows-node-mxc:apply-folder-policy"'),
+      source.indexOf("// --- Sandbox capabilities ---"),
+    );
+    const appLifecycle = source.slice(source.indexOf('app.on("window-all-closed"'));
+
+    expect(createWindow).toContain('win.on("close"');
+    expect(createWindow).toContain("shouldPreventWindowClose(lifecycleWindowState())");
+    expect(createWindow).toContain('win.webContents.on("render-process-gone"');
+    expect(createWindow).toContain("scheduleMainWindowRecovery");
+    expect(appLifecycle).toContain("shouldQuitAfterAllWindowsClosed(process.platform, state)");
+    expect(appLifecycle).toContain('electronLifecycleDiagnostics.log("before-quit")');
+    expect(appLifecycle).toContain("closeWindowsNodeMxcIngress()");
+    expect(appLifecycle).toContain("bundledWindowsNodeHost.revokeActivationLease()");
+    expect(appLifecycle).toContain("stopGatewayProcess()");
+    expect(applyHandler).toContain("windowsNodeMxcLifecycleOperations.acquire");
+    expect(applyHandler).toContain("lifecycleOperation.succeed(status)");
   });
 });

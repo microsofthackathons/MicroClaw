@@ -4,6 +4,9 @@ import {
   sendToWindow,
   showAndFocusWindow,
   showStartupWindow,
+  shouldPreventWindowClose,
+  shouldQuitAfterAllWindowsClosed,
+  shouldRecoverWindow,
   type AppWindow,
 } from "./window-lifecycle";
 
@@ -41,6 +44,54 @@ describe("sendToWindow", () => {
 
     expect(sendToWindow(window, "gateway:ws-disconnected", "closed")).toBe(true);
     expect(calls).toEqual(["send:gateway:ws-disconnected"]);
+  });
+
+  describe("MXC lifecycle window protection", () => {
+    it("prevents sole-window close and recovers renderer loss during an operation", () => {
+      const state = { lifecycleActive: true, explicitQuitRequested: false };
+
+      expect(shouldPreventWindowClose(state)).toBe(true);
+      expect(shouldRecoverWindow(state)).toBe(true);
+      expect(shouldQuitAfterAllWindowsClosed("win32", state)).toBe(false);
+    });
+
+    it("preserves explicit Quit semantics during an operation", () => {
+      const state = { lifecycleActive: true, explicitQuitRequested: true };
+
+      expect(shouldPreventWindowClose(state)).toBe(false);
+      expect(shouldRecoverWindow(state)).toBe(false);
+      expect(shouldQuitAfterAllWindowsClosed("win32", state)).toBe(true);
+    });
+
+    it.each(["locked startup", "active startup"])(
+      "recovers a renderer crash during %s without quitting the main process",
+      () => {
+        const state = { lifecycleActive: true, explicitQuitRequested: false };
+
+        expect(shouldRecoverWindow(state)).toBe(true);
+        expect(shouldQuitAfterAllWindowsClosed("win32", state)).toBe(false);
+      },
+    );
+
+    it("retains normal close-to-quit behavior outside a lifecycle operation", () => {
+      const state = { lifecycleActive: false, explicitQuitRequested: false };
+
+      expect(shouldPreventWindowClose(state)).toBe(false);
+      expect(shouldRecoverWindow(state)).toBe(false);
+      expect(shouldQuitAfterAllWindowsClosed("win32", state)).toBe(true);
+    });
+
+    it("does not quit while a scheduled recovery outlives the lifecycle operation", () => {
+      const state = {
+        lifecycleActive: false,
+        recoveryActive: true,
+        explicitQuitRequested: false,
+      };
+
+      expect(shouldPreventWindowClose(state)).toBe(true);
+      expect(shouldRecoverWindow(state)).toBe(true);
+      expect(shouldQuitAfterAllWindowsClosed("win32", state)).toBe(false);
+    });
   });
 
   it.each([

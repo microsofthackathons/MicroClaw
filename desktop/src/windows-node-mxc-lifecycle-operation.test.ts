@@ -63,6 +63,23 @@ describe("Windows Node MXC lifecycle operation coordinator", () => {
     await first;
   });
 
+  it("continues to a terminal state after the IPC caller drops its promise", async () => {
+    const coordinator = new WindowsNodeMxcLifecycleOperationCoordinator();
+    const pending = deferred<string>();
+    const afterSettled = vi.fn();
+
+    void coordinator.run({ kind: "apply-folder-policy" }, () => pending.promise, {
+      beforeStart: vi.fn(),
+      afterSettled,
+    });
+    await Promise.resolve();
+    expect(coordinator.active).toBe(true);
+
+    pending.resolve("active");
+    await vi.waitFor(() => expect(coordinator.active).toBe(false));
+    expect(afterSettled).toHaveBeenCalledOnce();
+  });
+
   it.each(["timeout", "cancellation", "failure"])(
     "releases the guard after %s rejection so a safe retry can start",
     async (reason) => {

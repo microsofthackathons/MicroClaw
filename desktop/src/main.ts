@@ -31,7 +31,14 @@ import {
   sendToWindow,
   showAndFocusWindow,
   showStartupWindow,
+  shouldPreventWindowClose,
+  shouldQuitAfterAllWindowsClosed,
+  shouldRecoverWindow,
 } from "./window-lifecycle";
+import {
+  ElectronLifecycleDiagnostics,
+  summarizeLifecycleError,
+} from "./electron-lifecycle-diagnostics";
 import Store from "electron-store";
 import {
   verifySkillIntegrity,
@@ -312,24 +319,6 @@ if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release(
   app.commandLine.appendSwitch("no-sandbox");
   app.commandLine.appendSwitch("disable-gpu");
 }
-
-// Handle EPIPE errors on stdout/stderr (happens when parent terminal closes)
-process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EPIPE") {
-    // Log to file instead of crashing — stdout/stderr pipe is broken
-    const logPath = path.join(
-      process.env.OPENCLAW_STATE_DIR || path.join(process.env.APPDATA || "", "openclaw"),
-      "epipe.log",
-    );
-    try {
-      fs.appendFileSync(logPath, `[${new Date().toISOString()}] EPIPE: ${err.stack}\n`);
-    } catch {
-      /* best-effort */
-    }
-    return;
-  }
-  throw err;
-});
 
 // ---------------------------------------------------------------------------
 // State
@@ -623,6 +612,19 @@ let windowsNodeMxcFolderPolicyMutationInProgress = false;
 let windowsNodeMxcLifecycleState: WindowsNodeMxcFolderTransactionPhase = "idle";
 let windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
 let windowsNodeMxcLifecycleDetail: string | null = null;
+let explicitQuitRequested = false;
+let mainWindowRecovery: Promise<void> | null = null;
+const electronLifecycleDiagnostics = new ElectronLifecycleDiagnostics(
+  () => path.join(app.getPath("userData"), "diagnostics", "electron-lifecycle.jsonl"),
+  () => ({
+    lifecycleActive: isWindowsNodeMxcLifecycleCritical(),
+    lifecyclePhase: windowsNodeMxcLifecycleState,
+    windowRecoveryActive: mainWindowRecovery !== null,
+    gatewayPid: gatewayProcess?.pid ?? null,
+    gatewayGeneration: gatewayGenerationId || null,
+    explicitQuitRequested,
+  }),
+);
 let pendingWindowsNodeMxcGatewayApproval: {
   request: WindowsNodeMxcGatewayApproval;
   gatewayGeneration: string;
@@ -651,6 +653,49 @@ type WindowsNodeMxcFolderPolicyRecovery = {
   lastError: string | null;
   failurePhase?: WindowsNodeMxcFolderTransactionPhase | null;
 };
+
+function isWindowsNodeMxcLifecycleCritical(): boolean {
+  return (
+    windowsNodeMxcLifecycleOperations.active ||
+    windowsNodeMxcSecurityTransitionInProgress ||
+    windowsNodeMxcActivationInProgress
+  );
+}
+
+function lifecycleWindowState() {
+  return {
+    lifecycleActive: isWindowsNodeMxcLifecycleCritical(),
+    recoveryActive: mainWindowRecovery !== null,
+    explicitQuitRequested,
+  };
+}
+
+function requestExplicitQuit(source: string): void {
+  if (!explicitQuitRequested) {
+    explicitQuitRequested = true;
+    electronLifecycleDiagnostics.log("explicit-quit-requested", { source });
+  }
+  app.quit();
+}
+
+process.on("uncaughtException", (error: NodeJS.ErrnoException) => {
+  electronLifecycleDiagnostics.log("uncaught-exception", {
+    error: summarizeLifecycleError(error),
+  });
+  if (error.code === "EPIPE") return;
+  throw error;
+});
+
+process.on("unhandledRejection", (reason) => {
+  electronLifecycleDiagnostics.log("unhandled-rejection", {
+    error: summarizeLifecycleError(reason),
+  });
+  throw reason instanceof Error
+    ? reason
+    : new Error("Unhandled promise rejection", { cause: reason });
+});
+
+electronLifecycleDiagnostics.log("main-process-start", { processId: process.pid });
 
 async function tryConsumeWindowsNodeMxcCronResumeAcknowledgement(): Promise<boolean> {
   const fence = parseWindowsNodeMxcCronResumeFence(
@@ -717,11 +762,13 @@ function beginWindowsNodeMxcLifecycleOperation(): void {
   }
   windowsNodeMxcSecurityTransitionInProgress = true;
   windowsNodeMxcReadinessTransitionId = randomUUID();
+  electronLifecycleDiagnostics.log("mxc-lifecycle-start");
 }
 
 function endWindowsNodeMxcLifecycleOperation(): void {
   windowsNodeMxcSecurityTransitionInProgress = false;
   windowsNodeMxcReadinessTransitionId = null;
+  electronLifecycleDiagnostics.log("mxc-lifecycle-settled");
 }
 
 function windowsNodeMxcLifecycleOperationHooks() {
@@ -773,6 +820,10 @@ function setWindowsNodeMxcLifecycleState(
   windowsNodeMxcLifecycleState = state;
   windowsNodeMxcLifecycleDetail = detail;
   windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
+  electronLifecycleDiagnostics.log("mxc-lifecycle-phase", {
+    phase: state,
+    detail: detail ? summarizeLifecycleError(detail) : null,
+  });
   sendToWindow(mainWindow, "windows-node-mxc:lifecycle-state", {
     phase: state,
     detail,
@@ -3484,7 +3535,110 @@ function createMainWindow(): BrowserWindow {
     return { action: "deny" };
   });
 
+  win.on("close", (event) => {
+    const prevented = shouldPreventWindowClose(lifecycleWindowState());
+    electronLifecycleDiagnostics.log("window-close", {
+      windowId: win.id,
+      prevented,
+    });
+    if (prevented) {
+      event.preventDefault();
+      showAndFocusWindow(win);
+    }
+  });
+  win.on("closed", () => {
+    electronLifecycleDiagnostics.log("window-closed", { windowId: win.id });
+    if (mainWindow === win) mainWindow = null;
+    scheduleMainWindowRecovery("window-closed");
+  });
+  win.on("unresponsive", () => {
+    electronLifecycleDiagnostics.log("window-unresponsive", { windowId: win.id });
+  });
+  win.on("responsive", () => {
+    electronLifecycleDiagnostics.log("window-responsive", { windowId: win.id });
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    electronLifecycleDiagnostics.log("render-process-gone", {
+      windowId: win.id,
+      reason: details.reason,
+      exitCode: details.exitCode,
+    });
+    scheduleMainWindowRecovery(`render-process-gone:${details.reason}`, win);
+  });
+
   return win;
+}
+
+async function loadMainWindowRenderer(win: BrowserWindow): Promise<void> {
+  if (isDev) {
+    for (let attempt = 0; attempt < 120; attempt++) {
+      try {
+        await win.loadURL(VITE_DEV_URL);
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    await win.loadURL(VITE_DEV_URL);
+    return;
+  }
+
+  const indexPath = path.join(__dirname, "../renderer/dist/index.html");
+  try {
+    await win.loadFile(indexPath);
+  } catch (error) {
+    electronLifecycleDiagnostics.log("renderer-load-retry", {
+      error: summarizeLifecycleError(error),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await win.loadFile(indexPath);
+  }
+}
+
+function scheduleMainWindowRecovery(
+  reason: string,
+  failedWindow?: BrowserWindow,
+  force = false,
+): void {
+  if ((!force && !shouldRecoverWindow(lifecycleWindowState())) || mainWindowRecovery) return;
+  electronLifecycleDiagnostics.log("window-recovery-scheduled", { reason });
+  mainWindowRecovery = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (explicitQuitRequested) return;
+    if (failedWindow && mainWindow === failedWindow) {
+      if (!failedWindow.isDestroyed()) failedWindow.destroy();
+      mainWindow = null;
+    }
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      showAndFocusWindow(mainWindow);
+      return;
+    }
+    const replacement = createMainWindow();
+    mainWindow = replacement;
+    await loadMainWindowRenderer(replacement);
+    showAndFocusWindow(replacement);
+    electronLifecycleDiagnostics.log("window-recovery-complete", {
+      reason,
+      windowId: replacement.id,
+    });
+  })()
+    .catch((error) => {
+      electronLifecycleDiagnostics.log("window-recovery-failed", {
+        reason,
+        error: summarizeLifecycleError(error),
+      });
+    })
+    .finally(() => {
+      mainWindowRecovery = null;
+    });
+}
+
+function showOrRecoverMainWindow(reason: string): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    scheduleMainWindowRecovery(reason, mainWindow ?? undefined, true);
+    return;
+  }
+  showAndFocusWindow(mainWindow);
 }
 
 // ---------------------------------------------------------------------------
@@ -4771,6 +4925,10 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
 
     gatewayProcess = child;
     gatewayGenerationId = nextGatewayGenerationId;
+    electronLifecycleDiagnostics.log("gateway-spawned", {
+      gatewayPid: child.pid ?? null,
+      policy: windowsNodeMxcGatewayStartPolicyOverride ?? "standard",
+    });
     gatewayHttpReadyGeneration = null;
     windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
     revokeWindowsNodeMxcWeixinIngress(windowsNodeMxcWeixinContext);
@@ -4810,6 +4968,10 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     });
 
     child.on("error", (err) => {
+      electronLifecycleDiagnostics.log("gateway-spawn-error", {
+        gatewayPid: child.pid ?? null,
+        error: summarizeLifecycleError(err),
+      });
       console.error("Gateway spawn error:", err);
       safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
       safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
@@ -4827,6 +4989,11 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     });
 
     child.on("exit", (code, signal) => {
+      electronLifecycleDiagnostics.log("gateway-exit", {
+        gatewayPid: child.pid ?? null,
+        exitCode: code,
+        signal,
+      });
       console.log(`[gateway] exited: code=${code} signal=${signal}`);
       safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
       if (gatewayProcess === child) {
@@ -9384,10 +9551,10 @@ function registerIpcHandlers(): void {
 // ---------------------------------------------------------------------------
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  requestExplicitQuit("single-instance-lock-denied");
 } else {
   app.on("second-instance", () => {
-    showAndFocusWindow(mainWindow);
+    showOrRecoverMainWindow("second-instance");
     // Ensure gateway is alive when user re-opens the app
     ensureGatewayConnected().catch((err) =>
       console.error("[second-instance] gateway reconnect failed:", err),
@@ -9428,7 +9595,7 @@ app.whenReady().then(async () => {
       inProgress ? "MicroClaw upgrade in progress" : "OpenClaw recovery failed",
       error instanceof Error ? error.message : String(error),
     );
-    app.quit();
+    requestExplicitQuit("startup-recovery-failed");
     return;
   }
 
@@ -9437,11 +9604,12 @@ app.whenReady().then(async () => {
   // Sync auto-start with OS
   app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
 
-  mainWindow = createMainWindow();
+  const initialWindow = createMainWindow();
+  mainWindow = initialWindow;
 
   const trayCallbacks = {
     onShowWindow: () => {
-      showAndFocusWindow(mainWindow);
+      showOrRecoverMainWindow("tray");
       // Ensure gateway is alive when user shows window from tray
       ensureGatewayConnected().catch((err) =>
         console.error("[tray-show] gateway reconnect failed:", err),
@@ -9452,6 +9620,7 @@ app.whenReady().then(async () => {
         console.error("[tray] Gateway restart failed:", error),
       );
     },
+    onQuit: () => requestExplicitQuit("tray"),
   };
   createTray(trayCallbacks, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
 
@@ -9480,44 +9649,36 @@ app.whenReady().then(async () => {
     console.error("Failed to start application services:", err);
   });
 
-  // Load the Vue renderer UI.
-  if (isDev) {
-    // Poll until Vite dev server is ready (up to 60s).
-    const waitForVite = async () => {
-      for (let i = 0; i < 120; i++) {
-        try {
-          await mainWindow!.loadURL(VITE_DEV_URL);
-          return;
-        } catch {
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-      await mainWindow!.loadURL(VITE_DEV_URL);
-    };
-    await waitForVite();
-  } else {
-    const indexPath = path.join(__dirname, "../renderer/dist/index.html");
-    try {
-      await mainWindow.loadFile(indexPath);
-    } catch (err) {
-      console.error("Failed to load renderer, retrying:", err);
-      await new Promise((r) => setTimeout(r, 1000));
-      await mainWindow.loadFile(indexPath);
-    }
+  try {
+    await loadMainWindowRenderer(initialWindow);
+    logStartupTiming("renderer-loaded");
+  } catch (error) {
+    electronLifecycleDiagnostics.log("initial-renderer-load-failed", {
+      error: summarizeLifecycleError(error),
+    });
+    scheduleMainWindowRecovery("initial-renderer-load-failed", initialWindow, true);
   }
-  logStartupTiming("renderer-loaded");
 
   // Watch skill directories for mid-session changes
   startSkillFileWatcher();
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
+  const state = lifecycleWindowState();
+  const shouldQuit = shouldQuitAfterAllWindowsClosed(process.platform, state);
+  electronLifecycleDiagnostics.log("window-all-closed", { shouldQuit });
+  if (shouldQuit) {
+    requestExplicitQuit("window-all-closed");
+  } else {
+    scheduleMainWindowRecovery("window-all-closed");
   }
 });
 
 app.on("before-quit", () => {
+  if (!explicitQuitRequested) explicitQuitRequested = true;
+  electronLifecycleDiagnostics.log("before-quit");
+  closeWindowsNodeMxcIngress();
+  bundledWindowsNodeHost.revokeActivationLease();
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   // Clean up skill file watchers
   for (const w of skillWatchers) {
@@ -9536,8 +9697,26 @@ app.on("before-quit", () => {
   stopGatewayProcess();
 });
 
+app.on("will-quit", () => {
+  electronLifecycleDiagnostics.log("will-quit");
+});
+
+app.on("quit", (_event, exitCode) => {
+  electronLifecycleDiagnostics.log("quit", { exitCode });
+});
+
+app.on("child-process-gone", (_event, details) => {
+  electronLifecycleDiagnostics.log("child-process-gone", {
+    processType: details.type,
+    reason: details.reason,
+    exitCode: details.exitCode,
+    serviceName: details.serviceName ?? null,
+    name: details.name ?? null,
+  });
+});
+
 app.on("activate", () => {
-  showAndFocusWindow(mainWindow);
+  showOrRecoverMainWindow("app-activate");
   ensureGatewayConnected().catch((err) =>
     console.error("[activate] gateway reconnect failed:", err),
   );
