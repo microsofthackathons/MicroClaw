@@ -128,6 +128,8 @@ internal sealed class ApprovalProofVerifier
 
         var now = _nowUnixMs();
         var lifetime = proof.ExpiresAtUnixMs - proof.IssuedAtUnixMs;
+        Console.Error.WriteLine(
+            $"[microclaw-approval-timing] stage=host-receipt receivedAtUnixMs={now} proofIssuedAtUnixMs={proof.IssuedAtUnixMs} proofAgeMs={Math.Max(0, now - proof.IssuedAtUnixMs)} proofLifetimeMs={lifetime}");
         if (lifetime <= 0 || lifetime > ApprovalProofContract.MaximumLifetimeMs
             || proof.IssuedAtUnixMs > now + ApprovalProofContract.MaximumClockSkewMs
             || proof.ExpiresAtUnixMs <= now)
@@ -166,6 +168,9 @@ internal sealed class ApprovalProofVerifier
             _consumedApprovalIds.Add(proof.ApprovalId, proof.ExpiresAtUnixMs);
             _consumedNonces.Add(proof.Nonce, proof.ExpiresAtUnixMs);
         }
+        var validatedAtUnixMs = _nowUnixMs();
+        Console.Error.WriteLine(
+            $"[microclaw-approval-timing] stage=host-validated validatedAtUnixMs={validatedAtUnixMs} proofAgeMs={Math.Max(0, validatedAtUnixMs - proof.IssuedAtUnixMs)}");
 
         return new ValidatedApprovalProof(
             proof.ApprovalId,

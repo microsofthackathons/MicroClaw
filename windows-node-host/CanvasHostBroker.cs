@@ -60,9 +60,9 @@ internal sealed class CanvasHostBroker : IDisposable
         try
         {
             CanvasPhase1Policy.ValidateCommand(command, args);
-            leaseGuard.RevalidateActive(lease);
+            lease = leaseGuard.RevalidateActive(lease);
             await EnsureHostAsync(cancellationToken);
-            leaseGuard.RevalidateActive(lease);
+            lease = leaseGuard.RevalidateActive(lease);
             using var pipe = new NamedPipeClientStream(
                 ".",
                 _commandPipeName,
@@ -271,7 +271,7 @@ internal sealed class CanvasHostBroker : IDisposable
                 Environment.MachineName,
                 _nodeId,
                 contextJson);
-            _activationLease.RevalidateActive(activeLease);
+            activeLease = _activationLease.RevalidateActive(activeLease);
             var sent = await _deliverAction(new JsonObject
             {
                 ["message"] = message,

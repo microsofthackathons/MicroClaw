@@ -11,6 +11,12 @@ const EXPECTED_VERSION = "2026.10.2";
 const EXPECTED_NODE_GATEWAY_MODULE = "nodes-CUbe_1MQ.mjs";
 const EXPECTED_NODE_GATEWAY_SHA256 =
   "3bc901af8f195d8b5d7ed41b2c50656f3da2ff160938d94d97d0c2fa8e42e676";
+const EXPECTED_NODE_INVOKE_PLUGIN_POLICY_MODULE = "node-invoke-plugin-policy-DLQRKKVA.mjs";
+const EXPECTED_NODE_INVOKE_PLUGIN_POLICY_SHA256 =
+  "6da4ee5c889ad2c236265b7f3290b4fd9c0ee1bcaa91bde0bd8f5a3c1ff532e9";
+const EXPECTED_NODE_REGISTRY_PRIVATE_MODULE = "node-registry-private-CyaYRwVd.mjs";
+const EXPECTED_NODE_REGISTRY_PRIVATE_SHA256 =
+  "31510d11a6f80614e8c1d3d3b3c44eec42a61feb17cb05e051ad613ce6475228";
 const EXPECTED_SYSTEM_RUN_MODULE = "system-run-approval-plan-Cu-Ftdkp.mjs";
 const EXPECTED_SYSTEM_RUN_SHA256 =
   "c0df5badb2a8cc6adfdfb8bac48e5379e0825005e0dec827d01b2fb3e223820e";
@@ -46,7 +52,7 @@ const EXPECTED_CANVAS_ELIGIBILITY_SHA256 =
   "4e80d6add8a2cd46f315e1698b65001fe837d1b16056a8255d34f546358c6431";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
-export const APPROVAL_PROOF_TTL_MS = 15_000;
+export const APPROVAL_PROOF_TTL_MS = 30_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
 const HOOKS_GATE_SYMBOL = Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
@@ -119,6 +125,15 @@ const PATCHED_NODE_GATEWAY_MINT_INSERT_SOURCE = `function mintMicroclawNodeAppro
 \tif (!minter || typeof minter.mint !== "function") throw new Error("MicroClaw node approval proof minter is unavailable");
 \treturn minter.mint(params);
 }
+function attachMicroclawNodeApprovalProof(params, request) {
+\tif (!request) return;
+\tconst proof = mintMicroclawNodeApprovalProof(request);
+\tparams.microclawApprovalProof = proof;
+\tconst forwardedAtUnixMs = Date.now();
+\tconst decisionAtUnixMs = Number.isFinite(request.decisionAtUnixMs) ? request.decisionAtUnixMs : proof.issuedAtUnixMs;
+\tconsole.error(\`[microclaw-approval-timing] stage=proof-mint decisionAtUnixMs=\${decisionAtUnixMs} proofIssuedAtUnixMs=\${proof.issuedAtUnixMs} decisionToMintMs=\${Math.max(0, proof.issuedAtUnixMs - decisionAtUnixMs)}\`);
+\tconsole.error(\`[microclaw-approval-timing] stage=gateway-forward forwardAtUnixMs=\${forwardedAtUnixMs} proofAgeMs=\${Math.max(0, forwardedAtUnixMs - proof.issuedAtUnixMs)}\`);
+}
 async function sanitizeSystemRunParamsForForwarding(opts) {`;
 
 export const PINNED_NODE_GATEWAY_APPROVAL_SOURCE = `\tconst approvalDecision = snapshot.decision;
@@ -156,23 +171,153 @@ const PATCHED_NODE_GATEWAY_APPROVAL_SOURCE = `\tconst approvalDecision = snapsho
 \t\t\tdetails: { runId }
 \t\t});
 \t\tif (approvalDecision !== "allow-once" || recordedResolutionSource !== "operator") return systemRunApprovalRequired(runId);
+\t\tif (!runtimeContext.plan) return systemRunApprovalGuardError({
+\t\t\tcode: "APPROVAL_PLAN_REQUIRED",
+\t\t\tmessage: "operator approval requires an approved execution plan",
+\t\t\tdetails: { runId }
+\t\t});
 \t\tif (typeof manager.consumeAllowOnce !== "function" || !await manager.consumeAllowOnce(runId)) return systemRunApprovalRequired(runId);
 \t\tnext.approved = true;
 \t\tnext.approvalDecision = "allow-once";
-\t\tnext.microclawApprovalProof = mintMicroclawNodeApprovalProof({
-\t\t\tapprovalId: runId,
-\t\t\tnodeId: targetNodeId,
-\t\t\tplan: runtimeContext.plan
-\t\t});
 \t\treturn {
 \t\t\tok: true,
 \t\t\tparams: next,
 \t\t\tapprovalAuthority: {
 \t\t\t\trecordId: runId,
 \t\t\t\tdecision: "allow-once"
+\t\t\t},
+\t\t\tmicroclawApprovalProofRequest: {
+\t\t\t\tapprovalId: runId,
+\t\t\t\tnodeId: targetNodeId,
+\t\t\t\tplan: runtimeContext.plan,
+\t\t\t\tdecisionAtUnixMs: snapshot.resolvedAtMs ?? nowMs
 \t\t\t}
 \t\t};
 \t}`;
+
+export const PINNED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE = `\t\t\t\t\tonNodeCommandDispatched: () => {
+\t\t\t\t\t\tnodeCommandDispatched = true;
+\t\t\t\t\t},`;
+const PATCHED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE = `\t\t\t\t\tonNodeCommandDispatched: () => {
+\t\t\t\t\t\tnodeCommandDispatched = true;
+\t\t\t\t\t},
+\t\t\t\t\tonNodeCommandDispatchPreparing: (dispatchParams) => {
+\t\t\t\t\t\tattachMicroclawNodeApprovalProof(dispatchParams, forwardedParams.microclawApprovalProofRequest);
+\t\t\t\t\t},`;
+
+export const PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE = `\t\t\t\t\tonDispatchReady: (invokeId) => {
+\t\t\t\t\t\tnodeCommandDispatched = true;
+\t\t\t\t\t\tnodeInvokeStream?.onDispatchReady(invokeId);
+\t\t\t\t\t}`;
+const PATCHED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE = `\t\t\t\t\tonDispatchReady: (invokeId) => {
+\t\t\t\t\t\tnodeCommandDispatched = true;
+\t\t\t\t\t\tnodeInvokeStream?.onDispatchReady(invokeId);
+\t\t\t\t\t},
+\t\t\t\t\tonDispatchPreparing: (dispatchParams) => {
+\t\t\t\t\t\tattachMicroclawNodeApprovalProof(dispatchParams, forwardedParams.microclawApprovalProofRequest);
+\t\t\t\t\t}`;
+
+export const PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE = `\t\tconst request = {
+\t\t\tnodeId: params.nodeSession.nodeId,
+\t\t\texpectedConnId: params.nodeSession.connId,
+\t\t\t...params.nodeSession.pairingGeneration ? { expectedPairingGeneration: params.nodeSession.pairingGeneration } : {},
+\t\t\tcommand: params.command,
+\t\t\tparams: override.params ?? params.params,`;
+const PATCHED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE = `\t\tconst requestParams = override.params ?? params.params;
+\t\tconst request = {
+\t\t\tnodeId: params.nodeSession.nodeId,
+\t\t\texpectedConnId: params.nodeSession.connId,
+\t\t\t...params.nodeSession.pairingGeneration ? { expectedPairingGeneration: params.nodeSession.pairingGeneration } : {},
+\t\t\tcommand: params.command,
+\t\t\tparams: requestParams,`;
+
+export const PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE = `\t\t\tonDispatchReady: (invokeId) => {
+\t\t\t\tnodeCommandDispatched = true;
+\t\t\t\tparams.onNodeCommandDispatched?.();
+\t\t\t\tparams.nodeInvokeStream?.onDispatchReady(invokeId);
+\t\t\t}
+\t\t};
+\t\tconst res = params.privateTransport ? await params.privateTransport.invoke(request) : await invokeNodeWithReadinessRetry(params.context.nodeRegistry, {
+\t\t\t...request,
+\t\t\tdeadlineAtMs
+\t\t});`;
+const PATCHED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE = `\t\t\tonDispatchReady: (invokeId) => {
+\t\t\t\tnodeCommandDispatched = true;
+\t\t\t\tparams.onNodeCommandDispatched?.();
+\t\t\t\tparams.nodeInvokeStream?.onDispatchReady(invokeId);
+\t\t\t},
+\t\t\tonDispatchPreparing: () => {
+\t\t\t\tparams.onNodeCommandDispatchPreparing?.(requestParams);
+\t\t\t}
+\t\t};
+\t\tif (params.privateTransport) request.onDispatchPreparing();
+\t\tconst res = params.privateTransport ? await params.privateTransport.invoke(request) : await invokeNodeWithReadinessRetry(params.context.nodeRegistry, {
+\t\t\t...request,
+\t\t\tdeadlineAtMs
+\t\t});`;
+
+export const PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE = `\tconst requestId = randomUUID();
+\tconst invokeParams = normalizeSystemRunInvokeParams({
+\t\tcommand: params.command,
+\t\tparams: params.params
+\t});
+\tconst payload = buildNodeInvokeRequest({
+\t\tid: requestId,
+\t\tnodeId: params.nodeId,
+\t\tcommand: params.command,
+\t\tparams: "params" in params ? invokeParams : void 0,
+\t\ttimeoutMs,
+\t\tidempotencyKey: params.idempotencyKey,
+\t\tsessionKey: params.sessionKey
+\t});
+\tif (params.command === "worker.launch.v1" && Buffer.byteLength(serializeNodeEvent("node.invoke.request", payload), "utf8") > 26214400) return {
+\t\tok: false,
+\t\terror: {
+\t\t\tcode: "INVALID_REQUEST",
+\t\t\tmessage: "worker launch exceeds the node payload limit"
+\t\t}
+\t};
+\tconst systemRunEvent = resolvePendingSystemRunEvent({
+\t\tcommand: params.command,
+\t\tparams: invokeParams
+\t});`;
+const PATCHED_NODE_REGISTRY_SERIALIZATION_SOURCE = `\tconst requestId = randomUUID();
+\tlet payloadTimeoutMs = timeoutMs;
+\tlet invokeParams;
+\tlet payload;
+\tlet systemRunEvent;`;
+
+export const PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE = `\t\tpayload.timeoutMs = Math.ceil(timeoutMs);
+\t}
+\tconst result = new Promise((resolve, reject) => {`;
+const PATCHED_NODE_REGISTRY_PRE_DISPATCH_SOURCE = `\t\tpayloadTimeoutMs = Math.ceil(timeoutMs);
+\t}
+\tparams.onDispatchPreparing?.(params.params);
+\tinvokeParams = normalizeSystemRunInvokeParams({
+\t\tcommand: params.command,
+\t\tparams: params.params
+\t});
+\tpayload = buildNodeInvokeRequest({
+\t\tid: requestId,
+\t\tnodeId: params.nodeId,
+\t\tcommand: params.command,
+\t\tparams: "params" in params ? invokeParams : void 0,
+\t\ttimeoutMs: payloadTimeoutMs,
+\t\tidempotencyKey: params.idempotencyKey,
+\t\tsessionKey: params.sessionKey
+\t});
+\tif (params.command === "worker.launch.v1" && Buffer.byteLength(serializeNodeEvent("node.invoke.request", payload), "utf8") > 26214400) return {
+\t\tok: false,
+\t\terror: {
+\t\t\tcode: "INVALID_REQUEST",
+\t\t\tmessage: "worker launch exceeds the node payload limit"
+\t\t}
+\t};
+\tsystemRunEvent = resolvePendingSystemRunEvent({
+\t\tcommand: params.command,
+\t\tparams: invokeParams
+\t});
+\tconst result = new Promise((resolve, reject) => {`;
 
 export const PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE = `\tif (timedOut && approvalSource === "ask-fallback" && !approved && requestedDecision === null && clientHasApprovals(opts.client)) {
 \t\tif (!runtimeContext.plan) return systemRunApprovalGuardError({
@@ -297,11 +442,53 @@ export function patchPinnedOpenClawNodeGateway(source) {
     PATCHED_NODE_GATEWAY_APPROVAL_SOURCE,
     "node approval proof handoff",
   );
-  return replaceExactlyOnce(
+  patched = replaceExactlyOnce(
     patched,
     PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
     PATCHED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
     "node ask-fallback approval proof handoff",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    PINNED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE,
+    PATCHED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE,
+    "plugin node approval proof dispatch boundary",
+  );
+  return replaceExactlyOnce(
+    patched,
+    PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
+    PATCHED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
+    "direct node approval proof dispatch boundary",
+  );
+}
+
+export function patchPinnedOpenClawNodeInvokePluginPolicy(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE,
+    PATCHED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE,
+    "plugin final node invoke params",
+  );
+  return replaceExactlyOnce(
+    patched,
+    PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE,
+    PATCHED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE,
+    "plugin pre-serialization node dispatch callback",
+  );
+}
+
+export function patchPinnedOpenClawNodeRegistryPrivate(source) {
+  let patched = replaceExactlyOnce(
+    source,
+    PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE,
+    PATCHED_NODE_REGISTRY_SERIALIZATION_SOURCE,
+    "node registry deferred serialization",
+  );
+  return replaceExactlyOnce(
+    patched,
+    PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
+    PATCHED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
+    "node registry pre-serialization dispatch callback",
   );
 }
 
@@ -441,6 +628,17 @@ function formatMicroclawUnresolvedNodeRunResult(params) {
 }
 /** Only explicit trusted provenance can prove that node execution did not begin. */`;
 
+export const PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE =
+  'params.failure.reason === "policy-denied" ? [`Node command was denied before execution on ${params.nodeId}.`, "Resolve the reported refusal before retrying."]';
+const PATCHED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE =
+  'params.failure.reason === "policy-denied" ? [`Node command was denied before execution on ${params.nodeId}.`, "Do not retry this command automatically. Do not switch to gateway or sandbox execution. Surface the refusal to the user."]';
+
+export const PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE = `\t\t\tconst host = target.effectiveHost;
+\t\t\tconst explicitSecurity = defaults?.security;`;
+const PATCHED_BASH_TOOLS_HOST_SELECTION_SOURCE = `\t\t\tconst host = target.effectiveHost;
+\t\t\tif (process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1" && host !== "node") throw new Error("MicroClaw MXC execution is locked to host=node. Do not retry with gateway or sandbox host overrides.");
+\t\t\tconst explicitSecurity = defaults?.security;`;
+
 export const PINNED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepareNodeSystemRun({
 \t\trequest: {
 \t\t\t...params,
@@ -566,6 +764,12 @@ export function patchPinnedOpenClawBashTools(source) {
   );
   patched = replaceExactlyOnce(
     patched,
+    PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
+    PATCHED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
+    "node pre-execution retry guidance",
+  );
+  patched = replaceExactlyOnce(
+    patched,
     PINNED_BASH_TOOLS_PREPARED_SOURCE,
     PATCHED_BASH_TOOLS_PREPARED_SOURCE,
     "node unresolved-outcome pre-approval deduplication",
@@ -588,11 +792,17 @@ export function patchPinnedOpenClawBashTools(source) {
     PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
     "node semantic pre-execution rejection classification",
   );
-  return replaceExactlyOnce(
+  patched = replaceExactlyOnce(
     patched,
     PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
     PATCHED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
     "node unresolved-outcome dispatch identity",
+  );
+  return replaceExactlyOnce(
+    patched,
+    PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
+    PATCHED_BASH_TOOLS_HOST_SELECTION_SOURCE,
+    "MXC exec host lock",
   );
 }
 
@@ -1244,6 +1454,16 @@ export function validatePinnedOpenClawApprovalPackage(
         module: EXPECTED_NODE_GATEWAY_MODULE,
         sha256: EXPECTED_NODE_GATEWAY_SHA256,
         patch: patchPinnedOpenClawNodeGateway,
+      },
+      {
+        module: EXPECTED_NODE_INVOKE_PLUGIN_POLICY_MODULE,
+        sha256: EXPECTED_NODE_INVOKE_PLUGIN_POLICY_SHA256,
+        patch: patchPinnedOpenClawNodeInvokePluginPolicy,
+      },
+      {
+        module: EXPECTED_NODE_REGISTRY_PRIVATE_MODULE,
+        sha256: EXPECTED_NODE_REGISTRY_PRIVATE_SHA256,
+        patch: patchPinnedOpenClawNodeRegistryPrivate,
       },
       {
         module: EXPECTED_SYSTEM_RUN_MODULE,

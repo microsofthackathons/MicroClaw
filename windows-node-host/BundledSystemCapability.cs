@@ -358,7 +358,7 @@ internal sealed class BundledSystemCapability(
                     ["TMPDIR"] = scratch,
                 });
             currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
-            activationLease.Revalidate(validatedActivation, request.Argv);
+            validatedActivation = activationLease.Revalidate(validatedActivation, request.Argv);
             currentIdentity = executableLease.Capture(
                 exactArgs,
                 currentCwd.ApprovalBinding,

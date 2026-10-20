@@ -18,6 +18,8 @@ const {
   PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
   PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
   PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
+  PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
+  PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
   PINNED_BASH_TOOLS_PREPARED_SOURCE,
   PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
   PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
@@ -28,7 +30,13 @@ const {
   PINNED_INTERNAL_HOOK_TRIGGER_SOURCE,
   PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
   PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
+  PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
   PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
+  PINNED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE,
+  PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE,
+  PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE,
+  PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
+  PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE,
   PINNED_SYSTEM_RUN_PLAN_SOURCE,
   attestPinnedOpenClawWebFetchHttpOnly,
   createWindowsNodeMxcApprovalProofMinter,
@@ -42,6 +50,8 @@ const {
   patchPinnedOpenClawExternalHooks,
   patchPinnedOpenClawInternalHooks,
   patchPinnedOpenClawNodeGateway,
+  patchPinnedOpenClawNodeInvokePluginPolicy,
+  patchPinnedOpenClawNodeRegistryPrivate,
   patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
   validatePinnedOpenClawApprovalPackage,
@@ -95,6 +105,8 @@ describe("pinned OpenClaw package validation", () => {
       });
       expect(targets.map((target: { module: string }) => target.module)).toEqual([
         "nodes-CUbe_1MQ.mjs",
+        "node-invoke-plugin-policy-DLQRKKVA.mjs",
+        "node-registry-private-CyaYRwVd.mjs",
         "system-run-approval-plan-Cu-Ftdkp.mjs",
         "exec-approval-mGU7M4-K.mjs",
         "bash-tools-Bl8Bd3CR.mjs",
@@ -118,7 +130,27 @@ describe("pinned OpenClaw package validation", () => {
         expect(checked.status, checked.stderr).toBe(0);
         if (target.module.startsWith("nodes-")) {
           expect(patched.indexOf("manager.projectDecisionIfActive")).toBeLessThan(
-            patched.indexOf("next.microclawApprovalProof ="),
+            patched.indexOf("microclawApprovalProofRequest: {"),
+          );
+          expect(patched).toContain(
+            "attachMicroclawNodeApprovalProof(dispatchParams, forwardedParams.microclawApprovalProofRequest)",
+          );
+        }
+        if (target.module === "node-invoke-plugin-policy-DLQRKKVA.mjs") {
+          expect(patched).toContain("const requestParams = override.params ?? params.params");
+          expect(patched).toContain(
+            "params.onNodeCommandDispatchPreparing?.(requestParams)",
+          );
+        }
+        if (target.module === "node-registry-private-CyaYRwVd.mjs") {
+          expect(patched.indexOf("params.isDispatchAuthorized?.()")).toBeLessThan(
+            patched.indexOf("params.onDispatchPreparing?.(params.params)"),
+          );
+          expect(patched.indexOf("params.onDispatchPreparing?.(params.params)")).toBeLessThan(
+            patched.indexOf("invokeParams = normalizeSystemRunInvokeParams"),
+          );
+          expect(patched.indexOf("invokeParams = normalizeSystemRunInvokeParams")).toBeLessThan(
+            patched.indexOf("payload = buildNodeInvokeRequest"),
           );
         }
         if (target.module === "extensions/canvas/index.js") {
@@ -389,9 +421,11 @@ describe("pinned OpenClaw node approval proof backport", () => {
     PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
     PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
     PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
+    PINNED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE,
+    PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
   ].join("\n");
 
-  it("injects a proof only into approved replay branches", () => {
+  it("mints a proof only at the latest trusted dispatch boundary", () => {
     const patched = patchPinnedOpenClawNodeGateway(source);
 
     expect(patched.match(/microclawApprovalProof =/g)).toHaveLength(1);
@@ -405,8 +439,47 @@ describe("pinned OpenClaw node approval proof backport", () => {
     expect(patched).toContain('recordedResolutionSource !== "operator"');
     expect(patched).toContain("plan: runtimeContext.plan");
     expect(patched).toContain("nodeId: targetNodeId");
+    expect(patched).toContain("microclawApprovalProofRequest");
+    expect(patched.match(/attachMicroclawNodeApprovalProof/g)).toHaveLength(3);
+    expect(patched).toContain("stage=proof-mint");
+    expect(patched).toContain("stage=gateway-forward");
     expect(patched.indexOf("consumeAllowOnce(runId)")).toBeLessThan(
-      patched.indexOf("microclawApprovalProof ="),
+      patched.indexOf("microclawApprovalProofRequest"),
+    );
+    expect(patched.indexOf("microclawApprovalProofRequest")).toBeLessThan(
+      patched.lastIndexOf("attachMicroclawNodeApprovalProof"),
+    );
+  });
+
+  it("attaches the proof to the final plugin params before registry serialization", () => {
+    const patchedPlugin = patchPinnedOpenClawNodeInvokePluginPolicy(
+      [
+        PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE,
+        PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE,
+      ].join("\n"),
+    );
+    const patchedRegistry = patchPinnedOpenClawNodeRegistryPrivate(
+      [
+        PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE,
+        "if (params.signal?.aborted) return { ok: false };",
+        "if (params.isDispatchAuthorized?.() === false) return { ok: false };",
+        PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
+      ].join("\n"),
+    );
+
+    expect(patchedPlugin).toContain("const requestParams = override.params ?? params.params");
+    expect(patchedPlugin).toContain("onDispatchPreparing: () =>");
+    expect(patchedPlugin).toContain(
+      "params.onNodeCommandDispatchPreparing?.(requestParams)",
+    );
+    expect(patchedRegistry.indexOf("params.isDispatchAuthorized?.()")).toBeLessThan(
+      patchedRegistry.indexOf("params.onDispatchPreparing?.(params.params)"),
+    );
+    expect(patchedRegistry.indexOf("params.onDispatchPreparing?.(params.params)")).toBeLessThan(
+      patchedRegistry.indexOf("invokeParams = normalizeSystemRunInvokeParams"),
+    );
+    expect(patchedRegistry.indexOf("invokeParams = normalizeSystemRunInvokeParams")).toBeLessThan(
+      patchedRegistry.indexOf("payload = buildNodeInvokeRequest"),
     );
   });
 
@@ -418,6 +491,8 @@ describe("pinned OpenClaw node approval proof backport", () => {
       PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
       PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+      PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
+      PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
     ].join("\n");
 
     it("classifies trusted pre-execution rejection without claiming an unknown outcome", () => {
@@ -450,6 +525,9 @@ describe("pinned OpenClaw node approval proof backport", () => {
         'payload.success === false && payload.executionState === "rejectedBeforeExecution"',
       );
       expect(patched).toContain('reason: "policy-denied"');
+      expect(patched).toContain("Do not retry this command automatically.");
+      expect(patched).toContain("Do not switch to gateway or sandbox execution.");
+      expect(patched).toContain("MicroClaw MXC execution is locked to host=node.");
     });
 
     it("deduplicates an exact unresolved plan before approval and records both dispatch paths", () => {
@@ -475,6 +553,8 @@ describe("pinned OpenClaw node approval proof backport", () => {
       PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
       PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+      PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
+      PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
     ])("fails closed when a pinned bash-tools fragment drifts", (fragment) => {
       expect(() =>
         patchPinnedOpenClawBashTools(
@@ -489,7 +569,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
     { decision: "allow-once", resolutionSource: "operator", consumed: false, allowed: false },
     { decision: "allow-once", resolutionSource: "auto-review", consumed: true, allowed: false },
     { decision: "allow-always", resolutionSource: "operator", consumed: true, allowed: false },
-  ])("awaits one-use consumption before minting a proof: %j", async (entry) => {
+  ])("awaits one-use consumption before scheduling dispatch-time proof minting: %j", async (entry) => {
     const patched = patchPinnedOpenClawNodeGateway(source);
     const branch = patched.slice(
       patched.indexOf("\tconst approvalDecision ="),
@@ -499,9 +579,8 @@ describe("pinned OpenClaw node approval proof backport", () => {
       "snapshot",
       "recordedResolutionSource",
       "manager",
-      "mintMicroclawNodeApprovalProof",
       `return (async () => {
-        const approvalSource = null, next = {}, runId = "approval", targetNodeId = "node";
+        const approvalSource = null, next = {}, runId = "approval", targetNodeId = "node", nowMs = 2000;
         const runtimeContext = {plan: {}};
         const systemRunApprovalRequired = () => ({ok: false});
         const systemRunApprovalGuardError = () => ({ok: false});
@@ -510,15 +589,22 @@ describe("pinned OpenClaw node approval proof backport", () => {
       })();`,
     );
     const consumeAllowOnce = vi.fn().mockResolvedValue(entry.consumed);
-    const mint = vi.fn().mockReturnValue("proof");
     const result = await run(
-      { decision: entry.decision },
+      { decision: entry.decision, resolvedAtMs: 1000 },
       entry.resolutionSource,
       { consumeAllowOnce },
-      mint,
     );
     expect(result.ok).toBe(entry.allowed);
-    expect(mint).toHaveBeenCalledTimes(entry.allowed ? 1 : 0);
+    expect(result.microclawApprovalProofRequest).toEqual(
+      entry.allowed
+        ? {
+            approvalId: "approval",
+            nodeId: "node",
+            plan: {},
+            decisionAtUnixMs: 1000,
+          }
+        : undefined,
+    );
     expect(consumeAllowOnce).toHaveBeenCalledTimes(
       entry.decision === "allow-once" && entry.resolutionSource === "operator" ? 1 : 0,
     );
@@ -581,6 +667,8 @@ describe("pinned OpenClaw node approval proof backport", () => {
     PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
     PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
     PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
+    PINNED_NODE_GATEWAY_PLUGIN_DISPATCH_SOURCE,
+    PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
   ])("fails closed when a pinned source fragment drifts", (fragment) => {
     expect(() =>
       patchPinnedOpenClawNodeGateway(
@@ -641,7 +729,7 @@ describe("Windows Node MXC approval proof minter", () => {
       planSha256: "121d69569e93b8e70445e4d8815cf9d72fd68d5065fa11106c4f204f4c78b661",
       issuedAtUnixMs: 1_735_689_600_000,
       expiresAtUnixMs: 1_735_689_600_000 + APPROVAL_PROOF_TTL_MS,
-      signature: "1167c6b0eeea3c385e252110d22bb87fa8e54f881a0f954d9f684289c1e48caa",
+      signature: "be550cd55e9ba5040270c80bcefc88179813a0cd8e18c393545fa6155c43f296",
     });
   });
 
@@ -749,5 +837,34 @@ describe("Windows Node MXC approval proof minter", () => {
 
     expect(first.nonce).not.toBe(second.nonce);
     expect(first.signature).not.toBe(second.signature);
+  });
+
+  it("starts the bounded proof lifetime at dispatch after a realistic decision delay", () => {
+    const decisionAtUnixMs = 1_735_689_600_000;
+    let nowUnixMs = decisionAtUnixMs + 50_000;
+    const minter = createWindowsNodeMxcApprovalProofMinter(
+      {
+        secretBase64: secret,
+        gatewayGeneration: "generation",
+        policyFingerprint: "a".repeat(64),
+        nodeId: "b".repeat(64),
+      },
+      {
+        now: () => nowUnixMs,
+        randomUUID: () => "12345678-1234-4234-8234-123456789abc",
+      },
+    );
+
+    const proof = minter.mint({
+      approvalId: "approval-delayed",
+      nodeId: "b".repeat(64),
+      plan,
+      decisionAtUnixMs,
+    });
+
+    expect(proof.issuedAtUnixMs).toBe(nowUnixMs);
+    expect(proof.expiresAtUnixMs).toBe(nowUnixMs + APPROVAL_PROOF_TTL_MS);
+    nowUnixMs += APPROVAL_PROOF_TTL_MS - 1;
+    expect(nowUnixMs).toBeLessThan(proof.expiresAtUnixMs);
   });
 });

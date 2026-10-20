@@ -166,6 +166,7 @@ import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
 import { runStartupWarmup } from "@/startup-warmup";
 import { watchStartupServiceReadiness } from "@/startup-service-readiness";
+import { resolveWindowsNodeMxcAllowedDecisions } from "@/windows-node-mxc-approval";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -281,6 +282,7 @@ interface PermissionRequestData {
   accessNeeded?: string;
   app?: string;
   source?: "sandbox" | "windows-node-mxc";
+  approvalLayer?: "gateway" | "node";
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
   containmentStrength?: "full" | "limited-dacl";
@@ -331,10 +333,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     windowsNodeMxcStatus.value.requestedMode !== "limited-dacl"
       ? "full"
       : "limited-dacl";
-  const allowedDecisions =
-    containmentStrength === "limited-dacl"
-      ? request.allowedDecisions.filter((decision) => decision !== "allow-always")
-      : request.allowedDecisions;
+  const allowedDecisions = resolveWindowsNodeMxcAllowedDecisions(request);
   const command = request.commandText ?? [request.executable, ...request.arguments].join(" ");
   permissionQueue.value.push({
     requestId: request.id,
@@ -344,6 +343,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     command,
     declaredAccess: request.declaredAccess,
     source: "windows-node-mxc",
+    approvalLayer: request.approvalLayer,
     containmentStrength,
     ambientAccess:
       containmentStrength === "limited-dacl"

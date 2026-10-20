@@ -623,6 +623,7 @@ let windowsNodeMxcLifecycleDetail: string | null = null;
 let pendingWindowsNodeMxcGatewayApproval: {
   request: WindowsNodeMxcGatewayApproval;
   gatewayGeneration: string;
+  receivedAtUnixMs: number;
 } | null = null;
 let windowsNodeMxcFailClosedPromise: Promise<void> | null = null;
 let windowsNodeMxcStartupTiming: {
@@ -1833,10 +1834,15 @@ async function handleWindowsNodeMxcGatewayApproval(
     return;
   }
   const rendererApproval = approval;
+  const receivedAtUnixMs = Date.now();
   pendingWindowsNodeMxcGatewayApproval = {
     request: rendererApproval,
     gatewayGeneration: approvalGeneration,
+    receivedAtUnixMs,
   };
+  console.info(
+    `[windows-node-mxc-approval-timing] stage=prompt-received layer=gateway unixMs=${receivedAtUnixMs} allowedDecisions=${rendererApproval.allowedDecisions.join(",")}`,
+  );
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
     ...rendererApproval,
     commandText: rendererApproval.command,
@@ -1929,6 +1935,10 @@ async function resolvePendingWindowsNodeMxcGatewayApproval(
   if (gatewayApproval?.request.id !== requestId) {
     throw new Error("The Gateway approval is no longer pending");
   }
+  const decisionAtUnixMs = Date.now();
+  console.info(
+    `[windows-node-mxc-approval-timing] stage=operator-decision layer=gateway unixMs=${decisionAtUnixMs} promptToDecisionMs=${Math.max(0, decisionAtUnixMs - gatewayApproval.receivedAtUnixMs)} decision=${decision}`,
+  );
   await withWindowsNodeMxcApprovalResolution(async () => {
     const approvalGeneration = gatewayApproval.gatewayGeneration;
     const proofContext = windowsNodeMxcApprovalProofContext;
@@ -5342,6 +5352,11 @@ function connectGatewayWs(): void {
                 })
               ) {
                 return;
+              }
+              if (approval) {
+                console.info(
+                  `[windows-node-mxc-approval-timing] stage=prompt-received layer=node unixMs=${Date.now()} allowedDecisions=deny,allow-once`,
+                );
               }
               sendToWindow(
                 mainWindow,

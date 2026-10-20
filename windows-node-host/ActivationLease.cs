@@ -64,23 +64,41 @@ public sealed class ActivationLeaseGuard(
         return lease;
     }
 
-    public void RevalidateActive(ValidatedActivationLease expected)
+    public ValidatedActivationLease RevalidateActive(ValidatedActivationLease expected)
     {
         var current = ValidateActive();
-        if (current != expected)
+        if (!IsSameScopeMonotonicRenewal(expected, current))
             throw new HostPolicyException(
                 "activation-lease-changed",
                 "The MicroClaw activation lease changed before capability execution.");
+        return current;
     }
 
-    public void Revalidate(ValidatedActivationLease expected, IReadOnlyList<string> argv)
+    public ValidatedActivationLease Revalidate(
+        ValidatedActivationLease expected,
+        IReadOnlyList<string> argv)
     {
         var current = Validate(argv);
-        if (current != expected)
+        if (!IsSameScopeMonotonicRenewal(expected, current))
             throw new HostPolicyException(
                 "activation-lease-changed",
                 "The MicroClaw activation lease changed before process launch.");
+        return current;
     }
+
+    private static bool IsSameScopeMonotonicRenewal(
+        ValidatedActivationLease expected,
+        ValidatedActivationLease current) =>
+        current.Mode == expected.Mode
+        && string.Equals(
+            current.GatewayGeneration,
+            expected.GatewayGeneration,
+            StringComparison.Ordinal)
+        && string.Equals(
+            current.PolicyFingerprint,
+            expected.PolicyFingerprint,
+            StringComparison.Ordinal)
+        && current.ExpiresAtUnixMs >= expected.ExpiresAtUnixMs;
 
     private ValidatedActivationLease ValidateCore()
     {
