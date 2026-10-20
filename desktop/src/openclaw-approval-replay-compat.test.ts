@@ -12,6 +12,7 @@ const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
   classifyWindowsNodeMxcInvokeFailure,
+  resolveWindowsNodeSystemRunPayload,
   PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
   PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
   PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
@@ -528,6 +529,123 @@ describe("pinned OpenClaw node approval proof backport", () => {
       expect(patched).toContain("Do not retry this command automatically.");
       expect(patched).toContain("Do not switch to gateway or sandbox execution.");
       expect(patched).toContain("MicroClaw MXC execution is locked to host=node.");
+    });
+
+    it("accepts only an exact validated system.run result envelope", () => {
+      const patched = patchPinnedOpenClawBashTools(source);
+      const completed = {
+        success: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 12,
+      };
+
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          nodeId: "node",
+          command: "system.run",
+          payload: completed,
+          payloadJSON: null,
+        }),
+      ).toEqual(completed);
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          nodeId: "node",
+          command: "system.run",
+          payload: completed,
+          payloadJSON: JSON.stringify(completed),
+        }),
+      ).toEqual(completed);
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          nodeId: "node",
+          command: "system.run",
+          payload: {
+            success: false,
+            exitCode: null,
+            timedOut: false,
+            error: "approval expired",
+            errorCode: "approval-proof-stale",
+            executionState: "rejectedBeforeExecution",
+          },
+          payloadJSON: null,
+        }),
+      ).toMatchObject({
+        success: false,
+        executionState: "rejectedBeforeExecution",
+      });
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run",
+          payload: { stdout: "", exitCode: 0, timedOut: false },
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: false,
+          command: "system.run",
+          payload: completed,
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run",
+          payload: { payload: completed },
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run",
+          payload: { ...completed, success: true, exitCode: 7 },
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run",
+          payload: {
+            ...completed,
+            payload: {
+              success: false,
+              executionState: "rejectedBeforeExecution",
+            },
+          },
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run",
+          payload: completed,
+          payloadJSON: "{",
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run",
+          payload: completed,
+          payloadJSON: JSON.stringify({ ...completed, success: false }),
+        }),
+      ).toBeNull();
+      expect(
+        resolveWindowsNodeSystemRunPayload({
+          ok: true,
+          command: "system.run.prepare",
+          payload: completed,
+        }),
+      ).toBeNull();
+
+      expect(patched).toContain("resolveMicroclawNodeSystemRunPayload(raw)");
+      expect(patched).toContain('response.command !== "system.run"');
     });
 
     it("deduplicates an exact unresolved plan before approval and records both dispatch paths", () => {

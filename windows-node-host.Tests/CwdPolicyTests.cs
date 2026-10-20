@@ -21,6 +21,33 @@ public sealed class CwdPolicyTests : IDisposable
         Directory.CreateDirectory(_root);
     }
 
+    [Theory]
+    [InlineData(0, false, true)]
+    [InlineData(7, false, false)]
+    [InlineData(0, true, false)]
+    public void CompletedSystemRunPayloadIncludesRequiredSuccess(
+        int exitCode,
+        bool timedOut,
+        bool expectedSuccess)
+    {
+        var response = BundledSystemCapability.Completed(
+            "stdout",
+            "stderr",
+            exitCode,
+            timedOut,
+            123,
+            "limited-dacl",
+            "limited-dacl");
+
+        Assert.True(response.Ok);
+        var payload = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.Equal(expectedSuccess, payload.GetProperty("success").GetBoolean());
+        Assert.Equal(exitCode, payload.GetProperty("exitCode").GetInt32());
+        Assert.Equal(timedOut, payload.GetProperty("timedOut").GetBoolean());
+        Assert.Equal("stdout", payload.GetProperty("stdout").GetString());
+        Assert.Equal("stderr", payload.GetProperty("stderr").GetString());
+    }
+
     [Fact]
     public void OmittedCwdUsesBoundScratchSemantic()
     {

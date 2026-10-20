@@ -108,6 +108,81 @@ export function classifyWindowsNodeMxcInvokeFailure(error) {
   };
 }
 
+export function resolveWindowsNodeSystemRunPayload(raw) {
+  const asRecord = (value) =>
+    value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const jsonEqual = (left, right) => {
+    if (Object.is(left, right)) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return (
+        Array.isArray(left) &&
+        Array.isArray(right) &&
+        left.length === right.length &&
+        left.every((value, index) => jsonEqual(value, right[index]))
+      );
+    }
+    const leftRecord = asRecord(left);
+    const rightRecord = asRecord(right);
+    if (!leftRecord || !rightRecord) return false;
+    const leftKeys = Object.keys(leftRecord).sort();
+    const rightKeys = Object.keys(rightRecord).sort();
+    return (
+      leftKeys.length === rightKeys.length &&
+      leftKeys.every(
+        (key, index) =>
+          key === rightKeys[index] && jsonEqual(leftRecord[key], rightRecord[key]),
+      )
+    );
+  };
+
+  const response = asRecord(raw);
+  const payload = asRecord(response?.payload);
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  if (
+    response?.ok !== true ||
+    response.command !== "system.run" ||
+    typeof payload?.success !== "boolean" ||
+    hasOwn(payload, "payload") ||
+    hasOwn(payload, "payloadJSON") ||
+    hasOwn(payload, "ok") ||
+    hasOwn(payload, "command")
+  ) {
+    return null;
+  }
+  const rejectedBeforeExecution =
+    payload.success === false &&
+    payload.executionState === "rejectedBeforeExecution" &&
+    payload.exitCode === null &&
+    payload.timedOut === false &&
+    typeof payload.error === "string" &&
+    payload.error.length > 0 &&
+    typeof payload.errorCode === "string" &&
+    payload.errorCode.length > 0;
+  const completed =
+    payload.executionState === undefined &&
+    typeof payload.stdout === "string" &&
+    typeof payload.stderr === "string" &&
+    typeof payload.exitCode === "number" &&
+    Number.isSafeInteger(payload.exitCode) &&
+    typeof payload.timedOut === "boolean" &&
+    typeof payload.durationMs === "number" &&
+    Number.isFinite(payload.durationMs) &&
+    payload.durationMs >= 0 &&
+    payload.success === (payload.exitCode === 0 && !payload.timedOut);
+  if (!rejectedBeforeExecution && !completed) return null;
+  if (response.payloadJSON !== undefined && response.payloadJSON !== null) {
+    if (typeof response.payloadJSON !== "string") return null;
+    let serializedPayload;
+    try {
+      serializedPayload = JSON.parse(response.payloadJSON);
+    } catch {
+      return null;
+    }
+    if (!jsonEqual(payload, serializedPayload)) return null;
+  }
+  return payload;
+}
+
 export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
   'if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("Invalid URL: must be http or https");';
 
@@ -726,8 +801,9 @@ export const PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await cal
 \t\t};`;
 
 const PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatewayTool("node.invoke", { timeoutMs: params.invokeWaitMs }, params.invoke, callOptions);
-\t\tconst payload = asNullableRecord(asNullableRecord(raw)?.payload);
-\t\tif (typeof payload?.success !== "boolean") return {
+\t\tconst resolveMicroclawNodeSystemRunPayload = ${resolveWindowsNodeSystemRunPayload.toString()};
+\t\tconst payload = resolveMicroclawNodeSystemRunPayload(raw);
+\t\tif (!payload) return {
 \t\t\tok: false,
 \t\t\tfailure: {
 \t\t\t\treason: "outcome-unknown",

@@ -394,17 +394,14 @@ internal sealed class BundledSystemCapability(
             if (validatedReadiness is not null)
                 Console.Error.WriteLine(
                     $"[readiness-probe] completed internal fixed probe kind={validatedReadiness.ProbeKind} exitCode={result.ExitCode} timedOut={result.TimedOut}");
-            return Success(new
-            {
-                stdout = result.Output ?? string.Empty,
-                stderr = result.Error ?? string.Empty,
-                exitCode = result.ExitCode,
-                timedOut = result.TimedOut,
-                durationMs = result.DurationMs,
-                containment = "mxc",
-                containmentStrength = policy.RequestedStrength,
-                effectiveTier = policy.EffectiveTier,
-            });
+            return Completed(
+                result.Output ?? string.Empty,
+                result.Error ?? string.Empty,
+                result.ExitCode,
+                result.TimedOut,
+                result.DurationMs,
+                policy.RequestedStrength,
+                policy.EffectiveTier);
         }
 
         finally
@@ -648,6 +645,26 @@ internal sealed class BundledSystemCapability(
     }
 
     private static NodeInvokeResponse Success(object payload) => new() { Ok = true, Payload = payload };
+    internal static NodeInvokeResponse Completed(
+        string stdout,
+        string stderr,
+        int exitCode,
+        bool timedOut,
+        long durationMs,
+        string containmentStrength,
+        string effectiveTier) =>
+        Success(new
+        {
+            stdout,
+            stderr,
+            exitCode,
+            timedOut,
+            success = exitCode == 0 && !timedOut,
+            durationMs,
+            containment = "mxc",
+            containmentStrength,
+            effectiveTier,
+        });
     private static NodeInvokeResponse RejectedBeforeExecution(string error, string code) =>
         new()
         {
