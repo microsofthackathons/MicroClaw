@@ -1214,6 +1214,31 @@ describe("SettingsView", () => {
     });
   });
 
+  it("shows the exact failed folder-policy phase and nested diagnostics", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValueOnce({
+      ...status("node-local"),
+      folderPolicyRecovery: {
+        previous: { rw: ["C:\\Desktop"], ro: [] },
+        draft: { rw: ["C:\\Desktop", "C:\\Users\\sunt\\Documents"], ro: [] },
+        updatedAt: "2026-10-20T07:40:04.792Z",
+        failurePhase: "persisting",
+        lastError:
+          "MXC ACL grant failed: launcher(timedOut=true); verification(protectedChildrenSufficient=false)",
+      },
+    });
+
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    const recovery = wrapper.find(".mxc-folder-policy .mxc-alert-error");
+    expect(recovery.text()).toContain("persisting:");
+    expect(recovery.text()).toContain("timedOut=true");
+    expect(recovery.text()).toContain("protectedChildrenSufficient=false");
+  });
+
   it("opens the English legal documents from About", async () => {
     const wrapper = shallowMount(SettingsView, {
       global: {

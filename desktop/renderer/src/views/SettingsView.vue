@@ -749,6 +749,9 @@
                 class="mxc-alert mxc-alert-error"
               >
                 {{ t("settings.windowsNodeMxcFolderRecovery") }}:
+                <strong v-if="windowsNodeMxcStatus.folderPolicyRecovery.failurePhase">
+                  {{ windowsNodeMxcStatus.folderPolicyRecovery.failurePhase }}:
+                </strong>
                 {{ windowsNodeMxcStatus.folderPolicyRecovery.lastError }}
                 <el-button text size="small" @click="stagePreviousWindowsNodeMxcFolderPolicy">
                   {{ t("settings.windowsNodeMxcStagePreviousFolders") }}

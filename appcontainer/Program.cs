@@ -428,6 +428,7 @@ internal class Program
     static int CmdCheckAcl(ReadOnlySpan<string> args)
     {
         string? name = null, dir = null, access = "r";
+        bool children = false;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -435,13 +436,14 @@ internal class Program
                 case "--name": if (i + 1 < args.Length) name = args[++i]; break;
                 case "--dir": if (i + 1 < args.Length) dir = args[++i]; break;
                 case "--access": if (i + 1 < args.Length) access = args[++i]; break;
+                case "--children": children = true; break;
             }
         }
         if (name == null) { Console.Error.WriteLine("Missing --name"); return 1; }
         if (dir == null) { Console.Error.WriteLine("Missing --dir"); return 1; }
 
         bool readOnly = access.Equals("r", StringComparison.OrdinalIgnoreCase);
-        string json = ContainerManager.CheckAccess(name, dir, readOnly);
+        string json = ContainerManager.CheckAccess(name, dir, readOnly, children);
         Console.WriteLine(json);
         return 0;
     }

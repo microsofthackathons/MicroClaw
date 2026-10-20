@@ -446,6 +446,7 @@ interface OpenClawAPI {
         draft: { rw: string[]; ro: string[] };
         updatedAt: string;
         lastError: string | null;
+        failurePhase?: string | null;
       } | null;
       durableApprovals: {
         records: Array<{

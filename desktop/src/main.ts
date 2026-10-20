@@ -205,6 +205,8 @@ import {
 } from "./windows-node-mxc-hooks";
 import {
   commitWindowsNodeMxcFolderPolicyAtomically,
+  describeWindowsNodeMxcFolderTransactionError,
+  replaceWindowsNodeMxcFolderAcls as reconcileWindowsNodeMxcFolderAcls,
   runWindowsNodeMxcFolderPolicyTransaction,
   type WindowsNodeMxcFolderPolicy,
   type WindowsNodeMxcFolderTransactionPhase,
@@ -383,6 +385,7 @@ const settingsStore = new Store<{
     draft: WindowsNodeMxcFolderPolicy;
     updatedAt: string;
     lastError: string | null;
+    failurePhase?: WindowsNodeMxcFolderTransactionPhase | null;
   };
   /** Privacy protection level. */
   privacyLevel: "basic" | "strict";
@@ -646,6 +649,7 @@ type WindowsNodeMxcFolderPolicyRecovery = {
   draft: WindowsNodeMxcFolderPolicy;
   updatedAt: string;
   lastError: string | null;
+  failurePhase?: WindowsNodeMxcFolderTransactionPhase | null;
 };
 
 async function tryConsumeWindowsNodeMxcCronResumeAcknowledgement(): Promise<boolean> {
@@ -7507,19 +7511,14 @@ function registerIpcHandlers(): void {
       const requestedMode =
         params?.requestedMode ??
         (params?.enabled === true ? "full" : params?.enabled === false ? "off" : null);
-      if (
-        requestedMode !== "off" &&
-        requestedMode !== "full" &&
-        requestedMode !== "limited-dacl"
-      ) {
+      if (requestedMode !== "off" && requestedMode !== "full" && requestedMode !== "limited-dacl") {
         throw new Error("A valid MXC containment mode is required");
       }
-      const lifecycleOperation = windowsNodeMxcLifecycleOperations.acquire<
-        WindowsNodeMxcRuntimeStatus
-      >(
-        { kind: "set-enabled", requestedMode },
-        windowsNodeMxcLifecycleOperationHooks(),
-      );
+      const lifecycleOperation =
+        windowsNodeMxcLifecycleOperations.acquire<WindowsNodeMxcRuntimeStatus>(
+          { kind: "set-enabled", requestedMode },
+          windowsNodeMxcLifecycleOperationHooks(),
+        );
       if (lifecycleOperation.joined) return lifecycleOperation.promise;
       let transitionSucceeded = false;
       let automaticReadinessStarted = false;
@@ -8182,40 +8181,64 @@ function registerIpcHandlers(): void {
     next: WindowsNodeMxcFolderPolicy,
   ) => {
     if (!toolSandbox) throw new Error("The AppContainer ACL manager is unavailable");
-    const previousAccess = new Map([
-      ...previous.ro.map((dir) => [normalizeDirPath(dir).toLowerCase(), "ro"] as const),
-      ...previous.rw.map((dir) => [normalizeDirPath(dir).toLowerCase(), "rw"] as const),
-    ]);
-    const nextAccess = new Map([
-      ...next.ro.map((dir) => [normalizeDirPath(dir).toLowerCase(), "ro"] as const),
-      ...next.rw.map((dir) => [normalizeDirPath(dir).toLowerCase(), "rw"] as const),
-    ]);
-    for (const dir of [...previous.rw, ...previous.ro]) {
-      const key = normalizeDirPath(dir).toLowerCase();
-      if (nextAccess.get(key) === previousAccess.get(key)) continue;
-      const launcherPath = toolSandbox.getStatus().launcherPath;
-      if (launcherPath) await unshieldIfNeeded(launcherPath, "MicroClaw", dir);
-      if (!(await toolSandbox.revokeDirAsync(dir))) {
-        throw new Error(
-          `Windows could not revoke the previous ACL for ${dir}. No elevation was attempted; the MXC route remains locked.`,
-        );
-      }
-    }
-    const ordered = [
-      ...next.ro.map((dir) => ({ dir, access: "r" as const })),
-      ...next.rw.map((dir) => ({ dir, access: "rw" as const })),
-    ].sort((left, right) => left.dir.length - right.dir.length);
-    for (const entry of ordered) {
-      if (likelyNeedsElevation(entry.dir)) {
-        throw new Error(
-          `The folder ${entry.dir} requires elevated ACL preparation. MicroClaw did not request elevation; choose a user-owned folder or prepare it explicitly.`,
-        );
-      }
-      const granted = await toolSandbox.grantDirAsync(entry.dir, entry.access, true);
-      if (!granted || !(await verifyAclPropagation(entry.dir, entry.access))) {
-        throw new Error(`Windows could not apply and verify the MXC ACL for ${entry.dir}`);
-      }
-    }
+    await reconcileWindowsNodeMxcFolderAcls(previous, next, {
+      normalizePath: (dir) => normalizeDirPath(dir).toLowerCase(),
+      grant: async (dir, access) => {
+        if (likelyNeedsElevation(dir)) {
+          return {
+            ok: false,
+            timedOut: false,
+            exitCode: null,
+            signal: null,
+            stderr: "",
+            errorMessage:
+              "Folder requires elevated ACL preparation; elevation is not permitted during MXC policy apply",
+            durationMs: 0,
+          };
+        }
+        return toolSandbox!.grantDirAsyncDetailed(dir, access, true);
+      },
+      revoke: async (dir) => {
+        const launcherPath = toolSandbox!.getStatus().launcherPath;
+        if (launcherPath) {
+          await unshieldIfNeeded(launcherPath, "MicroClaw", dir);
+        }
+        return toolSandbox!.revokeDirAsyncDetailed(dir);
+      },
+      verifyGrant: async (dir, access) => {
+        const acl = await toolSandbox!.checkAcl(dir, access, true);
+        const rootSatisfied =
+          acl?.exists === true && acl.hasExplicitProfileAccess === true && acl.sufficient === true;
+        const protectedChildrenSatisfied = acl?.protectedChildrenSufficient === true;
+        const effective =
+          rootSatisfied && protectedChildrenSatisfied
+            ? await verifyAclFromAppContainer(dir)
+            : false;
+        return {
+          satisfied: rootSatisfied && protectedChildrenSatisfied && effective,
+          detail:
+            `rootSufficient=${rootSatisfied}; ` +
+            `protectedChildrenSufficient=${protectedChildrenSatisfied}; ` +
+            `protectedChildrenChecked=${String(acl?.protectedChildrenChecked ?? "unknown")}; ` +
+            `protectedChildrenErrors=${String(acl?.protectedChildrenErrors ?? "unknown")}; ` +
+            `appContainerAccess=${effective}`,
+        };
+      },
+      verifyRevoked: async (dir) => {
+        const acl = await toolSandbox!.checkAcl(dir, "r", true);
+        const pathAbsent = acl?.exists === false;
+        const rootExplicitClear = pathAbsent || acl?.hasExplicitProfileAccess === false;
+        const protectedChildrenClear = pathAbsent || acl?.protectedChildrenClear === true;
+        return {
+          satisfied: rootExplicitClear && protectedChildrenClear,
+          detail:
+            `pathAbsent=${pathAbsent}; rootExplicitClear=${rootExplicitClear}; ` +
+            `protectedChildrenClear=${protectedChildrenClear}; ` +
+            `protectedChildrenChecked=${String(acl?.protectedChildrenChecked ?? "unknown")}; ` +
+            `protectedChildrenErrors=${String(acl?.protectedChildrenErrors ?? "unknown")}`,
+        };
+      },
+    });
   };
 
   const persistWindowsNodeMxcFolderPolicy = (
@@ -8247,6 +8270,7 @@ function registerIpcHandlers(): void {
         draft: { rw: [...next.rw], ro: [...next.ro] },
         updatedAt: new Date().toISOString(),
         lastError,
+        failurePhase: null,
       },
     };
     if (toolSandbox) {
@@ -8321,9 +8345,11 @@ function registerIpcHandlers(): void {
       if (!isWindowsNodeMxcDesired()) {
         throw new Error("Apply and reactivate requires Windows Node + MXC mode");
       }
-      const lifecycleOperation = windowsNodeMxcLifecycleOperations.acquire<
-        WindowsNodeMxcRuntimeStatus
-      >({ kind: "apply-folder-policy" }, windowsNodeMxcLifecycleOperationHooks());
+      const lifecycleOperation =
+        windowsNodeMxcLifecycleOperations.acquire<WindowsNodeMxcRuntimeStatus>(
+          { kind: "apply-folder-policy" },
+          windowsNodeMxcLifecycleOperationHooks(),
+        );
       if (lifecycleOperation.joined) return lifecycleOperation.promise;
       try {
         windowsNodeMxcActivationInProgress = true;
@@ -8336,6 +8362,7 @@ function registerIpcHandlers(): void {
           },
           updatedAt: new Date().toISOString(),
           lastError: null,
+          failurePhase: null,
         };
         settingsStore.set("windowsNodeMxcFolderPolicyRecovery", recovery);
         await runWindowsNodeMxcFolderPolicyTransaction(draft, previous, {
@@ -8486,6 +8513,11 @@ function registerIpcHandlers(): void {
             sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
           },
           lockAfterFailure: async (error, context) => {
+            const primaryErrorDetail = describeWindowsNodeMxcFolderTransactionError(error);
+            setWindowsNodeMxcLifecycleState(
+              "locked",
+              `${context.failurePhase}: ${primaryErrorDetail}`,
+            );
             closeWindowsNodeMxcIngress();
             windowsNodeMxcActivationInProgress = true;
             bundledWindowsNodeHost.revokeActivationLease();
@@ -8542,7 +8574,8 @@ function registerIpcHandlers(): void {
                 previous: context.previous,
                 draft: context.applied ?? context.draft,
                 updatedAt: new Date().toISOString(),
-                lastError: error instanceof Error ? error.message : String(error),
+                lastError: primaryErrorDetail,
+                failurePhase: context.failurePhase,
               });
             } catch (recoveryError) {
               recoveryErrors.push(recoveryError);
@@ -8576,10 +8609,31 @@ function registerIpcHandlers(): void {
             }
             windowsNodeMxcActivationInProgress = false;
             if (recoveryErrors.length > 0) {
-              throw new AggregateError(
-                recoveryErrors,
+              const recoveryFailure = new AggregateError(
+                [error, ...recoveryErrors],
                 "MXC folder policy failed and locked recovery was incomplete",
               );
+              const recoveryFailureDetail =
+                describeWindowsNodeMxcFolderTransactionError(recoveryFailure);
+              setWindowsNodeMxcLifecycleState(
+                "locked",
+                `${context.failurePhase}: ${recoveryFailureDetail}`,
+              );
+              try {
+                settingsStore.set("windowsNodeMxcFolderPolicyRecovery", {
+                  previous: context.previous,
+                  draft: context.applied ?? context.draft,
+                  updatedAt: new Date().toISOString(),
+                  lastError: recoveryFailureDetail,
+                  failurePhase: context.failurePhase,
+                });
+              } catch (persistError) {
+                console.error(
+                  "[windows-node-mxc] Could not persist complete folder recovery diagnostics:",
+                  persistError,
+                );
+              }
+              throw recoveryFailure;
             }
           },
         });
@@ -8587,6 +8641,9 @@ function registerIpcHandlers(): void {
         lifecycleOperation.succeed(status);
         return status;
       } catch (error) {
+        console.error(
+          `[windows-node-mxc] Folder policy apply failed during ${windowsNodeMxcLifecycleState}: ${describeWindowsNodeMxcFolderTransactionError(error)}`,
+        );
         lifecycleOperation.fail(error);
         throw error;
       } finally {
