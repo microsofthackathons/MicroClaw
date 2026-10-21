@@ -5,7 +5,6 @@ export type WindowsNodeMxcLifecycleOperationDescriptor =
   | {
       kind: "set-enabled";
       requestedMode: WindowsNodeMxcRequestedMode;
-      activationIntent?: string;
     }
   | { kind: "apply-folder-policy" };
 
@@ -36,8 +35,7 @@ function canJoinWindowsNodeMxcLifecycleOperation(
   return (
     current.kind === "set-enabled" &&
     next.kind === "set-enabled" &&
-    current.requestedMode === next.requestedMode &&
-    current.activationIntent === next.activationIntent
+    current.requestedMode === next.requestedMode
   );
 }
 

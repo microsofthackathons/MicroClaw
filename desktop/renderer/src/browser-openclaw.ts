@@ -73,15 +73,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onIntegrityAlert: noopSub,
     },
     windowsNodeMxc: {
-      getWeixinRemoteApprovalActivationOptions: async () => ({
-        weixinEnabled: false,
-        linkedAccountCount: 0,
-        authenticatedAccountCount: 0,
-        invariantState: "none" as const,
-        account: null,
-        enableAvailable: false,
-        unavailableReason: "no-account" as const,
-      }),
       getStatus: async () => ({
         requestedMode: "off" as const,
         effectiveStrength: "off" as const,

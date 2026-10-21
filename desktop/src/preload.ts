@@ -370,22 +370,11 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
-    getWeixinRemoteApprovalActivationOptions: () =>
-      ipcRenderer.invoke("windows-node-mxc:weixin-remote-approval-activation-options"),
     setEnabled: (params: {
       enabled?: boolean;
       requestedMode?: "off" | "full" | "limited-dacl";
       acknowledgeLimitedFilesystem?: boolean;
       nodeId?: string;
-      remoteApproval?:
-        | { enabled: false }
-        | {
-            enabled: true;
-            owner: {
-              accountId: string;
-              userId: string;
-            };
-          };
     }) => ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
       ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),

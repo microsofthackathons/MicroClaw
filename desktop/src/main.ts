@@ -182,7 +182,10 @@ import {
 } from "./weixin-plugin-convergence";
 import { createWeixinLoginCliOutcomeParser } from "./weixin-login-cli-outcome";
 import { isTrustedRendererUrl } from "./trusted-renderer-url";
-import { requireWeixinRemoteApprovalNativeConsent } from "./windows-node-mxc-weixin-remote-approval-consent";
+import {
+  assertNativeWeixinRemoteApprovalAuthority,
+  planWeixinRemoteApprovalNativeTransition,
+} from "./windows-node-mxc-weixin-remote-approval-consent";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import { requiresPostSpawnChannelCheck, waitForPostSpawnChannels } from "./post-spawn-restart";
@@ -301,7 +304,6 @@ import {
 import {
   planWeixinRemoteApprovalTransition,
   readWeixinRemoteApprovalActivationOptions,
-  type WeixinRemoteApprovalActivationOwner,
   type WeixinRemoteApprovalActivationOptions,
   type WeixinRemoteApprovalActivationSelection,
   type WeixinRemoteApprovalTransitionPlan,
@@ -1378,58 +1380,6 @@ function assertTrustedRendererIpc(event: IpcMainInvokeEvent): void {
   ) {
     throw new Error("Windows Node + MXC activation requires the trusted MicroClaw renderer");
   }
-}
-
-function getRemoteApprovalActivationIntent(
-  selection: WeixinRemoteApprovalActivationSelection | undefined,
-): string {
-  if (!selection) return "unspecified";
-  if (selection.enabled === false) return "disabled";
-  if (
-    !selection.owner ||
-    typeof selection.owner.accountId !== "string" ||
-    typeof selection.owner.userId !== "string"
-  ) {
-    return "invalid";
-  }
-  return JSON.stringify(["enabled", selection.owner.accountId, selection.owner.userId]);
-}
-
-async function confirmWeixinRemoteApprovalActivation(
-  requestedMode: Exclude<WindowsNodeMxcRequestedMode, "off">,
-  owner: WeixinRemoteApprovalActivationOwner,
-): Promise<void> {
-  const window = mainWindow;
-  if (!window || window.isDestroyed()) {
-    throw new Error("The MicroClaw window is unavailable for local consent");
-  }
-  const locale = resolveSupportedLocale(settingsStore.get("language") ?? "en-US");
-  await requireWeixinRemoteApprovalNativeConsent({
-    requestedMode,
-    owner,
-    confirm: async ({ accountId, userId }) => {
-      const result = await dialog.showMessageBox(window, {
-        type: "warning",
-        title: mainT(locale, "weixinRemoteApproval.consentTitle"),
-        message: mainT(locale, "weixinRemoteApproval.consentMessage"),
-        detail: [
-          mainT(locale, "weixinRemoteApproval.consentRisk"),
-          "",
-          `${mainT(locale, "weixinRemoteApproval.mode")}: ${requestedMode}`,
-          `${mainT(locale, "weixinRemoteApproval.accountId")}: ${accountId}`,
-          `${mainT(locale, "weixinRemoteApproval.userId")}: ${userId}`,
-        ].join("\n"),
-        buttons: [
-          mainT(locale, "weixinRemoteApproval.enable"),
-          mainT(locale, "weixinRemoteApproval.cancelActivation"),
-        ],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-      });
-      return result.response === 0;
-    },
-  });
 }
 
 function getWindowsNodeMxcWeixinRemoteApprovalConfiguration(): {
@@ -7799,10 +7749,6 @@ function registerIpcHandlers(): void {
 
   // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
   ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
-  ipcMain.handle("windows-node-mxc:weixin-remote-approval-activation-options", (event) => {
-    assertTrustedRendererIpc(event);
-    return getWeixinRemoteApprovalActivationOptions();
-  });
   ipcMain.handle("windows-node-mxc:approval-current", () =>
     getPendingWindowsNodeMxcApprovalForRenderer(),
   );
@@ -7834,10 +7780,10 @@ function registerIpcHandlers(): void {
         requestedMode?: WindowsNodeMxcRequestedMode;
         acknowledgeLimitedFilesystem?: boolean;
         nodeId?: string;
-        remoteApproval?: WeixinRemoteApprovalActivationSelection;
       },
     ) => {
       assertTrustedRendererIpc(event);
+      assertNativeWeixinRemoteApprovalAuthority(params);
       const requestedMode =
         params?.requestedMode ??
         (params?.enabled === true ? "full" : params?.enabled === false ? "off" : null);
@@ -7849,7 +7795,6 @@ function registerIpcHandlers(): void {
           {
             kind: "set-enabled",
             requestedMode,
-            activationIntent: getRemoteApprovalActivationIntent(params?.remoteApproval),
           },
           windowsNodeMxcLifecycleOperationHooks(),
         );
@@ -7861,6 +7806,7 @@ function registerIpcHandlers(): void {
       let cronSuspendedBeforePreflight = false;
       let standardRuntimeRecovered = false;
       let remoteApprovalPlan: WeixinRemoteApprovalTransitionPlan;
+      let remoteApprovalSelection: WeixinRemoteApprovalActivationSelection | undefined;
       let remoteApprovalPlanPersisted = false;
       let previousRemoteApprovalConfiguration = migrateWeixinRemoteApprovalConfiguration(null);
       let transitionInitialSelection: WindowsNodeMxcSelection | null = null;
@@ -7893,26 +7839,23 @@ function registerIpcHandlers(): void {
         if (!config || typeof config !== "object" || Array.isArray(config)) {
           throw new Error("OpenClaw configuration is unavailable");
         }
-        remoteApprovalPlan = planWeixinRemoteApprovalTransition({
+        const nativeConsent = await planWeixinRemoteApprovalNativeTransition({
+          request: params,
           currentMode: currentSelection.requestedMode,
           requestedMode,
           currentConfiguration: previousRemoteApprovalConfiguration,
-          options:
-            requestedMode !== "off" ? getWeixinRemoteApprovalActivationOptions(config) : undefined,
-          selection: params?.remoteApproval,
+          readOptions: () => getWeixinRemoteApprovalActivationOptions(readConfig()),
+          locale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
+          showDialog: async (options) => {
+            const window = mainWindow;
+            if (!window || window.isDestroyed()) {
+              throw new Error("The MicroClaw window is unavailable for local consent");
+            }
+            return dialog.showMessageBox(window, options);
+          },
         });
-        if (
-          currentSelection.requestedMode === "off" &&
-          requestedMode !== "off" &&
-          remoteApprovalPlan.action === "persist" &&
-          remoteApprovalPlan.configuration.enabled &&
-          remoteApprovalPlan.configuration.owner
-        ) {
-          await confirmWeixinRemoteApprovalActivation(
-            requestedMode,
-            remoteApprovalPlan.configuration.owner,
-          );
-        }
+        remoteApprovalPlan = nativeConsent.plan;
+        remoteApprovalSelection = nativeConsent.selection;
 
         const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
         const suspendCronBeforePreflight = shouldSuspendWindowsNodeMxcCronBeforePreflight(
@@ -7990,7 +7933,7 @@ function registerIpcHandlers(): void {
             requestedMode,
             currentConfiguration: previousRemoteApprovalConfiguration,
             options: getWeixinRemoteApprovalActivationOptions(readConfig()),
-            selection: params?.remoteApproval,
+            selection: remoteApprovalSelection,
           });
           persistWindowsNodeMxcWeixinRemoteApprovalPlan(remoteApprovalPlan, "activation-disabled");
           remoteApprovalPlanPersisted = remoteApprovalPlan.action === "persist";

@@ -387,24 +387,6 @@ interface OpenClawAPI {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
   windowsNodeMxc: {
-    getWeixinRemoteApprovalActivationOptions(): Promise<{
-      weixinEnabled: boolean;
-      linkedAccountCount: number;
-      authenticatedAccountCount: number;
-      invariantState: "none" | "single" | "multiple" | "invalid";
-      account: {
-        accountId: string;
-        userId: string;
-      } | null;
-      enableAvailable: boolean;
-      unavailableReason:
-        | "no-account"
-        | "multiple-accounts"
-        | "invalid-account"
-        | "account-disabled"
-        | "not-authenticated"
-        | null;
-    }>;
     getStatus(): Promise<{
       requestedMode: "off" | "full" | "limited-dacl";
       effectiveStrength: "off" | "full" | "limited-dacl";
@@ -565,15 +547,6 @@ interface OpenClawAPI {
       requestedMode?: "off" | "full" | "limited-dacl";
       acknowledgeLimitedFilesystem?: boolean;
       nodeId?: string;
-      remoteApproval?:
-        | { enabled: false }
-        | {
-            enabled: true;
-            owner: {
-              accountId: string;
-              userId: string;
-            };
-          };
     }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
     validateFolderPolicy(draft: {
       rw: string[];

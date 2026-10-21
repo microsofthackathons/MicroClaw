@@ -1670,13 +1670,6 @@
           </el-button>
         </template>
       </el-dialog>
-      <MxcWeixinRemoteApprovalDialog
-        v-model="windowsNodeMxcWeixinRemoteApprovalVisible"
-        :options="windowsNodeMxcWeixinRemoteApprovalOptions"
-        :submitting="windowsNodeMxcApplying"
-        @confirm="confirmWindowsNodeMxcWeixinRemoteApproval"
-        @cancel="cancelWindowsNodeMxcWeixinRemoteApproval"
-      />
     </div>
   </div>
 </template>
@@ -1693,7 +1686,6 @@ import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
-import MxcWeixinRemoteApprovalDialog from "@/components/MxcWeixinRemoteApprovalDialog.vue";
 import type { WindowsNodeMxcDisclosureTargetMode } from "../../../src/windows-node-mxc-disclosure";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
@@ -1825,15 +1817,6 @@ const capsRestarting = ref(false);
 const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
-type WeixinRemoteApprovalActivationOptions = Awaited<
-  ReturnType<typeof window.openclaw.windowsNodeMxc.getWeixinRemoteApprovalActivationOptions>
->;
-type WeixinRemoteApprovalActivationSelection =
-  | { enabled: false }
-  | {
-      enabled: true;
-      owner: NonNullable<WeixinRemoteApprovalActivationOptions["account"]>;
-    };
 type WindowsNodeMxcAmbientEntry = NonNullable<
   WindowsNodeMxcStatus["ambientAccess"]
 >["entries"][number];
@@ -1846,14 +1829,6 @@ const windowsNodeMxcConsentTarget = ref<WindowsNodeMxcDisclosureTargetMode | nul
 const windowsNodeMxcConsentSubmitting = ref(false);
 const windowsNodeMxcLimitedAcknowledgementVisible = ref(false);
 const windowsNodeMxcLimitedAcknowledged = ref(false);
-const windowsNodeMxcWeixinRemoteApprovalVisible = ref(false);
-const windowsNodeMxcWeixinRemoteApprovalOptions = ref<WeixinRemoteApprovalActivationOptions | null>(
-  null,
-);
-const windowsNodeMxcPendingActivation = ref<{
-  requestedMode: Exclude<WindowsNodeMxcMode, "off">;
-  acknowledgeLimitedFilesystem: boolean;
-} | null>(null);
 const windowsNodeMxcTransitionPhases = new Set([
   "locking",
   "validating",
@@ -2072,7 +2047,6 @@ function selectWindowsNodeMxcMode(mode: WindowsNodeMxcMode) {
     windowsNodeMxcApplying.value ||
     windowsNodeMxcConsentVisible.value ||
     windowsNodeMxcLimitedAcknowledgementVisible.value ||
-    windowsNodeMxcWeixinRemoteApprovalVisible.value ||
     windowsNodeMxcStatus.value?.requestedMode === mode
   ) {
     return;
@@ -2104,7 +2078,7 @@ async function acceptWindowsNodeMxcCapabilityConsent() {
       windowsNodeMxcLimitedAcknowledgementVisible.value = true;
       return;
     }
-    await beginWindowsNodeMxcActivation(requestedMode);
+    await applyWindowsNodeMxcMode(requestedMode);
   } finally {
     windowsNodeMxcConsentSubmitting.value = false;
   }
@@ -2112,88 +2086,20 @@ async function acceptWindowsNodeMxcCapabilityConsent() {
 
 async function confirmWindowsNodeMxcLimitedMode() {
   if (!windowsNodeMxcLimitedAcknowledged.value || windowsNodeMxcApplying.value) return;
-  if (await beginWindowsNodeMxcActivation("limited-dacl", true)) {
+  if (await applyWindowsNodeMxcMode("limited-dacl", true)) {
     windowsNodeMxcLimitedAcknowledgementVisible.value = false;
   }
-}
-
-async function beginWindowsNodeMxcActivation(
-  requestedMode: Exclude<WindowsNodeMxcMode, "off">,
-  acknowledgeLimitedFilesystem = false,
-): Promise<boolean> {
-  if (windowsNodeMxcStatus.value?.requestedMode !== "off") {
-    return applyWindowsNodeMxcMode(requestedMode, acknowledgeLimitedFilesystem);
-  }
-  try {
-    const options = await window.openclaw.windowsNodeMxc.getWeixinRemoteApprovalActivationOptions();
-    if (
-      options.weixinEnabled &&
-      options.invariantState === "single" &&
-      options.account &&
-      options.enableAvailable
-    ) {
-      windowsNodeMxcPendingActivation.value = {
-        requestedMode,
-        acknowledgeLimitedFilesystem,
-      };
-      windowsNodeMxcWeixinRemoteApprovalOptions.value = options;
-      windowsNodeMxcWeixinRemoteApprovalVisible.value = true;
-      return true;
-    }
-    return applyWindowsNodeMxcMode(requestedMode, acknowledgeLimitedFilesystem, {
-      enabled: false,
-    });
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-    return false;
-  }
-}
-
-function cancelWindowsNodeMxcWeixinRemoteApproval() {
-  if (windowsNodeMxcApplying.value) return;
-  windowsNodeMxcWeixinRemoteApprovalVisible.value = false;
-  windowsNodeMxcWeixinRemoteApprovalOptions.value = null;
-  windowsNodeMxcPendingActivation.value = null;
-}
-
-async function confirmWindowsNodeMxcWeixinRemoteApproval(
-  selection: WeixinRemoteApprovalActivationSelection,
-) {
-  const pending = windowsNodeMxcPendingActivation.value;
-  if (!pending || windowsNodeMxcApplying.value) return;
-  windowsNodeMxcWeixinRemoteApprovalVisible.value = false;
-  const succeeded = await applyWindowsNodeMxcMode(
-    pending.requestedMode,
-    pending.acknowledgeLimitedFilesystem,
-    selection,
-  );
-  windowsNodeMxcWeixinRemoteApprovalOptions.value = null;
-  windowsNodeMxcPendingActivation.value = null;
-  if (!succeeded) return;
 }
 
 async function applyWindowsNodeMxcMode(
   requestedMode: WindowsNodeMxcMode,
   acknowledgeLimitedFilesystem = false,
-  remoteApproval?: WeixinRemoteApprovalActivationSelection,
 ): Promise<boolean> {
   windowsNodeMxcApplying.value = true;
   try {
-    const remoteApprovalDto: WeixinRemoteApprovalActivationSelection | undefined = remoteApproval
-      ? remoteApproval.enabled
-        ? {
-            enabled: true,
-            owner: {
-              accountId: remoteApproval.owner.accountId,
-              userId: remoteApproval.owner.userId,
-            },
-          }
-        : { enabled: false }
-      : undefined;
     const status = await window.openclaw.windowsNodeMxc.setEnabled({
       requestedMode,
       ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),
-      ...(remoteApprovalDto ? { remoteApproval: remoteApprovalDto } : {}),
     });
     updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();

@@ -85,30 +85,29 @@ describe("Windows Node MXC lifecycle operation coordinator", () => {
     await first;
   });
 
-  it("does not join activation requests with different remote approval intent", async () => {
+  it("joins duplicate mode requests while main-owned native consent is pending", async () => {
     const coordinator = new WindowsNodeMxcLifecycleOperationCoordinator();
     const pending = deferred<void>();
     const first = coordinator.run(
       {
         kind: "set-enabled",
         requestedMode: "full",
-        activationIntent: "enabled:bot@im.wechat:owner@im.wechat",
       },
       () => pending.promise,
       { beforeStart: vi.fn(), afterSettled: vi.fn() },
     );
 
-    expect(() =>
-      coordinator.run(
-        {
-          kind: "set-enabled",
-          requestedMode: "full",
-          activationIntent: "disabled",
-        },
-        async () => undefined,
-        { beforeStart: vi.fn(), afterSettled: vi.fn() },
-      ),
-    ).toThrow("Another Windows Node + MXC lifecycle operation is already in progress");
+    const duplicateWork = vi.fn();
+    const duplicate = coordinator.run(
+      {
+        kind: "set-enabled",
+        requestedMode: "full",
+      },
+      duplicateWork,
+      { beforeStart: vi.fn(), afterSettled: vi.fn() },
+    );
+    expect(duplicate).toBe(first);
+    expect(duplicateWork).not.toHaveBeenCalled();
 
     pending.resolve();
     await first;

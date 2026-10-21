@@ -315,23 +315,6 @@ export default {
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
   "settings.experimental": "Experimental",
-  "settings.weixinRemoteApprovalActivationTitle": "Remote command approval",
-  "settings.weixinRemoteApprovalActivationIntro":
-    "Choose whether this MXC activation may send one-use command approvals to a linked WeChat account. This choice is requested again after MXC is turned off.",
-  "settings.weixinRemoteApprovalRiskTitle": "Security risk",
-  "settings.weixinRemoteApprovalRisk":
-    "Trusts normalized account, sender, direct-chat, message, and cursor metadata from the allowlisted openclaw-weixin plugin and Gateway as authentic. A compromised phone, WeChat session, plugin, or Gateway could authorize local command execution.",
-  "settings.weixinRemoteApprovalOnceOnly":
-    "Replies approve only the currently listed request(s) once. They never create durable approvals, folder grants, or future approval. Secret-bearing or unclassified free-text command fields stay local-only.",
-  "settings.weixinRemoteApprovalActivationDisabled": "Disabled",
-  "settings.weixinRemoteApprovalActivationDisabledDesc":
-    "Keep ordinary WeChat messaging available without remote command approval.",
-  "settings.weixinRemoteApprovalActivationEnabled": "Enabled",
-  "settings.weixinRemoteApprovalActivationEnabledDesc":
-    "Bind the sole authenticated WeChat account for remote command approval during this MXC activation.",
-  "settings.weixinRemoteApprovalActivationEnableAndContinue": "Enable remote approval and continue",
-  "settings.weixinRemoteApprovalActivationContinueDisabled":
-    "Continue with remote approval disabled",
   "settings.windowsNodeMxcModeFull": "Full containment",
   "settings.windowsNodeMxcFullBadge": "Hard boundary",
   "settings.windowsNodeMxcModeFullDesc":

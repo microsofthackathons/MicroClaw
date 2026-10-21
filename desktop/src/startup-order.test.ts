@@ -56,7 +56,7 @@ describe("desktop startup order", () => {
       source.indexOf('ipcMain.handle(\n    "windows-node-mxc:set-enabled"'),
       source.indexOf('"windows-node-mxc:approval-respond"'),
     );
-    const confirmation = handler.indexOf("await confirmWeixinRemoteApprovalActivation(");
+    const confirmation = handler.indexOf("await planWeixinRemoteApprovalNativeTransition(");
     const validating = handler.indexOf(
       'setWindowsNodeMxcLifecycleState("validating", validationDetail)',
     );
@@ -74,6 +74,15 @@ describe("desktop startup order", () => {
     );
 
     expect(confirmation).toBeGreaterThan(-1);
+    expect(handler.indexOf("assertTrustedRendererIpc(event)")).toBeLessThan(confirmation);
+    expect(handler.indexOf("assertNativeWeixinRemoteApprovalAuthority(params)")).toBeLessThan(
+      handler.indexOf("windowsNodeMxcLifecycleOperations.acquire<"),
+    );
+    expect(handler).toContain(
+      "readOptions: () => getWeixinRemoteApprovalActivationOptions(readConfig())",
+    );
+    expect(handler).toContain("selection: remoteApprovalSelection");
+    expect(handler).not.toContain("params?.remoteApproval");
     expect(validating).toBeGreaterThan(confirmation);
     expect(preparations).toHaveLength(1);
     expect(preparation).toBeGreaterThan(validating);

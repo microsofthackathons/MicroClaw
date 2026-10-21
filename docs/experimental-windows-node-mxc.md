@@ -181,16 +181,17 @@ access.
 
 WeChat remote approval is a default-off choice in the local MXC activation flow, not a standalone
 Settings toggle. When MXC is currently Off and WeChat has exactly one authenticated account,
-the activation dialog offers only an explicit Disabled/Enabled choice, defaulting to Disabled.
-There is no account selector or opaque identity block. Cancelling the dialog cancels MXC activation
-before the security transition mutates the Gateway or local containment state. Enabling also
-requires a main-process native confirmation that repeats the exact MXC mode, account ID, and user
-ID; renderer code cannot silently enroll an owner by calling the activation IPC directly.
-The dialog and final IPC boundary construct plain DTOs from the exact primitive identity strings;
-Vue-reactive account objects are never forwarded across Electron's structured-clone boundary.
+one main-process-owned native prompt offers Disabled, Enabled, and Cancel, defaulting to Disabled.
+There is no duplicate renderer WeChat prompt, account selector, or opaque identity block. Cancelling
+or closing the native prompt aborts activation before the Gateway or containment state is mutated,
+without resetting ordinary runtime readiness. Unrelated MXC capability and Limited-filesystem
+disclosures remain. The renderer sends only primitive mode/acknowledgement fields; the main process
+derives the exact owner and native consent is the sole enrollment authority. Renderer-supplied
+remote approval choices are rejected.
 
-The main process re-reads the requested channel state and account credentials before transition
-mutation and again at the locked transition boundary. It accepts only an exact authenticated
+The main process re-reads channel state and account credentials immediately after native consent
+and again at the locked transition boundary. An identity change while consent is pending aborts
+activation rather than binding a replacement. It accepts only an exact authenticated
 QR-login account ID plus its saved WeChat `userId`; a display name is never an identity. The approved
 sole identity is atomically added to the account's sender allowlist when necessary, preserving other
 explicit ordinary-message senders without granting them remote approval authority. If WeChat is

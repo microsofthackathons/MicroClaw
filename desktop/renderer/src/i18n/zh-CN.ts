@@ -296,22 +296,6 @@ export default {
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
   "settings.experimental": "实验性",
-  "settings.weixinRemoteApprovalActivationTitle": "远程命令审批",
-  "settings.weixinRemoteApprovalActivationIntro":
-    "选择本次 MXC 启用是否允许向已关联的微信账户发送一次性命令审批。关闭 MXC 后再次启用时会重新询问。",
-  "settings.weixinRemoteApprovalRiskTitle": "安全风险",
-  "settings.weixinRemoteApprovalRisk":
-    "本功能将白名单 openclaw-weixin 插件和 Gateway 提供的标准化账户、发送者、私聊、消息及游标元数据视为真实输入。手机、微信会话、插件或 Gateway 被控制时，攻击者可能授权本机命令执行。",
-  "settings.weixinRemoteApprovalOnceOnly":
-    "回复仅一次性批准当前列出的请求；绝不会创建永久审批、文件夹授权或未来请求授权。包含秘密或无法分类的自由文本命令字段仅允许本地审批。",
-  "settings.weixinRemoteApprovalActivationDisabled": "禁用",
-  "settings.weixinRemoteApprovalActivationDisabledDesc":
-    "保留普通微信消息功能，但不允许远程命令审批。",
-  "settings.weixinRemoteApprovalActivationEnabled": "启用",
-  "settings.weixinRemoteApprovalActivationEnabledDesc":
-    "在本次 MXC 启用期间，将唯一已认证的微信账户绑定到远程命令审批。",
-  "settings.weixinRemoteApprovalActivationEnableAndContinue": "启用远程审批并继续",
-  "settings.weixinRemoteApprovalActivationContinueDisabled": "禁用远程审批并继续",
   "settings.windowsNodeMxcModeFull": "完整隔离",
   "settings.windowsNodeMxcFullBadge": "强边界",
   "settings.windowsNodeMxcModeFullDesc":
