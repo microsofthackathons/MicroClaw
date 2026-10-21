@@ -1359,7 +1359,6 @@ function getWeixinRemoteApprovalActivationOptions(
   const stateDir = getOpenClawStateDir();
   return readWeixinRemoteApprovalActivationOptions({
     stateDir,
-    credentialsDir: resolveWindowsNodeMxcWeixinCredentialsDir(stateDir),
     config,
   });
 }
@@ -1481,9 +1480,9 @@ function isAuthenticatedWeixinRemoteApprovalOwner(
 ): owner is WeixinRemoteApprovalOwnerBinding {
   return Boolean(
     owner &&
-      readAuthenticatedWeixinOwners().some(
-        (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
-      ),
+    readAuthenticatedWeixinOwners().some(
+      (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
+    ),
   );
 }
 
@@ -6312,8 +6311,8 @@ function registerIpcHandlers(): void {
         const hasEnv = (envName: string): boolean =>
           Boolean(
             process.env[envName] ||
-              skillCfg?.env?.[envName] ||
-              (skillCfg?.apiKey && requirements.primaryEnv === envName),
+            skillCfg?.env?.[envName] ||
+            (skillCfg?.apiKey && requirements.primaryEnv === envName),
           );
 
         const missingBins = requirements.bins.filter((b) => !hasBin(b));

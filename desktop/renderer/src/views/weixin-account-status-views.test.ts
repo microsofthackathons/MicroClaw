@@ -126,6 +126,8 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
     expect(status).not.toContain("current-im-bot");
     expect(status).not.toContain("current@im.wechat");
     expect(wrapper.text()).toContain("Replace WeChat account");
+    const actions = wrapper.get(".login-actions");
+    expect(actions.classes()).toContain("login-actions--replace");
   });
 
   it("preserves the current identity when replacement fails", async () => {

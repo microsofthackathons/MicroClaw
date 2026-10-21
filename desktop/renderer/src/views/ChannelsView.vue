@@ -41,7 +41,11 @@
           </div>
 
           <!-- Login states -->
-          <div v-if="!loginActive" class="login-actions">
+          <div
+            v-if="!loginActive"
+            class="login-actions"
+            :class="{ 'login-actions--replace': hasStoredAccount }"
+          >
             <el-button type="primary" @click="startLogin" :loading="loginStarting">
               {{ hasStoredAccount ? t("plugins.replaceWeixin") : t("plugins.loginWeixin") }}
             </el-button>
@@ -498,6 +502,10 @@ function goToWeixinChat() {
   gap: 4px;
   margin: 10px 0;
   font-size: 13px;
+}
+
+.login-actions--replace {
+  margin-bottom: 16px;
 }
 
 .status-warning {

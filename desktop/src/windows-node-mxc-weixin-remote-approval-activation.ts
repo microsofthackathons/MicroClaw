@@ -6,10 +6,7 @@ import {
   normalizeWeixinRemoteApprovalOwner,
   type WeixinRemoteApprovalConfiguration,
 } from "./windows-node-mxc-weixin-remote-approval";
-import {
-  readWindowsNodeMxcWeixinAllowedSenders,
-  resolveStoredWindowsNodeMxcWeixinAccountPath,
-} from "./windows-node-mxc-weixin";
+import { resolveStoredWindowsNodeMxcWeixinAccountPath } from "./windows-node-mxc-weixin";
 
 const CANDIDATE_BOUND_AT = new Date(0).toISOString();
 const SAFE_ACCOUNT_ID_PATTERN = /^[A-Za-z0-9._@-]{1,160}$/;
@@ -21,8 +18,7 @@ export type WeixinRemoteApprovalUnavailableReason =
   | "multiple-accounts"
   | "invalid-account"
   | "account-disabled"
-  | "not-authenticated"
-  | "not-allowlisted";
+  | "not-authenticated";
 
 export interface WeixinRemoteApprovalActivationOwner {
   accountId: string;
@@ -99,7 +95,6 @@ function isAccountEnabled(config: JsonRecord, accountId: string): boolean {
 
 export function readWeixinRemoteApprovalActivationOptions(params: {
   stateDir: string;
-  credentialsDir?: string;
   config: unknown;
 }): WeixinRemoteApprovalActivationOptions {
   const config = asRecord(params.config);
@@ -169,20 +164,14 @@ export function readWeixinRemoteApprovalActivationOptions(params: {
       unavailableReason: "account-disabled",
     };
   }
-  const allowedSenders = readWindowsNodeMxcWeixinAllowedSenders({
-    stateDir: params.stateDir,
-    credentialsDir: params.credentialsDir,
-    accountId,
-  }).map((senderId) => senderId.trim().toLowerCase());
-  const enableAvailable = allowedSenders.includes(owner.userId);
   return {
     weixinEnabled,
     linkedAccountCount: 1,
     authenticatedAccountCount: 1,
     invariantState: "single",
     account: owner,
-    enableAvailable,
-    unavailableReason: enableAvailable ? null : "not-allowlisted",
+    enableAvailable: weixinEnabled,
+    unavailableReason: null,
   };
 }
 

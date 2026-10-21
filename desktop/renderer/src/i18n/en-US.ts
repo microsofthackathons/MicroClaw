@@ -328,25 +328,10 @@ export default {
     "Keep ordinary WeChat messaging available without remote command approval.",
   "settings.weixinRemoteApprovalActivationEnabled": "Enabled",
   "settings.weixinRemoteApprovalActivationEnabledDesc":
-    "Bind one exact authenticated, explicitly allowlisted account identity for this MXC activation.",
-  "settings.weixinRemoteApprovalActivationIdentity": "Exact approval identity",
-  "settings.weixinRemoteApprovalActivationNoEligible":
-    "Remote approval cannot be enabled for the current WeChat state. You can continue with remote approval disabled or cancel MXC activation.",
+    "Bind the sole authenticated WeChat account for remote command approval during this MXC activation.",
   "settings.weixinRemoteApprovalActivationEnableAndContinue": "Enable remote approval and continue",
   "settings.weixinRemoteApprovalActivationContinueDisabled":
     "Continue with remote approval disabled",
-  "settings.weixinRemoteApprovalActivationIneligible.account-disabled":
-    "This linked account is disabled in the WeChat channel configuration.",
-  "settings.weixinRemoteApprovalActivationIneligible.not-authenticated":
-    "This linked account is not authenticated.",
-  "settings.weixinRemoteApprovalActivationIneligible.not-allowlisted":
-    "This identity is not in the account's explicit sender allowlist.",
-  "settings.weixinRemoteApprovalActivationIneligible.no-account":
-    "No authenticated WeChat account is available.",
-  "settings.weixinRemoteApprovalActivationIneligible.multiple-accounts":
-    "Multiple legacy WeChat accounts violate the single-account invariant.",
-  "settings.weixinRemoteApprovalActivationIneligible.invalid-account":
-    "The stored WeChat account state is invalid.",
   "settings.windowsNodeMxcModeFull": "Full containment",
   "settings.windowsNodeMxcFullBadge": "Hard boundary",
   "settings.windowsNodeMxcModeFullDesc":

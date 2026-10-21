@@ -881,7 +881,7 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
-  it("explains ineligible linked accounts and can continue disabled", async () => {
+  it("skips the popup for an unavailable single account and forces approval disabled", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
@@ -895,7 +895,7 @@ describe("SettingsView", () => {
       invariantState: "single" as const,
       account: { accountId: "bot@im.wechat", userId: "owner@im.wechat" },
       enableAvailable: false,
-      unavailableReason: "not-allowlisted" as const,
+      unavailableReason: "account-disabled" as const,
     };
     getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce(options);
     const wrapper = shallowMount(SettingsView, {
@@ -906,23 +906,28 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
     wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await flushPromises();
-    const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
-
-    expect(remoteApproval.props("options")).toEqual(options);
-    remoteApproval.vm.$emit("confirm", { enabled: false });
-    await flushPromises();
+    expect(wrapper.findComponent(MxcWeixinRemoteApprovalDialog).props("modelValue")).toBe(false);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
       requestedMode: "full",
       remoteApproval: { enabled: false },
     });
   });
 
-  it("skips the popup when WeChat is disabled and persists remote approval as disabled", async () => {
+  it("skips the popup with zero accounts and persists remote approval as disabled", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
+    });
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
+      weixinEnabled: true,
+      linkedAccountCount: 0,
+      authenticatedAccountCount: 0,
+      invariantState: "none",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "no-account",
     });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },

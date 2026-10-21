@@ -89,7 +89,7 @@ describe("MXC WeChat remote approval activation", () => {
     });
   });
 
-  it("returns the one exact authenticated and allowlisted identity", () => {
+  it("returns the one exact authenticated identity", () => {
     const target = fixture();
     writeAccounts(target, [
       {
@@ -141,7 +141,7 @@ describe("MXC WeChat remote approval activation", () => {
     });
   });
 
-  it("shows the exact identity but disables approval when it is not allowlisted", () => {
+  it("keeps a legacy authenticated identity eligible before exact allowlist migration", () => {
     const target = fixture();
     writeAccounts(target, [
       {
@@ -156,11 +156,7 @@ describe("MXC WeChat remote approval activation", () => {
         ...target,
         config: config(),
       }),
-    ).toEqual({
-      ...eligibleOptions(),
-      enableAvailable: false,
-      unavailableReason: "not-allowlisted",
-    });
+    ).toEqual(eligibleOptions());
   });
 
   it("binds only the one exact identity supplied by the read-only context", () => {
@@ -243,8 +239,10 @@ describe("MXC WeChat remote approval activation", () => {
         requestedMode: "full",
         options: {
           ...initial,
-          enableAvailable: false,
-          unavailableReason: "not-allowlisted",
+          account: {
+            accountId: "replacement@im.wechat",
+            userId: "replacement-owner@im.wechat",
+          },
         },
         selection: { enabled: true, owner: initial.account! },
       }),

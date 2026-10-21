@@ -309,21 +309,9 @@ export default {
     "保留普通微信消息功能，但不允许远程命令审批。",
   "settings.weixinRemoteApprovalActivationEnabled": "启用",
   "settings.weixinRemoteApprovalActivationEnabledDesc":
-    "为本次 MXC 启用绑定一个准确的、已认证且位于显式发送者白名单中的账户身份。",
-  "settings.weixinRemoteApprovalActivationIdentity": "精确审批身份",
-  "settings.weixinRemoteApprovalActivationNoEligible":
-    "当前微信状态无法启用远程审批。你可以在禁用远程审批的情况下继续，或取消启用 MXC。",
+    "在本次 MXC 启用期间，将唯一已认证的微信账户绑定到远程命令审批。",
   "settings.weixinRemoteApprovalActivationEnableAndContinue": "启用远程审批并继续",
   "settings.weixinRemoteApprovalActivationContinueDisabled": "禁用远程审批并继续",
-  "settings.weixinRemoteApprovalActivationIneligible.account-disabled":
-    "此关联账户已在微信通道配置中禁用。",
-  "settings.weixinRemoteApprovalActivationIneligible.not-authenticated": "此关联账户尚未认证。",
-  "settings.weixinRemoteApprovalActivationIneligible.not-allowlisted":
-    "此身份不在该账户的显式发送者白名单中。",
-  "settings.weixinRemoteApprovalActivationIneligible.no-account": "没有可用的已认证微信账户。",
-  "settings.weixinRemoteApprovalActivationIneligible.multiple-accounts":
-    "多个旧微信账户违反单账户约束。",
-  "settings.weixinRemoteApprovalActivationIneligible.invalid-account": "保存的微信账户状态无效。",
   "settings.windowsNodeMxcModeFull": "完整隔离",
   "settings.windowsNodeMxcFullBadge": "强边界",
   "settings.windowsNodeMxcModeFullDesc":

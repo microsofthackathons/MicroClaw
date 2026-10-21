@@ -51,23 +51,25 @@ enableAutoUnmount(afterEach);
 afterEach(() => setLocale("en-US"));
 
 describe("MxcWeixinRemoteApprovalDialog", () => {
-  it("defaults to Disabled and shows the one exact identity without a selector", async () => {
+  it("shows only Disabled and Enabled choices, defaults to Disabled, and hides identity", async () => {
     const wrapper = mountDialog();
 
     expect(
       (wrapper.find('[data-testid="mxc-weixin-approval-disabled"]').element as HTMLInputElement)
         .checked,
     ).toBe(true);
-    const identity = wrapper.find('[data-testid="mxc-weixin-approval-owner"]');
-    expect(identity.text()).toContain("only@im.wechat");
-    expect(identity.text()).toContain("owner@im.wechat");
-    expect(identity.find("select").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-weixin-approval-enabled"]').exists()).toBe(true);
+    expect(wrapper.findAll('input[type="radio"]')).toHaveLength(2);
+    expect(wrapper.find("select").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-weixin-approval-owner"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("only@im.wechat");
+    expect(wrapper.text()).not.toContain("owner@im.wechat");
 
     await wrapper.find('[data-testid="mxc-weixin-approval-confirm"]').trigger("click");
     expect(wrapper.emitted("confirm")).toEqual([[{ enabled: false }]]);
   });
 
-  it("enables only the exact displayed account ID and user ID", async () => {
+  it("emits the hidden exact single-account binding when Enabled is selected", async () => {
     const wrapper = mountDialog();
     await wrapper.find('[data-testid="mxc-weixin-approval-enabled"]').setValue(true);
     await wrapper.find('[data-testid="mxc-weixin-approval-confirm"]').trigger("click");
@@ -83,24 +85,6 @@ describe("MxcWeixinRemoteApprovalDialog", () => {
         },
       ],
     ]);
-  });
-
-  it("offers no enablement or identity for a legacy multiple-account state", () => {
-    const wrapper = mountDialog({
-      weixinEnabled: true,
-      linkedAccountCount: 2,
-      authenticatedAccountCount: 0,
-      invariantState: "multiple",
-      account: null,
-      enableAvailable: false,
-      unavailableReason: "multiple-accounts",
-    });
-
-    expect(wrapper.find('[data-testid="mxc-weixin-approval-enabled"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-weixin-approval-owner"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-weixin-approval-no-eligible"]').text()).toContain(
-      "single-account invariant",
-    );
   });
 
   it("cancels without emitting a decision", async () => {

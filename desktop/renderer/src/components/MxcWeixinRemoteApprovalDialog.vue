@@ -29,7 +29,7 @@
           <small>{{ t("settings.weixinRemoteApprovalActivationDisabledDesc") }}</small>
         </span>
       </label>
-      <label v-if="options.enableAvailable && options.account" class="mxc-weixin-approval-choice">
+      <label class="mxc-weixin-approval-choice">
         <input
           v-model="choice"
           type="radio"
@@ -42,31 +42,6 @@
           <small>{{ t("settings.weixinRemoteApprovalActivationEnabledDesc") }}</small>
         </span>
       </label>
-
-      <div
-        v-if="options.account"
-        class="mxc-weixin-approval-owner"
-        data-testid="mxc-weixin-approval-owner"
-      >
-        <strong>{{ t("settings.weixinRemoteApprovalActivationIdentity") }}</strong>
-        <span
-          >{{ t("plugins.accountId") }}: <code>{{ options.account.accountId }}</code></span
-        >
-        <span
-          >{{ t("plugins.weixinUserId") }}: <code>{{ options.account.userId }}</code></span
-        >
-      </div>
-
-      <div
-        v-if="!options.enableAvailable"
-        class="mxc-weixin-approval-ineligible-summary"
-        data-testid="mxc-weixin-approval-no-eligible"
-      >
-        {{ t("settings.weixinRemoteApprovalActivationNoEligible") }}
-        <span v-if="options.unavailableReason">
-          {{ ineligibleReason(options.unavailableReason) }}
-        </span>
-      </div>
     </div>
     <template #footer>
       <el-button data-testid="mxc-weixin-approval-cancel" :disabled="submitting" @click="cancel">
@@ -134,10 +109,6 @@ const confirmDisabled = computed(
     (choice.value === "enabled" && (!props.options?.enableAvailable || !props.options.account)),
 );
 
-function ineligibleReason(reason: NonNullable<ActivationOptions["unavailableReason"]>) {
-  return t(`settings.weixinRemoteApprovalActivationIneligible.${reason}`);
-}
-
 function cancel() {
   if (props.submitting || submitted) return;
   emit("update:modelValue", false);
@@ -197,20 +168,5 @@ function confirm() {
 
 .mxc-weixin-approval-choice small {
   color: var(--text-secondary);
-}
-
-.mxc-weixin-approval-owner {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0 12px 26px;
-}
-
-.mxc-weixin-approval-owner span {
-  overflow-wrap: anywhere;
-}
-
-.mxc-weixin-approval-ineligible-summary {
-  margin-top: 10px;
-  color: var(--warning-color, #e6a23c);
 }
 </style>

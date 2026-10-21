@@ -403,7 +403,6 @@ interface OpenClawAPI {
         | "invalid-account"
         | "account-disabled"
         | "not-authenticated"
-        | "not-allowlisted"
         | null;
     }>;
     getStatus(): Promise<{

@@ -66,6 +66,21 @@ function readAllowFrom(filePath: string): string[] {
     : [];
 }
 
+function atomicWriteJson(filePath: string, value: JsonRecord): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(value, null, 2), "utf8");
+    fs.renameSync(temporary, filePath);
+  } finally {
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      // Already promoted or never created.
+    }
+  }
+}
+
 export function resolveStoredWindowsNodeMxcWeixinAccountPath(
   stateDir: string,
   accountId: string,
@@ -141,32 +156,23 @@ export function preflightWindowsNodeMxcWeixinAuthorization(params: {
       credentialsDir,
       `openclaw-weixin-${safeAccountKey(accountId)}-allowFrom.json`,
     );
-    if (readAllowFrom(allowFromPath).length > 0) continue;
-
+    const allowFrom = readAllowFrom(allowFromPath);
     const account = readJsonRecord(
       resolveStoredWindowsNodeMxcWeixinAccountPath(params.stateDir, accountId),
     );
     const ownerUserId = typeof account?.userId === "string" ? account.userId.trim() : "";
+    if (allowFrom.length > 0 && (!ownerUserId || allowFrom.includes(ownerUserId))) continue;
     if (!ownerUserId) {
       blockedAccountIds.push(accountId);
       continue;
     }
 
-    fs.mkdirSync(credentialsDir, { recursive: true });
     const existing = readJsonRecord(allowFromPath) ?? {};
-    fs.writeFileSync(
-      allowFromPath,
-      JSON.stringify(
-        {
-          ...existing,
-          version: typeof existing.version === "number" ? existing.version : 1,
-          allowFrom: [ownerUserId],
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
+    atomicWriteJson(allowFromPath, {
+      ...existing,
+      version: typeof existing.version === "number" ? existing.version : 1,
+      allowFrom: [...allowFrom, ownerUserId],
+    });
     migratedAccountIds.push(accountId);
   }
 

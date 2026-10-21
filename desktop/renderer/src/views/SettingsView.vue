@@ -2126,7 +2126,12 @@ async function beginWindowsNodeMxcActivation(
   }
   try {
     const options = await window.openclaw.windowsNodeMxc.getWeixinRemoteApprovalActivationOptions();
-    if (options.weixinEnabled && options.invariantState === "single" && options.account) {
+    if (
+      options.weixinEnabled &&
+      options.invariantState === "single" &&
+      options.account &&
+      options.enableAvailable
+    ) {
       windowsNodeMxcPendingActivation.value = {
         requestedMode,
         acknowledgeLimitedFilesystem,
@@ -2683,26 +2688,26 @@ let modelViewDisposed = false;
 const modelActionBusy = computed(() =>
   Boolean(
     switchingModelRef.value ||
-      removingModelRef.value ||
-      copilotDisconnecting.value ||
-      cloudTransition.value ||
-      providerSaving.value ||
-      sessionRecovering.value ||
-      localSelecting.value,
+    removingModelRef.value ||
+    copilotDisconnecting.value ||
+    cloudTransition.value ||
+    providerSaving.value ||
+    sessionRecovering.value ||
+    localSelecting.value,
   ),
 );
 const modelMutationBlocked = computed(() =>
   Boolean(
     switchingModelRef.value ||
-      removingModelRef.value ||
-      copilotDisconnecting.value ||
-      cloudTransition.value ||
-      providerSaving.value ||
-      sessionRecovery.value ||
-      sessionRecovering.value ||
-      localSelecting.value ||
-      chatStore.streaming ||
-      localOperation.value?.busy,
+    removingModelRef.value ||
+    copilotDisconnecting.value ||
+    cloudTransition.value ||
+    providerSaving.value ||
+    sessionRecovery.value ||
+    sessionRecovering.value ||
+    localSelecting.value ||
+    chatStore.streaming ||
+    localOperation.value?.busy,
   ),
 );
 function openLocalModel(modelRef?: string) {
