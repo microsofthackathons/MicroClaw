@@ -199,7 +199,7 @@ function fixture(initialReceipt?: LocalModelReceipt) {
   );
   const gateway: LocalModelGateway = {
     connected: true,
-    serverVersion: "2026.9.3",
+    serverVersion: "2026.10.3",
     methods: METHODS,
     connectionGeneration: 1,
     request: async <T>(method: string, params?: unknown, timeout?: number | null) =>
@@ -297,6 +297,25 @@ describe("local model protocol guards", () => {
       LOCAL_MODEL_PRESETS.map((model) => model.modelRef),
     );
     await f.service.getCapabilities();
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(["plugins.list"]);
+  });
+
+  it("offers setup for a fresh install without searching for or installing the provider", async () => {
+    const f = fixture();
+    f.gateway.methods = [...METHODS, "plugins.search"];
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params, timeout) =>
+      method === "plugins.list"
+        ? { plugins: [], mutationAllowed: true }
+        : original(method, params, timeout),
+    );
+
+    expect(await f.service.getCapabilities()).toMatchObject({
+      supported: true,
+      mutable: true,
+      blockers: [],
+      plugin: { installed: false, enabled: false, canInstall: true },
+    });
     expect(f.request.mock.calls.map(([method]) => method)).toEqual(["plugins.list"]);
   });
 
@@ -413,11 +432,17 @@ describe("local model protocol guards", () => {
   it.each(["2026.9.3", "2026.9.4"])("accepts the supported host %s", (version) => {
     expect(supportsLocalModelVersion(version)).toBe(true);
   });
-  it.each(["2026.9.3", "2026.9.4", "2026.10.2", "2026.10.2+build.1"])(
-    "accepts the verified Gateway release %s",
-    (version) => expect(supportsLocalModelGatewayVersion(version)).toBe(true),
+  it.each([
+    "2026.9.3",
+    "2026.9.4",
+    "2026.10.2",
+    "2026.10.2+build.1",
+    "2026.10.3",
+    "2026.10.3+build.1",
+  ])("accepts the verified Gateway release %s", (version) =>
+    expect(supportsLocalModelGatewayVersion(version)).toBe(true),
   );
-  it.each(["2026.10.1", "2026.10.3", "2026.10.2-beta.1", null])(
+  it.each(["2026.10.1", "2026.10.4", "2026.10.2-beta.1", "2026.10.3-beta.1", null])(
     "does not broaden Gateway compatibility to %s",
     (version) => expect(supportsLocalModelGatewayVersion(version)).toBe(false),
   );

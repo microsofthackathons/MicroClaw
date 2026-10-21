@@ -116,7 +116,11 @@ function getExternalApps() {
 var LAUNCHER = process.env.COMSPEC;
 var INTERNAL_SQLITE_WORKER_MARKER = "MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER";
 var internalWorkerStateDir = process.env.OPENCLAW_STATE_DIR || "";
-var internalWorkerTarget = process.argv[4] || "";
+var isInternalStateOwnershipWorker =
+  process.argv.length === 3 &&
+  path.basename(process.argv[1] || "").toLowerCase() === "openclaw-state-ownership.worker.js" &&
+  path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "state";
+var internalWorkerTarget = process.argv[isInternalStateOwnershipWorker ? 2 : 4] || "";
 function canonicalExistingPath(value) {
   try {
     var resolver = fs.realpathSync.native || fs.realpathSync;
@@ -131,21 +135,42 @@ var internalWorkerRelative =
   canonicalInternalWorkerStateDir && canonicalInternalWorkerTarget
     ? path.relative(canonicalInternalWorkerStateDir, canonicalInternalWorkerTarget)
     : "";
+var isInternalSqliteSession = process.argv.length === 4 && process.argv[3] === "session";
 var isAuthorizedInternalSqliteWorker =
   process.env[INTERNAL_SQLITE_WORKER_MARKER] === "1" &&
-  path.basename(process.argv[1] || "").toLowerCase() === "sqlite-readonly-location.worker.js" &&
-  path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "infra" &&
-  process.argv[2] === "--openclaw-sqlite-readonly-child" &&
-  (process.argv[3] === "async" || process.argv[3] === "sync") &&
-  path.extname(internalWorkerTarget).toLowerCase() === ".sqlite" &&
-  internalWorkerRelative !== "" &&
-  !internalWorkerRelative.startsWith("..") &&
-  !path.isAbsolute(internalWorkerRelative);
+  (isInternalStateOwnershipWorker ||
+    (path.basename(process.argv[1] || "").toLowerCase() === "sqlite-readonly-location.worker.js" &&
+      path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "infra" &&
+      process.argv[2] === "--openclaw-sqlite-readonly-child")) &&
+  ((isInternalSqliteSession && canonicalInternalWorkerStateDir !== "") ||
+    ((isInternalStateOwnershipWorker ||
+      process.argv[3] === "async" ||
+      process.argv[3] === "sync") &&
+      path.extname(internalWorkerTarget).toLowerCase() === ".sqlite" &&
+      internalWorkerRelative !== "" &&
+      !internalWorkerRelative.startsWith("..") &&
+      !path.isAbsolute(internalWorkerRelative)));
 delete process.env[INTERNAL_SQLITE_WORKER_MARKER];
+if (isAuthorizedInternalSqliteWorker && isInternalSqliteSession) {
+  var validateSqliteRequest = require(
+    path.join(__dirname, "sandbox-cp-hooks.js"),
+  ).isOpenClawSqliteSessionRequest;
+  process.prependListener("message", function (message) {
+    if (!validateSqliteRequest(message)) {
+      process.stderr.write(
+        "[sandbox] SQLite session request rejected: outside trusted state scope\n",
+      );
+      process.exit(1);
+    }
+  });
+}
 var isLauncherConfigured =
   LAUNCHER && /AppContainerLauncher/i.test(LAUNCHER) && !isAuthorizedInternalSqliteWorker;
 
 if (isLauncherConfigured) {
+  require(path.join(__dirname, "sandbox-host-runtime.js")).initialize(
+    process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR,
+  );
   var S = require(path.join(__dirname, "sandbox-state.js"));
   var fsMod = require("fs");
   var cp = require("child_process");

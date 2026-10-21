@@ -2534,6 +2534,156 @@ describe("OpenClaw internal SQLite worker", () => {
     ).toBe(true);
   });
 
+  it("recognizes snapshots launched by the trusted SQLite store worker", () => {
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+      ...runtime,
+      entryPath: path.join(packageRoot, "dist", "infra", "sqlite-store.worker.js"),
+    })).toBe(true);
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {
+      ...runtime,
+      entryPath: path.join(packageRoot, "dist", "infra", "untrusted.worker.js"),
+    })).toBe(false);
+  });
+
+  it("allows only the fixed ownership worker inspecting a canonical state database", () => {
+    const ownershipWorker = path.join(packageRoot, "dist", "state", "openclaw-state-ownership.worker.js");
+    const ownershipStack = stack.replace("sqlite-readonly-location-AbCd1234.js", "sqlite-readonly-worker-TSy0m8v6.mjs");
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [ownershipWorker, args[3]], ownershipStack, runtime)).toBe(true);
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [ownershipWorker, args[3]], "untrusted-plugin.js", runtime)).toBe(false);
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [ownershipWorker, args[3], "extra"], ownershipStack, runtime)).toBe(false);
+    expect(cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [ownershipWorker, path.join(localAppData, "Cookies.sqlite")], ownershipStack, {
+      ...runtime,
+      realpath: (value: string) => value,
+    })).toBe(false);
+  });
+
+  it.each(["async", "sync"])(
+    "accepts the 10.3 %s worker with a canonical v2 staging root",
+    (mode) => {
+      const staging = stagingRoot.replace("-2056-", "-v2-");
+      expect(
+        cpHooks.isOpenClawInternalSqliteWorkerCommand(
+          execPath,
+          [workerPath, args[1], mode, args[3], staging],
+          stack.replace(
+            "sqlite-readonly-location-AbCd1234.js",
+            "sqlite-readonly-worker-TSy0m8v6.mjs",
+          ),
+          {
+            ...runtime,
+            realpath: (value: string) => value === staging ? staging : runtime.realpath(value),
+          },
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    "openclaw-sqlite-readonly-v2-spoof",
+    "openclaw-sqlite-readonly-v2-139531e6-3179-429e-90e2-f16d5a26786z",
+    "openclaw-sqlite-readonly-v2-139531e6-3179-429e-90e2-f16d5a267869-extra",
+    "openclaw-sqlite-readonly-v3-139531e6-3179-429e-90e2-f16d5a267869",
+  ])("rejects malformed or unsupported staging names: %s", (name) => {
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        [...args, path.join(localAppData, "openclaw", name)],
+        stack,
+        { ...runtime, realpath: (value: string) => value },
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects v2 staging paths outside the cache root, nested paths and reparse points", () => {
+    const staging = stagingRoot.replace("-2056-", "-v2-");
+    for (const candidate of [
+      path.join(stateDir, path.basename(staging)),
+      path.join(staging, "nested"),
+    ]) {
+      expect(
+        cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [...args, candidate], stack, {
+          ...runtime,
+          realpath: (value: string) => value,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, [...args, staging], stack, {
+        ...runtime,
+        realpath: (value: string) =>
+          value === staging ? path.join(stateDir, path.basename(staging)) : runtime.realpath(value),
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts a trusted session worker only with IPC and a canonical state directory", () => {
+    const sessionArgs = [workerPath, args[1], "session"];
+    const options = { stdio: ["ignore", "pipe", "pipe", "ipc"] };
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, stack, runtime, options),
+    ).toBe(true);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(
+        execPath,
+        sessionArgs,
+        stack,
+        runtime,
+      ),
+    ).toBe(false);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, "untrusted-plugin.js", runtime, options),
+    ).toBe(false);
+    expect(
+      cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, sessionArgs, stack, {
+        ...runtime,
+        realpath: () => { throw new Error("ENOENT"); },
+      }, options),
+    ).toBe(false);
+  });
+
+  it.each(["sync", "auth-profile-rows", "operation"])("binds session %s requests to canonical state databases", (mode) => {
+    expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, args: [mode, args[3]] }, runtime)).toBe(true);
+    expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, args: [mode, "relative.sqlite"] }, runtime)).toBe(false);
+    expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, args: [mode, path.join(localAppData, "Cookies.sqlite")] }, {
+      ...runtime,
+      realpath: (value: string) => value,
+    })).toBe(false);
+    expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, args: [mode, args[3]] }, {
+      ...runtime,
+      realpath: (value: string) => value === args[3] ? path.join(localAppData, "Cookies.sqlite") : runtime.realpath(value),
+    })).toBe(false);
+  });
+
+  it("validates session snapshot staging and control messages", () => {
+    const staging = stagingRoot.replace("-2056-", "-v2-");
+    const sessionRuntime = {
+      ...runtime,
+      realpath: (value: string) => value === staging ? staging : runtime.realpath(value),
+    };
+    expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, args: ["sync", args[3], staging] }, sessionRuntime)).toBe(true);
+    expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, args: ["sync", args[3], localAppData] }, sessionRuntime)).toBe(false);
+    expect(cpHooks.isOpenClawSqliteSessionRequest("close", runtime)).toBe(true);
+    for (const type of ["next", "end"]) {
+      expect(cpHooks.isOpenClawSqliteSessionRequest({ id: 1, transfer: { type, transferId: 1 } }, runtime)).toBe(true);
+    }
+  });
+
+  it.each([
+    null,
+    {},
+    "other",
+    { id: 0, args: ["sync", args[3]] },
+    { id: 1, args: ["write", args[3]] },
+    { id: 1, args: ["sync", args[3], "", "{}", "extra"] },
+    { id: 1, args: ["sync", args[3]], extra: true },
+    { id: 1, args: ["operation", args[3], "extra"] },
+    { id: 1, transfer: { type: "write", transferId: 1 } },
+    { id: 1, transfer: { type: "next", transferId: 0 } },
+    { id: 1, transfer: { type: "next", transferId: 1 }, extra: true },
+  ])("rejects malformed session requests: %j", (message) => {
+    expect(cpHooks.isOpenClawSqliteSessionRequest(message, runtime)).toBe(false);
+  });
+
   it.each([
     "relative",
     path.join(stateDir, "output"),
@@ -2625,6 +2775,7 @@ describe("OpenClaw internal SQLite worker", () => {
       env: {
         NODE_OPTIONS: '--require "C:\\Users\\test\\.openclaw\\payload.js"',
         NODE_PATH: "C:\\Users\\test\\.openclaw\\modules",
+        NODE_COMPILE_CACHE: "C:\\Users\\test\\.openclaw\\attacker-cache",
       },
     });
 
@@ -2638,6 +2789,9 @@ describe("OpenClaw internal SQLite worker", () => {
     expect(invocation.options.killSignal).toBe("SIGKILL");
     expect(invocation.options.env.NODE_OPTIONS).toBeUndefined();
     expect(invocation.options.env.NODE_PATH).toBeUndefined();
+    expect(invocation.options.env.NODE_COMPILE_CACHE).not.toBe(
+      "C:\\Users\\test\\.openclaw\\attacker-cache",
+    );
     expect(invocation.options.env.MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER).toBe("1");
   });
 });
@@ -2914,7 +3068,7 @@ describe("per-path independent enforcement", () => {
       }
     });
 
-    it("allows OpenClaw to coordinate SQLite state ownership in its runtime lock directory", () => {
+    it.each(["2056", "v2"])("allows OpenClaw SQLite snapshot and lock paths for %s", (layout) => {
       const originalActive = sandboxState.state.sandboxActive;
       const originalRW = sandboxState.state._rwDirs.slice();
       const originalRO = sandboxState.state._roDirs.slice();
@@ -2934,7 +3088,7 @@ describe("per-path independent enforcement", () => {
         const snapshotFile = path.join(
           localAppData,
           "OpenClaw",
-          "openclaw-sqlite-readonly-2056-139531e6-3179-429e-90e2-f16d5a267869",
+          `openclaw-sqlite-readonly-${layout}-139531e6-3179-429e-90e2-f16d5a267869`,
           "openclaw.sqlite",
         );
 
@@ -2942,6 +3096,18 @@ describe("per-path independent enforcement", () => {
         expect(sandboxState.isReadBlockedPath(lockFile, false)).toBe(false);
         expect(sandboxState.isBlockedPath(snapshotFile)).toBe(false);
         expect(sandboxState.isReadBlockedPath(snapshotFile, false)).toBe(false);
+        expect(sandboxState.isReadBlockedPath(path.dirname(snapshotFile), false)).toBe(false);
+        for (const name of [
+          "openclaw-sqlite-readonly-v2-spoof",
+          "openclaw-sqlite-readonly-v2-139531e6-3179-429e-90e2-f16d5a26786z",
+          "openclaw-sqlite-readonly-v2-139531e6-3179-429e-90e2-f16d5a267869-extra",
+          "openclaw-sqlite-readonly-v3-139531e6-3179-429e-90e2-f16d5a267869",
+        ]) {
+          const rejected = path.join(localAppData, "OpenClaw", name, "secret");
+          expect(sandboxState.isBlockedPath(rejected)).toBe(true);
+          expect(sandboxState.isReadBlockedPath(rejected, false)).toBe(true);
+        }
+        expect(sandboxState.isReadBlockedPath(path.join(localAppData, "OpenClaw"), false)).toBe(true);
         expect(
           sandboxState.isBlockedPath(path.join(localAppData, "OpenClaw", "credentials.json")),
         ).toBe(true);

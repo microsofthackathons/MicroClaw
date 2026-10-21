@@ -12,6 +12,11 @@ import {
 } from "./gateway-lifecycle";
 
 describe("Gateway startup convergence", () => {
+  it("keeps runtime self-updating out of the Desktop-managed Gateway lifecycle", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    expect(main).toContain('OPENCLAW_NO_AUTO_UPDATE: "1"');
+    expect(main).toContain("return checkForUpdates({");
+  });
   it("awaits AppContainer ACL work before taking the Gateway plugin inventory", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     const prepare = main.indexOf("await toolSandbox.provisionAsync()");

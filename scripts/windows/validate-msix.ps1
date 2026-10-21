@@ -35,6 +35,7 @@ try {
         'resources\openclaw.asar',
         'resources\AppContainerLauncher.exe',
         'resources\sandbox-preload.js',
+        'resources\sandbox-host-runtime.js',
         'resources\sandbox-state.js',
         'resources\sandbox-permission.js',
         'resources\sandbox-fs-hooks.js',

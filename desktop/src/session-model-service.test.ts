@@ -244,7 +244,7 @@ describe("session model reads", () => {
 });
 
 describe("session model selection", () => {
-  it.each(["2026.9.3", "2026.10.2"])(
+  it.each(["2026.9.3", "2026.10.2", "2026.10.3"])(
     "selects a configured cloud model on %s with only an official metadata patch",
     async (version) => {
       const f = fixture();

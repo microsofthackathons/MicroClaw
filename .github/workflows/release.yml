@@ -102,7 +102,7 @@ jobs:
           . .\scripts\windows\node-runtime.ps1
           $node = & node --version
           if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
-            throw "Node $node is unsupported by OpenClaw 2026.10.2 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+            throw "Node $node is unsupported by OpenClaw 2026.10.3 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
           }
           Write-Host "node $node"
           $sdks = & dotnet --list-sdks

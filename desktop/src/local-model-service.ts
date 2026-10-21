@@ -174,7 +174,8 @@ export function supportsLocalModelVersion(version: string | null, minimumPatch =
 
 export function supportsLocalModelGatewayVersion(version: string | null): boolean {
   return (
-    supportsLocalModelVersion(version) || /^2026\.10\.2(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
+    supportsLocalModelVersion(version) ||
+    /^2026\.10\.(?:2|3)(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
   );
 }
 
@@ -372,7 +373,7 @@ export class LocalModelService {
     const versionSupported = supportsLocalModelGatewayVersion(gateway.serverVersion);
     if (!versionSupported) {
       blockers.push(
-        "Local setup requires OpenClaw 2026.10.2 or a supported 2026.9.3+ (2026.9.x) Gateway",
+        "Local setup requires OpenClaw 2026.10.2, 2026.10.3 or a supported 2026.9.3+ (2026.9.x) Gateway",
       );
     }
     const missing = METHODS.filter((method) => !gateway.methods.includes(method));

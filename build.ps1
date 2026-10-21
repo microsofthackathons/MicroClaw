@@ -1,4 +1,9 @@
 ﻿# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
+param(
+    [ValidateSet('2026.9.3', '2026.10.3')]
+    [string]$OpenClawVersion = '2026.10.3'
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -72,7 +77,7 @@ if (-not $nodeFound) {
     Write-Host "  ERROR: supported node.exe not found in any of:" -ForegroundColor Red
     foreach ($candidate in $nodeCandidates) { Write-Host "    - $candidate" -ForegroundColor Red }
     Write-Host "    - PATH (Get-Command node.exe)" -ForegroundColor Red
-    Write-Host "  OpenClaw 2026.10.2 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
+    Write-Host "  OpenClaw 2026.10.3 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
     Write-Host "  Install Node.js 26 (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
     exit 1
 }
@@ -165,7 +170,7 @@ $preloadSrc = "$acProject\sandbox-preload.js"
 if (Test-Path $preloadSrc) {
     $releaseDir = "$acProject\bin\Release\net9.0-windows\win-x64"
     Copy-Item $preloadSrc "$releaseDir\sandbox-preload.js" -Force
-    foreach ($mod in @('sandbox-state.js','sandbox-permission.js','sandbox-fs-hooks.js','sandbox-cp-hooks.js','sandbox-sensitive.js','path-extraction.js')) {
+    foreach ($mod in @('sandbox-state.js','sandbox-permission.js','sandbox-fs-hooks.js','sandbox-cp-hooks.js','sandbox-host-runtime.js','sandbox-sensitive.js','path-extraction.js')) {
         $modSrc = "$acProject\$mod"
         if (Test-Path $modSrc) { Copy-Item $modSrc "$releaseDir\$mod" -Force }
     }
@@ -232,6 +237,7 @@ $installerIdentityFiles = @(
     Get-Item "$root\deploy.py"
     Get-Item "$root\MicroClawDeployer.spec"
     Get-Item "$root\requirements.txt"
+    Get-Item "$root\desktop\src\openclaw-state-owner-compat.mjs"
     Get-ChildItem "$root\deployer" -File -Recurse |
         Where-Object { $_.FullName -notmatch '\\(__pycache__|logs)\\' }
     Get-ChildItem "$root\scripts" -File -Recurse
@@ -246,7 +252,7 @@ $installManifest = [ordered]@{
     desktopArchiveSha256 = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     installerBundleId = Get-FileSetId -Files $installerIdentityFiles -BasePath $root
     managedSkillsId = Get-FileSetId -Files $skillsFiles -BasePath "$root\skills"
-    openClawVersion = $Matches[1]
+    openClawVersion = $OpenClawVersion
     appContainerSchema = 1
 }
 $installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
@@ -467,6 +473,23 @@ if ($nsisExit -ne 0 -or -not (Test-Path $setupExe)) {
 }
 $setupSizeMB = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
 Write-Host "  -> $setupExe  ${setupSizeMB} MB" -ForegroundColor Green
+
+$verificationRoot = [IO.Path]::GetFullPath((Join-Path $root 'build')).TrimEnd('\') + '\'
+$verificationDir = [IO.Path]::GetFullPath((Join-Path $verificationRoot ("setup-payload-check-" + [Guid]::NewGuid().ToString('N'))))
+if (-not $verificationDir.StartsWith($verificationRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Unsafe setup verification directory: $verificationDir"
+}
+$verification = Start-Process -FilePath $setupExe -ArgumentList @('/EXTRACT_ONLY', "/D=$verificationDir") -WindowStyle Hidden -Wait -PassThru
+if ($verification.ExitCode -ne 0) {
+    throw "Final setup extraction failed (exit $($verification.ExitCode))."
+}
+$extractedFiles = @(Get-ChildItem -LiteralPath $verificationDir -File -Recurse |
+    Where-Object { $_.FullName -ne (Join-Path $verificationDir '.payload-complete') })
+$extractedId = Get-FileSetId -Files $extractedFiles -BasePath $verificationDir
+if ($extractedId -ne $payloadId) {
+    throw "Final setup payload differs from the verified installer directory."
+}
+Write-Host "  Verified: final setup extracts the complete current payload without launching installation" -ForegroundColor Green
 
 # Code-sign the setup exe. This is a NO-OP unless Trusted Signing is configured
 # (TRUSTED_SIGNING_ENDPOINT/ACCOUNT/PROFILE), so local + PR builds are unchanged.

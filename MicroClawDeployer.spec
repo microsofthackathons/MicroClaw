@@ -38,6 +38,7 @@ a = Analysis(
         ('scripts/windows/node-runtime.ps1', '.'),
         ('scripts', 'scripts'),
         ('deployer/assets', 'deployer/assets'),
+        ('desktop/src/openclaw-state-owner-compat.mjs', 'deployer/assets'),
     ] + managed_skill_datas + webview_datas + pythonnet_datas,
     hiddenimports=[],
     hookspath=[],

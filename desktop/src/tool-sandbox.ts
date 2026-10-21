@@ -238,7 +238,7 @@ export class ToolSandbox {
 
   /**
    * Get the path to sandbox-preload.js, which should be loaded via
-   * NODE_OPTIONS="--require <path>" to enable delayed sandbox activation.
+   * NODE_OPTIONS="--require <path>" to enforce tool sandboxing from process start.
    */
   getPreloadPath(): string | null {
     if (!this.isActive()) return null;
@@ -325,7 +325,11 @@ export class ToolSandbox {
     const launcher = this.launcherPath;
     const run = (args: string[]): Promise<void> =>
       new Promise((resolve, reject) => {
+        const started = Date.now();
         execFile(launcher, args, { windowsHide: true, timeout: 10000 }, (err) => {
+          console.log(
+            `[sandbox-timing] ${args.join(" ")} [${err ? "failed" : "success"}] ${Date.now() - started}ms`,
+          );
           if (err) reject(err);
           else resolve();
         });
@@ -368,10 +372,13 @@ export class ToolSandbox {
 
       // Shield sensitive paths after all grants complete
       if (this.launcherPath) {
+        const started = Date.now();
         try {
           await shieldAll(this.launcherPath, CONTAINER_NAME);
         } catch {
           /* non-fatal */
+        } finally {
+          console.log(`[sandbox-timing] shield ${Date.now() - started}ms`);
         }
       }
 

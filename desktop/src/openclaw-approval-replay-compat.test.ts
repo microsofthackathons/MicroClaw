@@ -45,18 +45,18 @@ describe("pinned OpenClaw package validation", () => {
     expect(() => validatePinnedOpenClawApprovalPackage(dir)).toThrow(/absolute path/);
   });
 
-  it.each(["2026.8.2", "2026.9.3", "2026.10.1", "2026.10.2-beta.1", "2026.10.3"])(
+  it.each(["2026.8.2", "2026.9.3", "2026.10.1", "2026.10.2", "2026.10.3-beta.1", "2026.10.4"])(
     "rejects an unpinned OpenClaw version: %s",
     (version) => {
       expect(() => validatePinnedOpenClawApprovalPackage(createPackage(version))).toThrow(
-        /requires OpenClaw 2026\.10\.2/,
+        /requires OpenClaw 2026\.10\.3/,
       );
     },
   );
 
-  it("rejects modified 10.2 approval bundles", () => {
-    const packageDir = createPackage("2026.10.2");
-    writeFileSync(join(packageDir, "dist", "nodes-CUbe_1MQ.mjs"), "// changed");
+  it("rejects modified 10.3 approval bundles", () => {
+    const packageDir = createPackage("2026.10.3");
+    writeFileSync(join(packageDir, "dist", "nodes-Cl-Air2F.mjs"), "// changed");
     expect(() => validatePinnedOpenClawApprovalPackage(packageDir)).toThrow(/hash mismatch/);
   });
 
@@ -65,9 +65,9 @@ describe("pinned OpenClaw package validation", () => {
     it("validates all published hashes and patch points and parses the patched bundles", () => {
       const targets = validatePinnedOpenClawApprovalPackage(publishedPackage);
       expect(targets.map((target: { module: string }) => target.module)).toEqual([
-        "nodes-CUbe_1MQ.mjs",
+        "nodes-Cl-Air2F.mjs",
         "system-run-approval-plan-Cu-Ftdkp.mjs",
-        "exec-approval-mGU7M4-K.mjs",
+        "exec-approval-BKqqOMdp.mjs",
       ]);
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));

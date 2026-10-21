@@ -209,7 +209,21 @@ describe("SettingsView model integration", () => {
 
   it("shows a local setup entry even without configured providers and never starts setup on mount", async () => {
     config = {};
+    window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        supported: true,
+        mutable: true,
+        blockers: [],
+        gatewayVersion: "2026.10.3",
+        plugin: { installed: false, enabled: false, canInstall: true },
+      },
+    });
+    const inspectProvider = vi.spyOn(window.openclaw.model.local, "inspectProvider");
+    const installProvider = vi.spyOn(window.openclaw.model.local, "installProvider");
+    const prepare = vi.spyOn(window.openclaw.model.local, "prepare");
     const { wrapper } = await open();
+    expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(false);
     expect(wrapper.find("select.model-picker-select").exists()).toBe(false);
     expect(wrapper.text()).toContain("No model provider configured");
     expect(
@@ -219,6 +233,9 @@ describe("SettingsView model integration", () => {
     expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(true);
     expect(write).not.toHaveBeenCalled();
     expect(wrapper.getComponent(LocalModelSetupDialog).props("inline")).toBe(true);
+    expect(inspectProvider).not.toHaveBeenCalled();
+    expect(installProvider).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it("uses section headings and removes unused compatible API entry points from the overview", async () => {

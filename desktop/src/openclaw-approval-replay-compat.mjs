@@ -7,16 +7,16 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
-const EXPECTED_VERSION = "2026.10.2";
-const EXPECTED_NODE_GATEWAY_MODULE = "nodes-CUbe_1MQ.mjs";
+const EXPECTED_VERSION = "2026.10.3";
+const EXPECTED_NODE_GATEWAY_MODULE = "nodes-Cl-Air2F.mjs";
 const EXPECTED_NODE_GATEWAY_SHA256 =
-  "3bc901af8f195d8b5d7ed41b2c50656f3da2ff160938d94d97d0c2fa8e42e676";
+  "b9a4037588bbf8405a6f9149cb85f7750ae58fa777bd1dc675fc8eb857d5a978";
 const EXPECTED_SYSTEM_RUN_MODULE = "system-run-approval-plan-Cu-Ftdkp.mjs";
 const EXPECTED_SYSTEM_RUN_SHA256 =
   "c0df5badb2a8cc6adfdfb8bac48e5379e0825005e0dec827d01b2fb3e223820e";
-const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-mGU7M4-K.mjs";
+const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-BKqqOMdp.mjs";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
-  "aacf6a38e1ea77a9ce02fc4f60069230eec6b9c0a2e7123d35032eb105253267";
+  "8090cab45823ea945c7ee3852e5751c60c2743a0e5edd63424dbc8c0cd882c9b";
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 15_000;

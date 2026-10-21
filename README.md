@@ -114,7 +114,7 @@ MicroClaw targets **Windows 10/11**. For most users, the only thing you need to 
 
 Build the installer from source, then run it:
 
-> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.10.2** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
+> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.10.3** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
 
 ```powershell
 .\build.ps1                                        # produces dist/MicroClawInstaller/MicroClawInstaller.exe
@@ -125,7 +125,7 @@ The installer handles the Windows-side setup in a single run:
 
 - Git for Windows (PortableGit → `~/.openclaw-git`)
 - Node.js 26 via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing supported system Node at that path is reused as-is; supported range: `>=24.16.0 <25 || >=26.1.0`, download fallback: `26.1.0`)
-- OpenClaw Gateway, pinned to **2026.10.2** on the default `stable` channel (`npm install -g openclaw@2026.10.2`)
+- OpenClaw Gateway, pinned to **2026.10.3** on the default `stable` channel (`npm install -g openclaw@2026.10.3`)
 - Configures the npm registry mirror and V8 compile cache
 - Installs the MicroClaw desktop client, managed skills, and Windows sandbox components; the WeChat plugin is not bundled or automatically installed
 - Adds Windows Defender exclusions, creates desktop shortcuts (including one-click Uninstall)
@@ -158,7 +158,7 @@ Changing an existing cloud **default model** uses a revision-guarded `config.pat
 
 If a conversation-model change becomes uncertain, the chat picker and model settings expose recovery rather than leaving all conversations locked. A fresh read can reconcile a completed RPC or a request whose original managed Gateway process has demonstrably stopped. Otherwise **Restart Gateway and recover** requires explicit confirmation, verifies shutdown of the owned process, and accepts the saved state without resending the patch or deleting history. A WebSocket reconnect or a matching model value alone is not proof that a delayed write has finished. Ordinary model switches still do not restart the Gateway.
 
-The installer prepares the pinned official llama.cpp provider without downloading model weights or the inference runtime. The installer discloses the provider and its declared capabilities; explicit user-disabled plugin policies are preserved. The local card shows **Connected** when the provider is installed and enabled, independently of whether either model is downloaded. This is provider availability, not an inference health check. Older installations can explicitly review and enable the component in local settings.
+The installer does not install or enable the official llama.cpp provider. In **Settings → Models → Local model**, choose **Enable** to review the official component and explicitly confirm installation or enablement. Opening settings alone never installs the provider or downloads models; model weights and the inference runtime require a separate first-use confirmation. Upgrades preserve existing local providers and explicit user-disabled plugin policies. The local card shows **Connected** when the provider is installed and enabled, independently of whether either model is downloaded. This is provider availability, not an inference health check.
 
 - Opening model settings reads saved configuration, small router presets and metadata of the two pinned cache files. Plugin status reads never call ClawHub search, full hardware discovery, inference or downloads. Online component lookup occurs only during an explicit component review/install action.
 - Model rows show downloaded/not-downloaded or unknown file state. Missing files go through first-use preparation rather than becoming the active model. Cached weights can be reused after cancelled preparation; merely browsing never reads GGUF contents or scans the cache. Existing external connections remain separate.
@@ -417,7 +417,8 @@ See [docs/architecture/repository-layout.md](docs/architecture/repository-layout
 
 Most users can do everything from **Settings** inside the desktop app — models, Brave API key, skill allowlist, etc. Runtime settings live in `~/.openclaw/openclaw.json`; you can hand-edit it if needed.
 
-Fresh installs include the official Parallel web-search plugin and select its keyless
+Fresh installs include the official Parallel web-search plugin pinned to **2026.10.3**, matching
+the default OpenClaw runtime, and select its keyless
 `parallel-free` provider, so web search works without additional setup. Usable existing web-search
 provider choices are preserved during upgrades; Brave or Tavily without an API key falls back to
 Parallel. The provider can be changed later in **Settings**.

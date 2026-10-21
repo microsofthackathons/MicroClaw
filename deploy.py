@@ -923,17 +923,13 @@ class DeployerApp(tk.Tk):
             (25, "Installing Node.js...", lambda: self._ensure_node(ws)),
             (35, "Configuring npm registry...", ws.setup_npm_mirror),
             (50, "Installing MicroClaw background service...", lambda: self._ensure_openclaw(ws)),
+            (52, "Backing up MicroClaw settings...", ws.prepare_openclaw_upgrade),
             (55, "Updating PATH...", ws.add_to_path),
             # ── MicroClaw components ──
             (60, "Installing desktop client...", ws.install_desktop_client),
             (62, "Copying bundled assets...", lambda: self._copy_bundled_assets(ws)),
             (65, "Writing API keys...", lambda: self._write_env_file()),
             (70, "Writing MicroClaw configuration...", ws.write_config),
-            (
-                76,
-                "Preparing official local provider (no model download)...",
-                ws.install_local_model_provider,
-            ),
             (80, "Installing web search provider...", ws.install_search_provider_plugin),
             (85, "Provisioning AppContainer sandbox...", ws.provision_appcontainer),
             (94, "Validating MicroClaw update...", ws.verify_openclaw_upgrade),
@@ -1005,7 +1001,7 @@ class DeployerApp(tk.Tk):
                     "MicroClaw/OpenClaw could not be closed automatically. "
                     "Exit it from the system tray and retry."
                 )
-        return ws.prepare_openclaw_upgrade()
+        return ws.prepare_openclaw_update()
 
     def _confirm_close_running_apps(self, active: ActiveInstallation) -> bool:
         completed = threading.Event()

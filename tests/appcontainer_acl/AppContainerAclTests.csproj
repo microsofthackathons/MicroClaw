@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <MicroClawTestTargetFramework Condition="'$(MicroClawTestTargetFramework)' == ''">net9.0-windows</MicroClawTestTargetFramework>
+    <TargetFramework>$(MicroClawTestTargetFramework)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../appcontainer/ContainerManager.cs" Link="ContainerManager.cs" />
+    <Compile Include="../../appcontainer/NativeMethods.cs" Link="NativeMethods.cs" />
+  </ItemGroup>
+</Project>

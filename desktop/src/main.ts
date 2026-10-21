@@ -3729,6 +3729,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       // the OpenClaw launcher from self-respawning through the tool sandbox.
       OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
       OPENCLAW_NO_RESPAWN: "1",
+      OPENCLAW_NO_AUTO_UPDATE: "1",
       // HMAC key for verifying the external apps whitelist file
       OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
     };
@@ -3739,6 +3740,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     // Initialize tool sandbox for AI agent command sandboxing.
     // Gateway runs outside AppContainer, but tool commands are routed
     // through AppContainer via preload interception.
+    logStartupTiming("sandbox-configuration-start");
     toolSandbox = new ToolSandbox(launcherPath, nodePath);
 
     // Restore sandbox enabled state from settings
@@ -3792,21 +3794,25 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       if (fs.existsSync(dir)) toolSandbox.addDirRO(dir);
     }
 
+    logStartupTiming("sandbox-configuration-complete");
     if (toolSandbox.isActive()) {
       // ACL inheritance changes plugin file ctime. Finish before OpenClaw captures
       // its startup inventory, otherwise its migration fingerprint never converges.
       await toolSandbox.provisionAsync().then(async (provisioned) => {
+        logStartupTiming("sandbox-provision-complete");
         if (provisioned) {
           console.log("[sandbox] AppContainer tool sandbox provisioned");
           mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
           // Clean up any stale ACLs from previous failed revokes
           await cleanupStaleAcls();
+          logStartupTiming("sandbox-stale-acls-cleaned");
           // Apply explicit DENY ACEs on credential / private files inside the
           // OpenClaw state dir. The state dir as a whole is granted rw to the
           // AppContainer (skills need it for logs/scratch/plugin state), but
           // .env / openclaw.json / device-identity.json / sessions/ must be
           // shielded from sandboxed skill subprocesses.
           hardenOpenClawStateDir();
+          logStartupTiming("sandbox-state-hardened");
         } else {
           console.warn("[sandbox] AppContainer provisioning failed — sandbox disabled");
           toolSandbox!.setEnabled(false);
@@ -3836,6 +3842,15 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     const localModelCompatPath = app.isPackaged
       ? path.join(process.resourcesPath, "openclaw-local-model-compat.mjs")
       : path.join(__dirname, "..", "src", "openclaw-local-model-compat.mjs");
+    const stateOwnerCompatPath = app.isPackaged
+      ? path.join(process.resourcesPath, "openclaw-state-owner-compat.mjs")
+      : path.join(__dirname, "..", "src", "openclaw-state-owner-compat.mjs");
+    if (!fs.existsSync(stateOwnerCompatPath)) {
+      throw new Error(
+        `OpenClaw state owner compatibility preload is missing: ${stateOwnerCompatPath}`,
+      );
+    }
+    gwEnv.MICROCLAW_WINDOWS_STATE_OWNER_COMPAT = "1";
     if (!fs.existsSync(localModelCompatPath))
       throw new Error("The exact local model adapter is missing");
     gwEnv.MICROCLAW_EXACT_LOCAL_MODELS = "1";
@@ -3867,6 +3882,8 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     }
 
     const gwArgs = [
+      "--import",
+      pathToFileURL(stateOwnerCompatPath).href,
       "--import",
       pathToFileURL(fsSafeCompatPath).href,
       "--import",
