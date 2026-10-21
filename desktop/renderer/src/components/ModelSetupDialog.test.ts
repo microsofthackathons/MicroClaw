@@ -64,14 +64,6 @@ describe("ModelSetupDialog", () => {
   const discoverModels = vi.fn();
   const registerCatalogModel = vi.fn();
   const openExternal = vi.fn();
-  const prepareGitHubCopilot = vi.fn();
-  const startGitHubCopilotLogin = vi.fn();
-  const cancelGitHubCopilotLogin = vi.fn();
-  const getGitHubCopilotStatus = vi.fn();
-  const listGitHubCopilotModels = vi.fn();
-  const removeGitHubCopilotListener = vi.fn();
-  let githubCopilotLoginListener: ((event: GitHubCopilotLoginEvent) => void) | undefined;
-
   beforeEach(() => {
     vi.useFakeTimers();
     read.mockResolvedValue({ gateway: { port: 18789 } });
@@ -87,29 +79,13 @@ describe("ModelSetupDialog", () => {
       models: ["qwen", "qwen3.7-plus", "MiniMax-M3", "MiniMax-M1"],
     });
     registerCatalogModel.mockResolvedValue(undefined);
-    prepareGitHubCopilot.mockResolvedValue({ restartRequired: false });
-    startGitHubCopilotLogin.mockResolvedValue({ sessionId: "copilot-session" });
-    cancelGitHubCopilotLogin.mockResolvedValue({ cancelled: true });
-    getGitHubCopilotStatus.mockResolvedValue({ authenticated: false });
-    listGitHubCopilotModels.mockResolvedValue([]);
-    githubCopilotLoginListener = undefined;
     window.openclaw = {
-      features: { githubCopilot: true },
       config: { read, write },
       gateway: { restart },
       model: {
         discoverModels,
         registerCatalogModel,
         testConnection,
-        prepareGitHubCopilot,
-        startGitHubCopilotLogin,
-        cancelGitHubCopilotLogin,
-        getGitHubCopilotStatus,
-        listGitHubCopilotModels,
-        onGitHubCopilotLoginEvent: (listener: (event: GitHubCopilotLoginEvent) => void) => {
-          githubCopilotLoginListener = listener;
-          return removeGitHubCopilotListener;
-        },
       },
       shell: { openExternal },
     } as unknown as typeof window.openclaw;
@@ -120,38 +96,31 @@ describe("ModelSetupDialog", () => {
     vi.clearAllMocks();
   });
 
-  it.each(["recovery", "saved provider"])(
-    "hides Copilot without a feature capability, including %s entry",
-    async (entry) => {
-      window.openclaw = { ...window.openclaw, features: undefined } as unknown as OpenClawAPI;
-      const props =
-        entry === "recovery"
-          ? { initialFamily: "github-copilot" as const }
-          : {
-              currentProvider: {
-                familyId: "github-copilot",
-                providerKey: "github-copilot",
-                modelName: "gpt-5",
-                baseUrl: "",
-                apiKey: "",
-                apiFormat: "openai-chat" as const,
-              },
-            };
-      const wrapper = mountDialog(props);
-      await flushPromises();
-      expect(wrapper.findAll(".model-family-card")).toHaveLength(4);
-      expect(wrapper.text()).not.toContain("GitHub Copilot");
-      expect(getGitHubCopilotStatus).not.toHaveBeenCalled();
-      expect(prepareGitHubCopilot).not.toHaveBeenCalled();
-      expect(startGitHubCopilotLogin).not.toHaveBeenCalled();
-      wrapper.unmount();
-    },
-  );
+  it("ignores saved Copilot setup and has no sign-in or feature-flag API", async () => {
+    const wrapper = mountDialog({
+      currentProvider: {
+        familyId: "github-copilot",
+        providerKey: "github-copilot",
+        modelName: "gpt-5",
+        baseUrl: "",
+        apiKey: "",
+        apiFormat: "openai-chat",
+      },
+    });
+    await flushPromises();
+    expect(wrapper.findAll(".model-family-card")).toHaveLength(4);
+    expect(wrapper.text()).not.toContain("GitHub Copilot");
+    expect(wrapper.find(".model-key-form").exists()).toBe(false);
+    expect("features" in window.openclaw).toBe(false);
+    expect("startGitHubCopilotLogin" in window.openclaw.model).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
 
   async function openCustomForm(wrapper: ReturnType<typeof mountDialog>) {
     const cards = wrapper.findAll(".model-family-card");
-    expect(cards).toHaveLength(5);
-    await cards[3].trigger("click");
+    expect(cards).toHaveLength(4);
+    await cards[2].trigger("click");
     expect(wrapper.text()).toContain("Configure custom provider");
     await wrapper.find(".primary-action").trigger("click");
   }
@@ -163,31 +132,15 @@ describe("ModelSetupDialog", () => {
     await wrapper.get("select").setValue("qwen3.7-plus");
   }
 
-  async function openGitHubCopilotForm(wrapper: ReturnType<typeof mountDialog>) {
-    const cards = wrapper.findAll(".model-family-card");
-    expect(cards).toHaveLength(5);
-    await cards[2].trigger("click");
-    expect(wrapper.text()).toContain("GitHub Copilot");
-    await wrapper.find(".primary-action").trigger("click");
-    await flushPromises();
-  }
-
-  it("shows managed providers, Copilot, custom setup, and a first-time local entry", () => {
+  it("shows only supported managed providers, custom setup, and a first-time local entry", () => {
     const wrapper = mountDialog();
     const cards = wrapper.findAll(".model-family-card");
     expect(cards.map((card) => card.text())).toEqual([
       "千问",
       "MiniMax",
-      "GitHub Copilot",
       "Other model",
       "Local model",
     ]);
-    expect(cards[2].findAll(".family-icon img")).toHaveLength(1);
-    const copilotLogo = decodeURIComponent(
-      cards[2].find(".family-icon img").attributes("src") ?? "",
-    );
-    expect(copilotLogo).toContain("viewBox='0 0 128 128'");
-    expect(copilotLogo).toContain("fill='black'");
     expect(wrapper.text()).not.toContain("OpenClaw catalog");
   });
 
@@ -357,7 +310,7 @@ describe("ModelSetupDialog", () => {
 
   it("opens the local dialog from the family grid without starting an operation", async () => {
     const wrapper = mountDialog();
-    await wrapper.findAll(".model-family-card")[4].trigger("click");
+    await wrapper.findAll(".model-family-card")[3].trigger("click");
     expect(wrapper.find(".primary-action").text()).toBe("Set up a local model");
     await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
@@ -405,15 +358,6 @@ describe("ModelSetupDialog", () => {
       "new-model",
     ]);
     wrapper.unmount();
-  });
-
-  it("opens directly on the requested GitHub Copilot recovery form", async () => {
-    const wrapper = mountDialog({ initialFamily: "github-copilot" });
-    await flushPromises();
-
-    expect(wrapper.find(".model-key-form").exists()).toBe(true);
-    expect(wrapper.text()).toContain("GitHub Copilot");
-    expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
   });
 
   it("opens the selected provider signup flow", async () => {
@@ -702,24 +646,6 @@ describe("ModelSetupDialog", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it("keeps configured providers when choosing an authenticated Copilot model in the legacy single-provider flow", async () => {
-    const providers = {
-      "llama-cpp": { models: [{ id: "saved" }], localService: { managed: true } },
-      cloud: { models: [{ id: "remote" }] },
-    };
-    read.mockResolvedValue({ models: { providers } });
-    getGitHubCopilotStatus.mockResolvedValue({ authenticated: true });
-    listGitHubCopilotModels.mockResolvedValue([{ id: "github-copilot/gpt-5.4", name: "GPT 5.4" }]);
-    const wrapper = mountDialog({ initialFamily: "github-copilot", singleProvider: true });
-    await flushPromises();
-    await wrapper.find("select").setValue("github-copilot/gpt-5.4");
-    await wrapper.find(".key-actions .primary-action").trigger("click");
-    await flushPromises();
-    await vi.runAllTimersAsync();
-    expect(write.mock.calls[0][0].models.providers).toEqual(providers);
-    expect(write.mock.calls[0][1]).toEqual({ models: { providers } });
-  });
-
   it("uses the original missing-config snapshot for a first cloud setup", async () => {
     read.mockResolvedValue(null);
     const wrapper = mountDialog();
@@ -814,71 +740,6 @@ describe("ModelSetupDialog", () => {
     expect(wrapper.text()).toContain("Provider ID");
     expect(wrapper.text()).toContain("API Format");
     expect(wrapper.text()).toContain("API KEY (OPTIONAL)");
-  });
-
-  it("signs into GitHub Copilot with a device code and saves a full model reference", async () => {
-    listGitHubCopilotModels.mockResolvedValueOnce([
-      { id: "github-copilot/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
-      { id: "github-copilot/gpt-5.4", name: "GPT-5.4" },
-    ]);
-    prepareGitHubCopilot.mockResolvedValueOnce({ restartRequired: true });
-    const wrapper = mountDialog();
-    await openGitHubCopilotForm(wrapper);
-    expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
-    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
-    expect(wrapper.find(".primary-action").text()).toContain("Sign in with GitHub");
-    await wrapper.find(".primary-action").trigger("click");
-    await flushPromises();
-    expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
-
-    githubCopilotLoginListener?.({
-      sessionId: "copilot-session",
-      status: "code",
-      verificationUrl: "https://github.com/login/device",
-      userCode: "ABCD-1234",
-      expiresInMs: 900_000,
-    });
-    await flushPromises();
-    expect(wrapper.text()).toContain("ABCD-1234");
-
-    githubCopilotLoginListener?.({
-      sessionId: "copilot-session",
-      status: "success",
-      defaultModel: "github-copilot/gpt-5.4",
-    });
-    await flushPromises();
-    expect(listGitHubCopilotModels).toHaveBeenCalledOnce();
-    expect(wrapper.text()).toContain("GitHub Copilot connected");
-    expect(wrapper.find("select").element.value).toBe("github-copilot/gpt-5.4");
-
-    await wrapper.find(".primary-action").trigger("click");
-    await flushPromises();
-    await vi.runAllTimersAsync();
-
-    expect(write).toHaveBeenCalledOnce();
-    expect(write.mock.calls[0][0]).toMatchObject({
-      agents: {
-        defaults: {
-          model: { primary: "github-copilot/gpt-5.4" },
-        },
-      },
-    });
-    expect(write.mock.calls[0][0].models).toBeUndefined();
-    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
-    expect(restart).toHaveBeenCalledOnce();
-  });
-
-  it("cancels an in-progress GitHub device login when the dialog closes", async () => {
-    const wrapper = mountDialog();
-    await openGitHubCopilotForm(wrapper);
-    await wrapper.find(".primary-action").trigger("click");
-    await flushPromises();
-
-    await wrapper.find(".model-setup-close").trigger("click");
-    await flushPromises();
-
-    expect(cancelGitHubCopilotLogin).toHaveBeenCalledWith("copilot-session");
-    expect(write).not.toHaveBeenCalled();
   });
 
   it("validates and saves a keyless local provider using the tested Base URL", async () => {

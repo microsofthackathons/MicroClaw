@@ -30,7 +30,6 @@ describe("ChatModelPicker", () => {
   beforeEach(() => {
     setLocale("en-US");
     const api = createBrowserOpenClawMock();
-    Object.assign(api.features, { githubCopilot: true });
     api.config.read = vi.fn().mockResolvedValue({
       models: {
         providers: {
@@ -85,19 +84,14 @@ describe("ChatModelPicker", () => {
     return wrapper;
   }
 
-  it("hides saved Copilot models and skips authentication when the internal feature is disabled", async () => {
-    Object.assign(window.openclaw.features, { githubCopilot: false });
+  it("omits saved Copilot models and exposes no authentication API", async () => {
     window.openclaw.config.read = vi.fn().mockResolvedValue({
       models: { providers: { cloud: { models: [{ id: "remote", name: "Cloud model" }] } } },
       agents: { defaults: { models: { "github-copilot/gpt-5": { alias: "Copilot" } } } },
     });
-    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
-    window.openclaw.model.listGitHubCopilotModels = vi.fn();
     const wrapper = await open();
     expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Copilot");
-    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
-    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
     expect(window.openclaw.config.write).not.toHaveBeenCalled();
   });
 
@@ -206,6 +200,7 @@ describe("ChatModelPicker", () => {
     const config = {
       models: {
         providers: {
+          cloud: { models: [{ id: "remote", name: "Cloud model" }] },
           "llama-cpp": {
             models: [
               {
@@ -228,7 +223,6 @@ describe("ChatModelPicker", () => {
         })),
       },
     };
-    const copilot = [{ id: "github-copilot/gpt-5.5", name: "GPT-5.5" }];
     vi.mocked(window.openclaw.config.read).mockResolvedValue(config);
     vi.mocked(window.openclaw.model.local.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(window.openclaw.model.session.get).mockImplementation(async (sessionKey) => ({
@@ -236,8 +230,8 @@ describe("ChatModelPicker", () => {
       modelRef: preset.modelRef,
       overridden: false,
     }));
-    window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
-      ok: true,
+    const capabilities = {
+      ok: true as const,
       value: {
         supported: true,
         mutable: true,
@@ -245,20 +239,17 @@ describe("ChatModelPicker", () => {
         gatewayVersion: "2026.9.3",
         plugin: { installed: true, enabled: true, canInstall: false },
       },
-    });
-    window.openclaw.model.getGitHubCopilotStatus = vi
-      .fn()
-      .mockResolvedValue({ authenticated: true });
-    window.openclaw.model.listGitHubCopilotModels = vi.fn().mockResolvedValue(copilot);
-    return { config, snapshot, copilot };
+    };
+    window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue(capabilities);
+    return { config, snapshot, capabilities };
   }
 
   it("opens the first complete catalogue once instead of exposing each arriving provider", async () => {
     const fixture = fixedCatalog();
     const local = deferred<typeof fixture.snapshot>();
-    const copilot = deferred<typeof fixture.copilot>();
+    const capabilities = deferred<typeof fixture.capabilities>();
     vi.mocked(window.openclaw.model.local.getSnapshot).mockReturnValue(local.promise);
-    vi.mocked(window.openclaw.model.listGitHubCopilotModels).mockReturnValue(copilot.promise);
+    vi.mocked(window.openclaw.model.local.getCapabilities).mockReturnValue(capabilities.promise);
     const wrapper = await open();
     const trigger = wrapper.get('[data-testid="chat-model-picker"]');
     expect(trigger.text()).toContain("Loading models...");
@@ -269,7 +260,7 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("false");
     expect(wrapper.findAll("[data-model-ref]")).toHaveLength(0);
-    copilot.resolve(fixture.copilot);
+    capabilities.resolve(fixture.capabilities);
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("true");
     expect(trigger.attributes("aria-busy")).toBe("false");
@@ -294,10 +285,10 @@ describe("ChatModelPicker", () => {
     await trigger.trigger("click");
     const config = deferred<typeof fixture.config>();
     const local = deferred<typeof fixture.snapshot>();
-    const copilot = deferred<typeof fixture.copilot>();
+    const capabilities = deferred<typeof fixture.capabilities>();
     vi.mocked(window.openclaw.config.read).mockReturnValue(config.promise);
     vi.mocked(window.openclaw.model.local.getSnapshot).mockReturnValue(local.promise);
-    vi.mocked(window.openclaw.model.listGitHubCopilotModels).mockReturnValue(copilot.promise);
+    vi.mocked(window.openclaw.model.local.getCapabilities).mockReturnValue(capabilities.promise);
     await trigger.trigger("click");
     expect(trigger.attributes("aria-expanded")).toBe("true");
     expect(refs()).toEqual(before);
@@ -310,7 +301,7 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     expect(refs()).toEqual(before);
     expect(localButton.text()).toBe(beforeStatus);
-    copilot.resolve(fixture.copilot);
+    capabilities.resolve(fixture.capabilities);
     await flushPromises();
     expect(refs()).toEqual(before);
     expect(localButton.text()).toBe(beforeStatus);
@@ -368,14 +359,12 @@ describe("ChatModelPicker", () => {
     expect(trigger.text()).toContain("Loading models...");
     current.resolve({
       sessionKey: "agent:main:two",
-      modelRef: "github-copilot/gpt-5.5",
+      modelRef: "cloud/remote",
       overridden: true,
     });
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("true");
-    expect(wrapper.get('[data-provider-group="github-copilot"]').attributes("aria-expanded")).toBe(
-      "true",
-    );
+    expect(wrapper.get('[data-provider-group="cloud"]').attributes("aria-expanded")).toBe("true");
     expect(wrapper.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
       "false",
     );

@@ -80,6 +80,7 @@ describe("model provider validation", () => {
   it.each([
     [{ ...validInput, providerKey: "" }, "providerKeyRequired"],
     [{ ...validInput, providerKey: "bad/provider" }, "invalidProviderKey"],
+    [{ ...validInput, providerKey: "github-copilot" }, "invalidProviderKey"],
     [{ ...validInput, modelName: "" }, "modelNameRequired"],
     [{ ...validInput, baseUrl: "" }, "baseUrlRequired"],
     [{ ...validInput, baseUrl: "file:///tmp/model" }, "invalidBaseUrl"],
@@ -280,14 +281,14 @@ describe("model provider config", () => {
       },
     });
 
-    const copilot = selectPrimaryModelConfig(existing, "github-copilot/gpt-5.4", {
+    const allowed = selectPrimaryModelConfig(existing, "custom/model-b", {
       ensureAllowed: true,
     });
-    expect(copilot.agents).toMatchObject({
+    expect(allowed.agents).toMatchObject({
       defaults: {
         models: {
           "external/model": { alias: "external" },
-          "github-copilot/gpt-5.4": {},
+          "custom/model-b": {},
         },
       },
     });
@@ -432,7 +433,7 @@ describe("provider retention when selecting a default", () => {
     expect(result.agents).toEqual({ defaults: { model: { primary: "stale/old" } } });
   });
 
-  it("preserves providers and profiles when switching to an auth-managed model", () => {
+  it("preserves legacy profiles and providers when switching to a supported model", () => {
     const existing = {
       auth: { profiles: { "github-copilot:github": { provider: "github-copilot" } } },
       models: {
@@ -442,7 +443,7 @@ describe("provider retention when selecting a default", () => {
       agents: { defaults: { model: { primary: "github-copilot/gpt-5.4" } } },
     };
 
-    const result = selectPrimaryModelConfig(existing, "github-copilot/gpt-5.4", {
+    const result = selectPrimaryModelConfig(existing, "custom/model-a", {
       ensureAllowed: true,
     });
     expect(result.models).toBe(existing.models);

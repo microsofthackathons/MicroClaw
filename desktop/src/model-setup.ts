@@ -1,3 +1,4 @@
+import { isModelProviderSupported } from "./model-provider-policy";
 import { isDeepStrictEqual } from "node:util";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 
@@ -48,17 +49,11 @@ export async function waitForDefaultModelApplied(
   }
 }
 
-export function hasConfiguredModel(config: unknown, githubCopilotEnabled = false): boolean {
+export function hasConfiguredModel(config: unknown): boolean {
   const root = asJsonObject(config);
   if (!root) return false;
 
   const models = asJsonObject(root.models);
   const providers = asJsonObject(models?.providers);
-  if (
-    providers &&
-    Object.keys(providers).some((key) => key !== "github-copilot" || githubCopilotEnabled)
-  )
-    return true;
-
-  return githubCopilotEnabled && getPrimaryModel(root)?.startsWith("github-copilot/") === true;
+  return Boolean(providers && Object.keys(providers).some(isModelProviderSupported));
 }

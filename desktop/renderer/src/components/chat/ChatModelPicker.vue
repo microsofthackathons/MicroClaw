@@ -127,8 +127,6 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
-import { mergeGitHubCopilotModelEntries } from "@/utils/auth-managed-models";
-import { isGitHubCopilotEnabled, isModelProviderEnabled } from "@/utils/model-features";
 import { getModelRef, readConfiguredModels, type ConfiguredModel } from "@/utils/configured-models";
 import type { LocalModelFileStatus } from "../../../../src/local-model-types";
 import type { SessionModelRecovery, SessionModelState } from "../../../../src/session-model-types";
@@ -310,19 +308,11 @@ async function refreshCatalog() {
     const config = readConfiguredModels(rawConfig);
     const catalogInputs = readConfiguredCatalogs(rawConfig);
     if (!current()) return;
-    const loadCopilot = async () => {
-      if (!isGitHubCopilotEnabled()) return [];
-      const status = await window.openclaw.model.getGitHubCopilotStatus();
-      return current() && status.authenticated
-        ? window.openclaw.model.listGitHubCopilotModels()
-        : [];
-    };
-    const [local, copilot] = await Promise.allSettled([
+    const [local] = await Promise.allSettled([
       Promise.all([
         window.openclaw.model.local.getSnapshot(),
         window.openclaw.model.local.getCapabilities(),
       ]),
-      loadCopilot(),
       providerCatalog.loadConfigured(catalogInputs),
     ]);
     await currentSelection;
@@ -330,7 +320,7 @@ async function refreshCatalog() {
     const errors: string[] = [];
     const report = (cause: unknown) =>
       errors.push(cause instanceof Error ? cause.message : String(cause));
-    let nextModels = config.models.filter((model) => isModelProviderEnabled(model.providerKey));
+    let nextModels = config.models;
     let nextCatalog: LocalModelCatalogEntry[] = [];
     const nextFiles = new Map<string, LocalModelFileStatus | "not-downloaded">();
     let filesKnown = false;
@@ -355,10 +345,6 @@ async function refreshCatalog() {
         report(capabilities.error);
       }
     } else report(local.reason);
-    if (copilot.status === "fulfilled") {
-      nextModels = mergeGitHubCopilotModelEntries(nextModels, copilot.value);
-    } else report(copilot.reason);
-
     // Publish one complete snapshot; replacing providers as each request finishes
     // makes Popper repeatedly resize and re-anchor an already-visible menu.
     baseModels.value = nextModels;

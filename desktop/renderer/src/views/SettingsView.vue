@@ -244,7 +244,7 @@
                   :model-value="selectedModel"
                   :models="modelOptions"
                   :model-status="modelOptionStatus"
-                  :loading="copilotModelsLoading || providerCatalogLoading || modelActionBusy"
+                  :loading="providerCatalogLoading || modelActionBusy"
                   :switching="Boolean(switchingModelRef) || localSelecting"
                   :disabled="modelActionBusy || chatStore.streaming || Boolean(sessionRecovery)"
                   @change="selectModel"
@@ -252,7 +252,7 @@
               </div>
             </div>
           </template>
-          <div v-else-if="!copilotModelsLoading" class="card-row no-border">
+          <div v-else class="card-row no-border">
             <span class="placeholder-text">{{ t("settings.noProviderConfigured") }}</span>
           </div>
         </div>
@@ -271,11 +271,9 @@
                   {{
                     provider.key === "llama-cpp"
                       ? t("modelManager.localHint")
-                      : provider.key === "github-copilot"
-                        ? t("modelManager.copilotHint")
-                        : provider.signupUrl
-                          ? t("modelManager.apiKeyHint")
-                          : t("modelManager.apiHint")
+                      : provider.signupUrl
+                        ? t("modelManager.apiKeyHint")
+                        : t("modelManager.apiHint")
                   }}
                 </p>
               </div>
@@ -362,7 +360,6 @@
                   t("modelManager.defaultModel")
                 }}</span>
                 <el-button
-                  v-if="model.source !== 'auth-managed'"
                   size="small"
                   text
                   :disabled="modelActionBusy"
@@ -370,7 +367,6 @@
                   >{{ t("modelManager.edit") }}</el-button
                 >
                 <el-button
-                  v-if="model.source !== 'auth-managed'"
                   size="small"
                   text
                   type="danger"
@@ -379,15 +375,6 @@
                   >{{ t("localModel.removeConnection") }}</el-button
                 >
               </div>
-              <el-button
-                v-if="provider.key === 'github-copilot' && provider.models.length"
-                size="small"
-                text
-                type="danger"
-                :disabled="modelMutationBlocked"
-                @click="disconnectGitHubCopilot"
-                >{{ t("settings.disconnect") }}</el-button
-              >
               <ModelSetupDialog
                 :key="editingModelRef"
                 v-model="showProviderSetup"
@@ -1759,12 +1746,7 @@ import { isManagedLocalModel, type LocalModelCatalogEntry } from "../../../src/l
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
 import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
 import { getDefaultAgentModelOverride, removeModelProviderConfig } from "@/utils/model-provider";
-import {
-  mergeGitHubCopilotModelEntries,
-  removeGitHubCopilotModelReferences,
-} from "@/utils/auth-managed-models";
 import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
-import { isGitHubCopilotEnabled, isModelProviderEnabled } from "@/utils/model-features";
 import {
   useProviderModelCatalog,
   readConfiguredCatalogs,
@@ -2595,11 +2577,8 @@ const piiToggles = reactive({
 const customModels = ref<ConfiguredModel[]>([]);
 const modelFormSelections = ref<Record<string, string>>({});
 const selectedModel = ref("");
-const copilotModelsLoading = ref(false);
-const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 const removingModelRef = ref("");
-let copilotModelsGeneration = 0;
 const showProviderSetup = ref(false);
 const editingProviderKey = ref("");
 const editingModelRef = ref("");
@@ -2650,12 +2629,11 @@ function modelOptionStatus(model: ConfiguredModel): string {
 let localSnapshotRevision = 0;
 const providerCards = computed(() => {
   const keys = new Set([
-    "github-copilot",
     ...MANAGED_MODEL_PROVIDERS.map((provider) => provider.id),
     "llama-cpp",
     ...customModels.value.map((model) => model.providerKey),
   ]);
-  return [...keys].filter(isModelProviderEnabled).map((key) => {
+  return [...keys].map((key) => {
     const models = customModels.value.filter((model) => model.providerKey === key);
     return {
       key,
@@ -2667,15 +2645,13 @@ const providerCards = computed(() => {
             : providerName(key),
       models,
       signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
-      editableModels: key === "github-copilot" || getManagedModelProvider(key) ? [] : models,
+      editableModels: getManagedModelProvider(key) ? [] : models,
       missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
     };
   });
 });
 const editingFamily = computed(
-  () =>
-    getManagedModelProvider(editingProviderKey.value)?.id ??
-    (editingProviderKey.value === "github-copilot" ? "github-copilot" : "custom"),
+  () => getManagedModelProvider(editingProviderKey.value)?.id ?? "custom",
 );
 const providerPrefill = computed(() => {
   const model = customModels.value.find((item) => getModelRef(item) === editingModelRef.value);
@@ -2711,7 +2687,6 @@ const modelActionBusy = computed(() =>
   Boolean(
     switchingModelRef.value ||
     removingModelRef.value ||
-    copilotDisconnecting.value ||
     cloudTransition.value ||
     providerSaving.value ||
     sessionRecovering.value ||
@@ -2722,7 +2697,6 @@ const modelMutationBlocked = computed(() =>
   Boolean(
     switchingModelRef.value ||
     removingModelRef.value ||
-    copilotDisconnecting.value ||
     cloudTransition.value ||
     providerSaving.value ||
     sessionRecovery.value ||
@@ -3030,10 +3004,8 @@ watch(activeSection, (v) => {
 function applyModelsConfig(config: any): void {
   defaultAgentOverride.value = getDefaultAgentModelOverride(config);
   const parsed = readConfiguredModels(config);
-  customModels.value = parsed.models.filter((model) => isModelProviderEnabled(model.providerKey));
-  selectedModel.value = isModelProviderEnabled(parsed.primary.split("/", 1)[0])
-    ? parsed.primary
-    : "";
+  customModels.value = parsed.models;
+  selectedModel.value = parsed.primary;
   providerCatalogInputs.value = readConfiguredCatalogs(config);
   const revision = ++providerCatalogRevision;
   providerCatalogLoading.value = true;
@@ -3070,33 +3042,6 @@ async function loadLocalFileStatus(): Promise<void> {
   }
 }
 
-async function loadSettingsGitHubCopilotModels(): Promise<void> {
-  if (!isGitHubCopilotEnabled()) return;
-  const generation = ++copilotModelsGeneration;
-  copilotModelsLoading.value = true;
-  const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
-  void modelsPromise.catch(() => {});
-
-  try {
-    const status = await window.openclaw.model.getGitHubCopilotStatus();
-    if (generation !== copilotModelsGeneration) return;
-    if (!status.authenticated) {
-      copilotModelsLoading.value = false;
-      return;
-    }
-
-    const models = await modelsPromise;
-    if (generation !== copilotModelsGeneration) return;
-    customModels.value = mergeGitHubCopilotModelEntries(customModels.value, models);
-  } catch (error) {
-    if (generation !== copilotModelsGeneration) return;
-    console.warn("[settings] Could not load GitHub Copilot models:", error);
-    modelStatusError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    if (generation === copilotModelsGeneration) copilotModelsLoading.value = false;
-  }
-}
-
 async function refreshModelsConfig(): Promise<void> {
   try {
     modelStatusError.value = "";
@@ -3107,7 +3052,6 @@ async function refreshModelsConfig(): Promise<void> {
     modelFormSelections.value = saved?.modelFormSelections ?? {};
     if (!config) return;
     applyModelsConfig(config);
-    void loadSettingsGitHubCopilotModels();
   } catch (error) {
     console.warn("[settings] Failed to refresh model configuration:", error);
     modelStatusError.value = error instanceof Error ? error.message : String(error);
@@ -3155,7 +3099,6 @@ onMounted(async () => {
   const config = await window.openclaw.config.read();
   if (config) {
     applyModelsConfig(config);
-    void loadSettingsGitHubCopilotModels();
   }
 
   // Load web search provider configuration
@@ -3171,7 +3114,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
-  copilotModelsGeneration += 1;
   localSnapshotRevision += 1;
   providerCatalogRevision += 1;
   modelViewDisposed = true;
@@ -3239,11 +3181,9 @@ async function selectModel(modelRef: string) {
 async function removeCustomModel(idx: number) {
   if (modelMutationBlocked.value) return;
   const removed = customModels.value[idx];
-  if (!removed || removed.source === "auth-managed") return;
+  if (!removed) return;
   const modelRef = getModelRef(removed);
-  const fallback = customModels.value.find(
-    (model, modelIndex) => modelIndex !== idx && model.source !== "auth-managed",
-  );
+  const fallback = customModels.value.find((_model, modelIndex) => modelIndex !== idx);
   removingModelRef.value = modelRef;
   try {
     const existing = await window.openclaw.config.read();
@@ -3292,63 +3232,6 @@ async function removeLocalConnection(modelRef: string): Promise<void> {
   await removeCustomModel(customModels.value.findIndex((model) => getModelRef(model) === modelRef));
   if (!customModels.value.some((model) => getModelRef(model) === modelRef))
     showLocalSetup.value = false;
-}
-
-async function disconnectGitHubCopilot() {
-  if (modelMutationBlocked.value) return;
-  try {
-    await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
-      type: "warning",
-    });
-  } catch {
-    return;
-  }
-  if (modelMutationBlocked.value) return;
-
-  const fallbackModel = customModels.value.find(
-    (model) =>
-      model.providerKey !== "github-copilot" &&
-      model.providerKey !== "llama-cpp" &&
-      model.source !== "auth-managed",
-  );
-  const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
-  copilotDisconnecting.value = true;
-  copilotModelsGeneration += 1;
-  copilotModelsLoading.value = false;
-
-  try {
-    const existingConfig = await window.openclaw.config.read();
-    if (!existingConfig || typeof existingConfig !== "object" || Array.isArray(existingConfig)) {
-      throw new Error(t("settings.copilotConfigUnavailable"));
-    }
-    const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
-    await window.openclaw.config.write(nextConfig, existingConfig);
-
-    await window.openclaw.model.disconnectGitHubCopilot();
-
-    try {
-      await restartGatewayAfterModelConfig();
-    } catch (error) {
-      await refreshModelsConfig();
-      ElMessage.warning(
-        t("settings.copilotDisconnectedRestartFailed", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      return;
-    }
-    await refreshModelsConfig();
-    ElMessage.success(t("settings.copilotDisconnected"));
-  } catch (error) {
-    await refreshModelsConfig();
-    ElMessage.error(
-      t("settings.copilotDisconnectFailed", {
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
-  } finally {
-    copilotDisconnecting.value = false;
-  }
 }
 
 function loadSearchConfig(config: any): void {

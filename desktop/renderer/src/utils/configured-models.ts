@@ -1,3 +1,4 @@
+import { isModelProviderSupported } from "../../../src/model-provider-policy";
 import { getManagedModelProvider } from "./managed-model-providers";
 import {
   normalizeModelInput,
@@ -10,7 +11,7 @@ export interface ConfiguredModel {
   providerKey: string;
   id: string;
   name: string;
-  source: "managed" | "custom" | "auth-managed";
+  source: "managed" | "custom";
   baseUrl?: string;
   apiKey?: string;
   apiFormat?: ModelApiFormat;
@@ -29,7 +30,6 @@ export function getModelRef(model: Pick<ConfiguredModel, "providerKey" | "id">):
 }
 
 export function providerName(key: string): string {
-  if (key === "github-copilot") return "GitHub Copilot";
   if (key === "llama-cpp") return "llama.cpp";
   return getManagedModelProvider(key)?.label ?? key;
 }
@@ -44,9 +44,13 @@ export function readConfiguredModels(config: unknown): {
   const modelDefaults = record(defaults.models);
   const selector = defaults.model;
   const primaryValue = typeof selector === "string" ? selector : record(selector).primary;
-  const primary = typeof primaryValue === "string" ? primaryValue : "";
+  const primary =
+    typeof primaryValue === "string" && isModelProviderSupported(primaryValue.split("/", 1)[0])
+      ? primaryValue
+      : "";
   const models: ConfiguredModel[] = [];
   for (const [key, raw] of Object.entries(providers)) {
+    if (!isModelProviderSupported(key)) continue;
     const provider = record(raw);
     const managed = getManagedModelProvider(key);
     for (const rawModel of Array.isArray(provider.models) ? provider.models : []) {
@@ -84,19 +88,6 @@ export function readConfiguredModels(config: unknown): {
         input: normalizeModelInput(model.input ?? preset?.input),
       });
     }
-  }
-  for (const ref of new Set([...Object.keys(modelDefaults), primary])) {
-    if (!ref.startsWith("github-copilot/") || models.some((model) => getModelRef(model) === ref))
-      continue;
-    const id = ref.slice("github-copilot/".length);
-    if (!id) continue;
-    const alias = record(modelDefaults[ref]).alias;
-    models.push({
-      providerKey: "github-copilot",
-      id,
-      name: typeof alias === "string" ? alias : id,
-      source: "auth-managed",
-    });
   }
   return { models, primary };
 }

@@ -47,8 +47,6 @@ nsis:
   shortcutName: OpenClaw
 
 extraResources:
-  - from: dist/github-copilot-auth-worker.js
-    to: github-copilot-auth-worker.js
   - from: src/openclaw-approval-replay-compat.mjs
     to: openclaw-approval-replay-compat.mjs
   - from: src/openclaw-fs-safe-compat.mjs
@@ -92,6 +90,9 @@ extraResources:
 
 files:
   - dist/**/*
+  - "!dist/github-copilot-*"
+  - "!dist/internal-features.*"
+  - "!dist/model-provider-plugins.*"
   - renderer/dist/**/*
   - assets/**/*
   - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,README,readme}"

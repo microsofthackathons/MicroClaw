@@ -113,15 +113,13 @@
           {{
             isLocalProvider
               ? t("localModel.configure")
-              : isGitHubCopilot
-                ? t("modelSetup.copilotSignIn")
-                : isCustomProvider
-                  ? t("modelSetup.configureCustom")
-                  : t("modelSetup.getApiKey")
+              : isCustomProvider
+                ? t("modelSetup.configureCustom")
+                : t("modelSetup.getApiKey")
           }}
         </button>
         <button
-          v-if="!isCustomProvider && !isGitHubCopilot && !isLocalProvider"
+          v-if="!isCustomProvider && !isLocalProvider"
           class="text-action"
           type="button"
           @click.stop="goToKeyForm()"
@@ -137,222 +135,141 @@
             {{
               manageOnly
                 ? t("modelManager.saveOnlyHint")
-                : t(
-                    isGitHubCopilot
-                      ? "modelSetup.copilotDesc"
-                      : isCustomProvider
-                        ? "modelSetup.customDesc"
-                        : "modelSetup.keyDesc",
-                  )
+                : t(isCustomProvider ? "modelSetup.customDesc" : "modelSetup.keyDesc")
             }}
           </p>
         </template>
 
         <el-form label-position="top" class="model-key-form">
-          <template v-if="isGitHubCopilot">
-            <div class="copilot-auth-panel">
-              <template v-if="githubAuthState === 'code'">
-                <span class="copilot-auth-label">{{ t("modelSetup.copilotEnterCode") }}</span>
-                <strong class="copilot-device-code">{{ githubUserCode }}</strong>
-                <span class="copilot-auth-hint">
-                  {{
-                    t("modelSetup.copilotCodeExpires", {
-                      minutes: githubCodeExpiryMinutes,
-                    })
-                  }}
-                </span>
-                <button
-                  class="text-action copilot-open-action"
-                  type="button"
-                  @click.stop="openGitHubVerificationPage"
-                >
-                  {{ t("modelSetup.copilotOpenGitHub") }}
-                </button>
-              </template>
-              <p v-if="streaming || localBlocked" role="status">
-                {{ t(streaming ? "localModel.streaming" : "localModel.switchBeforeSave") }}
-              </p>
-              <template
-                v-else-if="githubAuthState === 'checking' || githubAuthState === 'signing-in'"
+          <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerId')">
+            <el-input
+              v-model="providerKey"
+              :disabled="Boolean(inline && currentProvider)"
+              :placeholder="t('modelSetup.providerIdPlaceholder')"
+              @keydown.enter.prevent="saveAndStart"
+            />
+            <div class="field-hint">{{ t("modelSetup.providerIdHint") }}</div>
+          </el-form-item>
+          <el-form-item v-if="isCustomProvider" :label="t('modelSetup.apiFormat')">
+            <el-select v-model="selectedApiFormat" style="width: 100%">
+              <el-option :label="t('modelSetup.apiFormatOpenAIChat')" value="openai-chat" />
+              <el-option
+                :label="t('modelSetup.apiFormatOpenAIResponses')"
+                value="openai-responses"
+              />
+              <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="isCustomProvider" :label="t('modelSetup.modelSelect')">
+            <el-input
+              v-model="selectedModelName"
+              :placeholder="t('modelSetup.modelPlaceholder')"
+              @keydown.enter.prevent="saveAndStart"
+            />
+          </el-form-item>
+          <el-form-item :label="t('modelSetup.baseUrl')" data-testid="provider-base-field">
+            <el-input
+              v-model="baseUrl"
+              :disabled="!isCustomProvider"
+              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              @keydown.enter.prevent="saveAndStart"
+            />
+          </el-form-item>
+          <el-form-item
+            :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
+            data-testid="provider-key-field"
+          >
+            <div class="model-field-row">
+              <el-input
+                v-model="apiKey"
+                class="model-field-input"
+                :disabled="saving"
+                type="password"
+                show-password
+                :placeholder="selectedFamily.apiKeyPlaceholder"
+                @keydown.enter.prevent="saveAndStart"
+              />
+              <button
+                v-if="selectedManagedProvider"
+                class="model-field-action provider-api-key-link"
+                type="button"
+                :disabled="configMutationInProgress"
+                @click.stop="openProviderSignup"
               >
-                <span class="copilot-auth-label">
-                  {{
-                    t(
-                      githubAuthState === "checking"
-                        ? "modelSetup.copilotChecking"
-                        : "modelSetup.copilotStarting",
-                    )
-                  }}
-                </span>
-                <span class="copilot-auth-hint">{{ t("modelSetup.copilotTokenPrivacy") }}</span>
-              </template>
-              <template v-else-if="githubAuthState === 'authenticated'">
-                <span class="copilot-auth-success">{{ t("modelSetup.copilotConnected") }}</span>
-                <button
-                  class="text-action copilot-open-action"
-                  type="button"
-                  @click.stop="startGitHubCopilotLogin"
-                >
-                  {{ t("modelSetup.copilotUseAnotherAccount") }}
-                </button>
-              </template>
-              <template v-else>
-                <span class="copilot-auth-label">{{ t("modelSetup.copilotSignInHint") }}</span>
-                <span class="copilot-auth-hint">{{ t("modelSetup.copilotTokenPrivacy") }}</span>
-              </template>
+                {{ t("modelSetup.getApiKey") }}
+              </button>
             </div>
-
-            <el-form-item
-              v-if="githubAuthState === 'authenticated' && !manageOnly"
-              :label="t('modelSetup.modelSelect')"
-            >
+            <div v-if="isCustomProvider" class="field-hint">
+              {{ t("modelSetup.credentialHint") }}
+            </div>
+          </el-form-item>
+          <el-form-item
+            v-if="selectedManagedProvider"
+            :label="t('modelSetup.modelSelect')"
+            data-testid="provider-model-field"
+          >
+            <div class="model-field-row">
               <el-select
-                v-model="selectedGitHubModel"
-                style="width: 100%"
+                class="model-field-input"
+                :model-value="catalogReady ? selectedModelName : ''"
+                :disabled="!catalogReady || saving"
+                :loading="catalogLoading"
                 filterable
-                :placeholder="t('modelSetup.copilotModelPlaceholder')"
+                :placeholder="t('modelSetup.modelPlaceholder')"
+                @update:model-value="selectedModelName = $event"
               >
                 <el-option
-                  v-for="model in githubModels"
-                  :key="model.id"
-                  :label="model.name"
-                  :value="model.id"
+                  v-for="model in catalogModels"
+                  :key="model"
+                  :label="catalogModelLabel(model)"
+                  :title="catalogModelLabel(model)"
+                  :value="model"
+                  :disabled="Boolean(catalogModelRestriction(model))"
                 />
               </el-select>
-            </el-form-item>
-          </template>
-
-          <template v-else>
-            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerId')">
-              <el-input
-                v-model="providerKey"
-                :disabled="Boolean(inline && currentProvider)"
-                :placeholder="t('modelSetup.providerIdPlaceholder')"
-                @keydown.enter.prevent="saveAndStart"
-              />
-              <div class="field-hint">{{ t("modelSetup.providerIdHint") }}</div>
-            </el-form-item>
-            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.apiFormat')">
-              <el-select v-model="selectedApiFormat" style="width: 100%">
-                <el-option :label="t('modelSetup.apiFormatOpenAIChat')" value="openai-chat" />
-                <el-option
-                  :label="t('modelSetup.apiFormatOpenAIResponses')"
-                  value="openai-responses"
-                />
-                <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
-              </el-select>
-            </el-form-item>
-            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.modelSelect')">
-              <el-input
-                v-model="selectedModelName"
-                :placeholder="t('modelSetup.modelPlaceholder')"
-                @keydown.enter.prevent="saveAndStart"
-              />
-            </el-form-item>
-            <el-form-item :label="t('modelSetup.baseUrl')" data-testid="provider-base-field">
-              <el-input
-                v-model="baseUrl"
-                :disabled="!isCustomProvider"
-                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                @keydown.enter.prevent="saveAndStart"
-              />
-            </el-form-item>
-            <el-form-item
-              :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
-              data-testid="provider-key-field"
-            >
-              <div class="model-field-row">
-                <el-input
-                  v-model="apiKey"
-                  class="model-field-input"
-                  :disabled="saving"
-                  type="password"
-                  show-password
-                  :placeholder="selectedFamily.apiKeyPlaceholder"
-                  @keydown.enter.prevent="saveAndStart"
-                />
-                <button
-                  v-if="selectedManagedProvider"
-                  class="model-field-action provider-api-key-link"
-                  type="button"
-                  :disabled="configMutationInProgress"
-                  @click.stop="openProviderSignup"
+              <button
+                class="model-field-action model-refresh-action"
+                type="button"
+                data-testid="refresh-provider-models"
+                :aria-label="t('modelSetup.catalogRefresh')"
+                :title="t('modelSetup.catalogRefresh')"
+                :aria-busy="catalogLoading"
+                :disabled="!apiKey.trim() || catalogLoading || saving"
+                @click="loadProviderModels"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  :class="{ 'refresh-spinning': catalogLoading }"
                 >
-                  {{ t("modelSetup.getApiKey") }}
-                </button>
-              </div>
-              <div v-if="isCustomProvider" class="field-hint">
-                {{ t("modelSetup.credentialHint") }}
-              </div>
-            </el-form-item>
-            <el-form-item
-              v-if="selectedManagedProvider"
-              :label="t('modelSetup.modelSelect')"
-              data-testid="provider-model-field"
-            >
-              <div class="model-field-row">
-                <el-select
-                  class="model-field-input"
-                  :model-value="catalogReady ? selectedModelName : ''"
-                  :disabled="!catalogReady || saving"
-                  :loading="catalogLoading"
-                  filterable
-                  :placeholder="t('modelSetup.modelPlaceholder')"
-                  @update:model-value="selectedModelName = $event"
-                >
-                  <el-option
-                    v-for="model in catalogModels"
-                    :key="model"
-                    :label="catalogModelLabel(model)"
-                    :title="catalogModelLabel(model)"
-                    :value="model"
-                    :disabled="Boolean(catalogModelRestriction(model))"
-                  />
-                </el-select>
-                <button
-                  class="model-field-action model-refresh-action"
-                  type="button"
-                  data-testid="refresh-provider-models"
-                  :aria-label="t('modelSetup.catalogRefresh')"
-                  :title="t('modelSetup.catalogRefresh')"
-                  :aria-busy="catalogLoading"
-                  :disabled="!apiKey.trim() || catalogLoading || saving"
-                  @click="loadProviderModels"
-                >
-                  <svg
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                    :class="{ 'refresh-spinning': catalogLoading }"
-                  >
-                    <path d="M20 7v5h-5M4 17v-5h5" />
-                    <path d="M6.1 7A7 7 0 0 1 18 5l2 2M4 17l2 2a7 7 0 0 0 11.9-2" />
-                  </svg>
-                </button>
-              </div>
-              <p class="field-hint" role="status">
-                {{
-                  t(
-                    catalogLoading
-                      ? "modelSetup.catalogLoading"
-                      : catalogReady
-                        ? "modelSetup.catalogLoaded"
-                        : "modelSetup.catalogNeedsKey",
-                  )
-                }}
-              </p>
-              <p v-if="catalogError" class="error-msg" role="alert">{{ catalogError }}</p>
-              <p v-if="selectedModelRestriction" class="error-msg" role="alert">
-                {{ t(`modelSetup.incompatible.${selectedModelRestriction}`) }}
-              </p>
-            </el-form-item>
-          </template>
+                  <path d="M20 7v5h-5M4 17v-5h5" />
+                  <path d="M6.1 7A7 7 0 0 1 18 5l2 2M4 17l2 2a7 7 0 0 0 11.9-2" />
+                </svg>
+              </button>
+            </div>
+            <p class="field-hint" role="status">
+              {{
+                t(
+                  catalogLoading
+                    ? "modelSetup.catalogLoading"
+                    : catalogReady
+                      ? "modelSetup.catalogLoaded"
+                      : "modelSetup.catalogNeedsKey",
+                )
+              }}
+            </p>
+            <p v-if="catalogError" class="error-msg" role="alert">{{ catalogError }}</p>
+            <p v-if="selectedModelRestriction" class="error-msg" role="alert">
+              {{ t(`modelSetup.incompatible.${selectedModelRestriction}`) }}
+            </p>
+          </el-form-item>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
         </el-form>
 
@@ -367,20 +284,12 @@
             {{ t("modelSetup.back") }}
           </button>
           <button
-            v-if="isGitHubCopilot && githubLoginInProgress"
-            class="text-action"
-            type="button"
-            @mousedown.prevent.stop="cancelGitHubCopilotLogin"
-          >
-            {{ t("modelSetup.copilotCancel") }}
-          </button>
-          <button
             class="primary-action"
             type="button"
             :disabled="formPrimaryDisabled"
-            @click.prevent.stop="handleFormPrimaryAction"
-            @keydown.enter.prevent.stop="handleFormPrimaryAction"
-            @keydown.space.prevent.stop="handleFormPrimaryAction"
+            @click.prevent.stop="saveAndStart"
+            @keydown.enter.prevent.stop="saveAndStart"
+            @keydown.space.prevent.stop="saveAndStart"
           >
             {{ formPrimaryLabel }}
           </button>
@@ -399,7 +308,6 @@ import {
   mergeModelProviderConfig,
   matchesProviderConnection,
   getDefaultAgentModelOverride,
-  selectPrimaryModelConfig,
   validateModelProviderInput,
   type ModelApiFormat,
   type ModelProviderInput,
@@ -413,14 +321,12 @@ import {
   type ManagedModelProviderId,
   type ManagedModelPreset,
 } from "@/utils/managed-model-providers";
-import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
-import { isModelProviderEnabled } from "@/utils/model-features";
-import githubCopilotBlack from "@/assets/github-copilot-black.svg";
+import { isModelProviderSupported } from "../../../src/model-provider-policy";
 import LocalModelSetupDialog from "./LocalModelSetupDialog.vue";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
 import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
 
-type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom" | "local";
+type ModelFamilyId = ManagedModelProviderId | "custom" | "local";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
@@ -465,22 +371,11 @@ const emit = defineEmits<{
   busy: [value: boolean];
 }>();
 
-const allModelFamilies: ModelFamilyPreset[] = [
+const modelFamilies: ModelFamilyPreset[] = [
   ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
     ...provider,
     providerKey: provider.id,
   })),
-  {
-    id: "github-copilot",
-    labelKey: "modelSetup.githubCopilot",
-    providerKey: "",
-    baseUrl: "",
-    apiFormat: "openai-chat",
-    models: [],
-    defaultModel: "",
-    apiKeyPlaceholder: "sk-...",
-    logo: githubCopilotBlack,
-  },
   {
     id: "custom",
     labelKey: "modelSetup.otherModel",
@@ -502,7 +397,6 @@ const allModelFamilies: ModelFamilyPreset[] = [
     apiKeyPlaceholder: "",
   },
 ];
-const modelFamilies = allModelFamilies.filter((family) => isModelProviderEnabled(family.id));
 
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
@@ -532,7 +426,7 @@ const configMutationInProgress = ref(false);
 const localVisible = ref(false);
 const localTarget = ref<string>();
 const defaultAgentOverride = ref<ReturnType<typeof getDefaultAgentModelOverride>>(null);
-const { blocked: localBlocked, refresh: refreshLocalOperation } = useLocalModelOperation();
+const { refresh: refreshLocalOperation } = useLocalModelOperation();
 let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
@@ -582,59 +476,17 @@ async function loadProviderModels() {
   }
 }
 const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
-const isGitHubCopilot = computed(() => selectedFamilyId.value === "github-copilot");
 const isLocalProvider = computed(() => selectedFamilyId.value === "local");
-const {
-  state: githubAuthState,
-  models: githubModels,
-  selectedModel: selectedGitHubModel,
-  userCode: githubUserCode,
-  loginInProgress: githubLoginInProgress,
-  codeExpiryMinutes: githubCodeExpiryMinutes,
-  loadStatus: loadGitHubCopilotStatus,
-  startLogin: startGitHubCopilotLogin,
-  cancelLogin: cancelGitHubCopilotLogin,
-  reset: resetGitHubCopilotState,
-  openVerificationPage: openGitHubVerificationPage,
-} = useGitHubCopilotAuth({
-  isActive: () => props.modelValue && isKeyStep.value && isGitHubCopilot.value,
-  clearError: () => {
-    errorMsg.value = "";
-  },
-  setError: (message) => {
-    errorMsg.value = message;
-  },
-});
 const formPrimaryDisabled = computed(
   () =>
     saving.value ||
     props.streaming ||
     Boolean(selectedModelRestriction.value) ||
     (Boolean(selectedManagedProvider.value) &&
-      (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))) ||
-    (isGitHubCopilot.value &&
-      (githubAuthState.value === "checking" ||
-        githubAuthState.value === "signing-in" ||
-        githubAuthState.value === "code" ||
-        (githubAuthState.value === "authenticated" &&
-          !props.manageOnly &&
-          !selectedGitHubModel.value))),
+      (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))),
 );
 const formPrimaryLabel = computed(() => {
-  if (props.manageOnly && (!isGitHubCopilot.value || githubAuthState.value === "authenticated"))
-    return t(saving.value ? "modelManager.saving" : "settings.save");
-  if (isGitHubCopilot.value) {
-    if (saving.value) return t("modelSetup.starting");
-    if (githubAuthState.value === "authenticated") return t("modelSetup.copilotUseModel");
-    if (
-      githubAuthState.value === "checking" ||
-      githubAuthState.value === "signing-in" ||
-      githubAuthState.value === "code"
-    ) {
-      return t("modelSetup.copilotWaiting");
-    }
-    return t("modelSetup.copilotSignIn");
-  }
+  if (props.manageOnly) return t(saving.value ? "modelManager.saving" : "settings.save");
   return saving.value ? t("modelSetup.validating") : t("modelSetup.start");
 });
 
@@ -642,7 +494,6 @@ watch(
   () => props.modelValue,
   (visible) => {
     cancelPendingSubmission();
-    void resetGitHubCopilotState();
     if (!visible) return;
     localVisible.value = false;
     localTarget.value = undefined;
@@ -666,8 +517,8 @@ watch(
     }
     if (
       prefill &&
-      isModelProviderEnabled(prefill.familyId) &&
-      isModelProviderEnabled(prefill.providerKey)
+      isModelProviderSupported(prefill.familyId) &&
+      isModelProviderSupported(prefill.providerKey)
     ) {
       // Reopen on the configured provider, pre-filled and jumped to the key form so the user
       // can adjust the model, base URL or key without re-selecting the family.
@@ -677,17 +528,15 @@ watch(
       baseUrl.value = prefill.baseUrl || selectedFamily.value.baseUrl;
       selectedApiFormat.value = prefill.apiFormat;
       apiKey.value = prefill.apiKey;
-      isKeyStep.value = props.inline || selectedFamilyId.value !== "github-copilot";
-      if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
+      isKeyStep.value = true;
       errorMsg.value = "";
       return;
     }
-    if (props.initialFamily && isModelProviderEnabled(props.initialFamily)) {
+    if (props.initialFamily && isModelProviderSupported(props.initialFamily)) {
       selectFamily(props.initialFamily);
       isKeyStep.value = true;
       apiKey.value = "";
       errorMsg.value = "";
-      if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
       return;
     }
     selectFamily("qwen");
@@ -730,7 +579,6 @@ function cancelPendingSubmission() {
 function close() {
   if (configMutationInProgress.value) return;
   cancelPendingSubmission();
-  void resetGitHubCopilotState();
   emit("update:modelValue", false);
 }
 
@@ -754,7 +602,6 @@ function goToKeyForm() {
   selectedApiFormat.value = selectedFamily.value.apiFormat;
   isKeyStep.value = true;
   errorMsg.value = "";
-  if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
 }
 
 function handlePrimaryAction() {
@@ -762,7 +609,7 @@ function handlePrimaryAction() {
     localVisible.value = true;
     return;
   }
-  if (isCustomProvider.value || isGitHubCopilot.value) {
+  if (isCustomProvider.value) {
     goToKeyForm();
     return;
   }
@@ -801,60 +648,8 @@ async function openProviderSignup() {
 function goToSelectStep() {
   if (configMutationInProgress.value) return;
   cancelPendingSubmission();
-  void resetGitHubCopilotState();
   isKeyStep.value = false;
   errorMsg.value = "";
-}
-
-async function saveGitHubCopilotModel(): Promise<void> {
-  if (saving.value || props.streaming) return;
-  if (
-    !props.manageOnly &&
-    (!selectedGitHubModel.value.startsWith("github-copilot/") ||
-      !githubModels.value.some((model) => model.id === selectedGitHubModel.value))
-  ) {
-    errorMsg.value = t("modelSetup.copilotSelectModel");
-    return;
-  }
-
-  const generation = ++submissionGeneration;
-  saving.value = true;
-  errorMsg.value = "";
-  try {
-    if (!(await releaseLocalBeforeSave(generation))) return;
-    await window.openclaw.model.prepareGitHubCopilot();
-    if (generation !== submissionGeneration || !props.modelValue) return;
-    if (props.manageOnly) {
-      configMutationInProgress.value = true;
-      await restartGatewayAfterModelSetup();
-      configMutationInProgress.value = false;
-      emit("update:modelValue", false);
-      emit("configured");
-      return;
-    }
-    const existing = await window.openclaw.config.read();
-    if (generation !== submissionGeneration || !props.modelValue) return;
-    if (props.streaming) return;
-    const nextConfig = selectPrimaryModelConfig(existing || {}, selectedGitHubModel.value, {
-      ensureAllowed: true,
-    });
-    configMutationInProgress.value = true;
-    await window.openclaw.config.write(nextConfig, existing);
-    await restartGatewayAfterModelSetup();
-    if (generation !== submissionGeneration || !props.modelValue) return;
-    configMutationInProgress.value = false;
-    emit("update:modelValue", false);
-    emit("configured");
-  } catch (error) {
-    errorMsg.value = t("modelSetup.saveFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    if (generation === submissionGeneration) {
-      saving.value = false;
-      configMutationInProgress.value = false;
-    }
-  }
 }
 
 async function releaseLocalBeforeSave(generation: number): Promise<boolean> {
@@ -871,18 +666,6 @@ async function releaseLocalBeforeSave(generation: number): Promise<boolean> {
     return false;
   }
   return outcome === "ready" && isCurrent();
-}
-
-function handleFormPrimaryAction(): void {
-  if (isGitHubCopilot.value) {
-    if (githubAuthState.value === "authenticated") {
-      void saveGitHubCopilotModel();
-    } else {
-      void startGitHubCopilotLogin();
-    }
-  } else {
-    void saveAndStart();
-  }
 }
 
 function validationMessage(error: ModelProviderValidationError): string {
@@ -1057,7 +840,6 @@ function handleLocalConfigured() {
 .primary-action,
 .text-action,
 .model-key-form,
-.copilot-auth-panel,
 .field-hint,
 .error-msg {
   --ux-overlay: rgba(255, 255, 255, 0.72);
@@ -1425,55 +1207,6 @@ h2 {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.4;
-}
-
-.copilot-auth-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 18px;
-  padding: 18px;
-  border: 1px solid var(--ux-border);
-  border-radius: 14px;
-  background: var(--ux-card-active);
-  text-align: center;
-}
-
-.copilot-auth-label,
-.copilot-auth-success {
-  color: var(--ux-panel-text);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.copilot-auth-success {
-  color: #238636;
-}
-
-.copilot-auth-hint {
-  color: var(--ux-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.copilot-device-code {
-  padding: 8px 14px;
-  border: 1px solid var(--ux-border);
-  border-radius: 10px;
-  background: var(--ux-panel-bg);
-  color: var(--ux-panel-text);
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 24px;
-  letter-spacing: 2px;
-  user-select: all;
-}
-
-.copilot-open-action {
-  width: auto;
-  height: auto;
-  margin-top: 2px;
-  padding: 6px 12px;
 }
 
 .model-key-form :deep(.el-input__wrapper),

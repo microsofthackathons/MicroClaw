@@ -1,3 +1,5 @@
+import { isModelProviderSupported } from "../../../src/model-provider-policy";
+
 export type ModelApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 export type ModelInputCapability = "text" | "image";
 export type ModelReasoningEffort =
@@ -99,7 +101,8 @@ export function validateModelProviderInput(
   const apiKey = input.apiKey.trim();
 
   if (!providerKey) return "providerKeyRequired";
-  if (!PROVIDER_KEY_PATTERN.test(providerKey)) return "invalidProviderKey";
+  if (!PROVIDER_KEY_PATTERN.test(providerKey) || !isModelProviderSupported(providerKey))
+    return "invalidProviderKey";
   if (!modelName) return "modelNameRequired";
   if (!baseUrl) return "baseUrlRequired";
   if (!isValidHttpUrl(baseUrl)) return "invalidBaseUrl";

@@ -14,12 +14,7 @@ import {
   supportsLocalModelGatewayVersion,
 } from "./local-model-service";
 import { assertChatModelSupported } from "./provider-model-capabilities";
-import {
-  assertGitHubCopilotEnabled,
-  assertModelProviderEnabled,
-  INTERNAL_GITHUB_COPILOT_ARGUMENT,
-  readInternalFeatures,
-} from "./internal-features";
+import { assertModelProviderSupported, isModelProviderSupported } from "./model-provider-policy";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
 import { registerSessionModelHandlers } from "./session-model-ipc";
@@ -125,19 +120,6 @@ import {
   registerProviderCatalogModel,
   parseProviderCatalogSelection,
 } from "./provider-model-registration";
-import {
-  disconnectGitHubCopilot,
-  getGitHubCopilotAuthStatus,
-  GitHubCopilotAuthManager,
-  type GitHubCopilotAuthRuntime,
-  invalidateGitHubCopilotAuthStatusCache,
-  listGitHubCopilotModels,
-  parseGitHubCopilotGatewayModels,
-} from "./github-copilot-auth";
-import {
-  ensureGitHubCopilotProviderPlugin,
-  ensureSelectedModelProviderPlugins,
-} from "./model-provider-plugins";
 import {
   AGENT_PERSONAS,
   DEFAULT_AGENT_PERSONAS,
@@ -331,7 +313,6 @@ if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release(
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-const internalFeatures = readInternalFeatures(process.env);
 const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
   defaults: { windowBounds: null },
 });
@@ -437,12 +418,10 @@ const RENDERER_WRITABLE_SETTING_KEYS = new Set([
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
-let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 const activeModelSessions = new Set<string>();
 let modelConfigurationMutationInProgress = false;
-let githubCopilotLoginInProgress = false;
 const modelChatKey = (key: string) =>
   sessionModelChatKey(readConfig(), key, gwClient?.mainSessionKey);
 const modelGatewayIdentity = () =>
@@ -454,7 +433,7 @@ const localModelService = new LocalModelService({
   identity: modelGatewayIdentity,
   assertMutable: () => {
     sessionModelService.assertIdle();
-    if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
+    if (modelConfigurationMutationInProgress) {
       throw new Error("A model configuration change is in progress");
     }
     if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
@@ -488,7 +467,6 @@ const localModelService = new LocalModelService({
   onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
 });
 const sessionModelService = new SessionModelService({
-  githubCopilotEnabled: internalFeatures.githubCopilot,
   gateway: () => gwClient,
   prepareModel: (modelRef) =>
     withModelConfigurationMutation(async () => {
@@ -520,7 +498,7 @@ const sessionModelService = new SessionModelService({
   readConfig,
   assertMutable: () => {
     localModelService.assertIdle();
-    if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
+    if (modelConfigurationMutationInProgress) {
       throw new Error("A model configuration change is in progress");
     }
     if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
@@ -552,7 +530,6 @@ async function withModelConfigurationMutation<T>(operation: () => Promise<T>): P
 
 function assertCloudModelMutable(): void {
   assertWindowsNodeMxcConfigurationMutable();
-  if (githubCopilotLoginInProgress) throw new Error("GitHub Copilot sign-in is still in progress");
   if (!gatewaySpawnedByUs || gatewayRestarting)
     throw new Error("Model selection requires MicroClaw's connected managed Gateway");
   if (activeModelSessions.size > 0)
@@ -577,7 +554,7 @@ async function assertChatModelEnabled(sessionKey?: string): Promise<void> {
   if (sessionKey && gwClient && supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
     modelRef = (await sessionModelService.get(sessionKey)).modelRef ?? modelRef;
   }
-  assertModelProviderEnabled(modelRef, internalFeatures.githubCopilot);
+  assertModelProviderSupported(modelRef);
   if (modelRef) assertChatModelSupported(modelRef);
 }
 
@@ -942,14 +919,6 @@ function signalPostInstallFailure(error: unknown): void {
 }
 /** Tool execution sandbox (runs AI agent commands inside AppContainer). */
 let toolSandbox: ToolSandbox | null = null;
-const githubCopilotAuthManager = new GitHubCopilotAuthManager(
-  (event) => {
-    if (event.status !== "code") githubCopilotLoginInProgress = false;
-    mainWindow?.webContents.send("model:github-copilot:login-event", event);
-    if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
-  },
-  (url) => shell.openExternal(url),
-);
 /** Per-session random key for HMAC-signing the external apps whitelist file. */
 const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
 /** Current active chat session key (tracked via chat events). */
@@ -2429,23 +2398,6 @@ async function startApplicationServices(): Promise<void> {
   notifyRendererApplicationReady();
 }
 
-function resolveGitHubCopilotAuthRuntime(): GitHubCopilotAuthRuntime {
-  const entryPath = resolveOpenClawEntry();
-  const stateDir = getOpenClawStateDir();
-  const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
-  fs.mkdirSync(compileCacheDir, { recursive: true });
-  return {
-    nodePath: resolveNodePath(),
-    entryPath,
-    workerPath: app.isPackaged
-      ? path.join(process.resourcesPath, "github-copilot-auth-worker.js")
-      : path.join(__dirname, "github-copilot-auth-worker.js"),
-    openClawPackageDir: resolveOpenClawPackageDir(entryPath),
-    stateDir,
-    compileCacheDir,
-  };
-}
-
 /**
  * Verify that an AppContainer ACL grant has propagated by checking icacls output.
  * Polls every 100ms until the SID appears with the correct permission level, max 2s.
@@ -2840,15 +2792,15 @@ function isConfigured(): boolean {
 
 /**
  * Check if the user still needs to configure a model provider.
- * Returns true when there is no explicit custom provider, selected GitHub
- * Copilot model, or MODEL_API_KEY in .env.
+ * Returns true when there is no supported configured provider or MODEL_API_KEY
+ * in .env.
  *
  * When MODEL_API_KEY IS present in .env but openclaw.json has no provider,
  * auto-configures the provider from .env values before returning false.
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (hasConfiguredModel(config, internalFeatures.githubCopilot)) return false;
+  if (hasConfiguredModel(config)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -2993,25 +2945,21 @@ function autoConfigureModelFromEnv(config: any, env: Record<string, string>): vo
 }
 
 /**
- * Enable plugins required by the selected model and keep enabled plugin entries
- * in plugins.allow so the gateway loads them synchronously at startup.
+ * Keep supported enabled plugin entries in plugins.allow so the gateway loads
+ * them synchronously at startup.
  */
 function ensurePluginsAllow(): void {
   try {
     if (isWindowsNodeMxcDesired()) return;
     const config = readConfig();
     if (!config) return;
-    let changed = ensureSelectedModelProviderPlugins(config);
-    if (!config?.plugins?.entries) {
-      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      return;
-    }
+    let changed = false;
+    if (!config?.plugins?.entries) return;
     const entries = config.plugins.entries as Record<string, { enabled?: boolean }>;
-    const enabledIds = Object.keys(entries).filter((id) => entries[id].enabled);
-    if (enabledIds.length === 0) {
-      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      return;
-    }
+    const enabledIds = Object.keys(entries).filter(
+      (id) => entries[id].enabled && isModelProviderSupported(id),
+    );
+    if (enabledIds.length === 0) return;
 
     if (!Array.isArray(config.plugins.allow)) {
       config.plugins.allow = [];
@@ -3499,7 +3447,6 @@ function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      additionalArguments: internalFeatures.githubCopilot ? [INTERNAL_GITHUB_COPILOT_ARGUMENT] : [],
       backgroundThrottling: !backgroundLaunch,
     },
   });
@@ -5487,7 +5434,6 @@ async function completePostSpawnChannelStartup(
 function connectGatewayWs(): void {
   stopBundledWindowsNodeHost();
   gwClient?.stop();
-  gatewayModelCatalogRequest = null;
   if (!postSpawnRestartDone) {
     postSpawnChannelCheck = null;
     postSpawnRestartScheduled = false;
@@ -5827,34 +5773,6 @@ function connectGatewayWs(): void {
     },
   });
   gwClient.start();
-}
-
-function requestGatewayModelCatalog(): Promise<unknown> {
-  if (gatewayModelCatalogRequest) return gatewayModelCatalogRequest;
-  const client = gwClient;
-  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
-
-  const request = client.request("models.list", { view: "all", preparedOnly: true });
-  gatewayModelCatalogRequest = request;
-  void request.then(
-    () => {
-      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
-    },
-    () => {
-      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
-    },
-  );
-  return request;
-}
-
-async function refreshGatewayGitHubCopilotAuthStatus(): Promise<void> {
-  const client = gwClient;
-  if (!client?.connected) return;
-  try {
-    await client.request("models.authStatus", { refresh: true });
-  } catch (error) {
-    console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -6772,8 +6690,7 @@ function registerIpcHandlers(): void {
       return { outcome: "skipped", transcriptDeleted: true };
     if (
       hasLocalModelPrimary(readConfig()) ||
-      (!internalFeatures.githubCopilot &&
-        getPrimaryModel(readConfig())?.startsWith("github-copilot/"))
+      !isModelProviderSupported(getPrimaryModel(readConfig())?.split("/", 1)[0] ?? "")
     ) {
       return { outcome: "skipped", transcriptDeleted: true };
     }
@@ -7351,56 +7268,12 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle("model:github-copilot:prepare", async () => {
-    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
-    assertWindowsNodeMxcConfigurationMutable();
-    return withModelConfigurationMutation(async () => {
-      const config = readConfig();
-      if (!config || typeof config !== "object" || Array.isArray(config)) {
-        throw new Error("OpenClaw configuration is unavailable");
-      }
-      const restartRequired = ensureGitHubCopilotProviderPlugin(config);
-      if (restartRequired) {
-        await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-        invalidateGitHubCopilotAuthStatusCache();
-      }
-      return { restartRequired };
-    });
-  });
-
-  ipcMain.handle("model:github-copilot:start-login", () => {
-    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
-    assertWindowsNodeMxcConfigurationMutable();
-    if (modelConfigurationMutationInProgress) {
-      throw new Error("A model configuration change is in progress");
-    }
-    const sessionId = githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime());
-    githubCopilotLoginInProgress = true;
-    return { sessionId };
-  });
-
-  ipcMain.handle("model:github-copilot:cancel-login", (_event, sessionId?: string) => ({
-    cancelled: githubCopilotAuthManager.cancel(sessionId),
-  }));
-
-  ipcMain.handle("model:github-copilot:disconnect", async () => {
-    sessionModelService.assertIdle();
-    githubCopilotAuthManager.stop();
-    githubCopilotLoginInProgress = false;
-    return withModelConfigurationMutation(async () => {
-      const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
-      await refreshGatewayGitHubCopilotAuthStatus();
-      return result;
-    });
-  });
-
   ipcMain.handle("model:select-default", async (_event, params: unknown) =>
     withModelConfigurationMutation(async () => {
       const startedAt = Date.now();
       try {
         const selected = await selectDefaultModel(
           {
-            githubCopilotEnabled: internalFeatures.githubCopilot,
             gateway: () => gwClient,
             readConfig,
             assertMutable: assertCloudModelMutable,
@@ -7417,27 +7290,6 @@ function registerIpcHandlers(): void {
       }
     }),
   );
-
-  ipcMain.handle("model:github-copilot:status", () => {
-    if (!internalFeatures.githubCopilot) return { authenticated: false };
-    const client = gwClient;
-    const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
-    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
-  });
-
-  ipcMain.handle("model:github-copilot:list-models", async () => {
-    if (!internalFeatures.githubCopilot) return [];
-    if (gwClient?.connected) {
-      try {
-        const result = await requestGatewayModelCatalog();
-        const models = parseGitHubCopilotGatewayModels(result);
-        if (models.length > 0) return models;
-      } catch (error) {
-        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
-      }
-    }
-    return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
-  });
 
   // --- Usage (via gateway WebSocket sessions.usage) ---
   ipcMain.handle("usage:get-stats", async () => {
@@ -9751,7 +9603,6 @@ app.on("before-quit", () => {
     watcherDebounceTimer = null;
   }
   destroyTray();
-  githubCopilotAuthManager.stop();
   gwClient?.stop();
   stopGatewayProcess();
 });
