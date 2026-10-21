@@ -1,5 +1,6 @@
 import { GatewayRequestError } from "./gateway-client";
 import { assertChatModelSupported } from "./provider-model-capabilities";
+import { assertModelProviderEnabled } from "./internal-features";
 import {
   parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
@@ -17,6 +18,7 @@ export interface DefaultModelSelection {
 }
 
 interface Dependencies {
+  githubCopilotEnabled?: boolean;
   gateway():
     | (Pick<
         LocalModelGateway,
@@ -58,6 +60,7 @@ export async function selectDefaultModel(
     );
   if (ref.startsWith("llama-cpp/"))
     throw new Error("Use local model selection so preparation and file checks are preserved");
+  assertModelProviderEnabled(ref, deps.githubCopilotEnabled);
   assertChatModelSupported(ref);
   deps.assertMutable();
   let expectedConfig = params.expectedConfig;

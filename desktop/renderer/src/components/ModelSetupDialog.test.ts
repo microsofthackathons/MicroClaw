@@ -94,6 +94,7 @@ describe("ModelSetupDialog", () => {
     listGitHubCopilotModels.mockResolvedValue([]);
     githubCopilotLoginListener = undefined;
     window.openclaw = {
+      features: { githubCopilot: true },
       config: { read, write },
       gateway: { restart },
       model: {
@@ -118,6 +119,34 @@ describe("ModelSetupDialog", () => {
     vi.useRealTimers();
     vi.clearAllMocks();
   });
+
+  it.each(["recovery", "saved provider"])(
+    "hides Copilot without a feature capability, including %s entry",
+    async (entry) => {
+      window.openclaw = { ...window.openclaw, features: undefined } as unknown as OpenClawAPI;
+      const props =
+        entry === "recovery"
+          ? { initialFamily: "github-copilot" as const }
+          : {
+              currentProvider: {
+                familyId: "github-copilot",
+                providerKey: "github-copilot",
+                modelName: "gpt-5",
+                baseUrl: "",
+                apiKey: "",
+                apiFormat: "openai-chat" as const,
+              },
+            };
+      const wrapper = mountDialog(props);
+      await flushPromises();
+      expect(wrapper.findAll(".model-family-card")).toHaveLength(4);
+      expect(wrapper.text()).not.toContain("GitHub Copilot");
+      expect(getGitHubCopilotStatus).not.toHaveBeenCalled();
+      expect(prepareGitHubCopilot).not.toHaveBeenCalled();
+      expect(startGitHubCopilotLogin).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
 
   async function openCustomForm(wrapper: ReturnType<typeof mountDialog>) {
     const cards = wrapper.findAll(".model-family-card");

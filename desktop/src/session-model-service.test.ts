@@ -10,7 +10,7 @@ import {
 vi.mock("./local-model-files", () => ({ inspectLocalModelFiles: vi.fn(() => new Map()) }));
 
 type Row = Record<string, unknown>;
-function fixture() {
+function fixture(githubCopilotEnabled = true) {
   const config: Row = {
     agents: {
       defaults: { model: { primary: "cloud/a", fallbacks: ["cloud/b"] } },
@@ -121,6 +121,7 @@ function fixture() {
   });
   const onRecoveryChanged = vi.fn();
   const service = new SessionModelService({
+    githubCopilotEnabled,
     gateway: () => current,
     readConfig: () => config,
     assertMutable,
@@ -159,6 +160,26 @@ function fixture() {
 }
 
 beforeEach(() => vi.mocked(inspectLocalModelFiles).mockReset().mockReturnValue(new Map()));
+
+describe("disabled GitHub Copilot session models", () => {
+  it("rejects direct selection before making any Gateway request", async () => {
+    const f = fixture(false);
+    await expect(
+      f.service.select({ sessionKey: "chat", modelRef: "github-copilot/gpt-5" }),
+    ).rejects.toThrow("GitHub Copilot is disabled");
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("refuses resetting an override to a disabled inherited model without patching the session", async () => {
+    const f = fixture(false);
+    const agents = f.config.agents as Row;
+    (agents.defaults as Row).model = { primary: "github-copilot/gpt-5" };
+    await expect(f.service.select({ sessionKey: "chat", modelRef: null })).rejects.toThrow(
+      "GitHub Copilot is disabled",
+    );
+    expect(f.patches()).toEqual([]);
+  });
+});
 
 describe("session model reads", () => {
   it("uses the same canonical identity for send/terminal-event chat guards", () => {

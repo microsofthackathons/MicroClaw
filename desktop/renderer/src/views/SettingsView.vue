@@ -1764,6 +1764,7 @@ import {
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
 import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
+import { isGitHubCopilotEnabled, isModelProviderEnabled } from "@/utils/model-features";
 import {
   useProviderModelCatalog,
   readConfiguredCatalogs,
@@ -2654,7 +2655,7 @@ const providerCards = computed(() => {
     "llama-cpp",
     ...customModels.value.map((model) => model.providerKey),
   ]);
-  return [...keys].map((key) => {
+  return [...keys].filter(isModelProviderEnabled).map((key) => {
     const models = customModels.value.filter((model) => model.providerKey === key);
     return {
       key,
@@ -3029,8 +3030,10 @@ watch(activeSection, (v) => {
 function applyModelsConfig(config: any): void {
   defaultAgentOverride.value = getDefaultAgentModelOverride(config);
   const parsed = readConfiguredModels(config);
-  customModels.value = parsed.models;
-  selectedModel.value = parsed.primary;
+  customModels.value = parsed.models.filter((model) => isModelProviderEnabled(model.providerKey));
+  selectedModel.value = isModelProviderEnabled(parsed.primary.split("/", 1)[0])
+    ? parsed.primary
+    : "";
   providerCatalogInputs.value = readConfiguredCatalogs(config);
   const revision = ++providerCatalogRevision;
   providerCatalogLoading.value = true;
@@ -3068,6 +3071,7 @@ async function loadLocalFileStatus(): Promise<void> {
 }
 
 async function loadSettingsGitHubCopilotModels(): Promise<void> {
+  if (!isGitHubCopilotEnabled()) return;
   const generation = ++copilotModelsGeneration;
   copilotModelsLoading.value = true;
   const modelsPromise = window.openclaw.model.listGitHubCopilotModels();

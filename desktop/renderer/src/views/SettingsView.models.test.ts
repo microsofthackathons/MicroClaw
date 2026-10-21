@@ -75,6 +75,7 @@ describe("SettingsView model integration", () => {
       memory: { provider: "existing" },
     };
     const api = createBrowserOpenClawMock();
+    Object.assign(api.features, { githubCopilot: true });
     api.config.read = vi.fn(async () => structuredClone(config));
     write = vi.fn(async (next) => {
       config = structuredClone(next);
@@ -120,6 +121,21 @@ describe("SettingsView model integration", () => {
     await flushPromises();
     return { wrapper, chat: useChatStore(pinia) };
   }
+
+  it("hides disabled Copilot cards and saved models without reading authentication or deleting configuration", async () => {
+    Object.assign(window.openclaw.features, { githubCopilot: false });
+    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
+    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    const original = structuredClone(config);
+    const { wrapper } = await open(true);
+    expect(wrapper.find('[data-provider="github-copilot"]').exists()).toBe(false);
+    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("GitHub Copilot");
+    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(config).toEqual(original);
+  });
 
   it("exposes the shared recovery entry and blocks default changes until saved state is confirmed", async () => {
     const { wrapper } = await open();

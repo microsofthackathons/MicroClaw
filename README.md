@@ -144,6 +144,17 @@ On first launch, the desktop app opens a SetupWizard only when model configurati
 
 You can add or edit models any time under **Settings → Models**. Credentials are stored locally by the desktop app. If `.env` already contains `MODEL_BASE_URL`, `MODEL_API_KEY`, and `MODEL_NAME`, MicroClaw can prefill or auto-apply that configuration.
 
+#### Internal provider testing
+
+GitHub Copilot is disabled by default: it is absent from onboarding, model settings and model pickers, and the desktop rejects its sign-in and model-selection requests. Existing credentials and configuration are retained, but cannot be used for desktop chats while disabled. Internal testing can opt in by setting `MICROCLAW_INTERNAL_GITHUB_COPILOT=1` in the process environment **before starting MicroClaw** (including packaged builds). Fully exit an existing app instance first; the flag is not a persisted user setting and takes effect after restart. Browser-only development keeps Copilot disabled.
+
+```powershell
+$env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
+& "$HOME\.microclaw\MicroClawDesktop.exe"
+```
+
+Remove the environment variable and fully restart the app to disable the internal feature again. Other cloud and local model providers remain available.
+
 #### Local models (experimental)
 
 The managed catalog contains **Qwen3.5 4B Q4_K_M**, **Qwen3.5 9B Q4_K_M**, **Qwen3.5 35B-A3B Q4_K_M**, and **Qwen3.8 27B UD-Q4_K_M**. Chat and embedding weights download **only from ModelScope**, using pinned repository revisions, byte sizes and SHA-256 hashes. Hugging Face resolution and download fallback are disabled; weight redirects are restricted to ModelScope domains. Existing verified 4B/9B and embedding caches retain their historical filenames and can be reused without downloading again. Runtime components still use their upstream distribution sources. Larger models must pass the provider's memory, accelerator and disk admission checks; 4B remains the lightweight default. The 35B-A3B preset reserves a conservative 28 GiB model memory budget and requires at least 48 GiB system memory; the 27B preset retains upstream's GPU requirement and 22 GiB model memory budget. These are admission budgets, not guaranteed inference measurements.

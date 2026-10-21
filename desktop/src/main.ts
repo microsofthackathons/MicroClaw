@@ -14,6 +14,12 @@ import {
   supportsLocalModelGatewayVersion,
 } from "./local-model-service";
 import { assertChatModelSupported } from "./provider-model-capabilities";
+import {
+  assertGitHubCopilotEnabled,
+  assertModelProviderEnabled,
+  INTERNAL_GITHUB_COPILOT_ARGUMENT,
+  readInternalFeatures,
+} from "./internal-features";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
 import { registerSessionModelHandlers } from "./session-model-ipc";
@@ -112,7 +118,7 @@ import {
   requestModelEndpoint,
   resolveModelApiKey,
 } from "./model-connection";
-import { assertModelConfigUnchanged, hasConfiguredModel } from "./model-setup";
+import { assertModelConfigUnchanged, getPrimaryModel, hasConfiguredModel } from "./model-setup";
 import { selectDefaultModel } from "./default-model-selection";
 import { discoverProviderModels } from "./provider-model-catalog";
 import {
@@ -325,6 +331,7 @@ if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release(
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
+const internalFeatures = readInternalFeatures(process.env);
 const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
   defaults: { windowBounds: null },
 });
@@ -481,6 +488,7 @@ const localModelService = new LocalModelService({
   onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
 });
 const sessionModelService = new SessionModelService({
+  githubCopilotEnabled: internalFeatures.githubCopilot,
   gateway: () => gwClient,
   prepareModel: (modelRef) =>
     withModelConfigurationMutation(async () => {
@@ -564,7 +572,19 @@ function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown):
   );
 }
 
-async function withInternalModelChat<T>(operation: () => Promise<T>): Promise<T> {
+async function assertChatModelEnabled(sessionKey?: string): Promise<void> {
+  let modelRef = getPrimaryModel(readConfig());
+  if (sessionKey && gwClient && supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
+    modelRef = (await sessionModelService.get(sessionKey)).modelRef ?? modelRef;
+  }
+  assertModelProviderEnabled(modelRef, internalFeatures.githubCopilot);
+  if (modelRef) assertChatModelSupported(modelRef);
+}
+
+async function withInternalModelChat<T>(
+  operation: () => Promise<T>,
+  sessionKey?: string,
+): Promise<T> {
   if (modelConfigurationMutationInProgress)
     throw new Error("A model configuration change is being applied; wait for it to finish");
   localModelService.assertChatAllowed();
@@ -572,6 +592,7 @@ async function withInternalModelChat<T>(operation: () => Promise<T>): Promise<T>
   const key = `internal:model-operation:${randomUUID()}`;
   activeModelSessions.add(key);
   try {
+    await assertChatModelEnabled(sessionKey);
     return await operation();
   } finally {
     activeModelSessions.delete(key);
@@ -2827,7 +2848,7 @@ function isConfigured(): boolean {
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (hasConfiguredModel(config)) return false;
+  if (hasConfiguredModel(config, internalFeatures.githubCopilot)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -3478,6 +3499,7 @@ function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      additionalArguments: internalFeatures.githubCopilot ? [INTERNAL_GITHUB_COPILOT_ARGUMENT] : [],
       backgroundThrottling: !backgroundLaunch,
     },
   });
@@ -6688,10 +6710,7 @@ function registerIpcHandlers(): void {
       const activeKey = modelChatKey(params.sessionKey);
       activeModelSessions.add(activeKey);
       try {
-        if (supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
-          const selection = await sessionModelService.get(params.sessionKey);
-          if (selection.modelRef) assertChatModelSupported(selection.modelRef);
-        }
+        await assertChatModelEnabled(params.sessionKey);
         await gwClient.sendChat(
           params.sessionKey,
           params.message,
@@ -6718,7 +6737,10 @@ function registerIpcHandlers(): void {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     sessionModelService.assertChatAllowed();
     const client = gwClient;
-    return withInternalModelChat(() => client.generateSessionTitle(params.sessionKey));
+    return withInternalModelChat(
+      () => client.generateSessionTitle(params.sessionKey),
+      params.sessionKey,
+    );
   });
 
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
@@ -6748,7 +6770,11 @@ function registerIpcHandlers(): void {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     if (modelConfigurationMutationInProgress || localModelService.busy || sessionModelService.busy)
       return { outcome: "skipped", transcriptDeleted: true };
-    if (hasLocalModelPrimary(readConfig())) {
+    if (
+      hasLocalModelPrimary(readConfig()) ||
+      (!internalFeatures.githubCopilot &&
+        getPrimaryModel(readConfig())?.startsWith("github-copilot/"))
+    ) {
       return { outcome: "skipped", transcriptDeleted: true };
     }
     if (
@@ -7326,6 +7352,7 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle("model:github-copilot:prepare", async () => {
+    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
     assertWindowsNodeMxcConfigurationMutable();
     return withModelConfigurationMutation(async () => {
       const config = readConfig();
@@ -7342,6 +7369,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("model:github-copilot:start-login", () => {
+    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
     assertWindowsNodeMxcConfigurationMutable();
     if (modelConfigurationMutationInProgress) {
       throw new Error("A model configuration change is in progress");
@@ -7372,6 +7400,7 @@ function registerIpcHandlers(): void {
       try {
         const selected = await selectDefaultModel(
           {
+            githubCopilotEnabled: internalFeatures.githubCopilot,
             gateway: () => gwClient,
             readConfig,
             assertMutable: assertCloudModelMutable,
@@ -7390,12 +7419,14 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle("model:github-copilot:status", () => {
+    if (!internalFeatures.githubCopilot) return { authenticated: false };
     const client = gwClient;
     const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
+    if (!internalFeatures.githubCopilot) return [];
     if (gwClient?.connected) {
       try {
         const result = await requestGatewayModelCatalog();

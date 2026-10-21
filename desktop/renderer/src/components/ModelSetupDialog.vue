@@ -414,6 +414,7 @@ import {
   type ManagedModelPreset,
 } from "@/utils/managed-model-providers";
 import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
+import { isModelProviderEnabled } from "@/utils/model-features";
 import githubCopilotBlack from "@/assets/github-copilot-black.svg";
 import LocalModelSetupDialog from "./LocalModelSetupDialog.vue";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
@@ -464,7 +465,7 @@ const emit = defineEmits<{
   busy: [value: boolean];
 }>();
 
-const modelFamilies: ModelFamilyPreset[] = [
+const allModelFamilies: ModelFamilyPreset[] = [
   ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
     ...provider,
     providerKey: provider.id,
@@ -501,6 +502,7 @@ const modelFamilies: ModelFamilyPreset[] = [
     apiKeyPlaceholder: "",
   },
 ];
+const modelFamilies = allModelFamilies.filter((family) => isModelProviderEnabled(family.id));
 
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
@@ -662,7 +664,11 @@ watch(
       localVisible.value = true;
       return;
     }
-    if (prefill) {
+    if (
+      prefill &&
+      isModelProviderEnabled(prefill.familyId) &&
+      isModelProviderEnabled(prefill.providerKey)
+    ) {
       // Reopen on the configured provider, pre-filled and jumped to the key form so the user
       // can adjust the model, base URL or key without re-selecting the family.
       selectFamily(prefill.familyId as ModelFamilyId);
@@ -676,7 +682,7 @@ watch(
       errorMsg.value = "";
       return;
     }
-    if (props.initialFamily) {
+    if (props.initialFamily && isModelProviderEnabled(props.initialFamily)) {
       selectFamily(props.initialFamily);
       isKeyStep.value = true;
       apiKey.value = "";

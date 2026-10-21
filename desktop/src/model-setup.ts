@@ -48,13 +48,17 @@ export async function waitForDefaultModelApplied(
   }
 }
 
-export function hasConfiguredModel(config: unknown): boolean {
+export function hasConfiguredModel(config: unknown, githubCopilotEnabled = false): boolean {
   const root = asJsonObject(config);
   if (!root) return false;
 
   const models = asJsonObject(root.models);
   const providers = asJsonObject(models?.providers);
-  if (providers && Object.keys(providers).length > 0) return true;
+  if (
+    providers &&
+    Object.keys(providers).some((key) => key !== "github-copilot" || githubCopilotEnabled)
+  )
+    return true;
 
-  return getPrimaryModel(root)?.startsWith("github-copilot/") === true;
+  return githubCopilotEnabled && getPrimaryModel(root)?.startsWith("github-copilot/") === true;
 }

@@ -30,6 +30,7 @@ describe("ChatModelPicker", () => {
   beforeEach(() => {
     setLocale("en-US");
     const api = createBrowserOpenClawMock();
+    Object.assign(api.features, { githubCopilot: true });
     api.config.read = vi.fn().mockResolvedValue({
       models: {
         providers: {
@@ -83,6 +84,22 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     return wrapper;
   }
+
+  it("hides saved Copilot models and skips authentication when the internal feature is disabled", async () => {
+    Object.assign(window.openclaw.features, { githubCopilot: false });
+    window.openclaw.config.read = vi.fn().mockResolvedValue({
+      models: { providers: { cloud: { models: [{ id: "remote", name: "Cloud model" }] } } },
+      agents: { defaults: { models: { "github-copilot/gpt-5": { alias: "Copilot" } } } },
+    });
+    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
+    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    const wrapper = await open();
+    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Copilot");
+    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(window.openclaw.config.write).not.toHaveBeenCalled();
+  });
 
   it("preserves accessible expanded state with the real Element Plus popover", async () => {
     const wrapper = await open(true);
