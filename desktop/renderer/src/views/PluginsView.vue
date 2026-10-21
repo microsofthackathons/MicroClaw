@@ -40,16 +40,6 @@
           <div class="weixin-account-status" data-testid="weixin-account-status">
             <strong>{{ t("plugins.loginStatus") }}:</strong>
             <span>{{ loginSuccess ? t("plugins.loggedIn") : t("plugins.notLoggedIn") }}</span>
-            <template v-if="weixinStatus.currentAccount">
-              <span>
-                {{ t("plugins.accountId") }}:
-                <code>{{ weixinStatus.currentAccount.accountId }}</code>
-              </span>
-              <span v-if="weixinStatus.currentAccount.userId">
-                {{ t("plugins.weixinUserId") }}:
-                <code>{{ weixinStatus.currentAccount.userId }}</code>
-              </span>
-            </template>
             <span v-if="weixinStatus.invariantState === 'multiple'" class="status-warning">
               {{ t("plugins.multipleAccountsInvalid") }}
             </span>
@@ -97,15 +87,6 @@
             <span>{{ t("plugins.loginSuccess") }}</span>
             <el-button
               size="small"
-              type="primary"
-              text
-              @click="goToWeixinChat"
-              style="margin-left: auto"
-            >
-              {{ t("plugins.viewWeixinMessages") }}
-            </el-button>
-            <el-button
-              size="small"
               type="danger"
               text
               @click="disconnectWeixin"
@@ -125,16 +106,6 @@
             {{ t("plugins.restartGateway") }}
           </el-button>
           <span v-if="restartDone" class="restart-done">{{ t("plugins.gatewayRestarted") }}</span>
-          <el-button
-            v-if="restartDone"
-            size="small"
-            type="primary"
-            text
-            @click="goToWeixinChat"
-            style="margin-left: 8px"
-          >
-            {{ t("plugins.viewWeixinMessages") }}
-          </el-button>
         </div>
       </div>
     </div>
@@ -145,14 +116,12 @@
 import { computed, ref, onMounted, onUnmounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { useChatStore } from "@/stores/chat";
 import { useGatewayStore } from "@/stores/gateway";
 import { t } from "@/i18n";
 import weixinIcon from "@/assets/wechat.png";
 import QRCode from "qrcode";
 
 const router = useRouter();
-const chatStore = useChatStore();
 const gatewayStore = useGatewayStore();
 
 const weixinEnabled = ref(false);
@@ -497,11 +466,6 @@ async function restartGateway() {
     restarting.value = false;
   }
 }
-
-function goToWeixinChat() {
-  chatStore.switchToMainSession();
-  router.push("/chat");
-}
 </script>
 
 <style scoped>
@@ -536,10 +500,6 @@ function goToWeixinChat() {
   gap: 4px;
   margin: 10px 0;
   font-size: 13px;
-}
-
-.weixin-account-status code {
-  overflow-wrap: anywhere;
 }
 
 .status-warning {

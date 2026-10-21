@@ -209,7 +209,7 @@ export default {
   "plugins.waitingScan": "等待扫码...",
   "plugins.cancel": "取消",
   "plugins.loginSuccess": "微信登录成功",
-  "plugins.viewWeixinMessages": "查看微信消息 →",
+  "plugins.viewWeixinMessages": "查看微信消息",
   "plugins.gatewayRestart": "网关重启",
   "plugins.gatewayRestartDesc": "仅用于故障排查。微信登录成功后无需替换 Gateway 即可生效。",
   "plugins.restartGateway": "重启网关",

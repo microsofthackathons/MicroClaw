@@ -220,7 +220,7 @@ export default {
   "plugins.waitingScan": "Waiting for scan...",
   "plugins.cancel": "Cancel",
   "plugins.loginSuccess": "WeChat login successful",
-  "plugins.viewWeixinMessages": "View WeChat Messages →",
+  "plugins.viewWeixinMessages": "View WeChat Messages",
   "plugins.gatewayRestart": "Gateway Restart",
   "plugins.gatewayRestartDesc":
     "Use only for troubleshooting. Successful WeChat login activates without replacing the Gateway.",

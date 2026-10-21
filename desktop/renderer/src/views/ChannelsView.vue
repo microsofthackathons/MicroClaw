@@ -35,16 +35,6 @@
           <div class="weixin-account-status" data-testid="weixin-account-status">
             <strong>{{ t("plugins.loginStatus") }}:</strong>
             <span>{{ loginSuccess ? t("plugins.loggedIn") : t("plugins.notLoggedIn") }}</span>
-            <template v-if="weixinStatus.currentAccount">
-              <span>
-                {{ t("plugins.accountId") }}:
-                <code>{{ weixinStatus.currentAccount.accountId }}</code>
-              </span>
-              <span v-if="weixinStatus.currentAccount.userId">
-                {{ t("plugins.weixinUserId") }}:
-                <code>{{ weixinStatus.currentAccount.userId }}</code>
-              </span>
-            </template>
             <span v-if="weixinStatus.invariantState === 'multiple'" class="status-warning">
               {{ t("plugins.multipleAccountsInvalid") }}
             </span>
@@ -508,10 +498,6 @@ function goToWeixinChat() {
   gap: 4px;
   margin: 10px 0;
   font-size: 13px;
-}
-
-.weixin-account-status code {
-  overflow-wrap: anywhere;
 }
 
 .status-warning {

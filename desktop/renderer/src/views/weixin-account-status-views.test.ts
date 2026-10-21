@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
-import { setLocale } from "@/i18n";
+import { setLocale, t } from "@/i18n";
 import ChannelsView from "./ChannelsView.vue";
 import PluginsView from "./PluginsView.vue";
 
@@ -116,15 +116,15 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
     expect(wrapper.text()).toContain("Log in to WeChat");
   });
 
-  it("shows the safe logged-in identity and replacement action", async () => {
+  it("shows logged-in status without exposing opaque identity values", async () => {
     getStatus.mockResolvedValue(loggedInStatus());
     const wrapper = mountView();
     await flushPromises();
 
     const status = wrapper.find('[data-testid="weixin-account-status"]').text();
     expect(status).toContain("Logged in");
-    expect(status).toContain("current-im-bot");
-    expect(status).toContain("current@im.wechat");
+    expect(status).not.toContain("current-im-bot");
+    expect(status).not.toContain("current@im.wechat");
     expect(wrapper.text()).toContain("Replace WeChat account");
   });
 
@@ -140,13 +140,12 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
     await replaceButton!.trigger("click");
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="weixin-account-status"]').text()).toContain(
-      "current-im-bot",
-    );
     expect(wrapper.find('[data-testid="weixin-account-status"]').text()).toContain("Logged in");
+    expect(wrapper.text()).not.toContain("current-im-bot");
+    expect(wrapper.text()).not.toContain("current@im.wechat");
   });
 
-  it("refreshes safe status to the replacement identity after successful fallback login", async () => {
+  it("refreshes logged-in status after successful fallback replacement", async () => {
     getStatus
       .mockResolvedValueOnce(loggedInStatus())
       .mockResolvedValue(loggedInStatus("replacement-im-bot", "replacement@im.wechat"));
@@ -162,8 +161,65 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
     await flushPromises();
 
     const status = wrapper.find('[data-testid="weixin-account-status"]').text();
-    expect(status).toContain("replacement-im-bot");
-    expect(status).toContain("replacement@im.wechat");
+    expect(status).toContain("Logged in");
+    expect(status).not.toContain("replacement-im-bot");
+    expect(status).not.toContain("replacement@im.wechat");
     expect(status).not.toContain("current-im-bot");
+  });
+});
+
+describe("WeChat message navigation action", () => {
+  beforeEach(() => {
+    setLocale("en-US");
+    const openclaw = createBrowserOpenClawMock();
+    window.openclaw = {
+      ...openclaw,
+      plugin: {
+        weixin: {
+          ...openclaw.plugin.weixin,
+          getStatus: vi.fn().mockResolvedValue(loggedInStatus()),
+        },
+      },
+    };
+  });
+
+  it("remains available in ChannelsView without an arrow", async () => {
+    const wrapper = mount(ChannelsView, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          "el-button": buttonStub,
+          "el-switch": switchStub,
+          "el-alert": true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("View WeChat Messages");
+    expect(wrapper.text()).not.toContain("View WeChat Messages →");
+  });
+
+  it("is not rendered in PluginsView", async () => {
+    const wrapper = mount(PluginsView, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          "el-button": buttonStub,
+          "el-switch": switchStub,
+          "el-alert": true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("View WeChat Messages");
+  });
+
+  it("uses arrow-free message labels in both locales", () => {
+    setLocale("en-US");
+    expect(t("plugins.viewWeixinMessages")).toBe("View WeChat Messages");
+    setLocale("zh-CN");
+    expect(t("plugins.viewWeixinMessages")).toBe("查看微信消息");
   });
 });
