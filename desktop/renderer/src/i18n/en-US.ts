@@ -305,21 +305,34 @@ export default {
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
   "settings.experimental": "Experimental",
-  "settings.weixinRemoteApproval": "WeChat remote approval (Experimental)",
+  "settings.weixinRemoteApprovalActivationTitle": "Remote command approval",
+  "settings.weixinRemoteApprovalActivationIntro":
+    "Choose whether this MXC activation may send one-use command approvals to a linked WeChat account. This choice is requested again after MXC is turned off.",
+  "settings.weixinRemoteApprovalRiskTitle": "Security risk",
   "settings.weixinRemoteApprovalRisk":
     "Trusts normalized account, sender, direct-chat, message, and cursor metadata from the allowlisted openclaw-weixin plugin and Gateway as authentic. A compromised phone, WeChat session, plugin, or Gateway could authorize local command execution.",
-  "settings.weixinRemoteApprovalOwner": "Bound owner",
-  "settings.weixinRemoteApprovalUnbound": "Not bound",
-  "settings.weixinRemoteApprovalRequiresMxc":
-    "Enable Windows Node + MXC before enabling remote approval.",
-  "settings.weixinRemoteApprovalRequiresOwner":
-    "Exactly one authenticated WeChat account whose owner is in the explicit sender allowlist is required.",
   "settings.weixinRemoteApprovalOnceOnly":
     "Replies approve only the currently listed request(s) once. They never create durable approvals, folder grants, or future approval. Secret-bearing or unclassified free-text command fields stay local-only.",
-  "settings.weixinRemoteApprovalEnable": "Enable and bind locally",
-  "settings.weixinRemoteApprovalDisable": "Disable",
-  "settings.weixinRemoteApprovalRevoke": "Revoke owner binding",
-  "settings.weixinRemoteApprovalFailed": "Could not update WeChat remote approval",
+  "settings.weixinRemoteApprovalActivationDisabled": "Disabled",
+  "settings.weixinRemoteApprovalActivationDisabledDesc":
+    "Keep ordinary WeChat messaging available without remote command approval.",
+  "settings.weixinRemoteApprovalActivationEnabled": "Enabled",
+  "settings.weixinRemoteApprovalActivationEnabledDesc":
+    "Bind one exact authenticated, explicitly allowlisted account identity for this MXC activation.",
+  "settings.weixinRemoteApprovalActivationAccount": "Approval owner account",
+  "settings.weixinRemoteApprovalActivationSelectAccount": "Select an account",
+  "settings.weixinRemoteApprovalActivationNoEligible":
+    "Linked accounts exist, but none are eligible. You can continue with remote approval disabled or cancel MXC activation.",
+  "settings.weixinRemoteApprovalActivationEnableAndContinue":
+    "Enable remote approval and continue",
+  "settings.weixinRemoteApprovalActivationContinueDisabled":
+    "Continue with remote approval disabled",
+  "settings.weixinRemoteApprovalActivationIneligible.account-disabled":
+    "This linked account is disabled in the WeChat channel configuration.",
+  "settings.weixinRemoteApprovalActivationIneligible.not-authenticated":
+    "This linked account is not authenticated.",
+  "settings.weixinRemoteApprovalActivationIneligible.not-allowlisted":
+    "This identity is not in the account's explicit sender allowlist.",
   "settings.windowsNodeMxcModeFull": "Full containment",
   "settings.windowsNodeMxcFullBadge": "Hard boundary",
   "settings.windowsNodeMxcModeFullDesc":

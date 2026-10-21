@@ -6,6 +6,7 @@ import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
+import MxcWeixinRemoteApprovalDialog from "@/components/MxcWeixinRemoteApprovalDialog.vue";
 import SettingsView from "./SettingsView.vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 
@@ -28,9 +29,7 @@ describe("SettingsView", () => {
   const getUserDirs = vi.fn();
   const validateFolderPolicy = vi.fn();
   const applyFolderPolicy = vi.fn();
-  const getRemoteApprovalStatus = vi.fn();
-  const setRemoteApprovalEnabled = vi.fn();
-  const revokeRemoteApproval = vi.fn();
+  const getWeixinRemoteApprovalActivationOptions = vi.fn();
 
   const localNode = {
     id: "node-local",
@@ -200,16 +199,13 @@ describe("SettingsView", () => {
     getUserDirs.mockReset().mockResolvedValue({ rw: [], ro: [] });
     validateFolderPolicy.mockReset().mockImplementation(async (draft) => draft);
     applyFolderPolicy.mockReset();
-    getRemoteApprovalStatus.mockReset().mockResolvedValue({
-      experimental: true,
-      enabled: false,
-      configured: false,
-      owner: null,
-      availableOwners: [],
-      blockedReason: "owner-ambiguous",
+    getWeixinRemoteApprovalActivationOptions.mockReset().mockResolvedValue({
+      weixinEnabled: false,
+      linkedAccountCount: 0,
+      authenticatedAccountCount: 0,
+      eligibleOwners: [],
+      ineligibleAccounts: [],
     });
-    setRemoteApprovalEnabled.mockReset().mockResolvedValue({ ok: true });
-    revokeRemoteApproval.mockReset().mockResolvedValue({ ok: true });
     window.openclaw = {
       model: createBrowserOpenClawMock().model,
       config: {
@@ -231,15 +227,9 @@ describe("SettingsView", () => {
       shell: {
         openExternal,
       },
-      plugin: {
-        weixin: {
-          getRemoteApprovalStatus,
-          setRemoteApprovalEnabled,
-          revokeRemoteApproval,
-        },
-      },
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
+        getWeixinRemoteApprovalActivationOptions,
         preflight: preflightWindowsNodeMxc,
         setEnabled: setWindowsNodeMxcEnabled,
         validateFolderPolicy,
@@ -336,50 +326,15 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
-  it("shows the default-off experimental WeChat remote approval owner and controls", async () => {
+  it("does not expose a standalone WeChat remote approval settings card", async () => {
     routeState.section = "security";
-    getRemoteApprovalStatus.mockResolvedValueOnce({
-      experimental: true,
-      enabled: false,
-      configured: true,
-      owner: {
-        contract: "microclaw.windows-weixin-remote-approval.v1",
-        accountId: "bot@im.wechat",
-        userId: "owner@im.wechat",
-        boundAt: "2026-10-14T00:00:00.000Z",
-      },
-      availableOwners: [],
-      blockedReason: null,
-    });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
     });
     await flushPromises();
 
-    const card = wrapper.find('[data-testid="weixin-remote-approval"]');
-    expect(card.text()).toContain("WeChat remote approval (Experimental)");
-    expect(card.text()).toContain("owner@im.wechat");
-    expect(card.text()).toContain("allowlisted openclaw-weixin plugin and Gateway");
-    expect(card.text()).toContain("never create durable approvals");
-    expect(card.text()).toContain("unclassified free-text command fields stay local-only");
-    await wrapper.find('[data-testid="weixin-remote-approval-enable"]').trigger("click");
-    await flushPromises();
-    expect(setRemoteApprovalEnabled).toHaveBeenCalledWith(true);
-  });
-
-  it("discloses the trusted plugin and Gateway metadata assumption in Chinese", async () => {
-    routeState.section = "security";
-    setLocale("zh-CN");
-    const wrapper = shallowMount(SettingsView, {
-      global: { plugins: [createPinia()] },
-    });
-    await flushPromises();
-
-    const card = wrapper.find('[data-testid="weixin-remote-approval"]');
-    expect(card.text()).toContain("微信远程审批（实验性）");
-    expect(card.text()).toContain("白名单 openclaw-weixin 插件和 Gateway");
-    expect(card.text()).toContain("绝不会创建永久审批");
-    expect(card.text()).toContain("无法分类的自由文本命令字段仅允许本地审批");
+    expect(wrapper.find('[data-testid="weixin-remote-approval"]').exists()).toBe(false);
+    expect(getWeixinRemoteApprovalActivationOptions).not.toHaveBeenCalled();
   });
 
   it("keeps technical MXC details collapsed on a fresh Settings view", async () => {
@@ -767,6 +722,226 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
+  it("prompts for one eligible WeChat owner before mutating an Off to Full transition", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const owner = {
+      accountId: "bot@im.wechat",
+      userId: "owner@im.wechat",
+    };
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
+      weixinEnabled: true,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 1,
+      eligibleOwners: [owner],
+      ineligibleAccounts: [],
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+
+    const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
+    expect(remoteApproval.props("modelValue")).toBe(true);
+    expect(remoteApproval.props("options")).toMatchObject({ eligibleOwners: [owner] });
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+
+    remoteApproval.vm.$emit("confirm", { enabled: true, owner });
+    await flushPromises();
+
+    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "full",
+      remoteApproval: { enabled: true, owner },
+    });
+  });
+
+  it("passes the exact selected owner from multiple eligible accounts for Limited activation", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const owners = [
+      { accountId: "first@im.wechat", userId: "one@im.wechat" },
+      { accountId: "second@im.wechat", userId: "two@im.wechat" },
+    ];
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
+      weixinEnabled: true,
+      linkedAccountCount: 2,
+      authenticatedAccountCount: 2,
+      eligibleOwners: owners,
+      ineligibleAccounts: [],
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          "el-dialog": {
+            props: ["modelValue"],
+            template: '<div v-if="modelValue"><slot/><slot name="footer"/></div>',
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-limited"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await wrapper.vm.$nextTick();
+    await wrapper.find('[data-testid="mxc-limited-ack-checkbox"]').setValue(true);
+    await wrapper.find('[data-testid="mxc-confirm-limited"]').trigger("click");
+    await flushPromises();
+
+    const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
+    expect(remoteApproval.props("modelValue")).toBe(true);
+    remoteApproval.vm.$emit("confirm", { enabled: true, owner: owners[1] });
+    await flushPromises();
+
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "limited-dacl",
+      acknowledgeLimitedFilesystem: true,
+      remoteApproval: { enabled: true, owner: owners[1] },
+    });
+  });
+
+  it("continues with an explicit Disabled choice and never infers an owner", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
+      weixinEnabled: true,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 1,
+      eligibleOwners: [{ accountId: "bot@im.wechat", userId: "owner@im.wechat" }],
+      ineligibleAccounts: [],
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+    wrapper.findComponent(MxcWeixinRemoteApprovalDialog).vm.$emit("confirm", {
+      enabled: false,
+    });
+    await flushPromises();
+
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "full",
+      remoteApproval: { enabled: false },
+    });
+  });
+
+  it("cancels remote approval consent before preflight or transition mutation", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
+      weixinEnabled: true,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 1,
+      eligibleOwners: [{ accountId: "bot@im.wechat", userId: "owner@im.wechat" }],
+      ineligibleAccounts: [],
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+    const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
+    remoteApproval.vm.$emit("cancel");
+    await wrapper.vm.$nextTick();
+
+    expect(remoteApproval.props("modelValue")).toBe(false);
+    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+  });
+
+  it("explains ineligible linked accounts and can continue disabled", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const options = {
+      weixinEnabled: true,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 1,
+      eligibleOwners: [],
+      ineligibleAccounts: [
+        {
+          accountId: "bot@im.wechat",
+          userId: "owner@im.wechat",
+          reason: "not-allowlisted" as const,
+        },
+      ],
+    };
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce(options);
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+    const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
+
+    expect(remoteApproval.props("options")).toEqual(options);
+    remoteApproval.vm.$emit("confirm", { enabled: false });
+    await flushPromises();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "full",
+      remoteApproval: { enabled: false },
+    });
+  });
+
+  it("skips the popup when WeChat is disabled and persists remote approval as disabled", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+
+    expect(wrapper.findComponent(MxcWeixinRemoteApprovalDialog).props("modelValue")).toBe(false);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "full",
+      remoteApproval: { enabled: false },
+    });
+  });
+
   it("deduplicates disclosure requests and double-submit before applying Full once", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
@@ -793,13 +968,17 @@ describe("SettingsView", () => {
 
     consent.vm.$emit("accept");
     consent.vm.$emit("accept");
+    await Promise.resolve();
     expect(preflightWindowsNodeMxc).toHaveBeenCalledTimes(1);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
 
     releasePreflight();
     await flushPromises();
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "full",
+      remoteApproval: { enabled: false },
+    });
   });
 
   it("prompts and applies an explicit Limited to Full switch", async () => {

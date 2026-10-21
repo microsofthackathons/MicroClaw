@@ -14,4 +14,14 @@ export default {
   "tray.open": "Open MicroClaw",
   "tray.restartGateway": "Restart Gateway",
   "tray.quit": "Quit",
+  "weixinRemoteApproval.consentTitle": "Enable WeChat remote approval?",
+  "weixinRemoteApproval.consentMessage":
+    "Confirm the exact WeChat identity allowed to approve commands.",
+  "weixinRemoteApproval.consentRisk":
+    "A compromise of this authenticated WeChat session could approve one-use commands on this PC. This choice applies only to the activation shown below.",
+  "weixinRemoteApproval.mode": "MXC mode",
+  "weixinRemoteApproval.accountId": "Account ID",
+  "weixinRemoteApproval.userId": "User ID",
+  "weixinRemoteApproval.enable": "Enable remote approval",
+  "weixinRemoteApproval.cancelActivation": "Cancel MXC activation",
 } as Record<string, string>;

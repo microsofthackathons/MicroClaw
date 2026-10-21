@@ -6,6 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  prepareWeixinPluginResource,
+  WEIXIN_RUNTIME_MANIFEST_CONTRACT,
+} from "./prepare-weixin-plugin-resource.mjs";
 import { stageWeixinRuntime } from "./stage-weixin-runtime.mjs";
 
 const sourceDir = path.resolve(
@@ -204,4 +208,21 @@ test("staging rejects mismatched upstream versions", () => {
   fs.mkdirSync(mismatch);
   fs.writeFileSync(path.join(mismatch, "package.json"), JSON.stringify({ version: "0.0.0" }));
   assert.throws(() => stageWeixinRuntime(sourceDir, mismatch), /versions do not match/);
+});
+
+test("prepared package resource is provenance-pinned and excludes a nested OpenClaw core", () => {
+  const destination = path.join(tempDir, "packaged-resource");
+  const manifest = prepareWeixinPluginResource({ source: sourceDir, destination });
+  assert.equal(manifest.contract, WEIXIN_RUNTIME_MANIFEST_CONTRACT);
+  assert.equal(manifest.packageVersion, "2.4.6");
+  assert.equal(manifest.sdkCompatibility, "2026.10.2");
+  assert.ok(manifest.files.length > 0);
+  assert.ok(manifest.requiredOpenClawExports.includes("./plugin-sdk/command-auth-native"));
+  assert.ok(!manifest.requiredOpenClawExports.includes("./plugin-sdk/infra-runtime"));
+  assert.equal(fs.existsSync(path.join(destination, "node_modules", "openclaw")), false);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(destination, "microclaw-runtime.json"), "utf8"))
+      .treeSha256,
+    manifest.treeSha256,
+  );
 });

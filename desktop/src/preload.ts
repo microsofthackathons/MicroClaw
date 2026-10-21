@@ -221,10 +221,6 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.invoke("plugin:weixin:login-qr-wait", params),
       disconnect: (params?: { accountId?: string }) =>
         ipcRenderer.invoke("plugin:weixin:disconnect", params),
-      getRemoteApprovalStatus: () => ipcRenderer.invoke("plugin:weixin:remote-approval:get-status"),
-      setRemoteApprovalEnabled: (enabled: boolean) =>
-        ipcRenderer.invoke("plugin:weixin:remote-approval:set-enabled", enabled),
-      revokeRemoteApproval: () => ipcRenderer.invoke("plugin:weixin:remote-approval:revoke"),
       onLoginOutput: (callback: (text: string) => void) => {
         const handler = (_event: any, text: string) => callback(text);
         ipcRenderer.on("plugin:weixin:login-output", handler);
@@ -359,6 +355,8 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
+    getWeixinRemoteApprovalActivationOptions: () =>
+      ipcRenderer.invoke("windows-node-mxc:weixin-remote-approval-activation-options"),
     preflight: (params?: { requestedMode?: "off" | "full" | "limited-dacl" }) =>
       ipcRenderer.invoke("windows-node-mxc:preflight", params),
     setEnabled: (params: {
@@ -366,6 +364,15 @@ contextBridge.exposeInMainWorld("openclaw", {
       requestedMode?: "off" | "full" | "limited-dacl";
       acknowledgeLimitedFilesystem?: boolean;
       nodeId?: string;
+      remoteApproval?:
+        | { enabled: false }
+        | {
+            enabled: true;
+            owner: {
+              accountId: string;
+              userId: string;
+            };
+          };
     }) => ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
       ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),

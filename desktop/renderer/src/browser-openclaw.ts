@@ -73,6 +73,13 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onIntegrityAlert: noopSub,
     },
     windowsNodeMxc: {
+      getWeixinRemoteApprovalActivationOptions: async () => ({
+        weixinEnabled: false,
+        linkedAccountCount: 0,
+        authenticatedAccountCount: 0,
+        eligibleOwners: [],
+        ineligibleAccounts: [],
+      }),
       getStatus: async () => ({
         requestedMode: "off" as const,
         effectiveStrength: "off" as const,
@@ -348,19 +355,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           message: "Unavailable in browser development",
         }),
         disconnect: async () => ({ ok: true }),
-        getRemoteApprovalStatus: async () => ({
-          experimental: true as const,
-          enabled: false,
-          configured: false,
-          owner: null,
-          availableOwners: [],
-          blockedReason: "mxc-off" as const,
-        }),
-        setRemoteApprovalEnabled: async () => ({
-          ok: false,
-          error: "Unavailable in browser development",
-        }),
-        revokeRemoteApproval: async () => ({ ok: true }),
         onLoginOutput: noopSub,
         onLoginDone: noopSub,
       },

@@ -2,7 +2,11 @@ import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
 export type WindowsNodeMxcLifecycleOperationDescriptor =
   | { kind: "startup" }
-  | { kind: "set-enabled"; requestedMode: WindowsNodeMxcRequestedMode }
+  | {
+      kind: "set-enabled";
+      requestedMode: WindowsNodeMxcRequestedMode;
+      activationIntent?: string;
+    }
   | { kind: "apply-folder-policy" };
 
 interface TrackedWindowsNodeMxcLifecycleOperation {
@@ -32,7 +36,8 @@ function canJoinWindowsNodeMxcLifecycleOperation(
   return (
     current.kind === "set-enabled" &&
     next.kind === "set-enabled" &&
-    current.requestedMode === next.requestedMode
+    current.requestedMode === next.requestedMode &&
+    current.activationIntent === next.activationIntent
   );
 }
 

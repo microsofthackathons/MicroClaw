@@ -324,28 +324,6 @@ interface OpenClawAPI {
         timeoutMs?: number;
       }): Promise<{ connected: boolean; message: string; accountId?: string }>;
       disconnect(params?: { accountId?: string }): Promise<{ ok: boolean; error?: string }>;
-      getRemoteApprovalStatus(): Promise<{
-        experimental: true;
-        enabled: boolean;
-        configured: boolean;
-        owner: {
-          contract: "microclaw.windows-weixin-remote-approval.v1";
-          accountId: string;
-          userId: string;
-          boundAt: string;
-        } | null;
-        availableOwners: Array<{
-          contract: "microclaw.windows-weixin-remote-approval.v1";
-          accountId: string;
-          userId: string;
-          boundAt: string;
-        }>;
-        blockedReason: "mxc-off" | "owner-ambiguous" | null;
-      }>;
-      setRemoteApprovalEnabled(
-        enabled: boolean,
-      ): Promise<{ ok: boolean; error?: string; cancelled?: boolean }>;
-      revokeRemoteApproval(): Promise<{ ok: boolean }>;
       onLoginOutput(callback: (text: string) => void): () => void;
       onLoginDone(callback: (result: { code: number | null }) => void): () => void;
     };
@@ -403,6 +381,20 @@ interface OpenClawAPI {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
   windowsNodeMxc: {
+    getWeixinRemoteApprovalActivationOptions(): Promise<{
+      weixinEnabled: boolean;
+      linkedAccountCount: number;
+      authenticatedAccountCount: number;
+      eligibleOwners: Array<{
+        accountId: string;
+        userId: string;
+      }>;
+      ineligibleAccounts: Array<{
+        accountId: string;
+        userId: string | null;
+        reason: "account-disabled" | "not-authenticated" | "not-allowlisted";
+      }>;
+    }>;
     getStatus(): Promise<{
       requestedMode: "off" | "full" | "limited-dacl";
       effectiveStrength: "off" | "full" | "limited-dacl";
@@ -566,6 +558,15 @@ interface OpenClawAPI {
       requestedMode?: "off" | "full" | "limited-dacl";
       acknowledgeLimitedFilesystem?: boolean;
       nodeId?: string;
+      remoteApproval?:
+        | { enabled: false }
+        | {
+            enabled: true;
+            owner: {
+              accountId: string;
+              userId: string;
+            };
+          };
     }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
     validateFolderPolicy(draft: {
       rw: string[];

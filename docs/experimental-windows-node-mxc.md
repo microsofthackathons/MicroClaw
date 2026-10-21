@@ -179,11 +179,35 @@ access.
 
 ## WeChat remote approval (Experimental)
 
-WeChat remote approval is a separate, default-off capability under **Settings > Security**. Enabling
-or rebinding requires a local Electron confirmation and binds exactly one authenticated QR-login
-account ID plus its saved WeChat `userId`, which must also be present in the explicit sender
-allowlist; a display name is never an identity. Phase 1 accepts only that owner in a one-to-one chat.
-Group, forwarded, quoted, ambiguous-account, stale-cursor, and out-of-order forms cannot approve.
+WeChat remote approval is a default-off choice in the local MXC activation flow, not a standalone
+Settings toggle. When MXC is currently Off and the requested WeChat channel has linked accounts,
+the activation dialog offers an explicit Disabled/Enabled choice and, when Enabled is selected, an
+account selector. Disabled is always the default. Cancelling the dialog cancels MXC activation
+before the security transition mutates the Gateway or local containment state. Enabling also
+requires a main-process native confirmation that repeats the exact MXC mode, account ID, and user
+ID; renderer code cannot silently enroll an owner by calling the activation IPC directly.
+
+The main process re-reads the requested channel state and account credentials before transition
+mutation and again at the locked transition boundary. It accepts only an exact authenticated
+QR-login account ID plus its saved WeChat `userId` when that identity is also present in the
+account's explicit sender allowlist; a display name is never an identity. Multiple eligible linked
+accounts are supported, but exactly the locally selected `accountId` + `userId` pair is persisted.
+Ineligible linked accounts are explained without blocking activation with remote approval disabled.
+If WeChat is disabled or no account is linked, MXC proceeds with remote approval disabled without a
+useless selector. Turning MXC Off clears the active owner binding, so a later activation asks again.
+
+The selected configuration is persisted while the Gateway is locked and before the attested active
+generation, lease, or ingress release is issued. Active Full/Limited mode switches cannot rebind
+remote approval in place. Phase 1 accepts only the selected owner in a one-to-one chat. Group,
+forwarded, quoted, ambiguous-account, stale-cursor, and out-of-order forms cannot approve.
+
+Before starting a managed Gateway, the desktop validates and, when necessary, atomically converges
+the installed WeChat extension to the packaged, content-hashed compatibility artifact for the
+pinned OpenClaw SDK. A same-version extension is not trusted by version alone. The replacement is
+staged and validated before an atomic rename, links its OpenClaw peer dependency to the exact
+Gateway package, rejects nested or incompatible OpenClaw copies, and rolls back the prior extension
+on failure. Account and token state under the separate `openclaw-weixin` state directory is never
+part of this replacement.
 
 The product threat model intentionally treats normalized ingress metadata from the allowlisted
 `openclaw-weixin` plugin and Gateway as authentic user input: account identity, sender identity,
@@ -191,7 +215,7 @@ direct-chat identity, upstream message ID and cursor/order, exact content, and q
 metadata. This trust assumption applies to every WeChat command, not only MXC remote approval.
 MicroClaw does not require an independent WeChat server signature or immutable upstream lookup.
 Compromise of the authenticated WeChat session, the allowlisted plugin, or the Gateway therefore
-remains an explicit product risk and is disclosed in Settings.
+remains an explicit product risk and is disclosed in the local MXC activation dialog.
 
 Electron main remains the sole approval authority. The WeChat plugin has a generation-local,
 token-authenticated named-pipe transport with only two operations: report a normalized inbound

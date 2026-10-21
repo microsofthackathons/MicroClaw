@@ -287,20 +287,32 @@ export default {
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
   "settings.experimental": "实验性",
-  "settings.weixinRemoteApproval": "微信远程审批（实验性）",
+  "settings.weixinRemoteApprovalActivationTitle": "远程命令审批",
+  "settings.weixinRemoteApprovalActivationIntro":
+    "选择本次 MXC 启用是否允许向已关联的微信账户发送一次性命令审批。关闭 MXC 后再次启用时会重新询问。",
+  "settings.weixinRemoteApprovalRiskTitle": "安全风险",
   "settings.weixinRemoteApprovalRisk":
     "本功能将白名单 openclaw-weixin 插件和 Gateway 提供的标准化账户、发送者、私聊、消息及游标元数据视为真实输入。手机、微信会话、插件或 Gateway 被控制时，攻击者可能授权本机命令执行。",
-  "settings.weixinRemoteApprovalOwner": "绑定所有者",
-  "settings.weixinRemoteApprovalUnbound": "未绑定",
-  "settings.weixinRemoteApprovalRequiresMxc": "请先启用 Windows Node + MXC。",
-  "settings.weixinRemoteApprovalRequiresOwner":
-    "必须且只能存在一个已登录微信账户，且其所有者必须位于显式发送者白名单中。",
   "settings.weixinRemoteApprovalOnceOnly":
     "回复仅一次性批准当前列出的请求；绝不会创建永久审批、文件夹授权或未来请求授权。包含秘密或无法分类的自由文本命令字段仅允许本地审批。",
-  "settings.weixinRemoteApprovalEnable": "在本机确认启用并绑定",
-  "settings.weixinRemoteApprovalDisable": "禁用",
-  "settings.weixinRemoteApprovalRevoke": "撤销所有者绑定",
-  "settings.weixinRemoteApprovalFailed": "无法更新微信远程审批",
+  "settings.weixinRemoteApprovalActivationDisabled": "禁用",
+  "settings.weixinRemoteApprovalActivationDisabledDesc":
+    "保留普通微信消息功能，但不允许远程命令审批。",
+  "settings.weixinRemoteApprovalActivationEnabled": "启用",
+  "settings.weixinRemoteApprovalActivationEnabledDesc":
+    "为本次 MXC 启用绑定一个准确的、已认证且位于显式发送者白名单中的账户身份。",
+  "settings.weixinRemoteApprovalActivationAccount": "审批所有者账户",
+  "settings.weixinRemoteApprovalActivationSelectAccount": "选择账户",
+  "settings.weixinRemoteApprovalActivationNoEligible":
+    "存在已关联账户，但没有符合条件的身份。你可以在禁用远程审批的情况下继续，或取消启用 MXC。",
+  "settings.weixinRemoteApprovalActivationEnableAndContinue": "启用远程审批并继续",
+  "settings.weixinRemoteApprovalActivationContinueDisabled": "禁用远程审批并继续",
+  "settings.weixinRemoteApprovalActivationIneligible.account-disabled":
+    "此关联账户已在微信通道配置中禁用。",
+  "settings.weixinRemoteApprovalActivationIneligible.not-authenticated":
+    "此关联账户尚未认证。",
+  "settings.weixinRemoteApprovalActivationIneligible.not-allowlisted":
+    "此身份不在该账户的显式发送者白名单中。",
   "settings.windowsNodeMxcModeFull": "完整隔离",
   "settings.windowsNodeMxcFullBadge": "强边界",
   "settings.windowsNodeMxcModeFullDesc":

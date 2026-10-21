@@ -13,4 +13,13 @@ export default {
   "tray.open": "打开 MicroClaw",
   "tray.restartGateway": "重启网关",
   "tray.quit": "退出",
+  "weixinRemoteApproval.consentTitle": "启用微信远程审批？",
+  "weixinRemoteApproval.consentMessage": "请确认可审批命令的精确微信身份。",
+  "weixinRemoteApproval.consentRisk":
+    "如果此已认证微信会话遭到入侵，攻击者可能批准此电脑上的一次性命令。此选择仅适用于下方所示的本次激活。",
+  "weixinRemoteApproval.mode": "MXC 模式",
+  "weixinRemoteApproval.accountId": "账户 ID",
+  "weixinRemoteApproval.userId": "用户 ID",
+  "weixinRemoteApproval.enable": "启用远程审批",
+  "weixinRemoteApproval.cancelActivation": "取消 MXC 激活",
 } as Record<string, string>;

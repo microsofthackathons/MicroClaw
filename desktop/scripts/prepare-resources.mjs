@@ -59,6 +59,14 @@ const windowsNodeResult = spawnSync(
 if (windowsNodeResult.error) throw windowsNodeResult.error;
 if (windowsNodeResult.status !== 0) process.exit(windowsNodeResult.status ?? 1);
 
+const weixinPluginResult = spawnSync(
+  process.execPath,
+  [path.join(desktopDir, "scripts", "prepare-weixin-plugin-resource.mjs")],
+  { stdio: "inherit" },
+);
+if (weixinPluginResult.error) throw weixinPluginResult.error;
+if (weixinPluginResult.status !== 0) process.exit(weixinPluginResult.status ?? 1);
+
 const entry = path.join(openClawDir, "node_modules", "openclaw", "openclaw.mjs");
 try {
   readFileSync(entry);
