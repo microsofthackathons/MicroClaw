@@ -37,11 +37,28 @@
           <div class="plugin-section-desc">
             {{ t("plugins.channelLoginDesc") }}
           </div>
+          <div class="weixin-account-status" data-testid="weixin-account-status">
+            <strong>{{ t("plugins.loginStatus") }}:</strong>
+            <span>{{ loginSuccess ? t("plugins.loggedIn") : t("plugins.notLoggedIn") }}</span>
+            <template v-if="weixinStatus.currentAccount">
+              <span>
+                {{ t("plugins.accountId") }}:
+                <code>{{ weixinStatus.currentAccount.accountId }}</code>
+              </span>
+              <span v-if="weixinStatus.currentAccount.userId">
+                {{ t("plugins.weixinUserId") }}:
+                <code>{{ weixinStatus.currentAccount.userId }}</code>
+              </span>
+            </template>
+            <span v-if="weixinStatus.invariantState === 'multiple'" class="status-warning">
+              {{ t("plugins.multipleAccountsInvalid") }}
+            </span>
+          </div>
 
           <!-- Login states -->
-          <div v-if="!loginActive && !loginSuccess" class="login-actions">
+          <div v-if="!loginActive" class="login-actions">
             <el-button type="primary" @click="startLogin" :loading="loginStarting">
-              {{ t("plugins.loginWeixin") }}
+              {{ hasStoredAccount ? t("plugins.replaceWeixin") : t("plugins.loginWeixin") }}
             </el-button>
           </div>
 
@@ -125,7 +142,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from "vue";
+import { computed, ref, onMounted, onUnmounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useChatStore } from "@/stores/chat";
@@ -145,6 +162,20 @@ const toggling = ref(false);
 const loginActive = ref(false);
 const loginStarting = ref(false);
 const loginSuccess = ref(false);
+type WeixinStatus = Awaited<ReturnType<typeof window.openclaw.plugin.weixin.getStatus>>;
+const weixinStatus = ref<WeixinStatus>({
+  enabled: false,
+  requestedEnabled: false,
+  effectiveEnabled: false,
+  pausedByMxc: false,
+  installed: false,
+  loggedIn: false,
+  accountCount: 0,
+  invariantState: "none",
+  currentAccount: null,
+  loginInProgress: false,
+});
+const hasStoredAccount = computed(() => weixinStatus.value.accountCount > 0);
 const restarting = ref(false);
 const restartDone = ref(false);
 const disconnecting = ref(false);
@@ -166,12 +197,10 @@ let qrRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 onMounted(async () => {
   try {
-    const status = await window.openclaw.plugin.weixin.getStatus();
+    const status = await refreshWeixinStatus();
     weixinEnabled.value = status.enabled;
     weixinPausedByMxc.value = status.pausedByMxc ?? false;
     weixinInstalled.value = status.installed;
-    loginSuccess.value = status.loggedIn;
-    gatewayStore.weixinLoggedIn = status.loggedIn;
     if (status.loginInProgress && !status.loggedIn) {
       loginActive.value = true;
       useFallbackLogin.value = true;
@@ -195,19 +224,12 @@ onMounted(async () => {
     useFallbackLogin.value = false;
     if (result.code === 0) {
       try {
-        const status = await window.openclaw.plugin.weixin.getStatus();
-        loginSuccess.value = status.loggedIn;
-        gatewayStore.weixinLoggedIn = status.loggedIn;
-      } catch {
-        loginSuccess.value = true;
-        gatewayStore.weixinLoggedIn = true;
-      }
-      ElMessage.success(t("plugins.loginSuccess"));
+        const status = await refreshWeixinStatus();
+        if (status.loggedIn) ElMessage.success(t("plugins.loginSuccess"));
+      } catch {}
     } else {
       try {
-        const status = await window.openclaw.plugin.weixin.getStatus();
-        loginSuccess.value = status.loggedIn;
-        gatewayStore.weixinLoggedIn = status.loggedIn;
+        await refreshWeixinStatus();
       } catch {}
       if (!loginSuccess.value) {
         ElMessage.warning(t("plugins.loginEnded"));
@@ -215,6 +237,14 @@ onMounted(async () => {
     }
   });
 });
+
+async function refreshWeixinStatus(): Promise<WeixinStatus> {
+  const status = await window.openclaw.plugin.weixin.getStatus();
+  weixinStatus.value = status;
+  loginSuccess.value = status.loggedIn;
+  gatewayStore.weixinLoggedIn = status.loggedIn;
+  return status;
+}
 
 onUnmounted(() => {
   unsubLoginOutput?.();
@@ -285,8 +315,18 @@ async function fetchAndRenderQr(force = false): Promise<boolean> {
 }
 
 async function startLogin() {
+  if (hasStoredAccount.value) {
+    try {
+      await ElMessageBox.confirm(t("plugins.replaceWeixinConfirm"), t("plugins.replaceWeixin"), {
+        confirmButtonText: t("plugins.confirm"),
+        cancelButtonText: t("plugins.cancel"),
+        type: "warning",
+      });
+    } catch {
+      return;
+    }
+  }
   loginStarting.value = true;
-  loginSuccess.value = false;
   loginActive.value = true;
   qrError.value = "";
   qrScanned.value = false;
@@ -343,9 +383,8 @@ async function pollForLogin() {
         // Login success
         clearQrRefreshTimer();
         loginActive.value = false;
-        loginSuccess.value = true;
-        gatewayStore.weixinLoggedIn = true;
-        ElMessage.success(t("plugins.loginSuccess"));
+        const status = await refreshWeixinStatus();
+        if (status.loggedIn) ElMessage.success(t("plugins.loginSuccess"));
         return;
       }
 
@@ -404,8 +443,7 @@ async function disconnectWeixin() {
   try {
     const result = await window.openclaw.plugin.weixin.disconnect();
     if (result.ok) {
-      loginSuccess.value = false;
-      gatewayStore.weixinLoggedIn = false;
+      await refreshWeixinStatus();
       ElMessage.success(t("plugins.disconnected"));
     } else {
       ElMessage.error(t("plugins.operationFailed", { error: result.error || "Unknown error" }));
@@ -427,6 +465,11 @@ async function handleToggleEnabled(val: boolean) {
     } else {
       ElMessage.info(t("plugins.weixinDisabled"));
       loginSuccess.value = false;
+      weixinStatus.value = {
+        ...weixinStatus.value,
+        loggedIn: false,
+        currentAccount: null,
+      };
     }
   } catch (err: any) {
     ElMessage.error(t("plugins.operationFailed", { error: err.message || err }));
@@ -444,11 +487,9 @@ async function restartGateway() {
     restartDone.value = true;
     ElMessage.success(t("plugins.restartSuccess"));
     try {
-      const status = await window.openclaw.plugin.weixin.getStatus();
+      const status = await refreshWeixinStatus();
       weixinEnabled.value = status.enabled;
       weixinInstalled.value = status.installed;
-      loginSuccess.value = status.loggedIn;
-      gatewayStore.weixinLoggedIn = status.loggedIn;
     } catch {}
   } catch (err: any) {
     ElMessage.error(t("plugins.restartFailed", { error: err.message || err }));
@@ -488,6 +529,21 @@ function goToWeixinChat() {
   color: var(--text-secondary);
   font-size: 13px;
   margin-top: 2px;
+}
+
+.weixin-account-status {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.weixin-account-status code {
+  overflow-wrap: anywhere;
+}
+
+.status-warning {
+  color: var(--warning-color, #e6a23c);
 }
 
 .back-btn {

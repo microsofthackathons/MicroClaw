@@ -1832,7 +1832,7 @@ type WeixinRemoteApprovalActivationSelection =
   | { enabled: false }
   | {
       enabled: true;
-      owner: WeixinRemoteApprovalActivationOptions["eligibleOwners"][number];
+      owner: NonNullable<WeixinRemoteApprovalActivationOptions["account"]>;
     };
 type WindowsNodeMxcAmbientEntry = NonNullable<
   WindowsNodeMxcStatus["ambientAccess"]
@@ -1847,8 +1847,9 @@ const windowsNodeMxcConsentSubmitting = ref(false);
 const windowsNodeMxcLimitedAcknowledgementVisible = ref(false);
 const windowsNodeMxcLimitedAcknowledged = ref(false);
 const windowsNodeMxcWeixinRemoteApprovalVisible = ref(false);
-const windowsNodeMxcWeixinRemoteApprovalOptions =
-  ref<WeixinRemoteApprovalActivationOptions | null>(null);
+const windowsNodeMxcWeixinRemoteApprovalOptions = ref<WeixinRemoteApprovalActivationOptions | null>(
+  null,
+);
 const windowsNodeMxcPendingActivation = ref<{
   requestedMode: Exclude<WindowsNodeMxcMode, "off">;
   acknowledgeLimitedFilesystem: boolean;
@@ -2124,9 +2125,8 @@ async function beginWindowsNodeMxcActivation(
     return applyWindowsNodeMxcMode(requestedMode, acknowledgeLimitedFilesystem);
   }
   try {
-    const options =
-      await window.openclaw.windowsNodeMxc.getWeixinRemoteApprovalActivationOptions();
-    if (options.weixinEnabled && options.linkedAccountCount > 0) {
+    const options = await window.openclaw.windowsNodeMxc.getWeixinRemoteApprovalActivationOptions();
+    if (options.weixinEnabled && options.invariantState === "single" && options.account) {
       windowsNodeMxcPendingActivation.value = {
         requestedMode,
         acknowledgeLimitedFilesystem,
@@ -2683,26 +2683,26 @@ let modelViewDisposed = false;
 const modelActionBusy = computed(() =>
   Boolean(
     switchingModelRef.value ||
-    removingModelRef.value ||
-    copilotDisconnecting.value ||
-    cloudTransition.value ||
-    providerSaving.value ||
-    sessionRecovering.value ||
-    localSelecting.value,
+      removingModelRef.value ||
+      copilotDisconnecting.value ||
+      cloudTransition.value ||
+      providerSaving.value ||
+      sessionRecovering.value ||
+      localSelecting.value,
   ),
 );
 const modelMutationBlocked = computed(() =>
   Boolean(
     switchingModelRef.value ||
-    removingModelRef.value ||
-    copilotDisconnecting.value ||
-    cloudTransition.value ||
-    providerSaving.value ||
-    sessionRecovery.value ||
-    sessionRecovering.value ||
-    localSelecting.value ||
-    chatStore.streaming ||
-    localOperation.value?.busy,
+      removingModelRef.value ||
+      copilotDisconnecting.value ||
+      cloudTransition.value ||
+      providerSaving.value ||
+      sessionRecovery.value ||
+      sessionRecovering.value ||
+      localSelecting.value ||
+      chatStore.streaming ||
+      localOperation.value?.busy,
   ),
 );
 function openLocalModel(modelRef?: string) {

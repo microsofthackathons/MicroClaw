@@ -310,6 +310,10 @@ import {
   WindowsNodeMxcWeixinRemoteApprovalServer,
   type WeixinRemoteApprovalInboundEnvelope,
 } from "./windows-node-mxc-weixin-remote-approval-transport";
+import {
+  readWeixinAccountStatus,
+  shouldRevokeWeixinRemoteApprovalOwner,
+} from "./weixin-account-status";
 
 /**
  * Normalize a directory path for comparison/storage.
@@ -1460,12 +1464,16 @@ function getWindowsNodeMxcWeixinRemoteApprovalConfiguration(): {
 }
 
 function readAuthenticatedWeixinOwners(): WeixinRemoteApprovalOwnerBinding[] {
-  return getWeixinRemoteApprovalActivationOptions().eligibleOwners.map((owner) => ({
-    contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
-    accountId: owner.accountId,
-    userId: owner.userId,
-    boundAt: new Date().toISOString(),
-  }));
+  const options = getWeixinRemoteApprovalActivationOptions();
+  if (!options.enableAvailable || !options.account) return [];
+  return [
+    {
+      contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
+      accountId: options.account.accountId,
+      userId: options.account.userId,
+      boundAt: new Date().toISOString(),
+    },
+  ];
 }
 
 function isAuthenticatedWeixinRemoteApprovalOwner(
@@ -1473,9 +1481,9 @@ function isAuthenticatedWeixinRemoteApprovalOwner(
 ): owner is WeixinRemoteApprovalOwnerBinding {
   return Boolean(
     owner &&
-    readAuthenticatedWeixinOwners().some(
-      (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
-    ),
+      readAuthenticatedWeixinOwners().some(
+        (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
+      ),
   );
 }
 
@@ -1504,19 +1512,35 @@ function currentWindowsNodeMxcWeixinRemoteApprovalSecurity(): WeixinRemoteApprov
   };
 }
 
-function closeWindowsNodeMxcWeixinRemoteApproval(reason: string): void {
+function closeWindowsNodeMxcWeixinRemoteApproval(reason: string, deliverNotices = true): void {
   const notices = windowsNodeMxcWeixinRemoteApprovalBroker.invalidateAll(reason);
   windowsNodeMxcWeixinRemoteApprovalSources.clear();
   const server = windowsNodeMxcWeixinRemoteApprovalServer;
   windowsNodeMxcWeixinRemoteApprovalServer = null;
   if (!server) return;
-  if (notices.length === 0) {
+  if (!deliverNotices || notices.length === 0) {
     server.close();
     return;
   }
   void Promise.allSettled(
     notices.map((notice) => deliverWindowsNodeMxcWeixinRemoteApprovalNotice(server, notice)),
   ).finally(() => server.close());
+}
+
+function reconcileWindowsNodeMxcWeixinRemoteApprovalOwner(reason: string): void {
+  const configuration = migrateWeixinRemoteApprovalConfiguration(
+    settingsStore.get("windowsNodeMxcWeixinRemoteApproval"),
+  );
+  if (!configuration.owner) return;
+  const accountStatus = readWeixinAccountStatus(getOpenClawStateDir());
+  if (!shouldRevokeWeixinRemoteApprovalOwner(accountStatus, configuration.owner)) {
+    return;
+  }
+  closeWindowsNodeMxcWeixinRemoteApproval(reason, false);
+  const disabled = { enabled: false, owner: null };
+  settingsStore.set("windowsNodeMxcWeixinRemoteApproval", disabled);
+  windowsNodeMxcWeixinRemoteApprovalBroker.configure(disabled);
+  electronLifecycleDiagnostics.log("weixin-remote-approval-owner-revoked", { reason });
 }
 
 function persistWindowsNodeMxcWeixinRemoteApprovalPlan(
@@ -1577,6 +1601,20 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
         acknowledgement: "MicroClaw Security Approval: invalid or no longer active.",
       };
     }
+  }
+  const revalidatedConfiguration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+  if (
+    !revalidatedConfiguration.enabled ||
+    !revalidatedConfiguration.owner ||
+    revalidatedConfiguration.owner.accountId !== inbound.accountId ||
+    revalidatedConfiguration.owner.userId !== inbound.senderId
+  ) {
+    return {
+      consumed: candidateLike,
+      acknowledgement: candidateLike
+        ? "MicroClaw Security Approval: invalid or no longer active."
+        : undefined,
+    };
   }
   const security = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
   const candidateResult = windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate({
@@ -4557,7 +4595,9 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       if (app.isPackaged) {
         throw new Error("The packaged Weixin runtime resource is missing");
       }
-      console.warn("[weixin] Skipping plugin convergence because the development resource is absent");
+      console.warn(
+        "[weixin] Skipping plugin convergence because the development resource is absent",
+      );
     } else {
       const convergence = convergeWeixinPluginRuntime({
         bundledPluginRoot: bundledWeixinPluginRoot,
@@ -6272,8 +6312,8 @@ function registerIpcHandlers(): void {
         const hasEnv = (envName: string): boolean =>
           Boolean(
             process.env[envName] ||
-            skillCfg?.env?.[envName] ||
-            (skillCfg?.apiKey && requirements.primaryEnv === envName),
+              skillCfg?.env?.[envName] ||
+              (skillCfg?.apiKey && requirements.primaryEnv === envName),
           );
 
         const missingBins = requirements.bins.filter((b) => !hasBin(b));
@@ -6953,31 +6993,15 @@ function registerIpcHandlers(): void {
       requestedEnabled && isWindowsNodeMxcDesired() && !isApplicationIngressReady();
     const effectiveEnabled = requestedEnabled && !pausedByMxc;
     const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
-    // Check if plugin is installed, enabled, AND has saved login accounts
-    let loggedIn = false;
-    if (installed && requestedEnabled) {
-      try {
-        const accountsPath = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts.json");
-        if (fs.existsSync(accountsPath)) {
-          const accounts = JSON.parse(fs.readFileSync(accountsPath, "utf-8"));
-          if (Array.isArray(accounts) && accounts.length > 0) {
-            // Verify at least one account has a token file
-            const accountsDir = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts");
-            loggedIn = accounts.some((id: string) => {
-              const tokenFile = path.join(accountsDir, `${id}.json`);
-              return fs.existsSync(tokenFile);
-            });
-          }
-        }
-      } catch {}
-    }
+    const accountStatus = readWeixinAccountStatus(getOpenClawStateDir());
+    reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-status-changed");
     return {
       enabled: requestedEnabled,
       requestedEnabled,
       effectiveEnabled,
       pausedByMxc,
       installed,
-      loggedIn,
+      ...accountStatus,
       loginInProgress: !!weixinLoginProcess,
     };
   });
@@ -7040,8 +7064,7 @@ function registerIpcHandlers(): void {
       const child = spawn(nodePath, args, spawnOpts);
       weixinLoginProcess = child;
       let settled = false;
-      const activationOutcomeParser =
-        createWeixinLoginCliOutcomeParser(activationOutcomeToken);
+      const activationOutcomeParser = createWeixinLoginCliOutcomeParser(activationOutcomeToken);
 
       child.stdout?.on("data", (chunk: Buffer) => {
         const visibleOutput = activationOutcomeParser.push(chunk.toString("utf-8"));
@@ -7070,22 +7093,20 @@ function registerIpcHandlers(): void {
           exitCode: code,
           outcome: activationOutcome ?? "missing",
         });
+        if (code === 0) {
+          reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-replaced");
+        }
         mainWindow?.webContents.send("plugin:weixin:login-done", { code });
         if (!settled) {
           settled = true;
           resolve({ ok: code === 0, error: code !== 0 ? `Exit code ${code}` : undefined });
         }
-        if (
-          code === 0 &&
-          (activationOutcome === "reload-failed" || activationOutcome === null)
-        ) {
+        if (code === 0 && (activationOutcome === "reload-failed" || activationOutcome === null)) {
           const fallbackReason =
             activationOutcome === "reload-failed"
               ? "config-mutation-failed"
               : "activation-outcome-missing";
-          console.warn(
-            `[weixin-login] Managed restart fallback required: ${fallbackReason}`,
-          );
+          console.warn(`[weixin-login] Managed restart fallback required: ${fallbackReason}`);
           electronLifecycleDiagnostics.log("weixin-login-managed-restart-fallback", {
             reason: fallbackReason,
           });
@@ -7167,6 +7188,9 @@ function registerIpcHandlers(): void {
       }
       try {
         const result = await gwClient.weixinLoginQrWait(params);
+        if (result.connected) {
+          reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-replaced");
+        }
         if (result.connected && result.activationReloadRequested === false) {
           console.warn(
             "[weixin:login-qr-wait] Channel hot reload was not requested; falling back to a managed Gateway restart",
@@ -7724,13 +7748,10 @@ function registerIpcHandlers(): void {
 
   // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
   ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
-  ipcMain.handle(
-    "windows-node-mxc:weixin-remote-approval-activation-options",
-    (event) => {
-      assertTrustedRendererIpc(event);
-      return getWeixinRemoteApprovalActivationOptions();
-    },
-  );
+  ipcMain.handle("windows-node-mxc:weixin-remote-approval-activation-options", (event) => {
+    assertTrustedRendererIpc(event);
+    return getWeixinRemoteApprovalActivationOptions();
+  });
   ipcMain.handle(
     "windows-node-mxc:preflight",
     async (_event, params?: { requestedMode?: WindowsNodeMxcRequestedMode }) => {
@@ -7832,9 +7853,7 @@ function registerIpcHandlers(): void {
           requestedMode,
           currentConfiguration: previousRemoteApprovalConfiguration,
           options:
-            requestedMode !== "off"
-              ? getWeixinRemoteApprovalActivationOptions(config)
-              : undefined,
+            requestedMode !== "off" ? getWeixinRemoteApprovalActivationOptions(config) : undefined,
           selection: params?.remoteApproval,
         });
         if (
@@ -7900,10 +7919,7 @@ function registerIpcHandlers(): void {
             options: getWeixinRemoteApprovalActivationOptions(readConfig()),
             selection: params?.remoteApproval,
           });
-          persistWindowsNodeMxcWeixinRemoteApprovalPlan(
-            remoteApprovalPlan,
-            "activation-disabled",
-          );
+          persistWindowsNodeMxcWeixinRemoteApprovalPlan(remoteApprovalPlan, "activation-disabled");
           remoteApprovalPlanPersisted = remoteApprovalPlan.action === "persist";
           if (!isWindowsNodeMxcDesired()) {
             settingsStore.set(

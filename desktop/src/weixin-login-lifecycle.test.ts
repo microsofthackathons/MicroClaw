@@ -29,7 +29,7 @@ describe("Weixin login lifecycle", () => {
       source.indexOf("\n    },\n  },", source.indexOf("loginWithQrWait: async")),
     );
 
-    expect(waitHandler).toContain("saveWeixinAccount");
+    expect(waitHandler).toContain("replaceWeixinAccount");
     expect(waitHandler).toContain("await triggerWeixinChannelReload");
     expect(waitHandler.indexOf("await triggerWeixinChannelReload")).toBeLessThan(
       waitHandler.indexOf("return {"),
@@ -57,8 +57,31 @@ describe("Weixin login lifecycle", () => {
     );
 
     expect(handler).toContain('activationOutcome === "reload-failed"');
-    expect(handler).toContain('activationOutcome === null');
+    expect(handler).toContain("activationOutcome === null");
     expect(handler).toContain("CLI activation completed without Gateway replacement");
     expect(handler).not.toContain('restartManagedGateway("Activating Weixin after login")');
+  });
+
+  it("revalidates the exact remote-approval owner after asynchronous security activation", () => {
+    const source = readRepositoryFile("desktop", "src", "main.ts");
+    const handler = source.slice(
+      source.indexOf("async function handleWindowsNodeMxcWeixinRemoteApprovalInbound"),
+      source.indexOf(
+        "function configureWindowsNodeMxcWeixinRemoteApprovalBroker",
+        source.indexOf("async function handleWindowsNodeMxcWeixinRemoteApprovalInbound"),
+      ),
+    );
+
+    const activation = handler.indexOf("await requireEffectiveWindowsNodeMxc");
+    const revalidation = handler.indexOf("const revalidatedConfiguration");
+    const resolution = handler.indexOf(
+      "windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate",
+      revalidation,
+    );
+    expect(activation).toBeGreaterThanOrEqual(0);
+    expect(revalidation).toBeGreaterThan(activation);
+    expect(resolution).toBeGreaterThan(revalidation);
+    expect(handler).toContain("revalidatedConfiguration.owner.accountId !== inbound.accountId");
+    expect(handler).toContain("revalidatedConfiguration.owner.userId !== inbound.senderId");
   });
 });

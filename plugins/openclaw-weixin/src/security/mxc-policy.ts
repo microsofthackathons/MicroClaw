@@ -56,19 +56,13 @@ export function assertMxcWeixinIngressReleased(): void {
   }
 }
 
-export function isWeixinSenderAllowedByPolicy(
-  senderId: string,
-  allowFrom: string[],
-): boolean {
-  if (allowFrom.includes(senderId)) return true;
-  return !isMxcManagedWeixin() && allowFrom.length === 0;
+export function isWeixinSenderAllowedByPolicy(senderId: string, allowFrom: string[]): boolean {
+  return allowFrom.includes(senderId);
 }
 
 export function assertMxcWeixinOutboundMediaSource(mediaSource: string): void {
   if (isMxcManagedWeixin() && /^https?:\/\//i.test(mediaSource.trim())) {
-    throw new Error(
-      "MXC WeChat blocks remote HTTP(S) media; use a broker-approved local file",
-    );
+    throw new Error("MXC WeChat blocks remote HTTP(S) media; use a broker-approved local file");
   }
 }
 
@@ -202,7 +196,10 @@ export async function authorizeMxcWeixinOutboundMedia(filePath: string): Promise
   const stat = await fs.promises.stat(canonicalFile);
   if (!stat.isFile()) throw new Error("WeChat media broker accepts regular files only");
 
-  const candidateRoots = [...policy.approvedRoots.map((entry) => entry.path), policy.outboundTempRoot];
+  const candidateRoots = [
+    ...policy.approvedRoots.map((entry) => entry.path),
+    policy.outboundTempRoot,
+  ];
   for (const configuredRoot of candidateRoots) {
     const resolvedRoot = path.resolve(configuredRoot);
     if (containsPath(resolvedRoot, resolved)) {

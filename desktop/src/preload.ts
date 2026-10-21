@@ -211,7 +211,22 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- WeChat Plugin ---
   plugin: {
     weixin: {
-      getStatus: () => ipcRenderer.invoke("plugin:weixin:get-status"),
+      getStatus: () =>
+        ipcRenderer.invoke("plugin:weixin:get-status") as Promise<{
+          enabled: boolean;
+          requestedEnabled: boolean;
+          effectiveEnabled: boolean;
+          pausedByMxc: boolean;
+          installed: boolean;
+          loggedIn: boolean;
+          accountCount: number;
+          invariantState: "none" | "single" | "multiple" | "invalid";
+          currentAccount: {
+            accountId: string;
+            userId?: string;
+          } | null;
+          loginInProgress: boolean;
+        }>,
       setEnabled: (enabled: boolean) => ipcRenderer.invoke("plugin:weixin:set-enabled", enabled),
       login: () => ipcRenderer.invoke("plugin:weixin:login"),
       cancelLogin: () => ipcRenderer.invoke("plugin:weixin:cancel-login"),

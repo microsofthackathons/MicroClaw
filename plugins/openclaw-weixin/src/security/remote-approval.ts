@@ -5,6 +5,7 @@ import type { WeixinMessage } from "../api/types.js";
 import { MessageItemType, MessageType } from "../api/types.js";
 import { getContextToken } from "../messaging/inbound.js";
 import { sendMessageWeixin } from "../messaging/send.js";
+import { isActiveWeixinAccount } from "../auth/accounts.js";
 
 const CONTRACT = "microclaw.windows-weixin-remote-approval.v1";
 const MAX_FRAME_BYTES = 64 * 1024;
@@ -54,6 +55,13 @@ export class WeixinRemoteApprovalTransport {
   >();
 
   constructor(private readonly options: RemoteApprovalTransportOptions) {}
+
+  private isActiveAccount(): boolean {
+    return (
+      Boolean(this.options.token?.trim()) &&
+      isActiveWeixinAccount(this.options.accountId, this.options.token)
+    );
+  }
 
   get enabled(): boolean {
     return Boolean(
@@ -108,6 +116,7 @@ export class WeixinRemoteApprovalTransport {
     agentId: string;
     sessionKey: string;
     sourcePhase: "candidate" | "start" | "complete";
+    isActive?: () => boolean;
   }): Promise<boolean> {
     if (!this.enabled) return false;
     const candidate = classifyWeixinRemoteApprovalCandidate(params.message);
@@ -119,6 +128,9 @@ export class WeixinRemoteApprovalTransport {
       } catch {
         return reservedCandidate;
       }
+    }
+    if (!this.isActiveAccount() || (params.isActive && !params.isActive())) {
+      return reservedCandidate;
     }
     const source = normalizeInboundSource(
       params.message,
@@ -146,7 +158,11 @@ export class WeixinRemoteApprovalTransport {
         },
       });
     });
-    if (result.acknowledgement) {
+    if (
+      result.acknowledgement &&
+      this.isActiveAccount() &&
+      (!params.isActive || params.isActive())
+    ) {
       try {
         await this.sendSystemMessage(source.senderId, result.acknowledgement);
       } catch (error) {
@@ -217,6 +233,16 @@ export class WeixinRemoteApprovalTransport {
         typeof frame.to === "string" &&
         typeof frame.text === "string"
       ) {
+        if (!this.isActiveAccount()) {
+          this.write({
+            contract: CONTRACT,
+            type: "delivery-result",
+            deliveryId: frame.deliveryId,
+            ok: false,
+            error: "WeChat account changed before remote approval delivery",
+          });
+          continue;
+        }
         void this.sendSystemMessage(frame.to, frame.text)
           .then(() =>
             this.write({
@@ -240,6 +266,9 @@ export class WeixinRemoteApprovalTransport {
   }
 
   private async sendSystemMessage(to: string, text: string): Promise<void> {
+    if (!this.isActiveAccount()) {
+      throw new Error("WeChat account changed before remote approval delivery");
+    }
     await sendMessageWeixin({
       to,
       text,
@@ -247,6 +276,7 @@ export class WeixinRemoteApprovalTransport {
         baseUrl: this.options.baseUrl,
         token: this.options.token,
         contextToken: getContextToken(this.options.accountId, to),
+        isActive: () => this.isActiveAccount(),
       },
     });
   }

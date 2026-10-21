@@ -197,12 +197,21 @@ export default {
   "plugins.channelLogin": "频道登录",
   "plugins.channelLoginDesc": "扫描二维码登录微信，登录后 AI 助手可以接收和处理微信消息。",
   "plugins.loginWeixin": "登录微信",
+  "plugins.replaceWeixin": "更换微信账户",
+  "plugins.replaceWeixinConfirm":
+    "成功登录后将替换当前微信账户，并删除其本地同步和授权状态。取消或登录失败会保留当前账户。",
+  "plugins.loginStatus": "状态",
+  "plugins.loggedIn": "已登录",
+  "plugins.notLoggedIn": "未登录",
+  "plugins.accountId": "账户 ID",
+  "plugins.weixinUserId": "微信用户 ID",
+  "plugins.multipleAccountsInvalid": "检测到多个旧账户。请重新登录以修复单账户状态。",
   "plugins.waitingScan": "等待扫码...",
   "plugins.cancel": "取消",
   "plugins.loginSuccess": "微信登录成功",
   "plugins.viewWeixinMessages": "查看微信消息 →",
   "plugins.gatewayRestart": "网关重启",
-  "plugins.gatewayRestartDesc": "启用插件或登录后需要重启网关才能生效。",
+  "plugins.gatewayRestartDesc": "仅用于故障排查。微信登录成功后无需替换 Gateway 即可生效。",
   "plugins.restartGateway": "重启网关",
   "plugins.gatewayRestarted": "✓ 网关已重启",
   "plugins.weixinEnabled": "微信插件已启用，请重启网关使配置生效",
@@ -301,18 +310,20 @@ export default {
   "settings.weixinRemoteApprovalActivationEnabled": "启用",
   "settings.weixinRemoteApprovalActivationEnabledDesc":
     "为本次 MXC 启用绑定一个准确的、已认证且位于显式发送者白名单中的账户身份。",
-  "settings.weixinRemoteApprovalActivationAccount": "审批所有者账户",
-  "settings.weixinRemoteApprovalActivationSelectAccount": "选择账户",
+  "settings.weixinRemoteApprovalActivationIdentity": "精确审批身份",
   "settings.weixinRemoteApprovalActivationNoEligible":
-    "存在已关联账户，但没有符合条件的身份。你可以在禁用远程审批的情况下继续，或取消启用 MXC。",
+    "当前微信状态无法启用远程审批。你可以在禁用远程审批的情况下继续，或取消启用 MXC。",
   "settings.weixinRemoteApprovalActivationEnableAndContinue": "启用远程审批并继续",
   "settings.weixinRemoteApprovalActivationContinueDisabled": "禁用远程审批并继续",
   "settings.weixinRemoteApprovalActivationIneligible.account-disabled":
     "此关联账户已在微信通道配置中禁用。",
-  "settings.weixinRemoteApprovalActivationIneligible.not-authenticated":
-    "此关联账户尚未认证。",
+  "settings.weixinRemoteApprovalActivationIneligible.not-authenticated": "此关联账户尚未认证。",
   "settings.weixinRemoteApprovalActivationIneligible.not-allowlisted":
     "此身份不在该账户的显式发送者白名单中。",
+  "settings.weixinRemoteApprovalActivationIneligible.no-account": "没有可用的已认证微信账户。",
+  "settings.weixinRemoteApprovalActivationIneligible.multiple-accounts":
+    "多个旧微信账户违反单账户约束。",
+  "settings.weixinRemoteApprovalActivationIneligible.invalid-account": "保存的微信账户状态无效。",
   "settings.windowsNodeMxcModeFull": "完整隔离",
   "settings.windowsNodeMxcFullBadge": "强边界",
   "settings.windowsNodeMxcModeFullDesc":
@@ -1063,7 +1074,8 @@ export default {
   "perm.mxcScopeNoAccessOnce": "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。",
   "perm.mxcLimitedScope":
     "额外文件夹授权是叠加式授权，并非排他允许列表。对话范围授权仅记住此确切可执行文件、参数、工作目录、声明访问、智能体和对话。",
-  "perm.mxcLimitedScopeOnce": "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表。",
+  "perm.mxcLimitedScopeOnce":
+    "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表。",
   "perm.riskRead": "低风险：智能体只能查看该文件夹中的文件。",
   "perm.riskWrite": "中风险：智能体可以在该文件夹中创建或修改文件。",
   "perm.riskCommandRO": "中风险：允许前请确认该命令符合当前任务。",

@@ -4,6 +4,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { getUpdates, classifyFetchError } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
 import { STALE_TOKEN_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
+import { isActiveWeixinAccount } from "../auth/accounts.js";
 import {
   interceptWeixinRemoteApprovalMessage,
   processOneMessage,
@@ -221,6 +222,10 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           log: opts.runtime?.log ?? (() => {}),
           errLog,
         };
+        if (!token?.trim() || !isActiveWeixinAccount(accountId, token)) {
+          aLog.warn("account is no longer the active authenticated WeChat identity; stopping");
+          return;
+        }
         let consumedByRemoteApproval = false;
         try {
           consumedByRemoteApproval = await interceptWeixinRemoteApprovalMessage(
@@ -241,10 +246,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           .then(async () => {
             if (replayRequired) return;
             const fromUserId = full.from_user_id ?? "";
-            const cachedConfig = await configManager.getForUser(
-              fromUserId,
-              full.context_token,
-            );
+            const cachedConfig = await configManager.getForUser(fromUserId, full.context_token);
             await processOneMessage(full, {
               ...baseMessageDeps,
               typingTicket: cachedConfig.typingTicket,
@@ -296,14 +298,14 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       errLog(
         `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)} type=${classified.type} description=${classified.description}${classified.code ? ` code=${classified.code}` : ""}`,
       );
-      aLog.error(`getUpdates error: ${String(err)}, type=${classified.type} code=${classified.code ?? "none"}, stack=${(err as Error).stack}`);
+      aLog.error(
+        `getUpdates error: ${String(err)}, type=${classified.type} code=${classified.code ?? "none"}, stack=${(err as Error).stack}`,
+      );
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         errLog(
           `weixin getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
         );
-        aLog.error(
-          `getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
-        );
+        aLog.error(`getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`);
         consecutiveFailures = 0;
         await sleep(30_000, abortSignal);
       } else {

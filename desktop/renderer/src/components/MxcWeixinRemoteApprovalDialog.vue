@@ -29,10 +29,7 @@
           <small>{{ t("settings.weixinRemoteApprovalActivationDisabledDesc") }}</small>
         </span>
       </label>
-      <label
-        v-if="options.eligibleOwners.length > 0"
-        class="mxc-weixin-approval-choice"
-      >
+      <label v-if="options.enableAvailable && options.account" class="mxc-weixin-approval-choice">
         <input
           v-model="choice"
           type="radio"
@@ -46,55 +43,33 @@
         </span>
       </label>
 
-      <label
-        v-if="choice === 'enabled' && options.eligibleOwners.length > 0"
+      <div
+        v-if="options.account"
         class="mxc-weixin-approval-owner"
+        data-testid="mxc-weixin-approval-owner"
       >
-        <span>{{ t("settings.weixinRemoteApprovalActivationAccount") }}</span>
-        <select
-          v-model="selectedOwnerKey"
-          :disabled="submitting"
-          data-testid="mxc-weixin-approval-owner"
+        <strong>{{ t("settings.weixinRemoteApprovalActivationIdentity") }}</strong>
+        <span
+          >{{ t("plugins.accountId") }}: <code>{{ options.account.accountId }}</code></span
         >
-          <option value="" disabled>
-            {{ t("settings.weixinRemoteApprovalActivationSelectAccount") }}
-          </option>
-          <option
-            v-for="owner in options.eligibleOwners"
-            :key="ownerKey(owner)"
-            :value="ownerKey(owner)"
-          >
-            {{ owner.userId }} ({{ owner.accountId }})
-          </option>
-        </select>
-      </label>
+        <span
+          >{{ t("plugins.weixinUserId") }}: <code>{{ options.account.userId }}</code></span
+        >
+      </div>
 
       <div
-        v-if="options.eligibleOwners.length === 0"
+        v-if="!options.enableAvailable"
         class="mxc-weixin-approval-ineligible-summary"
         data-testid="mxc-weixin-approval-no-eligible"
       >
         {{ t("settings.weixinRemoteApprovalActivationNoEligible") }}
+        <span v-if="options.unavailableReason">
+          {{ ineligibleReason(options.unavailableReason) }}
+        </span>
       </div>
-      <ul
-        v-if="options.ineligibleAccounts.length > 0"
-        class="mxc-weixin-approval-ineligible-list"
-      >
-        <li
-          v-for="account in options.ineligibleAccounts"
-          :key="`${account.accountId}:${account.userId ?? ''}`"
-        >
-          <code>{{ account.userId ?? account.accountId }}</code>
-          <span>{{ ineligibleReason(account.reason) }}</span>
-        </li>
-      </ul>
     </div>
     <template #footer>
-      <el-button
-        data-testid="mxc-weixin-approval-cancel"
-        :disabled="submitting"
-        @click="cancel"
-      >
+      <el-button data-testid="mxc-weixin-approval-cancel" :disabled="submitting" @click="cancel">
         {{ t("common.cancel") }}
       </el-button>
       <el-button
@@ -121,7 +96,7 @@ import { t } from "@/i18n";
 type ActivationOptions = Awaited<
   ReturnType<typeof window.openclaw.windowsNodeMxc.getWeixinRemoteApprovalActivationOptions>
 >;
-type ActivationOwner = ActivationOptions["eligibleOwners"][number];
+type ActivationOwner = NonNullable<ActivationOptions["account"]>;
 type ActivationSelection =
   | { enabled: false }
   | {
@@ -142,33 +117,24 @@ const emit = defineEmits<{
 }>();
 
 const choice = ref<"disabled" | "enabled">("disabled");
-const selectedOwnerKey = ref("");
 let submitted = false;
-
-const ownerKey = (owner: ActivationOwner) => JSON.stringify([owner.accountId, owner.userId]);
 
 watch(
   () => props.modelValue,
   (visible) => {
     if (!visible) return;
     choice.value = "disabled";
-    selectedOwnerKey.value = "";
     submitted = false;
   },
 );
 
-const selectedOwner = computed(
-  () =>
-    props.options?.eligibleOwners.find(
-      (owner) => ownerKey(owner) === selectedOwnerKey.value,
-    ) ?? null,
-);
-
 const confirmDisabled = computed(
-  () => props.submitting === true || (choice.value === "enabled" && !selectedOwner.value),
+  () =>
+    props.submitting === true ||
+    (choice.value === "enabled" && (!props.options?.enableAvailable || !props.options.account)),
 );
 
-function ineligibleReason(reason: ActivationOptions["ineligibleAccounts"][number]["reason"]) {
+function ineligibleReason(reason: NonNullable<ActivationOptions["unavailableReason"]>) {
   return t(`settings.weixinRemoteApprovalActivationIneligible.${reason}`);
 }
 
@@ -187,8 +153,8 @@ function beforeClose(done: () => void) {
 function confirm() {
   if (confirmDisabled.value || submitted) return;
   submitted = true;
-  if (choice.value === "enabled" && selectedOwner.value) {
-    emit("confirm", { enabled: true, owner: selectedOwner.value });
+  if (choice.value === "enabled" && props.options?.account) {
+    emit("confirm", { enabled: true, owner: props.options.account });
     return;
   }
   emit("confirm", { enabled: false });
@@ -239,34 +205,12 @@ function confirm() {
   margin: 10px 0 12px 26px;
 }
 
-.mxc-weixin-approval-owner select {
-  width: 100%;
-  min-height: 36px;
-  padding: 6px 8px;
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-card);
+.mxc-weixin-approval-owner span {
+  overflow-wrap: anywhere;
 }
 
 .mxc-weixin-approval-ineligible-summary {
   margin-top: 10px;
   color: var(--warning-color, #e6a23c);
-}
-
-.mxc-weixin-approval-ineligible-list {
-  display: grid;
-  gap: 6px;
-  margin: 8px 0 0;
-  padding-left: 20px;
-}
-
-.mxc-weixin-approval-ineligible-list li {
-  display: grid;
-  gap: 2px;
-}
-
-.mxc-weixin-approval-ineligible-list code {
-  overflow-wrap: anywhere;
 }
 </style>

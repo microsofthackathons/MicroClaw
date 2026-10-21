@@ -134,7 +134,7 @@ test("staged source and JavaScript use only the retained 10.2 SDK subpaths", () 
   assert.equal(pkg.engines.node, ">=24.16.0 <25 || >=26.1.0");
 });
 
-test("emitted authorization preserves pairing and command access-group behavior", async () => {
+test("emitted authorization preserves pairing and fails closed without an allowlist", async () => {
   const { resolveWeixinCommandAuthorization: authorize } = await stagedImport(
     "dist/src/auth/authorization.js",
   );
@@ -142,6 +142,7 @@ test("emitted authorization preserves pairing and command access-group behavior"
     senderAllowedForCommands: true,
     commandAuthorized: true,
   });
+
   assert.deepEqual(authorize({}, "/status", "stranger", ["owner"]), {
     senderAllowedForCommands: false,
     commandAuthorized: false,
@@ -151,7 +152,7 @@ test("emitted authorization preserves pairing and command access-group behavior"
     commandAuthorized: undefined,
   });
   assert.deepEqual(authorize({}, "/status", "legacy", []), {
-    senderAllowedForCommands: true,
+    senderAllowedForCommands: false,
     commandAuthorized: false,
   });
   assert.deepEqual(
@@ -161,6 +162,42 @@ test("emitted authorization preserves pairing and command access-group behavior"
       commandAuthorized: true,
     },
   );
+});
+
+test("emitted dispatch aborts when the authenticated account generation changes", () => {
+  const source = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "messaging", "process-message.js"),
+    "utf8",
+  );
+  assert.match(source, /onWeixinAccountChanged/);
+  assert.match(source, /watchWeixinAccountState/);
+  assert.match(source, /setInterval\(abortIfAccountChanged,\s*50\)/);
+  assert.match(source, /accountAbortController\.abort/);
+  assert.match(source, /abortSignal:\s*accountAbortController\.signal/);
+  assert.match(source, /assertAccountStillActive\(\);\s*await sendMessageWeixin/);
+  assert.match(source, /assertAccountStillActive\(\);\s*await sendWeixinMediaFile/);
+  assert.doesNotMatch(source, /legacyUserId/);
+
+  const sendSource = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "messaging", "send.js"),
+    "utf8",
+  );
+  assert.match(sendSource, /assertSendActive\(opts\);\s*await sendMessageApi/g);
+
+  const mediaSource = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "messaging", "send-media.js"),
+    "utf8",
+  );
+  assert.match(mediaSource, /await uploadVideoToWeixin[\s\S]*assertActive\(\)/);
+  assert.match(mediaSource, /await uploadFileToWeixin[\s\S]*assertActive\(\)/);
+  assert.match(mediaSource, /await uploadFileAttachmentToWeixin[\s\S]*assertActive\(\)/);
+
+  const approvalSource = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "security", "remote-approval.js"),
+    "utf8",
+  );
+  assert.match(approvalSource, /if \(!this\.isActiveAccount\(\)\)/);
+  assert.match(approvalSource, /isActive:\s*\(\) => this\.isActiveAccount\(\)/);
 });
 
 test("emitted login reload atomically updates only the Weixin timestamp", async () => {

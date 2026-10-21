@@ -16,7 +16,10 @@ const SAFE_ACCOUNT_ID_PATTERN = /^[A-Za-z0-9._@-]{1,160}$/;
 
 type JsonRecord = Record<string, unknown>;
 
-export type WeixinRemoteApprovalIneligibleReason =
+export type WeixinRemoteApprovalUnavailableReason =
+  | "no-account"
+  | "multiple-accounts"
+  | "invalid-account"
   | "account-disabled"
   | "not-authenticated"
   | "not-allowlisted";
@@ -26,18 +29,14 @@ export interface WeixinRemoteApprovalActivationOwner {
   userId: string;
 }
 
-export interface WeixinRemoteApprovalIneligibleAccount {
-  accountId: string;
-  userId: string | null;
-  reason: WeixinRemoteApprovalIneligibleReason;
-}
-
 export interface WeixinRemoteApprovalActivationOptions {
   weixinEnabled: boolean;
   linkedAccountCount: number;
   authenticatedAccountCount: number;
-  eligibleOwners: WeixinRemoteApprovalActivationOwner[];
-  ineligibleAccounts: WeixinRemoteApprovalIneligibleAccount[];
+  invariantState: "none" | "single" | "multiple" | "invalid";
+  account: WeixinRemoteApprovalActivationOwner | null;
+  enableAvailable: boolean;
+  unavailableReason: WeixinRemoteApprovalUnavailableReason | null;
 }
 
 export type WeixinRemoteApprovalActivationSelection =
@@ -55,9 +54,7 @@ export type WeixinRemoteApprovalTransitionPlan =
     };
 
 function asRecord(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
 function readJson(filePath: string): unknown {
@@ -71,11 +68,7 @@ function readJson(filePath: string): unknown {
 function normalizeAccountId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const accountId = value.trim().toLowerCase();
-  if (
-    !accountId ||
-    accountId.includes("..") ||
-    !SAFE_ACCOUNT_ID_PATTERN.test(accountId)
-  ) {
+  if (!accountId || accountId.includes("..") || !SAFE_ACCOUNT_ID_PATTERN.test(accountId)) {
     return null;
   }
   return accountId;
@@ -112,81 +105,84 @@ export function readWeixinRemoteApprovalActivationOptions(params: {
   const config = asRecord(params.config);
   const pluginEntries = asRecord(asRecord(config.plugins).entries);
   const weixinEnabled = asRecord(pluginEntries["openclaw-weixin"]).enabled === true;
-  const rawAccountIds = readJson(
-    path.join(params.stateDir, "openclaw-weixin", "accounts.json"),
-  );
-  const accountIds = Array.isArray(rawAccountIds)
-    ? [
-        ...new Set(
-          rawAccountIds
-            .map(normalizeAccountId)
-            .filter((accountId): accountId is string => accountId !== null),
-        ),
-      ]
-    : [];
-  const eligibleOwners: WeixinRemoteApprovalActivationOwner[] = [];
-  const ineligibleAccounts: WeixinRemoteApprovalIneligibleAccount[] = [];
-  let authenticatedAccountCount = 0;
-
-  for (const accountId of accountIds) {
-    const account = asRecord(
-      readJson(resolveStoredWindowsNodeMxcWeixinAccountPath(params.stateDir, accountId)),
-    );
-    const owner = normalizeOwner(accountId, account.userId);
-    const authenticated =
-      typeof account.token === "string" && account.token.trim().length > 0 && owner !== null;
-    if (authenticated) authenticatedAccountCount += 1;
-
-    if (!isAccountEnabled(config, accountId)) {
-      ineligibleAccounts.push({
-        accountId,
-        userId: owner?.userId ?? null,
-        reason: "account-disabled",
-      });
-      continue;
-    }
-    if (!authenticated || !owner) {
-      ineligibleAccounts.push({
-        accountId,
-        userId: owner?.userId ?? null,
-        reason: "not-authenticated",
-      });
-      continue;
-    }
-    const allowedSenders = readWindowsNodeMxcWeixinAllowedSenders({
-      stateDir: params.stateDir,
-      credentialsDir: params.credentialsDir,
-      accountId,
-    }).map((senderId) => senderId.trim().toLowerCase());
-    if (!allowedSenders.includes(owner.userId)) {
-      ineligibleAccounts.push({
-        accountId,
-        userId: owner.userId,
-        reason: "not-allowlisted",
-      });
-      continue;
-    }
-    eligibleOwners.push(owner);
+  const accountIndexPath = path.join(params.stateDir, "openclaw-weixin", "accounts.json");
+  const rawAccountIds = fs.existsSync(accountIndexPath) ? readJson(accountIndexPath) : [];
+  if (!Array.isArray(rawAccountIds) || rawAccountIds.length === 0) {
+    return {
+      weixinEnabled,
+      linkedAccountCount: 0,
+      authenticatedAccountCount: 0,
+      invariantState: Array.isArray(rawAccountIds) ? "none" : "invalid",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: Array.isArray(rawAccountIds) ? "no-account" : "invalid-account",
+    };
   }
-
-  const byIdentity = (
-    left: WeixinRemoteApprovalActivationOwner,
-    right: WeixinRemoteApprovalActivationOwner,
-  ) =>
-    left.accountId.localeCompare(right.accountId) || left.userId.localeCompare(right.userId);
-  eligibleOwners.sort(byIdentity);
-  ineligibleAccounts.sort(
-    (left, right) =>
-      left.accountId.localeCompare(right.accountId) ||
-      (left.userId ?? "").localeCompare(right.userId ?? ""),
+  if (rawAccountIds.length !== 1) {
+    return {
+      weixinEnabled,
+      linkedAccountCount: rawAccountIds.length,
+      authenticatedAccountCount: 0,
+      invariantState: "multiple",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "multiple-accounts",
+    };
+  }
+  const accountId = normalizeAccountId(rawAccountIds[0]);
+  if (!accountId || accountId !== rawAccountIds[0]) {
+    return {
+      weixinEnabled,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 0,
+      invariantState: "invalid",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "invalid-account",
+    };
+  }
+  const accountData = asRecord(
+    readJson(resolveStoredWindowsNodeMxcWeixinAccountPath(params.stateDir, accountId)),
   );
-
+  const owner = normalizeOwner(accountId, accountData.userId);
+  const authenticated =
+    typeof accountData.token === "string" && accountData.token.trim().length > 0 && owner !== null;
+  if (!authenticated || !owner) {
+    return {
+      weixinEnabled,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 0,
+      invariantState: "invalid",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "not-authenticated",
+    };
+  }
+  if (!isAccountEnabled(config, accountId)) {
+    return {
+      weixinEnabled,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 1,
+      invariantState: "single",
+      account: owner,
+      enableAvailable: false,
+      unavailableReason: "account-disabled",
+    };
+  }
+  const allowedSenders = readWindowsNodeMxcWeixinAllowedSenders({
+    stateDir: params.stateDir,
+    credentialsDir: params.credentialsDir,
+    accountId,
+  }).map((senderId) => senderId.trim().toLowerCase());
+  const enableAvailable = allowedSenders.includes(owner.userId);
   return {
     weixinEnabled,
-    linkedAccountCount: accountIds.length,
-    authenticatedAccountCount,
-    eligibleOwners,
-    ineligibleAccounts,
+    linkedAccountCount: 1,
+    authenticatedAccountCount: 1,
+    invariantState: "single",
+    account: owner,
+    enableAvailable,
+    unavailableReason: enableAvailable ? null : "not-allowlisted",
   };
 }
 
@@ -218,10 +214,10 @@ export function planWeixinRemoteApprovalTransition(params: {
     const stillEligible =
       owner &&
       params.options?.weixinEnabled === true &&
-      params.options.eligibleOwners.some(
-        (candidate) =>
-          candidate.accountId === owner.accountId && candidate.userId === owner.userId,
-      );
+      params.options.invariantState === "single" &&
+      params.options.enableAvailable &&
+      params.options.account?.accountId === owner.accountId &&
+      params.options.account.userId === owner.userId;
     return stillEligible
       ? { action: "preserve" }
       : {
@@ -252,10 +248,10 @@ export function planWeixinRemoteApprovalTransition(params: {
   const selectedOwner = normalizeOwner(selection.owner.accountId, selection.owner.userId);
   const eligible =
     selectedOwner &&
-    options.eligibleOwners.some(
-      (owner) =>
-        owner.accountId === selectedOwner.accountId && owner.userId === selectedOwner.userId,
-    );
+    options.invariantState === "single" &&
+    options.enableAvailable &&
+    options.account?.accountId === selectedOwner.accountId &&
+    options.account.userId === selectedOwner.userId;
   if (!selectedOwner || !eligible) {
     throw new Error("The selected WeChat remote approval owner is no longer eligible");
   }

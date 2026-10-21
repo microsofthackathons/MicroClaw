@@ -26,10 +26,10 @@ describe("MXC WeChat remote approval activation", () => {
     return { stateDir, accountsDir, credentialsDir };
   }
 
-  function config(accounts: Record<string, unknown> = {}) {
+  function config(accountEnabled = true, pluginEnabled = true) {
     return {
-      plugins: { entries: { "openclaw-weixin": { enabled: true } } },
-      channels: { "openclaw-weixin": { accounts } },
+      plugins: { entries: { "openclaw-weixin": { enabled: pluginEnabled } } },
+      channels: { "openclaw-weixin": { enabled: accountEnabled } },
     };
   }
 
@@ -53,23 +53,25 @@ describe("MXC WeChat remote approval activation", () => {
       );
       if (account.allowlisted && account.userId) {
         fs.writeFileSync(
-          path.join(
-            target.credentialsDir,
-            `openclaw-weixin-${account.accountId}-allowFrom.json`,
-          ),
+          path.join(target.credentialsDir, `openclaw-weixin-${account.accountId}-allowFrom.json`),
           JSON.stringify({ version: 1, allowFrom: [account.userId] }),
         );
       }
     }
   }
 
-  it("reports zero linked accounts without inventing an owner", () => {
+  const eligibleOptions = (): WeixinRemoteApprovalActivationOptions => ({
+    weixinEnabled: true,
+    linkedAccountCount: 1,
+    authenticatedAccountCount: 1,
+    invariantState: "single",
+    account: { accountId: "owner@im.wechat", userId: "user@im.wechat" },
+    enableAvailable: true,
+    unavailableReason: null,
+  });
+
+  it("reports zero accounts without inventing an approval identity", () => {
     const target = fixture();
-    fs.mkdirSync(path.join(target.stateDir, "openclaw-weixin"), { recursive: true });
-    fs.writeFileSync(
-      path.join(target.stateDir, "openclaw-weixin", "accounts.json"),
-      JSON.stringify([]),
-    );
 
     expect(
       readWeixinRemoteApprovalActivationOptions({
@@ -80,106 +82,95 @@ describe("MXC WeChat remote approval activation", () => {
       weixinEnabled: true,
       linkedAccountCount: 0,
       authenticatedAccountCount: 0,
-      eligibleOwners: [],
-      ineligibleAccounts: [],
+      invariantState: "none",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "no-account",
     });
   });
 
-  it("returns every eligible authenticated and allowlisted identity for explicit selection", () => {
+  it("returns the one exact authenticated and allowlisted identity", () => {
     const target = fixture();
     writeAccounts(target, [
       {
-        accountId: "second@im.wechat",
-        userId: "owner-two@im.wechat",
-        token: "token-two",
+        accountId: "owner@im.wechat",
+        userId: "user@im.wechat",
+        token: "token",
         allowlisted: true,
       },
+    ]);
+
+    expect(
+      readWeixinRemoteApprovalActivationOptions({
+        ...target,
+        config: config(),
+      }),
+    ).toEqual(eligibleOptions());
+  });
+
+  it("fails closed for a legacy multiple-account invariant violation", () => {
+    const target = fixture();
+    writeAccounts(target, [
       {
         accountId: "first@im.wechat",
-        userId: "owner-one@im.wechat",
-        token: "token-one",
+        userId: "first-owner@im.wechat",
+        token: "first",
+        allowlisted: true,
+      },
+      {
+        accountId: "second@im.wechat",
+        userId: "second-owner@im.wechat",
+        token: "second",
         allowlisted: true,
       },
     ]);
 
-    const options = readWeixinRemoteApprovalActivationOptions({
-      ...target,
-      config: config(),
+    expect(
+      readWeixinRemoteApprovalActivationOptions({
+        ...target,
+        config: config(),
+      }),
+    ).toEqual({
+      weixinEnabled: true,
+      linkedAccountCount: 2,
+      authenticatedAccountCount: 0,
+      invariantState: "multiple",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "multiple-accounts",
     });
-
-    expect(options.eligibleOwners).toEqual([
-      { accountId: "first@im.wechat", userId: "owner-one@im.wechat" },
-      { accountId: "second@im.wechat", userId: "owner-two@im.wechat" },
-    ]);
-    expect(options.authenticatedAccountCount).toBe(2);
   });
 
-  it("marks disabled, unauthenticated, and non-allowlisted accounts ineligible", () => {
+  it("shows the exact identity but disables approval when it is not allowlisted", () => {
     const target = fixture();
     writeAccounts(target, [
       {
-        accountId: "disabled@im.wechat",
-        userId: "disabled-owner@im.wechat",
-        token: "token",
-        allowlisted: true,
-      },
-      {
-        accountId: "logged-out@im.wechat",
-        userId: "logged-out-owner@im.wechat",
-      },
-      {
-        accountId: "missing-allowlist@im.wechat",
-        userId: "missing-owner@im.wechat",
+        accountId: "owner@im.wechat",
+        userId: "user@im.wechat",
         token: "token",
       },
     ]);
 
-    const options = readWeixinRemoteApprovalActivationOptions({
-      ...target,
-      config: config({ "disabled@im.wechat": { enabled: false } }),
+    expect(
+      readWeixinRemoteApprovalActivationOptions({
+        ...target,
+        config: config(),
+      }),
+    ).toEqual({
+      ...eligibleOptions(),
+      enableAvailable: false,
+      unavailableReason: "not-allowlisted",
     });
-
-    expect(options.eligibleOwners).toEqual([]);
-    expect(options.ineligibleAccounts).toEqual([
-      {
-        accountId: "disabled@im.wechat",
-        userId: "disabled-owner@im.wechat",
-        reason: "account-disabled",
-      },
-      {
-        accountId: "logged-out@im.wechat",
-        userId: "logged-out-owner@im.wechat",
-        reason: "not-authenticated",
-      },
-      {
-        accountId: "missing-allowlist@im.wechat",
-        userId: "missing-owner@im.wechat",
-        reason: "not-allowlisted",
-      },
-    ]);
   });
 
-  it("binds exactly the selected account ID and user ID", () => {
-    const options: WeixinRemoteApprovalActivationOptions = {
-      weixinEnabled: true,
-      linkedAccountCount: 2,
-      authenticatedAccountCount: 2,
-      eligibleOwners: [
-        { accountId: "first@im.wechat", userId: "one@im.wechat" },
-        { accountId: "second@im.wechat", userId: "two@im.wechat" },
-      ],
-      ineligibleAccounts: [],
-    };
-
+  it("binds only the one exact identity supplied by the read-only context", () => {
+    const options = eligibleOptions();
     expect(
       planWeixinRemoteApprovalTransition({
         currentMode: "off",
         requestedMode: "limited-dacl",
         options,
-        selection: {
-          enabled: true,
-          owner: { accountId: "second@im.wechat", userId: "two@im.wechat" },
-        },
+        selection: { enabled: true, owner: options.account! },
         now: new Date("2026-10-20T00:00:00.000Z"),
       }),
     ).toEqual({
@@ -188,15 +179,15 @@ describe("MXC WeChat remote approval activation", () => {
         enabled: true,
         owner: {
           contract: "microclaw.windows-weixin-remote-approval.v1",
-          accountId: "second@im.wechat",
-          userId: "two@im.wechat",
+          accountId: "owner@im.wechat",
+          userId: "user@im.wechat",
           boundAt: "2026-10-20T00:00:00.000Z",
         },
       },
     });
   });
 
-  it("defaults to disabled, clears the owner on MXC Off, and preserves an eligible active owner", () => {
+  it("defaults to disabled, clears on Off, and preserves only the exact active identity", () => {
     const disabled = {
       action: "persist",
       configuration: { enabled: false, owner: null },
@@ -213,32 +204,7 @@ describe("MXC WeChat remote approval activation", () => {
         requestedMode: "off",
       }),
     ).toEqual(disabled);
-    expect(
-      planWeixinRemoteApprovalTransition({
-        currentMode: "limited-dacl",
-        requestedMode: "full",
-        currentConfiguration: {
-          enabled: true,
-          owner: {
-            contract: "microclaw.windows-weixin-remote-approval.v1",
-            accountId: "owner@im.wechat",
-            userId: "user@im.wechat",
-            boundAt: "2026-10-20T00:00:00.000Z",
-          },
-        },
-        options: {
-          weixinEnabled: true,
-          linkedAccountCount: 1,
-          authenticatedAccountCount: 1,
-          eligibleOwners: [{ accountId: "owner@im.wechat", userId: "user@im.wechat" }],
-          ineligibleAccounts: [],
-        },
-        selection: { enabled: false },
-      }),
-    ).toEqual({ action: "preserve" });
-  });
 
-  it("clears an invalid or stale active owner instead of rebinding in place", () => {
     const currentConfiguration = {
       enabled: true,
       owner: {
@@ -250,94 +216,46 @@ describe("MXC WeChat remote approval activation", () => {
     };
     expect(
       planWeixinRemoteApprovalTransition({
-        currentMode: "full",
-        requestedMode: "limited-dacl",
+        currentMode: "limited-dacl",
+        requestedMode: "full",
+        currentConfiguration,
+        options: eligibleOptions(),
+      }),
+    ).toEqual({ action: "preserve" });
+    expect(
+      planWeixinRemoteApprovalTransition({
+        currentMode: "limited-dacl",
+        requestedMode: "full",
         currentConfiguration,
         options: {
-          weixinEnabled: true,
-          linkedAccountCount: 1,
-          authenticatedAccountCount: 1,
-          eligibleOwners: [],
-          ineligibleAccounts: [
-            {
-              accountId: "owner@im.wechat",
-              userId: "user@im.wechat",
-              reason: "not-allowlisted",
-            },
-          ],
+          ...eligibleOptions(),
+          account: { accountId: "replacement@im.wechat", userId: "other@im.wechat" },
         },
       }),
-    ).toEqual({
-      action: "persist",
-      configuration: { enabled: false, owner: null },
-    });
+    ).toEqual(disabled);
   });
 
-  it("rejects a stale selected owner after its allowlist eligibility changes", () => {
-    const target = fixture();
-    writeAccounts(target, [
-      {
-        accountId: "owner@im.wechat",
-        userId: "user@im.wechat",
-        token: "token",
-        allowlisted: true,
-      },
-    ]);
-    const initial = readWeixinRemoteApprovalActivationOptions({
-      ...target,
-      config: config(),
-    });
-    fs.rmSync(
-      path.join(
-        target.credentialsDir,
-        "openclaw-weixin-owner@im.wechat-allowFrom.json",
-      ),
-    );
-    const current = readWeixinRemoteApprovalActivationOptions({
-      ...target,
-      config: config(),
-    });
-
-    expect(initial.eligibleOwners).toHaveLength(1);
+  it("rejects stale boundary identity and disabled-channel enablement", () => {
+    const initial = eligibleOptions();
     expect(() =>
       planWeixinRemoteApprovalTransition({
         currentMode: "off",
         requestedMode: "full",
-        options: current,
-        selection: {
-          enabled: true,
-          owner: initial.eligibleOwners[0],
+        options: {
+          ...initial,
+          enableAvailable: false,
+          unavailableReason: "not-allowlisted",
         },
+        selection: { enabled: true, owner: initial.account! },
       }),
     ).toThrow("no longer eligible");
-  });
-
-  it("rejects enablement when WeChat is disabled or the IPC choice is malformed", () => {
-    const options: WeixinRemoteApprovalActivationOptions = {
-      weixinEnabled: false,
-      linkedAccountCount: 1,
-      authenticatedAccountCount: 1,
-      eligibleOwners: [{ accountId: "owner@im.wechat", userId: "user@im.wechat" }],
-      ineligibleAccounts: [],
-    };
     expect(() =>
       planWeixinRemoteApprovalTransition({
         currentMode: "off",
         requestedMode: "full",
-        options,
-        selection: {
-          enabled: true,
-          owner: options.eligibleOwners[0],
-        },
+        options: { ...initial, weixinEnabled: false },
+        selection: { enabled: true, owner: initial.account! },
       }),
     ).toThrow("channel is disabled");
-    expect(() =>
-      planWeixinRemoteApprovalTransition({
-        currentMode: "off",
-        requestedMode: "full",
-        options: { ...options, weixinEnabled: true },
-        selection: { enabled: true, owner: null } as never,
-      }),
-    ).toThrow("valid WeChat remote approval activation choice");
   });
 });

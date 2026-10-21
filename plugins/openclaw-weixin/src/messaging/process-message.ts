@@ -8,7 +8,11 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { sendTyping } from "../api/api.js";
 import type { WeixinMessage } from "../api/types.js";
 import { MessageItemType, TypingStatus } from "../api/types.js";
-import { loadWeixinAccount } from "../auth/accounts.js";
+import {
+  isActiveWeixinAccount,
+  onWeixinAccountChanged,
+  watchWeixinAccountState,
+} from "../auth/accounts.js";
 import { resolveWeixinCommandAuthorization } from "../auth/authorization.js";
 import { readFrameworkAllowFromList } from "../auth/pairing.js";
 import { downloadRemoteImageToTemp } from "../cdn/upload.js";
@@ -67,6 +71,7 @@ export async function interceptWeixinRemoteApprovalMessage(
   deps: ProcessMessageDeps,
   sourcePhase: "candidate" | "start" | "complete" = "candidate",
 ): Promise<boolean> {
+  if (!deps.token?.trim() || !isActiveWeixinAccount(deps.accountId, deps.token)) return false;
   if (!deps.remoteApprovalTransport) return false;
   const senderId = full.from_user_id?.trim() ?? "";
   if (full.context_token && senderId) {
@@ -83,6 +88,8 @@ export async function interceptWeixinRemoteApprovalMessage(
     agentId: route.agentId ?? "",
     sessionKey: route.sessionKey ?? "",
     sourcePhase,
+    isActive: () =>
+      Boolean(deps.token?.trim()) && isActiveWeixinAccount(deps.accountId, deps.token),
   });
 }
 
@@ -106,6 +113,10 @@ export async function processOneMessage(
   deps: ProcessMessageDeps,
 ): Promise<void> {
   assertMxcWeixinIngressReleased();
+  if (!deps.token?.trim() || !isActiveWeixinAccount(deps.accountId, deps.token)) {
+    logger.info(`authorization: dropping message for inactive account=${deps.accountId}`);
+    return;
+  }
   if (!deps?.channelRuntime) {
     logger.error(
       `processOneMessage: channelRuntime is undefined, skipping message from=${full.from_user_id}`,
@@ -121,15 +132,20 @@ export async function processOneMessage(
 
   const textBody = extractTextBody(full.item_list);
   if (textBody.startsWith("/")) {
-    const slashResult = await handleSlashCommand(textBody, {
-      to: full.from_user_id ?? "",
-      contextToken: full.context_token,
-      baseUrl: deps.baseUrl,
-      token: deps.token,
-      accountId: deps.accountId,
-      log: deps.log,
-      errLog: deps.errLog,
-    }, receivedAt, full.create_time_ms);
+    const slashResult = await handleSlashCommand(
+      textBody,
+      {
+        to: full.from_user_id ?? "",
+        contextToken: full.context_token,
+        baseUrl: deps.baseUrl,
+        token: deps.token,
+        accountId: deps.accountId,
+        log: deps.log,
+        errLog: deps.errLog,
+      },
+      receivedAt,
+      full.create_time_ms,
+    );
     if (slashResult.handled) {
       logger.info(`[weixin] Slash command handled, skipping AI pipeline`);
       return;
@@ -196,9 +212,10 @@ export async function processOneMessage(
   const mediaDownloadMs = Date.now() - mediaDownloadStart;
 
   if (debug) {
-    debugTrace.push(mediaItem
-      ? `│ mediaDownload: type=${mediaItem.type} cost=${mediaDownloadMs}ms`
-      : "│ mediaDownload: none",
+    debugTrace.push(
+      mediaItem
+        ? `│ mediaDownload: type=${mediaItem.type} cost=${mediaDownloadMs}ms`
+        : "│ mediaDownload: none",
     );
   }
 
@@ -211,21 +228,15 @@ export async function processOneMessage(
   const senderId = full.from_user_id ?? "";
 
   const fromStore = readFrameworkAllowFromList(deps.accountId);
-  const legacyUserId = fromStore.length === 0
-    ? loadWeixinAccount(deps.accountId)?.userId?.trim()
-    : undefined;
-  const allowFrom = fromStore.length > 0 ? fromStore : legacyUserId ? [legacyUserId] : [];
   const { senderAllowedForCommands, commandAuthorized } = resolveWeixinCommandAuthorization(
     deps.config,
     rawBody,
     senderId,
-    allowFrom,
+    fromStore,
   );
 
   if (!senderAllowedForCommands) {
-    logger.info(
-      `authorization: dropping message from=${senderId} outcome=unauthorized`,
-    );
+    logger.info(`authorization: dropping message from=${senderId} outcome=unauthorized`);
     return;
   }
 
@@ -270,6 +281,10 @@ export async function processOneMessage(
   if (contextToken) {
     setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
   }
+  if (!isActiveWeixinAccount(deps.accountId, deps.token)) {
+    logger.info(`authorization: account changed before dispatch account=${deps.accountId}`);
+    return;
+  }
   if (
     deps.remoteApprovalTransport &&
     (await deps.remoteApprovalTransport.intercept({
@@ -277,6 +292,7 @@ export async function processOneMessage(
       agentId: route.agentId ?? "",
       sessionKey: route.sessionKey ?? "",
       sourcePhase: "start",
+      isActive: () => isActiveWeixinAccount(deps.accountId, deps.token),
     }))
   ) {
     logger.info("remote approval: consumed system approval reply before agent dispatch");
@@ -311,12 +327,20 @@ export async function processOneMessage(
     `recordInboundSession: done storePath=${storePath} sessionKey=${route.sessionKey ?? "(none)"}`,
   );
 
+  const accountStillActive = () =>
+    Boolean(deps.token?.trim()) && isActiveWeixinAccount(deps.accountId, deps.token);
+  const assertAccountStillActive = () => {
+    if (!accountStillActive()) {
+      throw new Error("WeChat account changed during message processing");
+    }
+  };
   const runId = randomUUID();
   const replyProgressSender = resolveReplyProgressMessagesEnabled(deps.config)
     ? new WeixinReplyProgressSender({
         runId,
         to: ctx.To,
         accountId: deps.accountId,
+        isActive: accountStillActive,
         opts: {
           baseUrl: deps.baseUrl,
           token: deps.token,
@@ -330,27 +354,31 @@ export async function processOneMessage(
   const typingCallbacks = createTypingCallbacks({
     start: hasTypingTicket
       ? () =>
-          sendTyping({
-            baseUrl: deps.baseUrl,
-            token: deps.token,
-            body: {
-              ilink_user_id: ctx.To,
-              typing_ticket: deps.typingTicket!,
-              status: TypingStatus.TYPING,
-            },
-          })
+          accountStillActive()
+            ? sendTyping({
+                baseUrl: deps.baseUrl,
+                token: deps.token,
+                body: {
+                  ilink_user_id: ctx.To,
+                  typing_ticket: deps.typingTicket!,
+                  status: TypingStatus.TYPING,
+                },
+              })
+            : Promise.resolve()
       : async () => {},
     stop: hasTypingTicket
       ? () =>
-          sendTyping({
-            baseUrl: deps.baseUrl,
-            token: deps.token,
-            body: {
-              ilink_user_id: ctx.To,
-              typing_ticket: deps.typingTicket!,
-              status: TypingStatus.CANCEL,
-            },
-          })
+          accountStillActive()
+            ? sendTyping({
+                baseUrl: deps.baseUrl,
+                token: deps.token,
+                body: {
+                  ilink_user_id: ctx.To,
+                  typing_ticket: deps.typingTicket!,
+                  status: TypingStatus.CANCEL,
+                },
+              })
+            : Promise.resolve()
       : async () => {},
     onStartError: (err) => deps.log(`[weixin] typing send error: ${String(err)}`),
     onStopError: (err) => deps.log(`[weixin] typing cancel error: ${String(err)}`),
@@ -358,13 +386,17 @@ export async function processOneMessage(
   });
 
   /** Delivery records populated synchronously at deliver() entry, safe to read in finally. */
-  const debugDeliveries: Array<{ textLen: number; media: string; preview: string; ts: number }> = [];
+  const debugDeliveries: Array<{ textLen: number; media: string; preview: string; ts: number }> =
+    [];
 
   const { dispatcher, replyOptions, markDispatchIdle } =
     deps.channelRuntime.reply.createReplyDispatcherWithTyping({
       humanDelay,
       typingCallbacks,
       deliver: async (payload) => {
+        if (!accountStillActive()) {
+          throw new Error("WeChat account changed before reply delivery");
+        }
         const rawText = payload.text ?? "";
         const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
         assertMxcWeixinIngressReleased();
@@ -418,41 +450,85 @@ export async function processOneMessage(
               logger.warn(
                 `outbound: unrecognized mediaUrl scheme, sending text only mediaUrl=${mediaUrl.slice(0, 80)}`,
               );
-              await sendMessageWeixin({ to: ctx.To, text, opts: {
-                baseUrl: deps.baseUrl,
-                token: deps.token,
-                contextToken,
+              assertAccountStillActive();
+              await sendMessageWeixin({
+                to: ctx.To,
+                text,
+                opts: {
+                  baseUrl: deps.baseUrl,
+                  token: deps.token,
+                  contextToken,
+                  runId,
+                  isActive: accountStillActive,
+                },
+              });
+              emitWeixinMessageSent({
+                to: ctx.To,
+                content: text,
+                success: true,
+                accountId: deps.accountId,
                 runId,
-              }});
-              emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+              });
               logger.info(`outbound: text sent to=${ctx.To}`);
               return;
             }
             filePath = await authorizeMxcWeixinOutboundMedia(filePath);
             assertMxcWeixinIngressReleased();
+            assertAccountStillActive();
             await sendWeixinMediaFile({
               filePath,
               to: ctx.To,
               text,
-              opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken, runId },
+              opts: {
+                baseUrl: deps.baseUrl,
+                token: deps.token,
+                contextToken,
+                runId,
+                isActive: accountStillActive,
+              },
               cdnBaseUrl: deps.cdnBaseUrl,
             });
-            emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+            emitWeixinMessageSent({
+              to: ctx.To,
+              content: text,
+              success: true,
+              accountId: deps.accountId,
+              runId,
+            });
             logger.info(`outbound: media sent OK to=${ctx.To}`);
           } else {
             logger.debug(`outbound: sending text message to=${ctx.To}`);
             assertMxcWeixinIngressReleased();
-            await sendMessageWeixin({ to: ctx.To, text, opts: {
-              baseUrl: deps.baseUrl,
-              token: deps.token,
-              contextToken,
+            assertAccountStillActive();
+            await sendMessageWeixin({
+              to: ctx.To,
+              text,
+              opts: {
+                baseUrl: deps.baseUrl,
+                token: deps.token,
+                contextToken,
+                runId,
+                isActive: accountStillActive,
+              },
+            });
+            emitWeixinMessageSent({
+              to: ctx.To,
+              content: text,
+              success: true,
+              accountId: deps.accountId,
               runId,
-            }});
-            emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+            });
             logger.info(`outbound: text sent OK to=${ctx.To}`);
           }
         } catch (err) {
-          emitWeixinMessageSent({ to: ctx.To, content: text, success: false, error: String(err), accountId: deps.accountId, runId });
+          emitWeixinMessageSent({
+            to: ctx.To,
+            content: text,
+            success: false,
+            error: String(err),
+            accountId: deps.accountId,
+            runId,
+          });
           logger.error(
             `outbound: FAILED to=${ctx.To} mediaUrl=${mediaUrl ?? "none"} err=${String(err)} stack=${(err as Error).stack ?? ""}`,
           );
@@ -474,18 +550,37 @@ export async function processOneMessage(
         } else {
           notice = `⚠️ 消息发送失败：${errMsg}`;
         }
-        void sendWeixinErrorNotice({
-          to: ctx.To,
-          contextToken,
-          message: notice,
-          baseUrl: deps.baseUrl,
-          token: deps.token,
-          runId,
-          errLog: deps.errLog,
-        });
+        if (accountStillActive()) {
+          void sendWeixinErrorNotice({
+            to: ctx.To,
+            contextToken,
+            message: notice,
+            baseUrl: deps.baseUrl,
+            token: deps.token,
+            runId,
+            errLog: deps.errLog,
+            isActive: accountStillActive,
+          });
+        }
       },
     });
 
+  const accountAbortController = new AbortController();
+  const abortIfAccountChanged = () => {
+    if (!accountStillActive()) {
+      accountAbortController.abort(new Error("WeChat account replaced"));
+    }
+  };
+  const unsubscribeAccountChange = onWeixinAccountChanged(abortIfAccountChanged);
+  const unwatchAccountState = watchWeixinAccountState(abortIfAccountChanged);
+  const accountPoll = setInterval(abortIfAccountChanged, 50);
+  accountPoll.unref?.();
+  if (!accountStillActive()) {
+    clearInterval(accountPoll);
+    unwatchAccountState();
+    unsubscribeAccountChange();
+    return;
+  }
   logger.debug(`dispatchReplyFromConfig: starting agentId=${route.agentId ?? "(none)"}`);
   try {
     await deps.channelRuntime.reply.withReplyDispatcher({
@@ -498,6 +593,7 @@ export async function processOneMessage(
           replyOptions: {
             ...replyOptions,
             ...(replyProgressSender?.replyOptions ?? {}),
+            abortSignal: accountAbortController.signal,
             disableBlockStreaming: true,
           },
         }),
@@ -509,28 +605,31 @@ export async function processOneMessage(
     );
     throw err;
   } finally {
+    clearInterval(accountPoll);
+    unwatchAccountState();
+    unsubscribeAccountChange();
     markDispatchIdle();
-    await replyProgressSender?.finalize();
+    if (accountStillActive()) {
+      await replyProgressSender?.finalize();
+    }
 
     logger.info(
       `debug-check: accountId=${deps.accountId} debug=${String(debug)} hasContextToken=${Boolean(contextToken)}`,
     );
 
-    if (debug && contextToken) {
+    if (debug && contextToken && accountStillActive()) {
       const dispatchDoneAt = Date.now();
       const eventTs = full.create_time_ms ?? 0;
       const platformDelay = eventTs > 0 ? `${receivedAt - eventTs}ms` : "N/A";
       const inboundProcessMs = (debugTs.preDispatch ?? receivedAt) - receivedAt;
       const aiMs = dispatchDoneAt - (debugTs.preDispatch ?? receivedAt);
-      const totalTime = eventTs > 0 ? `${dispatchDoneAt - eventTs}ms` : `${dispatchDoneAt - receivedAt}ms`;
+      const totalTime =
+        eventTs > 0 ? `${dispatchDoneAt - eventTs}ms` : `${dispatchDoneAt - receivedAt}ms`;
 
       if (debugDeliveries.length > 0) {
         debugTrace.push("── 回复 ──");
         for (const d of debugDeliveries) {
-          debugTrace.push(
-            `│ textLen=${d.textLen} media=${d.media}`,
-            `│ text="${d.preview}"`,
-          );
+          debugTrace.push(`│ textLen=${d.textLen} media=${d.media}`, `│ text="${d.preview}"`);
         }
         const firstTs = debugDeliveries[0].ts;
         debugTrace.push(`│ deliver耗时: ${dispatchDoneAt - firstTs}ms`);
@@ -551,10 +650,17 @@ export async function processOneMessage(
 
       logger.info(`debug-timing: sending to=${ctx.To}`);
       try {
+        assertAccountStillActive();
         await sendMessageWeixin({
           to: ctx.To,
           text: timingText,
-          opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken, runId },
+          opts: {
+            baseUrl: deps.baseUrl,
+            token: deps.token,
+            contextToken,
+            runId,
+            isActive: accountStillActive,
+          },
         });
         logger.info(`debug-timing: sent OK`);
       } catch (debugErr) {

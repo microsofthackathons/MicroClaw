@@ -203,8 +203,10 @@ describe("SettingsView", () => {
       weixinEnabled: false,
       linkedAccountCount: 0,
       authenticatedAccountCount: 0,
-      eligibleOwners: [],
-      ineligibleAccounts: [],
+      invariantState: "none",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "no-account",
     });
     window.openclaw = {
       model: createBrowserOpenClawMock().model,
@@ -737,8 +739,10 @@ describe("SettingsView", () => {
       weixinEnabled: true,
       linkedAccountCount: 1,
       authenticatedAccountCount: 1,
-      eligibleOwners: [owner],
-      ineligibleAccounts: [],
+      invariantState: "single",
+      account: owner,
+      enableAvailable: true,
+      unavailableReason: null,
     });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
@@ -751,7 +755,7 @@ describe("SettingsView", () => {
 
     const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
     expect(remoteApproval.props("modelValue")).toBe(true);
-    expect(remoteApproval.props("options")).toMatchObject({ eligibleOwners: [owner] });
+    expect(remoteApproval.props("options")).toMatchObject({ account: owner });
     expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
 
@@ -765,23 +769,21 @@ describe("SettingsView", () => {
     });
   });
 
-  it("passes the exact selected owner from multiple eligible accounts for Limited activation", async () => {
+  it("fails closed and skips owner consent for a legacy multiple-account state", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
     });
-    const owners = [
-      { accountId: "first@im.wechat", userId: "one@im.wechat" },
-      { accountId: "second@im.wechat", userId: "two@im.wechat" },
-    ];
     getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
       weixinEnabled: true,
       linkedAccountCount: 2,
-      authenticatedAccountCount: 2,
-      eligibleOwners: owners,
-      ineligibleAccounts: [],
+      authenticatedAccountCount: 0,
+      invariantState: "multiple",
+      account: null,
+      enableAvailable: false,
+      unavailableReason: "multiple-accounts",
     });
     const wrapper = shallowMount(SettingsView, {
       global: {
@@ -803,15 +805,11 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-confirm-limited"]').trigger("click");
     await flushPromises();
 
-    const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
-    expect(remoteApproval.props("modelValue")).toBe(true);
-    remoteApproval.vm.$emit("confirm", { enabled: true, owner: owners[1] });
-    await flushPromises();
-
+    expect(wrapper.findComponent(MxcWeixinRemoteApprovalDialog).props("modelValue")).toBe(false);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
       requestedMode: "limited-dacl",
       acknowledgeLimitedFilesystem: true,
-      remoteApproval: { enabled: true, owner: owners[1] },
+      remoteApproval: { enabled: false },
     });
   });
 
@@ -826,8 +824,10 @@ describe("SettingsView", () => {
       weixinEnabled: true,
       linkedAccountCount: 1,
       authenticatedAccountCount: 1,
-      eligibleOwners: [{ accountId: "bot@im.wechat", userId: "owner@im.wechat" }],
-      ineligibleAccounts: [],
+      invariantState: "single",
+      account: { accountId: "bot@im.wechat", userId: "owner@im.wechat" },
+      enableAvailable: true,
+      unavailableReason: null,
     });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
@@ -859,8 +859,10 @@ describe("SettingsView", () => {
       weixinEnabled: true,
       linkedAccountCount: 1,
       authenticatedAccountCount: 1,
-      eligibleOwners: [{ accountId: "bot@im.wechat", userId: "owner@im.wechat" }],
-      ineligibleAccounts: [],
+      invariantState: "single",
+      account: { accountId: "bot@im.wechat", userId: "owner@im.wechat" },
+      enableAvailable: true,
+      unavailableReason: null,
     });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
@@ -890,14 +892,10 @@ describe("SettingsView", () => {
       weixinEnabled: true,
       linkedAccountCount: 1,
       authenticatedAccountCount: 1,
-      eligibleOwners: [],
-      ineligibleAccounts: [
-        {
-          accountId: "bot@im.wechat",
-          userId: "owner@im.wechat",
-          reason: "not-allowlisted" as const,
-        },
-      ],
+      invariantState: "single" as const,
+      account: { accountId: "bot@im.wechat", userId: "owner@im.wechat" },
+      enableAvailable: false,
+      unavailableReason: "not-allowlisted" as const,
     };
     getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce(options);
     const wrapper = shallowMount(SettingsView, {

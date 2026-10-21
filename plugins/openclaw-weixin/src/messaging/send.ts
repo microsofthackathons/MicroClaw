@@ -13,7 +13,14 @@ export { StreamingMarkdownFilter } from "./markdown-filter.js";
 type WeixinMessageSendOptions = WeixinApiOptions & {
   contextToken?: string;
   runId?: string;
+  isActive?: () => boolean;
 };
+
+function assertSendActive(opts: WeixinMessageSendOptions): void {
+  if (opts.isActive?.() === false) {
+    throw new Error("WeChat account changed before message delivery");
+  }
+}
 
 function generateClientId(): string {
   return generateId("openclaw-weixin");
@@ -84,6 +91,7 @@ export async function sendMessageWeixin(params: {
     clientId,
   });
   try {
+    assertSendActive(opts);
     await sendMessageApi({
       baseUrl: opts.baseUrl,
       token: opts.token,
@@ -123,6 +131,7 @@ export async function sendMessageItemWeixin(params: {
     },
   };
   try {
+    assertSendActive(opts);
     await sendMessageApi({
       baseUrl: opts.baseUrl,
       token: opts.token,
@@ -174,6 +183,7 @@ async function sendMediaItems(params: {
       },
     };
     try {
+      assertSendActive(opts);
       await sendMessageApi({
         baseUrl: opts.baseUrl,
         token: opts.token,

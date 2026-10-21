@@ -81,15 +81,13 @@ describe("MXC WeChat policy", () => {
     expect(isMxcWeixinIngressReleased()).toBe(false);
   });
 
-  it("fails closed for empty MXC sender policy while preserving legacy behavior", () => {
+  it("fails closed for an empty sender policy in every security mode", () => {
     process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
     expect(isWeixinSenderAllowedByPolicy("sender@im.wechat", [])).toBe(false);
-    expect(
-      isWeixinSenderAllowedByPolicy("owner@im.wechat", ["owner@im.wechat"]),
-    ).toBe(true);
+    expect(isWeixinSenderAllowedByPolicy("owner@im.wechat", ["owner@im.wechat"])).toBe(true);
 
     delete process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT;
-    expect(isWeixinSenderAllowedByPolicy("sender@im.wechat", [])).toBe(true);
+    expect(isWeixinSenderAllowedByPolicy("sender@im.wechat", [])).toBe(false);
   });
 
   it("rejects remote outbound media under MXC before fetch", async () => {
@@ -115,11 +113,7 @@ describe("MXC WeChat policy", () => {
     await expect(authorizeMxcWeixinOutboundMedia(outsideFile)).rejects.toThrow(
       /outside selected folders/,
     );
-    const staged = await stageMxcWeixinInboundMedia(
-      Buffer.from("image"),
-      "image/png",
-      1024,
-    );
+    const staged = await stageMxcWeixinInboundMedia(Buffer.from("image"), "image/png", 1024);
     expect(path.dirname(staged.path)).toBe(fs.realpathSync(policy.inbound));
     expect(path.extname(staged.path)).toBe(".png");
   });
@@ -144,9 +138,7 @@ describe("MXC WeChat policy", () => {
     const link = path.join(policy.selected, "escape");
     fs.symlinkSync(outside, link, "junction");
 
-    await expect(
-      authorizeMxcWeixinOutboundMedia(path.join(link, "secret.txt")),
-    ).rejects.toThrow();
+    await expect(authorizeMxcWeixinOutboundMedia(path.join(link, "secret.txt"))).rejects.toThrow();
   });
 
   it("fails closed when the media policy belongs to a stale generation", async () => {

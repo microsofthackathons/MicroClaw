@@ -306,6 +306,12 @@ interface OpenClawAPI {
         pausedByMxc: boolean;
         installed: boolean;
         loggedIn: boolean;
+        accountCount: number;
+        invariantState: "none" | "single" | "multiple" | "invalid";
+        currentAccount: {
+          accountId: string;
+          userId?: string;
+        } | null;
         loginInProgress: boolean;
       }>;
       setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
@@ -385,15 +391,20 @@ interface OpenClawAPI {
       weixinEnabled: boolean;
       linkedAccountCount: number;
       authenticatedAccountCount: number;
-      eligibleOwners: Array<{
+      invariantState: "none" | "single" | "multiple" | "invalid";
+      account: {
         accountId: string;
         userId: string;
-      }>;
-      ineligibleAccounts: Array<{
-        accountId: string;
-        userId: string | null;
-        reason: "account-disabled" | "not-authenticated" | "not-allowlisted";
-      }>;
+      } | null;
+      enableAvailable: boolean;
+      unavailableReason:
+        | "no-account"
+        | "multiple-accounts"
+        | "invalid-account"
+        | "account-disabled"
+        | "not-authenticated"
+        | "not-allowlisted"
+        | null;
     }>;
     getStatus(): Promise<{
       requestedMode: "off" | "full" | "limited-dacl";
@@ -550,9 +561,7 @@ interface OpenClawAPI {
       warnings: string[];
       remediation: string[];
     }>;
-    preflight(params?: {
-      requestedMode?: "off" | "full" | "limited-dacl";
-    }): Promise<unknown>;
+    preflight(params?: { requestedMode?: "off" | "full" | "limited-dacl" }): Promise<unknown>;
     setEnabled(params: {
       enabled?: boolean;
       requestedMode?: "off" | "full" | "limited-dacl";
@@ -623,9 +632,7 @@ interface OpenClawAPI {
     ): () => void;
     onLifecycleState(
       callback: (
-        state: Awaited<
-          ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>
-        >["lifecycleState"],
+        state: Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["lifecycleState"],
       ) => void,
     ): () => void;
   };
@@ -658,10 +665,7 @@ interface OpenClawAPI {
       removedChildren?: string[];
       dirs: { rw: string[]; ro: string[] };
     }>;
-    stageUserDir(params: {
-      access: "rw" | "ro";
-      draft: { rw: string[]; ro: string[] };
-    }): Promise<{
+    stageUserDir(params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }): Promise<{
       ok: boolean;
       canceled?: boolean;
       reason?: string;

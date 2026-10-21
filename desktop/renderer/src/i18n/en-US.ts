@@ -207,13 +207,23 @@ export default {
   "plugins.channelLoginDesc":
     "Scan the QR code to log in to WeChat. Once logged in, the AI assistant can receive and process WeChat messages.",
   "plugins.loginWeixin": "Log in to WeChat",
+  "plugins.replaceWeixin": "Replace WeChat account",
+  "plugins.replaceWeixinConfirm":
+    "A successful login will replace the current WeChat account and remove its local sync and authorization state. Canceling or a failed login keeps the current account.",
+  "plugins.loginStatus": "Status",
+  "plugins.loggedIn": "Logged in",
+  "plugins.notLoggedIn": "Not logged in",
+  "plugins.accountId": "Account ID",
+  "plugins.weixinUserId": "WeChat user ID",
+  "plugins.multipleAccountsInvalid":
+    "Multiple legacy accounts were detected. Log in again to repair the single-account invariant.",
   "plugins.waitingScan": "Waiting for scan...",
   "plugins.cancel": "Cancel",
   "plugins.loginSuccess": "WeChat login successful",
   "plugins.viewWeixinMessages": "View WeChat Messages →",
   "plugins.gatewayRestart": "Gateway Restart",
   "plugins.gatewayRestartDesc":
-    "The gateway must be restarted after enabling the plugin or logging in.",
+    "Use only for troubleshooting. Successful WeChat login activates without replacing the Gateway.",
   "plugins.restartGateway": "Restart Gateway",
   "plugins.gatewayRestarted": "✓ Gateway restarted",
   "plugins.weixinEnabled":
@@ -319,12 +329,10 @@ export default {
   "settings.weixinRemoteApprovalActivationEnabled": "Enabled",
   "settings.weixinRemoteApprovalActivationEnabledDesc":
     "Bind one exact authenticated, explicitly allowlisted account identity for this MXC activation.",
-  "settings.weixinRemoteApprovalActivationAccount": "Approval owner account",
-  "settings.weixinRemoteApprovalActivationSelectAccount": "Select an account",
+  "settings.weixinRemoteApprovalActivationIdentity": "Exact approval identity",
   "settings.weixinRemoteApprovalActivationNoEligible":
-    "Linked accounts exist, but none are eligible. You can continue with remote approval disabled or cancel MXC activation.",
-  "settings.weixinRemoteApprovalActivationEnableAndContinue":
-    "Enable remote approval and continue",
+    "Remote approval cannot be enabled for the current WeChat state. You can continue with remote approval disabled or cancel MXC activation.",
+  "settings.weixinRemoteApprovalActivationEnableAndContinue": "Enable remote approval and continue",
   "settings.weixinRemoteApprovalActivationContinueDisabled":
     "Continue with remote approval disabled",
   "settings.weixinRemoteApprovalActivationIneligible.account-disabled":
@@ -333,6 +341,12 @@ export default {
     "This linked account is not authenticated.",
   "settings.weixinRemoteApprovalActivationIneligible.not-allowlisted":
     "This identity is not in the account's explicit sender allowlist.",
+  "settings.weixinRemoteApprovalActivationIneligible.no-account":
+    "No authenticated WeChat account is available.",
+  "settings.weixinRemoteApprovalActivationIneligible.multiple-accounts":
+    "Multiple legacy WeChat accounts violate the single-account invariant.",
+  "settings.weixinRemoteApprovalActivationIneligible.invalid-account":
+    "The stored WeChat account state is invalid.",
   "settings.windowsNodeMxcModeFull": "Full containment",
   "settings.windowsNodeMxcFullBadge": "Hard boundary",
   "settings.windowsNodeMxcModeFullDesc":
