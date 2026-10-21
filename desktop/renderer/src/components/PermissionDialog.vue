@@ -24,6 +24,10 @@ interface PermissionRequest {
     category: WindowsNodeMxcAmbientAccessCategory;
     status: "denied" | "read" | "read-write";
   }>;
+  expiresAtUnixMs?: number;
+  remoteDelivery?:
+    | import("../../../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState
+    | null;
 }
 
 const props = defineProps<{
@@ -31,7 +35,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  respond: [decision: string];
+  respond: [decision: string, origin?: "desktop" | "timeout"];
 }>();
 
 // ── Countdown timer ──
@@ -46,16 +50,19 @@ function clearTimer() {
 }
 
 watch(
-  () => props.request,
-  (req) => {
+  () =>
+    props.request ? `${props.request.requestId}:${props.request.expiresAtUnixMs ?? ""}` : null,
+  () => {
+    const req = props.request;
     clearTimer();
     if (req) {
-      countdown.value = AUTO_DENY_SECONDS;
+      const deadline = req.expiresAtUnixMs ?? Date.now() + AUTO_DENY_SECONDS * 1000;
+      countdown.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       countdownTimer = setInterval(() => {
-        countdown.value--;
+        countdown.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
         if (countdown.value <= 0) {
           clearTimer();
-          emit("respond", "deny");
+          emit("respond", "deny", "timeout");
         }
       }, 1000);
     }
@@ -96,6 +103,18 @@ const commandHtml = computed(() => {
 });
 
 const isMxcApproval = computed(() => props.request?.type === "mxc-approval");
+const remoteDeliveryText = computed(() => {
+  const delivery = props.request?.remoteDelivery;
+  if (!delivery || delivery.reason === "disabled") return "";
+  if (delivery.state === "sent") {
+    return delivery.replyMode === "code-required"
+      ? t("perm.phoneCodeRequired")
+      : t("perm.phoneSent");
+  }
+  if (delivery.state === "sending") return t("perm.phoneSending");
+  if (delivery.state === "unconfirmed") return t("perm.phoneUnconfirmed");
+  return t("perm.phoneLocalOnly", { reason: delivery.reason ?? "unavailable" });
+});
 const isLimitedMxcApproval = computed(
   () => isMxcApproval.value && props.request?.containmentStrength === "limited-dacl",
 );
@@ -107,9 +126,7 @@ const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
 );
 const allowsAlways = computed(
-  () =>
-    !props.request?.allowedDecisions ||
-    props.request.allowedDecisions.includes("allow-always"),
+  () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always"),
 );
 const mxcScopeText = computed(() => {
   if (isLimitedMxcApproval.value) {
@@ -169,7 +186,6 @@ const grantLabel = computed(() =>
 function respond(decision: string) {
   emit("respond", decision);
 }
-
 </script>
 
 <template>
@@ -203,12 +219,18 @@ function respond(decision: string) {
           {{ isLimitedMxcApproval ? t("perm.mxcLimitedDesc") : t("perm.mxcDesc") }}
         </div>
         <div v-else class="perm-body" v-html="descriptionHtml"></div>
+        <div
+          v-if="remoteDeliveryText"
+          class="perm-body"
+          role="status"
+          data-testid="mxc-phone-delivery"
+        >
+          {{ remoteDeliveryText }}
+        </div>
         <div v-if="isMxcApproval && declaredAccess.length > 0" class="perm-mxc-detail">
           <div class="perm-command-label">
             {{
-              isLimitedMxcApproval
-                ? t("perm.mxcAdditionalAccessLabel")
-                : t("perm.mxcAccessLabel")
+              isLimitedMxcApproval ? t("perm.mxcAdditionalAccessLabel") : t("perm.mxcAccessLabel")
             }}
           </div>
           <div
@@ -217,9 +239,7 @@ function respond(decision: string) {
             class="perm-mxc-access"
           >
             <span>
-              {{
-                declaration.access === "ro" ? t("perm.mxcAccessRo") : t("perm.mxcAccessRw")
-              }}
+              {{ declaration.access === "ro" ? t("perm.mxcAccessRo") : t("perm.mxcAccessRw") }}
               —
             </span>
             <code>{{ declaration.path }}</code>

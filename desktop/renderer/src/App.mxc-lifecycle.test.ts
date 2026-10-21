@@ -8,10 +8,12 @@ import App from "./App.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
 import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
+import PermissionDialog from "@/components/PermissionDialog.vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { planWeixinRemoteApprovalNativeTransition } from "../../src/windows-node-mxc-weixin-remote-approval-consent";
+import { WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } from "../../src/windows-node-mxc-weixin-remote-approval";
 import {
   planWeixinRemoteApprovalTransition,
   type WeixinRemoteApprovalActivationOptions,
@@ -27,6 +29,8 @@ describe("App MXC loading gate with the real Gateway store", () => {
   let sequence: number;
   let wrapper: ReturnType<typeof shallowMount>;
   let nativeOptions: WeixinRemoteApprovalActivationOptions;
+  let approvalRequest: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalRequest"]>[0];
+  let approvalResolved: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalResolved"]>[0];
   const nativeDialog = vi.fn();
   const persist = vi.fn();
 
@@ -38,6 +42,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       removeEventListener: vi.fn(),
     });
     window.openclaw = createBrowserOpenClawMock();
+    vi.spyOn(window.openclaw.windowsNodeMxc, "respondApproval").mockResolvedValue(undefined);
     status = await window.openclaw.windowsNodeMxc.getStatus();
     status.fullAvailability = {
       available: true,
@@ -55,6 +60,16 @@ describe("App MXC loading gate with the real Gateway store", () => {
       serviceReady = callback;
       return vi.fn();
     });
+    vi.spyOn(window.openclaw.windowsNodeMxc, "onApprovalRequest").mockImplementation((callback) => {
+      approvalRequest = callback;
+      return vi.fn();
+    });
+    vi.spyOn(window.openclaw.windowsNodeMxc, "onApprovalResolved").mockImplementation(
+      (callback) => {
+        approvalResolved = callback;
+        return vi.fn();
+      },
+    );
     vi.spyOn(window.openclaw.settings, "get").mockResolvedValue({
       ...(await window.openclaw.settings.get()),
       language: "en-US",
@@ -221,6 +236,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
               action: "persist",
               configuration: {
                 enabled: true,
+                consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
                 owner: expect.objectContaining({
                   accountId: "exact-bot",
                   userId: "exact-user@im.wechat",
@@ -350,5 +366,185 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await flushPromises();
     expect(errorMessage).toHaveBeenCalledWith("ambient assessment timed out after 180000ms");
     expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+  });
+
+  function permission(
+    id: string,
+  ): NonNullable<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getPendingApproval"]>>> {
+    return {
+      id,
+      commandText: "hostname.exe",
+      approvalLayer: "gateway",
+      executable: "hostname.exe",
+      arguments: [],
+      canonicalCwd: "isolated-scratch:v1",
+      agent: "main",
+      declaredAccess: [],
+      allowedDecisions: ["deny", "allow-once", "allow-always"],
+      expiresAtUnixMs: Date.now() + 60_000,
+    };
+  }
+
+  it.each(["wechat", "timeout"] as const)(
+    "does not resurrect an approval resolved by %s while status is loading",
+    async (origin) => {
+      let finish!: (value: MxcStatus) => void;
+      vi.mocked(window.openclaw.windowsNodeMxc.getStatus).mockImplementation(
+        () =>
+          new Promise<MxcStatus>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const { gateway } = await mountReadyApp();
+      const epoch = gateway.readinessEpoch;
+      approvalRequest(permission("status-race"));
+      await flushPromises();
+      approvalResolved({
+        requestId: "status-race",
+        approvalLayer: "gateway",
+        status: "accepted",
+        decision: "deny",
+        origin,
+      });
+      finish(status);
+      await flushPromises();
+      expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+      expect(gateway.ready).toBe(true);
+      expect(gateway.readinessEpoch).toBe(epoch);
+    },
+  );
+
+  it.each(["resolved", "null", "generation"] as const)(
+    "ignores a late initial %s snapshot without hiding a newer request",
+    async (kind) => {
+      let finish!: (value: ReturnType<typeof permission> | null) => void;
+      vi.spyOn(window.openclaw.windowsNodeMxc, "getPendingApproval").mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const { gateway } = await mountReadyApp();
+      const epoch = gateway.readinessEpoch;
+      if (kind === "resolved")
+        approvalResolved({
+          requestId: "snapshot-race",
+          status: "accepted",
+          decision: "deny",
+          origin: "timeout",
+        });
+      if (kind === "generation") {
+        gateway.resetReady();
+        serviceReady();
+        await flushPromises();
+      }
+      approvalRequest(permission("newer"));
+      await flushPromises();
+      finish(kind === "null" ? null : permission("snapshot-race"));
+      await flushPromises();
+      expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("newer");
+      wrapper.findComponent(PermissionDialog).vm.$emit("respond", "deny");
+      await flushPromises();
+      expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+      if (kind !== "generation") expect(gateway.readinessEpoch).toBe(epoch);
+    },
+  );
+
+  it("targets closed requests by layer as well as ID and rejects late delivery updates", async () => {
+    await mountReadyApp();
+    approvalRequest(permission("shared-id"));
+    approvalRequest({ ...permission("shared-id"), approvalLayer: "node" });
+    await flushPromises();
+    approvalResolved({
+      requestId: "shared-id",
+      approvalLayer: "gateway",
+      status: "accepted",
+      decision: "deny",
+      origin: "timeout",
+    });
+    approvalRequest({
+      ...permission("shared-id"),
+      remoteDelivery: {
+        state: "sent",
+        reason: null,
+        replyMode: "code-required",
+        revision: 100,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toMatchObject({
+      requestId: "shared-id",
+      approvalLayer: "node",
+    });
+    wrapper.findComponent(PermissionDialog).vm.$emit("respond", "deny");
+    await flushPromises();
+    approvalRequest({ ...permission("shared-id"), approvalLayer: "node" });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+  });
+
+  it("updates one pending request and dismisses only the exact remotely resolved request without resetting readiness", async () => {
+    const { gateway } = await mountReadyApp();
+    const epoch = gateway.readinessEpoch;
+    const first = permission("first");
+    await approvalRequest(first);
+    await approvalRequest(permission("second"));
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("first");
+    await approvalRequest({
+      ...first,
+      remoteDelivery: { state: "sent", reason: null, replyMode: "code-required", revision: 2 },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toMatchObject({
+      requestId: "first",
+      expiresAtUnixMs: first.expiresAtUnixMs,
+      remoteDelivery: { state: "sent", revision: 2 },
+    });
+    approvalResolved({
+      requestId: "first",
+      status: "accepted",
+      decision: "allow-always",
+      origin: "wechat",
+      durableSaved: true,
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("second");
+    approvalResolved({
+      requestId: "first",
+      status: "accepted",
+      decision: "deny",
+      origin: "timeout",
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("second");
+    expect(gateway.ready).toBe(true);
+    expect(gateway.readinessEpoch).toBe(epoch);
+  });
+
+  it("does not pop the next permission or show a stale IPC error when main resolution wins the Desktop response race", async () => {
+    await mountReadyApp();
+    const error = vi.spyOn(ElMessage, "error");
+    await approvalRequest(permission("race-first"));
+    await approvalRequest(permission("race-second"));
+    const respond = vi
+      .spyOn(window.openclaw.windowsNodeMxc, "respondApproval")
+      .mockImplementation(async () => {
+        approvalResolved({
+          requestId: "race-first",
+          status: "accepted",
+          decision: "deny",
+          origin: "timeout",
+        });
+        throw new Error("This approval is no longer pending");
+      });
+    wrapper.findComponent(PermissionDialog).vm.$emit("respond", "allow-once");
+    await flushPromises();
+    expect(respond).toHaveBeenCalledExactlyOnceWith({
+      requestId: "race-first",
+      decision: "allow-once",
+    });
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("race-second");
+    expect(error).not.toHaveBeenCalledWith("This approval is no longer pending");
   });
 });

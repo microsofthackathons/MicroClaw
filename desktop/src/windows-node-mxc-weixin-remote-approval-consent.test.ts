@@ -9,7 +9,11 @@ import {
   type WeixinRemoteApprovalActivationOptions,
 } from "./windows-node-mxc-weixin-remote-approval-activation";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
-import { normalizeWeixinRemoteApprovalOwner } from "./windows-node-mxc-weixin-remote-approval";
+import {
+  normalizeWeixinRemoteApprovalOwner,
+  WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+  weixinRemoteApprovalConsentHash,
+} from "./windows-node-mxc-weixin-remote-approval";
 
 const owner = { accountId: "exact-bot@im.wechat", userId: "exact-user@im.wechat" };
 const eligible = (): WeixinRemoteApprovalActivationOptions => ({
@@ -66,10 +70,14 @@ describe("WeChat remote approval native consent", () => {
         createWeixinRemoteApprovalConsentDialog("en-US"),
       );
       expect(params.readOptions).toHaveBeenCalledTimes(2);
-      expect(result.selection).toEqual({ enabled: true, owner });
+      expect(result.selection).toEqual({
+        enabled: true,
+        owner,
+        consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+      });
       expect(result.plan).toMatchObject({
         action: "persist",
-        configuration: { enabled: true, owner },
+        configuration: { enabled: true, owner, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE },
       });
     },
   );
@@ -178,6 +186,60 @@ describe("WeChat remote approval native consent", () => {
     );
     expect(params.readOptions).not.toHaveBeenCalled();
     expect(params.showDialog).not.toHaveBeenCalled();
+  });
+
+  it.each(["consentScope", "durableConsent", "owner"])(
+    "rejects a forged renderer %s before native state or mutation",
+    async (key) => {
+      const params = activation(1);
+      await expect(
+        planWeixinRemoteApprovalNativeTransition({
+          ...params,
+          request: { requestedMode: "full", [key]: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE },
+        }),
+      ).rejects.toThrow("Renderer-supplied");
+      expect(params.readOptions).not.toHaveBeenCalled();
+      expect(params.showDialog).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not upgrade inherited one-use consent and issues a new durable epoch only on deliberate native Enabled reconsent", async () => {
+    const legacy = {
+      enabled: true,
+      owner: normalizeWeixinRemoteApprovalOwner(
+        owner.accountId,
+        owner.userId,
+        new Date(0).toISOString(),
+      ),
+    };
+    const params = activation(1);
+    expect(
+      await planWeixinRemoteApprovalNativeTransition({
+        ...params,
+        currentMode: "full",
+        requestedMode: "limited-dacl",
+        currentConfiguration: legacy,
+      }),
+    ).toEqual({ selection: undefined, plan: { action: "preserve" } });
+    expect(weixinRemoteApprovalConsentHash(legacy)).toBeNull();
+    expect(params.showDialog).not.toHaveBeenCalled();
+    const renewed = await planWeixinRemoteApprovalNativeTransition({
+      ...params,
+      currentConfiguration: legacy,
+    });
+    expect(params.showDialog).toHaveBeenCalledOnce();
+    expect(renewed.plan.action).toBe("persist");
+    if (renewed.plan.action !== "persist") throw new Error("Missing native consent");
+    expect(renewed.plan.configuration.consentScope).toBe(WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE);
+    expect(weixinRemoteApprovalConsentHash(renewed.plan.configuration)).not.toBeNull();
+    expect(renewed.plan.configuration.owner?.boundAt).not.toBe(legacy.owner.boundAt);
+    const preserve = await planWeixinRemoteApprovalNativeTransition({
+      ...activation(),
+      currentMode: "full",
+      requestedMode: "limited-dacl",
+      currentConfiguration: renewed.plan.configuration,
+    });
+    expect(preserve).toEqual({ selection: undefined, plan: { action: "preserve" } });
   });
 
   it("preserves a valid owner on contained-mode switches without asking again, and Off revokes", async () => {

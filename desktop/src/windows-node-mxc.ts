@@ -119,6 +119,7 @@ export type WindowsNodeMxcApprovalDecision = "deny" | "allow-once" | "allow-alwa
 
 export interface WindowsNodeMxcGatewayApproval {
   id: string;
+  expiresAtUnixMs?: number;
   command: string;
   executable: string;
   arguments: string[];
@@ -243,6 +244,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const request = asRecord(envelope.request);
   const plan = asRecord(request.systemRunPlan);
   const id = typeof envelope.id === "string" ? envelope.id.trim() : "";
+  const expiresAtMs = envelope.expiresAtMs;
   const host = typeof request.host === "string" ? request.host : "";
   const nodeId = typeof request.nodeId === "string" ? request.nodeId : "";
   const argv = plan.argv;
@@ -274,6 +276,8 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     typeof plan.commandPreview === "string";
   if (
     !id ||
+    (expiresAtMs !== undefined &&
+      (!Number.isSafeInteger(expiresAtMs) || Number(expiresAtMs) <= 0)) ||
     host !== "node" ||
     nodeId.toLowerCase() !== selectedNodeId.trim().toLowerCase() ||
     !isNonEmptyStringArray(argv) ||
@@ -307,6 +311,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
 
   return {
     id,
+    ...(typeof expiresAtMs === "number" ? { expiresAtUnixMs: expiresAtMs } : {}),
     command: commandText,
     executable: argv[0],
     arguments: argv.slice(1),

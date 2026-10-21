@@ -4,6 +4,7 @@ import path from "node:path";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 import {
   normalizeWeixinRemoteApprovalOwner,
+  WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
   type WeixinRemoteApprovalConfiguration,
 } from "./windows-node-mxc-weixin-remote-approval";
 import { resolveStoredWindowsNodeMxcWeixinAccountPath } from "./windows-node-mxc-weixin";
@@ -40,6 +41,7 @@ export type WeixinRemoteApprovalActivationSelection =
   | {
       enabled: true;
       owner: WeixinRemoteApprovalActivationOwner;
+      consentScope?: typeof WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE;
     };
 
 export type WeixinRemoteApprovalTransitionPlan =
@@ -230,6 +232,12 @@ export function planWeixinRemoteApprovalTransition(params: {
   ) {
     throw new Error("A valid WeChat remote approval activation choice is required");
   }
+  if (
+    selection.consentScope !== undefined &&
+    selection.consentScope !== WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
+  ) {
+    throw new Error("Invalid native WeChat approval consent scope");
+  }
   const options = params.options;
   if (!options?.weixinEnabled) {
     throw new Error("WeChat remote approval is unavailable because the WeChat channel is disabled");
@@ -248,6 +256,7 @@ export function planWeixinRemoteApprovalTransition(params: {
     action: "persist",
     configuration: {
       enabled: true,
+      ...(selection.consentScope ? { consentScope: selection.consentScope } : {}),
       owner: normalizeWeixinRemoteApprovalOwner(
         selectedOwner.accountId,
         selectedOwner.userId,

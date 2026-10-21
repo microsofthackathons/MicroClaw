@@ -1031,6 +1031,17 @@ export default {
   "perm.shellDescRO": "允许对 {dir} 的只读权限",
   "perm.appDesc": "AI 助手正在尝试启动 {app}，此应用不在沙箱白名单中，需要在沙箱外运行。",
   "perm.mxcDesc": "AI 助手想在 MXC 沙箱内运行此命令。",
+  "perm.phoneSending": "正在向微信发送此审批；原超时期限仍然生效。",
+  "perm.phoneSent":
+    "已通知微信：回复 1 请求代码仅允许一次，2 请求代码在此精确范围永久允许，3 请求代码拒绝。",
+  "plugins.weixinMutationLocked": "请先关闭 MXC，再更改微信频道或账户。",
+  "plugins.weixinMutationUnknown": "在确认主进程的 MXC 状态之前，微信配置保持锁定。",
+  "perm.phoneCodeRequired":
+    "已通知微信。请回复 1/2/3 并附带手机提示中的请求代码；目前无法验证裸数字回复的时序。",
+  "perm.phoneLocalOnly": "无法通过手机审批（{reason}）。请在此决策；未授予远程权限。",
+  "perm.phoneUnconfirmed": "手机送达状态未确认。请在此决策；不会自动重发。",
+  "perm.mxcResolutionUnconfirmed": "无法确认权限决策。不会自动重试；请查看当前请求状态。",
+  "perm.mxcDurableNotSaved": "当前一次性决策已接受，但未能保存其精确范围的永久审批。",
   "perm.mxcLimitedDesc": "AI 助手想使用有限文件系统隔离运行此命令。",
   "perm.mxcAccessLabel": "声明的文件夹用途",
   "perm.mxcAdditionalAccessLabel": "额外文件系统授权",

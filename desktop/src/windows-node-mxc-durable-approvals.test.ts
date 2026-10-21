@@ -45,6 +45,26 @@ afterEach(() => {
 });
 
 describe("WindowsNodeMxcDurableApprovalStore", () => {
+  it("never transfers phone-created durable authority to another consent epoch or an unbound Desktop context", async () => {
+    const approvals = store();
+    const scoped = { ...identity, weixinConsentHash: "c".repeat(64) };
+    await approvals.add(scoped);
+    expect(approvals.findExact(scoped)).not.toBeNull();
+    expect(approvals.findExact(identity)).toBeNull();
+    expect(approvals.findExact({ ...scoped, weixinConsentHash: "d".repeat(64) })).toBeNull();
+    for (const changed of [
+      { argv: [...identity.argv, "other"] },
+      { commandText: "different" },
+      { cwdBinding: "C:\\Elsewhere" },
+      { sessionKey: "agent:main:other" },
+      { agentId: "other" },
+      { executableSha256: "e".repeat(64) },
+      { policyFingerprint: "f".repeat(64) },
+      { declaredAccess: [] },
+    ])
+      expect(approvals.findExact({ ...scoped, ...changed })).toBeNull();
+  });
+
   it("persists, matches, touches, and revokes atomically", async () => {
     const approvals = store();
     const added = await approvals.add(identity);

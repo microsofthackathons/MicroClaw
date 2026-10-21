@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import {
@@ -7,8 +7,11 @@ import {
   renderWeixinRemoteApprovalPrompt,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
   WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS,
+  WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+  weixinRemoteApprovalConsentHash,
   type WeixinRemoteApprovalCandidate,
   type WeixinRemoteApprovalCreateInput,
+  type WeixinRemoteApprovalConfiguration,
 } from "./windows-node-mxc-weixin-remote-approval";
 
 const approval: WindowsNodeMxcGatewayApproval = {
@@ -23,7 +26,7 @@ const approval: WindowsNodeMxcGatewayApproval = {
   sessionKey: "agent:main:weixin:owner",
   declaredAccess: [],
   hasMutableFileOperand: false,
-  allowedDecisions: ["allow-once", "deny"],
+  allowedDecisions: ["allow-once", "allow-always", "deny"],
 };
 
 function input(now = 1_000): WeixinRemoteApprovalCreateInput {
@@ -61,11 +64,18 @@ function configuredBroker(
   const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(audit);
   broker.configure({
     enabled: true,
+    consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
     owner: normalizeWeixinRemoteApprovalOwner(
       "BOT@IM.WECHAT",
       "OWNER@IM.WECHAT",
       "2026-10-14T00:00:00.000Z",
     ),
+  });
+  const create = broker.createChallenge.bind(broker);
+  vi.spyOn(broker, "createChallenge").mockImplementation((value) => {
+    const delivery = create(value);
+    if (delivery) broker.markDelivered(delivery.challengeId, value.now ?? Date.now());
+    return delivery;
   });
   return broker;
 }
@@ -99,6 +109,97 @@ function codeFromPrompt(text: string): string {
 }
 
 describe("WeChat remote approval broker", () => {
+  it("preserves legacy once-only consent without manufacturing durable authority and hashes the native scope and epoch", () => {
+    const legacy = { enabled: true, owner: configuredBroker().getConfiguration().owner };
+    expect(migrateWeixinRemoteApprovalConfiguration(legacy)).toEqual(legacy);
+    expect(weixinRemoteApprovalConsentHash(legacy)).toBeNull();
+    expect(
+      weixinRemoteApprovalConsentHash(
+        migrateWeixinRemoteApprovalConfiguration({
+          ...legacy,
+          consentScope: "renderer-selected",
+        }),
+      ),
+    ).toBeNull();
+    const current: WeixinRemoteApprovalConfiguration = {
+      ...legacy,
+      consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+    };
+    expect(migrateWeixinRemoteApprovalConfiguration(current)).toEqual(current);
+    expect(weixinRemoteApprovalConsentHash(current)).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      weixinRemoteApprovalConsentHash({
+        ...current,
+        owner: normalizeWeixinRemoteApprovalOwner(
+          "BOT@IM.WECHAT",
+          "OWNER@IM.WECHAT",
+          "2026-10-15T00:00:00.000Z",
+        ),
+      }),
+    ).not.toBe(weixinRemoteApprovalConsentHash(current));
+  });
+
+  it.each([
+    ["1", "allow-once"],
+    ["3", "deny"],
+  ] as const)(
+    "keeps legacy %s available after refusing durable approval without resetting the deadline",
+    (digit, decision) => {
+      const broker = configuredBroker();
+      broker.configure({ enabled: true, owner: broker.getConfiguration().owner });
+      const delivery = broker.createChallenge(input())!;
+      expect(delivery.text).toContain("renew local native consent");
+      const code = codeFromPrompt(delivery.text);
+      const rejected = broker.resolveCandidate(candidate(code, { text: `2 ${code}` }));
+      expect(rejected).toMatchObject({ status: "rejected", reason: "consent-scope" });
+      expect(rejected).toMatchObject({
+        acknowledgement: expect.stringContaining("original deadline unchanged"),
+      });
+      expect(
+        broker.resolveCandidate(
+          candidate(code, {
+            cursor: 102,
+            messageId: "102",
+            now: 2_100,
+            text: `2 ${code}`,
+          }),
+        ),
+      ).toMatchObject({ status: "rejected", acknowledgement: "" });
+      expect(
+        broker.resolveCandidate(
+          candidate(code, {
+            cursor: 103,
+            messageId: "103",
+            now: 2_200,
+            text: `${digit} ${code}`,
+          }),
+        ),
+      ).toMatchObject({ status: decision === "deny" ? "denied" : "approved", decision });
+    },
+  );
+
+  it("invalidates pending authority when native durable consent is renewed or removed", () => {
+    const broker = configuredBroker();
+    const delivery = broker.createChallenge(input())!;
+    broker.configure({ enabled: true, owner: broker.getConfiguration().owner });
+    expect(broker.resolveCandidate(candidate(codeFromPrompt(delivery.text)))).toMatchObject({
+      status: "rejected",
+    });
+    broker.configure({
+      enabled: true,
+      owner: broker.getConfiguration().owner,
+      consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+    });
+    const renewed = broker.createChallenge(input())!;
+    expect(
+      broker.resolveCandidate(
+        candidate(codeFromPrompt(renewed.text), {
+          text: `2 ${codeFromPrompt(renewed.text)}`,
+        }),
+      ),
+    ).toMatchObject({ status: "approved", decision: "allow-always" });
+  });
+
   it("migrates missing or invalid settings to default-off and preserves valid bindings", () => {
     expect(migrateWeixinRemoteApprovalConfiguration(undefined)).toEqual({
       enabled: false,
@@ -135,8 +236,8 @@ describe("WeChat remote approval broker", () => {
 
   it.each([
     ["1", "allow-once", ["approval-1"]],
-    ["2", "deny", ["approval-1"]],
-    ["3", "allow-once", ["approval-1"]],
+    ["2", "allow-always", ["approval-1"]],
+    ["3", "deny", ["approval-1"]],
   ] as const)("resolves owner option %s exactly once", (option, decision, ids) => {
     const broker = configuredBroker();
     const delivery = broker.createChallenge(input())!;
@@ -163,7 +264,7 @@ describe("WeChat remote approval broker", () => {
     ).toMatchObject({ consumed: true, status: "rejected", reason: "replayed" });
   });
 
-  it("limits option 3 to the explicitly enumerated originating-message batch", () => {
+  it("limits denial to the explicitly enumerated originating-message batch", () => {
     const broker = configuredBroker();
     const batchInput = input();
     batchInput.requests = [
@@ -186,18 +287,19 @@ describe("WeChat remote approval broker", () => {
         candidate(code, { text: `3 ${code}`, requests: batchInput.requests }),
       ),
     ).toMatchObject({
-      status: "approved",
-      decision: "allow-once",
+      status: "denied",
+      decision: "deny",
       approvalIds: ["approval-1", "approval-2"],
     });
   });
 
-  it("keeps bare numeric messages ordinary but consumes exact or ambiguous code-shaped text", () => {
+  it("consumes bare or invalid input only during a delivered challenge without deciding", () => {
     const broker = configuredBroker();
     broker.createChallenge(input());
-    expect(broker.resolveCandidate(candidate("", { text: "1" }))).toEqual({
-      consumed: false,
-      status: "not-candidate",
+    expect(broker.resolveCandidate(candidate("", { text: "1" }))).toMatchObject({
+      consumed: true,
+      status: "rejected",
+      reason: "cursor",
     });
     expect(
       broker.resolveCandidate(candidate("", { text: " 1 23456789 ", ambiguous: true })),
@@ -343,24 +445,23 @@ describe("WeChat remote approval broker", () => {
     expect(delivery.text).not.toContain("%USERPROFILE%");
   });
 
-  it.each([
-    '{"safe":1,"safe":2,"number":9007199254740993}',
-    "Cafe\u0301",
-    "任意文本",
-  ])("keeps unclassified exact text local-only without transforming it: %s", (value) => {
-    const broker = configuredBroker();
-    const exact = input();
-    exact.requests = [
-      {
-        approval: {
-          ...approval,
-          command: `whoami.exe "${value}"`,
-          arguments: [value],
+  it.each(['{"safe":1,"safe":2,"number":9007199254740993}', "Cafe\u0301", "任意文本"])(
+    "keeps unclassified exact text local-only without transforming it: %s",
+    (value) => {
+      const broker = configuredBroker();
+      const exact = input();
+      exact.requests = [
+        {
+          approval: {
+            ...approval,
+            command: `whoami.exe "${value}"`,
+            arguments: [value],
+          },
         },
-      },
-    ];
-    expect(broker.createChallenge(exact)).toBeNull();
-  });
+      ];
+      expect(broker.createChallenge(exact)).toBeNull();
+    },
+  );
 
   it.each([
     ["C0 control", "\u0001"],
@@ -443,9 +544,7 @@ describe("WeChat remote approval broker", () => {
   it("keeps an unknown switch value local-only even when both tokens look harmless", () => {
     const broker = configuredBroker();
     const unsafe = input();
-    unsafe.requests = [
-      { approval: { ...approval, arguments: ["--opaque", "shortvalue"] } },
-    ];
+    unsafe.requests = [{ approval: { ...approval, arguments: ["--opaque", "shortvalue"] } }];
     expect(broker.createChallenge(unsafe)).toBeNull();
   });
 
@@ -487,7 +586,7 @@ describe("WeChat remote approval broker", () => {
     expect(broker.createChallenge(tooManyRequests)).toBeNull();
   });
 
-  it("renders truthful English and Chinese one-use option copy", () => {
+  it("renders truthful English and Chinese exact-scope decision copy", () => {
     for (const locale of ["en-US", "zh-CN"] as const) {
       const prompt = renderWeixinRemoteApprovalPrompt({
         code: "23456789",
@@ -502,7 +601,7 @@ describe("WeChat remote approval broker", () => {
       expect(prompt).toContain(approval.executableSha256);
       expect(prompt).toContain(JSON.stringify(approval.canonicalCwd));
       expect(prompt).toMatch(
-        locale === "zh-CN" ? /不会创建永久授权/ : /no durable or future approval/,
+        locale === "zh-CN" ? /永久审批也不会扩大范围/ : /Always does not broaden that scope/,
       );
     }
   });

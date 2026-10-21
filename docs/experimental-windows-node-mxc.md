@@ -227,7 +227,10 @@ pending approvals, read a challenge, choose an approval ID, mutate approval stat
 proofs, or expose the path through the ordinary `message` tool. Exact candidate replies are
 intercepted before session recording and agent dispatch. Mixed, malformed, or otherwise ambiguous
 challenge-shaped replies are also consumed and fail closed, including when the broker transport is
-uncertain. Normal messages, including bare `1`, `2`, or `3`, remain ordinary conversation input.
+uncertain. Once an exact-owner prompt is successfully sent, other input in that owner's direct
+conversation (including bare digits and invalid text) is consumed before the agent queue, makes
+no decision, and receives at most three reminders with a five-second minimum interval. It never
+extends the deadline. Outside this delivered pending mode, bare digits remain ordinary chat.
 The long-poll loop advances its in-memory server cursor before placing ordinary messages on its
 serialized dispatch queue, allowing an exact approval reply to be consumed while the originating
 agent run is waiting. It persists the cursor only after the covered ordinary dispatches complete,
@@ -235,12 +238,16 @@ so a crash replays rather than drops them.
 
 The reserved plain-text prompt begins `[MicroClaw Security Approval #CODE]`. The code is eight
 characters from an unambiguous 32-symbol alphabet (40 bits), generated with `randomBytes`, valid for
-two minutes, one-use, and limited to three wrong attempts plus a global attempt window. The prompt
+at most two minutes, one-use, and limited to three wrong attempts plus a global attempt window.
+The actual permission deadline is the earlier of the original 60-second Desktop window and the
+Gateway expiry. The phone prompt and Desktop countdown use that same deadline. The prompt
 renders authorization-relevant strings exactly and reversibly with JSON string quoting. It does not
 trim or NFC-normalize, rewrite user-profile paths, parse and reserialize JSON, convert numeric text,
 collapse duplicate keys, redact partial values, or otherwise change code points. It includes the
 complete command text, executable canonical path and hash, argv, canonical CWD, declared file
-access, agent/session, requested/effective MXC mode, expiry, and every request covered by option 3.
+access, agent/session, requested/effective MXC mode, expiry, and exact request reference.
+Long approved fields use numbered JSON fragments joined without separators; nothing is hidden,
+masked, or truncated.
 If those exact fields exceed deterministic request/argument/declaration/line/total limits, contain
 control, C0/C1, surrogate, bidi/format/default-ignorable, line/paragraph separator, zero-width,
 variation-selector, or similar concealment characters, or appear secret-bearing or ambiguously
@@ -251,28 +258,64 @@ command must exactly reconstruct from the signed argv; executable/CWD/declaratio
 canonical local paths or fixed structural bindings; and arguments are limited to bounded
 parameterless switches, explicitly classified path/enum switch values, boolean literals, and short
 relative filenames. Arbitrary positional text or numbers, inline option values, URLs, long opaque
-values, credential-semantic names, and every other unknown form remain local-only.
+values, credential-semantic names, and every other unknown form remain local-only. A closed
+literal PowerShell grammar also covers `New-Item` (File/Directory), `Remove-Item` (including
+explicit recursive deletion), `Clear-Content`, `Set-Content`, and `Add-Content`, including the
+pinned outer interpreter and one literal nested interpreter. Paths must be literal local paths
+covered by an explicit RW declaration. Script expansions, pipelines, extra invocations, unknown
+flags, wildcard/device/UNC/ADS paths and arbitrary inline contents are not eligible. Inline
+content is limited to the reviewed public primitives `""`, `"0"`, `"1"`, `"true"`, `"false"`,
+and `"null"`; other content writes stay local, even when the text happens to be non-secret.
 This is intentionally conservative: a non-secret command may still require local approval when its
 display sensitivity cannot be proven from the current execution contract.
 
 - `1 CODE` approves the exact first/current request once.
-- `2 CODE` denies the exact request.
-- `3 CODE` approves only the explicitly enumerated requests from the same originating WeChat
-  message once. Phase 1 enumerates a one-item batch, so options 1 and 3 are equivalent.
+- `2 CODE` saves the same exact conversation-scoped durable approval available on the Desktop,
+  only when that exact request is eligible.
+- `3 CODE` denies the exact request.
+
+The current provider has no authenticated outgoing message timestamp/cursor fence. Incoming
+provider time compared with local delivery time cannot prove that a bare digit was authored after
+the prompt. Therefore the displayed syntax always requires the request code; timestamps are
+diagnostic metadata, never a guessed authorization signal.
 
 The in-memory challenge binds the authenticated sender/account/chat, source message ID and cursor,
 agent/session, exact approval IDs and batch, executable canonical path and SHA-256, argv, CWD,
 declarations, requested/effective mode, Gateway generation, policy fingerprint, node identity,
 active-lease hash, creation/expiry, challenge ID, and code hash. Electron revalidates the current
 pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
-immediately before the existing `exec.approval.resolve` call. Remote approval always sends
-`allow-once`; it never creates or consumes a durable approval, widens folders, or changes Limited
-mode's durable-approval prohibition.
+immediately before the existing `exec.approval.resolve` call. Exact Always resolves the current
+Gateway request once and then persists the existing executable/hash/argv/CWD/access/policy/agent/
+session identity. Phone-created records additionally bind a hash of the exact native owner consent
+epoch and versioned durable capability, so MXC Off/reconsent or account replacement cannot transfer
+that authority. Existing native one-use consent remains enabled for once/deny but is never silently
+upgraded: `2 CODE` stays unavailable until the user deliberately turns MXC Off and chooses Enabled
+in the existing single native prompt. Only that main-owned choice issues the current capability;
+renderer-supplied scope markers are rejected. It never grants
+all writes/deletes or broadens folders. A failed durable save is explicitly reported as accepted
+once, not as a successfully saved Always grant.
 
 First resolution wins across local and remote UI. Local resolution, timeout, relock, Gateway/Node
 restart, policy or lease drift, MXC Off, logout/rebind, feature disable/revoke, shutdown, prompt-send
-failure, and excessive invalid attempts invalidate the challenge. A prompt-send failure leaves the
-normal local approval pending. Acknowledgements are system messages and never enter agent history.
+failure, and excessive code attempts invalidate the challenge. Timeout calls the actual Gateway
+deny resolver. The authoritative terminal event closes only its matching Desktop request and
+invalidates the phone challenge. One safe phone result identifies the accepted decision and origin
+(Desktop/WeChat/timeout), explicitly not command execution success. Unknown resolution outcomes
+are reported as unconfirmed, never retried or falsely reported as denied. Overlapping requests
+retain their original deadlines and receive remote authority one at a time.
+
+Suppression is never silent: typed, hashed diagnostics distinguish source/route, security,
+transport and presentation failures, and the Desktop shows phone-delivery/local-only state.
+Unsupported or sensitive commands with a verified source get a data-free phone local-only notice
+and a terminal result, not leaked contents or a misleading masked consent. A prompt-send failure
+leaves the normal local approval pending and is not automatically resent.
+
+WeChat toggle/login/replace/disconnect controls are locked in both channel/plugin views while
+MXC is active or transitioning. Main enforces the same guard before writes/spawns/RPC, and
+activation cannot cross an in-flight account mutation or unconfirmed login writer. Cancellation
+waits for known writers to drain; an unknown writer requires an explicit Gateway stop.
+
+Acknowledgements are system messages and never enter agent history.
 An acknowledgement delivery failure does not re-dispatch the consumed approval reply. The plugin
 advances its in-memory long-poll cursor while approval is pending, but persists each cursor only
 after every ordinary message covered by it has completed dispatch; a restart therefore replays

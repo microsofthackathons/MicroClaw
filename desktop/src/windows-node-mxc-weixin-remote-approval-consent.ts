@@ -1,7 +1,10 @@
 import type { MessageBoxOptions } from "electron";
 import { t, type SupportedLocale } from "./i18n";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
-import type { WeixinRemoteApprovalConfiguration } from "./windows-node-mxc-weixin-remote-approval";
+import {
+  WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+  type WeixinRemoteApprovalConfiguration,
+} from "./windows-node-mxc-weixin-remote-approval";
 import {
   planWeixinRemoteApprovalTransition,
   type WeixinRemoteApprovalActivationOptions,
@@ -10,7 +13,12 @@ import {
 } from "./windows-node-mxc-weixin-remote-approval-activation";
 
 export function assertNativeWeixinRemoteApprovalAuthority(request: unknown): void {
-  if (request && typeof request === "object" && "remoteApproval" in request) {
+  const allowed = new Set(["enabled", "requestedMode", "acknowledgeLimitedFilesystem", "nodeId"]);
+  if (
+    request &&
+    typeof request === "object" &&
+    Object.keys(request).some((key) => !allowed.has(key))
+  ) {
     throw new Error("Renderer-supplied WeChat remote approval choices are not accepted");
   }
 }
@@ -74,7 +82,14 @@ export async function planWeixinRemoteApprovalNativeTransition(params: {
       ) {
         throw new Error("The WeChat remote approval identity changed during native consent");
       }
-      selection = response === 1 ? { enabled: true, owner } : { enabled: false };
+      selection =
+        response === 1
+          ? {
+              enabled: true,
+              owner,
+              consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+            }
+          : { enabled: false };
     }
   }
   return {

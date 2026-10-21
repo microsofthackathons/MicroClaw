@@ -313,6 +313,8 @@ interface OpenClawAPI {
           userId?: string;
         } | null;
         loginInProgress: boolean;
+        mutationLocked: boolean;
+        mutationLockRevision: number;
       }>;
       setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
       login(): Promise<{ ok: boolean; error?: string }>;
@@ -332,6 +334,7 @@ interface OpenClawAPI {
       disconnect(params?: { accountId?: string }): Promise<{ ok: boolean; error?: string }>;
       onLoginOutput(callback: (text: string) => void): () => void;
       onLoginDone(callback: (result: { code: number | null }) => void): () => void;
+      onMutationLock(callback: (status: { locked: boolean; revision: number }) => void): () => void;
     };
   };
   model: {
@@ -570,6 +573,8 @@ interface OpenClawAPI {
       executable: string;
       arguments: string[];
       commandText?: string;
+      expiresAtUnixMs?: number;
+      remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
       agent: string | null;
       canonicalCwd: string;
       approvalLayer: "gateway" | "node";
@@ -582,6 +587,7 @@ interface OpenClawAPI {
     respondApproval(params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
+      origin?: "desktop" | "timeout";
     }): Promise<void>;
     onApprovalRequest(
       callback: (
@@ -590,6 +596,8 @@ interface OpenClawAPI {
           executable: string;
           arguments: string[];
           commandText?: string;
+          expiresAtUnixMs?: number;
+          remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
           agent: string | null;
           canonicalCwd: string;
           approvalLayer: "gateway" | "node";
@@ -606,6 +614,10 @@ interface OpenClawAPI {
         state: Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["lifecycleState"],
       ) => void,
     ): () => void;
+    onApprovalResolved(callback: (result: {
+      requestId: string;
+      approvalLayer?: "gateway" | "node";
+    } & import("../src/windows-node-mxc-approval-lifecycle").MxcApprovalTerminal) => void): () => void;
   };
   sandbox: {
     getStatus(): Promise<{

@@ -15,9 +15,9 @@ export default {
   "tray.quit": "退出",
   "weixinRemoteApproval.consentTitle": "远程命令审批",
   "weixinRemoteApproval.consentMessage":
-    "选择是否允许当前已登录的微信账户为本次 MXC 激活审批一次性命令。",
+    "选择是否允许当前已登录的微信账户为本次 MXC 激活审批命令。",
   "weixinRemoteApproval.consentRisk":
-    "如果此微信会话遭到入侵，攻击者可能批准此电脑上的命令。远程审批仅限一次性授权；禁用后仍需在此桌面审批。",
+    "如果此微信会话遭到入侵，攻击者可能批准此电脑上的命令或保存精确范围的永久审批；禁用后仍需在此桌面审批。",
   "weixinRemoteApproval.disable": "禁用",
   "weixinRemoteApproval.enable": "启用",
   "weixinRemoteApproval.cancelActivation": "取消 MXC 激活",

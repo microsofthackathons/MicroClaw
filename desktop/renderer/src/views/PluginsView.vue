@@ -19,11 +19,25 @@
           <div class="plugin-desc">{{ t("plugins.weixinDesc") }}</div>
         </div>
         <div class="plugin-toggle">
-          <el-switch v-model="weixinEnabled" :loading="toggling" @change="handleToggleEnabled" />
+          <el-switch
+            v-model="weixinEnabled"
+            :disabled="mutationLocked"
+            :loading="toggling"
+            @change="handleToggleEnabled"
+          />
         </div>
       </div>
 
       <!-- Plugin body — only visible when enabled -->
+      <el-alert
+        v-if="mutationLocked"
+        :title="
+          t(mutationLockKnown ? 'plugins.weixinMutationLocked' : 'plugins.weixinMutationUnknown')
+        "
+        type="info"
+        :closable="false"
+        show-icon
+      />
       <div v-if="weixinEnabled" class="plugin-body">
         <el-alert
           v-if="weixinPausedByMxc"
@@ -51,7 +65,12 @@
             class="login-actions"
             :class="{ 'login-actions--replace': hasStoredAccount }"
           >
-            <el-button type="primary" @click="startLogin" :loading="loginStarting">
+            <el-button
+              type="primary"
+              @click="startLogin"
+              :disabled="mutationLocked"
+              :loading="loginStarting"
+            >
               {{ hasStoredAccount ? t("plugins.replaceWeixin") : t("plugins.loginWeixin") }}
             </el-button>
           </div>
@@ -94,6 +113,7 @@
               type="danger"
               text
               @click="disconnectWeixin"
+              :disabled="mutationLocked"
               :loading="disconnecting"
             >
               {{ t("plugins.disconnect") }}
@@ -124,9 +144,16 @@ import { useGatewayStore } from "@/stores/gateway";
 import { t } from "@/i18n";
 import weixinIcon from "@/assets/wechat.png";
 import QRCode from "qrcode";
+import { useWeixinMutationLock } from "@/composables/useWeixinMutationLock";
 
 const router = useRouter();
 const gatewayStore = useGatewayStore();
+const {
+  locked: mutationLocked,
+  known: mutationLockKnown,
+  applyStatus: applyMutationLock,
+  canMutate,
+} = useWeixinMutationLock();
 
 const weixinEnabled = ref(false);
 const weixinPausedByMxc = ref(false);
@@ -147,6 +174,8 @@ const weixinStatus = ref<WeixinStatus>({
   invariantState: "none",
   currentAccount: null,
   loginInProgress: false,
+  mutationLocked: true,
+  mutationLockRevision: 0,
 });
 const hasStoredAccount = computed(() => weixinStatus.value.accountCount > 0);
 const restarting = ref(false);
@@ -213,6 +242,7 @@ onMounted(async () => {
 
 async function refreshWeixinStatus(): Promise<WeixinStatus> {
   const status = await window.openclaw.plugin.weixin.getStatus();
+  applyMutationLock(status);
   weixinStatus.value = status;
   loginSuccess.value = status.loggedIn;
   gatewayStore.weixinLoggedIn = status.loggedIn;
@@ -263,6 +293,7 @@ async function renderQrCode(dataUrl: string) {
 }
 
 async function fetchAndRenderQr(force = false): Promise<boolean> {
+  if (!canMutate()) return false;
   try {
     const result = await window.openclaw.plugin.weixin.loginQrStart({
       force,
@@ -288,6 +319,7 @@ async function fetchAndRenderQr(force = false): Promise<boolean> {
 }
 
 async function startLogin() {
+  if (!canMutate()) return;
   if (hasStoredAccount.value) {
     try {
       await ElMessageBox.confirm(t("plugins.replaceWeixinConfirm"), t("plugins.replaceWeixin"), {
@@ -299,6 +331,7 @@ async function startLogin() {
       return;
     }
   }
+  if (!canMutate()) return;
   loginStarting.value = true;
   loginActive.value = true;
   qrError.value = "";
@@ -342,6 +375,7 @@ async function startLogin() {
 
 async function pollForLogin() {
   while (loginActive.value && !loginAborted) {
+    if (!canMutate()) return;
     try {
       const result = await window.openclaw.plugin.weixin.loginQrWait({
         accountId: "default",
@@ -391,9 +425,16 @@ async function pollForLogin() {
 async function cancelLogin() {
   loginAborted = true;
   clearQrRefreshTimer();
-  if (useFallbackLogin.value) {
+  try {
     await window.openclaw.plugin.weixin.cancelLogin();
     useFallbackLogin.value = false;
+  } catch (error) {
+    ElMessage.error(
+      t("plugins.operationFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return;
   }
   loginActive.value = false;
   qrError.value = "";
@@ -402,6 +443,7 @@ async function cancelLogin() {
 }
 
 async function disconnectWeixin() {
+  if (!canMutate()) return;
   try {
     await ElMessageBox.confirm(t("plugins.disconnectConfirm"), t("plugins.disconnect"), {
       confirmButtonText: t("plugins.confirm"),
@@ -412,6 +454,7 @@ async function disconnectWeixin() {
     return; // User cancelled
   }
 
+  if (!canMutate()) return;
   disconnecting.value = true;
   try {
     const result = await window.openclaw.plugin.weixin.disconnect();
@@ -429,6 +472,10 @@ async function disconnectWeixin() {
 }
 
 async function handleToggleEnabled(val: boolean) {
+  if (!canMutate()) {
+    weixinEnabled.value = weixinStatus.value.enabled;
+    return;
+  }
   toggling.value = true;
   try {
     await window.openclaw.plugin.weixin.setEnabled(val);

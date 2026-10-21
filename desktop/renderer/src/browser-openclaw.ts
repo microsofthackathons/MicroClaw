@@ -169,6 +169,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         throw new Error("Unavailable in browser development");
       },
       onApprovalRequest: noopSub,
+      onApprovalResolved: noopSub,
       onLifecycleState: noopSub,
     },
     sandbox: {
@@ -338,6 +339,8 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           invariantState: "none",
           currentAccount: null,
           loginInProgress: false,
+          mutationLocked: false,
+          mutationLockRevision: 0,
         }),
         setEnabled: async () => ({ ok: true }),
         login: async () => ({ ok: false, error: "Unavailable in browser development" }),
@@ -350,6 +353,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         disconnect: async () => ({ ok: true }),
         onLoginOutput: noopSub,
         onLoginDone: noopSub,
+        onMutationLock: noopSub,
       },
     },
     usage: {

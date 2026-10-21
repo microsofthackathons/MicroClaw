@@ -16,9 +16,9 @@ export default {
   "tray.quit": "Quit",
   "weixinRemoteApproval.consentTitle": "Remote command approval",
   "weixinRemoteApproval.consentMessage":
-    "Choose whether the currently signed-in WeChat account can approve one-use commands for this MXC activation.",
+    "Choose whether the currently signed-in WeChat account can approve commands for this MXC activation.",
   "weixinRemoteApproval.consentRisk":
-    "A compromised WeChat session could approve commands on this PC. Remote approvals are one-use only; Disabled keeps approval on this desktop.",
+    "A compromised WeChat session could approve commands or save exact-scope approvals on this PC. Disabled keeps approval on this desktop.",
   "weixinRemoteApproval.disable": "Disabled",
   "weixinRemoteApproval.enable": "Enabled",
   "weixinRemoteApproval.cancelActivation": "Cancel MXC activation",

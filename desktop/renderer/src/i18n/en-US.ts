@@ -1106,6 +1106,21 @@ export default {
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
   "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
+  "perm.phoneSending": "Sending this approval to WeChat; the original timeout still applies.",
+  "perm.phoneSent":
+    "WeChat notified: reply 1 CODE to allow once, 2 CODE to always allow this exact scope, or 3 CODE to deny.",
+  "plugins.weixinMutationLocked": "Turn off MXC first to change the WeChat channel or account.",
+  "plugins.weixinMutationUnknown":
+    "WeChat configuration is locked until its main-process MXC status can be verified.",
+  "perm.phoneCodeRequired":
+    "WeChat notified. Reply 1/2/3 with the request code shown on the phone; bare-reply freshness could not be verified.",
+  "perm.phoneLocalOnly":
+    "Phone approval unavailable ({reason}). Decide here; no remote permission was granted.",
+  "perm.phoneUnconfirmed": "Phone delivery is unconfirmed. Decide here; no automatic resend.",
+  "perm.mxcResolutionUnconfirmed":
+    "Permission decision could not be confirmed. No automatic retry; check the current request status.",
+  "perm.mxcDurableNotSaved":
+    "The current one-use decision was accepted, but its exact durable approval could not be saved.",
   "perm.mxcLimitedDesc": "AI wants to run this command with Limited filesystem containment.",
   "perm.mxcAccessLabel": "Declared folder use",
   "perm.mxcAdditionalAccessLabel": "Additional filesystem grants",

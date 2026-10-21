@@ -73,7 +73,7 @@ export async function interceptWeixinRemoteApprovalMessage(
 ): Promise<boolean> {
   if (!deps.token?.trim() || !isActiveWeixinAccount(deps.accountId, deps.token)) return false;
   if (!deps.remoteApprovalTransport) return false;
-  const senderId = full.from_user_id?.trim() ?? "";
+  const senderId = typeof full.from_user_id === "string" ? full.from_user_id.trim() : "";
   if (full.context_token && senderId) {
     setContextToken(deps.accountId, senderId, full.context_token);
   }

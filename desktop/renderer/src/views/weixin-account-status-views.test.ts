@@ -22,9 +22,9 @@ const buttonStub = {
 };
 
 const switchStub = {
-  props: ["modelValue", "loading"],
+  props: ["modelValue", "loading", "disabled"],
   emits: ["change", "update:modelValue"],
-  template: "<input type='checkbox' />",
+  template: "<input type='checkbox' :disabled='disabled' />",
 };
 
 type WeixinStatus = Awaited<ReturnType<typeof window.openclaw.plugin.weixin.getStatus>>;
@@ -40,6 +40,8 @@ const loggedOutStatus = (): WeixinStatus => ({
   invariantState: "none",
   currentAccount: null,
   loginInProgress: false,
+  mutationLocked: false,
+  mutationLockRevision: 0,
 });
 
 const loggedInStatus = (
@@ -63,6 +65,9 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
   const loginQrStart = vi.fn();
   const login = vi.fn();
   let loginDone: ((result: { code: number | null }) => void) | null;
+  let mutationLock: (status: { locked: boolean; revision: number }) => void;
+  const setEnabled = vi.fn();
+  const disconnect = vi.fn();
 
   function mountView() {
     return mount(component, {
@@ -87,6 +92,8 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
       error: "fast path unavailable",
     });
     login.mockReset().mockResolvedValue({ ok: true });
+    setEnabled.mockReset().mockResolvedValue({ ok: true });
+    disconnect.mockReset().mockResolvedValue({ ok: true });
     const openclaw = createBrowserOpenClawMock();
     window.openclaw = {
       ...openclaw,
@@ -96,6 +103,12 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
           getStatus,
           loginQrStart,
           login,
+          setEnabled,
+          disconnect,
+          onMutationLock(callback) {
+            mutationLock = callback;
+            return vi.fn();
+          },
           onLoginDone(callback) {
             loginDone = callback;
             return () => {
@@ -168,6 +181,39 @@ describe.each(views)("%s WeChat account status", (_name, component) => {
     expect(status).not.toContain("replacement@im.wechat");
     expect(status).not.toContain("current-im-bot");
   });
+
+  it.each(["active", "transitioning"])(
+    "locks toggle/replace/disconnect and stale handlers while MXC is %s",
+    async () => {
+      getStatus.mockResolvedValue(loggedInStatus());
+      const wrapper = mountView();
+      await flushPromises();
+      mutationLock({ locked: true, revision: 2 });
+      await flushPromises();
+      expect(wrapper.get("input[type=checkbox]").attributes("disabled")).toBeDefined();
+      const buttons = wrapper
+        .findAllComponents(buttonStub)
+        .filter((button) => /Replace WeChat account|Disconnect/.test(button.text()));
+      expect(buttons).toHaveLength(2);
+      for (const button of buttons) {
+        expect(button.props("disabled")).toBe(true);
+        button.vm.$emit("click");
+      }
+      wrapper.findComponent(switchStub).vm.$emit("change", false);
+      await flushPromises();
+      expect(loginQrStart).not.toHaveBeenCalled();
+      expect(login).not.toHaveBeenCalled();
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(setEnabled).not.toHaveBeenCalled();
+      mutationLock({ locked: false, revision: 1 });
+      await flushPromises();
+      expect(wrapper.get("input[type=checkbox]").attributes("disabled")).toBeDefined();
+      mutationLock({ locked: false, revision: 3 });
+      await flushPromises();
+      expect(wrapper.get("input[type=checkbox]").attributes("disabled")).toBeUndefined();
+      wrapper.unmount();
+    },
+  );
 });
 
 describe("WeChat message navigation action", () => {

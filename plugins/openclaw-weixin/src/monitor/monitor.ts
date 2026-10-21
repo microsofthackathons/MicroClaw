@@ -18,7 +18,6 @@ import {
   waitForMxcWeixinIngressRelease,
 } from "../security/mxc-policy.js";
 import {
-  classifyWeixinRemoteApprovalCandidate,
   WeixinRemoteApprovalTransport,
 } from "../security/remote-approval.js";
 
@@ -71,6 +70,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
     baseUrl,
     token,
     error: errLog,
+    diagnostic: (record) => aLog.info(`weixin-remote-approval ${JSON.stringify(record)}`),
   });
   if (remoteApprovalTransport.enabled) {
     try {
@@ -234,9 +234,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           );
         } catch (error) {
           errLog(`weixin remote approval interception failed: ${String(error)}`);
-          consumedByRemoteApproval =
-            remoteApprovalTransport.enabled &&
-            classifyWeixinRemoteApprovalCandidate(full).candidateLike;
+          consumedByRemoteApproval = remoteApprovalTransport.shouldReserveInbound(full);
         }
         if (consumedByRemoteApproval) {
           aLog.info("remote approval: consumed system reply before agent dispatch");

@@ -12,6 +12,10 @@ vi.mock("../api/api.js", () => ({
   getUpdates: mocks.getUpdates,
   classifyFetchError: () => ({ type: "test", description: "test" }),
 }));
+vi.mock("../auth/accounts.js", () => ({
+  isActiveWeixinAccount: (accountId: string, token: string) =>
+    accountId === "bot@im.wechat" && token === "token",
+}));
 vi.mock("../api/config-cache.js", () => ({
   WeixinConfigManager: class {
     async getForUser() {
@@ -38,6 +42,7 @@ vi.mock("../util/logger.js", () => ({
     withAccount: () => ({
       debug: vi.fn(),
       info: vi.fn(),
+      warn: vi.fn(),
       error: vi.fn(),
     }),
   },
@@ -53,6 +58,7 @@ vi.mock("../security/remote-approval.js", () => ({
     enabled = true;
     start = vi.fn();
     close = vi.fn();
+    shouldReserveInbound = () => true;
   },
 }));
 

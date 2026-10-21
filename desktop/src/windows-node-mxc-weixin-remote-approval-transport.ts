@@ -24,6 +24,7 @@ interface RegisteredClient {
       resolve: () => void;
       reject: (error: Error) => void;
       timer: NodeJS.Timeout;
+      delivered?: () => void;
     }
   >;
 }
@@ -58,7 +59,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
     private readonly token: string,
     private readonly onInbound: (
       source: WeixinRemoteApprovalInboundEnvelope,
-    ) => Promise<{ consumed: boolean; acknowledgement?: string }>,
+    ) => Promise<{ consumed: boolean; acknowledgement?: string; approvalActive?: boolean }>,
+    private readonly onDisconnect?: (accountId: string) => void,
   ) {}
 
   async start(): Promise<void> {
@@ -80,7 +82,24 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
     });
   }
 
-  async deliver(params: { accountId: string; to: string; text: string }): Promise<void> {
+  isRegistered(accountId: string): boolean {
+    const client = this.clients.get(accountId.trim().toLowerCase());
+    return Boolean(client && !client.socket.destroyed);
+  }
+
+  async deliver(params: {
+    accountId: string;
+    to: string;
+    text: string;
+    approval?: { challengeId: string; expiresAtUnixMs: number };
+    terminalChallengeId?: string;
+    onDelivered?: () => void;
+    timeoutMs?: number;
+  }): Promise<void> {
+    const timeoutMs = params.timeoutMs ?? DELIVERY_TIMEOUT_MS;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DELIVERY_TIMEOUT_MS) {
+      throw new Error("Invalid bounded WeChat delivery timeout");
+    }
     const client = this.clients.get(params.accountId.trim().toLowerCase());
     if (!client || client.socket.destroyed) {
       throw new Error("The WeChat remote approval transport is unavailable");
@@ -90,8 +109,13 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
       const timer = setTimeout(() => {
         client.pendingDeliveries.delete(deliveryId);
         reject(new Error("The WeChat remote approval message timed out"));
-      }, DELIVERY_TIMEOUT_MS);
-      client.pendingDeliveries.set(deliveryId, { resolve, reject, timer });
+      }, timeoutMs);
+      client.pendingDeliveries.set(deliveryId, {
+        resolve,
+        reject,
+        timer,
+        delivered: params.onDelivered,
+      });
     });
     this.write(client.socket, {
       contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
@@ -99,6 +123,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
       deliveryId,
       to: params.to,
       text: params.text,
+      ...(params.approval ? { approval: params.approval } : {}),
+      ...(params.terminalChallengeId ? { terminalChallengeId: params.terminalChallengeId } : {}),
     });
     await promise;
   }
@@ -111,6 +137,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
       }
       client.pendingDeliveries.clear();
       client.socket.destroy();
+      this.onDisconnect?.(client.accountId);
     }
     this.clients.clear();
     this.server?.close();
@@ -127,6 +154,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
       destroyed = true;
       if (registered && this.clients.get(registered.accountId) === registered) {
         this.clients.delete(registered.accountId);
+        this.onDisconnect?.(registered.accountId);
       }
       if (registered) {
         for (const pending of registered.pendingDeliveries.values()) {
@@ -179,8 +207,10 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
           if (!pending) continue;
           registered.pendingDeliveries.delete(frame.deliveryId);
           clearTimeout(pending.timer);
-          if (frame.ok) pending.resolve();
-          else pending.reject(new Error(frame.error || "WeChat remote approval delivery failed"));
+          if (frame.ok) {
+            pending.delivered?.();
+            pending.resolve();
+          } else pending.reject(new Error(frame.error || "WeChat remote approval delivery failed"));
           continue;
         }
         if (frame.type !== "inbound" || !frame.requestId || !frame.source) {
@@ -241,6 +271,10 @@ function isInboundEnvelope(value: unknown): value is WeixinRemoteApprovalInbound
     typeof source.quoted === "boolean" &&
     typeof source.receivedAtUnixMs === "number" &&
     Number.isSafeInteger(source.receivedAtUnixMs) &&
+    (source.sentAtUnixMs === undefined ||
+      (typeof source.sentAtUnixMs === "number" &&
+        Number.isSafeInteger(source.sentAtUnixMs) &&
+        source.sentAtUnixMs >= 0)) &&
     typeof source.text === "string" &&
     typeof source.ambiguous === "boolean" &&
     (source.sourcePhase === "candidate" ||
