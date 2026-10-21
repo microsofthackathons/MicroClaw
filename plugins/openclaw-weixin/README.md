@@ -281,8 +281,8 @@ Send or cancel the typing status indicator.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `seq` | `number?` | Message sequence number |
-| `message_id` | `number?` | Unique message ID |
+| `seq` | `number` or `string` (optional) | Message sequence number |
+| `message_id` | `number` or `string` (optional) | Unique message ID |
 | `from_user_id` | `string?` | Sender ID |
 | `to_user_id` | `string?` | Receiver ID |
 | `create_time_ms` | `number?` | Creation timestamp (ms) |
@@ -291,6 +291,11 @@ Send or cancel the typing status indicator.
 | `message_state` | `number?` | `0` = NEW, `1` = GENERATING, `2` = FINISH |
 | `item_list` | `MessageItem[]?` | Message content list |
 | `context_token` | `string?` | Conversation context token, must be passed back when replying |
+
+`getUpdates` preserves numeric `message_id` and `seq` JSON source lexemes as decimal strings,
+including values above JavaScript's safe-integer range. Remote approval requires both fields to
+be valid nonnegative uint64 decimals; it never reconstructs a rounded number or invents a missing
+cursor. These fields remain optional for ordinary chat.
 
 #### MessageItem
 

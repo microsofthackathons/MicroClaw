@@ -9,6 +9,7 @@ import {
   WindowsNodeMxcWeixinRemoteApprovalBroker,
 } from "./windows-node-mxc-weixin-remote-approval";
 import type { WindowsNodeMxcWeixinRemoteApprovalServer } from "./windows-node-mxc-weixin-remote-approval-transport";
+import { normalizeWeixinProviderInteger } from "./weixin-provider-integer";
 
 export type WeixinRemoteDeliveryReason =
   | WeixinRemoteApprovalRejectionReason
@@ -26,7 +27,9 @@ export interface WeixinRemoteDeliveryState {
   revision: number;
 }
 
-export function remoteApprovalDiagnosticBinding(approval: WindowsNodeMxcGatewayApproval): {
+export function remoteApprovalDiagnosticBinding(
+  approval: Pick<WindowsNodeMxcGatewayApproval, "id" | "sessionKey">,
+): {
   approvalHash: string;
   sessionHash: string;
 } {
@@ -49,7 +52,10 @@ export function exactWeixinApprovalSource(
     source.conversationId.trim().toLowerCase() !== owner.userId
   )
     return "source-identity-mismatch";
-  if (!Number.isSafeInteger(source.cursor) || source.cursor < 0 || !source.messageId.trim()) {
+  if (
+    normalizeWeixinProviderInteger(source.cursor) === null ||
+    normalizeWeixinProviderInteger(source.messageId) === null
+  ) {
     return "source-metadata-invalid";
   }
   if (source.sessionKey !== approval.sessionKey) return "source-session-mismatch";

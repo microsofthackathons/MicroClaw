@@ -6,6 +6,7 @@ import { MessageItemType, MessageType } from "../api/types.js";
 import { getContextToken } from "../messaging/inbound.js";
 import { sendMessageWeixin } from "../messaging/send.js";
 import { isActiveWeixinAccount } from "../auth/accounts.js";
+import { normalizeProviderInteger, providerMetadataShape, type ProviderFieldShape } from "../api/provider-metadata.js";
 
 const CONTRACT = "microclaw.windows-weixin-remote-approval.v1";
 const MAX_FRAME_BYTES = 64 * 1024;
@@ -23,7 +24,7 @@ interface InboundSource {
   senderId: string;
   conversationId: string;
   messageId: string;
-  cursor: number;
+  cursor: string;
   agentId: string;
   sessionKey: string;
   direct: boolean;
@@ -40,7 +41,7 @@ interface RemoteApprovalTransportOptions {
   baseUrl: string;
   token?: string;
   error?: (message: string) => void;
-  diagnostic?: (record: { code: string; phase: string; sessionHash: string; hasProviderSendTime: boolean }) => void;
+  diagnostic?: (record: { code: string; phase: string; sessionHash: string; hasProviderSendTime: boolean; metadataProvenance: string; messageId: ProviderFieldShape; seq: ProviderFieldShape }) => void;
 }
 
 export class WeixinRemoteApprovalTransport {
@@ -165,6 +166,7 @@ export class WeixinRemoteApprovalTransport {
       phase: params.sourcePhase,
       sessionHash: createHash("sha256").update(params.sessionKey).digest("hex").slice(0, 16),
       hasProviderSendTime: Number.isSafeInteger(params.message.create_time_ms),
+      ...providerMetadataShape(params.message),
     });
     const source = normalized.source;
     if (!source) {
@@ -385,8 +387,8 @@ export function normalizeInboundSourceResult(
   sessionKey: string,
 ): { source: InboundSource; reason: null } | { source: null; reason: string } {
   const senderId = typeof message.from_user_id === "string" ? message.from_user_id.trim() : "";
-  const messageId = message.message_id;
-  const cursor = message.seq;
+  const messageId = normalizeProviderInteger(message.message_id);
+  const cursor = normalizeProviderInteger(message.seq);
   if (message.item_list !== undefined && !Array.isArray(message.item_list)) return { source: null, reason: "provider-items-invalid" };
   const textItems = message.item_list?.filter((item) => item.type === MessageItemType.TEXT) ?? [];
   const text =
@@ -394,8 +396,8 @@ export function normalizeInboundSourceResult(
       ? (textItems[0]?.text_item?.text ?? "")
       : "";
   if (!accountId.trim() || !senderId.toLowerCase().endsWith("@im.wechat")) return { source: null, reason: "provider-identity-invalid" };
-  if (!Number.isSafeInteger(messageId) || messageId! < 0) return { source: null, reason: "provider-message-id-unavailable" };
-  if (!Number.isSafeInteger(cursor) || cursor! < 0) return { source: null, reason: "provider-cursor-unavailable" };
+  if (messageId === null) return { source: null, reason: "provider-message-id-unavailable" };
+  if (cursor === null) return { source: null, reason: "provider-cursor-unavailable" };
   if (!agentId.trim() || !sessionKey.trim()) return { source: null, reason: "route-unavailable" };
   const quoted = textItems.some((item) => Boolean(item.ref_msg));
   const forwarded = message.message_type !== MessageType.USER;
@@ -405,8 +407,8 @@ export function normalizeInboundSourceResult(
     accountId: accountId.trim().toLowerCase(),
     senderId: senderId.toLowerCase(),
     conversationId: senderId.toLowerCase(),
-    messageId: String(messageId),
-    cursor: cursor!,
+    messageId,
+    cursor,
     agentId: agentId.trim(),
     sessionKey: sessionKey.trim(),
     direct,

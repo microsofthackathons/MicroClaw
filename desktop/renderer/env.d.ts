@@ -14,6 +14,7 @@ interface ChatEventPayload {
   deltaText?: string;
   replace?: boolean;
   errorMessage?: string;
+  lifecyclePhase?: "start" | "end" | "error";
 }
 
 interface AppSettings {
@@ -252,7 +253,7 @@ interface OpenClawAPI {
   chat: {
     isConnected(): Promise<boolean>;
     sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
-    loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
+    loadHistory(sessionKey: string): Promise<{ sessionKey?: string; messages?: unknown[]; thinkingLevel?: string; sessionInfo?: import("../src/chat-run-lifecycle").ChatSessionRuntime }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
     abort(sessionKey: string): Promise<void>;

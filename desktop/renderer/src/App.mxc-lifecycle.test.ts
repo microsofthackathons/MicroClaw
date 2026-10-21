@@ -12,6 +12,7 @@ import PermissionDialog from "@/components/PermissionDialog.vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import { agentRunLifecycleEvent } from "../../src/chat-run-lifecycle";
 import { planWeixinRemoteApprovalNativeTransition } from "../../src/windows-node-mxc-weixin-remote-approval-consent";
 import { WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } from "../../src/windows-node-mxc-weixin-remote-approval";
 import {
@@ -33,6 +34,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   let approvalResolved: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalResolved"]>[0];
   const nativeDialog = vi.fn();
   const persist = vi.fn();
+  let chatEvent: Parameters<OpenClawAPI["chat"]["onEvent"]>[0];
 
   beforeEach(async () => {
     vi.useFakeTimers();
@@ -42,6 +44,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
       removeEventListener: vi.fn(),
     });
     window.openclaw = createBrowserOpenClawMock();
+    vi.spyOn(window.openclaw.chat, "onEvent").mockImplementation((callback) => {
+      chatEvent = callback;
+      return vi.fn();
+    });
     vi.spyOn(window.openclaw.windowsNodeMxc, "respondApproval").mockResolvedValue(undefined);
     status = await window.openclaw.windowsNodeMxc.getStatus();
     status.fullAvailability = {
@@ -143,6 +149,36 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await flushPromises();
     expect(settings.text()).not.toContain("Remote command approval");
   }
+
+  it("routes actual external lifecycle through App+Pinia without a renderer send or global loader", async () => {
+    const { gateway, chat } = await mountReadyApp();
+    const key = "agent:main:main";
+    chat.setMainSessionKey(key);
+    const start = agentRunLifecycleEvent({
+      stream: "lifecycle",
+      sessionKey: key,
+      runId: "wechat-run",
+      data: { phase: "start" },
+    });
+    const end = agentRunLifecycleEvent({
+      stream: "lifecycle",
+      sessionKey: key,
+      runId: "wechat-run",
+      data: { phase: "end" },
+    });
+    if (!start || !end) throw new Error("Invalid lifecycle fixture");
+    chatEvent(start);
+    expect(chat.streaming).toBe(true);
+    expect(chat.chatRunId).toBe("wechat-run");
+    expect(chat.messages).toEqual([]);
+    expect(gateway.ready).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    chatEvent(end);
+    await flushPromises();
+    expect(chat.streaming).toBe(false);
+    expect(chat.lastError).toBeNull();
+    expect(gateway.ready).toBe(true);
+  });
 
   function useNativeMainBridge() {
     return vi

@@ -220,6 +220,24 @@ MicroClaw does not require an independent WeChat server signature or immutable u
 Compromise of the authenticated WeChat session, the allowlisted plugin, or the Gateway therefore
 remains an explicit product risk and is disclosed in the local MXC activation dialog.
 
+Provider message IDs and cursors use canonical nonnegative decimal strings internally. Numeric
+JSON literals are preserved from their original source lexemes before floating-point rounding;
+already-decoded unsafe numbers, missing fields, invalid decimals, and values beyond uint64 fail
+remote-approval validation. Diagnostics report wire types/presence and hashed session-binding
+shape, not message contents, credentials, or raw identities. A registered chat-route alias is not
+implicitly equivalent to a different prepared execution-session binding.
+MXC compatibility diagnostics compare fixed, hashed fields at exec defaults, node prepare
+input/output, and the raw approval envelope before normalization. They do not establish route
+equivalence or authorize a request.
+
+Desktop thinking state follows exact Gateway session/run lifecycle events, including external
+WeChat runs, rather than requiring a Desktop send. History's authoritative `sessionInfo` active-run
+snapshot restores state after switching or reconnecting. Older terminal events and stale snapshots
+cannot clear a newer run; lifecycle-only completion clears thinking without inventing a chat turn.
+Streamed text and tool evidence remain pending until the actual terminal chat event or
+authoritative history owns the output. Failed cancellation reports the error without falsely
+clearing authoritative busy state.
+
 Electron main remains the sole approval authority. The WeChat plugin has a generation-local,
 token-authenticated named-pipe transport with only two operations: report a normalized inbound
 message before agent dispatch, and deliver a desktop-generated system message. It cannot list

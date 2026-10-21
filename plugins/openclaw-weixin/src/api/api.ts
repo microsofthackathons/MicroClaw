@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfigBotAgent, loadConfigRouteTag } from "../auth/accounts.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactUrl } from "../util/redact.js";
+import { parseWeixinUpdatesJson } from "./provider-metadata.js";
 
 import type {
   BaseInfo,
@@ -453,7 +454,7 @@ export async function getUpdates(
       label: "getUpdates",
       abortSignal: params.abortSignal,
     });
-    const resp: GetUpdatesResp = JSON.parse(rawText);
+    const resp = parseWeixinUpdatesJson(rawText);
     return resp;
   } catch (err) {
     // Long-poll timeout or external abort are both normal control-flow exits.

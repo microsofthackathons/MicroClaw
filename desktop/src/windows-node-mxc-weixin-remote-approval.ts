@@ -2,6 +2,10 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import { classifyLiteralFilesystemCommand } from "./windows-node-mxc-literal-filesystem-command";
+import {
+  normalizeWeixinProviderInteger,
+  isLaterWeixinProviderCursor,
+} from "./weixin-provider-integer";
 
 export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT =
   "microclaw.windows-weixin-remote-approval.v1";
@@ -86,12 +90,20 @@ export function migrateWeixinRemoteApprovalConfiguration(
   }
 }
 
+export function projectWeixinRemoteApprovalRuntimeConfiguration(
+  stored: unknown,
+  runtimeAuthorized: boolean,
+): WeixinRemoteApprovalConfiguration {
+  const validated = migrateWeixinRemoteApprovalConfiguration(stored);
+  return { ...validated, enabled: validated.enabled && runtimeAuthorized };
+}
+
 export interface WeixinRemoteApprovalSource {
   accountId: string;
   senderId: string;
   conversationId: string;
   messageId: string;
-  cursor: number;
+  cursor: number | string;
   agentId: string;
   sessionKey: string;
   direct: boolean;
@@ -131,7 +143,7 @@ export interface WeixinRemoteApprovalDelivery {
   senderId: string;
   conversationId: string;
   sourceMessageId: string;
-  sourceCursor: number;
+  sourceCursor: number | string;
   expiresAtUnixMs: number;
   text: string;
 }
@@ -141,7 +153,7 @@ export interface WeixinRemoteApprovalCandidate {
   senderId: string;
   conversationId: string;
   messageId: string;
-  cursor: number;
+  cursor: number | string;
   direct: boolean;
   forwarded: boolean;
   quoted: boolean;
@@ -214,7 +226,7 @@ interface ActiveChallenge {
   createdAtUnixMs: number;
   expiresAtUnixMs: number;
   attempts: number;
-  lastCandidateCursor: number;
+  lastCandidateCursor: number | string;
   locale: "en-US" | "zh-CN";
   deliveredAtUnixMs: number | null;
   reminderAtUnixMs: number | null;
@@ -304,7 +316,7 @@ function securityBindingHash(
         senderId: normalizeIdentity(source.senderId),
         conversationId: normalizeOpaqueId(source.conversationId),
         messageId: normalizeOpaqueId(source.messageId),
-        cursor: source.cursor,
+        cursor: normalizeWeixinProviderInteger(source.cursor),
         agentId: normalizeOpaqueId(source.agentId),
         sessionKey: normalizeOpaqueId(source.sessionKey),
         direct: source.direct,
@@ -688,9 +700,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     )
       return reject("source-identity-mismatch");
     if (
-      !Number.isSafeInteger(input.source.cursor) ||
-      input.source.cursor < 0 ||
-      !input.source.messageId.trim()
+      normalizeWeixinProviderInteger(input.source.cursor) === null ||
+      normalizeWeixinProviderInteger(input.source.messageId) === null
     ) {
       return reject("source-metadata-invalid");
     }
@@ -929,9 +940,9 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       return reject("chat");
     }
     if (
-      !Number.isSafeInteger(candidate.cursor) ||
-      candidate.cursor <= challenge.source.cursor ||
-      candidate.cursor <= challenge.lastCandidateCursor ||
+      !isLaterWeixinProviderCursor(candidate.cursor, challenge.source.cursor) ||
+      !isLaterWeixinProviderCursor(candidate.cursor, challenge.lastCandidateCursor) ||
+      normalizeWeixinProviderInteger(candidate.messageId) === null ||
       normalizeOpaqueId(candidate.messageId) === challenge.source.messageId
     ) {
       return reject("cursor");

@@ -65,6 +65,7 @@ export type ChatEventPayload = {
   deltaText?: string;
   replace?: boolean;
   errorMessage?: string;
+  lifecyclePhase?: "start" | "end" | "error";
 };
 
 export type AgentWarmupResult = {
@@ -363,7 +364,12 @@ export class GatewayClient {
   }
 
   /** Load chat history for a session. */
-  loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }> {
+  loadHistory(sessionKey: string): Promise<{
+    sessionKey?: string;
+    messages?: unknown[];
+    thinkingLevel?: string;
+    sessionInfo?: import("./chat-run-lifecycle").ChatSessionRuntime;
+  }> {
     return this.request("chat.history", { sessionKey, limit: 200 });
   }
 

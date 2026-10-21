@@ -1,5 +1,6 @@
 import net from "node:net";
 import { randomUUID } from "node:crypto";
+import { normalizeWeixinProviderInteger } from "./weixin-provider-integer";
 
 import {
   WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
@@ -262,8 +263,8 @@ function isInboundEnvelope(value: unknown): value is WeixinRemoteApprovalInbound
     typeof source.senderId === "string" &&
     typeof source.conversationId === "string" &&
     typeof source.messageId === "string" &&
-    typeof source.cursor === "number" &&
-    Number.isSafeInteger(source.cursor) &&
+    normalizeWeixinProviderInteger(source.messageId) !== null &&
+    normalizeWeixinProviderInteger(source.cursor) !== null &&
     typeof source.agentId === "string" &&
     typeof source.sessionKey === "string" &&
     typeof source.direct === "boolean" &&

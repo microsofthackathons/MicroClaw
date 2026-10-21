@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import {
   migrateWeixinRemoteApprovalConfiguration,
+  projectWeixinRemoteApprovalRuntimeConfiguration,
   normalizeWeixinRemoteApprovalOwner,
   renderWeixinRemoteApprovalPrompt,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
@@ -28,6 +29,39 @@ const approval: WindowsNodeMxcGatewayApproval = {
   hasMutableFileOperand: false,
   allowedDecisions: ["allow-once", "allow-always", "deny"],
 };
+
+describe("native consent capability across the real runtime configuration projection", () => {
+  const owner = normalizeWeixinRemoteApprovalOwner(
+    "bot",
+    "owner@im.wechat",
+    "2026-10-20T00:00:00.000Z",
+  );
+  it("preserves an existing validated native durable marker and exact owner epoch", () => {
+    const stored = { enabled: true, owner, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+    const projected = projectWeixinRemoteApprovalRuntimeConfiguration(stored, true);
+    expect(projected).toEqual(stored);
+    expect(weixinRemoteApprovalConsentHash(projected)).not.toBeNull();
+  });
+  it("does not upgrade a legacy owner or an invalid marker", () => {
+    for (const stored of [
+      { enabled: true, owner },
+      { enabled: true, owner, consentScope: "invalid" },
+    ]) {
+      const projected = projectWeixinRemoteApprovalRuntimeConfiguration(stored, true);
+      expect(projected.enabled).toBe(true);
+      expect(projected.consentScope).toBeUndefined();
+      expect(weixinRemoteApprovalConsentHash(projected)).toBeNull();
+    }
+  });
+  it("still gates authority on the current authenticated runtime", () => {
+    const projected = projectWeixinRemoteApprovalRuntimeConfiguration(
+      { enabled: true, owner, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE },
+      false,
+    );
+    expect(projected.enabled).toBe(false);
+    expect(weixinRemoteApprovalConsentHash(projected)).toBeNull();
+  });
+});
 
 function input(now = 1_000): WeixinRemoteApprovalCreateInput {
   return {

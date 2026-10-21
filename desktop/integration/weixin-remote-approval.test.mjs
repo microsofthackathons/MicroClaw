@@ -81,6 +81,7 @@ vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
 
 import { interceptWeixinRemoteApprovalMessage } from "../../plugins/openclaw-weixin/src/messaging/process-message.js";
 import { monitorWeixinProvider } from "../../plugins/openclaw-weixin/src/monitor/monitor.js";
+import { parseWeixinUpdatesJson } from "../../plugins/openclaw-weixin/src/api/provider-metadata.js";
 import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
 import { buildMicroclawWindowsNodeShellCommand } from "../src/openclaw-approval-replay-compat.mjs";
 import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc";
@@ -96,6 +97,7 @@ import {
 import { deliverWeixinRemoteApproval } from "../src/windows-node-mxc-weixin-remote-approval-delivery";
 import {
   normalizeWeixinRemoteApprovalOwner,
+  projectWeixinRemoteApprovalRuntimeConfiguration,
   WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
   weixinRemoteApprovalConsentHash,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
@@ -239,17 +241,26 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     mocks.monitorTransport = null;
   });
 
-  async function pipeline(approval = normalizedApproval(), durableConsent = true) {
+  async function pipeline(
+    approval = normalizedApproval(),
+    durableConsent = true,
+    scopeOverride = undefined,
+  ) {
     const sources = new Map();
-    const configuration = {
-      enabled: true,
-      ...(durableConsent ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } : {}),
-      owner: normalizeWeixinRemoteApprovalOwner(
-        "bot",
-        "owner@im.wechat",
-        "2026-10-20T00:00:00.000Z",
-      ),
-    };
+    const configuration = projectWeixinRemoteApprovalRuntimeConfiguration(
+      {
+        enabled: true,
+        ...(durableConsent
+          ? { consentScope: scopeOverride ?? WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
+          : {}),
+        owner: normalizeWeixinRemoteApprovalOwner(
+          "bot",
+          "owner@im.wechat",
+          "2026-10-20T00:00:00.000Z",
+        ),
+      },
+      true,
+    );
     const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker();
     broker.configure(configuration);
     const directory = mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-approval-test-"));
@@ -427,6 +438,43 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     ),
   );
 
+  it.each([false, true])(
+    "delivers the real folder-plan pipeline with lossless provider int64 wire metadata (quoted=%s)",
+    async (quoted) => {
+      const state = await pipeline(normalizedApproval(), false);
+      const wireMessage = (text, id, seq) => {
+        const encode = (value) => (quoted ? JSON.stringify(value) : value);
+        const wire = JSON.stringify({ ...phoneMessage(text), message_id: "ID", seq: "SEQ" })
+          .replace('"ID"', encode(id))
+          .replace('"SEQ"', encode(seq));
+        return parseWeixinUpdatesJson(`{"msgs":[${wire}]}`).msgs[0];
+      };
+      await interceptWeixinRemoteApprovalMessage(
+        wireMessage(
+          "Create the requested Desktop folder",
+          "18446744073709551000",
+          "9007199254740993",
+        ),
+        state.deps,
+        "start",
+      );
+      expect(state.sources.get(sessionKey)).toMatchObject({
+        messageId: "18446744073709551000",
+        cursor: "9007199254740993",
+      });
+      const delivery = await state.deliver();
+      expect(delivery).not.toBeNull();
+      expect(mocks.send).toHaveBeenCalledOnce();
+      const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+      await interceptWeixinRemoteApprovalMessage(
+        wireMessage(`1 ${code}`, "18446744073709551001", "9007199254740994"),
+        state.deps,
+      );
+      expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith("allow-once");
+      expect(state.store.list()).toHaveLength(0);
+    },
+  );
+
   it.each([
     ["1", "allow-once"],
     ["3", "deny"],
@@ -446,6 +494,17 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       expect(state.store.list()).toHaveLength(0);
     },
   );
+  it("does not persist a phone Always through an invalid runtime consent marker", async () => {
+    const state = await pipeline(normalizedApproval(), true, "invalid-native-scope");
+    const delivery = await state.start();
+    const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+    expect(await state.reply(`2 ${code}`)).toBe(true);
+    expect(state.resolveGateway).not.toHaveBeenCalled();
+    expect(state.store.list()).toHaveLength(0);
+    expect(await state.reply(`1 ${code}`, 44)).toBe(true);
+    expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith("allow-once");
+    expect(state.store.list()).toHaveLength(0);
+  });
   it.each(cases)("%s: %s resolves from %s as %s", async (_operation, script, origin, decision) => {
     const state = await pipeline(normalizedApproval(script));
     const delivery = await state.start();
@@ -548,7 +607,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
 
   it.each([
     [{ seq: undefined }, "provider-cursor-unavailable"],
-    [{ seq: "42" }, "provider-cursor-unavailable"],
+    [{ seq: "042" }, "provider-cursor-unavailable"],
     [{ message_id: undefined }, "provider-message-id-unavailable"],
     [{ message_id: -1 }, "provider-message-id-unavailable"],
     [{ from_user_id: 42 }, "provider-identity-invalid"],

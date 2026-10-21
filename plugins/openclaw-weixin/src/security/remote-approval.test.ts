@@ -36,7 +36,7 @@ describe("WeChat remote approval ingress normalization", () => {
       senderId: "owner@im.wechat",
       conversationId: "owner@im.wechat",
       messageId: "1001",
-      cursor: 42,
+      cursor: "42",
       agentId: "main",
       sessionKey: "agent:main:weixin:owner",
       direct: true,
@@ -44,6 +44,13 @@ describe("WeChat remote approval ingress normalization", () => {
       quoted: false,
       text: "1 23456789",
     });
+  });
+
+  it("preserves exact canonical decimal provider strings without Number conversion", () => {
+    expect(normalizeInboundSource(
+      message({ message_id: "18446744073709551000", seq: "9007199254740993" }),
+      "bot", "main", "s",
+    )).toMatchObject({ messageId: "18446744073709551000", cursor: "9007199254740993" });
   });
 
   it("marks group, forwarded, and quoted forms as ineligible", () => {

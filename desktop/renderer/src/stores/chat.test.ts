@@ -76,6 +76,413 @@ import {
 import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
+describe("server-driven WeChat conversation busy state", () => {
+  const key = "agent:main:main";
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+  });
+  function event(
+    runId: string,
+    lifecyclePhase: "start" | "end" | "error",
+    sessionKey = key,
+  ): ChatEventPayload {
+    return { runId, lifecyclePhase, sessionKey, state: "status" };
+  }
+  it("shows thinking without a renderer send and clears on lifecycle-only completion", () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent(event("external", "start"));
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("external");
+    expect(store.messages).toEqual([]);
+    store.handleChatEvent(event("external", "end"));
+    expect(store.streaming).toBe(false);
+    expect(store.lastError).toBeNull();
+    expect(store.messages).toEqual([]);
+  });
+  it("keeps unrelated conversations and old terminal events from changing the current run", () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent(event("other", "start", "agent:other:main"));
+    expect(store.streaming).toBe(false);
+    store.handleChatEvent(event("old", "start"));
+    store.handleChatEvent(event("new", "start"));
+    store.handleChatEvent(event("old", "end"));
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("new");
+    store.handleChatEvent(event("new", "end"));
+    expect(store.streaming).toBe(false);
+    store.handleChatEvent(event("old", "start"));
+    expect(store.streaming).toBe(false);
+  });
+  it.each(["error", "aborted", "final"] as const)(
+    "clears external busy state on %s without another delta",
+    (state) => {
+      const store = useChatStore();
+      store.setMainSessionKey(key);
+      store.handleChatEvent(event("external", "start"));
+      store.handleChatEvent({ sessionKey: key, runId: "external", state });
+      expect(store.streaming).toBe(false);
+    },
+  );
+  it("starts from an actual external delta or tool wait even if lifecycle start was missed", () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "delta-run",
+      state: "delta",
+      deltaText: "working",
+    });
+    expect(store.streaming).toBe(true);
+    store.handleChatEvent(event("delta-run", "end"));
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "tool-run",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "tool" },
+    });
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("tool-run");
+  });
+  it("restores a canonical active run from real history metadata after reconnect", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["external"], status: "running" },
+    });
+    await store.loadHistory();
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("external");
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [], status: "done" },
+    });
+    await store.recoverAfterReconnect();
+    expect(store.streaming).toBe(false);
+  });
+  it("does not let a stale inactive snapshot clear a newer live start", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    let resolve!: (value: unknown) => void;
+    mockLoadHistory.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const loading = store.loadHistory();
+    store.handleChatEvent({ sessionKey: key, runId: "new", state: "delta", deltaText: "working" });
+    resolve({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await loading;
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("new");
+  });
+  it("uses authoritative history canonicalization without leaving the chat loader set", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["external"] },
+    });
+    await store.loadHistory();
+    expect(store.sessionKey).toBe(key);
+    expect(store.loading).toBe(false);
+    expect(store.streaming).toBe(true);
+  });
+  it("restores only the selected session's active run after switching", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    mockLoadHistory.mockImplementation(async (sessionKey) => ({
+      sessionKey,
+      messages: [],
+      sessionInfo: {
+        key: sessionKey,
+        hasActiveRun: sessionKey === key,
+        activeRunIds: sessionKey === key ? ["external"] : [],
+      },
+    }));
+    store.handleChatEvent(event("external", "start"));
+    await store.switchSession("agent:other:main");
+    expect(store.streaming).toBe(false);
+    await store.switchSession(key);
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("external");
+  });
+  it("clears a confirmed cancellation and rejects a late start for that run", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent(event("external", "start"));
+    await store.abort();
+    expect(mockAbort).toHaveBeenCalledWith(key);
+    expect(store.streaming).toBe(false);
+    store.handleChatEvent(event("external", "start"));
+    expect(store.streaming).toBe(false);
+  });
+  it("preserves real streamed text when the terminal event has no structured message", () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "delta",
+      deltaText: "completed response",
+    });
+    store.handleChatEvent({ sessionKey: key, runId: "external", state: "final" });
+    expect(
+      store.messages.some((message) => store.extractTextOnly(message) === "completed response"),
+    ).toBe(true);
+    expect(store.streaming).toBe(false);
+  });
+  it("retains completed tool history before clearing terminal busy state", () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "external",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "actual-tool" },
+    });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "final",
+      message: { role: "assistant", content: "done" },
+    });
+    expect(Object.values(store.completedToolCallsMap).flat()).toContainEqual(
+      expect.objectContaining({ id: "actual-tool" }),
+    );
+    expect(store.streaming).toBe(false);
+  });
+  it("preserves delta/tool output across lifecycle end then an empty final while history is pending", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    let resolveHistory!: (value: unknown) => void;
+    const history = new Promise((resolve) => {
+      resolveHistory = resolve;
+    });
+    mockLoadHistory.mockReturnValue(history);
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "external",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "actual-tool" },
+    });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "delta",
+      deltaText: "actual completed text",
+    });
+    store.handleChatEvent(event("external", "end"));
+    expect(store.streaming).toBe(false);
+    expect(store.streamText).toBe("actual completed text");
+    expect(store.streamToolCalls).toHaveLength(1);
+    store.handleChatEvent({ sessionKey: key, runId: "external", state: "final" });
+    expect(
+      store.messages.some((message) => store.extractTextOnly(message) === "actual completed text"),
+    ).toBe(true);
+    expect(Object.values(store.completedToolCallsMap).flat()).toContainEqual(
+      expect.objectContaining({ id: "actual-tool" }),
+    );
+    expect(store.lastError).toBeNull();
+    resolveHistory({
+      sessionKey: key,
+      messages: [...store.messages],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await history;
+    expect(store.lastError).toBeNull();
+  });
+  it("keeps a background session's output through lifecycle end and its later empty final", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "external",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "background-tool" },
+    });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "delta",
+      deltaText: "background completed text",
+    });
+    await store.switchSession("agent:other:main");
+    store.handleChatEvent(event("external", "end"));
+    store.handleChatEvent({ sessionKey: key, runId: "external", state: "final" });
+    let resolveHistory!: (value: unknown) => void;
+    const history = new Promise((resolve) => {
+      resolveHistory = resolve;
+    });
+    mockLoadHistory.mockReturnValueOnce(history);
+    const switching = store.switchSession(key);
+    expect(
+      store.messages.some(
+        (message) => store.extractTextOnly(message) === "background completed text",
+      ),
+    ).toBe(true);
+    expect(Object.values(store.completedToolCallsMap).flat()).toContainEqual(
+      expect.objectContaining({ id: "background-tool" }),
+    );
+    expect(store.streaming).toBe(false);
+    resolveHistory({
+      sessionKey: key,
+      messages: [...store.messages],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await switching;
+    expect(store.lastError).toBeNull();
+  });
+  it("lets authoritative terminal history own output without a late final creating an empty-response error", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    let resolveHistory!: (value: unknown) => void;
+    const history = new Promise((resolve) => {
+      resolveHistory = resolve;
+    });
+    mockLoadHistory.mockReturnValueOnce(history);
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "delta",
+      deltaText: "completed text",
+    });
+    store.handleChatEvent(event("external", "end"));
+    const persisted = {
+      sessionKey: key,
+      messages: [{ role: "assistant", content: "completed text" }],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    };
+    mockLoadHistory.mockResolvedValue(persisted);
+    resolveHistory(persisted);
+    await history;
+    expect(store.streamText).toBe("");
+    store.handleChatEvent({ sessionKey: key, runId: "external", state: "final" });
+    expect(store.lastError).toBeNull();
+    expect(store.messages).toHaveLength(1);
+  });
+  it("caches uncommitted terminal output when switching away after lifecycle end", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    let resolveEndHistory!: (value: unknown) => void;
+    const endHistory = new Promise((resolve) => {
+      resolveEndHistory = resolve;
+    });
+    mockLoadHistory.mockReturnValueOnce(endHistory);
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "external",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "pending-tool" },
+    });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "delta",
+      deltaText: "pending completed text",
+    });
+    store.handleChatEvent(event("external", "end"));
+    await store.switchSession("agent:other:main");
+    let resolveSwitchHistory!: (value: unknown) => void;
+    const switchHistory = new Promise((resolve) => {
+      resolveSwitchHistory = resolve;
+    });
+    mockLoadHistory.mockReturnValueOnce(switchHistory);
+    const switching = store.switchSession(key);
+    expect(store.streaming).toBe(false);
+    expect(store.streamText).toBe("pending completed text");
+    expect(store.streamToolCalls).toHaveLength(1);
+    store.handleChatEvent({ sessionKey: key, runId: "external", state: "final" });
+    expect(
+      store.messages.some((message) => store.extractTextOnly(message) === "pending completed text"),
+    ).toBe(true);
+    expect(Object.values(store.completedToolCallsMap).flat()).toContainEqual(
+      expect.objectContaining({ id: "pending-tool" }),
+    );
+    resolveEndHistory({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    resolveSwitchHistory({
+      sessionKey: key,
+      messages: [...store.messages],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await Promise.all([endHistory, switching]);
+    expect(store.lastError).toBeNull();
+  });
+  it("does not let a late old final or end-history response clear a newer run", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    let resolveHistory!: (value: unknown) => void;
+    const history = new Promise((resolve) => {
+      resolveHistory = resolve;
+    });
+    mockLoadHistory.mockReturnValueOnce(history);
+    store.handleChatEvent({ sessionKey: key, runId: "old", state: "delta", deltaText: "old text" });
+    store.handleChatEvent(event("old", "end"));
+    store.handleChatEvent({ sessionKey: key, runId: "new", state: "delta", deltaText: "new text" });
+    store.handleChatEvent({ sessionKey: key, runId: "old", state: "final" });
+    resolveHistory({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await history;
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("new");
+    expect(store.streamText).toBe("new text");
+    expect(store.lastError).toBeNull();
+  });
+  it("retains authoritative busy state and surfaces a rejected cancellation", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "external",
+      state: "delta",
+      deltaText: "working",
+    });
+    mockAbort.mockRejectedValueOnce(new Error("Abort denied"));
+    await store.abort();
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("external");
+    expect(store.lastError).toMatchObject({ raw: expect.stringContaining("Abort denied") });
+  });
+  it("does not close a newer run when an older cancellation response arrives", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({ sessionKey: key, runId: "old", state: "delta", deltaText: "old" });
+    let complete!: () => void;
+    mockAbort.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const aborting = store.abort();
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "new",
+      state: "status",
+      lifecyclePhase: "start",
+    });
+    complete();
+    await aborting;
+    expect(store.streaming).toBe(true);
+    expect(store.chatRunId).toBe("new");
+  });
+});
+
 describe("classifyChatError", () => {
   it.each([
     ["HTTP 403 Forbidden", "provider_access", 403],

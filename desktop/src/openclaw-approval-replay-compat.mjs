@@ -57,6 +57,111 @@ const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.appr
 const HOOKS_GATE_SYMBOL = Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
 
+export function buildMxcApprovalContextDiagnostic(stage, context, hashString) {
+  if (
+    ![
+      "gateway-approval-requested",
+      "exec-defaults",
+      "node-prepare-input",
+      "node-prepare-output",
+    ].includes(stage)
+  ) {
+    throw new Error("Unsupported MXC approval diagnostic stage");
+  }
+  function descriptor(record, key) {
+    return record && typeof record === "object" && !Array.isArray(record)
+      ? Object.getOwnPropertyDescriptor(record, key)
+      : undefined;
+  }
+  function read(record, key) {
+    const field = descriptor(record, key);
+    return field && "value" in field ? field.value : undefined;
+  }
+  function describe(record, key) {
+    const field = descriptor(record, key);
+    if (!field) return { present: false, type: "missing" };
+    if (!("value" in field)) return { present: true, type: "accessor" };
+    const value = field.value;
+    return {
+      present: true,
+      type: value === null ? "null" : Array.isArray(value) ? "array" : typeof value,
+      ...(typeof value === "string" ? { hash: hashString(value), length: value.length } : {}),
+    };
+  }
+  function fields(record, keys) {
+    return Object.fromEntries(keys.map((key) => [key, describe(record, key)]));
+  }
+  const envelope = read(context, "envelope");
+  const request =
+    stage === "gateway-approval-requested" ? read(envelope, "request") : read(context, "request");
+  const plan =
+    stage === "gateway-approval-requested" ? read(request, "systemRunPlan") : read(context, "plan");
+  const defaults = read(context, "defaults");
+  const origin =
+    stage === "gateway-approval-requested" ? read(envelope, "origin") : read(context, "origin");
+  return {
+    contract: "microclaw.mxc-approval-context-diagnostic.v1",
+    stage,
+    envelope: fields(envelope, [
+      "id",
+      "sessionKey",
+      "agentId",
+      "runId",
+      "toolCallId",
+      "originatingClientId",
+    ]),
+    request: fields(request, [
+      "sessionKey",
+      "agentId",
+      "runId",
+      "toolCallId",
+      "origin",
+      "originatingClientId",
+      "originatingDeviceId",
+      "turnSourceChannel",
+      "turnSourceTo",
+      "turnSourceAccountId",
+      "turnSourceThreadId",
+    ]),
+    plan: fields(plan, ["sessionKey", "agentId", "runId", "toolCallId"]),
+    defaults: fields(defaults, [
+      "sessionKey",
+      "runSessionKey",
+      "notifySessionKey",
+      "sessionId",
+      "agentId",
+      "runId",
+      "messageProvider",
+      "currentChannelId",
+      "accountId",
+    ]),
+    origin: fields(origin, [
+      "kind",
+      "channel",
+      "sessionKey",
+      "agentId",
+      "runId",
+      "toolCallId",
+      "turnSourceChannel",
+      "turnSourceTo",
+      "turnSourceAccountId",
+      "turnSourceThreadId",
+    ]),
+  };
+}
+
+export function describeMxcApprovalContext(stage, context) {
+  return buildMxcApprovalContextDiagnostic(stage, context, (value) =>
+    createHash("sha256").update(value).digest("hex").slice(0, 16),
+  );
+}
+
+const MXC_APPROVAL_CONTEXT_DIAGNOSTIC_SOURCE = `${buildMxcApprovalContextDiagnostic.toString()}
+function logMicroclawMxcApprovalContext(stage, context) {
+\tif (process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1") return;
+\tconsole.info("[weixin-remote-approval-context]", buildMxcApprovalContextDiagnostic(stage, context, (value) => crypto.createHash("sha256").update(value).digest("hex").slice(0, 16)));
+}`;
+
 export function classifyWindowsNodeMxcInvokeFailure(error) {
   const asRecord = (value) =>
     value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -72,9 +177,7 @@ export function classifyWindowsNodeMxcInvokeFailure(error) {
     (error instanceof Error ? error.message : normalizeString(error)) ??
     "node invoke failed";
   const nodeCommandDispatched =
-    typeof details?.nodeCommandDispatched === "boolean"
-      ? details.nodeCommandDispatched
-      : undefined;
+    typeof details?.nodeCommandDispatched === "boolean" ? details.nodeCommandDispatched : undefined;
   const requestSent =
     typeof errorRecord?.requestSent === "boolean" ? errorRecord.requestSent : undefined;
   if (
@@ -129,8 +232,7 @@ export function normalizeWindowsNodeSystemRunResponse(raw) {
     return (
       leftKeys.length === rightKeys.length &&
       leftKeys.every(
-        (key, index) =>
-          key === rightKeys[index] && jsonEqual(leftRecord[key], rightRecord[key]),
+        (key, index) => key === rightKeys[index] && jsonEqual(leftRecord[key], rightRecord[key]),
       )
     );
   };
@@ -223,10 +325,7 @@ export function describeWindowsNodeSystemRunResponseShape(raw) {
 }
 
 export function buildMicroclawWindowsNodeShellCommand(command, env = process.env) {
-  const windowsRoot = (env.SystemRoot ?? env.WINDIR ?? "C:\\Windows").replace(
-    /[\\/]+$/,
-    "",
-  );
+  const windowsRoot = (env.SystemRoot ?? env.WINDIR ?? "C:\\Windows").replace(/[\\/]+$/, "");
   return [
     `${windowsRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
     "-NoLogo",
@@ -710,6 +809,7 @@ export const PINNED_BASH_TOOLS_FAILURE_REGION_SOURCE = `//#region src/agents/bas
 /** Only explicit trusted provenance can prove that node execution did not begin. */`;
 
 const PATCHED_BASH_TOOLS_FAILURE_REGION_SOURCE = `//#region src/agents/bash-tools.exec-host-node-failure.ts
+${MXC_APPROVAL_CONTEXT_DIAGNOSTIC_SOURCE}
 const microclawUnresolvedNodeRuns = new Map();
 function buildMicroclawUnresolvedNodeRunKey(nodeId, plan) {
 \treturn crypto.createHash("sha256").update(JSON.stringify({
@@ -766,6 +866,7 @@ export const PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE = `\t\t\tconst host = targe
 \t\t\tconst explicitSecurity = defaults?.security;`;
 const PATCHED_BASH_TOOLS_HOST_SELECTION_SOURCE = `\t\t\tconst host = target.effectiveHost;
 \t\t\tif (process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1" && host !== "node") throw new Error("MicroClaw MXC execution is locked to host=node. Do not retry with gateway or sandbox host overrides.");
+\t\t\tif (host === "node") logMicroclawMxcApprovalContext("exec-defaults", { defaults, origin: { agentId, toolCallId } });
 \t\t\tconst explicitSecurity = defaults?.security;`;
 
 export const PINNED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepareNodeSystemRun({
@@ -778,7 +879,8 @@ export const PINNED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepa
 \t});
 \tconst approvalAnalysis = await analyzeNodeApprovalRequirement({`;
 
-const PATCHED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepareNodeSystemRun({
+const PATCHED_BASH_TOOLS_PREPARED_SOURCE = `\tlogMicroclawMxcApprovalContext("node-prepare-input", { request: params, origin: params });
+\tconst prepared = await prepareNodeSystemRun({
 \t\trequest: {
 \t\t\t...params,
 \t\t\tsecurity: hostSecurity,
@@ -786,6 +888,7 @@ const PATCHED_BASH_TOOLS_PREPARED_SOURCE = `\tconst prepared = await prepareNode
 \t\t},
 \t\ttarget
 \t});
+\tlogMicroclawMxcApprovalContext("node-prepare-output", { request: params, plan: prepared.plan, origin: params });
 \tconst microclawUnresolvedRunKey = buildMicroclawUnresolvedNodeRunKey(target.nodeId, prepared.plan);
 \tconst microclawUnresolvedRun = findMicroclawUnresolvedNodeRun(microclawUnresolvedRunKey);
 \tif (microclawUnresolvedRun) return formatMicroclawUnresolvedNodeRunResult({
