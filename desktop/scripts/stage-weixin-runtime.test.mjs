@@ -221,6 +221,17 @@ test("prepared package resource is provenance-pinned and excludes a nested OpenC
   assert.ok(!manifest.requiredOpenClawExports.includes("./plugin-sdk/infra-runtime"));
   assert.equal(fs.existsSync(path.join(destination, "node_modules", "openclaw")), false);
   assert.equal(
+    JSON.parse(
+      fs.readFileSync(path.join(destination, "node_modules", "qrcode-terminal", "package.json")),
+    ).version,
+    "0.12.0",
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(destination, "node_modules", "zod", "package.json")))
+      .version,
+    "4.4.3",
+  );
+  assert.equal(
     JSON.parse(fs.readFileSync(path.join(destination, "microclaw-runtime.json"), "utf8"))
       .treeSha256,
     manifest.treeSha256,
