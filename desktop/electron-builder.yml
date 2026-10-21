@@ -6,6 +6,7 @@ directories:
   output: release
 
 afterSign: scripts/update-signed-windows-node-manifest.mjs
+afterPack: scripts/finalize-packaged-weixin-resource.mjs
 
 win:
   target:
