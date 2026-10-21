@@ -1,4 +1,5 @@
 import { GatewayRequestError } from "./gateway-client";
+import { assertChatModelSupported } from "./provider-model-capabilities";
 import {
   parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
@@ -30,6 +31,7 @@ interface Dependencies {
     | null;
   readConfig(): unknown;
   assertMutable(): void;
+  prepareModel?(modelRef: string, expectedConfig: unknown): Promise<unknown>;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -56,8 +58,13 @@ export async function selectDefaultModel(
     );
   if (ref.startsWith("llama-cpp/"))
     throw new Error("Use local model selection so preparation and file checks are preserved");
+  assertChatModelSupported(ref);
   deps.assertMutable();
-  assertModelConfigUnchanged(params.expectedConfig, deps.readConfig());
+  let expectedConfig = params.expectedConfig;
+  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
+  if (deps.prepareModel) expectedConfig = await deps.prepareModel(ref, expectedConfig);
+  deps.assertMutable();
+  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
   const gateway = deps.gateway();
   if (!gateway?.connected || !supportsLocalModelGatewayVersion(gateway.serverVersion))
     throw new Error("Default model selection requires a connected, supported OpenClaw Gateway");
@@ -119,7 +126,7 @@ export async function selectDefaultModel(
     )
       throw new Error("The selected model is not configured");
   }
-  assertModelConfigUnchanged(params.expectedConfig, deps.readConfig());
+  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
   if (getPrimaryModel(config) !== ref) {
     let result: Record<string, unknown>;
     try {

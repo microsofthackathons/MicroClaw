@@ -100,7 +100,7 @@ describe.skipIf(!publishedPackage || process.platform !== "win32")(
               "--port",
               String(port),
             ],
-            { env, cwd: stateDir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+            { env, cwd: publishedPackage, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
           );
           let log = "";
           const capture = (data: Buffer) => {
@@ -227,7 +227,7 @@ const outsideDatabase = new DatabaseSync(outsideDatabasePath);
 outsideDatabase.exec("CREATE TABLE secret (value TEXT);");
 outsideDatabase.close();
 const session = worker.createScopedSqliteReadOnlyWorker(worker.captureSqliteReadOnlyWorkerLaunch());
-await assert.rejects(session.run(outsideDatabasePath, { mode: "sync" }), /outside trusted state scope/);
+await assert.rejects(session.run(outsideDatabasePath, { mode: "sync" }), /Unauthorized OpenClaw SQLite worker session request/);
 await session.close();
 assert.equal(sandbox.isBlockedPath(path.join(process.env.LOCALAPPDATA, "openclaw", "credentials.json")), true);
 console.log("SQLite sync/async snapshots and cleanup verified with sandbox active");
@@ -256,6 +256,7 @@ console.log("SQLite sync/async snapshots and cleanup verified with sandbox activ
         });
         const result = spawnSync(process.execPath, [script], {
           env,
+          cwd: publishedPackage,
           windowsHide: true,
           encoding: "utf8",
           timeout: 60_000,
@@ -264,7 +265,7 @@ console.log("SQLite sync/async snapshots and cleanup verified with sandbox activ
         expect(result.status, result.stderr).toBe(0);
         expect(result.stderr).toContain("spawnSync: OpenClaw SQLite worker -> BYPASS (internal)");
         expect(result.stderr).toContain("execFile: OpenClaw SQLite worker -> BYPASS (internal)");
-        expect(result.stderr).toContain("spawn: OpenClaw SQLite worker -> BYPASS (internal)");
+        expect(result.stderr).toContain("spawn: OpenClaw SQLite worker -> BYPASS (internal IPC)");
         expect(result.stderr).not.toMatch(/permission requested|BLOCKED \(permission\)/i);
         expect(result.stdout).toContain("SQLite sync/async snapshots and cleanup verified");
       } finally {

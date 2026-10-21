@@ -11,6 +11,7 @@ internal static class ApprovalProofContract
     public const string PlanVersion = "microclaw.windows-node-approval-plan.v2";
     public const int MaximumLifetimeMs = 30_000;
     public const int MaximumClockSkewMs = 5_000;
+    public const int MaximumPostConsumptionLaunchDelayMs = 30_000;
 }
 
 internal sealed record ApprovalProofRecord(
@@ -29,7 +30,7 @@ internal sealed record ValidatedApprovalProof(
     string ApprovalId,
     string Nonce,
     string PlanSha256,
-    long ExpiresAtUnixMs);
+    long LaunchExpiresAtUnixMs);
 
 internal sealed class ApprovalProofVerifier
 {
@@ -127,6 +128,8 @@ internal sealed class ApprovalProofVerifier
 
         var now = _nowUnixMs();
         var lifetime = proof.ExpiresAtUnixMs - proof.IssuedAtUnixMs;
+        Console.Error.WriteLine(
+            $"[microclaw-approval-timing] stage=host-receipt receivedAtUnixMs={now} proofIssuedAtUnixMs={proof.IssuedAtUnixMs} proofAgeMs={Math.Max(0, now - proof.IssuedAtUnixMs)} proofLifetimeMs={lifetime}");
         if (lifetime <= 0 || lifetime > ApprovalProofContract.MaximumLifetimeMs
             || proof.IssuedAtUnixMs > now + ApprovalProofContract.MaximumClockSkewMs
             || proof.ExpiresAtUnixMs <= now)
@@ -165,12 +168,23 @@ internal sealed class ApprovalProofVerifier
             _consumedApprovalIds.Add(proof.ApprovalId, proof.ExpiresAtUnixMs);
             _consumedNonces.Add(proof.Nonce, proof.ExpiresAtUnixMs);
         }
+        var validatedAtUnixMs = _nowUnixMs();
+        Console.Error.WriteLine(
+            $"[microclaw-approval-timing] stage=host-validated validatedAtUnixMs={validatedAtUnixMs} proofAgeMs={Math.Max(0, validatedAtUnixMs - proof.IssuedAtUnixMs)}");
 
         return new ValidatedApprovalProof(
             proof.ApprovalId,
             proof.Nonce,
             planSha256,
-            proof.ExpiresAtUnixMs);
+            checked(now + ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs));
+    }
+
+    public void Revalidate(ValidatedApprovalProof proof)
+    {
+        if (proof.LaunchExpiresAtUnixMs <= _nowUnixMs())
+            throw new HostPolicyException(
+                "approval-proof-stale",
+                "The post-approval process-launch authorization expired before process launch.");
     }
 
     public static string ComputePlanSha256(JsonElement args, DurableApproval currentIdentity)

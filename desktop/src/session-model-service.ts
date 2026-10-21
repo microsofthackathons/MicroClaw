@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { inspectLocalModelFiles } from "./local-model-files";
 import { GatewayRequestError } from "./gateway-client";
+import { assertChatModelSupported } from "./provider-model-capabilities";
 import { supportsLocalModelGatewayVersion, validateLocalModelUrl } from "./local-model-service";
 import {
   parseGitHubCopilotGatewayAuthStatus,
@@ -24,6 +25,7 @@ interface Dependencies {
   runtime(): SessionModelRuntime | null;
   restartGateway(): Promise<void>;
   onRecoveryChanged(): void;
+  prepareModel?(modelRef: string): Promise<void>;
 }
 
 export interface SessionModelRuntime {
@@ -522,8 +524,14 @@ export class SessionModelService {
     }
     const key = sessionKey(params.sessionKey);
     const ref = params.modelRef === null ? null : modelReference(params.modelRef);
+    if (ref !== null) assertChatModelSupported(ref);
     this.assertIdle();
     this.deps.assertMutable();
+    if (ref !== null && this.deps.prepareModel) {
+      await this.deps.prepareModel(ref);
+      this.assertIdle();
+      this.deps.assertMutable();
+    }
     const ctx = this.context();
     const runtime = ctx.runtime;
     if (!runtime || runtime.isStopped())

@@ -7,26 +7,19 @@ export const WINDOWS_NODE_MXC_READINESS_PROOF_TTL_MS = 15_000;
 export const WINDOWS_NODE_MXC_APPROVAL_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const WINDOWS_NODE_MXC_SCRATCH_BINDING = "isolated-scratch:v1";
 
-export type WindowsNodeMxcReadinessProbeKind = "hostname" | "powershell";
+export type WindowsNodeMxcReadinessProbeKind = "execution";
 
 export const WINDOWS_NODE_MXC_READINESS_PROBES: Record<
   WindowsNodeMxcReadinessProbeKind,
   readonly string[]
 > = {
-  hostname: [
-    "C:\\Windows\\System32\\cmd.exe",
-    "/d",
-    "/s",
-    "/c",
-    "C:\\Windows\\System32\\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
-  ],
-  powershell: [
+  execution: [
     "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    "[Console]::Out.Write('MICROCLAW_MXC_POWERSHELL_OK')",
+    "$child=& 'C:\\Windows\\System32\\hostname.exe'; if ([string]::IsNullOrWhiteSpace(($child -join ''))) { exit 41 }; [Console]::Out.Write('MICROCLAW_MXC_EXECUTION_OK')",
   ],
 };
 

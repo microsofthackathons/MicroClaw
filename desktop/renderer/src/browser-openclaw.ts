@@ -74,8 +74,24 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     },
     windowsNodeMxc: {
       getStatus: async () => ({
+        requestedMode: "off" as const,
+        effectiveStrength: "off" as const,
+        effectiveTier: null,
         desiredEnabled: false,
         effectiveEnabled: false,
+        hooks: {
+          requestedExternalEnabled: false,
+          requestedInternalEnabled: false,
+          effectiveExternalEnabled: false,
+          effectiveInternalEnabled: false,
+          pausedByMxc: false,
+        },
+        canvas: {
+          state: "off" as const,
+          commandCount: 8 as const,
+          nativeA2uiOnly: true as const,
+          localFilesAllowed: false as const,
+        },
         lifecycleState: {
           phase: "idle" as const,
           detail: null,
@@ -113,13 +129,34 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           needsDaclAugmentation: false,
           degraded: false,
           warnings: [],
+          probes: {
+            baseContainerApiPresent: null,
+            bfscfgPresent: null,
+            bfsCompiledIn: null,
+          },
           reason: "Unavailable in browser development",
         },
+        fullAvailability: {
+          available: false,
+          summary: "Unavailable in browser development",
+          blockers: ["Unavailable in browser development"],
+          remediation: [],
+        },
+        limitedAvailability: {
+          available: false,
+          summary: "Unavailable in browser development",
+          blockers: ["Unavailable in browser development"],
+          remediation: [],
+        },
+        ambientAccess: null,
         smoke: null,
         blockers: ["Unavailable in browser development"],
         warnings: [],
         remediation: [],
       }),
+      preflight: async () => {
+        throw new Error("Unavailable in browser development");
+      },
       setEnabled: async () => {
         throw new Error("Unavailable in browser development");
       },
@@ -220,7 +257,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onToolEvent: noopSub,
       onExecCommand: noopSub,
     },
-    cron: { list: async () => ({ jobs: [] }) },
+    cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },
     model: {
       selectDefault: async () => {
@@ -278,6 +315,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         }),
         onEvent: noopSub,
       },
+      discoverModels: async () => ({ ok: false, error: "unavailable" }),
+      registerCatalogModel: async () => {
+        throw new Error("Model registration requires the desktop Gateway");
+      },
       testConnection: async () => ({ ok: true, message: "Connection successful" }),
       prepareGitHubCopilot: async () => ({ restartRequired: false }),
       startGitHubCopilotLogin: async () => ({ sessionId: "browser-dev" }),
@@ -291,6 +332,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       weixin: {
         getStatus: async () => ({
           enabled: false,
+          requestedEnabled: false,
+          effectiveEnabled: false,
+          pausedByMxc: false,
           installed: false,
           loggedIn: false,
           loginInProgress: false,
@@ -304,6 +348,19 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           message: "Unavailable in browser development",
         }),
         disconnect: async () => ({ ok: true }),
+        getRemoteApprovalStatus: async () => ({
+          experimental: true as const,
+          enabled: false,
+          configured: false,
+          owner: null,
+          availableOwners: [],
+          blockedReason: "mxc-off" as const,
+        }),
+        setRemoteApprovalEnabled: async () => ({
+          ok: false,
+          error: "Unavailable in browser development",
+        }),
+        revokeRemoteApproval: async () => ({ ok: true }),
         onLoginOutput: noopSub,
         onLoginDone: noopSub,
       },

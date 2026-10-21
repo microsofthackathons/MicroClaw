@@ -13,8 +13,10 @@
       class="model-setup-panel"
       :role="inline ? 'region' : 'dialog'"
       :aria-modal="inline ? undefined : true"
+      :aria-label="inline ? getFamilyLabel(selectedFamily) : undefined"
     >
       <button
+        v-if="!inline"
         class="model-setup-close"
         type="button"
         :disabled="configMutationInProgress"
@@ -129,20 +131,22 @@
       </template>
 
       <template v-else>
-        <h2>{{ inline ? getFamilyLabel(selectedFamily) : t("modelSetup.title") }}</h2>
-        <p class="model-setup-desc">
-          {{
-            manageOnly
-              ? t("modelManager.saveOnlyHint")
-              : t(
-                  isGitHubCopilot
-                    ? "modelSetup.copilotDesc"
-                    : isCustomProvider
-                      ? "modelSetup.customDesc"
-                      : "modelSetup.keyDesc",
-                )
-          }}
-        </p>
+        <template v-if="!inline">
+          <h2>{{ t("modelSetup.title") }}</h2>
+          <p class="model-setup-desc">
+            {{
+              manageOnly
+                ? t("modelManager.saveOnlyHint")
+                : t(
+                    isGitHubCopilot
+                      ? "modelSetup.copilotDesc"
+                      : isCustomProvider
+                        ? "modelSetup.customDesc"
+                        : "modelSetup.keyDesc",
+                  )
+            }}
+          </p>
+        </template>
 
         <el-form label-position="top" class="model-key-form">
           <template v-if="isGitHubCopilot">
@@ -238,29 +242,14 @@
                 <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
               </el-select>
             </el-form-item>
-            <el-form-item :label="t('modelSetup.modelSelect')">
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.modelSelect')">
               <el-input
-                v-if="isCustomProvider"
                 v-model="selectedModelName"
                 :placeholder="t('modelSetup.modelPlaceholder')"
                 @keydown.enter.prevent="saveAndStart"
               />
-              <el-select
-                v-else
-                v-model="selectedModelName"
-                style="width: 100%"
-                filterable
-                :placeholder="t('modelSetup.modelPlaceholder')"
-              >
-                <el-option
-                  v-for="model in selectedManagedProvider?.models ?? []"
-                  :key="model.id"
-                  :label="model.name"
-                  :value="model.id"
-                />
-              </el-select>
             </el-form-item>
-            <el-form-item :label="t('modelSetup.baseUrl')">
+            <el-form-item :label="t('modelSetup.baseUrl')" data-testid="provider-base-field">
               <el-input
                 v-model="baseUrl"
                 :disabled="!isCustomProvider"
@@ -270,17 +259,98 @@
             </el-form-item>
             <el-form-item
               :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
+              data-testid="provider-key-field"
             >
-              <el-input
-                v-model="apiKey"
-                type="password"
-                show-password
-                :placeholder="selectedFamily.apiKeyPlaceholder"
-                @keydown.enter.prevent="saveAndStart"
-              />
+              <div class="model-field-row">
+                <el-input
+                  v-model="apiKey"
+                  class="model-field-input"
+                  :disabled="saving"
+                  type="password"
+                  show-password
+                  :placeholder="selectedFamily.apiKeyPlaceholder"
+                  @keydown.enter.prevent="saveAndStart"
+                />
+                <button
+                  v-if="selectedManagedProvider"
+                  class="model-field-action provider-api-key-link"
+                  type="button"
+                  :disabled="configMutationInProgress"
+                  @click.stop="openProviderSignup"
+                >
+                  {{ t("modelSetup.getApiKey") }}
+                </button>
+              </div>
               <div v-if="isCustomProvider" class="field-hint">
                 {{ t("modelSetup.credentialHint") }}
               </div>
+            </el-form-item>
+            <el-form-item
+              v-if="selectedManagedProvider"
+              :label="t('modelSetup.modelSelect')"
+              data-testid="provider-model-field"
+            >
+              <div class="model-field-row">
+                <el-select
+                  class="model-field-input"
+                  :model-value="catalogReady ? selectedModelName : ''"
+                  :disabled="!catalogReady || saving"
+                  :loading="catalogLoading"
+                  filterable
+                  :placeholder="t('modelSetup.modelPlaceholder')"
+                  @update:model-value="selectedModelName = $event"
+                >
+                  <el-option
+                    v-for="model in catalogModels"
+                    :key="model"
+                    :label="catalogModelLabel(model)"
+                    :title="catalogModelLabel(model)"
+                    :value="model"
+                    :disabled="Boolean(catalogModelRestriction(model))"
+                  />
+                </el-select>
+                <button
+                  class="model-field-action model-refresh-action"
+                  type="button"
+                  data-testid="refresh-provider-models"
+                  :aria-label="t('modelSetup.catalogRefresh')"
+                  :title="t('modelSetup.catalogRefresh')"
+                  :aria-busy="catalogLoading"
+                  :disabled="!apiKey.trim() || catalogLoading || saving"
+                  @click="loadProviderModels"
+                >
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                    :class="{ 'refresh-spinning': catalogLoading }"
+                  >
+                    <path d="M20 7v5h-5M4 17v-5h5" />
+                    <path d="M6.1 7A7 7 0 0 1 18 5l2 2M4 17l2 2a7 7 0 0 0 11.9-2" />
+                  </svg>
+                </button>
+              </div>
+              <p class="field-hint" role="status">
+                {{
+                  t(
+                    catalogLoading
+                      ? "modelSetup.catalogLoading"
+                      : catalogReady
+                        ? "modelSetup.catalogLoaded"
+                        : "modelSetup.catalogNeedsKey",
+                  )
+                }}
+              </p>
+              <p v-if="catalogError" class="error-msg" role="alert">{{ catalogError }}</p>
+              <p v-if="selectedModelRestriction" class="error-msg" role="alert">
+                {{ t(`modelSetup.incompatible.${selectedModelRestriction}`) }}
+              </p>
             </el-form-item>
           </template>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
@@ -292,7 +362,7 @@
             class="text-action text-action--back"
             type="button"
             :disabled="configMutationInProgress"
-            @mousedown.prevent.stop="goToSelectStep"
+            @click.prevent.stop="goToSelectStep"
           >
             {{ t("modelSetup.back") }}
           </button>
@@ -308,7 +378,7 @@
             class="primary-action"
             type="button"
             :disabled="formPrimaryDisabled"
-            @mousedown.prevent.stop="handleFormPrimaryAction"
+            @click.prevent.stop="handleFormPrimaryAction"
             @keydown.enter.prevent.stop="handleFormPrimaryAction"
             @keydown.space.prevent.stop="handleFormPrimaryAction"
           >
@@ -321,10 +391,13 @@
 </template>
 
 <script setup lang="ts">
+import { useProviderModelCatalog } from "@/composables/use-provider-model-catalog";
+import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
 import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import {
   mergeModelProviderConfig,
+  matchesProviderConnection,
   getDefaultAgentModelOverride,
   selectPrimaryModelConfig,
   validateModelProviderInput,
@@ -439,7 +512,7 @@ function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
 
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
-const selectedModelName = ref(getDefaultModel(modelFamilies[0]));
+const selectedModelName = ref("");
 const baseUrl = ref(modelFamilies[0].baseUrl);
 const providerKey = ref(modelFamilies[0].providerKey);
 const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
@@ -448,6 +521,8 @@ const errorMsg = ref("");
 const saving = ref(false);
 watch(saving, (value) => emit("busy", value), { flush: "sync" });
 onUnmounted(() => {
+  catalogGeneration++;
+  clearTimeout(catalogTimer);
   cancelPendingSubmission();
   emit("busy", false);
 });
@@ -460,6 +535,50 @@ let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
 const selectedManagedProvider = computed(() => getManagedModelProvider(selectedFamilyId.value));
+const catalogModels = ref<string[]>([]);
+const catalogReady = ref(false);
+const catalogLoading = ref(false);
+const catalogError = ref("");
+const providerCatalog = useProviderModelCatalog();
+const selectedModelRestriction = computed(() => catalogModelRestriction(selectedModelName.value));
+function catalogModelRestriction(model: string) {
+  return getChatModelRestriction(`${providerKey.value}/${model}`);
+}
+function catalogModelLabel(model: string): string {
+  const restriction = catalogModelRestriction(model);
+  return restriction ? `${model} — ${t(`modelSetup.incompatible.${restriction}`)}` : model;
+}
+let catalogGeneration = 0;
+let catalogTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function loadProviderModels() {
+  if (!props.modelValue || !selectedManagedProvider.value || !apiKey.value.trim() || saving.value)
+    return;
+  clearTimeout(catalogTimer);
+  const generation = ++catalogGeneration;
+  catalogModels.value = [];
+  catalogReady.value = false;
+  catalogLoading.value = true;
+  catalogError.value = "";
+  try {
+    const result = await providerCatalog.load({
+      baseUrl: baseUrl.value,
+      apiKey: apiKey.value,
+    });
+    if (generation !== catalogGeneration) return;
+    if (!result.ok) {
+      catalogError.value = t(`modelSetup.catalogError.${result.error}`);
+      return;
+    }
+    catalogModels.value = result.models;
+    catalogReady.value = true;
+    if (!result.models.includes(selectedModelName.value)) selectedModelName.value = "";
+  } catch {
+    if (generation === catalogGeneration) catalogError.value = t("modelSetup.catalogError.network");
+  } finally {
+    if (generation === catalogGeneration) catalogLoading.value = false;
+  }
+}
 const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
 const isGitHubCopilot = computed(() => selectedFamilyId.value === "github-copilot");
 const isLocalProvider = computed(() => selectedFamilyId.value === "local");
@@ -488,6 +607,9 @@ const formPrimaryDisabled = computed(
   () =>
     saving.value ||
     props.streaming ||
+    Boolean(selectedModelRestriction.value) ||
+    (Boolean(selectedManagedProvider.value) &&
+      (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))) ||
     (isGitHubCopilot.value &&
       (githubAuthState.value === "checking" ||
         githubAuthState.value === "signing-in" ||
@@ -570,6 +692,21 @@ watch(
   { immediate: true },
 );
 
+watch(
+  [() => props.modelValue, isKeyStep, selectedFamilyId, baseUrl, apiKey],
+  () => {
+    ++catalogGeneration;
+    clearTimeout(catalogTimer);
+    catalogReady.value = false;
+    catalogLoading.value = false;
+    catalogModels.value = [];
+    catalogError.value = "";
+    if (props.modelValue && isKeyStep.value && selectedManagedProvider.value && apiKey.value.trim())
+      catalogTimer = setTimeout(() => void loadProviderModels(), 600);
+  },
+  { immediate: true, flush: "sync" },
+);
+
 function getFamilyLabel(family: ModelFamilyPreset): string {
   return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
 }
@@ -593,8 +730,9 @@ function close() {
 
 function selectFamily(familyId: ModelFamilyId) {
   const family = getFamilyById(familyId);
+  if (family.id !== selectedFamilyId.value) apiKey.value = "";
   selectedFamilyId.value = family.id;
-  selectedModelName.value = getDefaultModel(family);
+  selectedModelName.value = getManagedModelProvider(familyId) ? "" : getDefaultModel(family);
   baseUrl.value = family.baseUrl;
   providerKey.value = family.providerKey;
   selectedApiFormat.value = family.apiFormat;
@@ -602,7 +740,9 @@ function selectFamily(familyId: ModelFamilyId) {
 }
 
 function goToKeyForm() {
-  selectedModelName.value = getDefaultModel(selectedFamily.value);
+  selectedModelName.value = selectedManagedProvider.value
+    ? ""
+    : getDefaultModel(selectedFamily.value);
   baseUrl.value = selectedFamily.value.baseUrl;
   providerKey.value = selectedFamily.value.providerKey;
   selectedApiFormat.value = selectedFamily.value.apiFormat;
@@ -624,14 +764,32 @@ function handlePrimaryAction() {
 }
 
 function handleGetApiKey() {
+  void openProviderSignup();
+  goToKeyForm();
+}
+
+async function openProviderSignup() {
   const signupUrl = selectedManagedProvider.value?.signupUrl;
   if (!signupUrl) return;
+  const family = selectedFamilyId.value;
+  const generation = submissionGeneration;
   try {
-    window.openclaw?.shell?.openExternal?.(signupUrl);
-  } catch {
-    window.open(signupUrl, "_blank", "noopener,noreferrer");
+    if (window.openclaw?.shell?.openExternal) {
+      await window.openclaw.shell.openExternal(signupUrl);
+    } else {
+      window.open(signupUrl, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    if (
+      props.modelValue &&
+      selectedFamilyId.value === family &&
+      submissionGeneration === generation
+    ) {
+      errorMsg.value = t("modelSetup.openProviderFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  goToKeyForm();
 }
 
 function goToSelectStep() {
@@ -736,6 +894,17 @@ function validationMessage(error: ModelProviderValidationError): string {
 
 async function saveAndStart() {
   if (saving.value || props.streaming) return;
+  if (selectedModelRestriction.value) {
+    errorMsg.value = t(`modelSetup.incompatible.${selectedModelRestriction.value}`);
+    return;
+  }
+  if (
+    selectedManagedProvider.value &&
+    (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))
+  ) {
+    errorMsg.value = catalogError.value || t("modelSetup.catalogChoose");
+    return;
+  }
   if (providerKey.value.trim().toLowerCase() === "llama-cpp") {
     if (props.inline) {
       errorMsg.value = t("modelManager.localEntryHint");
@@ -755,7 +924,11 @@ async function saveAndStart() {
     apiFormat: selectedApiFormat.value,
     modelName: selectedModelName.value,
     input:
-      props.currentProvider?.input ?? (isCustomProvider.value ? ["text"] : managedModel?.input),
+      props.currentProvider?.modelName === selectedModelName.value
+        ? props.currentProvider.input
+        : isCustomProvider.value
+          ? ["text"]
+          : managedModel?.input,
   };
   const validationError = validateModelProviderInput(input, {
     requireApiKey: !isCustomProvider.value,
@@ -799,18 +972,36 @@ async function saveAndStart() {
       errorMsg.value = t("modelManager.structuredSecret");
       return;
     }
-    const nextConfig = props.manageOnly
-      ? mergeModelProviderConfig(existing || {}, verifiedInput, {
-          select: false,
-          displayName:
-            props.currentProvider?.modelName === verifiedInput.modelName
-              ? (props.currentProvider.displayName ?? verifiedInput.modelName)
-              : verifiedInput.modelName,
-        })
-      : mergeModelProviderConfig(existing || {}, verifiedInput);
     configMutationInProgress.value = true;
-    await window.openclaw.config.write(nextConfig, existing);
-    await restartGatewayAfterModelSetup();
+    if (
+      props.manageOnly &&
+      selectedManagedProvider.value &&
+      matchesProviderConnection(existing, verifiedInput)
+    ) {
+      await window.openclaw.model.registerCatalogModel({
+        modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
+        expectedConfig: existing,
+      });
+    } else {
+      const nextConfig = props.manageOnly
+        ? mergeModelProviderConfig(existing || {}, verifiedInput, {
+            select: false,
+            displayName:
+              props.currentProvider?.modelName === verifiedInput.modelName
+                ? (props.currentProvider.displayName ?? verifiedInput.modelName)
+                : verifiedInput.modelName,
+          })
+        : mergeModelProviderConfig(existing || {}, verifiedInput);
+      await window.openclaw.config.write(nextConfig, existing);
+      await restartGatewayAfterModelSetup();
+      if (generation !== submissionGeneration || !props.modelValue) return;
+      if (selectedManagedProvider.value) {
+        await window.openclaw.model.registerCatalogModel({
+          modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
+          expectedConfig: await window.openclaw.config.read(),
+        });
+      }
+    }
     if (generation !== submissionGeneration || !props.modelValue) return;
     configMutationInProgress.value = false;
     emit("update:modelValue", false);
@@ -1135,6 +1326,83 @@ h2 {
 
 .model-key-form {
   text-align: left;
+}
+
+.model-field-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.model-field-input {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+}
+
+.model-field-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid var(--ux-border);
+  border-radius: 10px;
+  background: var(--ux-panel-bg);
+  color: var(--ux-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.model-field-action:hover:not(:disabled) {
+  background: var(--ux-surface-hover);
+  color: var(--ux-panel-text);
+}
+
+.model-field-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+.model-field-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-refresh-action {
+  width: 48px;
+  padding: 0;
+}
+
+.refresh-spinning {
+  animation: model-refresh-spin 1s linear infinite;
+}
+
+@keyframes model-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refresh-spinning {
+    animation: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .model-field-row {
+    gap: 8px;
+  }
+  .provider-api-key-link {
+    padding: 0 8px;
+    font-size: 12px;
+  }
 }
 
 .model-key-form :deep(.el-form-item__label) {

@@ -14,7 +14,7 @@ public sealed class ReadinessProofTests
         Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
     private static readonly string PolicyFingerprint = new('a', 64);
     private static readonly string NodeId = new('b', 64);
-    private static readonly string[] Argv = ReadinessProbeContract.Probes["hostname"];
+    private static readonly string[] Argv = ReadinessProbeContract.Probes["execution"];
     private static readonly DurableApproval CurrentIdentity = new(
         DurableApprovalIdentity.SchemaVersion,
         Argv[0],
@@ -35,14 +35,31 @@ public sealed class ReadinessProofTests
         var replay = Assert.Throws<HostPolicyException>(
             () => verifier.ValidateAndConsume(args, CurrentIdentity));
 
-        Assert.Equal("hostname", validated.ProbeKind);
+        Assert.Equal("execution", validated.ProbeKind);
         Assert.Equal(
-            "1cf9d0658d325540aba0d944d8d00937b2c86626a6a814cbc9017a2ab63c2c45",
+            "35fc1fc5eb08a374a0247f7dde073db0ca0578d26158bbd6fdc5110ac6e50bda",
             validated.PlanSha256);
         Assert.Equal(
-            "7c964f4e5c2c0f169eb295185edf317f609cbdfe105b29ec29980bebb577744d",
+            "223e2c971807546fe05478ebf9e28790b3b6339a92504e7f9fd6a559aab167c7",
             proof.Signature);
         Assert.Equal("readiness-proof-replayed", replay.Code);
+    }
+
+    [Fact]
+    public void FreshProofsPermitRepeatedExecutionProbeButEachNonceRemainsOneUse()
+    {
+        var verifier = Verifier();
+        var first = Sign(UnsignedProof(Args()));
+        var second = Sign(UnsignedProof(Args()) with
+        {
+            Nonce = "12345678-1234-4234-8234-123456789abe",
+        });
+
+        Assert.Equal("execution", verifier.ValidateAndConsume(Args(first), CurrentIdentity).ProbeKind);
+        Assert.Equal("execution", verifier.ValidateAndConsume(Args(second), CurrentIdentity).ProbeKind);
+        AssertCode(
+            "readiness-proof-replayed",
+            () => verifier.ValidateAndConsume(Args(second), CurrentIdentity));
     }
 
     [Fact]
@@ -70,6 +87,28 @@ public sealed class ReadinessProofTests
 
         Assert.Single(results, result => result == "valid");
         Assert.Equal(23, results.Count(result => result == "readiness-proof-replayed"));
+    }
+
+    [Fact]
+    public void RevalidationRejectsProofThatExpiresBeforeLaunch()
+    {
+        var now = IssuedAtUnixMs;
+        var verifier = new ReadinessProofVerifier(
+            Secret,
+            Generation,
+            PolicyFingerprint,
+            NodeId,
+            TransitionId,
+            () => now);
+        var args = Args();
+        var validated = verifier.ValidateAndConsume(
+            Args(Sign(UnsignedProof(args))),
+            CurrentIdentity);
+
+        now = validated.ExpiresAtUnixMs;
+        var error = Assert.Throws<HostPolicyException>(() => verifier.Revalidate(validated));
+
+        Assert.Equal("readiness-proof-stale", error.Code);
     }
 
     [Theory]
@@ -119,7 +158,7 @@ public sealed class ReadinessProofTests
                 CurrentIdentity));
         AssertCode(
             "readiness-proof-kind-mismatch",
-            () => Verifier().ValidateAndConsume(Args(proof, probeKind: "powershell"), CurrentIdentity));
+            () => Verifier().ValidateAndConsume(Args(proof, probeKind: "hostname"), CurrentIdentity));
 
         var declaredIdentity = CurrentIdentity with
         {
@@ -158,7 +197,7 @@ public sealed class ReadinessProofTests
 
     private static JsonElement Args(
         object? proof = null,
-        string probeKind = "hostname",
+        string probeKind = "execution",
         string? cwd = null,
         string? agentId = ReadinessProbeContract.AgentId,
         string? rawCommand = null)
@@ -197,7 +236,7 @@ public sealed class ReadinessProofTests
             Generation,
             PolicyFingerprint,
             NodeId,
-            "hostname",
+            "execution",
             ApprovalProofVerifier.ComputePlanSha256(args, CurrentIdentity),
             IssuedAtUnixMs,
             IssuedAtUnixMs + 15_000,
@@ -210,5 +249,40 @@ public sealed class ReadinessProofTests
     {
         var error = Assert.Throws<HostPolicyException>(action);
         Assert.Equal(expected, error.Code);
+    }
+
+    [Fact]
+    public void ReadinessPreparationIsFreshBoundAndOneUse()
+    {
+        var now = IssuedAtUnixMs;
+        var guard = new ReadinessPreparationGuard(() => now);
+        guard.Record("execution", CurrentIdentity);
+        now += ReadinessPreparationGuard.MaximumAgeMs - 1;
+
+        Assert.Equal(
+            ReadinessPreparationGuard.MaximumAgeMs - 1,
+            guard.ValidateAndConsume("execution", CurrentIdentity));
+        AssertCode(
+            "readiness-preparation-required",
+            () => guard.ValidateAndConsume("execution", CurrentIdentity));
+    }
+
+    [Fact]
+    public void ReadinessPreparationRejectsStaleOrChangedLaunch()
+    {
+        var now = IssuedAtUnixMs;
+        var guard = new ReadinessPreparationGuard(() => now);
+        guard.Record("execution", CurrentIdentity);
+        now += ReadinessPreparationGuard.MaximumAgeMs + 1;
+        AssertCode(
+            "readiness-preparation-stale",
+            () => guard.ValidateAndConsume("execution", CurrentIdentity));
+
+        guard.Record("execution", CurrentIdentity);
+        AssertCode(
+            "readiness-preparation-mismatch",
+            () => guard.ValidateAndConsume(
+                "execution",
+                CurrentIdentity with { ExecutableSha256 = new string('d', 64) }));
     }
 }

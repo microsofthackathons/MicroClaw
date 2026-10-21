@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
 export const WINDOWS_NODE_MXC_DURABLE_APPROVALS_CONTRACT =
   "microclaw.windows-node-mxc-durable-approvals.v1";
@@ -40,6 +41,13 @@ export type WindowsNodeMxcDurableApprovalIdentity = Omit<
   WindowsNodeMxcDurableApproval,
   "schemaVersion" | "id" | "createdAt" | "lastUsedAt" | "approvalPlanContract"
 >;
+
+export function canUseWindowsNodeMxcDurableApproval(
+  requestedMode: WindowsNodeMxcRequestedMode,
+  identity: WindowsNodeMxcDurableApprovalIdentity | null,
+): identity is WindowsNodeMxcDurableApprovalIdentity {
+  return requestedMode !== "off" && identity !== null;
+}
 
 interface DurableApprovalStoreDependencies {
   now?: () => Date;
@@ -145,6 +153,12 @@ export class WindowsNodeMxcDurableApprovalStore {
     await this.enqueueWrite((records) => records.filter((record) => record.id !== id));
   }
 
+  async revokeSession(sessionKey: string): Promise<void> {
+    await this.enqueueWrite((records) =>
+      records.filter((record) => record.sessionKey !== sessionKey),
+    );
+  }
+
   async revokeAll(): Promise<void> {
     await this.enqueueWrite(() => []);
   }
@@ -172,7 +186,8 @@ export function durableApprovalIdentityFromGateway(
     !/^[a-f0-9]{64}$/i.test(approval.executableSha256) ||
     !/^[a-f0-9]{64}$/i.test(policyFingerprint) ||
     !path.win32.isAbsolute(approval.executablePath) ||
-    !approval.sessionKey
+    !approval.sessionKey ||
+    approval.hasMutableFileOperand
   ) {
     return null;
   }

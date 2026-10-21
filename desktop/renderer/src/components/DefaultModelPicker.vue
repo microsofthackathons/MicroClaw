@@ -3,6 +3,9 @@
     <el-popover
       v-model:visible="open"
       trigger="click"
+      role="dialog"
+      :title="t('modelManager.defaultModel')"
+      popper-class="model-picker-dialog"
       placement="bottom-end"
       :width="380"
       :popper-style="{ maxWidth: 'calc(100vw - 32px)' }"

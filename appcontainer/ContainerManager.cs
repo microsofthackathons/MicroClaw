@@ -248,6 +248,20 @@ internal static class ContainerManager
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        if (!Directory.Exists(dirPath) && !File.Exists(dirPath))
+            throw new DirectoryNotFoundException($"Path not found: {dirPath}");
+
+        // Do this before recursive ACL propagation or an already-accessible fast path.
+        try
+        {
+            GrantAncestorTraverse(containerName, dirPath);
+            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] GrantAncestorTraverse done for: {dirPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] WARNING: GrantAncestorTraverse FAILED for {dirPath}: {ex.Message}");
+        }
+
         // Fast path: if ALL APPLICATION PACKAGES already has sufficient access,
         // skip per-profile ACL grant (the directory is accessible to any AppContainer).
         if (HasAllAppPackagesAccess(dirPath, readOnly))
@@ -308,18 +322,6 @@ internal static class ContainerManager
         else
         {
             throw new DirectoryNotFoundException($"Path not found: {dirPath}");
-        }
-
-        // Grant traverse on ancestor directories so the AC process can reach
-        // this path. Failures are non-fatal (e.g. drive root may need admin).
-        try
-        {
-            GrantAncestorTraverse(containerName, dirPath);
-            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] GrantAncestorTraverse done for: {dirPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] WARNING: GrantAncestorTraverse FAILED for {dirPath}: {ex.Message}");
         }
 
         Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] GrantAccess complete for: {dirPath} (readOnly={readOnly})");
@@ -438,7 +440,11 @@ internal static class ContainerManager
     /// Check whether the AppContainer profile has access to a directory.
     /// Returns JSON with access details.
     /// </summary>
-    public static string CheckAccess(string containerName, string dirPath, bool readOnly)
+    public static string CheckAccess(
+        string containerName,
+        string dirPath,
+        bool readOnly,
+        bool includeProtectedChildren = false)
     {
         if (!Directory.Exists(dirPath) && !File.Exists(dirPath))
         {
@@ -447,6 +453,7 @@ internal static class ContainerManager
 
         string sidStr = EnsureProfile(containerName);
         bool hasProfileAccess = false;
+        bool hasExplicitProfileAccess = false;
         string profileRights = "";
         bool hasAllAppPkg = false;
         string allAppRights = "";
@@ -472,6 +479,8 @@ internal static class ContainerManager
                 if (rule.IdentityReference.Value == sidStr)
                 {
                     hasProfileAccess = true;
+                    if (!rule.IsInherited)
+                        hasExplicitProfileAccess = true;
                     profileRights = rule.FileSystemRights.ToString();
                 }
                 else if (rule.IdentityReference.Value == AllAppPackagesSid.Value)
@@ -497,12 +506,73 @@ internal static class ContainerManager
                     (r.FileSystemRights & needed) == needed);
             }
 
+            int protectedChildrenChecked = 0;
+            int protectedChildrenWithProfileAccess = 0;
+            int protectedChildrenInsufficient = 0;
+            int protectedChildrenErrors = 0;
+            if (includeProtectedChildren && Directory.Exists(dirPath))
+            {
+                DirectoryInfo[] children;
+                try
+                {
+                    children = new DirectoryInfo(dirPath).GetDirectories();
+                }
+                catch
+                {
+                    children = [];
+                    protectedChildrenErrors++;
+                }
+
+                foreach (var child in children)
+                {
+                    try
+                    {
+                        bool isReparsePoint =
+                            (child.Attributes & FileAttributes.ReparsePoint) != 0;
+                        var childSecurity = child.GetAccessControl();
+                        if (!isReparsePoint && !childSecurity.AreAccessRulesProtected)
+                            continue;
+                        protectedChildrenChecked++;
+                        var childRules = childSecurity.GetAccessRules(
+                            true,
+                            false,
+                            typeof(SecurityIdentifier));
+                        bool childHasProfileAccess = childRules.Cast<FileSystemAccessRule>().Any(r =>
+                            r.IdentityReference.Value == sidStr &&
+                            r.AccessControlType == AccessControlType.Allow);
+                        bool childSufficient = childRules.Cast<FileSystemAccessRule>().Any(r =>
+                            r.IdentityReference.Value == sidStr &&
+                            r.AccessControlType == AccessControlType.Allow &&
+                            (r.FileSystemRights & needed) == needed);
+                        if (childHasProfileAccess)
+                            protectedChildrenWithProfileAccess++;
+                        if (!isReparsePoint && !childSufficient)
+                            protectedChildrenInsufficient++;
+                    }
+                    catch
+                    {
+                        protectedChildrenErrors++;
+                    }
+                }
+            }
+
+            bool protectedChildrenSufficient =
+                protectedChildrenInsufficient == 0 && protectedChildrenErrors == 0;
+            bool protectedChildrenClear =
+                protectedChildrenWithProfileAccess == 0 && protectedChildrenErrors == 0;
             return $"{{\"path\":{JsonEscape(dirPath)},\"exists\":true," +
                    $"\"hasProfileAccess\":{(hasProfileAccess ? "true" : "false")}," +
+                   $"\"hasExplicitProfileAccess\":{(hasExplicitProfileAccess ? "true" : "false")}," +
                    $"\"profileRights\":{JsonEscape(profileRights)}," +
                    $"\"hasAllAppPackages\":{(hasAllAppPkg ? "true" : "false")}," +
                    $"\"allAppRights\":{JsonEscape(allAppRights)}," +
-                   $"\"sufficient\":{(sufficient ? "true" : "false")}}}";
+                   $"\"sufficient\":{(sufficient ? "true" : "false")}," +
+                   $"\"protectedChildrenChecked\":{protectedChildrenChecked}," +
+                   $"\"protectedChildrenWithProfileAccess\":{protectedChildrenWithProfileAccess}," +
+                   $"\"protectedChildrenInsufficient\":{protectedChildrenInsufficient}," +
+                   $"\"protectedChildrenErrors\":{protectedChildrenErrors}," +
+                   $"\"protectedChildrenSufficient\":{(protectedChildrenSufficient ? "true" : "false")}," +
+                   $"\"protectedChildrenClear\":{(protectedChildrenClear ? "true" : "false")}}}";
         }
         catch (Exception ex)
         {
@@ -595,12 +665,14 @@ internal static class ContainerManager
 
                 // Check if the SID already has traverse access
                 var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
+                var traverseRights = FileSystemRights.ReadAttributes |
+                    FileSystemRights.ReadExtendedAttributes | FileSystemRights.Traverse;
                 bool hasAccess = false;
                 foreach (FileSystemAccessRule rule in rules)
                 {
                     if (rule.IdentityReference.Value == sidStr &&
                         rule.AccessControlType == AccessControlType.Allow &&
-                        (rule.FileSystemRights & FileSystemRights.Traverse) != 0)
+                        (rule.FileSystemRights & traverseRights) == traverseRights)
                     {
                         hasAccess = true;
                         break;
@@ -621,8 +693,7 @@ internal static class ContainerManager
                         // directory contents — e.g. D:\ sibling folder names are private).
                         security.AddAccessRule(new FileSystemAccessRule(
                             sid,
-                            FileSystemRights.ReadAttributes |
-                            FileSystemRights.ReadExtendedAttributes | FileSystemRights.Traverse,
+                            traverseRights,
                             InheritanceFlags.None,
                             PropagationFlags.None,
                             AccessControlType.Allow));
@@ -678,6 +749,11 @@ internal static class ContainerManager
         {
             try
             {
+                if ((child.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    Console.Error.WriteLine($"[grant] Skipped reparse-point child: {child.FullName}");
+                    continue;
+                }
                 var childSecurity = child.GetAccessControl();
                 if (!childSecurity.AreAccessRulesProtected)
                     continue; // inheritance enabled — parent ACL will propagate
@@ -687,7 +763,8 @@ internal static class ContainerManager
                 foreach (FileSystemAccessRule rule in rules)
                 {
                     if (rule.IdentityReference.Value == sidStr &&
-                        rule.AccessControlType == AccessControlType.Allow)
+                        rule.AccessControlType == AccessControlType.Allow &&
+                        (rule.FileSystemRights & rights) == rights)
                     {
                         hasAccess = true;
                         break;

@@ -19,6 +19,11 @@ interface PermissionRequest {
   accessNeeded?: string;
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  containmentStrength?: "full" | "limited-dacl";
+  ambientAccess?: Array<{
+    category: WindowsNodeMxcAmbientAccessCategory;
+    status: "denied" | "read" | "read-write";
+  }>;
 }
 
 const props = defineProps<{
@@ -91,6 +96,9 @@ const commandHtml = computed(() => {
 });
 
 const isMxcApproval = computed(() => props.request?.type === "mxc-approval");
+const isLimitedMxcApproval = computed(
+  () => isMxcApproval.value && props.request?.containmentStrength === "limited-dacl",
+);
 const isAttendedApproval = computed(
   () => props.request?.type === "app-approval" || isMxcApproval.value,
 );
@@ -99,9 +107,14 @@ const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
 );
 const allowsAlways = computed(
-  () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always"),
+  () =>
+    !props.request?.allowedDecisions ||
+    props.request.allowedDecisions.includes("allow-always"),
 );
 const mxcScopeText = computed(() => {
+  if (isLimitedMxcApproval.value) {
+    return allowsAlways.value ? t("perm.mxcLimitedScope") : t("perm.mxcLimitedScopeOnce");
+  }
   if (declaredAccess.value.length > 0) {
     return allowsAlways.value ? t("perm.mxcScope") : t("perm.mxcScopeOnce");
   }
@@ -127,6 +140,7 @@ const dialogIcon = computed(() => {
 });
 const dialogTitle = computed(() => {
   if (!props.request) return t("perm.title");
+  if (isLimitedMxcApproval.value) return t("perm.titleMxcLimited");
   if (isMxcApproval.value) return t("perm.titleMxc");
   if (props.request.type === "app-approval") return t("perm.titleApp");
   if (isShellRequest.value) return t("perm.titleCommand");
@@ -134,6 +148,7 @@ const dialogTitle = computed(() => {
 });
 const riskHint = computed(() => {
   if (!props.request) return "";
+  if (isLimitedMxcApproval.value) return t("perm.riskMxcLimited");
   if (isMxcApproval.value) return t("perm.riskMxc");
   if (props.request.type === "app-approval") return t("perm.riskApp");
   if (isShellRequest.value)
@@ -154,6 +169,7 @@ const grantLabel = computed(() =>
 function respond(decision: string) {
   emit("respond", decision);
 }
+
 </script>
 
 <template>
@@ -183,10 +199,18 @@ function respond(decision: string) {
             </svg>
           </button>
         </div>
-        <div v-if="isMxcApproval" class="perm-body">{{ t("perm.mxcDesc") }}</div>
+        <div v-if="isMxcApproval" class="perm-body">
+          {{ isLimitedMxcApproval ? t("perm.mxcLimitedDesc") : t("perm.mxcDesc") }}
+        </div>
         <div v-else class="perm-body" v-html="descriptionHtml"></div>
         <div v-if="isMxcApproval && declaredAccess.length > 0" class="perm-mxc-detail">
-          <div class="perm-command-label">{{ t("perm.mxcAccessLabel") }}</div>
+          <div class="perm-command-label">
+            {{
+              isLimitedMxcApproval
+                ? t("perm.mxcAdditionalAccessLabel")
+                : t("perm.mxcAccessLabel")
+            }}
+          </div>
           <div
             v-for="declaration in declaredAccess"
             :key="`${declaration.access}:${declaration.path}`"
@@ -241,7 +265,7 @@ function respond(decision: string) {
               class="perm-btn perm-btn-filled"
               @click="respond('allow-always')"
             >
-              {{ t("perm.allowAlways") }}
+              {{ isMxcApproval ? t("perm.mxcAllowAlways") : t("perm.allowAlways") }}
             </button>
           </template>
           <template v-else>

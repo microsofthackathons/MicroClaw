@@ -2,6 +2,7 @@ import { defineComponent } from "vue";
 import { createPinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ElPopover } from "element-plus";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { setLocale } from "@/i18n";
 import ChatModelPicker from "./ChatModelPicker.vue";
@@ -67,11 +68,14 @@ describe("ChatModelPicker", () => {
     document.body.replaceChildren();
     vi.restoreAllMocks();
   });
-  async function open() {
+  async function open(realPopover = false) {
     const wrapper = mount(ChatModelPicker, {
       attachTo: document.body,
       props: { sessionKey: "agent:main:one", disabled: false, connected: true },
-      global: { stubs: { "el-popover": Popover, LocalModelDownloadDialog: true } },
+      global: {
+        components: { ElPopover },
+        stubs: { "el-popover": realPopover ? false : Popover, LocalModelDownloadDialog: true },
+      },
     });
     wrappers.push(wrapper);
     await flushPromises();
@@ -79,6 +83,20 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     return wrapper;
   }
+
+  it("preserves accessible expanded state with the real Element Plus popover", async () => {
+    const wrapper = await open(true);
+    const trigger = wrapper.get('[data-testid="chat-model-picker"]');
+    await vi.waitFor(() => expect(trigger.attributes("aria-expanded")).toBe("true"));
+    expect(trigger.attributes("aria-haspopup")).toBe("dialog");
+    const dialogId = trigger.attributes("aria-controls");
+    expect(dialogId).toBeTruthy();
+    const dialog = dialogId ? document.getElementById(dialogId) : null;
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(dialog?.getAttribute("aria-label")).toBe("Model for this conversation");
+    await trigger.trigger("keydown", { key: "Escape", code: "Escape" });
+    await vi.waitFor(() => expect(trigger.attributes("aria-expanded")).toBe("false"));
+  });
 
   it("blocks selection while another session's outcome is unknown and reloads after recovery", async () => {
     let changed!: () => void;
@@ -107,6 +125,63 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     expect(window.openclaw.model.session.get).toHaveBeenCalledTimes(reads + 1);
     expect(model.attributes("disabled")).toBeUndefined();
+  });
+
+  it("does not select a realtime entry from the complete provider catalog", async () => {
+    vi.mocked(window.openclaw.config.read).mockResolvedValue({
+      models: {
+        providers: {
+          qwen: {
+            baseUrl: "https://provider.example/v1",
+            apiKey: "fixture",
+            models: [{ id: "qwen3.7-plus", name: "Plus" }],
+          },
+        },
+      },
+    });
+    window.openclaw.model.discoverModels = vi.fn().mockResolvedValue({
+      ok: true,
+      models: ["qwen3.7-plus", "qwen3.8-omni-flash-realtime"],
+    });
+    const wrapper = await open();
+    const choice = wrapper.get('[data-model-ref="qwen/qwen3.8-omni-flash-realtime"]');
+    expect(choice.attributes("disabled")).toBeDefined();
+    expect(choice.text()).toContain("Requires realtime API");
+    await choice.trigger("click");
+    expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
+    expect(wrapper.findAll('[data-model-ref^="qwen/"]')).toHaveLength(2);
+  });
+
+  it("shows and selects the full cloud catalog rather than only saved definitions without restarting", async () => {
+    vi.mocked(window.openclaw.config.read).mockResolvedValue({
+      models: {
+        providers: {
+          qwen: {
+            baseUrl: "https://provider.example/v1",
+            apiKey: "fixture",
+            models: [{ id: "saved", name: "Saved" }],
+          },
+        },
+      },
+    });
+    window.openclaw.model.discoverModels = vi.fn().mockResolvedValue({
+      ok: true,
+      models: ["saved", "live-one", "live-two"],
+    });
+    const wrapper = await open();
+    expect(
+      wrapper
+        .findAll('[data-model-ref^="qwen/"]')
+        .map((model) => model.attributes("data-model-ref")),
+    ).toEqual(["qwen/saved", "qwen/live-one", "qwen/live-two"]);
+    await wrapper.get('[data-model-ref="qwen/live-two"]').trigger("click");
+    await flushPromises();
+    expect(window.openclaw.model.session.select).toHaveBeenCalledWith({
+      sessionKey: "agent:main:one",
+      modelRef: "qwen/live-two",
+    });
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    expect(window.openclaw.config.write).not.toHaveBeenCalled();
   });
 
   function fixedCatalog() {

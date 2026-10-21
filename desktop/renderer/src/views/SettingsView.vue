@@ -225,7 +225,9 @@
           <h2 class="model-section-title">{{ t("modelManager.providers") }}</h2>
         </div>
         <p class="provider-description">{{ t("modelManager.providersHint") }}</p>
-        <p v-if="modelStatusError" class="provider-error" role="alert">{{ modelStatusError }}</p>
+        <p v-if="modelStatusError || providerCatalogError" class="provider-error" role="alert">
+          {{ [modelStatusError, providerCatalogError].filter(Boolean).join("; ") }}
+        </p>
         <SessionModelRecoveryNotice
           :disabled="chatStore.streaming || Boolean(switchingModelRef || localSelecting)"
           @state="sessionRecovery = $event"
@@ -242,7 +244,7 @@
                   :model-value="selectedModel"
                   :models="modelOptions"
                   :model-status="modelOptionStatus"
-                  :loading="copilotModelsLoading || modelActionBusy"
+                  :loading="copilotModelsLoading || providerCatalogLoading || modelActionBusy"
                   :switching="Boolean(switchingModelRef) || localSelecting"
                   :disabled="modelActionBusy || chatStore.streaming || Boolean(sessionRecovery)"
                   @change="selectModel"
@@ -271,7 +273,9 @@
                       ? t("modelManager.localHint")
                       : provider.key === "github-copilot"
                         ? t("modelManager.copilotHint")
-                        : t("modelManager.apiHint")
+                        : provider.signupUrl
+                          ? t("modelManager.apiKeyHint")
+                          : t("modelManager.apiHint")
                   }}
                 </p>
               </div>
@@ -288,32 +292,47 @@
                   )
                 }}
               </span>
-              <el-button
+              <button
+                type="button"
+                class="provider-toggle"
                 :data-testid="
                   provider.key === 'llama-cpp'
                     ? 'add-local-model'
                     : `manage-provider-${provider.key}`
                 "
-                size="small"
-                :disabled="modelActionBusy"
-                @click="
-                  provider.key === 'llama-cpp' ? openLocalModel() : openCloudSetup(provider.key)
-                "
-                >{{
+                :aria-expanded="isProviderExpanded(provider.key)"
+                :aria-controls="`provider-panel-${provider.key}`"
+                :aria-label="
                   t(
-                    provider.key === "llama-cpp"
-                      ? localProviderReady
-                        ? "modelManager.configure"
-                        : "fixedLocal.enable"
-                      : provider.models.length
-                        ? "modelManager.configure"
-                        : "modelManager.add",
+                    isProviderExpanded(provider.key)
+                      ? 'modelManager.collapseProvider'
+                      : 'modelManager.expandProvider',
+                    { provider: provider.label },
                   )
-                }}</el-button
+                "
+                :disabled="
+                  modelActionBusy ||
+                  (provider.key === 'llama-cpp' && showLocalSetup && localOperation?.busy)
+                "
+                @click="toggleProvider(provider.key)"
               >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  aria-hidden="true"
+                  :class="{ 'provider-chevron-up': isProviderExpanded(provider.key) }"
+                >
+                  <path d="m4 6 4 4 4-4" />
+                </svg>
+              </button>
             </header>
             <LocalModelSetupDialog
               v-if="provider.key === 'llama-cpp' && showLocalSetup"
+              :id="`provider-panel-${provider.key}`"
               inline
               :target-model-ref="localTargetModel"
               :default-agent-override="defaultAgentOverride"
@@ -325,7 +344,12 @@
               @remove-connection="removeLocalConnection"
             />
             <div
-              v-if="provider.key === editingProviderKey && provider.key !== 'llama-cpp'"
+              v-if="
+                provider.key === editingProviderKey &&
+                showProviderSetup &&
+                provider.key !== 'llama-cpp'
+              "
+              :id="`provider-panel-${provider.key}`"
               class="provider-editor"
             >
               <div
@@ -454,37 +478,268 @@
       <div v-if="activeSection === 'security'" class="section">
         <div class="section-label">{{ t("settings.security") }}</div>
         <div class="card-group mxc-card">
-          <div class="card-row">
-            <div>
-              <span class="row-label">{{ t("settings.windowsNodeMxc") }}</span>
-              <div class="mxc-subtitle">{{ t("settings.windowsNodeMxcExperimental") }}</div>
-            </div>
-            <el-switch
-              :model-value="windowsNodeMxcStatus?.desiredEnabled ?? false"
-              :loading="windowsNodeMxcApplying"
-              @change="toggleWindowsNodeMxc"
-            />
+          <div class="mxc-heading">
+            <span class="row-label">{{ t("settings.windowsNodeMxc") }}</span>
+            <div class="mxc-subtitle">{{ t("settings.windowsNodeMxcExperimental") }}</div>
           </div>
+          <div v-if="windowsNodeMxcStatus" class="mxc-mode-grid">
+            <section
+              class="mxc-mode-card"
+              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'full' }"
+              data-testid="mxc-mode-full"
+            >
+              <div class="mxc-mode-card-heading">
+                <strong>{{ t("settings.windowsNodeMxcModeFull") }}</strong>
+                <span class="mxc-mode-badge">{{ t("settings.windowsNodeMxcFullBadge") }}</span>
+              </div>
+              <p>{{ t("settings.windowsNodeMxcModeFullDesc") }}</p>
+              <p
+                v-if="windowsNodeMxcStatus.fullAvailability.summary"
+                class="mxc-availability-summary"
+              >
+                {{ windowsNodeMxcStatus.fullAvailability.summary }}
+              </p>
+              <ul
+                v-if="
+                  windowsNodeMxcStatus.fullAvailability.blockers.length ||
+                  windowsNodeMxcStatus.fullAvailability.remediation.length
+                "
+                class="mxc-availability-list"
+              >
+                <li
+                  v-for="blocker in windowsNodeMxcStatus.fullAvailability.blockers"
+                  :key="`full-blocker-${blocker}`"
+                  class="mxc-availability-blocker"
+                >
+                  {{ blocker }}
+                </li>
+                <li
+                  v-for="step in windowsNodeMxcStatus.fullAvailability.remediation"
+                  :key="`full-remediation-${step}`"
+                >
+                  {{ step }}
+                </li>
+              </ul>
+              <el-button
+                type="primary"
+                plain
+                data-testid="mxc-select-full"
+                :loading="windowsNodeMxcApplying"
+                :disabled="
+                  windowsNodeMxcApplying ||
+                  !windowsNodeMxcStatus.fullAvailability.available ||
+                  windowsNodeMxcStatus.requestedMode === 'full'
+                "
+                @click="selectWindowsNodeMxcMode('full')"
+              >
+                {{
+                  windowsNodeMxcStatus.requestedMode === "full"
+                    ? t("settings.windowsNodeMxcSelected")
+                    : t("settings.windowsNodeMxcUseFull")
+                }}
+              </el-button>
+            </section>
+            <section
+              class="mxc-mode-card mxc-mode-card-limited"
+              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'limited-dacl' }"
+              data-testid="mxc-mode-limited"
+            >
+              <div class="mxc-mode-card-heading">
+                <strong>{{ t("settings.windowsNodeMxcModeLimited") }}</strong>
+                <span class="mxc-mode-badge mxc-mode-badge-warning">{{
+                  t("settings.windowsNodeMxcLimitedBadge")
+                }}</span>
+              </div>
+              <p>{{ t("settings.windowsNodeMxcModeLimitedDesc") }}</p>
+              <p class="mxc-mode-warning">
+                {{ t("settings.windowsNodeMxcLimitedFilesystemWarning") }}
+              </p>
+              <p
+                v-if="windowsNodeMxcStatus.limitedAvailability.summary"
+                class="mxc-availability-summary"
+              >
+                {{ windowsNodeMxcStatus.limitedAvailability.summary }}
+              </p>
+              <ul
+                v-if="
+                  windowsNodeMxcStatus.limitedAvailability.blockers.length ||
+                  windowsNodeMxcStatus.limitedAvailability.remediation.length
+                "
+                class="mxc-availability-list"
+              >
+                <li
+                  v-for="blocker in windowsNodeMxcStatus.limitedAvailability.blockers"
+                  :key="`limited-blocker-${blocker}`"
+                  class="mxc-availability-blocker"
+                >
+                  {{ blocker }}
+                </li>
+                <li
+                  v-for="step in windowsNodeMxcStatus.limitedAvailability.remediation"
+                  :key="`limited-remediation-${step}`"
+                >
+                  {{ step }}
+                </li>
+              </ul>
+              <el-button
+                type="warning"
+                plain
+                data-testid="mxc-select-limited"
+                :loading="windowsNodeMxcApplying"
+                :disabled="
+                  windowsNodeMxcApplying ||
+                  !windowsNodeMxcStatus.limitedAvailability.available ||
+                  windowsNodeMxcStatus.requestedMode === 'limited-dacl'
+                "
+                @click="selectWindowsNodeMxcMode('limited-dacl')"
+              >
+                {{
+                  windowsNodeMxcStatus.requestedMode === "limited-dacl"
+                    ? t("settings.windowsNodeMxcSelected")
+                    : t("settings.windowsNodeMxcUseLimited")
+                }}
+              </el-button>
+            </section>
+            <section
+              class="mxc-mode-card mxc-mode-card-off"
+              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'off' }"
+              data-testid="mxc-mode-off"
+            >
+              <div class="mxc-mode-card-heading">
+                <strong>{{ t("settings.windowsNodeMxcModeOff") }}</strong>
+              </div>
+              <p>{{ t("settings.windowsNodeMxcModeOffDesc") }}</p>
+              <p class="mxc-mode-warning">{{ t("settings.windowsNodeMxcOffWarning") }}</p>
+              <el-button
+                plain
+                data-testid="mxc-select-off"
+                :loading="windowsNodeMxcApplying"
+                :disabled="windowsNodeMxcApplying || windowsNodeMxcStatus.requestedMode === 'off'"
+                @click="selectWindowsNodeMxcMode('off')"
+              >
+                {{
+                  windowsNodeMxcStatus.requestedMode === "off"
+                    ? t("settings.windowsNodeMxcSelected")
+                    : t("settings.windowsNodeMxcUseOff")
+                }}
+              </el-button>
+            </section>
+          </div>
+          <section
+            v-if="weixinRemoteApprovalStatus"
+            class="mxc-remote-approval"
+            data-testid="weixin-remote-approval"
+          >
+            <div class="mxc-mode-card-heading">
+              <strong>{{ t("settings.weixinRemoteApproval") }}</strong>
+            </div>
+            <p>{{ t("settings.weixinRemoteApprovalRisk") }}</p>
+            <div class="mxc-remote-owner">
+              <span>{{ t("settings.weixinRemoteApprovalOwner") }}</span>
+              <code>{{
+                weixinRemoteApprovalStatus.owner?.userId ??
+                t("settings.weixinRemoteApprovalUnbound")
+              }}</code>
+            </div>
+            <div
+              v-if="weixinRemoteApprovalStatus.blockedReason"
+              class="mxc-alert mxc-alert-warning"
+            >
+              {{
+                weixinRemoteApprovalStatus.blockedReason === "mxc-off"
+                  ? t("settings.weixinRemoteApprovalRequiresMxc")
+                  : t("settings.weixinRemoteApprovalRequiresOwner")
+              }}
+            </div>
+            <p class="mxc-mode-warning">{{ t("settings.weixinRemoteApprovalOnceOnly") }}</p>
+            <div class="mxc-remote-actions">
+              <el-button
+                v-if="!weixinRemoteApprovalStatus.enabled"
+                type="warning"
+                plain
+                data-testid="weixin-remote-approval-enable"
+                :loading="weixinRemoteApprovalApplying"
+                :disabled="
+                  weixinRemoteApprovalApplying || weixinRemoteApprovalStatus.blockedReason !== null
+                "
+                @click="setWeixinRemoteApprovalEnabled(true)"
+              >
+                {{ t("settings.weixinRemoteApprovalEnable") }}
+              </el-button>
+              <el-button
+                v-else
+                plain
+                data-testid="weixin-remote-approval-disable"
+                :loading="weixinRemoteApprovalApplying"
+                @click="setWeixinRemoteApprovalEnabled(false)"
+              >
+                {{ t("settings.weixinRemoteApprovalDisable") }}
+              </el-button>
+              <el-button
+                v-if="weixinRemoteApprovalStatus.configured"
+                type="danger"
+                plain
+                data-testid="weixin-remote-approval-revoke"
+                :loading="weixinRemoteApprovalApplying"
+                @click="revokeWeixinRemoteApproval"
+              >
+                {{ t("settings.weixinRemoteApprovalRevoke") }}
+              </el-button>
+            </div>
+          </section>
           <template v-if="windowsNodeMxcStatus">
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.windowsNodeMxcEffective") }}</span>
+            <div class="card-row mxc-status-summary" data-testid="mxc-status-summary">
               <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
-                {{ windowsNodeMxcProtectionLabel }}
+                {{ windowsNodeMxcCompactStatus }}
               </span>
             </div>
             <div v-if="windowsNodeMxcProtectionDetail" class="mxc-primary-detail">
               {{ windowsNodeMxcProtectionDetail }}
             </div>
             <div
+              v-if="windowsNodeMxcHooksPausedSummary"
+              class="mxc-alert mxc-alert-warning"
+              data-testid="mxc-hooks-paused"
+            >
+              {{ windowsNodeMxcHooksPausedSummary }}
+            </div>
+            <div
+              v-if="windowsNodeMxcStatus.canvas.state !== 'off'"
+              class="mxc-alert"
+              :class="
+                windowsNodeMxcStatus.canvas.state === 'active'
+                  ? 'mxc-alert-success'
+                  : 'mxc-alert-warning'
+              "
+              data-testid="mxc-canvas-status"
+            >
+              {{
+                windowsNodeMxcStatus.canvas.state === "active"
+                  ? t("settings.windowsNodeMxcCanvasActive")
+                  : t("settings.windowsNodeMxcCanvasPaused")
+              }}
+            </div>
+            <div
+              v-if="
+                windowsNodeMxcStatus.requestedMode === 'limited-dacl' ||
+                windowsNodeMxcStatus.effectiveStrength === 'limited-dacl'
+              "
+              class="card-row no-border mxc-ambient-compact"
+              :class="windowsNodeMxcAmbientSummaryClass"
+              data-testid="mxc-ambient-compact"
+            >
+              {{ windowsNodeMxcAmbientSummary }}
+            </div>
+            <div
               class="card-row no-border mxc-folder-policy"
               style="flex-direction: column; align-items: stretch"
             >
-              <span class="row-label">{{ t("settings.windowsNodeMxcFolders") }}</span>
+              <span class="row-label">{{ windowsNodeMxcFolderTitle }}</span>
               <div class="mxc-folder-policy-hint">
-                {{ t("settings.windowsNodeMxcFoldersHint") }}
+                {{ windowsNodeMxcFolderHint }}
               </div>
               <div
-                v-if="windowsNodeMxcStatus.desiredEnabled"
+                v-if="windowsNodeMxcStatus.requestedMode !== 'off'"
                 class="mxc-alert mxc-alert-warning mxc-folder-policy-locked"
               >
                 {{ t("settings.windowsNodeMxcFoldersStaged") }}
@@ -494,6 +749,9 @@
                 class="mxc-alert mxc-alert-error"
               >
                 {{ t("settings.windowsNodeMxcFolderRecovery") }}:
+                <strong v-if="windowsNodeMxcStatus.folderPolicyRecovery.failurePhase">
+                  {{ windowsNodeMxcStatus.folderPolicyRecovery.failurePhase }}:
+                </strong>
                 {{ windowsNodeMxcStatus.folderPolicyRecovery.lastError }}
                 <el-button text size="small" @click="stagePreviousWindowsNodeMxcFolderPolicy">
                   {{ t("settings.windowsNodeMxcStagePreviousFolders") }}
@@ -519,7 +777,9 @@
                   class="dir-item"
                 >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
+                  <span class="dir-badge dir-badge-rw">{{
+                    t("settings.windowsNodeMxcGrantReadWrite")
+                  }}</span>
                   <el-button
                     data-testid="mxc-change-ro"
                     text
@@ -561,7 +821,9 @@
                   class="dir-item"
                 >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
+                  <span class="dir-badge dir-badge-ro">{{
+                    t("settings.windowsNodeMxcGrantReadOnly")
+                  }}</span>
                   <el-button
                     data-testid="mxc-change-rw"
                     text
@@ -601,6 +863,7 @@
               </div>
             </div>
             <div
+              v-if="!windowsNodeMxcLimitedMode"
               class="card-row no-border mxc-folder-policy"
               style="flex-direction: column; align-items: stretch"
             >
@@ -668,6 +931,19 @@
                 {{ windowsNodeMxcStatus.durableApprovals.warning }}
               </div>
             </div>
+            <div
+              v-else
+              class="card-row no-border mxc-folder-policy"
+              style="flex-direction: column; align-items: stretch"
+              data-testid="mxc-limited-approvals"
+            >
+              <span class="row-label">{{
+                t("settings.windowsNodeMxcLimitedCommandApprovals")
+              }}</span>
+              <div class="mxc-alert mxc-alert-warning">
+                {{ t("settings.windowsNodeMxcLimitedCommandApprovalsHint") }}
+              </div>
+            </div>
             <button
               type="button"
               class="mxc-technical-summary"
@@ -689,6 +965,65 @@
               :aria-label="t('settings.windowsNodeMxcTechnicalDetails')"
               data-testid="mxc-technical-details"
             >
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcRequestedMode") }}</span>
+                <span class="row-value">{{ windowsNodeMxcRequestedModeLabel }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcAttestedStrength") }}</span>
+                <span class="row-value">{{ windowsNodeMxcEffectiveStrengthLabel }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcAttestedTier") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.effectiveTier ?? t("settings.windowsNodeMxcUnavailable")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcEffective") }}</span>
+                <span class="row-value">{{ windowsNodeMxcProtectionLabel }}</span>
+              </div>
+              <div
+                v-if="windowsNodeMxcLimitedMode"
+                class="card-row mxc-ambient-diagnostics"
+                data-testid="mxc-ambient-diagnostics"
+              >
+                <span class="row-label">{{ t("settings.windowsNodeMxcAmbientBeforeGrants") }}</span>
+                <template v-if="windowsNodeMxcStatus.ambientAccess">
+                  <div class="mxc-ambient-grid">
+                    <span
+                      v-for="entry in windowsNodeMxcStatus.ambientAccess.entries"
+                      :key="entry.category"
+                      class="mxc-ambient-entry"
+                    >
+                      <span>{{ windowsNodeMxcAmbientCategoryLabel(entry.category) }}</span>
+                      <strong :class="`mxc-ambient-status-${entry.status}`">{{
+                        windowsNodeMxcAmbientStatusLabel(entry.status)
+                      }}</strong>
+                    </span>
+                  </div>
+                  <div class="mxc-ambient-metadata">
+                    <span>
+                      {{ t("settings.windowsNodeMxcAmbientContract") }}:
+                      {{ windowsNodeMxcStatus.ambientAccess.contract }}
+                    </span>
+                    <span>
+                      {{ t("settings.windowsNodeMxcAmbientHash") }}:
+                      {{ windowsNodeMxcStatus.ambientAccess.hash }}
+                    </span>
+                    <span>
+                      {{ t("settings.windowsNodeMxcAmbientCheckedAt") }}:
+                      {{ windowsNodeMxcStatus.ambientAccess.checkedAt }}
+                    </span>
+                  </div>
+                </template>
+                <div v-else class="mxc-alert mxc-alert-warning">
+                  {{ t("settings.windowsNodeMxcAmbientUnavailable") }}
+                </div>
+                <div class="mxc-folder-policy-hint">
+                  {{ t("settings.windowsNodeMxcAmbientAccessHint") }}
+                </div>
+              </div>
               <div class="card-row">
                 <span class="row-label">{{ t("settings.windowsNodeMxcSelectedNode") }}</span>
                 <span class="row-value">
@@ -724,6 +1059,36 @@
                     · {{ t("settings.windowsNodeMxcDaclRequired") }}
                   </template>
                 </span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBaseContainerApi") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.probe.probes.baseContainerApiPresent === null
+                    ? t("settings.windowsNodeMxcUnknown")
+                    : windowsNodeMxcStatus.probe.probes.baseContainerApiPresent
+                      ? t("settings.windowsNodeMxcAvailable")
+                      : t("settings.windowsNodeMxcMissing")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBfsRuntime") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.probe.probes.bfsCompiledIn === null
+                    ? t("settings.windowsNodeMxcUnknown")
+                    : windowsNodeMxcStatus.probe.probes.bfsCompiledIn
+                      ? t("settings.windowsNodeMxcCompiledIn")
+                      : t("settings.windowsNodeMxcCompiledOut")
+                }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.windowsNodeMxcBfsHostTool") }}</span>
+                <span class="row-value">{{
+                  windowsNodeMxcStatus.probe.probes.bfscfgPresent === null
+                    ? t("settings.windowsNodeMxcUnknown")
+                    : windowsNodeMxcStatus.probe.probes.bfscfgPresent
+                      ? t("settings.windowsNodeMxcAvailable")
+                      : t("settings.windowsNodeMxcMissing")
+                }}</span>
               </div>
               <div class="card-row">
                 <span class="row-label">{{ t("settings.windowsNodeMxcBundledHelper") }}</span>
@@ -811,7 +1176,11 @@
                 <span class="row-value">
                   {{
                     windowsNodeMxcStatus.smoke
-                      ? `${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome} / ${windowsNodeMxcStatus.smoke.hostname.outcome} / ${windowsNodeMxcStatus.smoke.powershell.outcome}`
+                      ? `${windowsNodeMxcStatus.smoke.profile}: ${windowsNodeMxcStatus.smoke.execution.outcome}${
+                          windowsNodeMxcStatus.smoke.deniedOutsideRoot
+                            ? ` / outside-root ${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome}`
+                            : ""
+                        }`
                       : t("settings.windowsNodeMxcNotRun")
                   }}
                 </span>
@@ -847,7 +1216,7 @@
         </div>
 
         <div
-          v-if="!windowsNodeMxcStatus?.desiredEnabled"
+          v-if="windowsNodeMxcStatus?.requestedMode === 'off'"
           class="card-group"
           style="margin-top: 12px"
         >
@@ -867,7 +1236,7 @@
         </div>
 
         <div
-          v-if="!windowsNodeMxcStatus?.desiredEnabled"
+          v-if="windowsNodeMxcStatus?.requestedMode === 'off'"
           :class="{ 'sandbox-disabled': !sandboxStatus.enabled }"
         >
           <!-- Sandbox capabilities (network) -->
@@ -1318,6 +1687,51 @@
           </a>
         </div>
       </div>
+      <MxcCapabilityConsentDialog
+        v-model="windowsNodeMxcConsentVisible"
+        :target-mode="windowsNodeMxcConsentTarget"
+        :submitting="windowsNodeMxcConsentSubmitting"
+        @accept="acceptWindowsNodeMxcCapabilityConsent"
+        @cancel="cancelWindowsNodeMxcCapabilityConsent"
+      />
+      <el-dialog
+        v-model="windowsNodeMxcLimitedAcknowledgementVisible"
+        :title="t('settings.windowsNodeMxcLimitedAcknowledgeTitle')"
+        width="560"
+        :close-on-click-modal="!windowsNodeMxcApplying"
+        :close-on-press-escape="!windowsNodeMxcApplying"
+        :show-close="!windowsNodeMxcApplying"
+      >
+        <p class="mxc-limited-dialog-warning">
+          {{ t("settings.windowsNodeMxcLimitedAcknowledgeBody") }}
+        </p>
+        <label class="mxc-limited-checkbox">
+          <input
+            v-model="windowsNodeMxcLimitedAcknowledged"
+            type="checkbox"
+            data-testid="mxc-limited-ack-checkbox"
+            :disabled="windowsNodeMxcApplying"
+          />
+          <span>{{ t("settings.windowsNodeMxcLimitedAcknowledgeCheckbox") }}</span>
+        </label>
+        <template #footer>
+          <el-button
+            :disabled="windowsNodeMxcApplying"
+            @click="windowsNodeMxcLimitedAcknowledgementVisible = false"
+          >
+            {{ t("common.cancel") }}
+          </el-button>
+          <el-button
+            type="warning"
+            data-testid="mxc-confirm-limited"
+            :loading="windowsNodeMxcApplying"
+            :disabled="!windowsNodeMxcLimitedAcknowledged"
+            @click="confirmWindowsNodeMxcLimitedMode"
+          >
+            {{ t("settings.windowsNodeMxcEnableLimited") }}
+          </el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -1333,6 +1747,8 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
+import type { WindowsNodeMxcDisclosureTargetMode } from "../../../src/windows-node-mxc-disclosure";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
@@ -1348,6 +1764,11 @@ import {
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
 import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
+import {
+  useProviderModelCatalog,
+  readConfiguredCatalogs,
+  type ConfiguredCatalogs,
+} from "@/composables/use-provider-model-catalog";
 import {
   readConfiguredModels,
   getModelRef,
@@ -1457,10 +1878,24 @@ const sandboxCapabilities = ref<string[]>([]);
 const capsRestarting = ref(false);
 const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
+type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
+type WeixinRemoteApprovalStatus = Awaited<
+  ReturnType<typeof window.openclaw.plugin.weixin.getRemoteApprovalStatus>
+>;
+type WindowsNodeMxcAmbientEntry = NonNullable<
+  WindowsNodeMxcStatus["ambientAccess"]
+>["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
+const weixinRemoteApprovalStatus = ref<WeixinRemoteApprovalStatus | null>(null);
+const weixinRemoteApprovalApplying = ref(false);
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
 const windowsNodeMxcTechnicalDetailsOpen = ref(false);
+const windowsNodeMxcConsentVisible = ref(false);
+const windowsNodeMxcConsentTarget = ref<WindowsNodeMxcDisclosureTargetMode | null>(null);
+const windowsNodeMxcConsentSubmitting = ref(false);
+const windowsNodeMxcLimitedAcknowledgementVisible = ref(false);
+const windowsNodeMxcLimitedAcknowledged = ref(false);
 const windowsNodeMxcTransitionPhases = new Set([
   "locking",
   "validating",
@@ -1469,14 +1904,20 @@ const windowsNodeMxcTransitionPhases = new Set([
   "smoking-locked",
   "starting-active",
   "smoking-active",
+  "promoting-active",
   "verifying-active",
   "starting-standard",
 ]);
 
 const windowsNodeMxcProtectionLabel = computed(() => {
   const status = windowsNodeMxcStatus.value;
-  if (!status?.desiredEnabled) return t("settings.windowsNodeMxcProtectionOff");
+  if (!status || status.requestedMode === "off") {
+    return t("settings.windowsNodeMxcProtectionOff");
+  }
   if (status.effectiveEnabled && status.lifecycleState.phase === "active") {
+    if (status.effectiveStrength === "limited-dacl") {
+      return t("settings.windowsNodeMxcLimitedActive");
+    }
     return t("settings.windowsNodeMxcProtected");
   }
   if (windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)) {
@@ -1490,13 +1931,14 @@ const windowsNodeMxcProtectionClass = computed(() => {
   if (status?.effectiveEnabled && status.lifecycleState.phase === "active") {
     return "mxc-state-ok";
   }
-  return status?.desiredEnabled ? "mxc-state-blocked" : "mxc-state-neutral";
+  return status?.requestedMode !== "off" ? "mxc-state-blocked" : "mxc-state-neutral";
 });
 
 const windowsNodeMxcProtectionDetail = computed(() => {
   const status = windowsNodeMxcStatus.value;
   if (
-    !status?.desiredEnabled ||
+    !status ||
+    status.requestedMode === "off" ||
     (status.effectiveEnabled && status.lifecycleState.phase === "active")
   ) {
     return "";
@@ -1504,6 +1946,124 @@ const windowsNodeMxcProtectionDetail = computed(() => {
   const phase = t(`settings.windowsNodeMxcLifecyclePhase.${status.lifecycleState.phase}`);
   return status.lifecycleState.detail ? `${phase} · ${status.lifecycleState.detail}` : phase;
 });
+
+const windowsNodeMxcHooksPausedSummary = computed(() => {
+  const hooks = windowsNodeMxcStatus.value?.hooks;
+  if (!hooks?.pausedByMxc) return "";
+  if (hooks.requestedExternalEnabled && hooks.requestedInternalEnabled) {
+    return t("settings.windowsNodeMxcHooksPausedBoth");
+  }
+  return hooks.requestedExternalEnabled
+    ? t("settings.windowsNodeMxcHooksPausedExternal")
+    : t("settings.windowsNodeMxcHooksPausedInternal");
+});
+
+const windowsNodeMxcLimitedMode = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  return status?.requestedMode === "limited-dacl" || status?.effectiveStrength === "limited-dacl";
+});
+
+const windowsNodeMxcRequestedModeLabel = computed(() =>
+  windowsNodeMxcModeLabel(windowsNodeMxcStatus.value?.requestedMode ?? "off"),
+);
+
+const windowsNodeMxcEffectiveStrengthLabel = computed(() =>
+  windowsNodeMxcModeLabel(windowsNodeMxcStatus.value?.effectiveStrength ?? "off"),
+);
+
+const windowsNodeMxcCompactStatus = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (!status || status.requestedMode === "off") {
+    return t("settings.windowsNodeMxcCompactOff");
+  }
+  const mode =
+    status.effectiveEnabled && status.lifecycleState.phase === "active"
+      ? windowsNodeMxcModeLabel(status.effectiveStrength)
+      : windowsNodeMxcModeLabel(status.requestedMode);
+  const state =
+    status.effectiveEnabled && status.lifecycleState.phase === "active"
+      ? t("settings.windowsNodeMxcStatusActive")
+      : windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)
+        ? t("settings.windowsNodeMxcStarting")
+        : t("settings.windowsNodeMxcActionRequired");
+  return t("settings.windowsNodeMxcCompactStatus", { mode, state });
+});
+
+const windowsNodeMxcAmbientEntries = computed(
+  () => windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [],
+);
+
+const windowsNodeMxcAmbientExceptions = computed(() =>
+  windowsNodeMxcAmbientEntries.value.filter((entry) => entry.status !== "denied"),
+);
+
+const windowsNodeMxcAmbientSummary = computed(() => {
+  const entries = windowsNodeMxcAmbientEntries.value;
+  if (entries.length === 0) {
+    return t("settings.windowsNodeMxcAmbientUnavailable");
+  }
+  const denied = entries.length - windowsNodeMxcAmbientExceptions.value.length;
+  if (windowsNodeMxcAmbientExceptions.value.length === 0) {
+    return t("settings.windowsNodeMxcAmbientAllDenied", {
+      denied,
+      total: entries.length,
+    });
+  }
+  const details = windowsNodeMxcAmbientExceptions.value
+    .map(
+      (entry) =>
+        `${windowsNodeMxcAmbientCategoryLabel(entry.category)} — ${windowsNodeMxcAmbientStatusLabel(entry.status)}`,
+    )
+    .join(", ");
+  return t("settings.windowsNodeMxcAmbientExceptions", {
+    details,
+    denied,
+    total: entries.length,
+  });
+});
+
+const windowsNodeMxcAmbientSummaryClass = computed(() => {
+  if (windowsNodeMxcAmbientEntries.value.length === 0) {
+    return "mxc-summary-warning";
+  }
+  return windowsNodeMxcAmbientExceptions.value.length === 0
+    ? "mxc-summary-ok"
+    : "mxc-summary-error";
+});
+
+const windowsNodeMxcFolderTitle = computed(() => {
+  if (windowsNodeMxcLimitedMode.value) {
+    return t("settings.windowsNodeMxcLimitedFolders");
+  }
+  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
+    return t("settings.windowsNodeMxcConfiguredFolders");
+  }
+  return t("settings.windowsNodeMxcFullFolders");
+});
+
+const windowsNodeMxcFolderHint = computed(() => {
+  if (windowsNodeMxcLimitedMode.value) {
+    return t("settings.windowsNodeMxcLimitedFoldersHint");
+  }
+  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
+    return t("settings.windowsNodeMxcConfiguredFoldersHint");
+  }
+  return t("settings.windowsNodeMxcFoldersHint");
+});
+
+function windowsNodeMxcModeLabel(mode: WindowsNodeMxcMode) {
+  if (mode === "full") return t("settings.windowsNodeMxcModeFull");
+  if (mode === "limited-dacl") return t("settings.windowsNodeMxcModeLimited");
+  return t("settings.windowsNodeMxcModeOff");
+}
+
+function windowsNodeMxcAmbientCategoryLabel(category: WindowsNodeMxcAmbientEntry["category"]) {
+  return t(`settings.windowsNodeMxcAmbientCategory.${category}`);
+}
+
+function windowsNodeMxcAmbientStatusLabel(status: WindowsNodeMxcAmbientEntry["status"]) {
+  return t(`settings.windowsNodeMxcAmbientStatus.${status}`);
+}
 
 const windowsNodeMxcFolderDraftDirty = computed(
   () => policyIdentity(windowsNodeMxcFolderDraft) !== policyIdentity(windowsNodeMxcFolderBaseline),
@@ -1549,12 +2109,109 @@ async function loadWindowsNodeMxcStatus() {
   }
 }
 
-async function toggleWindowsNodeMxc(enabled: boolean) {
-  windowsNodeMxcApplying.value = true;
-  gateway.resetReady();
-  chatStore.wsConnected = false;
+async function loadWeixinRemoteApprovalStatus() {
   try {
-    const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
+    weixinRemoteApprovalStatus.value =
+      await window.openclaw.plugin.weixin.getRemoteApprovalStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function setWeixinRemoteApprovalEnabled(enabled: boolean) {
+  if (weixinRemoteApprovalApplying.value) return;
+  weixinRemoteApprovalApplying.value = true;
+  try {
+    const result = await window.openclaw.plugin.weixin.setRemoteApprovalEnabled(enabled);
+    if (!result.ok && !result.cancelled) {
+      throw new Error(result.error || t("settings.weixinRemoteApprovalFailed"));
+    }
+    await loadWeixinRemoteApprovalStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    weixinRemoteApprovalApplying.value = false;
+  }
+}
+
+async function revokeWeixinRemoteApproval() {
+  if (weixinRemoteApprovalApplying.value) return;
+  weixinRemoteApprovalApplying.value = true;
+  try {
+    await window.openclaw.plugin.weixin.revokeRemoteApproval();
+    await loadWeixinRemoteApprovalStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    weixinRemoteApprovalApplying.value = false;
+  }
+}
+
+function selectWindowsNodeMxcMode(mode: WindowsNodeMxcMode) {
+  if (
+    windowsNodeMxcApplying.value ||
+    windowsNodeMxcConsentVisible.value ||
+    windowsNodeMxcLimitedAcknowledgementVisible.value ||
+    windowsNodeMxcStatus.value?.requestedMode === mode
+  ) {
+    return;
+  }
+  if (mode === "off") {
+    void applyWindowsNodeMxcMode(mode);
+    return;
+  }
+  windowsNodeMxcConsentTarget.value = mode;
+  windowsNodeMxcConsentVisible.value = true;
+}
+
+function cancelWindowsNodeMxcCapabilityConsent() {
+  if (windowsNodeMxcConsentSubmitting.value) return;
+  windowsNodeMxcConsentVisible.value = false;
+  windowsNodeMxcConsentTarget.value = null;
+}
+
+async function acceptWindowsNodeMxcCapabilityConsent() {
+  const requestedMode = windowsNodeMxcConsentTarget.value;
+  if (!requestedMode || windowsNodeMxcConsentSubmitting.value) return;
+
+  windowsNodeMxcConsentSubmitting.value = true;
+  windowsNodeMxcConsentVisible.value = false;
+  windowsNodeMxcConsentTarget.value = null;
+  try {
+    if (requestedMode === "limited-dacl") {
+      windowsNodeMxcLimitedAcknowledged.value = false;
+      windowsNodeMxcLimitedAcknowledgementVisible.value = true;
+      return;
+    }
+    await applyWindowsNodeMxcMode(requestedMode);
+  } finally {
+    windowsNodeMxcConsentSubmitting.value = false;
+  }
+}
+
+async function confirmWindowsNodeMxcLimitedMode() {
+  if (!windowsNodeMxcLimitedAcknowledged.value || windowsNodeMxcApplying.value) return;
+  await applyWindowsNodeMxcMode("limited-dacl", true);
+  if (windowsNodeMxcStatus.value?.requestedMode === "limited-dacl") {
+    windowsNodeMxcLimitedAcknowledgementVisible.value = false;
+  }
+}
+
+async function applyWindowsNodeMxcMode(
+  requestedMode: WindowsNodeMxcMode,
+  acknowledgeLimitedFilesystem = false,
+) {
+  windowsNodeMxcApplying.value = true;
+  try {
+    if (requestedMode !== "off") {
+      await window.openclaw.windowsNodeMxc.preflight({ requestedMode });
+    }
+    gateway.resetReady();
+    chatStore.wsConnected = false;
+    const status = await window.openclaw.windowsNodeMxc.setEnabled({
+      requestedMode,
+      ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),
+    });
     updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();
   } catch (error) {
@@ -1721,7 +2378,7 @@ function showWindowsNodeMxcFolderPolicyError(reason: string) {
 
 async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
   try {
-    if (!windowsNodeMxcStatus.value?.desiredEnabled) {
+    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
       await addSandboxDir(access, "windows-node-mxc");
       await loadWindowsNodeMxcStatus();
       return;
@@ -1751,7 +2408,7 @@ async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
 
 async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro") {
   try {
-    if (!windowsNodeMxcStatus.value?.desiredEnabled) {
+    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
       const result = await window.openclaw.sandbox.setUserDirAccess({ dir, access });
       if (!result.ok) showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
       await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
@@ -1772,7 +2429,7 @@ async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro"
 
 async function removeWindowsNodeMxcFolder(dir: string, access: "rw" | "ro") {
   try {
-    if (!windowsNodeMxcStatus.value?.desiredEnabled) {
+    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
       await removeSandboxDir(dir, access);
       await loadWindowsNodeMxcStatus();
       return;
@@ -1935,6 +2592,7 @@ const piiToggles = reactive({
 
 // --- Models & API state ---
 const customModels = ref<ConfiguredModel[]>([]);
+const modelFormSelections = ref<Record<string, string>>({});
 const selectedModel = ref("");
 const copilotModelsLoading = ref(false);
 const copilotDisconnecting = ref(false);
@@ -1953,7 +2611,17 @@ const localSelection = ref("");
 const localSelecting = ref(false);
 const sessionRecovery = ref<SessionModelRecovery | null>(null);
 const sessionRecovering = ref(false);
-const modelOptions = computed(() => mergeLocalModelCatalog(customModels.value, localCatalog.value));
+const providerCatalog = useProviderModelCatalog();
+const providerCatalogInputs = ref<ConfiguredCatalogs>({});
+const providerCatalogLoading = ref(false);
+let providerCatalogRevision = 0;
+const providerCatalogError = computed(() => providerCatalog.errors(providerCatalogInputs.value));
+const modelOptions = computed(() =>
+  mergeLocalModelCatalog(
+    providerCatalog.merge(customModels.value, providerCatalogInputs.value),
+    localCatalog.value,
+  ),
+);
 function modelOptionStatus(model: ConfiguredModel): string {
   const preset = localCatalog.value.find((entry) => entry.modelRef === getModelRef(model));
   if (preset && localOperation.value?.busy && localOperation.value.modelRef === preset.modelRef) {
@@ -1997,7 +2665,8 @@ const providerCards = computed(() => {
             ? t("modelManager.compatibleApi")
             : providerName(key),
       models,
-      editableModels: key === "github-copilot" ? [] : models,
+      signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
+      editableModels: key === "github-copilot" || getManagedModelProvider(key) ? [] : models,
       missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
     };
   });
@@ -2088,10 +2757,32 @@ async function prepareCloudChange(): Promise<boolean> {
   }
 }
 
+function isProviderExpanded(key: string): boolean {
+  return key === "llama-cpp"
+    ? showLocalSetup.value
+    : showProviderSetup.value && editingProviderKey.value === key;
+}
+
+function toggleProvider(key: string): void {
+  if (modelActionBusy.value) return;
+  if (isProviderExpanded(key)) {
+    if (key === "llama-cpp") showLocalSetup.value = false;
+    else showProviderSetup.value = false;
+  } else if (key === "llama-cpp") openLocalModel();
+  else openCloudSetup(key);
+}
+
 function openCloudSetup(providerKey: string, model?: ConfiguredModel): void {
   if (modelActionBusy.value) return;
   editingProviderKey.value = providerKey;
-  const entry = model ?? customModels.value.find((item) => item.providerKey === providerKey);
+  const entry =
+    model ??
+    customModels.value.find(
+      (item) =>
+        item.providerKey === providerKey &&
+        getModelRef(item) === modelFormSelections.value[providerKey],
+    ) ??
+    customModels.value.find((item) => item.providerKey === providerKey);
   editingModelRef.value = entry ? getModelRef(entry) : `new:${providerKey}`;
   showProviderSetup.value = true;
 }
@@ -2327,7 +3018,11 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    void Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
+    void Promise.all([
+      loadSandboxStatus(),
+      loadWindowsNodeMxcStatus(),
+      loadWeixinRemoteApprovalStatus(),
+    ]);
   }
 });
 
@@ -2336,6 +3031,13 @@ function applyModelsConfig(config: any): void {
   const parsed = readConfiguredModels(config);
   customModels.value = parsed.models;
   selectedModel.value = parsed.primary;
+  providerCatalogInputs.value = readConfiguredCatalogs(config);
+  const revision = ++providerCatalogRevision;
+  providerCatalogLoading.value = true;
+  void providerCatalog.loadConfigured(providerCatalogInputs.value).finally(() => {
+    if (!modelViewDisposed && revision === providerCatalogRevision)
+      providerCatalogLoading.value = false;
+  });
   void loadLocalFileStatus();
 }
 
@@ -2394,7 +3096,11 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
 async function refreshModelsConfig(): Promise<void> {
   try {
     modelStatusError.value = "";
-    const config = await window.openclaw.config.read();
+    const [config, saved] = await Promise.all([
+      window.openclaw.config.read(),
+      window.openclaw.settings.get(),
+    ]);
+    modelFormSelections.value = saved?.modelFormSelections ?? {};
     if (!config) return;
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
@@ -2408,7 +3114,7 @@ function handleSettingsWindowFocus(): void {
   if (activeSection.value === "models" && !showProviderSetup.value) {
     void refreshModelsConfig();
   } else if (activeSection.value === "security") {
-    void loadWindowsNodeMxcStatus();
+    void Promise.all([loadWindowsNodeMxcStatus(), loadWeixinRemoteApprovalStatus()]);
   }
 }
 
@@ -2427,6 +3133,7 @@ onMounted(async () => {
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
+    modelFormSelections.value = saved.modelFormSelections ?? {};
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
     settings.minimizeToTray = saved.minimizeToTray ?? false;
@@ -2450,7 +3157,11 @@ onMounted(async () => {
   // Load web search provider configuration
   loadSearchConfig(config);
   if (activeSection.value === "security") {
-    await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
+    await Promise.all([
+      loadSandboxStatus(),
+      loadWindowsNodeMxcStatus(),
+      loadWeixinRemoteApprovalStatus(),
+    ]);
   }
 });
 
@@ -2458,6 +3169,7 @@ onUnmounted(() => {
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
   localSnapshotRevision += 1;
+  providerCatalogRevision += 1;
   modelViewDisposed = true;
 });
 
@@ -2688,8 +3400,16 @@ async function saveSearchSettings(): Promise<void> {
   }
 }
 
-function openExternal(url: string) {
-  window.openclaw.shell.openExternal(url);
+async function openExternal(url: string) {
+  try {
+    await window.openclaw.shell.openExternal(url);
+  } catch (error) {
+    ElMessage.error(
+      t("settings.openLinkFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
 }
 
 const privacyStatementUrl = "https://www.microsoft.com/privacy/privacystatement";
@@ -2807,6 +3527,31 @@ async function clearChatHistory() {
   align-items: center;
   gap: 16px;
   padding: 14px 18px;
+}
+.provider-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+}
+.provider-toggle:hover {
+  background: var(--el-fill-color-light);
+}
+.provider-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+}
+.provider-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.provider-chevron-up {
+  transform: rotate(180deg);
 }
 .provider-card-title {
   flex: 1;
@@ -3529,10 +4274,80 @@ async function clearChatHistory() {
 .mxc-card {
   border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border));
 }
+.mxc-heading {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border-row);
+}
 .mxc-subtitle {
   margin-top: 3px;
   color: var(--text-muted);
   font-size: 12px;
+}
+.mxc-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-row);
+}
+.mxc-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+}
+.mxc-mode-card.selected {
+  border-color: color-mix(in srgb, var(--accent-color) 70%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 35%, transparent);
+}
+.mxc-mode-card-limited {
+  border-color: rgba(230, 162, 60, 0.45);
+}
+.mxc-mode-card-off {
+  border-color: color-mix(in srgb, var(--settings-action-danger) 35%, var(--border));
+}
+.mxc-mode-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mxc-mode-card p,
+.mxc-availability-list {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mxc-mode-card .el-button {
+  align-self: flex-start;
+  margin-top: auto;
+}
+.mxc-mode-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-subtle);
+  color: var(--accent-color);
+  font-size: 10px;
+  font-weight: 700;
+}
+.mxc-mode-badge-warning {
+  background: rgba(230, 162, 60, 0.12);
+  color: #b26a00;
+}
+.mxc-mode-warning,
+.mxc-availability-blocker {
+  color: var(--settings-action-danger) !important;
+}
+.mxc-availability-summary {
+  font-weight: 600;
+}
+.mxc-availability-list {
+  padding-left: 18px;
 }
 .mxc-state {
   font-size: 12px;
@@ -3552,6 +4367,64 @@ async function clearChatHistory() {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.mxc-status-summary {
+  justify-content: flex-start;
+}
+.mxc-status-summary .mxc-state {
+  font-size: 14px;
+}
+.mxc-ambient-compact {
+  display: block;
+  padding: 12px 24px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.mxc-summary-ok {
+  color: #388e3c;
+}
+.mxc-summary-warning {
+  color: #b26a00;
+}
+.mxc-summary-error {
+  color: var(--settings-action-danger);
+}
+.mxc-ambient-diagnostics {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.mxc-ambient-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.mxc-ambient-entry {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.mxc-ambient-status-denied {
+  color: #4caf50;
+}
+.mxc-ambient-status-read {
+  color: #b26a00;
+}
+.mxc-ambient-status-read-write {
+  color: var(--settings-action-danger);
+}
+.mxc-ambient-metadata {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 .mxc-technical-summary {
@@ -3657,9 +4530,62 @@ async function clearChatHistory() {
   border-color: rgba(230, 162, 60, 0.45);
   background: rgba(230, 162, 60, 0.08);
 }
+.mxc-alert-success {
+  border-color: rgba(103, 194, 58, 0.45);
+  background: rgba(103, 194, 58, 0.08);
+}
 .mxc-alert-error {
   border-color: color-mix(in srgb, var(--settings-action-danger) 45%, transparent);
   background: color-mix(in srgb, var(--settings-action-danger) 8%, transparent);
+}
+.mxc-limited-dialog-warning {
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.mxc-limited-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mxc-limited-checkbox input {
+  margin-top: 3px;
+}
+.mxc-remote-approval {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning-color, #e6a23c) 6%, transparent);
+}
+.mxc-remote-approval p {
+  margin: 8px 0;
+}
+.mxc-remote-owner {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mxc-remote-owner code {
+  overflow-wrap: anywhere;
+}
+.mxc-remote-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+@container (max-width: 760px) {
+  .mxc-mode-grid {
+    grid-template-columns: 1fr;
+  }
+  .mxc-ambient-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .external-apps-list {
   display: flex;

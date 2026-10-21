@@ -161,7 +161,9 @@ describe.skipIf(!publishedPackage || process.platform !== "win32")(
       const home = mkdtempSync(join(tmpdir(), "microclaw-native-snapshot-"));
       roots.push(home);
       const env = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !/OPENCLAW|NODE_OPTIONS|MICROCLAW/i.test(key)),
+        Object.entries(process.env).filter(
+          ([key]) => !/OPENCLAW|NODE_OPTIONS|MICROCLAW/i.test(key),
+        ),
       );
       Object.assign(env, {
         HOME: home,
@@ -174,7 +176,10 @@ describe.skipIf(!publishedPackage || process.platform !== "win32")(
       const result = spawnSync(
         process.execPath,
         [
-          "--import", preload, "--input-type=module", "-e",
+          "--import",
+          preload,
+          "--input-type=module",
+          "-e",
           `
           import assert from "node:assert/strict";
           import fs from "node:fs";
@@ -225,7 +230,10 @@ describe.skipIf(!publishedPackage || process.platform !== "win32")(
         { env, cwd: home, encoding: "utf8", timeout: 60000, windowsHide: true },
       );
       expect(result.status, result.stderr || result.error?.message).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ snapshotVerified: true, tamperingRejected: true });
+      expect(JSON.parse(result.stdout)).toEqual({
+        snapshotVerified: true,
+        tamperingRejected: true,
+      });
     });
 
     it("completes the real Doctor CLI after recovering both dead owner records without a reboot", async () => {

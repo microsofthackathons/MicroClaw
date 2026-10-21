@@ -22,6 +22,7 @@ import * as fs from "fs";
 import { app } from "electron";
 import { SANDBOX_PERMISSION_TIMEOUT_MS } from "./constants";
 import { shieldAll } from "./sensitive-shield";
+import type { WindowsNodeMxcAclLauncherResult } from "./windows-node-mxc-folder-transaction";
 
 const CONTAINER_NAME = "MicroClaw";
 // No default capabilities — settings store is the single source of truth.
@@ -398,25 +399,56 @@ export class ToolSandbox {
     access: "rw" | "r",
     children: boolean = false,
   ): Promise<boolean> {
+    return (await this.grantDirAsyncDetailed(dir, access, children)).ok;
+  }
+
+  async grantDirAsyncDetailed(
+    dir: string,
+    access: "rw" | "r",
+    children: boolean = false,
+  ): Promise<WindowsNodeMxcAclLauncherResult> {
     if (!this.launcherPath || !fs.existsSync(this.launcherPath) || !fs.existsSync(dir)) {
-      return false;
+      return {
+        ok: false,
+        timedOut: false,
+        exitCode: null,
+        signal: null,
+        stderr: "",
+        errorMessage: "AppContainer launcher or target path is unavailable",
+        durationMs: 0,
+      };
     }
     const args = ["grant", "--name", CONTAINER_NAME, "--dir", dir, "--access", access];
     if (children) args.push("--children");
-    return new Promise<boolean>((resolve) => {
+    const startedAt = Date.now();
+    return new Promise<WindowsNodeMxcAclLauncherResult>((resolve) => {
       execFile(
         this.launcherPath!,
         args,
         { windowsHide: true, timeout: 10000 },
-        (err, stdout, stderr) => {
+        (err, _stdout, stderr) => {
+          const durationMs = Date.now() - startedAt;
           if (stderr)
             console.log(`[tool-sandbox] grantDirAsync stderr for ${dir}:\n${stderr.trimEnd()}`);
           if (err) {
             console.error(`[tool-sandbox] grantDirAsync failed for ${dir}:`, err.message);
-            resolve(false);
-          } else {
-            resolve(true);
           }
+          const processError = err as
+            | (Error & {
+                code?: number | string;
+                signal?: string;
+                killed?: boolean;
+              })
+            | null;
+          resolve({
+            ok: !err,
+            timedOut: processError?.killed === true,
+            exitCode: processError?.code ?? (err ? null : 0),
+            signal: processError?.signal ?? null,
+            stderr: stderr.trim().slice(0, 4096),
+            errorMessage: err?.message ?? null,
+            durationMs,
+          });
         },
       );
     });
@@ -468,19 +500,54 @@ export class ToolSandbox {
    * Revoke AppContainer access to a single directory asynchronously.
    */
   async revokeDirAsync(dir: string): Promise<boolean> {
+    return (await this.revokeDirAsyncDetailed(dir)).ok;
+  }
+
+  async revokeDirAsyncDetailed(dir: string): Promise<WindowsNodeMxcAclLauncherResult> {
     if (!this.launcherPath || !fs.existsSync(this.launcherPath)) {
-      return false;
+      return {
+        ok: false,
+        timedOut: false,
+        exitCode: null,
+        signal: null,
+        stderr: "",
+        errorMessage: "AppContainer launcher is unavailable",
+        durationMs: 0,
+      };
     }
     const args = ["revoke", "--name", CONTAINER_NAME, "--dir", dir];
-    return new Promise<boolean>((resolve) => {
-      execFile(this.launcherPath!, args, { windowsHide: true, timeout: 10000 }, (err) => {
-        if (err) {
-          console.error(`[tool-sandbox] revokeDirAsync failed for ${dir}:`, err.message);
-          resolve(false);
-        } else {
-          resolve(true);
-        }
-      });
+    const startedAt = Date.now();
+    return new Promise<WindowsNodeMxcAclLauncherResult>((resolve) => {
+      execFile(
+        this.launcherPath!,
+        args,
+        { windowsHide: true, timeout: 10000 },
+        (err, _stdout, stderr) => {
+          const durationMs = Date.now() - startedAt;
+          if (stderr) {
+            console.log(`[tool-sandbox] revokeDirAsync stderr for ${dir}:\n${stderr.trimEnd()}`);
+          }
+          if (err) {
+            console.error(`[tool-sandbox] revokeDirAsync failed for ${dir}:`, err.message);
+          }
+          const processError = err as
+            | (Error & {
+                code?: number | string;
+                signal?: string;
+                killed?: boolean;
+              })
+            | null;
+          resolve({
+            ok: !err,
+            timedOut: processError?.killed === true,
+            exitCode: processError?.code ?? (err ? null : 0),
+            signal: processError?.signal ?? null,
+            stderr: stderr.trim().slice(0, 4096),
+            errorMessage: err?.message ?? null,
+            durationMs,
+          });
+        },
+      );
     });
   }
 
@@ -680,7 +747,11 @@ export class ToolSandbox {
    * Check ACL status for a single directory.
    * Returns parsed JSON from the launcher's check-acl command.
    */
-  async checkAcl(dir: string, access: "rw" | "r"): Promise<Record<string, unknown> | null> {
+  async checkAcl(
+    dir: string,
+    access: "rw" | "r",
+    children: boolean = false,
+  ): Promise<Record<string, unknown> | null> {
     if (!this.launcherPath || !fs.existsSync(this.launcherPath)) return null;
     const args = [
       "check-acl",
@@ -691,6 +762,7 @@ export class ToolSandbox {
       "--access",
       access === "rw" ? "rw" : "r",
     ];
+    if (children) args.push("--children");
     return new Promise((resolve) => {
       execFile(this.launcherPath!, args, { windowsHide: true, timeout: 10000 }, (err, stdout) => {
         if (err) {

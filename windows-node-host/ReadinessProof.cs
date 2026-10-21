@@ -16,22 +16,14 @@ internal static class ReadinessProbeContract
     public static readonly IReadOnlyDictionary<string, string[]> Probes =
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
-            ["hostname"] =
-            [
-                @"C:\Windows\System32\cmd.exe",
-                "/d",
-                "/s",
-                "/c",
-                @"C:\Windows\System32\hostname.exe && echo MICROCLAW_MXC_HOSTNAME_OK",
-            ],
-            ["powershell"] =
+            ["execution"] =
             [
                 @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "[Console]::Out.Write('MICROCLAW_MXC_POWERSHELL_OK')",
+                "$child=& 'C:\\Windows\\System32\\hostname.exe'; if ([string]::IsNullOrWhiteSpace(($child -join ''))) { exit 41 }; [Console]::Out.Write('MICROCLAW_MXC_EXECUTION_OK')",
             ],
         };
 
@@ -46,6 +38,9 @@ internal static class ReadinessProbeContract
                     expected[index],
                     index == 0 ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             .All(matches => matches);
+
+    public static string? MatchKind(IReadOnlyList<string> argv) =>
+        Probes.FirstOrDefault(entry => Matches(argv, entry.Value)).Key;
 }
 
 internal sealed record ReadinessProofRecord(
@@ -78,7 +73,8 @@ internal sealed class ReadinessProofVerifier
     private readonly Func<long> _nowUnixMs;
     private readonly object _consumeGate = new();
     private readonly Dictionary<string, long> _consumedNonces = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _consumedProbeKinds = new(StringComparer.Ordinal);
+
+    public string TransitionId => _transitionId;
 
     public ReadinessProofVerifier(
         string secretBase64,
@@ -140,13 +136,11 @@ internal sealed class ReadinessProofVerifier
                 .Select(entry => entry.Key)
                 .ToArray())
                 _consumedNonces.Remove(key);
-            if (_consumedNonces.ContainsKey(proof.Nonce)
-                || _consumedProbeKinds.Contains(proof.ProbeKind))
+            if (_consumedNonces.ContainsKey(proof.Nonce))
                 throw new HostPolicyException(
                     "readiness-proof-replayed",
                     "This readiness probe authorization has already been consumed.");
             _consumedNonces.Add(proof.Nonce, proof.ExpiresAtUnixMs);
-            _consumedProbeKinds.Add(proof.ProbeKind);
         }
 
         return new ValidatedReadinessProof(
@@ -155,6 +149,14 @@ internal sealed class ReadinessProofVerifier
             proof.ProbeKind,
             planSha256,
             proof.ExpiresAtUnixMs);
+    }
+
+    public void Revalidate(ValidatedReadinessProof proof)
+    {
+        if (proof.ExpiresAtUnixMs <= _nowUnixMs())
+            throw new HostPolicyException(
+                "readiness-proof-stale",
+                "The readiness proof expired before process launch.");
     }
 
     public static string ComputeSignature(string secretBase64, ReadinessProofRecord proof) =>
@@ -336,4 +338,57 @@ internal sealed class ReadinessProofVerifier
             return false;
         }
     }
+}
+
+internal sealed class ReadinessPreparationGuard
+{
+    public const int MaximumAgeMs = 30_000;
+
+    private readonly Func<long> _nowUnixMs;
+    private readonly object _gate = new();
+    private PreparedReadiness? _prepared;
+
+    public ReadinessPreparationGuard(Func<long>? nowUnixMs = null)
+    {
+        _nowUnixMs = nowUnixMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    public void Record(string probeKind, DurableApproval identity)
+    {
+        if (!ReadinessProbeContract.Probes.ContainsKey(probeKind))
+            throw new HostPolicyException(
+                "readiness-preparation-invalid",
+                "The readiness preparation probe kind is invalid.");
+        lock (_gate)
+            _prepared = new PreparedReadiness(probeKind, identity, _nowUnixMs());
+    }
+
+    public long ValidateAndConsume(string probeKind, DurableApproval identity)
+    {
+        lock (_gate)
+        {
+            var prepared = _prepared;
+            _prepared = null;
+            if (prepared is null)
+                throw new HostPolicyException(
+                    "readiness-preparation-required",
+                    "A fresh readiness preparation is required before the internal probe.");
+            var ageMs = _nowUnixMs() - prepared.PreparedAtUnixMs;
+            if (ageMs < 0 || ageMs > MaximumAgeMs)
+                throw new HostPolicyException(
+                    "readiness-preparation-stale",
+                    "The readiness preparation expired before process launch.");
+            if (!string.Equals(prepared.ProbeKind, probeKind, StringComparison.Ordinal)
+                || !DurableApprovalIdentity.Matches(prepared.Identity, identity))
+                throw new HostPolicyException(
+                    "readiness-preparation-mismatch",
+                    "The readiness preparation does not match the launch identity.");
+            return ageMs;
+        }
+    }
+
+    private sealed record PreparedReadiness(
+        string ProbeKind,
+        DurableApproval Identity,
+        long PreparedAtUnixMs);
 }

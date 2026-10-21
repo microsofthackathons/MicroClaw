@@ -80,8 +80,8 @@ describe("PermissionDialog", () => {
     ]);
     expect(wrapper.find(".perm-mxc-access script").exists()).toBe(false);
     expect(wrapper.find(".perm-mxc-value").text()).toBe("isolated-scratch:v1");
-    expect(wrapper.findAll(".perm-body")[1].text()).toBe(
-      "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. “Allow always” remembers this exact command, canonical working directory, and declaration identity.",
+    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
+      "Conversation-scoped approval remembers only this exact executable",
     );
     expect(wrapper.text()).not.toContain("Requested folder access");
   });
@@ -110,6 +110,50 @@ describe("PermissionDialog", () => {
       "Deny",
       "Allow once",
     ]);
+  });
+
+  it("keeps Limited approval concise and offers exact conversation-scoped reuse", () => {
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        request: {
+          requestId: "mxc-limited-request",
+          type: "mxc-approval",
+          command: "Get-ChildItem",
+          dirPath: "isolated-scratch:v1",
+          containmentStrength: "limited-dacl",
+          declaredAccess: [{ access: "ro", path: String.raw`C:\Work` }],
+          ambientAccess: [
+            { category: "desktop", status: "read-write" },
+            { category: "ssh", status: "denied" },
+          ],
+          allowedDecisions: ["deny", "allow-once", "allow-always"],
+        },
+      },
+    });
+
+    expect(wrapper.find(".perm-title").text()).toBe("Limited filesystem containment");
+    expect(wrapper.find(".perm-subtitle").text()).toContain(
+      "Limited filesystem containment",
+    );
+    expect(wrapper.findAll(".perm-body")[0].text()).toBe(
+      "AI wants to run this command with Limited filesystem containment.",
+    );
+    expect(wrapper.find(".perm-command-label").text()).toBe(
+      "Additional filesystem grants",
+    );
+    expect(wrapper.text()).not.toContain("Ambient filesystem access");
+    expect(wrapper.find(".perm-mxc-ambient").exists()).toBe(false);
+    expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
+      "Deny",
+      "Allow once",
+      "Always allow in this conversation",
+    ]);
+    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
+      "additive, not an exclusive allowlist",
+    );
+    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
+      "exact executable, arguments, working directory, declared access, agent, and conversation",
+    );
   });
 
   it("keeps high-risk actions visible without optional semantic color tokens", () => {

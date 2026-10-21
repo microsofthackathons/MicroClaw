@@ -39,11 +39,14 @@
             :class="{ selected: getModelRef(model) === selectedModel }"
             :data-model-ref="getModelRef(model)"
             :aria-pressed="getModelRef(model) === selectedModel"
-            :disabled="disabled || isModelDisabled?.(model)"
+            :disabled="disabled || isModelDisabled?.(model) || Boolean(restrictionLabel(model))"
+            :title="restrictionLabel(model) || undefined"
             @click="select(model)"
           >
             <span class="model-choice-name">{{ model.name }}</span>
-            <span v-if="modelStatus" class="model-choice-state">{{ modelStatus(model) }}</span>
+            <span v-if="restrictionLabel(model) || modelStatus" class="model-choice-state">
+              {{ restrictionLabel(model) || modelStatus?.(model) }}
+            </span>
             <span v-if="getModelRef(model) === selectedModel" aria-hidden="true">&#10003;</span>
           </button>
           <slot name="model-action" :model="model" />
@@ -63,6 +66,7 @@
 import { computed, ref, useId, watch } from "vue";
 import { t } from "@/i18n";
 import { getModelRef, providerName, type ConfiguredModel } from "@/utils/configured-models";
+import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
 
 const props = defineProps<{
   models: ConfiguredModel[];
@@ -105,7 +109,12 @@ function toggle(provider: string): void {
   expansion.set(provider, !isExpanded(provider));
 }
 function select(model: ConfiguredModel): void {
-  if (!props.disabled && !props.isModelDisabled?.(model)) emit("select", getModelRef(model));
+  if (!props.disabled && !props.isModelDisabled?.(model) && !restrictionLabel(model))
+    emit("select", getModelRef(model));
+}
+function restrictionLabel(model: ConfiguredModel): string {
+  const restriction = getChatModelRestriction(getModelRef(model));
+  return restriction ? t(`modelSetup.incompatible.${restriction}`) : "";
 }
 watch(search, () => searchExpandedGroups.value.clear(), { flush: "sync" });
 watch(
@@ -118,6 +127,11 @@ watch(
 </script>
 
 <style scoped>
+/* The popover title names its dialog; each picker renders its own visible header. */
+:global(.model-picker-dialog .el-popover__title) {
+  display: none;
+}
+
 .model-groups {
   max-height: 320px;
   overflow-y: auto;

@@ -10,7 +10,8 @@ export const PINNED_OPENCLAW_VERSION = "2026.10.3";
 export const PINNED_PID_MODULE = "pid-alive-CPS_shDt.mjs";
 export const PINNED_PID_SHA256 = "15370817b8250160bfba29d3e0c46d8f1f09579b65abd0c83fc47c44c7ff4280";
 export const PINNED_NATIVE_PLUGIN_MODULE = "plugin-generation-artifact-BfVPxt5p.mjs";
-export const PINNED_NATIVE_PLUGIN_SHA256 = "7e85c00946c7a17c2858c9cfcfa206854e92a1e9c10ca2e4c106d81dfca8ef04";
+export const PINNED_NATIVE_PLUGIN_SHA256 =
+  "7e85c00946c7a17c2858c9cfcfa206854e92a1e9c10ca2e4c106d81dfca8ef04";
 const NATIVE_COMPANION_COPY =
   "\t\t\t\tcopyPluginSourceFile(member.source, member.boundary, target);\n" +
   "\t\t\t\tfs.chmodSync(target, 384 | Number(member.stat.mode & 64n));";
@@ -73,7 +74,10 @@ export function patchPinnedWindowsPidSource(source) {
 
 export function patchPinnedWindowsNativePluginSource(source) {
   const index = source.indexOf(NATIVE_COMPANION_COPY);
-  if (index < 0 || source.indexOf(NATIVE_COMPANION_COPY, index + NATIVE_COMPANION_COPY.length) >= 0) {
+  if (
+    index < 0 ||
+    source.indexOf(NATIVE_COMPANION_COPY, index + NATIVE_COMPANION_COPY.length) >= 0
+  ) {
     throw new Error("The pinned native plugin snapshot patch did not match exactly once");
   }
   return source.replace(
@@ -137,7 +141,8 @@ export function initializeWindowsStateOwnerCompatibility(packageDir) {
         if (result.source === undefined || result.source === null) {
           throw new Error("The pinned OpenClaw native plugin source is unavailable");
         }
-        const source = typeof result.source === "string" ? result.source : Buffer.from(result.source);
+        const source =
+          typeof result.source === "string" ? result.source : Buffer.from(result.source);
         if (createHash("sha256").update(source).digest("hex") !== PINNED_NATIVE_PLUGIN_SHA256) {
           throw new Error("The OpenClaw native plugin module changed before loading");
         }

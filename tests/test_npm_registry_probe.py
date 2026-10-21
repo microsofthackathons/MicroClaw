@@ -41,8 +41,7 @@ class NpmRegistryProbeTests(unittest.TestCase):
             self.assertEqual(self.setup._npm_registry_attempts(), [registry])
         self.setup.log.warn.assert_called_once()
         self.assertTrue(
-            any("URLError/SSLError" in call.args[0]
-                for call in self.setup.log.debug.call_args_list)
+            any("URLError/SSLError" in call.args[0] for call in self.setup.log.debug.call_args_list)
         )
 
     def test_slow_probe_does_not_discard_completed_results_or_block_until_shutdown(self):
@@ -79,12 +78,8 @@ class NpmRegistryProbeTests(unittest.TestCase):
         def configured_registry(key, default=None):
             return NPM_REGISTRY_HUAWEI_MIRRORS if key == "npm.registry" else default
 
-        self.setup.cfg = SimpleNamespace(
-            get=configured_registry
-        )
+        self.setup.cfg = SimpleNamespace(get=configured_registry)
         candidates = self.setup._npm_registry_candidates()
         self.assertEqual(candidates[0], NPM_REGISTRY_HUAWEI_MIRRORS)
-        self.assertEqual(
-            len(candidates), len(set(registry.rstrip("/") for registry in candidates))
-        )
+        self.assertEqual(len(candidates), len(set(registry.rstrip("/") for registry in candidates)))
         self.assertTrue(all(registry.startswith("https://") for registry in candidates))

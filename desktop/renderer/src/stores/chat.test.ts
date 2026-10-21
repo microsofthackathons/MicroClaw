@@ -77,6 +77,31 @@ import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
 describe("classifyChatError", () => {
+  it.each([
+    ["HTTP 403 Forbidden", "provider_access", 403],
+    [
+      "⚠️ Couldn't sign in to the AI service. Sign in again under Models.",
+      "provider_access",
+      undefined,
+    ],
+    ["HTTP 401 Invalid API key", "unauthorized", 401],
+    [
+      "UNSUPPORTED_CHAT_MODEL: qwen/realtime requires a different API",
+      "unsupported_model",
+      undefined,
+    ],
+    [
+      "The AI service couldn't accept this request. Try a new conversation.",
+      "request_rejected",
+      undefined,
+    ],
+  ])(
+    "classifies provider failures without assuming every access rejection is an invalid key",
+    (raw, code, status) => {
+      expect(classifyChatError(String(raw))).toMatchObject({ code, status });
+    },
+  );
+
   it("treats a Copilot token-exchange 404 as an authentication failure", () => {
     expect(classifyChatError("Copilot token exchange failed: HTTP 404")).toEqual({
       code: "copilot_auth",

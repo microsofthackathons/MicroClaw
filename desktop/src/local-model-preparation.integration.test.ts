@@ -24,8 +24,10 @@ import { parseManagedModelPaths } from "./local-model-files";
 const entry = process.env.MICROCLAW_TEST_OPENCLAW_ENTRY;
 const cache = process.env.MICROCLAW_TEST_LOCAL_CACHE;
 const plugin = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
-it.skipIf(!entry || !cache || !plugin)(
-  "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults",
+it.skipIf(!entry || !plugin)(
+  cache
+    ? "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults"
+    : "reaches exact-model download consent through the real provider loader without downloading or changing defaults",
   async () => {
     const root = mkdtempSync(path.join(tmpdir(), "microclaw-complete-local-"));
     const configPath = path.join(root, "openclaw.json");
@@ -38,7 +40,9 @@ it.skipIf(!entry || !cache || !plugin)(
     try {
       mkdirSync(isolatedCache, { recursive: true });
       const weightFiles = [model.cacheFile, "hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"];
-      const originals = new Map(weightFiles.map((file) => [file, path.join(cache!, file)]));
+      const originals = new Map(
+        cache ? weightFiles.map((file) => [file, path.join(cache, file)]) : [],
+      );
       for (const [file, original] of originals) {
         copyFileSync(original, path.join(isolatedCache, file));
       }
@@ -134,17 +138,31 @@ it.skipIf(!entry || !cache || !plugin)(
       });
       await vi.waitFor(
         () => {
-          expect(service.getOperation()?.phase, service.getOperation()?.error).toBe("step");
-          expect(service.getOperation()?.step?.type).toBe("confirm");
+          expect(["step", "error"]).toContain(service.getOperation()?.phase);
         },
         { timeout: 90_000, interval: 200 },
       );
       const consent = service.getOperation()!;
+      expect(consent.phase, consent.error).toBe("step");
+      expect(consent.step?.type, consent.error).toBe("confirm");
       expect(consent.download).toMatchObject({
         modelRef: model.modelRef,
-        modelBytes: 0,
-        embeddingBytes: 0,
       });
+      if (!cache) {
+        expect(
+          request.mock.calls.some(
+            ([method, params]) =>
+              method === "wizard.next" &&
+              (params as { answer?: { value?: unknown } }).answer?.value === true,
+          ),
+        ).toBe(false);
+        await service.cancel(started.id);
+        expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.model).toEqual(
+          before.agents.defaults.model,
+        );
+        return;
+      }
+      expect(consent.download).toMatchObject({ modelBytes: 0, embeddingBytes: 0 });
       await service.answer({ operationId: started.id, stepId: consent.step!.id, value: true });
       await vi.waitFor(
         () => {

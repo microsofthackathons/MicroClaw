@@ -1,7 +1,9 @@
 # 远程权限审批：通过微信消息流授权 MicroClaw 操作
 
 **日期**: 2026-03-30  
-**状态**: 设计阶段  
+**状态**: 已由 `docs/experimental-windows-node-mxc.md` 中的 “WeChat remote approval
+(Experimental)” 安全架构取代。本文仅保留为历史设计记录，不得实现其中的 `Y/N`、通用权限、
+ACL 扩权或 response-file 方案。
 **依赖**: AppContainer 沙箱权限系统、openclaw-weixin 插件
 
 ---

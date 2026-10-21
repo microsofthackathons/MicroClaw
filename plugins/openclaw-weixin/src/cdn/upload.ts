@@ -11,6 +11,7 @@ import { redactUrl } from "../util/redact.js";
 import { getExtensionFromContentTypeOrUrl } from "../media/mime.js";
 import { tempFileName } from "../util/random.js";
 import { UploadMediaType } from "../api/types.js";
+import { fetchWeixinRemoteMediaWithPolicy } from "../security/mxc-policy.js";
 
 export type UploadedFileInfo = {
   filekey: string;
@@ -32,7 +33,7 @@ export async function downloadRemoteImageToTemp(url: string, destDir: string): P
   logger.debug(`downloadRemoteImageToTemp: fetching url=${redactUrl(url)}`);
   let res: Response;
   try {
-    res = await fetch(url);
+    res = await fetchWeixinRemoteMediaWithPolicy(url);
   } catch (err) {
     const cause =
       (err as NodeJS.ErrnoException).cause ?? (err as NodeJS.ErrnoException).code ?? "";

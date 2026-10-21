@@ -54,6 +54,22 @@ export const HEALTH_CHECK_BUSY_GRACE_MS = 240_000;
  *  than two minutes before the Gateway binds its health endpoint. */
 export const GATEWAY_READY_TIMEOUT_MS = 300_000;
 
+/** Total authenticated RPC readiness budget before the bundled Windows node may start. */
+export const MXC_GATEWAY_RPC_READY_TIMEOUT_MS = 180_000;
+
+/** Per-attempt budget for the representative authenticated config.get readiness RPC. */
+export const MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS = 120_000;
+
+/** Initial and maximum retry delays for authenticated Gateway readiness. */
+export const MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS = 500;
+export const MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS = 5_000;
+
+/** Max time to keep the locked policy while agent databases finish startup preparation. */
+export const MXC_AGENT_DATABASE_READY_TIMEOUT_MS = 180_000;
+
+/** Poll cadence for per-agent database admission readiness. */
+export const MXC_AGENT_DATABASE_READY_POLL_INTERVAL_MS = 250;
+
 /** Max time to wait for the gateway port to become free (ms). */
 export const PORT_WAIT_TIMEOUT_MS = 30_000;
 

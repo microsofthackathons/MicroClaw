@@ -10,15 +10,40 @@ export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
   "system.which",
 ] as const;
 export const WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND = "system.run.cwd-policy";
+export const WINDOWS_NODE_MXC_CANVAS_COMMANDS = [
+  "canvas.present",
+  "canvas.hide",
+  "canvas.snapshot",
+  "canvas.caps",
+  "canvas.a2ui.push",
+  "canvas.a2ui.pushJSONL",
+  "canvas.a2ui.reset",
+  "canvas.a2ui.dump",
+] as const;
+export const WINDOWS_NODE_MXC_CANVAS_ACTIONS = ["cancel", "click", "confirm", "submit"] as const;
 export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
   ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
   WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+  ...WINDOWS_NODE_MXC_CANVAS_COMMANDS,
 ] as const;
-export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = ["exec"] as const;
+export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = [
+  "exec",
+  "web_search",
+  "web_fetch",
+  "message",
+  "canvas",
+] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
 ] as const;
-export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs", "group:plugins"] as const;
+export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+] as const;
+export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs"] as const;
+export const WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS = ["memory-core"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
   "group:runtime",
   "group:fs",
@@ -106,6 +131,7 @@ export interface WindowsNodeMxcGatewayApproval {
     access: SandboxFolderAccess;
     path: string;
   }>;
+  hasMutableFileOperand: boolean;
   allowedDecisions: WindowsNodeMxcApprovalDecision[];
 }
 
@@ -228,6 +254,10 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const cwdBinding = typeof plan.cwdBinding === "string" ? plan.cwdBinding.trim() : "";
   const previewDeclaredAccess = parseGatewayDeclaredAccess(commandPreview);
   const declaredAccess = normalizeStructuredDeclaredAccess(plan.declaredAccess);
+  const hasMutableFileOperand =
+    Object.hasOwn(plan, "mutableFileOperand") &&
+    plan.mutableFileOperand !== null &&
+    plan.mutableFileOperand !== undefined;
   const hasCanonicalCwd =
     Object.hasOwn(plan, "cwd") &&
     (plan.cwd === null || (typeof plan.cwd === "string" && plan.cwd.trim().length > 0));
@@ -286,6 +316,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     agent: typeof plan.agentId === "string" && plan.agentId.trim() ? plan.agentId : null,
     sessionKey: plan.sessionKey as string,
     declaredAccess,
+    hasMutableFileOperand,
     allowedDecisions: [...new Set(allowed)],
   };
 }
@@ -328,14 +359,30 @@ export interface WindowsNodeReadiness {
   warnings: string[];
 }
 
+export interface MxcBackendProbeFacts {
+  baseContainerApiPresent: boolean | null;
+  bfscfgPresent: boolean | null;
+  bfsCompiledIn: boolean | null;
+}
+
 export interface MxcProbeResult {
   outcome: "supported" | "unsupported" | "error";
   tier: string | null;
   needsDaclAugmentation: boolean;
   degraded: boolean;
   warnings: string[];
+  probes: MxcBackendProbeFacts;
   reason: string | null;
 }
+
+export interface MxcExactBackendEligibility {
+  eligible: boolean;
+  summary: string | null;
+  blockers: string[];
+  remediation: string[];
+}
+
+const MXC_EXACT_FILESYSTEM_ISOLATION_TIERS = new Set(["base-container", "appcontainer-bfs"]);
 
 export interface MxcSmokeResult {
   outcome:
@@ -363,11 +410,21 @@ const INGRESS_BACKUP_KEYS = {
   hooks: "$microclaw.ingress.hooks",
   plugins: "$microclaw.ingress.plugins",
 } as const;
+export type WindowsNodeMxcIngressField = keyof typeof INGRESS_BACKUP_KEYS;
 
 export interface WindowsNodeMxcPolicyApplication {
   config: Record<string, unknown>;
   backups: AgentToolsBackup;
   agentIds: string[];
+}
+
+export function getWindowsNodeMxcIngressBackup(
+  backups: AgentToolsBackup,
+  field: WindowsNodeMxcIngressField,
+): unknown {
+  const backupKey = INGRESS_BACKUP_KEYS[field];
+  if (!Object.hasOwn(backups, backupKey)) return undefined;
+  return structuredClone(backups[backupKey]);
 }
 
 export function migrateWindowsNodeMxcToolBackupAliases(
@@ -473,7 +530,10 @@ export function applyWindowsNodeMxcGatewayPolicy(
   config.channels = Object.fromEntries(
     Object.entries(channels).map(([channelId, value]) => [
       channelId,
-      { ...asRecord(value), enabled: false },
+      {
+        ...asRecord(value),
+        enabled: channelId === "openclaw-weixin" && asRecord(value).enabled === true,
+      },
     ]),
   );
   const hooks = asRecord(config.hooks);
@@ -485,15 +545,34 @@ export function applyWindowsNodeMxcGatewayPolicy(
   config.cron = { ...asRecord(config.cron), enabled: false };
   const plugins = asRecord(config.plugins);
   const pluginEntries = asRecord(plugins.entries);
+  const weixinRequested = asRecord(pluginEntries["openclaw-weixin"]).enabled === true;
+  const pluginAllow = ["canvas", ...(weixinRequested ? ["openclaw-weixin"] : [])];
   config.plugins = {
     ...plugins,
-    enabled: false,
-    entries: Object.fromEntries(
-      Object.entries(pluginEntries).map(([pluginId, value]) => [
-        pluginId,
-        { ...asRecord(value), enabled: false },
-      ]),
-    ),
+    enabled: true,
+    allow: pluginAllow,
+    deny: Array.isArray(plugins.deny)
+      ? plugins.deny.filter((value) => value !== "canvas" && value !== "openclaw-weixin")
+      : [],
+    slots: {
+      ...asRecord(plugins.slots),
+      memory: "none",
+    },
+    entries: {
+      ...Object.fromEntries(
+        Object.entries(pluginEntries).map(([pluginId, value]) => [
+          pluginId,
+          {
+            ...asRecord(value),
+            enabled: pluginId === "canvas" || (pluginId === "openclaw-weixin" && weixinRequested),
+          },
+        ]),
+      ),
+      canvas: {
+        ...asRecord(pluginEntries.canvas),
+        enabled: true,
+      },
+    },
   };
   return { config, backups, agentIds };
 }
@@ -577,8 +656,22 @@ export function validateWindowsNodeMxcGatewayPolicy(
         : expectedState === "active"
           ? matchesActive
           : matchesLocked;
+    const tools = asRecord(entry.tools);
+    const allow = Array.isArray(tools?.allow) ? tools.allow : [];
+    const deny = Array.isArray(tools?.deny) ? tools.deny : [];
+    const forbiddenFilesystemTools = findGatewayNativeFilesystemTools(allow);
+    if (forbiddenFilesystemTools.length > 0) {
+      blockers.push(
+        `Agent "${id}" enables Gateway-native filesystem tools while MXC is enabled: ${forbiddenFilesystemTools.join(", ")}`,
+      );
+    }
+    if (!deny.includes("group:fs")) {
+      blockers.push(`Agent "${id}" does not deny the Gateway-native filesystem tool group`);
+    }
     if (!matchesExpected) {
-      blockers.push(`Agent "${id}" tool policy drifted from exec-only Windows-node routing`);
+      blockers.push(
+        `Agent "${id}" tool policy drifted from contained exec and Gateway web routing`,
+      );
     }
   }
 
@@ -589,6 +682,9 @@ export function validateWindowsNodeMxcGatewayPolicy(
   const globalDeny = globalTools && Array.isArray(globalTools.deny) ? globalTools.deny : [];
   if (globalDeny.some((value) => value === "exec" || value === "group:runtime")) {
     blockers.push("Global Gateway tool policy blocks node exec");
+  }
+  if (globalDeny.some((value) => value === "canvas" || value === "group:plugins")) {
+    blockers.push("Global Gateway tool policy blocks the reviewed Canvas tool");
   }
   const gateway =
     root.gateway && typeof root.gateway === "object" && !Array.isArray(root.gateway)
@@ -602,10 +698,14 @@ export function validateWindowsNodeMxcGatewayPolicy(
   const allowCommands = Array.isArray(commands.allow) ? commands.allow : [];
   const denyCommands = Array.isArray(commands.deny) ? commands.deny : [];
   if (!isDeepStrictEqual(allowCommands, [...WINDOWS_NODE_MXC_NODE_COMMANDS])) {
-    blockers.push("Gateway node command allowlist drifted from the bundled system-only surface");
+    blockers.push(
+      "Gateway node command allowlist drifted from the bundled system and Canvas surface",
+    );
   }
   if (!isDeepStrictEqual(denyCommands, [])) {
-    blockers.push("Gateway node command denylist conflicts with the bundled system-only surface");
+    blockers.push(
+      "Gateway node command denylist conflicts with the bundled system and Canvas surface",
+    );
   }
   const cron = asRecord(root.cron);
   if (cron.enabled !== false) blockers.push("Gateway cron ingress must remain disabled");
@@ -615,15 +715,53 @@ export function validateWindowsNodeMxcGatewayPolicy(
     blockers.push("Gateway internal-hook ingress must remain disabled");
   }
   const channels = asRecord(root.channels);
+  let weixinChannelEnabled = false;
   for (const [channelId, value] of Object.entries(channels)) {
+    if (channelId === "openclaw-weixin") {
+      weixinChannelEnabled = asRecord(value).enabled === true;
+      continue;
+    }
     if (asRecord(value).enabled !== false) {
       blockers.push(`Gateway channel "${channelId}" must remain disabled`);
     }
   }
   const plugins = asRecord(root.plugins);
-  if (plugins.enabled !== false) blockers.push("Gateway plugins must remain disabled");
+  const canvasPluginEnabled = asRecord(asRecord(plugins.entries).canvas).enabled === true;
+  const weixinPluginEnabled =
+    asRecord(asRecord(plugins.entries)["openclaw-weixin"]).enabled === true;
+  if (plugins.enabled !== true || !canvasPluginEnabled) {
+    blockers.push("Gateway Canvas plugin must remain enabled under MXC");
+  }
+  if (weixinChannelEnabled && !weixinPluginEnabled) {
+    blockers.push("Gateway WeChat channel cannot be enabled while its plugin is disabled");
+  }
+  const pluginAllow = Array.isArray(plugins.allow) ? plugins.allow : [];
+  const pluginDeny = Array.isArray(plugins.deny) ? plugins.deny : [];
+  const expectedPluginAllow = ["canvas", ...(weixinPluginEnabled ? ["openclaw-weixin"] : [])];
+  if (!isDeepStrictEqual(pluginAllow, expectedPluginAllow) || pluginDeny.includes("canvas")) {
+    blockers.push("Gateway plugin policy drifted from the reviewed Canvas/WeChat surface");
+  }
+  if (
+    weixinPluginEnabled &&
+    (!pluginAllow.includes("openclaw-weixin") || pluginDeny.includes("openclaw-weixin"))
+  ) {
+    blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
+  }
+  const memorySlot = asRecord(plugins.slots).memory;
+  if (memorySlot !== "none" && memorySlot !== null) {
+    blockers.push(
+      'Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"',
+    );
+  }
   for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
-    if (asRecord(value).enabled !== false) {
+    if (
+      pluginId !== "canvas" &&
+      pluginId !== "openclaw-weixin" &&
+      !WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.includes(
+        pluginId as (typeof WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS)[number],
+      ) &&
+      asRecord(value).enabled !== false
+    ) {
       blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
     }
   }
@@ -662,6 +800,7 @@ export function validateWindowsNodeMxcSettings(
   const requiredTrue: Array<[keyof WindowsNodeMxcSettings, string]> = [
     ["EnableNodeMode", "Windows Companion node mode is disabled"],
     ["NodeSystemRunEnabled", "Windows node system.run is disabled"],
+    ["NodeCanvasEnabled", "Reviewed Canvas Phase 1 capability is disabled"],
     ["SystemRunSandboxEnabled", "Windows node MXC sandbox is disabled"],
     [
       "SystemRunBlockHostFallbackWhenMxcUnavailable",
@@ -671,15 +810,14 @@ export function validateWindowsNodeMxcSettings(
       "SystemRunAllowWindowsUi",
       "Windows UI APIs must be allowed for PowerShell compatibility with MXC 0.7",
     ],
+    ["SystemRunAllowOutbound", "Contained outbound network access must be enabled for this mode"],
   ];
   for (const [property, message] of requiredTrue) {
     if (settings[property] !== true) blockers.push(message);
   }
 
   const requiredFalse: Array<[keyof WindowsNodeMxcSettings, string]> = [
-    ["SystemRunAllowOutbound", "Outbound network access must remain blocked"],
     ["EnableMcpServer", "Local MCP must remain disabled for this mode"],
-    ["NodeCanvasEnabled", "Canvas capability must be disabled"],
     ["NodeScreenEnabled", "Screen capability must be disabled"],
     ["NodeCameraEnabled", "Camera capability must be disabled"],
     ["NodeLocationEnabled", "Location capability must be disabled"],
@@ -694,7 +832,7 @@ export function validateWindowsNodeMxcSettings(
   if (settings.SandboxClipboard !== 0) blockers.push("Sandbox clipboard policy must be None");
 
   warnings.push(
-    "allowWindowsUi is a PowerShell compatibility relaxation; it does not enable screen, input, canvas, camera, microphone, browser, location, or speech capabilities.",
+    "allowWindowsUi is a PowerShell compatibility relaxation; it does not enable screen, input, camera, microphone, browser, location, or speech capabilities. Canvas is separately restricted to the reviewed native A2UI subset.",
   );
   return { ready: blockers.length === 0, blockers, warnings };
 }
@@ -761,6 +899,10 @@ export function validateSelectedWindowsNode(
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
   }
+  for (const command of WINDOWS_NODE_MXC_CANVAS_COMMANDS) {
+    if (!node.commands.includes(command))
+      blockers.push(`Selected node does not declare ${command}`);
+  }
   const allowedCommands = new Set<string>(WINDOWS_NODE_MXC_NODE_COMMANDS);
   const unexpectedCommands = node.commands.filter((command) => !allowedCommands.has(command));
   if (unexpectedCommands.length > 0) {
@@ -774,15 +916,47 @@ export function validateEffectiveToolNames(
   expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift"> = "active",
 ): WindowsNodeReadiness {
   const unique = [...new Set(toolNames)].sort();
-  const expected = expectedState === "active" ? ["exec"] : [];
-  const blockers = isDeepStrictEqual(unique, expected)
-    ? []
-    : [
-        `Effective Gateway tools must be ${
-          expectedState === "active" ? 'exactly "exec"' : "empty while readiness is locked"
-        }; observed: ${unique.join(", ") || "none"}`,
-      ];
+  const expected = expectedState === "active" ? [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST].sort() : [];
+  const filesystemCheck = validateNoGatewayNativeFilesystemTools(unique);
+  const blockers = [...filesystemCheck.blockers];
+  if (!isDeepStrictEqual(unique, expected)) {
+    blockers.push(
+      `Effective Gateway tools must be ${
+        expectedState === "active"
+          ? `exactly ${expected.map((tool) => `"${tool}"`).join(", ")}`
+          : "empty while readiness is locked"
+      }; observed: ${unique.join(", ") || "none"}`,
+    );
+  }
   return { ready: blockers.length === 0, blockers, warnings: [] };
+}
+
+function findGatewayNativeFilesystemTools(toolNames: readonly unknown[]): string[] {
+  const forbidden = new Set<string>(WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS);
+  return [
+    ...new Set(
+      toolNames
+        .filter((toolName): toolName is string => typeof toolName === "string")
+        .map((toolName) => toolName.trim())
+        .filter((toolName) => forbidden.has(toolName)),
+    ),
+  ].sort();
+}
+
+export function validateNoGatewayNativeFilesystemTools(
+  toolNames: readonly string[],
+): WindowsNodeReadiness {
+  const forbidden = findGatewayNativeFilesystemTools(toolNames);
+  return {
+    ready: forbidden.length === 0,
+    blockers:
+      forbidden.length === 0
+        ? []
+        : [
+            `Gateway-native filesystem tools are forbidden while MXC is enabled: ${forbidden.join(", ")}`,
+          ],
+    warnings: [],
+  };
 }
 
 export function classifyMissingEffectiveToolSession(
@@ -908,6 +1082,17 @@ export function classifyMxcProbe(
   const warnings = Array.isArray(parsed.warnings)
     ? parsed.warnings.filter((entry): entry is string => typeof entry === "string")
     : [];
+  const nestedProbes =
+    parsed.probes && typeof parsed.probes === "object" && !Array.isArray(parsed.probes)
+      ? (parsed.probes as Record<string, unknown>)
+      : {};
+  const probes: MxcBackendProbeFacts = {
+    baseContainerApiPresent: optionalBoolean(
+      nestedProbes.baseContainerApiPresent ?? parsed.baseContainerApiPresent,
+    ),
+    bfscfgPresent: optionalBoolean(nestedProbes.bfscfgPresent ?? parsed.bfscfgPresent),
+    bfsCompiledIn: optionalBoolean(nestedProbes.bfsCompiledIn ?? parsed.bfsCompiledIn),
+  };
   if (typeof parsed.error === "string" || parsed.supported === false) {
     return {
       outcome: "unsupported",
@@ -915,6 +1100,7 @@ export function classifyMxcProbe(
       needsDaclAugmentation: false,
       degraded: false,
       warnings,
+      probes,
       reason:
         typeof parsed.error === "string"
           ? parsed.error
@@ -925,26 +1111,117 @@ export function classifyMxcProbe(
   const tier = typeof parsed.tier === "string" ? parsed.tier.trim() : "";
   if (!tier) return probeError("wxc-exec --probe did not report an isolation tier");
   const normalizedTier = tier.toLowerCase();
-  if (!["base-container", "appcontainer-bfs", "appcontainer-dacl"].includes(normalizedTier)) {
+  if (![...MXC_EXACT_FILESYSTEM_ISOLATION_TIERS, "appcontainer-dacl"].includes(normalizedTier)) {
     return probeError(`wxc-exec --probe reported an unrecognized isolation tier: ${tier}`);
   }
   const needsDaclAugmentation = parsed.needsDaclAugmentation === true;
+  const degraded =
+    needsDaclAugmentation || !MXC_EXACT_FILESYSTEM_ISOLATION_TIERS.has(normalizedTier);
+  if (degraded) {
+    return {
+      outcome: "unsupported",
+      tier,
+      needsDaclAugmentation,
+      degraded: true,
+      warnings,
+      probes,
+      reason:
+        `MXC isolation tier ${tier} cannot enforce the configured filesystem roots as a hard ` +
+        "capability boundary; base-container or appcontainer-bfs is required",
+    };
+  }
+  if (normalizedTier === "base-container" && probes.baseContainerApiPresent === false) {
+    return probeError(
+      "wxc-exec --probe reported base-container while the Base Container API was unavailable",
+    );
+  }
+  if (
+    normalizedTier === "appcontainer-bfs" &&
+    (probes.bfsCompiledIn === false || probes.bfscfgPresent === false)
+  ) {
+    return probeError(
+      "wxc-exec --probe reported appcontainer-bfs without proving compiled BFS support and bfscfg.exe",
+    );
+  }
   return {
     outcome: "supported",
     tier,
     needsDaclAugmentation,
-    degraded:
-      needsDaclAugmentation || !["base-container", "appcontainer-bfs"].includes(normalizedTier),
+    degraded: false,
     warnings,
+    probes,
     reason: null,
   };
 }
 
+export function describeMxcExactBackendEligibility(
+  probe: MxcProbeResult,
+): MxcExactBackendEligibility {
+  if (probe.outcome === "supported") {
+    return {
+      eligible: true,
+      summary: null,
+      blockers: [],
+      remediation: [],
+    };
+  }
+
+  const blockers: string[] = [];
+  const remediation: string[] = [];
+
+  if (probe.outcome === "error") {
+    blockers.push(probe.reason ?? "The MXC exact-containment probe failed");
+    remediation.push(
+      "Repair the pinned, signed MXC runtime and retry. MicroClaw will not start the Windows node until the probe succeeds.",
+    );
+  } else {
+    if (probe.probes.baseContainerApiPresent === false) {
+      blockers.push(
+        "The Base Container API is unavailable on this Windows installation, so MXC cannot create a base-container sandbox.",
+      );
+      remediation.push(
+        "Use a supported Windows build that exposes processmodel.dll and Experimental_CreateProcessInSandbox. MicroClaw cannot safely install or emulate this operating-system API.",
+      );
+    }
+    if (probe.probes.bfsCompiledIn === false) {
+      blockers.push(
+        "The pinned official MXC 0.7.0 production runtime was built without the appcontainer-bfs backend.",
+      );
+      remediation.push(
+        "Do not copy bfscfg.exe onto the host: it cannot enable BFS in this runtime. Use only a future reviewed and signed MXC release that enables an exact backend on a documented supported Windows build.",
+      );
+    } else if (probe.probes.bfsCompiledIn === true && probe.probes.bfscfgPresent === false) {
+      blockers.push(
+        "The MXC runtime supports appcontainer-bfs, but the required bfscfg.exe host component is unavailable.",
+      );
+      remediation.push(
+        "Provision BFS only through a reviewed vendor installer on a documented supported Windows build; MicroClaw will not copy or execute an unverified host component.",
+      );
+    }
+    if (blockers.length === 0) {
+      blockers.push(
+        probe.reason ??
+          "MXC did not prove a base-container or appcontainer-bfs exact-containment backend",
+      );
+      remediation.push(
+        "Install a reviewed exact-containment backend supported by this Windows build, then retry. AppContainer + DACL remains intentionally unsupported.",
+      );
+    }
+  }
+
+  return {
+    eligible: false,
+    summary: blockers.join(" "),
+    blockers,
+    remediation,
+  };
+}
+
 export function getMxcTierWarning(probe: MxcProbeResult): string | null {
-  if (probe.outcome !== "supported" || !probe.degraded) return null;
-  return `Degraded MXC containment: ${probe.tier ?? "unknown tier"}${
+  if (!probe.degraded) return null;
+  return `Rejected degraded MXC containment: ${probe.tier ?? "unknown tier"}${
     probe.needsDaclAugmentation ? " requires host DACL augmentation" : ""
-  }. This mode remains usable but is weaker than base-container or appcontainer-bfs.`;
+  }. This mode cannot enforce the configured folder policy exactly.`;
 }
 
 export function classifyMxcSmoke(value: unknown, expectedMarker: string): MxcSmokeResult {
@@ -1344,8 +1621,17 @@ function probeError(reason: string): MxcProbeResult {
     needsDaclAugmentation: false,
     degraded: false,
     warnings: [],
+    probes: {
+      baseContainerApiPresent: null,
+      bfscfgPresent: null,
+      bfsCompiledIn: null,
+    },
     reason,
   };
+}
+
+function optionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function normalizeWindowsPath(value: string): string {

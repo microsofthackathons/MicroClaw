@@ -10,7 +10,30 @@ export interface AppWindow {
   restore(): void;
   setSkipTaskbar(skip: boolean): void;
   show(): void;
+  showInactive(): void;
   focus(): void;
+}
+
+export interface WindowLifecycleState {
+  lifecycleActive: boolean;
+  recoveryActive?: boolean;
+  explicitQuitRequested: boolean;
+}
+
+export function shouldPreventWindowClose(state: WindowLifecycleState): boolean {
+  return (state.lifecycleActive || state.recoveryActive === true) && !state.explicitQuitRequested;
+}
+
+export function shouldRecoverWindow(state: WindowLifecycleState): boolean {
+  return (state.lifecycleActive || state.recoveryActive === true) && !state.explicitQuitRequested;
+}
+
+export function shouldQuitAfterAllWindowsClosed(
+  platform: NodeJS.Platform,
+  state: WindowLifecycleState,
+): boolean {
+  if (platform === "darwin") return false;
+  return state.explicitQuitRequested || (!state.lifecycleActive && state.recoveryActive !== true);
 }
 
 export function sendToWindow(
@@ -38,6 +61,16 @@ export function showAndFocusWindow(window: AppWindow | null): void {
   window.setSkipTaskbar(false);
   window.show();
   window.focus();
+}
+
+export function showStartupWindow(window: AppWindow | null, background: boolean): void {
+  if (!background) {
+    showAndFocusWindow(window);
+    return;
+  }
+  if (!window || window.isDestroyed()) return;
+  window.setSkipTaskbar(false);
+  window.showInactive();
 }
 
 export function minimizeWindow(window: AppWindow | null, minimizeToTray: boolean): void {

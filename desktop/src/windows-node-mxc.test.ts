@@ -8,6 +8,7 @@ import {
   classifyMxcProbe,
   classifyMxcSmoke,
   classifyMissingEffectiveToolSession,
+  describeMxcExactBackendEligibility,
   extractEffectiveToolNames,
   getMxcTierWarning,
   getWindowsNodeMxcGatewayPolicyState,
@@ -22,10 +23,14 @@ import {
   restoreWindowsNodeMxcGatewayPolicy,
   selectWindowsNodeMxcGatewayStartPolicy,
   validateEffectiveToolNames,
+  validateNoGatewayNativeFilesystemTools,
   validateSelectedWindowsNode,
   validateWindowsNodeMxcGatewayPolicy,
   validateWindowsNodeMxcFolderPath,
   validateWindowsNodeMxcSettings,
+  WINDOWS_NODE_MXC_CANVAS_COMMANDS,
+  WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
+  WINDOWS_NODE_MXC_TOOL_ALLOWLIST,
 } from "./windows-node-mxc";
 import {
   classifyDeniedCwdSmoke,
@@ -40,7 +45,7 @@ import {
 const strictSettings = {
   EnableNodeMode: true,
   NodeSystemRunEnabled: true,
-  NodeCanvasEnabled: false,
+  NodeCanvasEnabled: true,
   NodeScreenEnabled: false,
   NodeCameraEnabled: false,
   NodeLocationEnabled: false,
@@ -50,7 +55,7 @@ const strictSettings = {
   EnableMcpServer: false,
   SystemRunSandboxEnabled: true,
   SystemRunBlockHostFallbackWhenMxcUnavailable: true,
-  SystemRunAllowOutbound: false,
+  SystemRunAllowOutbound: true,
   SystemRunAllowWindowsUi: true,
   SandboxClipboard: 0,
 };
@@ -86,6 +91,7 @@ describe("Gateway node exec approval bridge", () => {
       arguments: ["-Command", "Set-Content test.txt ok"],
       executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       executableSha256: "c".repeat(64),
+      hasMutableFileOperand: false,
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
       sessionKey: "agent:main:approval-regression",
@@ -124,6 +130,7 @@ describe("Gateway node exec approval bridge", () => {
       arguments: ["-Command", "Set-Content test.txt ok"],
       executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       executableSha256: "c".repeat(64),
+      hasMutableFileOperand: false,
       canonicalCwd: "isolated-scratch:v1",
       agent: "main",
       sessionKey: "agent:main:approval-regression",
@@ -314,13 +321,22 @@ describe("bundled Windows Node CWD attestation", () => {
           approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
           approvalProofBindsExecutableContent: true,
           approvalProofBindsActivation: true,
+          launchTimeApprovalProofRevalidation: true,
           readinessProofContract: "microclaw.windows-node-readiness.v1",
           readinessProofBindsTransition: true,
           readinessProofBindsPreparedPlan: true,
           readinessProofExactBuiltInsOnly: true,
           readinessProofOneUse: true,
+          launchTimeReadinessProofRevalidation: true,
+          exactFilesystemIsolationRequired: true,
+          degradedIsolationTierRejected: true,
           durableApprovalStoreProtected: true,
           durableApprovalsPresent: true,
+          requestedContainmentStrength: "full",
+          folderPolicyIsExclusiveBoundary: true,
+          durableApprovalsAllowed: true,
+          ambientAssessmentBound: false,
+          outboundNetworkEnabled: true,
         },
       }),
     ).toEqual({ ready: true, blockers: [], durableApprovalsPresent: true });
@@ -332,11 +348,18 @@ describe("bundled Windows Node CWD attestation", () => {
     "approvalProofBindsPreparedPlan",
     "approvalProofBindsExecutableContent",
     "approvalProofBindsActivation",
+    "launchTimeApprovalProofRevalidation",
     "readinessProofBindsTransition",
     "readinessProofBindsPreparedPlan",
     "readinessProofExactBuiltInsOnly",
     "readinessProofOneUse",
+    "launchTimeReadinessProofRevalidation",
+    "exactFilesystemIsolationRequired",
+    "degradedIsolationTierRejected",
     "durableApprovalStoreProtected",
+    "folderPolicyIsExclusiveBoundary",
+    "durableApprovalsAllowed",
+    "outboundNetworkEnabled",
   ])("fails closed when %s is not attested", (property) => {
     const payload = {
       contract: "microclaw.windows-cwd.v1",
@@ -359,13 +382,22 @@ describe("bundled Windows Node CWD attestation", () => {
       approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
       approvalProofBindsExecutableContent: true,
       approvalProofBindsActivation: true,
+      launchTimeApprovalProofRevalidation: true,
       readinessProofContract: "microclaw.windows-node-readiness.v1",
       readinessProofBindsTransition: true,
       readinessProofBindsPreparedPlan: true,
       readinessProofExactBuiltInsOnly: true,
       readinessProofOneUse: true,
+      launchTimeReadinessProofRevalidation: true,
+      exactFilesystemIsolationRequired: true,
+      degradedIsolationTierRejected: true,
       durableApprovalStoreProtected: true,
       durableApprovalsPresent: false,
+      requestedContainmentStrength: "full",
+      folderPolicyIsExclusiveBoundary: true,
+      durableApprovalsAllowed: true,
+      ambientAssessmentBound: false,
+      outboundNetworkEnabled: true,
     };
 
     expect(
@@ -414,22 +446,24 @@ describe("bundled Windows Node CWD attestation", () => {
           settingsFingerprint: "settings",
           probeTier: "appcontainer-dacl",
           checkedAt: "2026-08-18T00:00:00.000Z",
-          hostname: { outcome: "passed", reason: "ok" },
-          powershell: { outcome: "passed", reason: "ok" },
+          profile: "limited-minimal-smoke",
+          execution: { outcome: "passed", reason: "ok" },
         }),
       ).toBe(false);
     });
 
     it("binds smoke proof and ingress release to the exact Gateway generation", () => {
       const smoke = {
+        profile: "limited-minimal-smoke" as const,
         gatewayGeneration: "generation-1",
         nodeId: "node-1",
         settingsFingerprint: "settings-1",
         probeTier: "appcontainer-dacl",
+        containmentStrength: "limited-dacl" as const,
+        ambientAccessHash: "a".repeat(64),
         checkedAt: new Date().toISOString(),
-        hostname: { outcome: "passed" as const, reason: "ok" },
-        powershell: { outcome: "passed" as const, reason: "ok" },
-        deniedOutsideRoot: { outcome: "passed" as const, reason: "denied" },
+        execution: { outcome: "passed" as const, reason: "ok" },
+        deniedOutsideRoot: null,
       };
 
       expect(
@@ -439,6 +473,8 @@ describe("bundled Windows Node CWD attestation", () => {
           "node-1",
           "settings-1",
           "appcontainer-dacl",
+          "limited-dacl",
+          "a".repeat(64),
         ),
       ).toBe(smoke);
       expect(
@@ -448,6 +484,8 @@ describe("bundled Windows Node CWD attestation", () => {
           "node-1",
           "settings-1",
           "appcontainer-dacl",
+          "limited-dacl",
+          "a".repeat(64),
         ),
       ).toBeNull();
       expect(isWindowsNodeMxcIngressReleased(true, "generation-1", "generation-1", false)).toBe(
@@ -511,11 +549,11 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(selectWindowsNodeMxcGatewayStartPolicy(null, false)).toBe("locked");
   });
 
-  it("exposes only exec and pins it to one stable node", () => {
+  it("exposes contained exec, Gateway web, brokered messaging, and reviewed Canvas while pinning exec", () => {
     expect(buildWindowsNodeMxcToolPolicy("node-123")).toEqual({
       profile: "full",
-      allow: ["exec"],
-      deny: ["process", "group:fs", "group:plugins"],
+      allow: ["exec", "web_search", "web_fetch", "message", "canvas"],
+      deny: ["process", "group:fs"],
       codeMode: false,
       exec: {
         host: "node",
@@ -532,7 +570,10 @@ describe("Windows Node MXC Gateway policy", () => {
     const source = {
       agents: {
         list: [
-          { id: "main", tools: { allow: ["read"] } },
+          {
+            id: "main",
+            tools: { allow: [...WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS] },
+          },
           { id: "coder", name: "Coder" },
         ],
       },
@@ -606,10 +647,13 @@ describe("Windows Node MXC Gateway policy", () => {
     });
   });
 
-  it("disables and restores every MicroClaw-managed external ingress surface", () => {
+  it("keeps only requested WeChat lifecycle loaded while pausing other ingress", () => {
     const source = {
       agents: { list: [{ id: "main" }] },
-      channels: { discord: { enabled: true, token: "preserved" } },
+      channels: {
+        discord: { enabled: true, token: "preserved" },
+        "openclaw-weixin": { enabled: true },
+      },
       hooks: { enabled: true, token: "preserved", internal: { enabled: true } },
       cron: { enabled: true, maxConcurrentRuns: 2 },
       plugins: {
@@ -622,13 +666,22 @@ describe("Windows Node MXC Gateway policy", () => {
     const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "locked");
 
     expect(applied.config).toMatchObject({
-      channels: { discord: { enabled: false, token: "preserved" } },
+      channels: {
+        discord: { enabled: false, token: "preserved" },
+        "openclaw-weixin": { enabled: true },
+      },
       hooks: { enabled: false, token: "preserved", internal: { enabled: false } },
       cron: { enabled: false, maxConcurrentRuns: 2 },
       plugins: {
-        enabled: false,
-        allow: ["openclaw-weixin"],
-        entries: { "openclaw-weixin": { enabled: false } },
+        enabled: true,
+        allow: ["canvas", "openclaw-weixin"],
+        slots: {
+          memory: "none",
+        },
+        entries: {
+          "openclaw-weixin": { enabled: true },
+          canvas: { enabled: true },
+        },
       },
     });
     expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123", "locked").ready).toBe(
@@ -652,6 +705,36 @@ describe("Windows Node MXC Gateway policy", () => {
     for (const drift of drifts) {
       expect(validateWindowsNodeMxcGatewayPolicy(drift, "node-123", "active").ready).toBe(false);
     }
+    const implicitMemoryCore = structuredClone(baseline);
+    (
+      implicitMemoryCore.plugins as {
+        slots: Record<string, string>;
+      }
+    ).slots = {};
+    expect(
+      validateWindowsNodeMxcGatewayPolicy(implicitMemoryCore, "node-123", "active").blockers,
+    ).toContain('Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"');
+  });
+
+  it("never exposes Cron or automations tools and preserves native filesystem denial", () => {
+    expect(WINDOWS_NODE_MXC_TOOL_ALLOWLIST).not.toContain("cron");
+    expect(WINDOWS_NODE_MXC_TOOL_ALLOWLIST).not.toContain("automations");
+
+    for (const forbiddenTool of ["cron", "automations"]) {
+      const source = { agents: { list: [{ id: "main" }] } };
+      const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "active").config;
+      const agent = (applied.agents as { list: Array<{ tools: { allow: string[] } }> }).list[0];
+      agent.tools.allow.push(forbiddenTool);
+
+      const result = validateWindowsNodeMxcGatewayPolicy(applied, "node-123", "active");
+      expect(result.ready).toBe(false);
+    }
+
+    const policy = buildWindowsNodeMxcToolPolicy("node-123");
+    expect(policy.deny).toContain("group:fs");
+    for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
+      expect(policy.allow).not.toContain(filesystemTool);
+    }
   });
 
   it("uses an empty locked tool inventory until all readiness proofs pass", () => {
@@ -668,7 +751,31 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(validateEffectiveToolNames(["exec"], "locked").ready).toBe(false);
   });
 
-  it("detects file-tool, plugin, or host-exec policy drift", () => {
+  it.each(WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS)(
+    "fails closed when policy drift enables the Gateway-native %s tool",
+    (filesystemTool) => {
+      const config = {
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: {
+                ...buildWindowsNodeMxcToolPolicy("node-123"),
+                allow: ["exec", filesystemTool],
+              },
+            },
+          ],
+        },
+      };
+      const result = validateWindowsNodeMxcGatewayPolicy(config, "node-123");
+      expect(result.ready).toBe(false);
+      expect(result.blockers).toContain(
+        `Agent "main" enables Gateway-native filesystem tools while MXC is enabled: ${filesystemTool}`,
+      );
+    },
+  );
+
+  it("detects plugin or host-exec policy drift", () => {
     const config = {
       agents: {
         list: [
@@ -676,7 +783,6 @@ describe("Windows Node MXC Gateway policy", () => {
             id: "main",
             tools: {
               ...buildWindowsNodeMxcToolPolicy("node-123"),
-              allow: ["exec", "read"],
               exec: { host: "gateway" },
             },
           },
@@ -688,9 +794,60 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(result.blockers[0]).toContain("tool policy drifted");
   });
 
-  it("requires the effective runtime inventory to contain only exec", () => {
-    expect(validateEffectiveToolNames(["exec"]).ready).toBe(true);
+  it("requires the effective inventory to contain only contained exec, Web, messaging, and Canvas", () => {
+    expect(
+      validateEffectiveToolNames(["exec", "web_search", "web_fetch", "message", "canvas"]).ready,
+    ).toBe(true);
+    expect(validateEffectiveToolNames(["exec"]).ready).toBe(false);
     expect(validateEffectiveToolNames(["exec", "read"]).ready).toBe(false);
+  });
+
+  it.each(["full", "limited-dacl"] as const)(
+    "keeps Gateway-native filesystem tools forbidden for %s when safe capabilities are restored",
+    () => {
+      const restoredCapabilities = ["exec", "web_search", "web_fetch", "message", "canvas"];
+      expect(validateNoGatewayNativeFilesystemTools(restoredCapabilities).ready).toBe(true);
+
+      for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
+        const check = validateNoGatewayNativeFilesystemTools([
+          ...restoredCapabilities,
+          filesystemTool,
+        ]);
+        expect(check.ready).toBe(false);
+        expect(check.blockers[0]).toContain(filesystemTool);
+        const effectiveCheck = validateEffectiveToolNames([
+          "exec",
+          "web_search",
+          "web_fetch",
+          "message",
+          filesystemTool,
+        ]);
+        expect(effectiveCheck.ready).toBe(false);
+        expect(validateEffectiveToolNames([filesystemTool], "locked").ready).toBe(false);
+        expect(
+          shouldStopManagedGatewayForWindowsNodeMxc({
+            effectiveEnabled: false,
+            effectiveToolsState: effectiveCheck.ready ? "verified" : "drift",
+            gatewayPolicyState: "active",
+          }),
+        ).toBe(true);
+      }
+    },
+  );
+
+  it("fails closed when the filesystem group denial is removed", () => {
+    const policy = buildWindowsNodeMxcToolPolicy("node-123") as {
+      deny: string[];
+    };
+    policy.deny = policy.deny.filter((entry) => entry !== "group:fs");
+    const result = validateWindowsNodeMxcGatewayPolicy(
+      { agents: { list: [{ id: "main", tools: policy }] } },
+      "node-123",
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain(
+      'Agent "main" does not deny the Gateway-native filesystem tool group',
+    );
   });
 
   it("parses pinned OpenClaw grouped tool IDs and rejects unknown payloads", () => {
@@ -746,11 +903,11 @@ describe("Windows Node strict settings", () => {
     expect(validateWindowsNodeMxcSettings(strictSettings).ready).toBe(true);
   });
 
-  it("blocks host fallback, network, clipboard, MCP, and peripheral drift", () => {
+  it("blocks host fallback, missing contained network, clipboard, MCP, and peripheral drift", () => {
     const result = validateWindowsNodeMxcSettings({
       ...strictSettings,
       SystemRunBlockHostFallbackWhenMxcUnavailable: false,
-      SystemRunAllowOutbound: true,
+      SystemRunAllowOutbound: false,
       SandboxClipboard: 1,
       EnableMcpServer: true,
       NodeScreenEnabled: true,
@@ -759,7 +916,7 @@ describe("Windows Node strict settings", () => {
     expect(result.blockers).toEqual(
       expect.arrayContaining([
         "Strict MXC host-fallback blocking is disabled",
-        "Outbound network access must remain blocked",
+        "Contained outbound network access must be enabled for this mode",
         "Sandbox clipboard policy must be None",
         "Local MCP must remain disabled for this mode",
         "Screen capability must be disabled",
@@ -966,21 +1123,96 @@ describe("Windows Node MXC global folder policy", () => {
 });
 
 describe("MXC probe and smoke classification", () => {
-  it("accepts DACL-only machines with a prominent degraded warning", () => {
+  it("fails closed on DACL-only machines", () => {
     const probe = classifyMxcProbe(
       0,
-      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
+      JSON.stringify({
+        tier: "appcontainer-dacl",
+        needsDaclAugmentation: true,
+        probes: {
+          baseContainerApiPresent: false,
+          bfscfgPresent: false,
+          bfsCompiledIn: false,
+        },
+      }),
       "",
     );
-    expect(probe.outcome).toBe("supported");
+    expect(probe.outcome).toBe("unsupported");
     expect(probe.degraded).toBe(true);
-    expect(getMxcTierWarning(probe)).toContain("requires host DACL augmentation");
+    expect(probe.probes).toEqual({
+      baseContainerApiPresent: false,
+      bfscfgPresent: false,
+      bfsCompiledIn: false,
+    });
+    expect(probe.reason).toContain("cannot enforce the configured filesystem roots");
+    expect(getMxcTierWarning(probe)).toContain("Rejected degraded MXC containment");
+    expect(describeMxcExactBackendEligibility(probe)).toMatchObject({
+      eligible: false,
+      blockers: [
+        expect.stringContaining("Base Container API is unavailable"),
+        expect.stringContaining("runtime was built without the appcontainer-bfs backend"),
+      ],
+      remediation: [
+        expect.stringContaining("processmodel.dll"),
+        expect.stringContaining("Do not copy bfscfg.exe"),
+      ],
+    });
+  });
+
+  it("fails closed when an otherwise strong tier requests DACL augmentation", () => {
+    const probe = classifyMxcProbe(
+      0,
+      JSON.stringify({ tier: "base-container", needsDaclAugmentation: true }),
+      "",
+    );
+    expect(probe.outcome).toBe("unsupported");
+    expect(probe.degraded).toBe(true);
   });
 
   it("treats base-container and BFS as full-strength", () => {
-    for (const tier of ["base-container", "appcontainer-bfs"]) {
-      expect(classifyMxcProbe(0, JSON.stringify({ tier }), "").degraded).toBe(false);
-    }
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "base-container",
+          probes: { baseContainerApiPresent: true },
+        }),
+        "",
+      ).outcome,
+    ).toBe("supported");
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "appcontainer-bfs",
+          probes: { bfsCompiledIn: true, bfscfgPresent: true },
+        }),
+        "",
+      ).outcome,
+    ).toBe("supported");
+  });
+
+  it("rejects contradictory exact-backend probe evidence", () => {
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "base-container",
+          probes: { baseContainerApiPresent: false },
+        }),
+        "",
+      ).outcome,
+    ).toBe("error");
+    expect(
+      classifyMxcProbe(
+        0,
+        JSON.stringify({
+          tier: "appcontainer-bfs",
+          probes: { bfsCompiledIn: false, bfscfgPresent: true },
+        }),
+        "",
+      ).outcome,
+    ).toBe("error");
   });
 
   it("fails closed on an unknown isolation tier", () => {
@@ -1035,7 +1267,18 @@ describe("selected node readiness", () => {
       "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
     );
 
-    node!.commands.push("system.run.readiness", "system.which", "system.run.cwd-policy");
+    node!.commands.push(
+      "system.run.readiness",
+      "system.which",
+      "system.run.cwd-policy",
+      ...WINDOWS_NODE_MXC_CANVAS_COMMANDS,
+    );
     expect(validateSelectedWindowsNode(node).ready).toBe(true);
+
+    node!.commands.push("canvas.eval");
+    expect(validateSelectedWindowsNode(node)).toMatchObject({
+      ready: false,
+      blockers: ["Selected node declares unexpected commands: canvas.eval"],
+    });
   });
 });

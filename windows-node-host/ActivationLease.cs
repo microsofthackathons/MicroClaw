@@ -41,6 +41,67 @@ public sealed class ActivationLeaseGuard(
 
     public ValidatedActivationLease Validate(IReadOnlyList<string> argv)
     {
+        var lease = ValidateCore();
+        if (lease.Mode is ActivationLeaseMode.Diagnostic
+            && !ReadinessProbeContract.Probes.Values.Any(expected =>
+                ReadinessProbeContract.Matches(argv, expected)))
+        {
+            throw new HostPolicyException(
+                "activation-lease-diagnostic-scope",
+                "The diagnostic activation lease permits only MicroClaw's fixed contained smokes.");
+        }
+
+        return lease;
+    }
+
+    public ValidatedActivationLease ValidateActive()
+    {
+        var lease = ValidateCore();
+        if (lease.Mode is not ActivationLeaseMode.Active)
+            throw new HostPolicyException(
+                "activation-lease-active-required",
+                "This capability is available only while MXC is Active.");
+        return lease;
+    }
+
+    public ValidatedActivationLease RevalidateActive(ValidatedActivationLease expected)
+    {
+        var current = ValidateActive();
+        if (!IsSameScopeMonotonicRenewal(expected, current))
+            throw new HostPolicyException(
+                "activation-lease-changed",
+                "The MicroClaw activation lease changed before capability execution.");
+        return current;
+    }
+
+    public ValidatedActivationLease Revalidate(
+        ValidatedActivationLease expected,
+        IReadOnlyList<string> argv)
+    {
+        var current = Validate(argv);
+        if (!IsSameScopeMonotonicRenewal(expected, current))
+            throw new HostPolicyException(
+                "activation-lease-changed",
+                "The MicroClaw activation lease changed before process launch.");
+        return current;
+    }
+
+    private static bool IsSameScopeMonotonicRenewal(
+        ValidatedActivationLease expected,
+        ValidatedActivationLease current) =>
+        current.Mode == expected.Mode
+        && string.Equals(
+            current.GatewayGeneration,
+            expected.GatewayGeneration,
+            StringComparison.Ordinal)
+        && string.Equals(
+            current.PolicyFingerprint,
+            expected.PolicyFingerprint,
+            StringComparison.Ordinal)
+        && current.ExpiresAtUnixMs >= expected.ExpiresAtUnixMs;
+
+    private ValidatedActivationLease ValidateCore()
+    {
         ActivationLeaseRecord lease;
         try
         {
@@ -108,30 +169,12 @@ public sealed class ActivationLeaseGuard(
                 "activation-lease-signature",
                 "The activation lease signature is invalid.");
 
-        if (lease.Mode is ActivationLeaseMode.Diagnostic
-            && !ReadinessProbeContract.Probes.Values.Any(expected =>
-                ReadinessProbeContract.Matches(argv, expected)))
-        {
-            throw new HostPolicyException(
-                "activation-lease-diagnostic-scope",
-                "The diagnostic activation lease permits only MicroClaw's fixed contained smokes.");
-        }
-
         return new ValidatedActivationLease(
             lease.Mode,
             lease.GatewayGeneration,
             lease.PolicyFingerprint,
             lease.ExpiresAtUnixMs,
             lease.Signature);
-    }
-
-    public void Revalidate(ValidatedActivationLease expected, IReadOnlyList<string> argv)
-    {
-        var current = Validate(argv);
-        if (current != expected)
-            throw new HostPolicyException(
-                "activation-lease-changed",
-                "The MicroClaw activation lease changed before process launch.");
     }
 
     public static string ComputeSignature(

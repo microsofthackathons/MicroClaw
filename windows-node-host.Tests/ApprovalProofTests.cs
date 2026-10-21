@@ -58,6 +58,50 @@ public sealed class ApprovalProofTests
     }
 
     [Fact]
+    public void RevalidationUsesAShortPostConsumptionLaunchWindow()
+    {
+        var now = IssuedAtUnixMs;
+        var verifier = new ApprovalProofVerifier(
+            Secret,
+            "generation-test-001",
+            PolicyFingerprint,
+            NodeId,
+            () => now);
+        var validated = verifier.ValidateAndConsume(Args(VectorProof()), CurrentIdentity);
+
+        now += ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs - 1;
+        verifier.Revalidate(validated);
+
+        now++;
+        var error = Assert.Throws<HostPolicyException>(() => verifier.Revalidate(validated));
+
+        Assert.Equal("approval-proof-stale", error.Code);
+    }
+
+    [Fact]
+    public void HumanApprovalDelayDoesNotConsumeThePostDecisionLaunchWindow()
+    {
+        var decisionAt = IssuedAtUnixMs + 50_000;
+        var now = decisionAt;
+        var verifier = new ApprovalProofVerifier(
+            Secret,
+            "generation-test-001",
+            PolicyFingerprint,
+            NodeId,
+            () => now);
+        var proof = Sign(VectorProof() with
+        {
+            IssuedAtUnixMs = decisionAt,
+            ExpiresAtUnixMs = decisionAt + ApprovalProofContract.MaximumLifetimeMs,
+        });
+
+        var validated = verifier.ValidateAndConsume(Args(proof), CurrentIdentity);
+        now += ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs - 1;
+
+        verifier.Revalidate(validated);
+    }
+
+    [Fact]
     public async Task ConcurrentConsumptionAllowsExactlyOneInvocation()
     {
         var verifier = Verifier(IssuedAtUnixMs);
@@ -91,7 +135,8 @@ public sealed class ApprovalProofTests
             () => Verifier(IssuedAtUnixMs).ValidateAndConsume(Args(new { contract = "wrong" }), CurrentIdentity));
         AssertCode(
             "approval-proof-stale",
-            () => Verifier(IssuedAtUnixMs + 20_000).ValidateAndConsume(Args(VectorProof()), CurrentIdentity));
+            () => Verifier(IssuedAtUnixMs + ApprovalProofContract.MaximumLifetimeMs)
+                .ValidateAndConsume(Args(VectorProof()), CurrentIdentity));
         AssertCode(
             "approval-proof-stale",
             () => Verifier(IssuedAtUnixMs - 10_000).ValidateAndConsume(Args(VectorProof()), CurrentIdentity));
@@ -246,8 +291,8 @@ public sealed class ApprovalProofTests
             NodeId,
             "121d69569e93b8e70445e4d8815cf9d72fd68d5065fa11106c4f204f4c78b661",
             IssuedAtUnixMs,
-            IssuedAtUnixMs + 15_000,
-            "1167c6b0eeea3c385e252110d22bb87fa8e54f881a0f954d9f684289c1e48caa");
+            IssuedAtUnixMs + ApprovalProofContract.MaximumLifetimeMs,
+            "be550cd55e9ba5040270c80bcefc88179813a0cd8e18c393545fa6155c43f296");
 
     private static ApprovalProofRecord Sign(ApprovalProofRecord proof) =>
         proof with

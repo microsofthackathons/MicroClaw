@@ -221,6 +221,10 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.invoke("plugin:weixin:login-qr-wait", params),
       disconnect: (params?: { accountId?: string }) =>
         ipcRenderer.invoke("plugin:weixin:disconnect", params),
+      getRemoteApprovalStatus: () => ipcRenderer.invoke("plugin:weixin:remote-approval:get-status"),
+      setRemoteApprovalEnabled: (enabled: boolean) =>
+        ipcRenderer.invoke("plugin:weixin:remote-approval:set-enabled", enabled),
+      revokeRemoteApproval: () => ipcRenderer.invoke("plugin:weixin:remote-approval:revoke"),
       onLoginOutput: (callback: (text: string) => void) => {
         const handler = (_event: any, text: string) => callback(text);
         ipcRenderer.on("plugin:weixin:login-output", handler);
@@ -268,6 +272,13 @@ contextBridge.exposeInMainWorld("openclaw", {
         return () => ipcRenderer.removeListener("model:local:event", listener);
       },
     } satisfies LocalModelAPI,
+    discoverModels: (params: import("./provider-model-catalog").ProviderCatalogInput) =>
+      ipcRenderer.invoke("model:discover-models", params) as Promise<
+        import("./provider-model-catalog").ProviderCatalogResult
+      >,
+    registerCatalogModel: (
+      params: import("./provider-model-registration").ProviderCatalogSelection,
+    ) => ipcRenderer.invoke("model:register-catalog-model", params) as Promise<void>,
     testConnection: (params: {
       baseUrl: string;
       apiKey: string;
@@ -348,8 +359,14 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
-    setEnabled: (params: { enabled: boolean; nodeId?: string }) =>
-      ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
+    preflight: (params?: { requestedMode?: "off" | "full" | "limited-dacl" }) =>
+      ipcRenderer.invoke("windows-node-mxc:preflight", params),
+    setEnabled: (params: {
+      enabled?: boolean;
+      requestedMode?: "off" | "full" | "limited-dacl";
+      acknowledgeLimitedFilesystem?: boolean;
+      nodeId?: string;
+    }) => ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
       ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),
     applyFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
