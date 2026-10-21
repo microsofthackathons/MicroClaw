@@ -55,6 +55,19 @@ describe("GatewayLoading MXC lifecycle", () => {
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
   });
 
+  it("shows an intentional managed replacement as reconnecting", () => {
+    const wrapper = shallowMount(GatewayLoading, {
+      props: {
+        status: "restarting",
+        connected: false,
+        warming: false,
+      },
+    });
+
+    expect(wrapper.find(".loading-status").text()).toContain("Reconnecting services");
+    expect(wrapper.find(".loading-status").text()).not.toContain("Disconnected");
+  });
+
   it("does not expose a conflicting retry when the Gateway timer expires mid-transition", () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {

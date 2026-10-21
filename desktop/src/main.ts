@@ -7132,6 +7132,24 @@ function registerIpcHandlers(): void {
       }
       try {
         const result = await gwClient.weixinLoginQrWait(params);
+        if (result.connected && result.activationReloadRequested === false) {
+          console.warn(
+            "[weixin:login-qr-wait] Channel hot reload was not requested; falling back to a managed Gateway restart",
+          );
+          mainWindow?.webContents.send(
+            "gateway:log",
+            "[weixin] Channel reload could not be requested; reconnecting the managed Gateway…",
+          );
+          setTimeout(() => {
+            void restartManagedGateway("Activating Weixin after channel reload failure").catch(
+              (error) =>
+                console.error(
+                  "[weixin:login-qr-wait] managed restart failed:",
+                  error instanceof Error ? error.message : String(error),
+                ),
+            );
+          }, 0);
+        }
         return result;
       } catch (err: any) {
         console.error("[weixin:login-qr-wait] failed:", err.message);

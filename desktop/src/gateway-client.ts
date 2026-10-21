@@ -580,7 +580,12 @@ export class GatewayClient {
     sessionKey?: string;
     accountId?: string;
     timeoutMs?: number;
-  }): Promise<{ connected: boolean; message: string; accountId?: string }> {
+  }): Promise<{
+    connected: boolean;
+    message: string;
+    accountId?: string;
+    activationReloadRequested?: boolean;
+  }> {
     return this.request("web.login.wait", params);
   }
 

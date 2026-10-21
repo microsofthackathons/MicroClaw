@@ -305,7 +305,7 @@ export function loadConfigBotAgent(): string | undefined {
  * Bump `channels.openclaw-weixin.channelConfigUpdatedAt` in openclaw.json on each successful login
  * so the gateway reloads config from disk (no empty `accounts: {}` placeholder).
  */
-export async function triggerWeixinChannelReload(): Promise<void> {
+export async function triggerWeixinChannelReload(): Promise<boolean> {
   try {
     const { mutateConfigFile } = await import("openclaw/plugin-sdk/config-mutation");
     await mutateConfigFile({
@@ -322,8 +322,10 @@ export async function triggerWeixinChannelReload(): Promise<void> {
       },
     });
     logger.info("triggerWeixinChannelReload: wrote channel config to openclaw.json");
+    return true;
   } catch (err) {
     logger.warn(`triggerWeixinChannelReload: failed to update config: ${String(err)}`);
+    return false;
   }
 }
 

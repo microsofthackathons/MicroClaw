@@ -818,6 +818,7 @@ export default {
   "gateway.mxcFailed": "MXC readiness failed. Execution remains safely locked.",
   "gateway.ready": "Ready",
   "gateway.starting": "Starting services…",
+  "gateway.restarting": "Reconnecting services…",
   "gateway.connecting": "Connecting…",
   "gateway.warming": "Preparing your workspace…",
   "gateway.timeout": "Service startup timed out. Please retry.",

@@ -241,6 +241,7 @@ const targetProgress = computed(() => {
     case "stopped":
       return 5;
     case "starting":
+    case "restarting":
       return 70;
     case "running":
       return 90;
@@ -290,6 +291,8 @@ const statusText = computed(() => {
     case "stopped":
     case "starting":
       return t("gateway.starting");
+    case "restarting":
+      return t("gateway.restarting");
     case "running":
       return t("gateway.connecting");
     case "timeout":

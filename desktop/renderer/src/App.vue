@@ -166,6 +166,7 @@ import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
 import { runStartupWarmup } from "@/startup-warmup";
 import { watchStartupServiceReadiness } from "@/startup-service-readiness";
+import { planGatewayStatusTransition } from "@/gateway-status-transition";
 import { resolveWindowsNodeMxcAllowedDecisions } from "@/windows-node-mxc-approval";
 
 const gateway = useGatewayStore();
@@ -604,8 +605,13 @@ onMounted(async () => {
 
   // Gateway process status
   unsubStatus = window.openclaw.gateway.onStatus((status) => {
+    const transition = planGatewayStatusTransition(gateway.status, status);
     gateway.status = status;
-    if (status === "running") {
+    if (transition.resetReadiness) {
+      gateway.resetReady();
+      chatStore.wsConnected = false;
+    }
+    if (transition.refreshPort) {
       window.openclaw.gateway.getPort().then((p) => (gateway.port = p));
     }
   });

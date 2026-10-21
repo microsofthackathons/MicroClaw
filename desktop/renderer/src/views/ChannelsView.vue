@@ -324,7 +324,6 @@ async function pollForLogin() {
         loginSuccess.value = true;
         gatewayStore.weixinLoggedIn = true;
         ElMessage.success(t("plugins.loginSuccess"));
-        restartGatewayAfterLogin();
         return;
       }
 
@@ -347,12 +346,6 @@ async function pollForLogin() {
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
-}
-
-async function restartGatewayAfterLogin() {
-  try {
-    await window.openclaw.gateway.restart();
-  } catch {}
 }
 
 async function cancelLogin() {

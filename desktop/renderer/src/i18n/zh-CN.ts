@@ -763,6 +763,7 @@ export default {
   "gateway.mxcFailed": "MXC 就绪检查失败，执行仍保持安全锁定。",
   "gateway.ready": "准备就绪",
   "gateway.starting": "正在启动服务…",
+  "gateway.restarting": "正在重新连接服务…",
   "gateway.connecting": "正在连接…",
   "gateway.warming": "正在准备您的工作区…",
   "gateway.timeout": "服务启动超时，请重试",

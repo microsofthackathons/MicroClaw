@@ -535,6 +535,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         apiBaseUrl: savedBaseUrl || DEFAULT_BASE_URL,
         timeoutMs: params.timeoutMs,
       });
+      let activationReloadRequested: boolean | undefined = result.connected ? false : undefined;
 
       if (result.connected && result.botToken && result.accountId) {
         try {
@@ -548,7 +549,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           if (result.userId) {
             clearStaleAccountsForUserId(normalizedId, result.userId, clearContextTokensForAccount);
           }
-          triggerWeixinChannelReload();
+          activationReloadRequested = await triggerWeixinChannelReload();
           logger.info(`loginWithQrWait: saved account data for accountId=${normalizedId}`);
         } catch (err) {
           logger.error(`loginWithQrWait: failed to save account data err=${String(err)}`);
@@ -559,7 +560,12 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         connected: result.connected,
         message: result.message,
         accountId: result.accountId,
-      } as { connected: boolean; message: string };
+        activationReloadRequested,
+      } as {
+        connected: boolean;
+        message: string;
+        activationReloadRequested?: boolean;
+      };
     },
   },
 };

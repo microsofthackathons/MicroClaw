@@ -174,7 +174,7 @@ test("emitted login reload atomically updates only the Weixin timestamp", async 
     },
   };
   sdk.reset(original);
-  await triggerWeixinChannelReload();
+  assert.equal(await triggerWeixinChannelReload(), true);
   assert.notEqual(sdk.config, original);
   const stamp = sdk.config.channels["openclaw-weixin"].channelConfigUpdatedAt;
   assert.ok(Number.isFinite(Date.parse(stamp)));
@@ -184,7 +184,7 @@ test("emitted login reload atomically updates only the Weixin timestamp", async 
   assert.equal(original.channels["openclaw-weixin"].channelConfigUpdatedAt, undefined);
 
   sdk.reset({});
-  await triggerWeixinChannelReload();
+  assert.equal(await triggerWeixinChannelReload(), true);
   assert.ok(sdk.config.channels["openclaw-weixin"].channelConfigUpdatedAt);
 });
 
@@ -193,7 +193,7 @@ test("failed config mutation preserves configuration and logs the failure", asyn
   const { triggerWeixinChannelReload } = await stagedImport("dist/src/auth/accounts.js");
   const original = { gateway: { port: 18789 } };
   sdk.reset(original, new Error("write denied"));
-  await triggerWeixinChannelReload();
+  assert.equal(await triggerWeixinChannelReload(), false);
   assert.equal(sdk.config, original);
   const logs = fs
     .readdirSync(path.join(tempDir, "logs"))

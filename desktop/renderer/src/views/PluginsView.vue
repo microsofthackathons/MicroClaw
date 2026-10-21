@@ -346,9 +346,6 @@ async function pollForLogin() {
         loginSuccess.value = true;
         gatewayStore.weixinLoggedIn = true;
         ElMessage.success(t("plugins.loginSuccess"));
-
-        // Restart gateway to activate the channel
-        mainWindow_restartGatewayAfterLogin();
         return;
       }
 
@@ -376,14 +373,6 @@ async function pollForLogin() {
       console.warn("[weixin-qr-poll] error:", err.message);
       await new Promise((r) => setTimeout(r, 2000));
     }
-  }
-}
-
-async function mainWindow_restartGatewayAfterLogin() {
-  try {
-    await window.openclaw.gateway.restart();
-  } catch (err: any) {
-    console.error("[weixin-login] restart failed:", err.message);
   }
 }
 
