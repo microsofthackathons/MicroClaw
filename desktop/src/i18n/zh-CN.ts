@@ -22,4 +22,6 @@ export default {
   "weixinRemoteApproval.userId": "用户 ID",
   "weixinRemoteApproval.enable": "启用远程审批",
   "weixinRemoteApproval.cancelActivation": "取消 MXC 激活",
+  "mxc.assessingLimitedAmbientAccess": "正在评估 Limited 模式的环境文件系统访问权限",
+  "mxc.verifyingFullBackend": "正在验证 Full AppContainer 后端",
 } as Record<string, string>;

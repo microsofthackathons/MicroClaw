@@ -1,7 +1,7 @@
 import { createPinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -20,7 +20,6 @@ describe("SettingsView", () => {
   const exportGatewayLogs = vi.fn();
   const openExternal = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
-  const preflightWindowsNodeMxc = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
   const addUserDir = vi.fn();
   const stageUserDir = vi.fn();
@@ -178,7 +177,6 @@ describe("SettingsView", () => {
     routeState.section = "skills";
     setLocale("en-US");
     getWindowsNodeMxcStatus.mockReset().mockResolvedValue(status("diagnostic-unpaired-local-node"));
-    preflightWindowsNodeMxc.mockReset().mockResolvedValue(undefined);
     setWindowsNodeMxcEnabled
       .mockReset()
       .mockImplementation(
@@ -232,7 +230,6 @@ describe("SettingsView", () => {
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
         getWeixinRemoteApprovalActivationOptions,
-        preflight: preflightWindowsNodeMxc,
         setEnabled: setWindowsNodeMxcEnabled,
         validateFolderPolicy,
         applyFolderPolicy,
@@ -590,7 +587,7 @@ describe("SettingsView", () => {
     expect(off.find('[data-testid="mxc-status-summary"]').text()).toBe("Containment — Off");
   });
 
-  it("returns to the loading gate before turning containment off", async () => {
+  it("leaves readiness unchanged until main-process lifecycle events gate the transition", async () => {
     routeState.section = "security";
     const pinia = createPinia();
     const wrapper = shallowMount(SettingsView, {
@@ -607,19 +604,20 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-select-off"]').trigger("click");
     await flushPromises();
 
-    expect(gateway.ready).toBe(false);
-    expect(chat.wsConnected).toBe(false);
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "off" });
   });
 
-  it("keeps the standard route ready when Full containment preflight rejects enablement", async () => {
+  it("keeps the standard route ready and settles when main-process validation rejects enablement", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
     });
-    preflightWindowsNodeMxc.mockRejectedValueOnce(new Error("exact backend unavailable"));
+    setWindowsNodeMxcEnabled.mockRejectedValueOnce(new Error("exact backend unavailable"));
+    const errorMessage = vi.spyOn(ElMessage, "error");
     const pinia = createPinia();
     const wrapper = shallowMount(SettingsView, {
       global: {
@@ -633,15 +631,17 @@ describe("SettingsView", () => {
     chat.wsConnected = true;
 
     await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
+    expect(errorMessage).toHaveBeenCalledWith("exact backend unavailable");
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(true);
   });
 
   it("requires explicit acknowledgement before enabling Limited containment", async () => {
@@ -668,7 +668,6 @@ describe("SettingsView", () => {
     expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("targetMode")).toBe(
       "limited-dacl",
     );
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await wrapper.vm.$nextTick();
@@ -679,9 +678,6 @@ describe("SettingsView", () => {
     await confirm.trigger("click");
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({
-      requestedMode: "limited-dacl",
-    });
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
       requestedMode: "limited-dacl",
       acknowledgeLimitedFilesystem: true,
@@ -710,7 +706,6 @@ describe("SettingsView", () => {
     expect(consent.props("modelValue")).toBe(true);
     expect(consent.props("targetMode")).toBe("full");
     expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
 
     consent.vm.$emit("cancel");
@@ -720,7 +715,6 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
@@ -756,13 +750,11 @@ describe("SettingsView", () => {
     const remoteApproval = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
     expect(remoteApproval.props("modelValue")).toBe(true);
     expect(remoteApproval.props("options")).toMatchObject({ account: owner });
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
 
     remoteApproval.vm.$emit("confirm", { enabled: true, owner });
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
       requestedMode: "full",
       remoteApproval: { enabled: true, owner },
@@ -877,7 +869,6 @@ describe("SettingsView", () => {
     await wrapper.vm.$nextTick();
 
     expect(remoteApproval.props("modelValue")).toBe(false);
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
@@ -952,10 +943,10 @@ describe("SettingsView", () => {
       requestedMode: "off",
       desiredEnabled: false,
     });
-    let releasePreflight!: () => void;
-    preflightWindowsNodeMxc.mockReturnValueOnce(
+    let releaseSetEnabled!: () => void;
+    setWindowsNodeMxcEnabled.mockReturnValueOnce(
       new Promise<void>((resolve) => {
-        releasePreflight = resolve;
+        releaseSetEnabled = resolve;
       }),
     );
     const wrapper = shallowMount(SettingsView, {
@@ -972,10 +963,9 @@ describe("SettingsView", () => {
     consent.vm.$emit("accept");
     consent.vm.$emit("accept");
     await Promise.resolve();
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledTimes(1);
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
 
-    releasePreflight();
+    releaseSetEnabled();
     await flushPromises();
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
@@ -1000,12 +990,9 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
     const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
     expect(consent.props("targetMode")).toBe("full");
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
-
     consent.vm.$emit("accept");
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
   });
 
@@ -1030,7 +1017,6 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(false);
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Full containment");
   });

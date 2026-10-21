@@ -38,6 +38,34 @@ describe("GatewayLoading MXC lifecycle", () => {
     expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
   });
 
+  it("shows validation while persisted mode is Off without jumping to connected 90%", async () => {
+    vi.useFakeTimers();
+    const wrapper = shallowMount(GatewayLoading, {
+      props: {
+        status: "running",
+        connected: false,
+        warming: false,
+        mxcDesired: false,
+        mxcPhase: "validating",
+        mxcDetail: "Assessing Limited-mode ambient filesystem access",
+        mxcRequestedMode: "off",
+        mxcEffectiveStrength: "off",
+      },
+    });
+
+    expect(wrapper.find(".loading-status").text()).toContain("Validating policy");
+    expect(wrapper.find(".loading-mxc-detail").text()).toBe(
+      "Assessing Limited-mode ambient filesystem access",
+    );
+    expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
+    await wrapper.setProps({ connected: true });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(Number.parseInt(wrapper.find(".loading-pct").text(), 10)).toBeLessThanOrEqual(35);
+    expect(wrapper.find(".loading-status").text()).not.toContain("90%");
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
   it("shows in-process policy promotion as a guarded startup phase", () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {

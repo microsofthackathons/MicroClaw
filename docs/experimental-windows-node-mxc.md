@@ -180,21 +180,21 @@ access.
 ## WeChat remote approval (Experimental)
 
 WeChat remote approval is a default-off choice in the local MXC activation flow, not a standalone
-Settings toggle. When MXC is currently Off and the requested WeChat channel has linked accounts,
-the activation dialog offers an explicit Disabled/Enabled choice and, when Enabled is selected, an
-account selector. Disabled is always the default. Cancelling the dialog cancels MXC activation
+Settings toggle. When MXC is currently Off and WeChat has exactly one authenticated account,
+the activation dialog offers only an explicit Disabled/Enabled choice, defaulting to Disabled.
+There is no account selector or opaque identity block. Cancelling the dialog cancels MXC activation
 before the security transition mutates the Gateway or local containment state. Enabling also
 requires a main-process native confirmation that repeats the exact MXC mode, account ID, and user
 ID; renderer code cannot silently enroll an owner by calling the activation IPC directly.
 
 The main process re-reads the requested channel state and account credentials before transition
 mutation and again at the locked transition boundary. It accepts only an exact authenticated
-QR-login account ID plus its saved WeChat `userId` when that identity is also present in the
-account's explicit sender allowlist; a display name is never an identity. Multiple eligible linked
-accounts are supported, but exactly the locally selected `accountId` + `userId` pair is persisted.
-Ineligible linked accounts are explained without blocking activation with remote approval disabled.
-If WeChat is disabled or no account is linked, MXC proceeds with remote approval disabled without a
-useless selector. Turning MXC Off clears the active owner binding, so a later activation asks again.
+QR-login account ID plus its saved WeChat `userId`; a display name is never an identity. The approved
+sole identity is atomically added to the account's sender allowlist when necessary, preserving other
+explicit ordinary-message senders without granting them remote approval authority. If WeChat is
+disabled, unavailable, unauthenticated, or in a legacy multiple-account state, MXC skips the popup
+and proceeds with remote approval disabled. Turning MXC Off or replacing the exact identity clears
+the owner binding, so a later activation asks again.
 
 The selected configuration is persisted while the Gateway is locked and before the attested active
 generation, lease, or ingress release is issued. Active Full/Limited mode switches cannot rebind
@@ -468,6 +468,17 @@ immediately preceding every Limited launch. A changed
 status or hash, missing result, tier change, restart, or policy change closes ingress, revokes the
 lease, and requires a fresh explicit transition. The assessment is enforcement evidence, not a
 one-time warning dialog.
+
+An explicit activation performs one main-process containment validation after native consent and
+before security configuration or remote-approval persistence. Its result is scoped to that lifecycle
+transition and handed to the initial locked Gateway startup; it is not a cross-transition cache.
+Host startup and per-command revalidation remain independent fresh checks. All 18 assessment
+categories remain sequential, with category/status/elapsed diagnostics, a 30-second per-target
+limit and a 180-second helper limit; helper timeout terminates and verifies the process tree.
+The renderer waits for actual lifecycle events before gating the ordinary UI, including while the
+persisted mode is still Off. Pending/cancelled native consent and pre-start guard rejection leave
+readiness unchanged. Validation failure restores the standard runtime before service-ready releases
+the loading gate and the original error is shown.
 
 ## Readiness and activation transaction
 

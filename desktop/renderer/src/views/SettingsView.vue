@@ -2179,11 +2179,6 @@ async function applyWindowsNodeMxcMode(
 ): Promise<boolean> {
   windowsNodeMxcApplying.value = true;
   try {
-    if (requestedMode !== "off") {
-      await window.openclaw.windowsNodeMxc.preflight({ requestedMode });
-    }
-    gateway.resetReady();
-    chatStore.wsConnected = false;
     const status = await window.openclaw.windowsNodeMxc.setEnabled({
       requestedMode,
       ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),

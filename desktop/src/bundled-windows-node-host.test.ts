@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,7 @@ import {
   assertLoopbackGateway,
   createBundledWindowsNodeEnvironment,
   endBundledWindowsNodeBootstrap,
+  execFileText,
   classifyBundledHostDiagnostic,
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
@@ -673,6 +674,47 @@ describe("bundled Windows node host", () => {
     ).toBe(deletionError);
     expect(terminated).toBe(true);
   });
+
+  it("settles a timed out ambient helper and terminates its process tree", async () => {
+    const startedAt = Date.now();
+
+    await expect(
+      execFileText(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], 100),
+    ).rejects.toThrow("ambient assessment timed out after 100ms");
+
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  });
+
+  it.runIf(process.platform === "win32")(
+    "kills pipe-holding descendants before settling a helper timeout",
+    async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-ambient-timeout-"));
+      const pidsPath = path.join(root, "pids.json");
+      const script = `
+      const { spawn } = require("node:child_process");
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        stdio: "inherit", windowsHide: true,
+      });
+      child.on("spawn", () => require("node:fs").writeFileSync(
+        process.argv[1], JSON.stringify([process.pid, child.pid]),
+      ));
+      setTimeout(() => {}, 30000);
+    `;
+      try {
+        await expect(
+          execFileText(process.execPath, ["-e", script, pidsPath], 2000),
+        ).rejects.toThrow("ambient assessment timed out after 2000ms");
+        const pids = JSON.parse(readFileSync(pidsPath, "utf8")) as number[];
+        expect(pids).toHaveLength(2);
+        for (const pid of pids) {
+          expect(() => process.kill(pid, 0)).toThrow();
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
 
   it("requires an explicit non-conflicting package architecture", () => {
     const script = path.join(__dirname, "..", "scripts", "prepare-windows-node-resources.mjs");

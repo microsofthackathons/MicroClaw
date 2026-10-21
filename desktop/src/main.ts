@@ -1766,6 +1766,33 @@ async function prepareWindowsNodeMxcContainment(
   return { effectiveTier: probe.tier, ambientAccess };
 }
 
+interface PreparedWindowsNodeMxcContainment {
+  requestedMode: Exclude<WindowsNodeMxcRequestedMode, "off">;
+  transitionId: string | null;
+  effectiveTier: string;
+  ambientAccess: BundledWindowsNodeAmbientAccess | null;
+}
+
+function assertPreparedWindowsNodeMxcContainment(
+  prepared: PreparedWindowsNodeMxcContainment,
+  requestedMode: Exclude<WindowsNodeMxcRequestedMode, "off">,
+): void {
+  if (
+    !windowsNodeMxcSecurityTransitionInProgress ||
+    !prepared.transitionId ||
+    prepared.transitionId !== windowsNodeMxcReadinessTransitionId ||
+    prepared.requestedMode !== requestedMode ||
+    windowsNodeMxcCurrentEffectiveTier !== prepared.effectiveTier ||
+    (requestedMode === "limited-dacl" &&
+      (!prepared.ambientAccess ||
+        windowsNodeMxcCurrentAmbientAccess?.hash !== prepared.ambientAccess.hash)) ||
+    (requestedMode === "full" &&
+      (prepared.ambientAccess !== null || windowsNodeMxcCurrentAmbientAccess !== null))
+  ) {
+    throw new Error("The freshly validated MXC containment result is no longer current");
+  }
+}
+
 function isApplicationIngressReady(): boolean {
   return (
     !windowsNodeMxcSecurityTransitionInProgress &&
@@ -2414,7 +2441,9 @@ function assertWindowsNodeMxcSmokePassed(
   }
 }
 
-async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRuntimeStatus> {
+async function runAutomaticWindowsNodeMxcReadiness(
+  preparedContainment?: PreparedWindowsNodeMxcContainment,
+): Promise<WindowsNodeMxcRuntimeStatus> {
   if (windowsNodeMxcActivationInProgress) {
     throw new Error("Windows Node + MXC activation is already in progress");
   }
@@ -2433,10 +2462,18 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
     preflightExactBackend: async () => {
       const requestedMode = getWindowsNodeMxcRequestedMode();
       if (requestedMode === "off") throw new Error("MXC containment mode is off");
-      await prepareWindowsNodeMxcContainment(requestedMode);
+      if (preparedContainment) {
+        assertPreparedWindowsNodeMxcContainment(preparedContainment, requestedMode);
+        return;
+      }
+      preparedContainment = {
+        requestedMode,
+        transitionId: windowsNodeMxcReadinessTransitionId,
+        ...(await prepareWindowsNodeMxcContainment(requestedMode)),
+      };
     },
     startLockedGeneration: async () => {
-      await startGatewayWithWindowsNodeMxcPolicy("locked");
+      await startGatewayWithWindowsNodeMxcPolicy("locked", preparedContainment);
       const lockedGeneration = gatewayGenerationId;
       await waitForBundledWindowsNodeGeneration(lockedGeneration);
       const status = await waitForWindowsNodeMxcBaseReady(lockedGeneration, "locked", false);
@@ -4445,12 +4482,14 @@ function normalizeSkillsStatus(
   return records;
 }
 
-async function startGateway(): Promise<void> {
+async function startGateway(
+  preparedContainment?: PreparedWindowsNodeMxcContainment,
+): Promise<void> {
   if (gatewayStartPromise) return gatewayStartPromise;
   const start = (async () => {
     gatewayStartInProgress = true;
     try {
-      await startGatewayInner();
+      await startGatewayInner(1, preparedContainment);
     } finally {
       gatewayStartInProgress = false;
     }
@@ -4463,19 +4502,25 @@ async function startGateway(): Promise<void> {
   }
 }
 
-async function startGatewayWithWindowsNodeMxcPolicy(policy: "active" | "locked"): Promise<void> {
+async function startGatewayWithWindowsNodeMxcPolicy(
+  policy: "active" | "locked",
+  preparedContainment?: PreparedWindowsNodeMxcContainment,
+): Promise<void> {
   if (windowsNodeMxcGatewayStartPolicyOverride !== null) {
     throw new Error("A managed Gateway policy override is already in progress");
   }
   windowsNodeMxcGatewayStartPolicyOverride = policy;
   try {
-    await startGateway();
+    await startGateway(preparedContainment);
   } finally {
     windowsNodeMxcGatewayStartPolicyOverride = null;
   }
 }
 
-async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
+async function startGatewayInner(
+  startupRetriesRemaining = 1,
+  preparedContainment?: PreparedWindowsNodeMxcContainment,
+): Promise<void> {
   logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   let config = readConfig();
@@ -4816,9 +4861,16 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     if (!windowsNodeMxcDesired && storedCronResumeFence !== undefined && !cronResumeFence) {
       throw new Error("Stored MXC Cron resume fence is invalid");
     }
+    if (preparedContainment) {
+      if (windowsNodeMxcRequestedMode === "off") {
+        throw new Error("Prepared MXC containment cannot be used for a standard Gateway");
+      }
+      assertPreparedWindowsNodeMxcContainment(preparedContainment, windowsNodeMxcRequestedMode);
+    }
     const containmentPreparation =
       windowsNodeMxcDesired && windowsNodeMxcRequestedMode !== "off"
-        ? await prepareWindowsNodeMxcContainment(windowsNodeMxcRequestedMode)
+        ? (preparedContainment ??
+          (await prepareWindowsNodeMxcContainment(windowsNodeMxcRequestedMode)))
         : null;
     const nextGatewayGenerationId = randomUUID();
     const nextApprovalProofContext = windowsNodeMxcDesired
@@ -7751,14 +7803,6 @@ function registerIpcHandlers(): void {
     assertTrustedRendererIpc(event);
     return getWeixinRemoteApprovalActivationOptions();
   });
-  ipcMain.handle(
-    "windows-node-mxc:preflight",
-    async (_event, params?: { requestedMode?: WindowsNodeMxcRequestedMode }) => {
-      const requestedMode = params?.requestedMode ?? "full";
-      if (requestedMode === "off") return null;
-      return prepareWindowsNodeMxcContainment(requestedMode);
-    },
-  );
   ipcMain.handle("windows-node-mxc:approval-current", () =>
     getPendingWindowsNodeMxcApprovalForRenderer(),
   );
@@ -7813,12 +7857,14 @@ function registerIpcHandlers(): void {
       let transitionSucceeded = false;
       let automaticReadinessStarted = false;
       let transitionMutationStarted = false;
+      let validationStarted = false;
       let cronSuspendedBeforePreflight = false;
       let standardRuntimeRecovered = false;
       let remoteApprovalPlan: WeixinRemoteApprovalTransitionPlan;
       let remoteApprovalPlanPersisted = false;
       let previousRemoteApprovalConfiguration = migrateWeixinRemoteApprovalConfiguration(null);
       let transitionInitialSelection: WindowsNodeMxcSelection | null = null;
+      let preparedContainment: PreparedWindowsNodeMxcContainment | undefined;
       let lifecycleError: unknown = new Error(
         "Windows Node + MXC lifecycle operation ended without a result",
       );
@@ -7885,8 +7931,36 @@ function registerIpcHandlers(): void {
           cronSuspendedBeforePreflight = true;
         }
         if (enabled) {
-          setWindowsNodeMxcLifecycleState("validating");
-          await prepareWindowsNodeMxcContainment(requestedMode);
+          const validationDetail = mainT(
+            resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
+            requestedMode === "limited-dacl"
+              ? "mxc.assessingLimitedAmbientAccess"
+              : "mxc.verifyingFullBackend",
+          );
+          const validationStartedAt = Date.now();
+          validationStarted = true;
+          setWindowsNodeMxcLifecycleState("validating", validationDetail);
+          try {
+            const result = await prepareWindowsNodeMxcContainment(requestedMode);
+            preparedContainment = {
+              requestedMode,
+              transitionId: windowsNodeMxcReadinessTransitionId,
+              ...result,
+            };
+            electronLifecycleDiagnostics.log("mxc-validation-complete", {
+              requestedMode,
+              elapsedMs: Date.now() - validationStartedAt,
+            });
+          } catch (error) {
+            electronLifecycleDiagnostics.log("mxc-validation-failed", {
+              requestedMode,
+              elapsedMs: Date.now() - validationStartedAt,
+              error: summarizeLifecycleError(
+                error instanceof Error ? error.message : String(error),
+              ),
+            });
+            throw error;
+          }
         }
 
         if (!cronSuspendedBeforePreflight) {
@@ -7941,7 +8015,7 @@ function registerIpcHandlers(): void {
           toolSandbox?.setEnabled(false);
           writeConfigTextAtomically(JSON.stringify(applied.config, null, 2));
           automaticReadinessStarted = true;
-          const status = await runAutomaticWindowsNodeMxcReadiness();
+          const status = await runAutomaticWindowsNodeMxcReadiness(preparedContainment);
           transitionSucceeded = true;
           lifecycleOperation.succeed(status);
           return status;
@@ -8002,6 +8076,13 @@ function registerIpcHandlers(): void {
       } catch (error) {
         lifecycleError = error;
         const detail = error instanceof Error ? error.message : String(error);
+        if (!transitionMutationStarted && !validationStarted) {
+          electronLifecycleDiagnostics.log("mxc-activation-rejected-before-mutation", {
+            requestedMode,
+            error: summarizeLifecycleError(detail),
+          });
+          throw error;
+        }
         if (
           remoteApprovalPlanPersisted &&
           transitionInitialSelection?.requestedMode === "off" &&
@@ -8022,6 +8103,9 @@ function registerIpcHandlers(): void {
             await failClosedWindowsNodeMxc(`Security-mode transition failed: ${detail}`);
           }
         } else {
+          windowsNodeMxcCurrentAmbientAccess = null;
+          windowsNodeMxcCurrentEffectiveTier = null;
+          settingsStore.delete("windowsNodeMxcAmbientAccess");
           setWindowsNodeMxcLifecycleState("failed", detail);
           if (cronSuspendedBeforePreflight && !automaticReadinessStarted) {
             try {

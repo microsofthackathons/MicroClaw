@@ -12,6 +12,28 @@ function deferred<T>() {
 }
 
 describe("Windows Node MXC lifecycle operation coordinator", () => {
+  it("rejects a pre-start guard without starting a lifecycle or leaving an active operation", async () => {
+    const coordinator = new WindowsNodeMxcLifecycleOperationCoordinator();
+    const operation = vi.fn();
+    const afterSettled = vi.fn();
+    expect(() =>
+      coordinator.run({ kind: "set-enabled", requestedMode: "limited-dacl" }, operation, {
+        beforeStart: () => {
+          throw new Error("Wait for the managed Gateway startup or restart to finish");
+        },
+        afterSettled,
+      }),
+    ).toThrow("Wait for the managed Gateway startup or restart to finish");
+    expect(coordinator.active).toBe(false);
+    expect(operation).not.toHaveBeenCalled();
+    expect(afterSettled).not.toHaveBeenCalled();
+    await expect(
+      coordinator.run({ kind: "set-enabled", requestedMode: "limited-dacl" }, async () => "ok", {
+        beforeStart: vi.fn(),
+        afterSettled,
+      }),
+    ).resolves.toBe("ok");
+  });
   it("joins a duplicate set-enabled IPC request for the same requested mode", async () => {
     const coordinator = new WindowsNodeMxcLifecycleOperationCoordinator();
     const pending = deferred<string>();

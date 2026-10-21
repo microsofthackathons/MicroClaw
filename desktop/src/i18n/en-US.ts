@@ -24,4 +24,6 @@ export default {
   "weixinRemoteApproval.userId": "User ID",
   "weixinRemoteApproval.enable": "Enable remote approval",
   "weixinRemoteApproval.cancelActivation": "Cancel MXC activation",
+  "mxc.assessingLimitedAmbientAccess": "Assessing Limited-mode ambient filesystem access",
+  "mxc.verifyingFullBackend": "Verifying the Full AppContainer backend",
 } as Record<string, string>;

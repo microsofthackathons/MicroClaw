@@ -560,7 +560,6 @@ interface OpenClawAPI {
       warnings: string[];
       remediation: string[];
     }>;
-    preflight(params?: { requestedMode?: "off" | "full" | "limited-dacl" }): Promise<unknown>;
     setEnabled(params: {
       enabled?: boolean;
       requestedMode?: "off" | "full" | "limited-dacl";

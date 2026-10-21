@@ -49,4 +49,51 @@ describe("watchStartupServiceReadiness", () => {
 
     expect(completeStartup).toHaveBeenCalledOnce();
   });
+
+  it("completes again after an actual lifecycle resets the readiness epoch", async () => {
+    let serviceReady: (() => void) | undefined;
+    let epoch = 0;
+    const completeStartup = vi.fn();
+    watchStartupServiceReadiness({
+      readinessEpoch: () => epoch,
+      isServiceReady: vi.fn().mockResolvedValue(true),
+      onServiceReady: (callback) => {
+        serviceReady = callback;
+        return vi.fn();
+      },
+      completeStartup,
+    });
+    await Promise.resolve();
+    serviceReady?.();
+    expect(completeStartup).toHaveBeenCalledTimes(1);
+    epoch += 1;
+    serviceReady?.();
+    serviceReady?.();
+    expect(completeStartup).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores an initial readiness reply from before the transition gate reset", async () => {
+    let serviceReady: (() => void) | undefined;
+    let resolveReady!: (ready: boolean) => void;
+    let epoch = 0;
+    const completeStartup = vi.fn();
+    watchStartupServiceReadiness({
+      readinessEpoch: () => epoch,
+      isServiceReady: () =>
+        new Promise((resolve) => {
+          resolveReady = resolve;
+        }),
+      onServiceReady: (callback) => {
+        serviceReady = callback;
+        return vi.fn();
+      },
+      completeStartup,
+    });
+    epoch += 1;
+    resolveReady(true);
+    await Promise.resolve();
+    expect(completeStartup).not.toHaveBeenCalled();
+    serviceReady?.();
+    expect(completeStartup).toHaveBeenCalledOnce();
+  });
 });

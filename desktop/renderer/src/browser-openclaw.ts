@@ -163,9 +163,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         warnings: [],
         remediation: [],
       }),
-      preflight: async () => {
-        throw new Error("Unavailable in browser development");
-      },
       setEnabled: async () => {
         throw new Error("Unavailable in browser development");
       },

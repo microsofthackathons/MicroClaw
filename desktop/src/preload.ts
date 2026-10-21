@@ -372,8 +372,6 @@ contextBridge.exposeInMainWorld("openclaw", {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
     getWeixinRemoteApprovalActivationOptions: () =>
       ipcRenderer.invoke("windows-node-mxc:weixin-remote-approval-activation-options"),
-    preflight: (params?: { requestedMode?: "off" | "full" | "limited-dacl" }) =>
-      ipcRenderer.invoke("windows-node-mxc:preflight", params),
     setEnabled: (params: {
       enabled?: boolean;
       requestedMode?: "off" | "full" | "limited-dacl";

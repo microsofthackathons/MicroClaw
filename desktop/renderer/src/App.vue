@@ -9,7 +9,7 @@
     :connected="chatStore.wsConnected"
     :warming="gateway.warming"
     :error-message="gateway.lastError"
-    :mxc-desired="windowsNodeMxcStatus?.requestedMode !== 'off'"
+    :mxc-desired="windowsNodeMxcStatus?.desiredEnabled === true"
     :mxc-phase="windowsNodeMxcStatus?.lifecycleState.phase"
     :mxc-detail="windowsNodeMxcStatus?.lifecycleState.detail"
     :mxc-requested-mode="windowsNodeMxcStatus?.requestedMode"
@@ -230,9 +230,11 @@ async function warmThenMarkConnected() {
   await runStartupWarmup({
     showSetup: setupActive.value,
     needsSetup: () => window.openclaw.config.needsSetup(),
-    beginWarming: gateway.beginWarming,
+    beginWarming: () => readinessEpoch === gateway.readinessEpoch && gateway.beginWarming(),
     warmUpAgent: () => window.openclaw.gateway.warmUpAgent(),
-    finishWarming: gateway.finishWarming,
+    finishWarming: () => {
+      if (readinessEpoch === gateway.readinessEpoch) gateway.finishWarming();
+    },
     markConnected: () => markConnected(readinessEpoch),
     onError: (error) => console.warn("[renderer] agent warm-up unavailable:", error),
   });
@@ -247,9 +249,7 @@ async function handleRetry() {
         requestedMode: windowsNodeMxcStatus.value.requestedMode,
       });
     } catch (error) {
-      gateway.addLog(
-        `[error] ${error instanceof Error ? error.message : String(error)}`,
-      );
+      gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
     }
     return;
   }
@@ -307,8 +307,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
   }
   if (
     permissionQueue.value.some(
-      (pending) =>
-        pending.source === "windows-node-mxc" && pending.requestId === request.id,
+      (pending) => pending.source === "windows-node-mxc" && pending.requestId === request.id,
     )
   ) {
     return;
@@ -322,8 +321,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
   }
   if (
     permissionQueue.value.some(
-      (pending) =>
-        pending.source === "windows-node-mxc" && pending.requestId === request.id,
+      (pending) => pending.source === "windows-node-mxc" && pending.requestId === request.id,
     )
   ) {
     return;
@@ -538,8 +536,9 @@ onMounted(async () => {
     }
   });
 
-  unsubWindowsNodeMxcApproval =
-    window.openclaw.windowsNodeMxc.onApprovalRequest(enqueueWindowsNodeMxcApproval);
+  unsubWindowsNodeMxcApproval = window.openclaw.windowsNodeMxc.onApprovalRequest(
+    enqueueWindowsNodeMxcApproval,
+  );
   void window.openclaw.windowsNodeMxc
     .getPendingApproval()
     .then(enqueueWindowsNodeMxcApproval)
@@ -649,9 +648,15 @@ onMounted(async () => {
     if (windowsNodeMxcStatus.value) {
       windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
     }
-    if (!["active", "idle"].includes(state.phase)) {
+    if (
+      !["active", "idle"].includes(state.phase) &&
+      (!["failed", "locked"].includes(state.phase) || windowsNodeMxcStatus.value?.desiredEnabled)
+    ) {
       gateway.resetReady();
       chatStore.wsConnected = false;
+    }
+    if (["failed", "locked"].includes(state.phase) && state.detail) {
+      gateway.addLog(`[error] ${state.detail}`);
     }
     void window.openclaw.windowsNodeMxc
       .getStatus()
@@ -661,6 +666,7 @@ onMounted(async () => {
       );
   });
   unsubServiceReady = watchStartupServiceReadiness({
+    readinessEpoch: () => gateway.readinessEpoch,
     isServiceReady: window.openclaw.gateway.isServiceReady,
     onServiceReady: window.openclaw.gateway.onServiceReady,
     completeStartup: warmThenMarkConnected,
