@@ -1,4 +1,5 @@
 import { enableAutoUnmount, mount } from "@vue/test-utils";
+import { isProxy, ref } from "vue";
 import { afterEach, describe, expect, it } from "vitest";
 import { setLocale } from "@/i18n";
 import MxcWeixinRemoteApprovalDialog from "./MxcWeixinRemoteApprovalDialog.vue";
@@ -85,6 +86,30 @@ describe("MxcWeixinRemoteApprovalDialog", () => {
         },
       ],
     ]);
+  });
+
+  it("emits a plain cloneable identity DTO from reactive account options", async () => {
+    const options = ref<ActivationOptions>({
+      ...eligibleOptions,
+      account: { accountId: "Exact_Bot@im.wechat", userId: "Exact_Owner@im.wechat" },
+    });
+    const wrapper = mountDialog(options.value);
+    expect(isProxy(wrapper.props("options")?.account)).toBe(true);
+
+    await wrapper.find('[data-testid="mxc-weixin-approval-enabled"]').setValue(true);
+    await wrapper.find('[data-testid="mxc-weixin-approval-confirm"]').trigger("click");
+
+    const selection = wrapper.emitted("confirm")?.[0]?.[0];
+    expect(() => structuredClone(selection)).not.toThrow();
+    expect(selection).toEqual({
+      enabled: true,
+      owner: { accountId: "Exact_Bot@im.wechat", userId: "Exact_Owner@im.wechat" },
+    });
+    expect(isProxy(selection)).toBe(false);
+    expect(selection).toHaveProperty("owner");
+    if (selection && typeof selection === "object" && "owner" in selection) {
+      expect(isProxy(selection.owner)).toBe(false);
+    }
   });
 
   it("cancels without emitting a decision", async () => {

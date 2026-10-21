@@ -2179,10 +2179,21 @@ async function applyWindowsNodeMxcMode(
 ): Promise<boolean> {
   windowsNodeMxcApplying.value = true;
   try {
+    const remoteApprovalDto: WeixinRemoteApprovalActivationSelection | undefined = remoteApproval
+      ? remoteApproval.enabled
+        ? {
+            enabled: true,
+            owner: {
+              accountId: remoteApproval.owner.accountId,
+              userId: remoteApproval.owner.userId,
+            },
+          }
+        : { enabled: false }
+      : undefined;
     const status = await window.openclaw.windowsNodeMxc.setEnabled({
       requestedMode,
       ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),
-      ...(remoteApproval ? { remoteApproval } : {}),
+      ...(remoteApprovalDto ? { remoteApproval: remoteApprovalDto } : {}),
     });
     updateWindowsNodeMxcStatus(status);
     await loadSandboxStatus();

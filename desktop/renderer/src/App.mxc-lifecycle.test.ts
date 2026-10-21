@@ -1,6 +1,7 @@
 import { createPinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
+import { isProxy } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessage } from "element-plus";
 import App from "./App.vue";
@@ -84,15 +85,23 @@ describe("App MXC loading gate with the real Gateway store", () => {
         stubs: {
           RouterView: false,
           SettingsView: false,
+          MxcWeixinRemoteApprovalDialog: false,
           GatewayLoading: false,
           ElSwitch: true,
           ElRadio: true,
           ElRadioGroup: true,
-          ElButton: true,
+          ElButton: {
+            props: ["disabled", "loading"],
+            emits: ["click"],
+            template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot/></button>',
+          },
           ElOption: true,
           ElSelect: true,
           ElInput: true,
-          ElDialog: true,
+          ElDialog: {
+            props: ["modelValue"],
+            template: '<div v-if="modelValue"><slot/><slot name="footer"/></div>',
+          },
         },
       },
     });
@@ -112,10 +121,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await settings.find('[data-testid="mxc-select-full"]').trigger("click");
     settings.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await flushPromises();
-    settings.findComponent(MxcWeixinRemoteApprovalDialog).vm.$emit("confirm", {
-      enabled: true,
-      owner: { accountId: "exact-bot", userId: "exact-user" },
-    });
+    const dialog = settings.findComponent(MxcWeixinRemoteApprovalDialog);
+    expect(isProxy(dialog.props("options")?.account)).toBe(true);
+    await dialog.find('[data-testid="mxc-weixin-approval-enabled"]').setValue(true);
+    await dialog.find('[data-testid="mxc-weixin-approval-confirm"]').trigger("click");
     await flushPromises();
   }
 
@@ -135,12 +144,14 @@ describe("App MXC loading gate with the real Gateway store", () => {
     "keeps the live ordinary route ready on pending native consent then early rejection: %s",
     async (reason) => {
       let reject!: (error: Error) => void;
-      const setEnabled = vi.spyOn(window.openclaw.windowsNodeMxc, "setEnabled").mockImplementation(
-        () =>
-          new Promise((_, rejectPromise) => {
+      const setEnabled = vi
+        .spyOn(window.openclaw.windowsNodeMxc, "setEnabled")
+        .mockImplementation((params) => {
+          structuredClone(params);
+          return new Promise((_, rejectPromise) => {
             reject = rejectPromise;
-          }),
-      );
+          });
+        });
       const errorMessage = vi.spyOn(ElMessage, "error");
       const { gateway, chat } = await mountReadyApp();
       const epoch = gateway.readinessEpoch;
@@ -163,12 +174,12 @@ describe("App MXC loading gate with the real Gateway store", () => {
 
   it("tracks Off validation and only recovers after main confirms standard service readiness", async () => {
     let reject!: (error: Error) => void;
-    vi.spyOn(window.openclaw.windowsNodeMxc, "setEnabled").mockImplementation(
-      () =>
-        new Promise((_, rejectPromise) => {
-          reject = rejectPromise;
-        }),
-    );
+    vi.spyOn(window.openclaw.windowsNodeMxc, "setEnabled").mockImplementation((params) => {
+      structuredClone(params);
+      return new Promise((_, rejectPromise) => {
+        reject = rejectPromise;
+      });
+    });
     const errorMessage = vi.spyOn(ElMessage, "error");
     const { gateway, chat } = await mountReadyApp();
     await selectEnabled();

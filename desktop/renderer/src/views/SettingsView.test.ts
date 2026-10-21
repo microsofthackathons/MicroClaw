@@ -1,4 +1,5 @@
 import { createPinia } from "pinia";
+import { isProxy, reactive, ref } from "vue";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -759,6 +760,152 @@ describe("SettingsView", () => {
       requestedMode: "full",
       remoteApproval: { enabled: true, owner },
     });
+  });
+
+  it.each(["enabled", "disabled", "cancel"] as const)(
+    "sends cloneable %s through the real reactive dialog and IPC boundary",
+    async (choice) => {
+      routeState.section = "security";
+      getWindowsNodeMxcStatus.mockResolvedValue({
+        ...status("node-local"),
+        requestedMode: "off",
+        desiredEnabled: false,
+      });
+      type ActivationOptions = Awaited<
+        ReturnType<OpenClawAPI["windowsNodeMxc"]["getWeixinRemoteApprovalActivationOptions"]>
+      >;
+      type ActivationParams = Parameters<OpenClawAPI["windowsNodeMxc"]["setEnabled"]>[0];
+      const options = ref<ActivationOptions>({
+        weixinEnabled: true,
+        linkedAccountCount: 1,
+        authenticatedAccountCount: 1,
+        invariantState: "single",
+        account: { accountId: "Exact_Bot@im.wechat", userId: "Exact_Owner@im.wechat" },
+        enableAvailable: true,
+        unavailableReason: null,
+      });
+      getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce(options.value);
+      const roundTrips: ActivationParams[] = [];
+      setWindowsNodeMxcEnabled.mockImplementation(async (params: ActivationParams) => {
+        roundTrips.push(structuredClone(params));
+        return status("node-local");
+      });
+      const errorMessage = vi.spyOn(ElMessage, "error");
+      const pinia = createPinia();
+      const wrapper = shallowMount(SettingsView, {
+        global: {
+          plugins: [pinia],
+          stubs: {
+            MxcWeixinRemoteApprovalDialog: false,
+            "el-dialog": {
+              props: ["modelValue"],
+              template: '<div v-if="modelValue"><slot/><slot name="footer"/></div>',
+            },
+            "el-button": {
+              props: ["disabled", "loading"],
+              emits: ["click"],
+              template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot/></button>',
+            },
+          },
+        },
+      });
+      await flushPromises();
+      const gateway = useGatewayStore(pinia);
+      const chat = useChatStore(pinia);
+      gateway.markReady();
+      chat.wsConnected = true;
+      const epoch = gateway.readinessEpoch;
+
+      await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+      wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+      await flushPromises();
+      const dialog = wrapper.findComponent(MxcWeixinRemoteApprovalDialog);
+      expect(isProxy(dialog.props("options")?.account)).toBe(true);
+      if (choice === "cancel") {
+        await dialog.find('[data-testid="mxc-weixin-approval-cancel"]').trigger("click");
+      } else {
+        await dialog.find(`[data-testid="mxc-weixin-approval-${choice}"]`).setValue(true);
+        await dialog.find('[data-testid="mxc-weixin-approval-confirm"]').trigger("click");
+      }
+      await flushPromises();
+
+      expect(errorMessage).not.toHaveBeenCalled();
+      expect(gateway.ready).toBe(true);
+      expect(chat.wsConnected).toBe(true);
+      expect(gateway.readinessEpoch).toBe(epoch);
+      expect(roundTrips).toEqual(
+        choice === "cancel"
+          ? []
+          : [
+              {
+                requestedMode: "full",
+                remoteApproval:
+                  choice === "enabled"
+                    ? {
+                        enabled: true,
+                        owner: {
+                          accountId: "Exact_Bot@im.wechat",
+                          userId: "Exact_Owner@im.wechat",
+                        },
+                      }
+                    : { enabled: false },
+              },
+            ],
+      );
+      if (choice !== "cancel") {
+        const payload: ActivationParams = setWindowsNodeMxcEnabled.mock.calls[0][0];
+        expect(isProxy(payload)).toBe(false);
+        expect(isProxy(payload.remoteApproval)).toBe(false);
+        if (payload.remoteApproval?.enabled) {
+          expect(isProxy(payload.remoteApproval.owner)).toBe(false);
+        }
+      } else {
+        expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      }
+      wrapper.unmount();
+    },
+  );
+
+  it("copies a reactive selection to primitives at the final IPC boundary", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const owner = { accountId: "Exact_Bot@im.wechat", userId: "Exact_Owner@im.wechat" };
+    getWeixinRemoteApprovalActivationOptions.mockResolvedValueOnce({
+      weixinEnabled: true,
+      linkedAccountCount: 1,
+      authenticatedAccountCount: 1,
+      invariantState: "single",
+      account: owner,
+      enableAvailable: true,
+      unavailableReason: null,
+    });
+    setWindowsNodeMxcEnabled.mockImplementation(async (params) => {
+      structuredClone(params);
+      return status("node-local");
+    });
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+    wrapper
+      .findComponent(MxcWeixinRemoteApprovalDialog)
+      .vm.$emit("confirm", reactive({ enabled: true, owner }));
+    await flushPromises();
+    expect(errorMessage).not.toHaveBeenCalled();
+    const payload = setWindowsNodeMxcEnabled.mock.calls[0][0];
+    expect(isProxy(payload.remoteApproval)).toBe(false);
+    expect(isProxy(payload.remoteApproval.owner)).toBe(false);
+    expect(structuredClone(payload)).toEqual({
+      requestedMode: "full",
+      remoteApproval: { enabled: true, owner },
+    });
+    wrapper.unmount();
   });
 
   it("fails closed and skips owner consent for a legacy multiple-account state", async () => {

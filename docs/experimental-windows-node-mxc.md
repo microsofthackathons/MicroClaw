@@ -186,6 +186,8 @@ There is no account selector or opaque identity block. Cancelling the dialog can
 before the security transition mutates the Gateway or local containment state. Enabling also
 requires a main-process native confirmation that repeats the exact MXC mode, account ID, and user
 ID; renderer code cannot silently enroll an owner by calling the activation IPC directly.
+The dialog and final IPC boundary construct plain DTOs from the exact primitive identity strings;
+Vue-reactive account objects are never forwarded across Electron's structured-clone boundary.
 
 The main process re-reads the requested channel state and account credentials before transition
 mutation and again at the locked transition boundary. It accepts only an exact authenticated

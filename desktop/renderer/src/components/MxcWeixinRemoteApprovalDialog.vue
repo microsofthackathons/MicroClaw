@@ -125,7 +125,13 @@ function confirm() {
   if (confirmDisabled.value || submitted) return;
   submitted = true;
   if (choice.value === "enabled" && props.options?.account) {
-    emit("confirm", { enabled: true, owner: props.options.account });
+    emit("confirm", {
+      enabled: true,
+      owner: {
+        accountId: props.options.account.accountId,
+        userId: props.options.account.userId,
+      },
+    });
     return;
   }
   emit("confirm", { enabled: false });
