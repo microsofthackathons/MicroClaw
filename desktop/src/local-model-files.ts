@@ -33,7 +33,7 @@ function fileStatus(file: unknown): LocalModelFileStatus {
   }
 }
 
-/** Inspect only the two pinned cache filenames; do not scan directories or read weights. */
+/** Inspect only pinned cache filenames; do not scan directories or read weights. */
 export function inspectManagedLocalModelCache(
   provider: JsonObject,
   stateDir: string,

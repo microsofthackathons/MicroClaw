@@ -57,6 +57,8 @@ extraResources:
     to: openclaw-state-owner-compat.mjs
   - from: src/openclaw-local-model-compat.mjs
     to: openclaw-local-model-compat.mjs
+  - from: src/local-model-sources.json
+    to: local-model-sources.json
   - from: ../NOTICE
     to: NOTICE
   - from: resources/node.exe

@@ -284,7 +284,7 @@ describe("SettingsView model integration", () => {
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
   });
 
-  it("shows a connected local provider without weights and offers only 4B and 9B presets", async () => {
+  it("shows a connected local provider without weights and offers all four managed presets", async () => {
     config = {};
     window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
       ok: true,
@@ -314,9 +314,10 @@ describe("SettingsView model integration", () => {
         .findAll("select.model-picker-select option")
         .map((option) => option.attributes("value")),
     ).toEqual(LOCAL_MODEL_PRESETS.map((model) => model.modelRef));
-    await wrapper.get("select.model-picker-select").setValue(LOCAL_MODEL_PRESETS[0].modelRef);
+    expect(LOCAL_MODEL_PRESETS).toHaveLength(4);
+    await wrapper.get("select.model-picker-select").setValue(LOCAL_MODEL_PRESETS[2].modelRef);
     expect(wrapper.getComponent(LocalModelDownloadDialog).props("modelRef")).toBe(
-      LOCAL_MODEL_PRESETS[0].modelRef,
+      LOCAL_MODEL_PRESETS[2].modelRef,
     );
     expect(write).not.toHaveBeenCalled();
   });

@@ -4404,7 +4404,7 @@ class WindowsSetup:
             )
             allowed = not plugins.get("allow") or _LOCAL_MODEL_PLUGIN_ID in plugins["allow"]
             if current and enabled and allowed:
-                self.log.info("The official Qwen 4B/9B provider is already ready")
+                self.log.info("The official local model provider is already ready")
                 return True
             if not current and (state_dir / "extensions" / _LOCAL_MODEL_PLUGIN_ID).exists():
                 self.log.error(
@@ -4482,7 +4482,7 @@ class WindowsSetup:
             ):
                 self.log.error("The official local provider was not enabled")
                 return False
-            self.log.success("Local provider ready; 4B/9B weights remain opt-in")
+            self.log.success("Local provider ready; model weights remain opt-in")
             return True
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
             self.log.error(f"Local provider preparation failed: {error}")

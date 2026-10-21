@@ -256,7 +256,7 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("true");
     expect(trigger.attributes("aria-busy")).toBe("false");
-    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(3);
+    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(LOCAL_MODEL_PRESETS.length + 1);
     expect(wrapper.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
       "true",
     );
@@ -335,7 +335,7 @@ describe("ChatModelPicker", () => {
     local.resolve(fixture.snapshot);
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("true");
-    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(3);
+    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(LOCAL_MODEL_PRESETS.length + 1);
   });
 
   it("waits for a new conversation's selection before choosing its initially expanded provider", async () => {

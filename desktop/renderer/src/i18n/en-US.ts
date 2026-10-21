@@ -714,15 +714,15 @@ export default {
   "modelManager.edit": "Edit",
   "modelManager.notConfigured": "Not configured",
   "modelManager.localHint":
-    "Qwen3.5 4B and 9B on this computer. Confirm the download on first use.",
+    "Qwen3.5 4B, 9B, 35B-A3B and Qwen3.8 27B. Models download from ModelScope on demand.",
   "fixedLocal.downloadConsent":
-    "Prepare this exact model and any missing components? Your current model stays selected until preparation succeeds.",
+    "Download this model and embeddings from ModelScope, and prepare missing runtime components? Your current model stays selected until preparation succeeds.",
   "fixedLocal.modelDownload": "Model download",
   "fixedLocal.embeddingDownload": "Embedding download",
   "fixedLocal.runtimeSpace": "Runtime disk reserve",
   "fixedLocal.execution": "Execution",
   "fixedLocal.cpuWarning":
-    "CPU inference can be slow, especially with 9B. 4B is the lightweight choice.",
+    "Larger models need more memory and can be slow on CPU. 4B is the lightweight choice.",
   "fixedLocal.downloadAndUse": "Download and select",
   "fixedLocal.selecting": "Applying model selection...",
   "fixedLocal.confirming": "Starting the confirmed download...",
@@ -731,7 +731,8 @@ export default {
   "fixedLocal.preparing": "Preparing the selected model...",
   "fixedLocal.downloading": "Downloading / preparing",
   "fixedLocal.cached": "Already available",
-  "fixedLocal.unsupportedModel": "Only the Qwen3.5 4B and 9B managed presets are supported.",
+  "fixedLocal.unsupportedModel":
+    "Choose a managed model from the list. Models download only from ModelScope.",
   "fixedLocal.providerRequired":
     "Enable the official local provider in model settings before preparing a model.",
   "fixedLocal.agentRequired": "Select an agent conversation before preparing a local model.",
@@ -741,7 +742,7 @@ export default {
   "fixedLocal.lightweight": "Lightweight",
   "fixedLocal.prepareModel": "Prepare",
   "fixedLocal.connectedHint":
-    "The provider is connected. Select 4B or 9B from the model list; weights download only after confirmation.",
+    "The provider is connected. Select a model and confirm before downloading its weights from ModelScope.",
   "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
   "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
   "modelManager.apiKeyHint": "Expand to get an API key and configure the connection.",
@@ -855,7 +856,7 @@ export default {
     "Compatibility is checked before use. Runtime components are an additional download.",
   "localModel.startDownload": "Start download",
   "localModel.notNow": "Not now",
-  "localModel.prepareIntro": "Choose Qwen3.5 4B or 9B from the model list.",
+  "localModel.prepareIntro": "Choose a model from the list and confirm its ModelScope download.",
   "localModel.preparedHint":
     "The model is prepared. Select it as the default without an AI connection test.",
   "localModel.useModel": "Start using",

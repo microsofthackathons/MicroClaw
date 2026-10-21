@@ -217,6 +217,19 @@ describe("pinned exact local model chooser", () => {
     const f = fixture(LOCAL_MODEL_PRESETS[1].modelRef);
     expect((await f.run()).candidate.model.id).toBe("qwen3.5-9b-q4_k_m");
   });
+  it.each(LOCAL_MODEL_PRESETS.slice(2))(
+    "prepares $name only after exact selection and consent",
+    async (model) => {
+      const f = fixture(model.modelRef);
+      const before = structuredClone(f.ctx.config);
+      expect((await f.run()).candidate.model.id).toBe(model.modelRef.slice("llama-cpp/".length));
+      const summary = JSON.parse(f.ctx.prompter.confirm.mock.calls[0][0].message.split("\n")[1]);
+      expect(summary).toMatchObject({ modelRef: model.modelRef, modelBytes: model.downloadBytes });
+      expect(f.ctx.config).toEqual(before);
+      f.candidates.recipes = [];
+      await expect(f.run()).rejects.toThrow("does not fit");
+    },
+  );
   it("rejects unsupported selections rather than using a fallback recommendation", async () => {
     const f = fixture("llama-cpp/another");
     await expect(f.run()).rejects.toThrow("supported local models");

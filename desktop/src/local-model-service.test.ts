@@ -81,8 +81,14 @@ function fixture(initialReceipt?: LocalModelReceipt) {
       type: "confirm",
       message: `${LOCAL_MODEL_DOWNLOAD_PROMPT}\n${JSON.stringify({
         modelRef: selectedPreset,
-        modelName: "Qwen3.5 4B (Q4_K_M)",
-        modelBytes: 2740937888,
+        modelName: (
+          LOCAL_MODEL_PRESETS.find((model) => model.modelRef === selectedPreset) ??
+          LOCAL_MODEL_PRESETS[0]
+        ).name,
+        modelBytes: (
+          LOCAL_MODEL_PRESETS.find((model) => model.modelRef === selectedPreset) ??
+          LOCAL_MODEL_PRESETS[0]
+        ).downloadBytes,
         embeddingBytes: 328577056,
         runtimeDiskBytes: 2 * 1024 ** 3,
         backend: "cpu",
@@ -249,6 +255,24 @@ async function waitPhase(f: ReturnType<typeof fixture>, phase: LocalModelOperati
 }
 
 describe("local model protocol guards", () => {
+  it.each(LOCAL_MODEL_PRESETS.slice(2))(
+    "requires consent for the exact $name download without changing defaults",
+    async (model) => {
+      const f = fixture();
+      const before = structuredClone(f.readConfig());
+      const operation = await f.service.prepare({
+        authChoice: "llama-cpp",
+        modelRef: model.modelRef,
+      });
+      await waitPhase(f, "step");
+      expect(f.service.getOperation()?.download).toMatchObject({
+        modelRef: model.modelRef,
+        modelBytes: model.downloadBytes,
+      });
+      expect(f.readConfig()).toEqual(before);
+      await f.service.cancel(operation.id);
+    },
+  );
   it("requires a valid explicit owner for an ambiguous multi-agent preparation", async () => {
     const f = fixture();
     f.config({ agents: { entries: { first: {}, second: {} } } });

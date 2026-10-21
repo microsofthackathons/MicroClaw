@@ -710,7 +710,7 @@ export class LocalModelService {
           : text(params.modelRef)
         : undefined;
     if (modelRef && !isManagedLocalModel(modelRef))
-      throw new Error("Only the managed Qwen3.5 4B and 9B presets can be prepared");
+      throw new Error("Only models in the managed ModelScope catalog can be prepared");
     this.assertIdle();
     this.mutationPending = true;
     try {
