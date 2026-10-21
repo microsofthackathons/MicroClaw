@@ -188,6 +188,16 @@ test("emitted login reload atomically updates only the Weixin timestamp", async 
   assert.ok(sdk.config.channels["openclaw-weixin"].channelConfigUpdatedAt);
 });
 
+test("emitted CLI login reports structured activation outcomes", () => {
+  const channel = fs.readFileSync(path.join(stageDir, "dist", "src", "channel.js"), "utf8");
+  assert.match(channel, /MICROCLAW_WEIXIN_LOGIN_OUTCOME_TOKEN/);
+  assert.match(channel, /\[microclaw-weixin-activation:/);
+  assert.match(channel, /reload-requested/);
+  assert.match(channel, /already-active/);
+  assert.match(channel, /reload-failed/);
+  assert.match(channel, /await triggerWeixinChannelReload\(\)/);
+});
+
 test("failed config mutation preserves configuration and logs the failure", async () => {
   const sdk = await stagedImport("node_modules/openclaw/config-mutation.js");
   const { triggerWeixinChannelReload } = await stagedImport("dist/src/auth/accounts.js");

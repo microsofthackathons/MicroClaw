@@ -42,6 +42,14 @@ import {
   resolveWeixinOutboundTempRoot,
 } from "./security/mxc-policy.js";
 
+function writeMicroClawActivationOutcome(
+  outcome: "reload-requested" | "already-active" | "reload-failed",
+): void {
+  const token = process.env.MICROCLAW_WEIXIN_LOGIN_OUTCOME_TOKEN;
+  if (!token || !/^[a-zA-Z0-9-]{16,64}$/.test(token)) return;
+  process.stdout.write(`\n[microclaw-weixin-activation:${token}] ${outcome}\n`);
+}
+
 /** Returns true when mediaUrl refers to a local filesystem path (absolute or relative). */
 function isLocalFilePath(mediaUrl: string): boolean {
   return mediaUrl.startsWith("file://") || !mediaUrl.includes("://");
@@ -392,13 +400,17 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           if (waitResult.userId) {
             clearStaleAccountsForUserId(normalizedId, waitResult.userId, clearContextTokensForAccount);
           }
-          void triggerWeixinChannelReload();
+          const reloadRequested = await triggerWeixinChannelReload();
+          writeMicroClawActivationOutcome(
+            reloadRequested ? "reload-requested" : "reload-failed",
+          );
           log(`\n已将此 OpenClaw 连接到微信。`);
         } catch (err) {
           logger.error(
             `auth.login: failed to save account data accountId=${waitResult.accountId} err=${String(err)}`,
           );
           log(`⚠️  保存账号数据失败: ${String(err)}`);
+          throw err;
         }
       } else if (waitResult.alreadyConnected) {
         // Server confirmed this OpenClaw is already bound to the scanned bot;
@@ -409,6 +421,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         logger.info(
           `auth.login: bot already connected to this OpenClaw accountId=${account.accountId}`,
         );
+        writeMicroClawActivationOutcome("already-active");
       } else {
         logger.warn(
           `auth.login: login did not complete accountId=${account.accountId} message=${waitResult.message}`,

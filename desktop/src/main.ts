@@ -180,6 +180,7 @@ import {
   convergeWeixinPluginRuntime,
   resolveBundledWeixinPluginRoot,
 } from "./weixin-plugin-convergence";
+import { createWeixinLoginCliOutcomeParser } from "./weixin-login-cli-outcome";
 import { isTrustedRendererUrl } from "./trusted-renderer-url";
 import { requireWeixinRemoteApprovalNativeConsent } from "./windows-node-mxc-weixin-remote-approval-consent";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
@@ -7021,12 +7022,14 @@ function registerIpcHandlers(): void {
       const args = [entryPath, "channels", "login", "--channel", "openclaw-weixin"];
       const stateDir = getOpenClawStateDir();
       const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+      const activationOutcomeToken = randomUUID();
       const spawnOpts: any = {
         cwd: path.dirname(entryPath),
         env: {
           ...process.env,
           OPENCLAW_STATE_DIR: stateDir,
           NODE_COMPILE_CACHE: compileCacheDir,
+          MICROCLAW_WEIXIN_LOGIN_OUTCOME_TOKEN: activationOutcomeToken,
         },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
@@ -7037,9 +7040,14 @@ function registerIpcHandlers(): void {
       const child = spawn(nodePath, args, spawnOpts);
       weixinLoginProcess = child;
       let settled = false;
+      const activationOutcomeParser =
+        createWeixinLoginCliOutcomeParser(activationOutcomeToken);
 
       child.stdout?.on("data", (chunk: Buffer) => {
-        mainWindow?.webContents.send("plugin:weixin:login-output", chunk.toString("utf-8"));
+        const visibleOutput = activationOutcomeParser.push(chunk.toString("utf-8"));
+        if (visibleOutput) {
+          mainWindow?.webContents.send("plugin:weixin:login-output", visibleOutput);
+        }
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         mainWindow?.webContents.send("plugin:weixin:login-output", chunk.toString("utf-8"));
@@ -7053,25 +7061,52 @@ function registerIpcHandlers(): void {
       });
       child.on("close", (code) => {
         weixinLoginProcess = null;
+        const trailingOutput = activationOutcomeParser.finish();
+        if (trailingOutput) {
+          mainWindow?.webContents.send("plugin:weixin:login-output", trailingOutput);
+        }
+        const activationOutcome = activationOutcomeParser.outcome;
+        electronLifecycleDiagnostics.log("weixin-login-cli-activation-outcome", {
+          exitCode: code,
+          outcome: activationOutcome ?? "missing",
+        });
         mainWindow?.webContents.send("plugin:weixin:login-done", { code });
         if (!settled) {
           settled = true;
           resolve({ ok: code === 0, error: code !== 0 ? `Exit code ${code}` : undefined });
         }
-        // After successful login, restart gateway so weixin channel starts
-        if (code === 0) {
-          console.log("[weixin-login] Login succeeded — will restart gateway in 2s");
+        if (
+          code === 0 &&
+          (activationOutcome === "reload-failed" || activationOutcome === null)
+        ) {
+          const fallbackReason =
+            activationOutcome === "reload-failed"
+              ? "config-mutation-failed"
+              : "activation-outcome-missing";
+          console.warn(
+            `[weixin-login] Managed restart fallback required: ${fallbackReason}`,
+          );
+          electronLifecycleDiagnostics.log("weixin-login-managed-restart-fallback", {
+            reason: fallbackReason,
+          });
           mainWindow?.webContents.send(
             "gateway:log",
-            "[weixin] 登录成功，正在重启网关以激活微信通道…",
+            `[weixin] Channel hot reload unavailable (${fallbackReason}); reconnecting the managed Gateway…`,
           );
-          setTimeout(async () => {
-            try {
-              await restartManagedGateway("Activating Weixin after login");
-            } catch (err: any) {
-              console.error("[weixin-login] restart failed:", err.message);
-            }
-          }, 2000);
+          setTimeout(() => {
+            void restartManagedGateway(
+              `Activating Weixin after CLI hot reload failure: ${fallbackReason}`,
+            ).catch((error) =>
+              console.error(
+                "[weixin-login] managed restart fallback failed:",
+                error instanceof Error ? error.message : String(error),
+              ),
+            );
+          }, 0);
+        } else if (code === 0) {
+          console.info(
+            `[weixin-login] CLI activation completed without Gateway replacement: ${activationOutcome}`,
+          );
         }
       });
       setTimeout(() => {

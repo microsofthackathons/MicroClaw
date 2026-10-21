@@ -48,4 +48,17 @@ describe("Weixin login lifecycle", () => {
       'restartManagedGateway("Activating Weixin after channel reload failure")',
     );
   });
+
+  it("does not replace the Gateway after an attested successful CLI login", () => {
+    const source = readRepositoryFile("desktop", "src", "main.ts");
+    const handler = source.slice(
+      source.indexOf('ipcMain.handle("plugin:weixin:login"'),
+      source.indexOf('ipcMain.handle("plugin:weixin:cancel-login"'),
+    );
+
+    expect(handler).toContain('activationOutcome === "reload-failed"');
+    expect(handler).toContain('activationOutcome === null');
+    expect(handler).toContain("CLI activation completed without Gateway replacement");
+    expect(handler).not.toContain('restartManagedGateway("Activating Weixin after login")');
+  });
 });
