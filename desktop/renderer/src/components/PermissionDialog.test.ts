@@ -195,7 +195,10 @@ describe("PermissionDialog", () => {
     const request = {
       requestId: "deadline-request",
       type: "mxc-approval" as const,
-      command: "test",
+      command:
+        "powershell.exe -NoProfile -Command \"New-Item -ItemType Directory -Path 'C:\\Approved\\folder' -Force\"",
+      dirPath: "isolated-scratch:v1",
+      declaredAccess: [{ access: "rw" as const, path: String.raw`C:\Approved` }],
       expiresAtUnixMs: 46_000,
       remoteDelivery: { state: "sending" as const, reason: null, replyMode: null, revision: 1 },
     };
@@ -209,6 +212,26 @@ describe("PermissionDialog", () => {
         },
       });
       expect(wrapper.get('[data-testid="mxc-phone-delivery"]').text()).toContain("request code");
+      await wrapper.setProps({
+        request: {
+          ...request,
+          remoteDelivery: {
+            state: "sent",
+            reason: null,
+            replyMode: "simple-current-prompt",
+            revision: 3,
+          },
+        },
+      });
+      const simpleText = wrapper.get('[data-testid="mxc-phone-delivery"]').text();
+      expect(simpleText).toContain("reply 1 to allow once or 3 to deny");
+      expect(simpleText).toContain("only if the phone prompt offers it");
+      expect(simpleText).toContain("delayed reply");
+      expect(simpleText).not.toContain("CODE");
+      expect(simpleText).not.toMatch(/turn.*off|enable again/);
+      expect(wrapper.get(".perm-command-code").text()).toBe(request.command);
+      expect(wrapper.get(".perm-mxc-value").text()).toBe(request.dirPath);
+      expect(wrapper.get(".perm-mxc-access").text()).toContain(String.raw`C:\Approved`);
       await vi.advanceTimersByTimeAsync(34_000);
       expect(wrapper.emitted("respond")).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1_000);

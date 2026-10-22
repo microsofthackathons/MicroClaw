@@ -1108,7 +1108,7 @@ export default {
   "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
   "perm.phoneSending": "Sending this approval to WeChat; the original timeout still applies.",
   "perm.phoneSent":
-    "WeChat notified: reply 1 CODE to allow once, 2 CODE to always allow this exact scope, or 3 CODE to deny.",
+    "WeChat notified: reply 1 to allow once or 3 to deny. 2 is available only if the phone prompt offers it. Replies affect the current delivered prompt; a delayed reply can affect a newer prompt.",
   "plugins.weixinMutationLocked": "Turn off MXC first to change the WeChat channel or account.",
   "plugins.weixinMutationUnknown":
     "WeChat configuration is locked until its main-process MXC status can be verified.",

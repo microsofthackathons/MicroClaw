@@ -7,6 +7,7 @@ import {
   type WeixinRemoteApprovalSecurityBinding,
   type WeixinRemoteApprovalSource,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
+  WEIXIN_REMOTE_APPROVAL_REPLY_MODE,
   weixinApprovalSourceSessionKey,
   weixinApprovalOriginRejection,
   weixinRemoteApprovalWireSourceRejection,
@@ -30,7 +31,7 @@ export type WeixinRemoteDeliveryReason =
 export interface WeixinRemoteDeliveryState {
   state: "sending" | "sent" | "local-only" | "unconfirmed";
   reason: WeixinRemoteDeliveryReason | null;
-  replyMode: "bare-with-freshness" | "code-required" | null;
+  replyMode: typeof WEIXIN_REMOTE_APPROVAL_REPLY_MODE | "code-required" | null;
   revision: number;
 }
 
@@ -232,7 +233,7 @@ export async function deliverWeixinRemoteApproval(params: {
   }
   const { delivery } = result;
   params.challenge(delivery);
-  const replyMode = "code-required";
+  const replyMode = WEIXIN_REMOTE_APPROVAL_REPLY_MODE;
   publish("sending", null, replyMode);
   let acknowledged = false;
   try {

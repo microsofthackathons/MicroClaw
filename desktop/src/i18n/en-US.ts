@@ -18,7 +18,7 @@ export default {
   "weixinRemoteApproval.consentMessage":
     "Choose whether the currently signed-in WeChat account can approve commands for this MXC activation.",
   "weixinRemoteApproval.consentRisk":
-    "A compromised WeChat session could approve commands or save exact-scope approvals on this PC. Disabled keeps approval on this desktop.",
+    "A compromised WeChat session could approve commands or save exact-scope approvals on this PC. Replies 1/2/3 act on the current delivered prompt: a delayed reply can affect a newer prompt. 2 requires existing exact-conversation durable consent and command eligibility. Disabled keeps approval on this desktop.",
   "weixinRemoteApproval.disable": "Disabled",
   "weixinRemoteApproval.enable": "Enabled",
   "weixinRemoteApproval.cancelActivation": "Cancel MXC activation",

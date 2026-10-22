@@ -1648,9 +1648,15 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
     }
     return { consumed: false };
   }
-  const exactCandidate = /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.test(inbound.text);
+  const exactCandidate =
+    /^[123]$/.test(inbound.text) ||
+    /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.test(inbound.text);
   const candidateLike =
-    inbound.sourcePhase === "candidate" && (exactCandidate || inbound.ambiguous);
+    (inbound.sourcePhase === "candidate" || inbound.sourcePhase === "start") &&
+    (exactCandidate || inbound.ambiguous);
+  let simpleChallengeId = /^[123]$/.test(inbound.text)
+    ? windowsNodeMxcWeixinRemoteApprovalBroker.captureSimpleReplyChallenge(inbound)
+    : undefined;
   const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
   if (!configuration.enabled || !configuration.owner) {
     if (!candidateLike) return { consumed: false };
@@ -1668,6 +1674,12 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
     try {
       await requireEffectiveWindowsNodeMxc(true, false);
     } catch {
+      if (simpleChallengeId !== undefined) {
+        windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate({
+          ...inbound,
+          expectedSimpleChallengeId: null,
+        });
+      }
       return {
         consumed: true,
         acknowledgement: "MicroClaw Security Approval: invalid or no longer active.",
@@ -1706,12 +1718,72 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
         : undefined,
     };
   }
+  if (pending && simpleChallengeId) {
+    const generation = gatewayGenerationId;
+    const client = gwClient;
+    let route: { sessionKey: string; agentId: string } | null = null;
+    try {
+      if (!client?.connected) throw new Error("Gateway route resolver is unavailable");
+      route = await resolveWeixinSessionRoute(inbound, (method, params) =>
+        client.request(method, params, 3_000),
+      );
+    } catch {
+      console.info(
+        "[weixin-remote-approval-context]",
+        JSON.stringify(
+          describeWeixinApprovalDecision(
+            "weixin-source-validation",
+            "source-route-unresolved",
+            pending.request,
+            inbound,
+          ),
+        ),
+      );
+    }
+    const current = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+    const replySourceRejection = weixinRemoteApprovalWireSourceRejection(
+      current,
+      inbound,
+      readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+    );
+    if (
+      !route ||
+      !current.enabled ||
+      !current.owner ||
+      replySourceRejection !== null ||
+      generation !== gatewayGenerationId ||
+      client !== gwClient ||
+      !client?.connected ||
+      pending !== pendingWindowsNodeMxcGatewayApproval ||
+      pending.request.origin?.gatewayGeneration !== generation ||
+      route.agentId !== pending.request.agent ||
+      route.sessionKey !== (pending.request.origin?.runSessionKey ?? pending.request.sessionKey) ||
+      current.owner?.boundAt !== revalidatedConfiguration.owner.boundAt ||
+      current.consentScope !== revalidatedConfiguration.consentScope ||
+      windowsNodeMxcSecurityTransitionInProgress ||
+      !windowsNodeMxcWeixinRemoteApprovalBroker.isAuthenticatedSource(inbound)
+    ) {
+      console.info(
+        "[weixin-remote-approval-context]",
+        JSON.stringify(
+          describeWeixinApprovalDecision(
+            "weixin-source-validation",
+            replySourceRejection ?? "security-binding-invalid",
+            pending.request,
+            inbound,
+          ),
+        ),
+      );
+      simpleChallengeId = null;
+    }
+  }
   const security = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
   const candidateResult = windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate({
     ...inbound,
     ambiguous: inbound.ambiguous,
     requests: pending ? [{ approval: pending.request }] : undefined,
     security: pending ? (security ?? undefined) : undefined,
+    expectedSimpleChallengeId: simpleChallengeId,
   });
   if (candidateResult.consumed) {
     if (candidateResult.status === "approved" || candidateResult.status === "denied") {

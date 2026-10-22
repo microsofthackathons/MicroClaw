@@ -13,6 +13,8 @@ export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT =
 export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS = 2 * 60_000;
 export const WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE = "native-exact-conversation-durable.v2";
 export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS = 3;
+// Temporary product policy: a delayed unquoted reply may select a newer delivered prompt.
+export const WEIXIN_REMOTE_APPROVAL_REPLY_MODE = "simple-current-prompt" as const;
 
 const CHALLENGE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CHALLENGE_CODE_LENGTH = 8;
@@ -192,6 +194,7 @@ export interface WeixinRemoteApprovalDelivery {
   sourceCursor: number | string;
   expiresAtUnixMs: number;
   text: string;
+  replyCode: string;
 }
 
 export interface WeixinRemoteApprovalCandidate {
@@ -203,12 +206,15 @@ export interface WeixinRemoteApprovalCandidate {
   direct: boolean;
   forwarded: boolean;
   quoted: boolean;
+  agentId: string;
+  sessionKey: string;
   ambiguous?: boolean;
   text: string;
   now?: number;
   sentAtUnixMs?: number;
   requests?: WeixinRemoteApprovalBatchRequest[];
   security?: WeixinRemoteApprovalSecurityBinding;
+  expectedSimpleChallengeId?: string | null;
 }
 
 export type WeixinRemoteApprovalResolution =
@@ -277,6 +283,7 @@ interface ActiveChallenge {
   deliveredAtUnixMs: number | null;
   reminderAtUnixMs: number | null;
   reminderCount: number;
+  allowDurable: boolean;
 }
 
 interface ClosedChallenge {
@@ -410,13 +417,6 @@ function createCode(): string {
   return result;
 }
 
-function exactPromptValue(value: string): string {
-  /*
-    .replace(BEARER_PATTERN, "Bearer [REDACTED]")
-  */
-  return JSON.stringify(value);
-}
-
 function isSafeAsciiDisplayValue(value: string): boolean {
   return (
     value.length > 0 &&
@@ -545,16 +545,6 @@ function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayAp
   );
 }
 
-function renderExactArguments(values: string[]): string {
-  return values.map(exactPromptValue).join(" ") || "(none)";
-}
-
-function renderExactDeclarations(values: Array<{ access: string; path: string }>): string {
-  return (
-    values.map((entry) => `${entry.access}:${exactPromptValue(entry.path)}`).join(" ") || "(none)"
-  );
-}
-
 function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]): boolean {
   if (requests.length === 0 || requests.length > MAX_PROMPT_REQUESTS) return false;
   return requests.every(({ approval }) => {
@@ -570,18 +560,6 @@ function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]
   });
 }
 
-function renderExactField(label: string, value: string): string[] {
-  if (label.length + value.length + 2 <= MAX_PROMPT_LINE) return [`${label}: ${value}`];
-  const fragments: string[] = [];
-  for (let index = 0; index < value.length; index += 100) {
-    fragments.push(value.slice(index, index + 100));
-  }
-  return [
-    `${label} [JSON fragments; join without separators]:`,
-    ...fragments.map((fragment, index) => `  [${index + 1}/${fragments.length}] ${fragment}`),
-  ];
-}
-
 export function renderWeixinRemoteApprovalPrompt(params: {
   code: string;
   expiresAtUnixMs: number;
@@ -591,77 +569,99 @@ export function renderWeixinRemoteApprovalPrompt(params: {
   bareReplies?: boolean;
   allowDurable?: boolean;
 }): string {
-  const suffix = params.bareReplies ? "" : ` ${params.code}`;
-  const lines =
-    params.locale === "zh-CN"
-      ? [
-          `[MicroClaw 安全审批 #${params.code}]`,
-          "决策仅绑定下列精确命令、可执行内容、参数、目录、文件权限、策略、代理和会话；永久审批也不会扩大范围。",
-          ...params.requests.flatMap(({ approval }, index) => [
-            `请求标识: ${hash(approval.id).slice(0, 16)}`,
-            ...renderExactField(`请求 ${index + 1} 命令`, exactPromptValue(approval.command)),
-            `可执行文件: ${exactPromptValue(approval.executablePath || approval.executable)}`,
-            `SHA-256: ${approval.executableSha256}`,
-            ...renderExactField("参数", renderExactArguments(approval.arguments)),
-            ...renderExactField("工作目录", exactPromptValue(approval.canonicalCwd)),
-            ...(approval.providerInitialization
-              ? [
-                  "PowerShell 文件系统作用域：逻辑 $PWD 为 MicroClawCwd:\\；物理工作目录如上。所示命令包含精确初始化，不增加文件权限。",
-                ]
-              : []),
-            ...renderExactField("文件访问", renderExactDeclarations(approval.declaredAccess)),
-            ...renderExactField(
-              "代理/会话",
-              `${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
-            ),
-            `可变文件操作数: ${approval.hasMutableFileOperand ? "是" : "否"}`,
-            `本地可用决策: ${approval.allowedDecisions.join(", ")}`,
-          ]),
-          `模式: ${params.security.requestedMode} / ${exactPromptValue(params.security.effectiveMode)}`,
-          `过期时间: ${new Date(params.expiresAtUnixMs).toISOString()}`,
-          `回复: 1${suffix}（仅允许一次）`,
-          params.allowDurable
-            ? `      2${suffix}（在此精确范围永久允许）`
-            : `      2${suffix} 不可用：须先关闭 MXC，再通过唯一的本地原生提示重新启用审批。`,
-          `      3${suffix}（拒绝）`,
-          params.bareReplies
-            ? `若无法验证回复时序，请附带本请求代码，例如 1 ${params.code}。其他输入不作决策，截止时间不延长。`
-            : "无法预先验证裸数字回复的时序；请使用上述带代码的回复。其他输入不作决策，截止时间不延长。",
-        ]
-      : [
-          `[MicroClaw Security Approval #${params.code}]`,
-          "Decisions bind only the exact command/content, arguments, CWD, access, policy, agent and conversation shown. Always does not broaden that scope.",
-          ...params.requests.flatMap(({ approval }, index) => [
-            `Request reference: ${hash(approval.id).slice(0, 16)}`,
-            ...renderExactField(`Request ${index + 1} command`, exactPromptValue(approval.command)),
-            `Executable: ${exactPromptValue(approval.executablePath || approval.executable)}`,
-            `SHA-256: ${approval.executableSha256}`,
-            ...renderExactField("Args", renderExactArguments(approval.arguments)),
-            ...renderExactField("CWD", exactPromptValue(approval.canonicalCwd)),
-            ...(approval.providerInitialization
-              ? [
-                  "PowerShell filesystem scope: logical $PWD is MicroClawCwd:\\; physical CWD as shown. Exact initialization is included above; no extra file access.",
-                ]
-              : []),
-            ...renderExactField("File access", renderExactDeclarations(approval.declaredAccess)),
-            ...renderExactField(
-              "Agent/session",
-              `${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
-            ),
-            `Mutable file operand: ${approval.hasMutableFileOperand ? "yes" : "no"}`,
-            `Locally available decisions: ${approval.allowedDecisions.join(", ")}`,
-          ]),
-          `Mode: ${params.security.requestedMode} / ${exactPromptValue(params.security.effectiveMode)}`,
-          `Expires: ${new Date(params.expiresAtUnixMs).toISOString()}`,
-          `Reply: 1${suffix} (allow once)`,
-          params.allowDurable
-            ? `       2${suffix} (always for this exact scope)`
-            : `       2${suffix} unavailable: renew local native consent by turning MXC off and enabling it again.`,
-          `       3${suffix} (deny)`,
-          params.bareReplies
-            ? `If reply freshness cannot be verified, include this request's code, e.g. 1 ${params.code}. Other input makes no decision or deadline extension.`
-            : "Bare-reply freshness cannot be established in advance: use the coded replies above. Other input makes no decision or deadline extension.",
-        ];
+  if (!promptCanRepresentRequests(params.requests)) {
+    throw new Error("Cannot safely present these approval requests on WeChat");
+  }
+  const zh = params.locale === "zh-CN";
+  const suffix = params.bareReplies === false ? ` ${params.code}` : "";
+  const allowDurable =
+    params.allowDurable === true &&
+    params.requests.every(
+      ({ approval }) =>
+        approval.allowedDecisions.includes("allow-always") && !approval.hasMutableFileOperand,
+    );
+  const choices = zh
+    ? [
+        `回复 1${suffix}：仅允许一次`,
+        ...(allowDurable ? [`2${suffix}：记住此会话的精确范围`] : []),
+        `3${suffix}：拒绝`,
+      ]
+    : [
+        `Reply 1${suffix}: allow once`,
+        ...(allowDurable ? [`2${suffix}: remember exact scope in this conversation`] : []),
+        `3${suffix}: deny`,
+      ];
+  const actions = {
+    "create-directory": zh ? "创建文件夹" : "Create folder",
+    "create-file": zh ? "创建文件" : "Create file",
+    "remove-path": zh ? "删除文件或文件夹" : "Delete file/folder",
+    "clear-content": zh ? "清空文件内容" : "Clear file content",
+    "set-content": zh ? "替换文件内容" : "Replace file content",
+    "append-content": zh ? "追加文件内容" : "Append file content",
+  };
+  const lines = [
+    zh ? "[MicroClaw 安全审批]" : "[MicroClaw Security Approval]",
+    choices.join(" | "),
+    ...params.requests.flatMap(({ approval }) => {
+      const original = originalPowerShellFilesystemApproval(approval);
+      if (!original) throw new Error("Approval initialization could not be validated");
+      const operation = classifyLiteralFilesystemCommand(original);
+      return [
+        operation
+          ? `${actions[operation.kind]}: ${operation.path}`
+          : `${zh ? "命令" : "Command"}: ${approval.command}`,
+        `${zh ? "程序" : "Executable"}: ${approval.executablePath}`,
+        ...(operation
+          ? [
+              ...(operation.recursive
+                ? [zh ? "递归删除所有子项。" : "Recursive: delete all children."]
+                : []),
+              ...(operation.force
+                ? [
+                    operation.kind === "create-directory"
+                      ? zh
+                        ? "Force：复用已存在的文件夹。"
+                        : "Force: reuse an existing folder."
+                      : operation.kind === "create-file"
+                        ? zh
+                          ? "Force：可能覆盖已有文件。"
+                          : "Force: may overwrite an existing file."
+                        : zh
+                          ? "Force：包含隐藏或只读项；不绕过权限。"
+                          : "Force: include hidden/read-only items; no ACL bypass.",
+                  ]
+                : []),
+              ...(operation.content !== null
+                ? [`${zh ? "写入内容" : "Content"}: ${JSON.stringify(operation.content)}`]
+                : []),
+              ...(operation.encoding !== null
+                ? [`${zh ? "编码" : "Encoding"}: ${operation.encoding}`]
+                : []),
+              ...(operation.noNewline ? [zh ? "不添加换行。" : "No added newline."] : []),
+            ]
+          : []),
+        `${zh ? "文件访问" : "File access"}: ${
+          approval.declaredAccess
+            .map(
+              (entry) =>
+                `${entry.access === "rw" ? (zh ? "读写" : "read/write") : zh ? "只读" : "read-only"} ${entry.path}`,
+            )
+            .join("; ") || (zh ? "无额外授权" : "no additional grants")
+        }`,
+        ...(approval.providerInitialization
+          ? [
+              zh
+                ? "含受限工作目录初始化；不增加文件权限。"
+                : "Scoped CWD initialization included; no extra file access.",
+            ]
+          : []),
+      ];
+    }),
+    `${zh ? "到期" : "Expires"}: ${new Date(params.expiresAtUnixMs).toISOString()}`,
+    zh
+      ? "仅限当前会话的当前审批。精确命令、参数、工作目录和完整技术细节见桌面。"
+      : "Current prompt/conversation only. Exact command, argv, CWD and full details: Desktop.",
+  ];
   return lines.join("\n");
 }
 
@@ -669,14 +669,14 @@ function acknowledgement(locale: "en-US" | "zh-CN", result: string): string {
   const zh: Record<string, string> = {
     approved: "MicroClaw 安全审批：已批准一次。",
     denied: "MicroClaw 安全审批：已拒绝。",
-    expired: "MicroClaw 安全审批：已过期。",
-    invalid: "MicroClaw 安全审批：无效或已失效。",
+    expired: "MicroClaw 安全审批：已过期，未接受新决策。",
+    invalid: "MicroClaw 安全审批：无效或已失效，未接受新决策。",
   };
   const en: Record<string, string> = {
     approved: "MicroClaw Security Approval: approved once.",
     denied: "MicroClaw Security Approval: denied.",
-    expired: "MicroClaw Security Approval: expired.",
-    invalid: "MicroClaw Security Approval: invalid or no longer active.",
+    expired: "MicroClaw Security Approval: expired; no new decision accepted.",
+    invalid: "MicroClaw Security Approval: invalid or no longer active; no new decision accepted.",
   };
   return (locale === "zh-CN" ? zh : en)[result] ?? en.invalid;
 }
@@ -728,6 +728,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   private readonly challengesByChat = new Map<string, ActiveChallenge>();
   private readonly closedByChat = new Map<string, ClosedChallenge>();
   private readonly pendingResolutions = new Map<string, ActiveChallenge>();
+  private readonly seenCandidateMessages = new Set<string>();
   private readonly globalAttemptTimes: number[] = [];
   private readonly auditEvents: WeixinRemoteApprovalAuditEvent[] = [];
 
@@ -819,8 +820,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     )
       return reject("security-binding-invalid");
     const approvalIds = input.requests.map(({ approval }) => approval.id);
-    if (!approvalIds.length || new Set(approvalIds).size !== approvalIds.length)
-      return reject("ambiguous-request-set");
+    if (approvalIds.length !== 1) return reject("ambiguous-request-set");
     if (
       input.requests.some(
         ({ approval }) => !weixinApprovalOriginMatchesSecurity(approval, input.security),
@@ -887,6 +887,12 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       deliveredAtUnixMs: null,
       reminderAtUnixMs: null,
       reminderCount: 0,
+      allowDurable:
+        weixinRemoteApprovalConsentHash(this.configuration) !== null &&
+        input.requests.every(
+          ({ approval }) =>
+            approval.allowedDecisions.includes("allow-always") && !approval.hasMutableFileOperand,
+        ),
     };
     const text = renderWeixinRemoteApprovalPrompt({
       code,
@@ -894,13 +900,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       requests: input.requests,
       security: input.security,
       locale: input.locale,
-      bareReplies: false,
-      allowDurable:
-        weixinRemoteApprovalConsentHash(this.configuration) !== null &&
-        input.requests.every(
-          ({ approval }) =>
-            approval.allowedDecisions.includes("allow-always") && !approval.hasMutableFileOperand,
-        ),
+      bareReplies: true,
+      allowDurable: challenge.allowDurable,
     });
     if (
       text.length > MAX_PROMPT_LENGTH ||
@@ -922,6 +923,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         sourceCursor: challenge.source.cursor,
         expiresAtUnixMs,
         text,
+        replyCode: code,
       },
     };
   }
@@ -938,6 +940,23 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       return true;
     }
     return false;
+  }
+
+  captureSimpleReplyChallenge(
+    candidate: Pick<WeixinRemoteApprovalCandidate, "accountId" | "senderId" | "conversationId">,
+    now = Date.now(),
+  ): string | null {
+    const challenge = this.challengesByChat.get(
+      this.chatKey(candidate.accountId, candidate.conversationId),
+    );
+    return challenge &&
+      challenge.approvalIds.length === 1 &&
+      challenge.deliveredAtUnixMs !== null &&
+      now < challenge.expiresAtUnixMs &&
+      this.isAuthenticatedSource(candidate) &&
+      candidate.senderId === challenge.source.senderId
+      ? challenge.id
+      : null;
   }
 
   resolveCandidate(candidate: WeixinRemoteApprovalCandidate): WeixinRemoteApprovalResolution {
@@ -964,22 +983,20 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       ) {
         challenge.reminderAtUnixMs = now;
         challenge.reminderCount++;
-        text =
-          weixinRemoteApprovalConsentHash(this.configuration) === null
-            ? challenge.locale === "zh-CN"
-              ? `MicroClaw 安全审批：尚未作出决策，原截止时间不变。2 须先关闭 MXC，再通过唯一的本地原生提示重新启用审批。现在可回复 1 ${challenge.code}（仅一次）或 3 ${challenge.code}（拒绝）。`
-              : `MicroClaw Security Approval: no decision; original deadline unchanged. 2 requires renewed local native consent: turn MXC off and enable again. Reply 1 ${challenge.code} (once) or 3 ${challenge.code} (deny).`
-            : challenge.locale === "zh-CN"
-              ? `MicroClaw 安全审批：尚未作出决策，原截止时间不变。请回复 1 ${challenge.code}（仅一次）、2 ${challenge.code}（此精确范围永久允许）或 3 ${challenge.code}（拒绝）。`
-              : `MicroClaw Security Approval: no decision; original deadline unchanged. Reply 1 ${challenge.code} (once), 2 ${challenge.code} (always for this exact scope), or 3 ${challenge.code} (deny).`;
+        text = !challenge.allowDurable
+          ? challenge.locale === "zh-CN"
+            ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）或 3（拒绝）；不接受引用、转发或混合内容。"
+            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once) or 3 (deny), without quotes, forwarding or other content."
+          : challenge.locale === "zh-CN"
+            ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）、2（记住此会话的精确范围）或 3（拒绝）；不接受引用、转发或混合内容。"
+            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once), 2 (remember exact scope in this conversation), or 3 (deny), without quotes, forwarding or other content.";
       }
       return { consumed: true, status: "rejected", reason, acknowledgement: text };
     };
     if (activeOwnerConversation && (candidate.quoted || candidate.forwarded))
       return remind(candidate.quoted ? "quoted" : "forwarded");
     const bare = /^[123]$/.test(candidate.text);
-    // This provider has no authenticated delivery cursor/time fence.
-    if (activeOwnerConversation && bare) return remind("cursor");
+    // Simple replies intentionally select the current delivered challenge, not a proven prompt reference.
     if (
       activeOwnerConversation &&
       !bare &&
@@ -1000,13 +1017,43 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     }
 
     const parsed = /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.exec(candidate.text);
-    if (!parsed) return { consumed: false, status: "not-candidate" };
+    if (!parsed && !bare) return { consumed: false, status: "not-candidate" };
+    if (bare && challenge && challenge.approvalIds.length !== 1) return remind("malformed");
+    const providerMessageId = normalizeWeixinProviderInteger(candidate.messageId);
+    const messageKey = hash(
+      canonicalize({
+        accountId: candidate.accountId,
+        senderId: candidate.senderId,
+        conversationId: candidate.conversationId,
+        messageId: providerMessageId,
+      }),
+    );
+    const replayed = this.seenCandidateMessages.has(messageKey);
+    if (
+      providerMessageId !== null &&
+      normalizeWeixinProviderInteger(candidate.cursor) !== null &&
+      candidate.direct &&
+      !candidate.forwarded &&
+      !candidate.quoted &&
+      this.isAuthenticatedSource(candidate)
+    ) {
+      // Process-lifetime fence also covers rejected pre-delivery/expired replies and replacements.
+      this.seenCandidateMessages.add(messageKey);
+    }
 
     this.globalAttemptTimes.push(now);
     while (this.globalAttemptTimes[0] != null && this.globalAttemptTimes[0] < now - 60_000) {
       this.globalAttemptTimes.shift();
     }
     if (!challenge) {
+      if (!parsed) {
+        return {
+          consumed: true,
+          status: "rejected",
+          reason: "inactive",
+          acknowledgement: acknowledgement("en-US", "invalid"),
+        };
+      }
       const candidateCodeHash = hash(parsed[2].toUpperCase());
       for (const [activeChatKey, active] of this.challengesByChat) {
         if (!constantTimeCodeEquals(candidateCodeHash, active.codeHash)) continue;
@@ -1054,8 +1101,6 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     if (this.globalAttemptTimes.length > MAX_GLOBAL_ATTEMPTS_PER_MINUTE) {
       return reject("rate-limited", true);
     }
-    if (now >= challenge.expiresAtUnixMs) return reject("expired", true);
-    if (challenge.deliveredAtUnixMs === null) return reject("inactive");
     if (!candidate.direct) return reject("group", true);
     if (candidate.forwarded) return reject("forwarded", true);
     if (candidate.quoted) return reject("quoted", true);
@@ -1069,6 +1114,21 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       return reject("chat");
     }
     if (
+      candidate.agentId !== challenge.source.agentId ||
+      candidate.sessionKey !== (challenge.source.providerSessionKey ?? challenge.source.sessionKey)
+    )
+      return reject("stale", true);
+    if (providerMessageId === null) return reject("cursor");
+    if (replayed) return reject("replayed");
+    if (now >= challenge.expiresAtUnixMs) return reject("expired", true);
+    if (
+      bare &&
+      candidate.expectedSimpleChallengeId !== undefined &&
+      candidate.expectedSimpleChallengeId !== challenge.id
+    )
+      return reject("inactive");
+    if (challenge.deliveredAtUnixMs === null) return reject("inactive");
+    if (
       !isLaterWeixinProviderCursor(candidate.cursor, challenge.source.cursor) ||
       !isLaterWeixinProviderCursor(candidate.cursor, challenge.lastCandidateCursor) ||
       normalizeWeixinProviderInteger(candidate.messageId) === null ||
@@ -1077,7 +1137,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       return reject("cursor");
     }
     challenge.lastCandidateCursor = candidate.cursor;
-    if (!constantTimeCodeEquals(parsed[2].toUpperCase(), challenge.code)) {
+    if (parsed && !constantTimeCodeEquals(parsed[2].toUpperCase(), challenge.code)) {
       return reject("code");
     }
     if (!candidate.requests || !candidate.security) {
@@ -1094,11 +1154,13 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     ) {
       return reject("stale", true);
     }
-    if (parsed[1] === "2" && weixinRemoteApprovalConsentHash(this.configuration) === null) {
+    const option = parsed?.[1] ?? candidate.text;
+    if (option === "2" && weixinRemoteApprovalConsentHash(this.configuration) === null) {
       return remind("consent-scope");
     }
+    if (option === "2" && !challenge.allowDurable) return remind("malformed");
     if (
-      parsed[1] === "2" &&
+      option === "2" &&
       candidate.requests.some(
         ({ approval }) =>
           !approval.allowedDecisions.includes("allow-always") || approval.hasMutableFileOperand,
@@ -1113,7 +1175,6 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       locale: challenge.locale,
     });
     this.pendingResolutions.set(challenge.id, challenge);
-    const option = parsed[1];
     const decision = option === "3" ? "deny" : option === "2" ? "allow-always" : "allow-once";
     const approvalIds = [...challenge.approvalIds];
     return {

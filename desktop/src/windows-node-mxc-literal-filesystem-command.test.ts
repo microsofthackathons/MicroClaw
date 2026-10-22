@@ -75,4 +75,33 @@ describe("closed literal filesystem presentation grammar", () => {
       classifyLiteralFilesystemCommand({ ...value, executablePath: String.raw`C:\Other\cmd.exe` }),
     ).toBeNull();
   });
+
+  it("exposes all already-validated effects, including empty content, without rewriting them", () => {
+    expect(
+      classifyLiteralFilesystemCommand(
+        plan(
+          "Set-Content -LiteralPath 'C:\\Approved\\a.txt' -Value '' -Encoding Unicode -NoNewline -Force",
+        ),
+      ),
+    ).toMatchObject({
+      kind: "set-content",
+      path: "C:\\Approved\\a.txt",
+      force: true,
+      recursive: false,
+      content: "",
+      encoding: "Unicode",
+      noNewline: true,
+    });
+    expect(
+      classifyLiteralFilesystemCommand(
+        plan("Remove-Item -LiteralPath 'C:\\Approved\\a' -Recurse -Force"),
+      ),
+    ).toMatchObject({
+      force: true,
+      recursive: true,
+      content: null,
+      encoding: null,
+      noNewline: false,
+    });
+  });
 });

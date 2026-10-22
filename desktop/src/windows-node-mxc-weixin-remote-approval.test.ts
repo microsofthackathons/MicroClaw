@@ -146,18 +146,14 @@ function candidate(
     direct: true,
     forwarded: false,
     quoted: false,
+    agentId: base.source.agentId,
+    sessionKey: base.source.sessionKey,
     text: `1 ${code}`,
     now: 2_000,
     requests: base.requests,
     security: base.security,
     ...overrides,
   };
-}
-
-function codeFromPrompt(text: string): string {
-  const match = /#([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})\]/.exec(text);
-  if (!match) throw new Error("challenge code missing");
-  return match[1];
 }
 
 describe("WeChat remote approval broker", () => {
@@ -200,8 +196,8 @@ describe("WeChat remote approval broker", () => {
       const broker = configuredBroker();
       broker.configure({ enabled: true, owner: broker.getConfiguration().owner });
       const delivery = broker.createChallenge(input())!;
-      expect(delivery.text).toContain("renew local native consent");
-      const code = codeFromPrompt(delivery.text);
+      expect(delivery.text).not.toMatch(/2: remember|renew local native consent|off and/);
+      const code = delivery.replyCode;
       const rejected = broker.resolveCandidate(candidate(code, { text: `2 ${code}` }));
       expect(rejected).toMatchObject({ status: "rejected", reason: "consent-scope" });
       expect(rejected).toMatchObject({
@@ -234,7 +230,7 @@ describe("WeChat remote approval broker", () => {
     const broker = configuredBroker();
     const delivery = broker.createChallenge(input())!;
     broker.configure({ enabled: true, owner: broker.getConfiguration().owner });
-    expect(broker.resolveCandidate(candidate(codeFromPrompt(delivery.text)))).toMatchObject({
+    expect(broker.resolveCandidate(candidate(delivery.replyCode))).toMatchObject({
       status: "rejected",
     });
     broker.configure({
@@ -245,8 +241,10 @@ describe("WeChat remote approval broker", () => {
     const renewed = broker.createChallenge(input())!;
     expect(
       broker.resolveCandidate(
-        candidate(codeFromPrompt(renewed.text), {
-          text: `2 ${codeFromPrompt(renewed.text)}`,
+        candidate(renewed.replyCode, {
+          text: `2 ${renewed.replyCode}`,
+          messageId: "102",
+          cursor: 102,
         }),
       ),
     ).toMatchObject({ status: "approved", decision: "allow-always" });
@@ -293,7 +291,7 @@ describe("WeChat remote approval broker", () => {
   ] as const)("resolves owner option %s exactly once", (option, decision, ids) => {
     const broker = configuredBroker();
     const delivery = broker.createChallenge(input())!;
-    const code = codeFromPrompt(delivery.text);
+    const code = delivery.replyCode;
     const result = broker.resolveCandidate(candidate(code, { text: `${option} ${code}` }));
     expect(result).toMatchObject({
       consumed: true,
@@ -316,7 +314,7 @@ describe("WeChat remote approval broker", () => {
     ).toMatchObject({ consumed: true, status: "rejected", reason: "replayed" });
   });
 
-  it("limits denial to the explicitly enumerated originating-message batch", () => {
+  it("keeps ambiguous multi-request batches local-only", () => {
     const broker = configuredBroker();
     const batchInput = input();
     batchInput.requests = [
@@ -332,27 +330,21 @@ describe("WeChat remote approval broker", () => {
         },
       },
     ];
-    const delivery = broker.createChallenge(batchInput)!;
-    const code = codeFromPrompt(delivery.text);
-    expect(
-      broker.resolveCandidate(
-        candidate(code, { text: `3 ${code}`, requests: batchInput.requests }),
-      ),
-    ).toMatchObject({
-      status: "denied",
-      decision: "deny",
-      approvalIds: ["approval-1", "approval-2"],
+    expect(broker.createChallengeResult(batchInput)).toEqual({
+      status: "rejected",
+      reason: "ambiguous-request-set",
     });
   });
 
-  it("consumes bare or invalid input only during a delivered challenge without deciding", () => {
+  it("accepts exact bare input but still rejects ambiguous input", () => {
     const broker = configuredBroker();
     broker.createChallenge(input());
     expect(broker.resolveCandidate(candidate("", { text: "1" }))).toMatchObject({
       consumed: true,
-      status: "rejected",
-      reason: "cursor",
+      status: "approved",
+      decision: "allow-once",
     });
+    broker.createChallenge(input());
     expect(
       broker.resolveCandidate(candidate("", { text: " 1 23456789 ", ambiguous: true })),
     ).toMatchObject({ consumed: true, status: "rejected", reason: "malformed" });
@@ -380,7 +372,7 @@ describe("WeChat remote approval broker", () => {
   ] as const)("fails closed for mismatched reply %#", (overrides, reason) => {
     const broker = configuredBroker();
     const delivery = broker.createChallenge(input())!;
-    const code = codeFromPrompt(delivery.text);
+    const code = delivery.replyCode;
     expect(broker.resolveCandidate(candidate(code, overrides))).toMatchObject({
       consumed: true,
       status: "rejected",
@@ -391,7 +383,7 @@ describe("WeChat remote approval broker", () => {
   it("expires, bounds wrong-code attempts, and never logs the raw challenge", () => {
     const broker = configuredBroker();
     const delivery = broker.createChallenge(input())!;
-    const code = codeFromPrompt(delivery.text);
+    const code = delivery.replyCode;
     for (let index = 0; index < WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS; index++) {
       expect(
         broker.resolveCandidate(
@@ -407,7 +399,7 @@ describe("WeChat remote approval broker", () => {
     const expired = configuredBroker();
     const expiredDelivery = expired.createChallenge(input())!;
     expect(
-      expired.resolveCandidate(candidate(codeFromPrompt(expiredDelivery.text), { now: 200_000 })),
+      expired.resolveCandidate(candidate(expiredDelivery.replyCode, { now: 200_000 })),
     ).toMatchObject({ status: "rejected", reason: "expired" });
   });
 
@@ -415,13 +407,14 @@ describe("WeChat remote approval broker", () => {
     const localFirst = configuredBroker();
     const localDelivery = localFirst.createChallenge(input())!;
     localFirst.markLocallyResolved("approval-1", "denied");
-    expect(
-      localFirst.resolveCandidate(candidate(codeFromPrompt(localDelivery.text))),
-    ).toMatchObject({ status: "rejected", reason: "replayed" });
+    expect(localFirst.resolveCandidate(candidate(localDelivery.replyCode))).toMatchObject({
+      status: "rejected",
+      reason: "replayed",
+    });
 
     const remoteFirst = configuredBroker();
     const remoteDelivery = remoteFirst.createChallenge(input())!;
-    const result = remoteFirst.resolveCandidate(candidate(codeFromPrompt(remoteDelivery.text)));
+    const result = remoteFirst.resolveCandidate(candidate(remoteDelivery.replyCode));
     expect(result.status).toBe("approved");
     remoteFirst.markLocallyResolved("approval-1", "denied");
     if (result.status === "approved") {
@@ -452,7 +445,7 @@ describe("WeChat remote approval broker", () => {
     const delivery = broker.createChallenge(input())!;
     expect(
       broker.resolveCandidate(
-        candidate(codeFromPrompt(delivery.text), {
+        candidate(delivery.replyCode, {
           requests: [{ approval: { ...approval, ...approvalOverride } }],
         }),
       ),
@@ -471,7 +464,7 @@ describe("WeChat remote approval broker", () => {
     const delivery = broker.createChallenge(input())!;
     expect(
       broker.resolveCandidate(
-        candidate(codeFromPrompt(delivery.text), {
+        candidate(delivery.replyCode, {
           security: { ...input().security, ...securityOverride },
         }),
       ),
@@ -492,8 +485,9 @@ describe("WeChat remote approval broker", () => {
       },
     ];
     const delivery = broker.createChallenge(exact)!;
-    expect(delivery.text).toContain(JSON.stringify(exactPath));
-    expect(delivery.text).toContain(JSON.stringify("-7.50"));
+    expect(delivery.text).toContain(exactPath);
+    expect(delivery.text).toContain("-7.50");
+    expect(exact.requests[0].approval.arguments).toEqual([exactPath, "--mode", "-7.50"]);
     expect(delivery.text).not.toContain("%USERPROFILE%");
   });
 
@@ -646,15 +640,18 @@ describe("WeChat remote approval broker", () => {
         requests: [{ approval }],
         security: input().security,
         locale,
+        allowDurable: true,
       });
-      expect(prompt).toContain(`1 23456789`);
-      expect(prompt).toContain(`2 23456789`);
-      expect(prompt).toContain(`3 23456789`);
-      expect(prompt).toContain(approval.executableSha256);
-      expect(prompt).toContain(JSON.stringify(approval.canonicalCwd));
+      expect(prompt).toMatch(/1[:：]/);
+      expect(prompt).toMatch(/2[:：]/);
+      expect(prompt).toMatch(/3[:：]/);
+      expect(prompt).not.toContain("23456789");
+      expect(prompt).not.toContain(approval.executableSha256);
+      expect(prompt).toContain(approval.executablePath);
       expect(prompt).toMatch(
-        locale === "zh-CN" ? /永久审批也不会扩大范围/ : /Always does not broaden that scope/,
+        locale === "zh-CN" ? /记住此会话的精确范围/ : /remember exact scope in this conversation/,
       );
+      expect(prompt).toMatch(locale === "zh-CN" ? /完整技术细节见桌面/ : /full details: Desktop/);
     }
   });
 
@@ -662,7 +659,7 @@ describe("WeChat remote approval broker", () => {
     const events: unknown[] = [];
     const broker = configuredBroker((event) => events.push(event));
     const delivery = broker.createChallenge(input())!;
-    const code = codeFromPrompt(delivery.text);
+    const code = delivery.replyCode;
     const result = broker.resolveCandidate(candidate(code));
     expect(events).toEqual([]);
     expect(result.status).toBe("approved");
@@ -699,9 +696,7 @@ describe("WeChat remote approval broker", () => {
       } else {
         broker.invalidateAll(reason);
       }
-      const result = broker.resolveCandidate(
-        candidate(codeFromPrompt(delivery.text), { cursor: 102 }),
-      );
+      const result = broker.resolveCandidate(candidate(delivery.replyCode, { cursor: 102 }));
       expect(result).toMatchObject({ consumed: true, status: "rejected" });
       if (reason !== "superseded") {
         expect(result).toMatchObject({ reason: "replayed" });

@@ -100,6 +100,11 @@ type FilesystemOperation =
 interface LiteralFilesystemOperation {
   kind: FilesystemOperation;
   path: string;
+  force: boolean;
+  recursive: boolean;
+  content: string | null;
+  encoding: string | null;
+  noNewline: boolean;
 }
 
 // Only these low-entropy public primitives may be disclosed as inline content.
@@ -154,16 +159,31 @@ function filesystemPayload(
   const encoding = values.get("-encoding");
   if (encoding !== undefined && !["ascii", "utf8", "unicode"].includes(encoding.toLowerCase()))
     return null;
+  const effects = {
+    force: flags.has("-force"),
+    recursive: flags.has("-recurse"),
+    content: value ?? null,
+    encoding: encoding ?? null,
+    noNewline: flags.has("-nonewline"),
+  };
   if (command === "new-item") {
     const type = values.get("-itemtype")?.toLowerCase();
     if (type !== "directory" && type !== "file") return null;
     if (type === "directory" && value !== undefined) return null;
-    return { kind: type === "directory" ? "create-directory" : "create-file", path: target };
+    return {
+      kind: type === "directory" ? "create-directory" : "create-file",
+      path: target,
+      ...effects,
+    };
   }
-  if (command === "remove-item") return { kind: "remove-path", path: target };
-  if (command === "clear-content") return { kind: "clear-content", path: target };
+  if (command === "remove-item") return { kind: "remove-path", path: target, ...effects };
+  if (command === "clear-content") return { kind: "clear-content", path: target, ...effects };
   if (value === undefined) return null;
-  return { kind: command === "set-content" ? "set-content" : "append-content", path: target };
+  return {
+    kind: command === "set-content" ? "set-content" : "append-content",
+    path: target,
+    ...effects,
+  };
 }
 
 export function classifyLiteralFilesystemCommand(approval: {

@@ -117,7 +117,7 @@ import {
 } from "../src/windows-node-mxc-weixin-remote-approval-delivery";
 import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
 import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
-import { exactField, windowsCommand } from "./windows-command-fixture.mjs";
+import { windowsCommand } from "./windows-command-fixture.mjs";
 import {
   normalizeWeixinRemoteApprovalOwner,
   projectWeixinRemoteApprovalRuntimeConfiguration,
@@ -634,7 +634,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       const delivery = await state.deliver();
       expect(delivery).not.toBeNull();
       expect(mocks.send).toHaveBeenCalledOnce();
-      const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+      const code = delivery.replyCode;
       await interceptWeixinRemoteApprovalMessage(
         wireMessage(`1 ${code}`, "18446744073709551001", "9007199254740994"),
         state.deps,
@@ -652,8 +652,8 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     async (digit, decision) => {
       const state = await pipeline(normalizedApproval(), false);
       const delivery = await state.start();
-      expect(delivery.text).toContain("renew local native consent");
-      const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+      expect(delivery.text).not.toMatch(/2: remember|renew local native consent|off and/);
+      const code = delivery.replyCode;
       expect(await state.reply(`2 ${code}`)).toBe(true);
       expect(state.resolveGateway).not.toHaveBeenCalled();
       expect(state.store.list()).toHaveLength(0);
@@ -666,7 +666,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
   it("does not persist a phone Always through an invalid runtime consent marker", async () => {
     const state = await pipeline(normalizedApproval(), true, "invalid-native-scope");
     const delivery = await state.start();
-    const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     expect(await state.reply(`2 ${code}`)).toBe(true);
     expect(state.resolveGateway).not.toHaveBeenCalled();
     expect(state.store.list()).toHaveLength(0);
@@ -676,6 +676,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
   });
   it.each(cases)("%s: %s resolves from %s as %s", async (_operation, script, origin, decision) => {
     const state = await pipeline(normalizedApproval(script));
+    const desktopBefore = JSON.stringify(state.approval);
     const delivery = await state.start();
     expect(delivery).not.toBeNull();
     expect(state.resolveAgentRoute).toHaveBeenCalledWith(
@@ -686,12 +687,19 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       agentId: "main",
       sessionKey,
     });
-    expect(JSON.parse(exactField(delivery.text, "Request 1 command"))).toBe(state.approval.command);
-    expect(delivery.text).toContain(executableHash);
-    expect(state.states.at(-1)).toMatchObject({ state: "sent", replyMode: "code-required" });
+    expect(delivery.text).toContain(state.approval.executablePath);
+    expect(delivery.text).not.toContain(executableHash);
+    expect(JSON.stringify(state.approval)).toBe(desktopBefore);
+    expect(state.approval.command).toBe(
+      windowsCommand([state.approval.executable, ...state.approval.arguments]),
+    );
+    expect(state.states.at(-1)).toMatchObject({
+      state: "sent",
+      replyMode: "simple-current-prompt",
+    });
     if (origin === "desktop") await state.lifecycle.decide(decision, origin);
     else {
-      const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+      const code = delivery.replyCode;
       const option = decision === "allow-once" ? "1" : decision === "allow-always" ? "2" : "3";
       expect(await state.reply(`${option} ${code}`)).toBe(true);
     }
@@ -719,11 +727,11 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         origin === "wechat" ? expect.stringMatching(/^[a-f0-9]{64}$/) : undefined,
       );
     }
-    expect(await state.reply("1", 44)).toBe(false);
+    expect(await state.reply("1", 44)).toBe(true);
     expect(state.resolveGateway).toHaveBeenCalledTimes(1);
   });
 
-  it("intercepts bare/invalid/malformed metadata before the REAL monitor agent queue without extending its deadline", async () => {
+  it("intercepts invalid/malformed metadata before the REAL monitor agent queue without extending its deadline", async () => {
     const state = await pipeline();
     await state.start();
     mocks.monitorTransport = state.transport;
@@ -734,7 +742,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         get_updates_buf: "cursor-1",
         msgs: [
           phoneMessage("not a decision", 43),
-          phoneMessage("1", 44),
+          phoneMessage("1 WRONG123", 44),
           phoneMessage("2", 45, { seq: undefined }),
         ],
       })
@@ -754,7 +762,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(state.lifecycle.pending).toBe(true);
     expect(state.lifecycle.expiresAtUnixMs).toBe(state.expiresAtUnixMs);
     expect(mocks.send.mock.calls.map(([value]) => value.text).join("\n")).toContain(
-      "current prompt's choices and request code",
+      "one available digit from the current prompt",
     );
     expect(state.diagnostics).toContainEqual(
       expect.objectContaining({ code: "provider-cursor-unavailable" }),
@@ -830,8 +838,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       state: "unconfirmed",
       reason: "delivery-unconfirmed",
     });
-    const code = /#([23456789A-Z]{8})\]/.exec(mocks.send.mock.calls[0][0].text)[1];
-    expect(await state.reply(`1 ${code}`)).toBe(true);
+    expect(await state.reply("1")).toBe(true);
     expect(state.resolveGateway).not.toHaveBeenCalled();
     expect(mocks.send).toHaveBeenCalledTimes(2);
   });
@@ -966,7 +973,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     const delivery = await state.start();
     state.server.close();
     await new Promise((resolve) => setImmediate(resolve));
-    const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     expect(await state.reply(`1 ${code}`)).toBe(true);
     expect(state.resolveGateway).not.toHaveBeenCalled();
     expect(state.lifecycle.expiresAtUnixMs).toBe(state.expiresAtUnixMs);
@@ -991,14 +998,17 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       ...state.approval,
       arguments: [...state.approval.arguments, "changed"],
     });
-    const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     expect(await state.reply(`2 ${code}`)).toBe(true);
     expect(state.resolveGateway).not.toHaveBeenCalled();
     state.expire();
     await state.lifecycle.decide("deny", "timeout");
     expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith("deny");
     expect(state.resolved[0]).toMatchObject({ decision: "deny", origin: "timeout" });
-    expect(mocks.send.mock.calls.at(-1)[0].text).toContain("(timeout)");
+    expect(mocks.send.mock.calls.at(-1)[0].text).toMatch(
+      /RESULT: expired; no timely valid decision/,
+    );
+    expect(mocks.send.mock.calls.at(-1)[0].text).not.toContain("Permission decision accepted");
     expect(state.store.list()).toEqual([]);
   });
 
@@ -1013,7 +1023,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         }),
     );
     const desktop = state.lifecycle.decide("allow-once", "desktop");
-    const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     expect(await state.reply(`2 ${code}`)).toBe(true);
     finish();
     await desktop;
@@ -1034,7 +1044,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
           finish = resolve;
         }),
     );
-    const code = /#([23456789A-Z]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     const phone = state.reply(`1 ${code}`);
     await vi.waitFor(() => expect(state.resolveGateway).toHaveBeenCalledTimes(1));
     await expect(state.lifecycle.decide("deny", "desktop")).rejects.toThrow("in progress");
@@ -1064,8 +1074,8 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     finishOldSend({});
     await new Promise((resolve) => setImmediate(resolve));
     expect(state.transport.shouldReserveInbound(phoneMessage("ordinary message", 45))).toBe(false);
-    expect(await state.reply("1", 45)).toBe(false);
+    expect(await state.reply("1", 45)).toBe(true);
     expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith("deny");
-    expect(mocks.send).toHaveBeenCalledTimes(2);
+    expect(mocks.send).toHaveBeenCalledTimes(3);
   });
 });

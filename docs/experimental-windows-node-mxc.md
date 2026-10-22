@@ -298,27 +298,32 @@ proofs, or expose the path through the ordinary `message` tool. Exact candidate 
 intercepted before session recording and agent dispatch. Mixed, malformed, or otherwise ambiguous
 challenge-shaped replies are also consumed and fail closed, including when the broker transport is
 uncertain. Once an exact-owner prompt is successfully sent, other input in that owner's direct
-conversation (including bare digits and invalid text) is consumed before the agent queue, makes
-no decision, and receives at most three reminders with a five-second minimum interval. It never
-extends the deadline. Outside this delivered pending mode, bare digits remain ordinary chat.
+conversation is consumed before the agent queue. Exact bare `1`/`2`/`3` select the current delivered
+prompt as described below; other input makes no decision and receives at most three reminders with
+a five-second minimum interval. It never extends the deadline. While this remote-approval transport
+is enabled, reserved numeric replies without an active prompt are rejected rather than dispatched
+to the agent.
 The long-poll loop advances its in-memory server cursor before placing ordinary messages on its
 serialized dispatch queue, allowing an exact approval reply to be consumed while the originating
 agent run is waiting. It persists the cursor only after the covered ordinary dispatches complete,
 so a crash replays rather than drops them.
 
-The reserved plain-text prompt begins `[MicroClaw Security Approval #CODE]`. The code is eight
-characters from an unambiguous 32-symbol alphabet (40 bits), generated with `randomBytes`, valid for
-at most two minutes, one-use, and limited to three wrong attempts plus a global attempt window.
+The reserved plain-text prompt begins `[MicroClaw Security Approval]`, with available numeric
+choices first. An internal eight-character code from an unambiguous 32-symbol alphabet (40 bits)
+is still generated with `randomBytes`; coded replies remain supported, but no visible code is required
+by the default phone UX. Each challenge is valid for at most two minutes, one-use, and limited to
+three wrong attempts plus a global attempt window. Multi-request batches stay local-only.
 The actual permission deadline is the earlier of the original 60-second Desktop window and the
-Gateway expiry. The phone prompt and Desktop countdown use that same deadline. The prompt
-renders authorization-relevant strings exactly and reversibly with JSON string quoting. It does not
-trim or NFC-normalize, rewrite user-profile paths, parse and reserialize JSON, convert numeric text,
-collapse duplicate keys, redact partial values, or otherwise change code points. It includes the
-complete command text, executable canonical path and hash, argv, canonical CWD, declared file
-access, agent/session, requested/effective MXC mode, expiry, and exact request reference.
-Long approved fields use numbered JSON fragments joined without separators; nothing is hidden,
-masked, or truncated.
-If those exact fields exceed deterministic request/argument/declaration/line/total limits, contain
+Gateway expiry. The phone prompt and Desktop countdown use that same deadline. The short phone
+summary includes a validated literal operation and unchanged target, actual executable path
+(not just a trusted-looking basename), every declared RO/RW grant, force/recurse/content/encoding/
+no-newline effects, scoped initialization when present, expiry, and current-conversation scope.
+Empty public content is shown explicitly. Generic already-safe commands retain their exact command
+representation. Ordinary initialized create/delete fixtures are kept within approximately 600
+characters. The Desktop retains the unchanged full executed command, executable/hash, argv, physical
+canonical CWD, initialization metadata, access, agent/session and mode. These full technical details
+are deliberately not duplicated or split into JSON fragments on the phone.
+If required fields exceed deterministic request/argument/declaration/line/total limits, contain
 control, C0/C1, surrogate, bidi/format/default-ignorable, line/paragraph separator, zero-width,
 variation-selector, or similar concealment characters, or appear secret-bearing or ambiguously
 redacted, MicroClaw creates no remote challenge and leaves the normal local approval pending.
@@ -350,24 +355,36 @@ original absolute target, C: drive, filesystem grants and ancestor ACLs do not c
 Initialization and immutable original/final argv metadata are generated **before** executable
 identity capture and approval. Main independently regenerates them, and the proof binds them.
 Execution revalidates the prepared bytes and target, then launches those exact approved argv;
-it does not rewrite an approved command. Both phone and Desktop disclose the scope and retain
-the complete executed command. Original command output, errors and exit status are preserved;
+it does not rewrite an approved command. Both phone and Desktop disclose the scoped initialization;
+the Desktop retains the complete executed command and metadata. Original output, errors and exit status are preserved;
 initialization failure exits 125 without executing the operation. Reparse targets are rejected.
 Arbitrary scripts, encoded/file/interactive/profile/relative forms and other unsupported commands
 retain their existing behavior and approval rules; this is not a general PowerShell script rewrite.
 
-- `1 CODE` approves the exact first/current request once.
-- `2 CODE` saves the same exact conversation-scoped durable approval available on the Desktop,
-  only when that exact request is eligible.
-- `3 CODE` denies the exact request.
+- `1` approves the single current delivered request once.
+- `2` remembers the same exact conversation-scoped approval available on the Desktop, only with
+  existing native durable consent and an eligible request. Otherwise only `1`/`3` are displayed.
+- `3` denies that request. Strict `digit CODE` replies remain backward-compatible; malformed
+  coded or mixed text never falls back to a bare decision.
 
-The current provider has no authenticated outgoing message timestamp/cursor fence. Incoming
-provider time compared with local delivery time cannot prove that a bare digit was authored after
-the prompt. Therefore the displayed syntax always requires the request code; timestamps are
-diagnostic metadata, never a guessed authorization signal.
+**Temporary explicit product tradeoff — `simple-current-prompt`:** the current provider has no
+authenticated outgoing message timestamp/cursor fence. A locally generated send client ID is not
+a provider receipt identifying the prompt that the user intended. A previously unseen delayed reply
+intended for expired prompt A can therefore authorize newer delivered prompt B. This known risk is
+accepted for the simple-digit UX; it is not fixed by one pending prompt, local time, or cursor
+ordering. No timestamp or quote/client-ID heuristic is used to claim otherwise. This is an explicit
+code-level default, not a credential, owner, consent-scope or durable-authority migration.
+Only one provider-acknowledged current challenge can be selected; provider acceptance is not proof
+of human receipt. Main snapshots its challenge identity before awaiting fresh authoritative route
+resolution, so delivery or replacement during that await cannot make an earlier arrival eligible.
+Owner/account/direct conversation, agent/provider route and authoritative canonical session,
+current client/generation/security, original deadline, source cursor and first-terminal checks still
+apply. Broker-process-lifetime hashed message-ID fences reject already seen decisions, including
+pre-acknowledgement and expired replies, across challenge replacement. These replay fences do not
+identify the intended prompt of a previously unseen delayed reply.
 
 The in-memory challenge binds the authenticated sender/account/chat, source message ID and cursor,
-agent/session, exact approval IDs and batch, executable canonical path and SHA-256, argv, CWD,
+agent/session, exact approval ID, executable canonical path and SHA-256, argv, CWD,
 declarations, requested/effective mode, Gateway generation, policy fingerprint, node identity,
 active-lease hash, creation/expiry, challenge ID, and code hash. Electron revalidates the current
 pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
@@ -376,8 +393,8 @@ Gateway request once and then persists the existing executable/hash/argv/CWD/acc
 session identity. Phone-created records additionally bind a hash of the exact native owner consent
 epoch and versioned durable capability, so MXC Off/reconsent or account replacement cannot transfer
 that authority. Existing native one-use consent remains enabled for once/deny but is never silently
-upgraded: `2 CODE` stays unavailable until the user deliberately turns MXC Off and chooses Enabled
-in the existing single native prompt. Only that main-owned choice issues the current capability;
+upgraded: `2` stays unavailable and prompts/reminders do not encourage consent renewal. Only the
+existing main-owned native choice can issue the current durable capability;
 renderer-supplied scope markers are rejected. It never grants
 all writes/deletes or broadens folders. A failed durable save is explicitly reported as accepted
 once, not as a successfully saved Always grant.
@@ -386,10 +403,18 @@ First resolution wins across local and remote UI. Local resolution, timeout, rel
 restart, policy or lease drift, MXC Off, logout/rebind, feature disable/revoke, shutdown, prompt-send
 failure, and excessive code attempts invalidate the challenge. Timeout calls the actual Gateway
 deny resolver. The authoritative terminal event closes only its matching Desktop request and
-invalidates the phone challenge. One safe phone result identifies the accepted decision and origin
-(Desktop/WeChat/timeout), explicitly not command execution success. Unknown resolution outcomes
+invalidates the phone challenge. A timeout receipt says expired/no timely valid decision, not that
+the operator rejected or a user decision was accepted. Accepted operator decisions are distinguished
+from an externally observed Gateway block, and none proves command execution success. Unknown resolution outcomes
 are reported as unconfirmed, never retried or falsely reported as denied. Overlapping requests
 retain their original deadlines and receive remote authority one at a time.
+
+**Pinned SDK limitation:** OpenClaw 2026.10.2 maps every explicit wire `deny` to `user-denied`,
+including the fail-closed deny sent by MicroClaw's timer. Its agent-facing tool result may therefore
+still say the user denied an expired request. Phone copy does not correct that upstream reason.
+The actual SDK contract is regression-tested: null with deny fallback means `approval-timeout`, but
+null with FULL fallback can approve. MicroClaw keeps explicit deny, does not invent resolve RPC
+fields, and does not claim that a free-form agent's attribution has been fixed.
 
 Suppression is never silent: typed, hashed diagnostics distinguish source/route, security,
 transport and presentation failures, and the Desktop shows phone-delivery/local-only state.

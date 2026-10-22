@@ -111,7 +111,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
     vi.restoreAllMocks();
   });
 
-  async function mountReadyApp() {
+  async function mountReadyApp(realPermissionDialog = false) {
     const pinia = createPinia();
     const router = createRouter({
       history: createMemoryHistory(),
@@ -122,6 +122,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       global: {
         plugins: [pinia, router],
         stubs: {
+          PermissionDialog: !realPermissionDialog,
           RouterView: false,
           SettingsView: false,
           GatewayLoading: false,
@@ -696,7 +697,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       remoteDelivery: {
         state: "sent",
         reason: null,
-        replyMode: "code-required",
+        replyMode: "simple-current-prompt",
         revision: 100,
       },
     });
@@ -713,29 +714,57 @@ describe("App MXC loading gate with the real Gateway store", () => {
   });
 
   it("updates one pending request and dismisses only the exact remotely resolved request without resetting readiness", async () => {
-    const { gateway } = await mountReadyApp();
+    const { gateway } = await mountReadyApp(true);
     const epoch = gateway.readinessEpoch;
-    const first = permission("first");
+    const first = {
+      ...permission("first"),
+      commandText:
+        "powershell.exe -NoProfile -Command \"New-Item -ItemType Directory -Path 'C:\\Approved\\folder' -Force\"",
+      executable: "powershell.exe",
+      arguments: [
+        "-NoProfile",
+        "-Command",
+        "New-Item -ItemType Directory -Path 'C:\\Approved\\folder' -Force",
+      ],
+      declaredAccess: [{ access: "rw" as const, path: String.raw`C:\Approved` }],
+    };
     await approvalRequest(first);
     await approvalRequest(permission("second"));
     await flushPromises();
     expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("first");
     await approvalRequest({
       ...first,
-      remoteDelivery: { state: "sent", reason: null, replyMode: "code-required", revision: 2 },
+      remoteDelivery: {
+        state: "sent",
+        reason: null,
+        replyMode: "simple-current-prompt",
+        revision: 2,
+      },
     });
     await flushPromises();
     expect(wrapper.findComponent(PermissionDialog).props("request")).toMatchObject({
       requestId: "first",
       expiresAtUnixMs: first.expiresAtUnixMs,
-      remoteDelivery: { state: "sent", revision: 2 },
+      command: first.commandText,
+      dirPath: first.canonicalCwd,
+      declaredAccess: first.declaredAccess,
+      remoteDelivery: { state: "sent", replyMode: "simple-current-prompt", revision: 2 },
     });
+    const dialog = wrapper.findComponent(PermissionDialog);
+    expect(dialog.get('[data-testid="mxc-phone-delivery"]').text()).toContain(
+      "reply 1 to allow once or 3 to deny",
+    );
+    expect(dialog.get('[data-testid="mxc-phone-delivery"]').text()).not.toMatch(
+      /CODE|turn.*off|enable again/,
+    );
+    expect(dialog.get(".perm-command-code").text()).toBe(first.commandText);
+    expect(dialog.get(".perm-mxc-value").text()).toBe(first.canonicalCwd);
+    expect(dialog.get(".perm-mxc-access").text()).toContain(String.raw`C:\Approved`);
     approvalResolved({
       requestId: "first",
       status: "accepted",
-      decision: "allow-always",
+      decision: "allow-once",
       origin: "wechat",
-      durableSaved: true,
     });
     await flushPromises();
     expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("second");

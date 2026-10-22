@@ -135,9 +135,19 @@ describe("WeChat remote approval ingress normalization", () => {
           message({
             item_list: [{ type: MessageItemType.TEXT, text_item: { text } }],
           }),
-        ).candidateLike,
-      ).toBe(false);
+        ),
+      ).toEqual({ candidateLike: true, ambiguous: false, text });
     }
+    expect(
+      classifyWeixinRemoteApprovalCandidate(
+        message({
+          item_list: [
+            { type: MessageItemType.TEXT, text_item: { text: "1" } },
+            { type: MessageItemType.IMAGE },
+          ],
+        }),
+      ),
+    ).toEqual({ candidateLike: true, ambiguous: true, text: "1" });
     expect(
       normalizeInboundSource(
         message({

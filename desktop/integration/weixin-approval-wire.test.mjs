@@ -24,6 +24,7 @@ import {
 import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc";
 import {
   normalizeWeixinRemoteApprovalOwner,
+  WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
   weixinRemoteApprovalConsentHash,
   weixinRemoteApprovalWireSourceRejection,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
@@ -54,7 +55,7 @@ import {
 import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
 import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
 import { createMainWeixinInboundFixture } from "./main-weixin-inbound-fixture.mjs";
-import { exactField, windowsCommand } from "./windows-command-fixture.mjs";
+import { windowsCommand } from "./windows-command-fixture.mjs";
 import { logger } from "../../plugins/openclaw-weixin/src/util/logger.js";
 import {
   describeWeixinApprovalDecision,
@@ -340,10 +341,11 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     const body = JSON.parse(fetch.mock.calls[0][1].body);
     expect(body.msg.to_user_id).toBe(rawPeer);
     expect(body.msg.context_token).toBe("synthetic-exact-context");
-    expect(body.msg.item_list[0].text_item.text).toContain("1 ");
-    expect(JSON.parse(exactField(body.msg.item_list[0].text_item.text, "Request 1 command"))).toBe(
-      approval.command,
-    );
+    expect(body.msg.item_list[0].text_item.text).toContain("Reply 1:");
+    expect(body.msg.item_list[0].text_item.text).toContain(target);
+    expect(body.msg.item_list[0].text_item.text).toContain(executable);
+    expect(body.msg.item_list[0].text_item.text).not.toContain("Args:");
+    expect(approval.command).toBe(windowsCommand([approval.executable, ...approval.arguments]));
     expect(approval.command).toContain(target);
     const receipt = records.find(
       (record) => record.stage === "provider" && record.code === "provider-accepted",
@@ -361,7 +363,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     );
     for (const record of records)
       expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
-    const code = /#([A-Z0-9]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     expect(
       await transport.intercept({
         message: message({
@@ -379,74 +381,304 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     expect(JSON.stringify(records)).not.toContain(rawPeer);
     expect(JSON.stringify(records)).not.toContain("synthetic-exact-context");
   });
-  it("runs actual plugin dispatch and pinned SDK callback through Main source caching, challenge and exact provider sender", async () => {
-    sources.clear();
-    mainDiagnostics.length = 0;
-    await registerUserInFrameworkStore({ accountId: "bot", userId: rawPeer });
-    const order = [];
-    const intercept = transport.intercept.bind(transport);
-    vi.spyOn(transport, "intercept").mockImplementation(async (params) => {
-      order.push(params.sourcePhase);
-      return intercept(params);
-    });
-    const dispatch = vi.fn(async ({ replyOptions }) => {
-      order.push("dispatch");
-      const notify = createPinnedAgentRunStartNotifier(
-        replyOptions.onAgentRunStart,
-        approval.origin.runId,
-      );
-      notify();
-      await vi.waitFor(() => expect(sources.get(key)?.runIds).toEqual([approval.origin.runId]));
-      expect(await deliver()).not.toBeNull();
-      order.push("delivery");
-    });
-    const deps = {
-      accountId: "bot",
-      token: "synthetic-account-token",
-      config: { channels: { "openclaw-weixin": { replyProgressMessages: false } } },
-      remoteApprovalTransport: transport,
-      log: vi.fn(),
-      errLog: vi.fn(),
-      channelRuntime: {
-        routing: { resolveAgentRoute: () => ({ agentId: "main", sessionKey: key }) },
-        session: {
-          resolveStorePath: () => path.join(stateDir, "test-only-store"),
-          recordInboundSession: async () => order.push("record"),
+  it.each([
+    ["1", "allow-once"],
+    ["3", "deny"],
+  ])(
+    "runs actual plugin dispatch and pinned SDK callback through Main and bare %s before a second agent dispatch",
+    async (digit, decision) => {
+      sources.clear();
+      mainDiagnostics.length = 0;
+      await registerUserInFrameworkStore({ accountId: "bot", userId: rawPeer });
+      const order = [];
+      const intercept = transport.intercept.bind(transport);
+      vi.spyOn(transport, "intercept").mockImplementation(async (params) => {
+        order.push(params.sourcePhase);
+        return intercept(params);
+      });
+      const dispatch = vi.fn(async ({ replyOptions }) => {
+        order.push("dispatch");
+        const notify = createPinnedAgentRunStartNotifier(
+          replyOptions.onAgentRunStart,
+          approval.origin.runId,
+        );
+        notify();
+        await vi.waitFor(() => expect(sources.get(key)?.runIds).toEqual([approval.origin.runId]));
+        expect(await deliver()).not.toBeNull();
+        order.push("delivery");
+      });
+      const deps = {
+        accountId: "bot",
+        token: "synthetic-account-token",
+        config: { channels: { "openclaw-weixin": { replyProgressMessages: false } } },
+        remoteApprovalTransport: transport,
+        log: vi.fn(),
+        errLog: vi.fn(),
+        channelRuntime: {
+          routing: { resolveAgentRoute: () => ({ agentId: "main", sessionKey: key }) },
+          session: {
+            resolveStorePath: () => path.join(stateDir, "test-only-store"),
+            recordInboundSession: async () => order.push("record"),
+          },
+          reply: {
+            finalizeInboundContext: (ctx) => ctx,
+            resolveHumanDelayConfig: () => undefined,
+            createReplyDispatcherWithTyping: () => ({
+              dispatcher: {},
+              replyOptions: {},
+              markDispatchIdle: vi.fn(),
+            }),
+            withReplyDispatcher: ({ run }) => run(),
+            dispatchReplyFromConfig: dispatch,
+          },
         },
-        reply: {
-          finalizeInboundContext: (ctx) => ctx,
-          resolveHumanDelayConfig: () => undefined,
-          createReplyDispatcherWithTyping: () => ({
-            dispatcher: {},
-            replyOptions: {},
-            markDispatchIdle: vi.fn(),
-          }),
-          withReplyDispatcher: ({ run }) => run(),
-          dispatchReplyFromConfig: dispatch,
-        },
-      },
-    };
-    await processOneMessage(message(), deps);
-    expect(deps.errLog).not.toHaveBeenCalled();
-    expect(order).toEqual(["start", "record", "dispatch", "run", "delivery"]);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const sent = JSON.parse(fetch.mock.calls[0][1].body).msg;
-    expect(sent.to_user_id).toBe(rawPeer);
-    expect(sent.context_token).toBe("synthetic-exact-context");
-    const code = /#([A-Z0-9]{8})\]/.exec(sent.item_list[0].text_item.text)[1];
-    expect(
-      await interceptWeixinRemoteApprovalMessage(
+      };
+      await processOneMessage(message(), deps);
+      expect(deps.errLog).not.toHaveBeenCalled();
+      expect(order).toEqual(["start", "record", "dispatch", "run", "delivery"]);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(fetch.mock.calls[0][1].body).msg;
+      expect(sent.to_user_id).toBe(rawPeer);
+      expect(sent.context_token).toBe("synthetic-exact-context");
+      expect(sent.item_list[0].text_item.text).toContain("Reply 1:");
+      await processOneMessage(
         message({
           message_id: 1002,
           seq: 43,
-          item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+          item_list: [{ type: 1, text_item: { text: digit } }],
         }),
         deps,
+      );
+      expect(deps.errLog).not.toHaveBeenCalled();
+      expect(decisions).toEqual([{ approvalIds: [approval.id], decision }]);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      await processOneMessage(
+        message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: digit } }],
+        }),
+        deps,
+      );
+      expect(decisions).toHaveLength(1);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    "accepts bare 2 only for an actually normalized eligible plan with native durable consent=%s",
+    async (nativeConsent) => {
+      const executable = String.raw`C:\Windows\System32\whoami.exe`;
+      const argv = [executable, "/all"];
+      const systemRunPlan = {
+        argv,
+        commandText: windowsCommand(argv),
+        commandPreview: windowsCommand(argv),
+        cwd: null,
+        cwdBinding: "isolated-scratch:v1",
+        agentId: "main",
+        sessionKey: key,
+        executablePath: executable,
+        executableSha256: createHash("sha256")
+          .update(
+            process.platform === "win32"
+              ? readFileSync(executable)
+              : Buffer.from("synthetic-whoami"),
+          )
+          .digest("hex"),
+        declaredAccess: [],
+      };
+      approval = normalizeWindowsNodeMxcGatewayApproval(
+        {
+          id: randomUUID(),
+          request: { ...captured, systemRunPlan, command: systemRunPlan.commandText },
+        },
+        security.nodeId,
+        security.gatewayGeneration,
+      );
+      expect(approval).not.toBeNull();
+      expect(approval.hasMutableFileOperand).toBe(false);
+      expect(approval.allowedDecisions).toContain("allow-always");
+      if (nativeConsent) {
+        configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+        broker.configure(configuration);
+      }
+      const before = JSON.stringify(configuration);
+      const delivery = await deliver();
+      expect(delivery).not.toBeNull();
+      expect(delivery.text.includes("2: remember")).toBe(nativeConsent);
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: "2" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual(
+        nativeConsent ? [{ approvalIds: [approval.id], decision: "allow-always" }] : [],
+      );
+      expect(JSON.stringify(configuration)).toBe(before);
+    },
+  );
+
+  it.each([
+    ["no prompt", {}, "none"],
+    ["wrong authenticated peer", { from_user_id: rawPeer.toLowerCase() }, "sent"],
+    [
+      "quoted",
+      { item_list: [{ type: 1, text_item: { text: "1" }, ref_msg: { title: "synthetic quote" } }] },
+      "sent",
+    ],
+    ["forwarded", { message_type: 2 }, "sent"],
+    [
+      "mixed text and attachment",
+      { item_list: [{ type: 1, text_item: { text: "1" } }, { type: 2 }] },
+      "sent",
+    ],
+    ["missing cursor", { seq: undefined }, "sent"],
+    ["missing message ID", { message_id: undefined }, "sent"],
+    [
+      "malformed coded reply",
+      { item_list: [{ type: 1, text_item: { text: "1 WRONG123" } }] },
+      "sent",
+    ],
+    ["wrong canonical route", {}, "route"],
+    ["generation drift", {}, "generation"],
+    ["local resolution", {}, "local"],
+    ["expired prompt", {}, "expired"],
+  ])("keeps actual plugin→Main bare reply fail-closed: %s", async (_name, extra, state) => {
+    if (state !== "none") await deliver();
+    if (state === "route")
+      gateway.request.mockResolvedValue({ ok: true, key: "agent:main:other", agentId: "main" });
+    if (state === "generation") main.replace("gatewayGenerationId", "generation-changed");
+    if (state === "local") broker.markLocallyResolved(approval.id, "approved");
+    if (state === "expired") {
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+    }
+    try {
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+            ...extra,
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("pins acknowledgement eligibility at arrival, not after awaited effective-mode validation", async () => {
+    let acknowledge;
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const deliveryPromise = deliver();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    main.replace("requireEffectiveWindowsNodeMxc", async () => {
+      acknowledge(new globalThis.Response('{"ret":0}', { status: 200 }));
+      await deliveryPromise;
+    });
+    const reply = () =>
+      transport.intercept({
+        message: message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: "1" } }],
+        }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "candidate",
+      });
+    expect(await reply()).toBe(true);
+    expect(await deliveryPromise).not.toBeNull();
+    expect(decisions).toEqual([]);
+    expect(await reply()).toBe(true);
+    expect(decisions).toEqual([]);
+    const promptReceipts = records.filter(
+      (entry) => entry.kind === "prompt" && entry.code === "provider-accepted",
+    );
+    expect(
+      new Set(promptReceipts.map((entry) => `${entry.deliveryHash}:${entry.providerClientHash}`))
+        .size,
+    ).toBe(1);
+    expect(
+      fetch.mock.calls.filter(([, params]) =>
+        JSON.parse(params.body).msg.item_list[0].text_item.text.startsWith(
+          "[MicroClaw Security Approval]",
+        ),
       ),
-    ).toBe(true);
-    expect(decisions).toEqual([{ approvalIds: [approval.id], decision: "allow-once" }]);
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    "client replacement",
+    "client disconnect",
+    "generation change",
+    "pending replacement",
+    "feature disabled",
+    "consent epoch",
+    "consent scope",
+    "raw owner replacement",
+    "security transition",
+  ])("revalidates actual Main authority after its awaited reply route: %s", async (change) => {
+    await deliver();
+    let finishRoute;
+    gateway.request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRoute = resolve;
+        }),
+    );
+    const reply = transport.intercept({
+      message: message({
+        message_id: 1002,
+        seq: 43,
+        item_list: [{ type: 1, text_item: { text: "1" } }],
+      }),
+      agentId: "main",
+      sessionKey: key,
+      sourcePhase: "candidate",
+    });
+    await vi.waitFor(() => expect(finishRoute).toBeTypeOf("function"));
+    if (change === "client replacement") main.replace("gwClient", { ...gateway });
+    if (change === "client disconnect") gateway.connected = false;
+    if (change === "generation change") main.replace("gatewayGenerationId", "changed-generation");
+    if (change === "pending replacement")
+      main.replace("pendingWindowsNodeMxcGatewayApproval", { request: approval });
+    if (change === "feature disabled") configuration = { ...configuration, enabled: false };
+    if (change === "consent epoch")
+      configuration = {
+        ...configuration,
+        owner: { ...configuration.owner, boundAt: "2026-10-22T00:00:00Z" },
+      };
+    if (change === "consent scope")
+      configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+    if (change === "raw owner replacement") credential(rawPeer.toLowerCase());
+    if (change === "security transition")
+      main.replace("windowsNodeMxcSecurityTransitionInProgress", true);
+    finishRoute({ ok: true, key, agentId: "main" });
+    expect(await reply).toBe(true);
+    expect(decisions).toEqual([]);
+    for (const record of mainDiagnostics)
+      expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
   });
   it("rejects a same-fold byte-distinct source and a same-fold origin target without looking up aliases", async () => {
     sources.clear();
@@ -598,7 +830,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
   });
   it("keeps current owner replacement fail-closed even when canonical lowercase identity is unchanged", async () => {
     const delivery = await deliver();
-    const code = /#([A-Z0-9]{8})\]/.exec(delivery.text)[1];
+    const code = delivery.replyCode;
     credential(rawPeer.toLowerCase());
     await transport.intercept({
       message: message({
@@ -661,11 +893,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       );
       expect(records.some((record) => record.code === "provider-accepted")).toBe(false);
       expect(fetch).toHaveBeenCalledTimes(1);
-      const text = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
-      const code = /#([A-Z0-9]{8})\]/.exec(text)[1];
       const result = broker.resolveCandidate({
         ...sources.get(key),
-        text: `1 ${code}`,
+        text: "1",
         messageId: "1002",
         cursor: "43",
         receivedAtUnixMs: Date.now(),
@@ -749,7 +979,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       createHash("sha256").update(delivery.challengeId).digest("hex").slice(0, 16),
     );
     expect(body.msg.item_list[0].text_item.text).toContain(
-      "current prompt's choices and request code",
+      "one available digit from the current prompt",
     );
     expect(body.msg.item_list[0].text_item.text).not.toContain("exact always");
     expect(decisions).toEqual([]);
@@ -931,8 +1161,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           await source({ message_id: 1001 + step * 4, seq: 42 + step * 4 });
           const delivery = await deliver();
           expect(delivery).not.toBeNull();
-          expect(delivery.text).toContain("logical $PWD is MicroClawCwd:");
-          const code = /#([A-Z0-9]{8})\]/.exec(delivery.text)[1];
+          expect(delivery.text).toContain("Scoped CWD initialization");
+          const code = delivery.replyCode;
           expect(
             await transport.intercept({
               message: message({

@@ -6,6 +6,8 @@ import {
   WindowsNodeMxcApprovalLifecycle,
   type MxcApprovalTerminal,
 } from "./windows-node-mxc-approval-lifecycle";
+// @ts-expect-error External ESM pinned SDK contract fixture.
+import { resolvePinnedBaseExecApprovalDecision } from "../integration/pinned-approval-fixture.mjs";
 
 describe("authoritative MXC permission lifecycle", () => {
   afterEach(() => vi.useRealTimers());
@@ -189,6 +191,69 @@ describe("authoritative MXC permission lifecycle", () => {
         locale === "en-US" ? /not command execution success/ : /不代表命令执行成功/,
       );
       expect(text).toContain("wechat");
+    },
+  );
+
+  it.each(["en-US", "zh-CN"] as const)(
+    "distinguishes expiry from operator denial and an accepted user decision (%s)",
+    (locale) => {
+      const expired = renderMxcApprovalTerminal(
+        { status: "accepted", decision: "deny", origin: "timeout" },
+        locale,
+      );
+      expect(expired).toMatch(
+        locale === "en-US" ? /expired; no timely valid decision/ : /已过期，未及时收到有效决策/,
+      );
+      expect(expired).not.toMatch(
+        /Permission decision accepted|denied \(timeout\)|权限决策已接受|操作者已拒绝/,
+      );
+      const denied = renderMxcApprovalTerminal(
+        { status: "accepted", decision: "deny", origin: "wechat" },
+        locale,
+      );
+      expect(denied).toMatch(locale === "en-US" ? /denied by operator/ : /操作者已拒绝/);
+      const gateway = renderMxcApprovalTerminal(
+        { status: "accepted", decision: "deny", origin: "gateway" },
+        locale,
+      );
+      expect(gateway).toMatch(
+        locale === "en-US" ? /operator identity not established/ : /无法确认操作者身份/,
+      );
+      const unknown = renderMxcApprovalTerminal(
+        { status: "unconfirmed", origin: "timeout", reason: "resolution-failed" },
+        locale,
+      );
+      expect(unknown).toMatch(
+        locale === "en-US" ? /execution outcome unconfirmed/ : /执行结果未确认/,
+      );
+      expect(unknown).not.toMatch(/no new permission granted|未授予新权限/);
+    },
+  );
+
+  it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
+    "documents the ACTUAL pinned SDK limitation: explicit deny is user-denied; null can fail open under FULL fallback",
+    () => {
+      expect(
+        resolvePinnedBaseExecApprovalDecision({ decision: "deny", askFallback: "full" }),
+      ).toEqual({
+        approvedByAsk: false,
+        deniedReason: "user-denied",
+        timedOut: false,
+      });
+      expect(
+        resolvePinnedBaseExecApprovalDecision({ decision: null, askFallback: "deny" }),
+      ).toEqual({
+        approvedByAsk: false,
+        deniedReason: "approval-timeout",
+        timedOut: true,
+      });
+      expect(
+        resolvePinnedBaseExecApprovalDecision({ decision: null, askFallback: "full" }),
+      ).toEqual({
+        approvedByAsk: true,
+        deniedReason: null,
+        timedOut: true,
+      });
     },
   );
 });

@@ -4,6 +4,24 @@ import path from "node:path";
 import { URL, pathToFileURL } from "node:url";
 import ts from "typescript";
 
+export function resolvePinnedBaseExecApprovalDecision(params) {
+  const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
+  if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
+  const filename = path.join(packageDir, "dist", "bash-tools-Bl8Bd3CR.mjs");
+  const ast = ts.createSourceFile(
+    filename,
+    readFileSync(filename, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const name = "resolveBaseExecApprovalDecision";
+  const declaration = ast.statements.find(
+    (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  if (!declaration) throw new Error("Pinned exec decision contract missing");
+  return new Function(`${declaration.getText(ast)}; return ${name};`)()(params);
+}
+
 export function runPinnedApprovalRequests(
   plan,
   recipient = "owner@im.wechat",

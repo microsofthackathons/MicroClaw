@@ -1033,7 +1033,7 @@ export default {
   "perm.mxcDesc": "AI 助手想在 MXC 沙箱内运行此命令。",
   "perm.phoneSending": "正在向微信发送此审批；原超时期限仍然生效。",
   "perm.phoneSent":
-    "已通知微信：回复 1 请求代码仅允许一次，2 请求代码在此精确范围永久允许，3 请求代码拒绝。",
+    "已通知微信：回复 1 仅允许一次，3 拒绝；仅当手机提示提供 2 时才可使用。回复作用于当前已发送的审批，延迟回复可能影响更新的审批。",
   "plugins.weixinMutationLocked": "请先关闭 MXC，再更改微信频道或账户。",
   "plugins.weixinMutationUnknown": "在确认主进程的 MXC 状态之前，微信配置保持锁定。",
   "perm.phoneCodeRequired":

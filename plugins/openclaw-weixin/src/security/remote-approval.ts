@@ -16,7 +16,7 @@ const CONTRACT = "microclaw.windows-weixin-remote-approval.v1";
 const MAX_FRAME_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
 const CHALLENGE_CODE = "[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}";
-const EXACT_CANDIDATE_PATTERN = new RegExp(`^[123] ${CHALLENGE_CODE}$`, "i");
+const EXACT_CANDIDATE_PATTERN = new RegExp(`^[123](?: ${CHALLENGE_CODE})?$`, "i");
 const EMBEDDED_CANDIDATE_PATTERN = /[123] [A-Z0-9]{8}/i;
 const MALFORMED_CANDIDATE_PATTERN = new RegExp(
   "^[123](?:\\s+|[:-])?[A-Z0-9]{6,12}$",
@@ -148,7 +148,9 @@ export class WeixinRemoteApprovalTransport {
     if (!this.enabled) return false;
     const candidate = classifyWeixinRemoteApprovalCandidate(params.message);
     const activeOwner = this.isActiveOwnerMessage(params.message);
-    const reservedCandidate = params.sourcePhase === "candidate" && this.shouldReserveInbound(params.message);
+    const reservedCandidate =
+      (params.sourcePhase === "candidate" || params.sourcePhase === "start") &&
+      this.shouldReserveInbound(params.message);
     if (!this.socket) {
       try {
         await this.start();
@@ -368,7 +370,7 @@ export class WeixinRemoteApprovalTransport {
     this.reminderCount++;
     try {
       await this.sendSystemMessage(this.activeApproval.to,
-        "MicroClaw Security Approval: no decision. Use the current prompt's choices and request code, or use the Desktop. Original deadline unchanged.",
+        "MicroClaw Security Approval: no new decision accepted. Reply with one available digit from the current prompt, or use the Desktop. Original deadline unchanged.",
         {
           kind: "reminder",
           challengeHash: createHash("sha256").update(this.activeApproval.challengeId).digest("hex").slice(0, 16),
@@ -483,6 +485,7 @@ export function classifyWeixinRemoteApprovalCandidate(message: WeixinMessage): {
   }
   const combinedText = textItems.map((item) => item.text_item?.text ?? "").join("\n");
   const candidateLike =
+    /^[123]$/.test(combinedText) ||
     EMBEDDED_CANDIDATE_PATTERN.test(combinedText) ||
     MALFORMED_CANDIDATE_PATTERN.test(combinedText);
   return {

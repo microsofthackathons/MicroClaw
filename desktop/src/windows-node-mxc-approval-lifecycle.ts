@@ -158,6 +158,16 @@ export function renderMxcApprovalTerminal(
   outcome: MxcApprovalTerminal,
   locale: "en-US" | "zh-CN",
 ): string {
+  if (outcome.origin === "timeout") {
+    if (outcome.status !== "accepted") {
+      return locale === "zh-CN"
+        ? "MicroClaw 安全审批结果：已到期；权限决策及执行结果未确认。未接受新的用户决策，不会自动重试。"
+        : "MicroClaw Security Approval RESULT: deadline expired; permission resolution and execution outcome unconfirmed. No new user decision accepted; no automatic retry.";
+    }
+    return locale === "zh-CN"
+      ? "MicroClaw 安全审批结果：已过期，未及时收到有效决策；此次审批未授予新权限。这不是用户拒绝，也不是命令执行结果。"
+      : "MicroClaw Security Approval RESULT: expired; no timely valid decision received, no new permission granted by this prompt. This is not an operator rejection or a command execution result.";
+  }
   if (outcome.status !== "accepted") {
     return locale === "zh-CN"
       ? `MicroClaw 安全审批结果：${outcome.status === "cancelled" ? "已取消" : "决策未确认"}（${outcome.origin}）。未确认批准或拒绝；不会自动重试。`
@@ -167,7 +177,14 @@ export function renderMxcApprovalTerminal(
     "allow-once": locale === "zh-CN" ? "仅允许一次" : "allowed once",
     "allow-always":
       locale === "zh-CN" ? "已保存此精确范围的永久审批" : "always allowed for this exact scope",
-    deny: locale === "zh-CN" ? "已拒绝" : "denied",
+    deny:
+      outcome.origin === "gateway"
+        ? locale === "zh-CN"
+          ? "网关已阻止；无法确认操作者身份"
+          : "blocked by Gateway; operator identity not established"
+        : locale === "zh-CN"
+          ? "操作者已拒绝"
+          : "denied by operator",
   };
   const warning = outcome.warning
     ? locale === "zh-CN"

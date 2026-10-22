@@ -58,6 +58,12 @@ describe("WeChat remote approval native consent", () => {
         /accountId|userId|Account ID|User ID|@im\.wechat|exact-bot|exact-user/,
       );
       expect(copy).not.toContain("weixinRemoteApproval.");
+      expect(copy).toContain("1/2/3");
+      expect(copy).toMatch(
+        locale === "en-US"
+          ? /delayed reply can affect a newer prompt/
+          : /延迟回复可能影响更新的审批/,
+      );
     },
   );
 

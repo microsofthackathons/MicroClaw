@@ -191,9 +191,11 @@ describe("exact Limited PowerShell prepared initialization", () => {
       expect(result.status).toBe("created");
       if (result.status !== "created")
         throw new Error(`Phone presentation rejected: ${result.reason}`);
-      expect(result.delivery.text).toContain("logical $PWD is MicroClawCwd:");
-      expect(result.delivery.text).toContain("filesystem initialization failed");
-      expect(result.delivery.text).toContain("Remove-Item");
+      expect(result.delivery.text).toContain("Scoped CWD initialization");
+      expect(result.delivery.text).toContain("Delete file/folder");
+      expect(result.delivery.text).not.toContain("filesystem initialization failed");
+      expect(approval.command).toBe(plan.commandText);
+      expect(approval.providerInitialization).toEqual(initialization);
       expect(computeWindowsNodeMxcApprovalPlanSha256(plan)).not.toBe(
         computeWindowsNodeMxcApprovalPlanSha256({
           ...plan,
