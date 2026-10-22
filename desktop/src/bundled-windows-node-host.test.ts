@@ -1,13 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  promises as fsPromises,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   BUNDLED_WINDOWS_NODE_CWD_CONTRACT,
+  BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
   BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
   BUNDLED_WINDOWS_NODE_REVISION,
   BundledWindowsNodeHost,
+  type BundledWindowsNodeApprovalProofContext,
   MXC_EXACT_BACKEND_PROVISIONING,
   MXC_HOST_PREP_PATCH_REVISION,
   MXC_SDK_SOURCE_REVISION,
@@ -41,6 +50,14 @@ vi.mock("electron", () => ({
 
 const policyCanvasRoot = mkdtempSync(path.join(os.tmpdir(), "microclaw-policy-canvas-"));
 const policyCanvasHostPath = path.join(policyCanvasRoot, "canvas-host.exe");
+const leaseProofContext: BundledWindowsNodeApprovalProofContext = {
+  contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
+  secretBase64: Buffer.alloc(32, 9).toString("base64"),
+  gatewayGeneration: "lease-test-generation",
+  policyFingerprint: "b".repeat(64),
+  nodeId: "a".repeat(64),
+  readinessTransitionId: "12345678-1234-4234-8234-123456789abc",
+};
 writeFileSync(policyCanvasHostPath, "canvas-host");
 afterAll(() => rmSync(policyCanvasRoot, { recursive: true, force: true }));
 
@@ -226,6 +243,253 @@ describe("bundled Windows node host", () => {
     expect(first.secretBase64).not.toBe(second.secretBase64);
     expect(first.policyFingerprint).toBe(second.policyFingerprint);
   });
+
+  it("preserves lease authority across signed expiry renewals without changing the native lease contract", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-authority-"));
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const host = createLeaseHost(root);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+      await host.setActivationLease("active", 120_000);
+      const first = host.getActivationLeaseBindingHash(leaseProofContext);
+      const firstFile = JSON.parse(readFileSync(path.join(root, "lease.json"), "utf8"));
+      now.mockReturnValue(1_035_000);
+      await host.setActivationLease("active", 120_000);
+      const secondFile = JSON.parse(readFileSync(path.join(root, "lease.json"), "utf8"));
+      expect(first).toMatch(/^[a-f0-9]{64}$/);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBe(first);
+      expect(secondFile.expiresAtUnixMs - firstFile.expiresAtUnixMs).toBe(35_000);
+      expect(secondFile.signature).not.toBe(firstFile.signature);
+      expect(Object.keys(secondFile)).toEqual([
+        "contract",
+        "mode",
+        "gatewayGeneration",
+        "policyFingerprint",
+        "expiresAtUnixMs",
+        "signature",
+      ]);
+      for (const field of ["contract", "mode", "gatewayGeneration", "policyFingerprint"])
+        expect(secondFile[field]).toBe(firstFile[field]);
+      expect(JSON.stringify(secondFile)).not.toContain(first);
+    } finally {
+      now.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["revocation", "mode roundtrip", "host key", "policy", "generation"])(
+    "changes the lease authority for %s even when a current active lease is reissued",
+    async (change) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-replacement-"));
+      try {
+        const host = createLeaseHost(root);
+        await host.setActivationLease("active", 120_000);
+        const first = host.getActivationLeaseBindingHash(leaseProofContext);
+        if (change === "revocation") {
+          host.revokeActivationLease();
+          expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+        }
+        if (change === "mode roundtrip") {
+          await host.setActivationLease("diagnostic", 120_000);
+          expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+        }
+        if (change === "host key")
+          Object.assign(host, { activationLeaseSecret: Buffer.alloc(32, 8) });
+        if (change === "policy") Object.assign(host, { policyFingerprint: "d".repeat(64) });
+        if (change === "generation") Object.assign(host, { gatewayGeneration: "replacement" });
+        await host.setActivationLease("active", 120_000);
+        expect(host.getActivationLeaseBindingHash(leaseProofContext)).toMatch(/^[a-f0-9]{64}$/);
+        expect(host.getActivationLeaseBindingHash(leaseProofContext)).not.toBe(first);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("does not return a binding for expired authority, a dead host or a missing lease key", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-expiry-"));
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const host = createLeaseHost(root);
+      await host.setActivationLease("active", 5_000);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).not.toBeNull();
+      now.mockReturnValue(1_005_000);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+      now.mockReturnValue(1_000_000);
+      Object.assign(host, { process: { exitCode: 0 } });
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+      Object.assign(host, { process: { exitCode: null }, activationLeaseSecret: null });
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+    } finally {
+      now.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not revive a pending authority when renewal commits after the previous lease expired", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-gap-"));
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const host = createLeaseHost(root);
+      await host.setActivationLease("active", 5_000);
+      const first = host.getActivationLeaseBindingHash(leaseProofContext);
+      now.mockReturnValue(1_005_001);
+      await host.setActivationLease("active", 120_000);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toMatch(/^[a-f0-9]{64}$/);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).not.toBe(first);
+    } finally {
+      now.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function createLeaseHost(root: string): BundledWindowsNodeHost {
+    return Object.assign(createPolicyHost(), {
+      process: { exitCode: null },
+      activationLeaseSecret: Buffer.alloc(32, 7),
+      activationLeasePath: path.join(root, "lease.json"),
+      activationLease: null,
+      activationLeaseEpoch: 0,
+      activationLeaseAuthorityRevision: 0,
+      activationLeaseWriteQueue: Promise.resolve(),
+      startOptions: { approvalProof: leaseProofContext },
+      ensureIdentityNodeId: () => leaseProofContext.nodeId,
+      gatewayGeneration: "lease-test-generation",
+      policyFingerprint: "b".repeat(64),
+    });
+  }
+
+  it("requires the exact Main-owned proof context without exposing binding or key in status", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-context-"));
+    try {
+      const host = createLeaseHost(root);
+      await host.setActivationLease("active", 120_000);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).not.toBeNull();
+      expect(host.getActivationLeaseBindingHash({ ...leaseProofContext })).toBeNull();
+      expect(
+        host.getActivationLeaseBindingHash({
+          ...leaseProofContext,
+          readinessTransitionId: "22345678-1234-4234-8234-123456789abc",
+        }),
+      ).toBeNull();
+      const status = JSON.stringify(host.status());
+      expect(status).not.toContain("activationLeaseAuthorityRevision");
+      expect(status).not.toContain(host.getActivationLeaseBindingHash(leaseProofContext));
+      expect(status).not.toContain(Buffer.alloc(32, 7).toString("base64"));
+      expect(status).not.toContain(leaseProofContext.secretBase64);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes two in-flight mode writes and attests only committed authority", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-queue-"));
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const gates = [leaseWriteGate(), leaseWriteGate()];
+    let writeSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let settled: Promise<unknown> | undefined;
+    try {
+      const host = createLeaseHost(root);
+      await host.setActivationLease("active", 120_000);
+      const original = readFileSync(path.join(root, "lease.json"), "utf8");
+      const first = host.getActivationLeaseBindingHash(leaseProofContext);
+      const entered: string[] = [];
+      const write = fsPromises.writeFile.bind(fsPromises);
+      writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementation(async (...args) => {
+        const index = entered.length;
+        entered.push(JSON.parse(String(args[1])).mode);
+        await gates[index].promise;
+        return write(...args);
+      });
+      const diagnostic = host.setActivationLease("diagnostic", 120_000);
+      const active = host.setActivationLease("active", 120_000);
+      settled = Promise.allSettled([diagnostic, active]);
+      gates[1].resolve();
+      await vi.waitFor(() => expect(entered).toEqual(["diagnostic"]));
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBe(first);
+      expect(readFileSync(path.join(root, "lease.json"), "utf8")).toBe(original);
+      gates[0].resolve();
+      await diagnostic;
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+      await active;
+      expect(entered).toEqual(["diagnostic", "active"]);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).not.toBe(first);
+      expect(readFileSync(path.join(root, "lease.json"), "utf8")).toBe(original);
+    } finally {
+      gates.forEach((gate) => gate.resolve());
+      await settled;
+      writeSpy?.mockRestore();
+      now.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not attest a failed renewal as extending an expired lease", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-failed-renewal-"));
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    let writeSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const host = createLeaseHost(root);
+      await host.setActivationLease("active", 5_000);
+      const first = host.getActivationLeaseBindingHash(leaseProofContext);
+      const original = readFileSync(path.join(root, "lease.json"), "utf8");
+      now.mockReturnValue(1_004_000);
+      writeSpy = vi
+        .spyOn(fsPromises, "writeFile")
+        .mockRejectedValueOnce(new Error("isolated write failure"));
+      await expect(host.setActivationLease("active", 120_000)).rejects.toThrow(
+        "isolated write failure",
+      );
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBe(first);
+      expect(readFileSync(path.join(root, "lease.json"), "utf8")).toBe(original);
+      now.mockReturnValue(1_005_001);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+      expect(host.status().activationLease).toBeNull();
+    } finally {
+      writeSpy?.mockRestore();
+      now.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fences both queued lease writes when authority is revoked before commit", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-lease-queue-revoke-"));
+    const gate = leaseWriteGate();
+    let writeSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const host = createLeaseHost(root);
+      await host.setActivationLease("active", 120_000);
+      const write = fsPromises.writeFile.bind(fsPromises);
+      writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementationOnce(async (...args) => {
+        await gate.promise;
+        return write(...args);
+      });
+      const results = Promise.allSettled([
+        host.setActivationLease("diagnostic", 120_000),
+        host.setActivationLease("active", 120_000),
+      ]);
+      await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+      host.revokeActivationLease();
+      gate.resolve();
+      expect((await results).map((result) => result.status)).toEqual(["rejected", "rejected"]);
+      expect(host.getActivationLeaseBindingHash(leaseProofContext)).toBeNull();
+      await expect(fsPromises.stat(path.join(root, "lease.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      gate.resolve();
+      writeSpy?.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function leaseWriteGate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, resolve: () => release() };
+  }
 
   it("binds requested strength, effective tier, and ambient assessment into policy identity", () => {
     const host = createPolicyHost();

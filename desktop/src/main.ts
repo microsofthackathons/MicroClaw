@@ -1509,23 +1509,36 @@ function currentWindowsNodeMxcWeixinRemoteApprovalSecurity(): WeixinRemoteApprov
   const status = bundledWindowsNodeHost.status();
   const lease = status.activationLease;
   const requestedMode = getWindowsNodeMxcRequestedMode();
+  const effectiveMode = windowsNodeMxcCurrentEffectiveTier ?? status.effectiveTier;
   if (
     !proof ||
     !lease ||
+    windowsNodeMxcSecurityTransitionInProgress ||
+    !status.processRunning ||
     requestedMode === "off" ||
+    lease.mode !== "active" ||
+    lease.expiresAtUnixMs <= Date.now() ||
     proof.gatewayGeneration !== gatewayGenerationId ||
+    status.gatewayGeneration !== gatewayGenerationId ||
+    status.nodeId !== proof.nodeId ||
+    status.policyFingerprint !== proof.policyFingerprint ||
+    status.requestedStrength !== requestedMode ||
+    !effectiveMode ||
+    status.effectiveTier !== effectiveMode ||
     lease.gatewayGeneration !== gatewayGenerationId ||
     lease.policyFingerprint !== proof.policyFingerprint
   ) {
     return null;
   }
+  const activationLeaseHash = bundledWindowsNodeHost.getActivationLeaseBindingHash(proof);
+  if (!activationLeaseHash) return null;
   return {
     gatewayGeneration: gatewayGenerationId,
     policyFingerprint: proof.policyFingerprint,
     nodeId: proof.nodeId,
-    activationLeaseHash: createHash("sha256").update(JSON.stringify(lease), "utf8").digest("hex"),
+    activationLeaseHash,
     requestedMode,
-    effectiveMode: windowsNodeMxcCurrentEffectiveTier ?? status.effectiveTier ?? requestedMode,
+    effectiveMode,
   };
 }
 
@@ -1674,6 +1687,9 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
   if (pending && candidateLike) {
     try {
       await requireEffectiveWindowsNodeMxc(true, false);
+      if (!currentWindowsNodeMxcWeixinRemoteApprovalSecurity()) {
+        throw new Error("The current remote approval activation authority is unavailable");
+      }
     } catch {
       if (simpleChallengeId !== undefined) {
         windowsNodeMxcWeixinRemoteApprovalBroker.resolveCandidate({

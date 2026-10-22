@@ -412,8 +412,8 @@ identify the intended prompt of a previously unseen delayed reply.
 The in-memory challenge binds the authenticated sender/account/chat, source message ID and cursor,
 agent/session, exact approval ID, executable canonical path and SHA-256, argv, CWD,
 declarations, requested/effective mode, Gateway generation, policy fingerprint, node identity,
-active-lease hash, creation/expiry, challenge ID, and code hash. Electron revalidates the current
-pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
+active-lease authority fingerprint, creation/expiry, challenge ID, and code hash. Electron revalidates
+the current pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
 immediately before the existing `exec.approval.resolve` call. Exact Always resolves the current
 Gateway request once and then persists the existing executable/hash/argv/CWD/access/policy/agent/
 session identity. Phone-created records additionally bind a hash of the exact native owner consent
@@ -425,9 +425,20 @@ renderer-supplied scope markers are rejected. It never grants
 all writes/deletes or broadens folders. A failed durable save is explicitly reported as accepted
 once, not as a successfully saved Always grant.
 
+Ordinary signed active-lease expiry renewal does not invalidate a pending phone prompt. Its opaque,
+Main-only fingerprint binds the private host instance, exact Main-owned readiness/proof context,
+revocation epoch and committed authority revision, not the renewable expiration timestamp.
+Generation/policy/node alone cannot distinguish a revoke/reissue or diagnostic/active roundtrip
+under the same tuple. Main still requires a current, unexpired active lease and matching
+process/node/generation/policy/requested/effective mode before the route await, after it, and at
+resolution. Missing, expired, diagnostic or revoked authority fails closed;
+reissue after an expiry gap, revocation, intervening diagnostic mode or host replacement cannot
+revive the old binding. The native signed lease schema and the approval's original deadline are
+unchanged; renewal never grants permission, resends a prompt or extends approval time.
+
 First resolution wins across local and remote UI. Local resolution, timeout, relock, Gateway/Node
-restart, policy or lease drift, MXC Off, logout/rebind, feature disable/revoke, shutdown, prompt-send
-failure, and excessive code attempts invalidate the challenge. Timeout calls the actual Gateway
+restart, policy or lease-authority drift, MXC Off, logout/rebind, feature disable/revoke, shutdown,
+prompt-send failure, and excessive code attempts invalidate the challenge. Timeout calls the actual Gateway
 deny resolver. The authoritative terminal event closes only its matching Desktop request and
 invalidates the phone challenge. A timeout receipt says expired/no timely valid decision, not that
 the operator rejected or a user decision was accepted. Accepted operator decisions are distinguished

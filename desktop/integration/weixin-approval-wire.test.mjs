@@ -42,6 +42,12 @@ import {
   resolveWeixinSessionRoute,
 } from "../src/weixin-session-routing";
 import { WindowsNodeMxcWeixinRemoteApprovalServer } from "../src/windows-node-mxc-weixin-remote-approval-transport";
+import { BundledWindowsNodeHost } from "../src/bundled-windows-node-host";
+import {
+  commitMxcApprovalDecision,
+  WindowsNodeMxcApprovalLifecycle,
+} from "../src/windows-node-mxc-approval-lifecycle";
+import { createPowerShellFilesystemInitialization } from "../src/windows-node-mxc-powershell-scope";
 import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
 import {
   interceptWeixinRemoteApprovalMessage,
@@ -71,6 +77,7 @@ import {
 vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock("electron", () => ({ app: { isPackaged: false } }));
 
 const rawPeer = "AbCdEfCaseSensitive@im.wechat";
 const key = "agent:main:main";
@@ -90,6 +97,7 @@ function approvalFor(
   script = `New-Item -ItemType Directory -Path '${target}' -Force`,
   access = "rw",
   declaredAccess = [{ access, path: root }],
+  initialized = false,
 ) {
   const command = `powershell -NoProfile -Command "${script}"`;
   const preview = declaredAccess.length
@@ -98,10 +106,18 @@ function approvalFor(
   const argv = buildMicroclawWindowsNodeShellCommand(preview, { SystemRoot: "C:\\Windows" }).map(
     (argument) => (argument === preview ? command : argument),
   );
+  const initialization = initialized
+    ? createPowerShellFilesystemInitialization(argv, executable, declaredAccess)
+    : null;
+  if (initialized && !initialization)
+    throw new Error("Actual scoped creation preparation rejected");
+  const finalArgv = initialization?.finalArgv ?? argv;
   const plan = {
-    argv,
-    commandText: windowsCommand(argv),
-    commandPreview: preview,
+    argv: finalArgv,
+    commandText: windowsCommand(finalArgv),
+    commandPreview: initialization
+      ? `# [declare-access]rw:${root}[/declare-access]\n${finalArgv.at(-1)}`
+      : preview,
     cwd: null,
     cwdBinding: "isolated-scratch:v1",
     agentId: "main",
@@ -113,6 +129,7 @@ function approvalFor(
       )
       .digest("hex"),
     declaredAccess,
+    ...(initialization ? { providerInitialization: initialization } : {}),
   };
   captured ??= runPinnedApprovalRequests(plan, rawPeer, security.nodeId).find(
     (entry) => entry.kind === "trusted",
@@ -121,12 +138,13 @@ function approvalFor(
     ...captured,
     systemRunPlan: plan,
     command: plan.commandText,
-    commandPreview: preview,
+    commandPreview: plan.commandPreview,
   };
   const result = normalizeWindowsNodeMxcGatewayApproval(
     { id: randomUUID(), request },
     security.nodeId,
     security.gatewayGeneration,
+    initialized ? security.requestedMode : undefined,
   );
   if (!result) throw new Error("Actual pinned Gateway request/normalized folder plan rejected");
   return result;
@@ -149,6 +167,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
   let main;
   let mainDiagnostics;
   let gateway;
+  let renewalClock;
+  const leaseWorkers = [];
   const credentialPath = () => path.join(stateDir, "openclaw-weixin", "accounts", "bot.json");
   function credential(userId = rawPeer) {
     writeFileSync(credentialPath(), JSON.stringify({ token: "synthetic-account-token", userId }));
@@ -260,6 +280,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     transport?.close();
     server?.close();
     clearContextTokensForAccount("bot");
+    renewalClock?.mockRestore();
+    renewalClock = undefined;
+    for (const child of leaseWorkers.splice(0)) child.kill();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     rmSync(stateDir, { recursive: true, force: true });
@@ -296,12 +319,12 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     notify();
     await registration;
   }
-  async function deliver(expiresAtUnixMs = Date.now() + 60_000) {
+  async function deliver(expiresAtUnixMs = Date.now() + 60_000, approvalSecurity = security) {
     return deliverWeixinRemoteApproval({
       approval,
       configuration,
       source: findWeixinApprovalSource(sources, approval),
-      security,
+      security: approvalSecurity,
       server,
       broker,
       readWireOwner: () => readAuthenticatedWeixinWireOwner(stateDir),
@@ -313,6 +336,116 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       diagnostic: () => {},
       deliveryDiagnostic: (record) => records.push(record),
     });
+  }
+  async function useRenewableMainSecurity(ttlMs = 120_000, keyByte = 7) {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      windowsHide: true,
+      stdio: "pipe",
+    });
+    leaseWorkers.push(child);
+    const proofContext = { ...security, readinessTransitionId: randomUUID() };
+    const host = Object.create(BundledWindowsNodeHost.prototype);
+    Object.assign(host, {
+      process: child,
+      activationLeaseSecret: Buffer.alloc(32, keyByte),
+      activationLeasePath: path.join(stateDir, "test-only-activation-lease.json"),
+      activationLease: null,
+      activationLeaseEpoch: 0,
+      activationLeaseAuthorityRevision: 0,
+      activationLeaseWriteQueue: Promise.resolve(),
+      gatewayGeneration: security.gatewayGeneration,
+      policyFingerprint: security.policyFingerprint,
+      startOptions: {
+        requestedStrength: security.requestedMode,
+        effectiveTier: security.effectiveMode,
+        approvalProof: proofContext,
+      },
+      ensureIdentityNodeId: () => security.nodeId,
+    });
+    await host.setActivationLease("active", ttlMs);
+    const current = createMainFunctionFixture("currentWindowsNodeMxcWeixinRemoteApprovalSecurity", {
+      bundledWindowsNodeHost: host,
+      windowsNodeMxcApprovalProofContext: proofContext,
+      getWindowsNodeMxcRequestedMode: () => security.requestedMode,
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcCurrentEffectiveTier: security.effectiveMode,
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      createHash,
+    });
+    const readiness = createMainFunctionFixture("requireEffectiveWindowsNodeMxc", {
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      isWindowsNodeMxcDesired: () => true,
+      isWindowsNodeMxcIngressReleased: () => true,
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcIngressGeneration: security.gatewayGeneration,
+      windowsNodeMxcActivationInProgress: false,
+      bundledWindowsNodeHost: host,
+      getWindowsNodeMxcStatus: async () => ({
+        effectiveEnabled:
+          host.status().processRunning && host.status().activationLease?.mode === "active",
+        blockers: ["Test-only activation authority unavailable"],
+      }),
+      failClosedWindowsNodeMxc: vi.fn().mockResolvedValue(undefined),
+      console: { error: vi.fn() },
+    });
+    main.replace("currentWindowsNodeMxcWeixinRemoteApprovalSecurity", current.handle);
+    main.replace("requireEffectiveWindowsNodeMxc", readiness.handle);
+    return { host, current, readiness, proofContext };
+  }
+  function useActualMainCommit(authority, expiresAtUnixMs, remoteSecurity, beforeResolve) {
+    const outcomes = [];
+    const entry = {
+      request: approval,
+      gatewayGeneration: security.gatewayGeneration,
+      receivedAtUnixMs: Date.now(),
+      expiresAtUnixMs,
+      remoteSecurity,
+      remoteSource: findWeixinApprovalSource(sources, approval),
+    };
+    const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
+      exactWeixinApprovalSource,
+      getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      readAuthenticatedWeixinWireOwner,
+      getOpenClawStateDir: () => stateDir,
+      withWindowsNodeMxcApprovalResolution: (operation) => operation(),
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcApprovalProofContext: authority.proofContext,
+      gwClient: gateway,
+      requireEffectiveWindowsNodeMxc: (...args) => authority.readiness.handle(...args),
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      findPendingWindowsNodeMxcGatewayApproval: () => entry,
+      isWindowsNodeMxcIngressReleased: () => true,
+      windowsNodeMxcIngressGeneration: security.gatewayGeneration,
+      windowsNodeMxcActivationInProgress: false,
+      currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => authority.current.handle(),
+      commitMxcApprovalDecision,
+      windowsNodeMxcGatewayApprovalResolutionTarget: null,
+      console: { info: vi.fn(), error: vi.fn() },
+    });
+    entry.lifecycle = new WindowsNodeMxcApprovalLifecycle(expiresAtUnixMs, {
+      resolve: (decision, origin) => commit.handle(entry, decision, origin, remoteSecurity),
+      terminal: async (outcome) => {
+        outcomes.push(outcome);
+      },
+      error: vi.fn(),
+      now: Date.now,
+    });
+    const resolver = createMainFunctionFixture("resolvePendingWindowsNodeMxcGatewayApproval", {
+      findPendingWindowsNodeMxcGatewayApproval: () => (entry.lifecycle.pending ? entry : null),
+    });
+    main.replace("pendingWindowsNodeMxcGatewayApproval", entry);
+    main.replace("resolvePendingWindowsNodeMxcGatewayApproval", async (...args) => {
+      await beforeResolve?.();
+      await resolver.handle(...args);
+    });
+    gateway.request.mockImplementation(async (method, params) => {
+      if (method === "exec.approval.resolve") {
+        decisions.push({ approvalIds: [params.id], decision: params.decision });
+        return {};
+      }
+      return { ok: true, key, agentId: "main" };
+    });
+    return { entry, commit, outcomes };
   }
   it("projects the authenticated canonical origin through actual Main initial, delivery-update and snapshot producers, without exposing peer authority", async () => {
     const executionSessionKey = "agent:main:sandbox:execution-policy";
@@ -579,9 +712,25 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     ["exists-ro", "3", "deny"],
     ["exists-rw", "1", "allow-once"],
     ["exists-rw", "3", "deny"],
+    ["create-renew-before", "1", "allow-once"],
+    ["create-renew-route", "1", "allow-once"],
+    ["create-renew-commit", "1", "allow-once"],
+    ["create-renew-concurrent", "1", "allow-once"],
   ])(
     "runs actual %s plugin dispatch and pinned SDK callback through Main and bare %s before a second agent dispatch",
     async (operation, digit, decision) => {
+      let authority;
+      let approvalSecurity = security;
+      let logicalNow;
+      if (operation.startsWith("create-renew")) {
+        logicalNow = Date.now();
+        renewalClock = vi.spyOn(Date, "now").mockImplementation(() => logicalNow);
+        approval = approvalFor(undefined, "rw", [{ access: "rw", path: root }], true);
+        expect(approval.providerInitialization).toBeDefined();
+        authority = await useRenewableMainSecurity();
+        approvalSecurity = authority.current.handle();
+        expect(approvalSecurity).not.toBeNull();
+      }
       if (operation.startsWith("exists")) {
         approval = approvalFor(`Test-Path '${target}'`, operation === "exists-ro" ? "ro" : "rw");
         expect(classifyLiteralFilesystemCommand(approval)).toMatchObject({
@@ -610,7 +759,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         );
         notify();
         await vi.waitFor(() => expect(sources.get(key)?.runIds).toEqual([approval.origin.runId]));
-        const delivered = await deliver(originalDeadline);
+        const delivered = await deliver(originalDeadline, approvalSecurity);
         expect(delivered).not.toBeNull();
         expect(delivered.expiresAtUnixMs).toBe(originalDeadline);
         order.push("delivery");
@@ -660,6 +809,35 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         expect(approval.providerInitialization).toBeUndefined();
       }
       expect(JSON.stringify(approval)).toBe(original);
+      if (authority) {
+        const renew = async () => {
+          logicalNow += 35_000;
+          await Promise.all([
+            authority.host.setActivationLease("active", 120_000),
+            ...(operation === "create-renew-concurrent"
+              ? [authority.host.setActivationLease("active", 120_000)]
+              : []),
+          ]);
+          expect(authority.host.status().activationLease.expiresAtUnixMs).toBe(
+            logicalNow + 120_000,
+          );
+        };
+        const actualCommit = useActualMainCommit(
+          authority,
+          originalDeadline,
+          approvalSecurity,
+          operation === "create-renew-commit" ? renew : undefined,
+        );
+        authority.outcomes = actualCommit.outcomes;
+        authority.commitEntry = actualCommit.entry;
+        if (operation === "create-renew-before" || operation === "create-renew-concurrent")
+          await renew();
+        else if (operation === "create-renew-route")
+          gateway.request.mockImplementationOnce(async () => {
+            await renew();
+            return { ok: true, key, agentId: "main" };
+          });
+      }
       await processOneMessage(
         message({
           message_id: 1002,
@@ -670,6 +848,14 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       );
       expect(deps.errLog).not.toHaveBeenCalled();
       expect(decisions).toEqual([{ approvalIds: [approval.id], decision }]);
+      if (authority)
+        expect(authority.outcomes).toEqual([
+          {
+            status: "accepted",
+            decision: "allow-once",
+            origin: "wechat",
+          },
+        ]);
       expect(dispatch).toHaveBeenCalledTimes(1);
       await processOneMessage(
         message({
@@ -681,6 +867,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       );
       expect(decisions).toHaveLength(1);
       expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(approval)).toBe(original);
+      if (authority) expect(authority.commitEntry.expiresAtUnixMs).toBe(originalDeadline);
       expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
     },
   );
@@ -882,6 +1070,134 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     expect(
       new Set(promptReceipts.map((entry) => `${entry.deliveryHash}:${entry.providerClientHash}`))
         .size,
+    ).toBe(1);
+    expect(
+      fetch.mock.calls.filter(([, params]) =>
+        JSON.parse(params.body).msg.item_list[0].text_item.text.startsWith(
+          "[MicroClaw Security Approval]",
+        ),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each(
+    ["before arrival", "during route", "before commit"].flatMap((when) =>
+      [
+        "expired lease",
+        "expired then reissued",
+        "revoked lease",
+        "reissued lease",
+        "diagnostic lease",
+        "mode roundtrip",
+        "host lease key replacement",
+        "host object replacement",
+        "host process exited",
+        "missing lease key",
+        "proof context replacement",
+        "policy drift",
+        "generation drift",
+        "node drift",
+        "requested mode drift",
+        "effective tier drift",
+        "deactivated",
+        "deactivated then reactivated",
+        "security transition",
+      ].map((change) => [when, change]),
+    ),
+  )("keeps actual Main closed for renewable authority drift %s: %s", async (when, change) => {
+    let logicalNow = Date.now();
+    renewalClock = vi.spyOn(Date, "now").mockImplementation(() => logicalNow);
+    approval = approvalFor(undefined, "rw", [{ access: "rw", path: root }], true);
+    const authority = await useRenewableMainSecurity(
+      change.startsWith("expired") ? 5_000 : 120_000,
+    );
+    const initial = authority.current.handle();
+    const deadline = logicalNow + 60_000;
+    const delivery = await deliver(deadline, initial);
+    expect(delivery).not.toBeNull();
+    const changeAuthority = async () => {
+      logicalNow += change.startsWith("expired") ? 5_001 : 1_000;
+      if (change === "revoked lease" || change === "reissued lease")
+        authority.host.revokeActivationLease();
+      if (change === "reissued lease" || change === "expired then reissued")
+        await authority.host.setActivationLease("active", 120_000);
+      if (change === "diagnostic lease" || change === "mode roundtrip")
+        await authority.host.setActivationLease("diagnostic", 120_000);
+      if (change === "mode roundtrip") await authority.host.setActivationLease("active", 120_000);
+      if (change === "host lease key replacement")
+        Object.assign(authority.host, { activationLeaseSecret: Buffer.alloc(32, 8) });
+      if (change === "host process exited")
+        Object.assign(authority.host, { process: { exitCode: 0 } });
+      if (change === "missing lease key")
+        Object.assign(authority.host, { activationLeaseSecret: null });
+      if (change === "host object replacement") {
+        const replacement = await useRenewableMainSecurity(120_000, 8);
+        Object.assign(authority, replacement);
+        authority.commit?.replace("windowsNodeMxcApprovalProofContext", replacement.proofContext);
+      }
+      if (change === "proof context replacement") {
+        const replacement = { ...authority.proofContext };
+        authority.current.replace("windowsNodeMxcApprovalProofContext", replacement);
+        authority.commit?.replace("windowsNodeMxcApprovalProofContext", replacement);
+      }
+      if (change === "policy drift") {
+        Object.assign(authority.host, { policyFingerprint: "e".repeat(64) });
+        await authority.host.setActivationLease("active", 120_000);
+      }
+      if (change === "generation drift") {
+        Object.assign(authority.host, { gatewayGeneration: "replacement-generation" });
+        await authority.host.setActivationLease("active", 120_000);
+      }
+      if (change === "node drift") authority.host.ensureIdentityNodeId = () => "replacement-node";
+      if (change === "requested mode drift" || change === "deactivated")
+        authority.current.replace("getWindowsNodeMxcRequestedMode", () =>
+          change === "deactivated" ? "off" : "full",
+        );
+      if (change === "deactivated then reactivated") {
+        authority.current.replace("getWindowsNodeMxcRequestedMode", () => "off");
+        authority.host.revokeActivationLease();
+        authority.current.replace("getWindowsNodeMxcRequestedMode", () => security.requestedMode);
+        await authority.host.setActivationLease("active", 120_000);
+      }
+      if (change === "effective tier drift")
+        authority.current.replace("windowsNodeMxcCurrentEffectiveTier", "base-container");
+      if (change === "security transition")
+        for (const fixture of [
+          main,
+          authority.current,
+          authority.readiness,
+          authority.commit,
+        ].filter(Boolean))
+          fixture.replace("windowsNodeMxcSecurityTransitionInProgress", true);
+    };
+    if (when === "before arrival") await changeAuthority();
+    else if (when === "before commit") {
+      const actualCommit = useActualMainCommit(authority, deadline, initial, changeAuthority);
+      authority.commit = actualCommit.commit;
+    } else
+      gateway.request.mockImplementationOnce(async () => {
+        await changeAuthority();
+        return { ok: true, key, agentId: "main" };
+      });
+    expect(
+      await transport.intercept({
+        message: message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: "1" } }],
+        }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "candidate",
+      }),
+    ).toBe(true);
+    expect(decisions).toEqual([]);
+    expect(delivery.expiresAtUnixMs).toBe(deadline);
+    const receipts = records.filter(
+      (record) => record.kind === "prompt" && record.code === "provider-accepted",
+    );
+    expect(
+      new Set(receipts.map((record) => `${record.deliveryHash}:${record.providerClientHash}`)).size,
     ).toBe(1);
     expect(
       fetch.mock.calls.filter(([, params]) =>

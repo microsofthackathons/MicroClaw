@@ -143,6 +143,7 @@ export class BundledWindowsNodeHost {
   private policyFingerprint: string | null = null;
   private activationLease: BundledWindowsNodeActivationLease | null = null;
   private activationLeaseEpoch = 0;
+  private activationLeaseAuthorityRevision = 0;
   private activationLeaseWriteQueue: Promise<void> = Promise.resolve();
   private hostStderrTail: string[] = [];
   private hostExit: {
@@ -521,11 +522,58 @@ export class BundledWindowsNodeHost {
         await fs.promises.rm(leasePath, { force: true });
         throw new Error("Bundled Windows node activation generation changed during lease update");
       }
+      if (
+        !this.activationLease ||
+        this.activationLease.expiresAtUnixMs <= Date.now() ||
+        this.activationLease.contract !== lease.contract ||
+        this.activationLease.mode !== lease.mode ||
+        this.activationLease.gatewayGeneration !== lease.gatewayGeneration ||
+        this.activationLease.policyFingerprint !== lease.policyFingerprint
+      ) {
+        this.activationLeaseAuthorityRevision += 1;
+      }
       this.activationLease = lease;
     });
     this.activationLeaseWriteQueue = update.catch(() => undefined);
     await update;
     return lease;
+  }
+
+  getActivationLeaseBindingHash(
+    proofContext: BundledWindowsNodeApprovalProofContext,
+  ): string | null {
+    const lease = this.activationLease;
+    const secret = this.activationLeaseSecret;
+    if (
+      !this.process ||
+      this.process.exitCode !== null ||
+      this.startOptions?.approvalProof !== proofContext ||
+      !secret ||
+      !lease ||
+      lease.contract !== BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT ||
+      lease.mode !== "active" ||
+      lease.expiresAtUnixMs <= Date.now() ||
+      lease.gatewayGeneration !== this.gatewayGeneration ||
+      lease.policyFingerprint !== this.policyFingerprint
+    ) {
+      return null;
+    }
+    // Renewals preserve authority; revocation, mode changes and host replacement do not.
+    return createHmac("sha256", secret)
+      .update(
+        JSON.stringify({
+          contract: "microclaw.weixin-activation-authority.v1",
+          leaseContract: lease.contract,
+          mode: lease.mode,
+          gatewayGeneration: lease.gatewayGeneration,
+          policyFingerprint: lease.policyFingerprint,
+          readinessTransitionId: proofContext.readinessTransitionId,
+          epoch: this.activationLeaseEpoch,
+          revision: this.activationLeaseAuthorityRevision,
+        }),
+        "utf8",
+      )
+      .digest("hex");
   }
 
   revokeActivationLease(): void {
