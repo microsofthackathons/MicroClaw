@@ -25,24 +25,41 @@ import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc"
 import {
   normalizeWeixinRemoteApprovalOwner,
   weixinRemoteApprovalConsentHash,
+  weixinRemoteApprovalWireSourceRejection,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
 } from "../src/windows-node-mxc-weixin-remote-approval";
 import {
   bindWeixinApprovalRun,
   deliverWeixinRemoteApproval,
+  exactWeixinApprovalSource,
+  findWeixinApprovalSource,
+  remoteApprovalDiagnosticBinding,
 } from "../src/windows-node-mxc-weixin-remote-approval-delivery";
+import {
+  describeWeixinSessionBinding,
+  resolveWeixinSessionRoute,
+} from "../src/weixin-session-routing";
 import { WindowsNodeMxcWeixinRemoteApprovalServer } from "../src/windows-node-mxc-weixin-remote-approval-transport";
 import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
-import { interceptWeixinRemoteApprovalMessage } from "../../plugins/openclaw-weixin/src/messaging/process-message.js";
+import {
+  interceptWeixinRemoteApprovalMessage,
+  processOneMessage,
+} from "../../plugins/openclaw-weixin/src/messaging/process-message.js";
+import { registerUserInFrameworkStore } from "../../plugins/openclaw-weixin/src/auth/pairing.js";
 import {
   clearContextTokensForAccount,
   getContextToken,
   setContextToken,
 } from "../../plugins/openclaw-weixin/src/messaging/inbound.js";
 import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
+import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
+import { createMainWeixinInboundFixture } from "./main-weixin-inbound-fixture.mjs";
 import { exactField, windowsCommand } from "./windows-command-fixture.mjs";
 import { logger } from "../../plugins/openclaw-weixin/src/util/logger.js";
-import { isSafeMxcApprovalMetadataFrame } from "../src/mxc-approval-context-diagnostics";
+import {
+  describeWeixinApprovalDecision,
+  isSafeMxcApprovalMetadataFrame,
+} from "../src/mxc-approval-context-diagnostics";
 
 vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -116,6 +133,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
   let states;
   let pending;
   let inboundDiagnostics;
+  let main;
+  let mainDiagnostics;
+  let gateway;
   const credentialPath = () => path.join(stateDir, "openclaw-weixin", "accounts", "bot.json");
   function credential(userId = rawPeer) {
     writeFileSync(credentialPath(), JSON.stringify({ token: "synthetic-account-token", userId }));
@@ -166,30 +186,51 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     );
     broker.configure(configuration);
     approval = approvalFor();
+    mainDiagnostics = [];
+    gateway = {
+      connected: true,
+      request: vi.fn().mockResolvedValue({ ok: true, key, agentId: "main" }),
+    };
+    main = createMainWeixinInboundFixture({
+      windowsNodeMxcWeixinRemoteApprovalSources: sources,
+      bindWeixinApprovalRun,
+      gatewayGenerationId: security.gatewayGeneration,
+      describeWeixinApprovalDecision,
+      allPendingWindowsNodeMxcGatewayApprovals: () => [],
+      exactWeixinApprovalSource,
+      getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      readAuthenticatedWeixinWireOwner,
+      getOpenClawStateDir: () => stateDir,
+      windowsNodeMxcWeixinRemoteApprovalBroker: broker,
+      pendingWindowsNodeMxcGatewayApproval: {
+        get request() {
+          return approval;
+        },
+      },
+      requireEffectiveWindowsNodeMxc: vi.fn().mockResolvedValue(undefined),
+      currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => security,
+      resolvePendingWindowsNodeMxcGatewayApproval: async (id, decision) => {
+        decisions.push({ approvalIds: [id], decision });
+      },
+      gwClient: gateway,
+      resolveWeixinSessionRoute,
+      describeWeixinSessionBinding,
+      remoteApprovalDiagnosticBinding,
+      weixinRemoteApprovalWireSourceRejection,
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      console: {
+        info: (marker, record) => {
+          if (marker === "[weixin-remote-approval-context]")
+            mainDiagnostics.push(JSON.parse(record));
+        },
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    });
     server = new WindowsNodeMxcWeixinRemoteApprovalServer(
       pipe,
       "synthetic-pipe-secret",
-      async (source) => {
-        if (source.sourcePhase === "start") {
-          sources.set(key, {
-            ...source,
-            gatewayGeneration: security.gatewayGeneration,
-            runIds: [],
-          });
-        } else if (source.sourcePhase === "run") {
-          bindWeixinApprovalRun(sources, source, security.gatewayGeneration);
-        } else if (source.sourcePhase === "candidate") {
-          const decision = broker.resolveCandidate({
-            ...source,
-            requests: [{ approval }],
-            security,
-          });
-          if (decision.status === "approved" || decision.status === "denied")
-            decisions.push(decision);
-          return { consumed: decision.consumed, acknowledgement: decision.acknowledgement };
-        }
-        return { consumed: false };
-      },
+      main.handle,
     );
     await server.start();
     transport = new WeixinRemoteApprovalTransport({
@@ -229,19 +270,24 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         peer: { kind: "direct", id: message(extra).from_user_id },
       }),
     );
-    await transport.intercept({
-      message: message({ ...extra, ...runExtra }),
-      agentId: "main",
-      sessionKey: key,
-      sourcePhase: "run",
-      runId: approval.origin.runId,
-    });
+    let registration;
+    const notify = createPinnedAgentRunStartNotifier((actualRunId) => {
+      registration = transport.intercept({
+        message: message({ ...extra, ...runExtra }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "run",
+        runId: actualRunId,
+      });
+    }, approval.origin.runId);
+    notify();
+    await registration;
   }
   async function deliver() {
     return deliverWeixinRemoteApproval({
       approval,
       configuration,
-      source: sources.get(key),
+      source: findWeixinApprovalSource(sources, approval),
       security,
       server,
       broker,
@@ -257,8 +303,33 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
   }
   it("delivers the ordinary actual normalized folder plan with exact context and correlated provider receipt", async () => {
     expect(approval.origin.to).toBe(rawPeer);
+    expect(gateway.request).toHaveBeenCalledWith(
+      "sessions.resolve",
+      {
+        key,
+        agentId: "main",
+        includeGlobal: false,
+        includeUnknown: false,
+      },
+      3_000,
+    );
+    expect(sources.get(key)).toBeDefined();
     expect(sources.get(key).senderId).toBe(rawPeer);
     expect(sources.get(key).conversationId).toBe(rawPeer);
+    expect(mainDiagnostics).toContainEqual(
+      expect.objectContaining({
+        stage: "weixin-source-cached",
+        reason: "source-cached",
+      }),
+    );
+    expect(mainDiagnostics).toContainEqual(
+      expect.objectContaining({
+        stage: "weixin-run-registration",
+        reason: "source-run-bound",
+      }),
+    );
+    for (const record of mainDiagnostics)
+      expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
     expect(readWeixinAccountStatus(stateDir).currentAccount.userId).toBe(rawPeer.toLowerCase());
     expect(getContextToken("bot", rawPeer.toLowerCase())).toBeUndefined();
     const delivery = await deliver();
@@ -308,15 +379,203 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     expect(JSON.stringify(records)).not.toContain(rawPeer);
     expect(JSON.stringify(records)).not.toContain("synthetic-exact-context");
   });
+  it("runs actual plugin dispatch and pinned SDK callback through Main source caching, challenge and exact provider sender", async () => {
+    sources.clear();
+    mainDiagnostics.length = 0;
+    await registerUserInFrameworkStore({ accountId: "bot", userId: rawPeer });
+    const order = [];
+    const intercept = transport.intercept.bind(transport);
+    vi.spyOn(transport, "intercept").mockImplementation(async (params) => {
+      order.push(params.sourcePhase);
+      return intercept(params);
+    });
+    const dispatch = vi.fn(async ({ replyOptions }) => {
+      order.push("dispatch");
+      const notify = createPinnedAgentRunStartNotifier(
+        replyOptions.onAgentRunStart,
+        approval.origin.runId,
+      );
+      notify();
+      await vi.waitFor(() => expect(sources.get(key)?.runIds).toEqual([approval.origin.runId]));
+      expect(await deliver()).not.toBeNull();
+      order.push("delivery");
+    });
+    const deps = {
+      accountId: "bot",
+      token: "synthetic-account-token",
+      config: { channels: { "openclaw-weixin": { replyProgressMessages: false } } },
+      remoteApprovalTransport: transport,
+      log: vi.fn(),
+      errLog: vi.fn(),
+      channelRuntime: {
+        routing: { resolveAgentRoute: () => ({ agentId: "main", sessionKey: key }) },
+        session: {
+          resolveStorePath: () => path.join(stateDir, "test-only-store"),
+          recordInboundSession: async () => order.push("record"),
+        },
+        reply: {
+          finalizeInboundContext: (ctx) => ctx,
+          resolveHumanDelayConfig: () => undefined,
+          createReplyDispatcherWithTyping: () => ({
+            dispatcher: {},
+            replyOptions: {},
+            markDispatchIdle: vi.fn(),
+          }),
+          withReplyDispatcher: ({ run }) => run(),
+          dispatchReplyFromConfig: dispatch,
+        },
+      },
+    };
+    await processOneMessage(message(), deps);
+    expect(deps.errLog).not.toHaveBeenCalled();
+    expect(order).toEqual(["start", "record", "dispatch", "run", "delivery"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(fetch.mock.calls[0][1].body).msg;
+    expect(sent.to_user_id).toBe(rawPeer);
+    expect(sent.context_token).toBe("synthetic-exact-context");
+    const code = /#([A-Z0-9]{8})\]/.exec(sent.item_list[0].text_item.text)[1];
+    expect(
+      await interceptWeixinRemoteApprovalMessage(
+        message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+        }),
+        deps,
+      ),
+    ).toBe(true);
+    expect(decisions).toEqual([{ approvalIds: [approval.id], decision: "allow-once" }]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+  });
   it("rejects a same-fold byte-distinct source and a same-fold origin target without looking up aliases", async () => {
+    sources.clear();
     await source({ from_user_id: rawPeer.toLowerCase() });
     expect(await deliver()).toBeNull();
-    expect(states.at(-1).reason).toBe("source-identity-mismatch");
+    expect(states.at(-1).reason).toBe("source-unavailable");
+    expect(mainDiagnostics).toContainEqual(
+      expect.objectContaining({
+        stage: "weixin-source-validation",
+        reason: "source-identity-mismatch",
+      }),
+    );
     expect(fetch).not.toHaveBeenCalled();
     await source();
     approval = { ...approval, origin: { ...approval.origin, to: rawPeer.toLowerCase() } };
     expect(await deliver()).toBeNull();
     expect(states.at(-1).reason).toBe("source-provider-mismatch");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each([
+    [
+      "raw credential replaced with a same-fold peer",
+      () => credential(rawPeer.toLowerCase()),
+      "source-identity-mismatch",
+    ],
+    [
+      "consent owner replaced",
+      () => {
+        configuration = {
+          ...configuration,
+          owner: { ...configuration.owner, boundAt: "2026-10-22T00:00:00Z" },
+        };
+      },
+      "security-binding-invalid",
+    ],
+    [
+      "consent revoked",
+      () => {
+        configuration = { ...configuration, enabled: false };
+      },
+      "source-owner-unavailable",
+    ],
+    [
+      "Gateway generation changed",
+      () => main.replace("gatewayGenerationId", "replacement-generation"),
+      "security-binding-invalid",
+    ],
+    [
+      "Gateway client replaced",
+      () => main.replace("gwClient", { ...gateway }),
+      "security-binding-invalid",
+    ],
+    [
+      "Gateway disconnected",
+      () => {
+        gateway.connected = false;
+      },
+      "security-binding-invalid",
+    ],
+    [
+      "security transition began",
+      () => main.replace("windowsNodeMxcSecurityTransitionInProgress", true),
+      "security-binding-invalid",
+    ],
+  ])(
+    "revalidates %s after the awaited authoritative route lookup",
+    async (_name, mutate, reason) => {
+      sources.clear();
+      gateway.request.mockImplementationOnce(async () => {
+        mutate();
+        return { ok: true, key, agentId: "main" };
+      });
+      await source();
+      expect(sources.size).toBe(0);
+      expect(await deliver()).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mainDiagnostics).toContainEqual(
+        expect.objectContaining({
+          stage: "weixin-source-validation",
+          reason,
+        }),
+      );
+    },
+  );
+  it.each([
+    ["missing route", { ok: false }],
+    ["different route agent", { ok: true, key, agentId: "other-agent" }],
+  ])("rejects %s without guessing an alias", async (_name, result) => {
+    sources.clear();
+    gateway.request.mockResolvedValueOnce(result);
+    await source();
+    expect(sources.size).toBe(0);
+    expect(await deliver()).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mainDiagnostics).toContainEqual(
+      expect.objectContaining({
+        stage: "weixin-source-validation",
+        reason: "source-route-unresolved",
+      }),
+    );
+  });
+  it("does not substitute a newly resolved route for the actual approved originating route", async () => {
+    sources.clear();
+    const replacementRoute = "agent:main:other-conversation";
+    gateway.request.mockResolvedValueOnce({ ok: true, key: replacementRoute, agentId: "main" });
+    await source();
+    expect(sources.has(key)).toBe(false);
+    expect(sources.get(replacementRoute).senderId).toBe(rawPeer);
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).reason).toBe("source-unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("removes the exact raw source when actual plugin completion arrives", async () => {
+    expect(sources.get(key).senderId).toBe(rawPeer);
+    await interceptWeixinRemoteApprovalMessage(
+      message(),
+      {
+        accountId: "bot",
+        token: "synthetic-account-token",
+        config: {},
+        channelRuntime: {
+          routing: { resolveAgentRoute: () => ({ agentId: "main", sessionKey: key }) },
+        },
+        remoteApprovalTransport: transport,
+      },
+      "complete",
+    );
+    expect(sources.size).toBe(0);
+    expect(await deliver()).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
   });
   it.each([

@@ -246,8 +246,14 @@ peer must match byte-for-byte. The plugin uses that exact peer for its context-t
 revalidates it before every prompt, fallback, acknowledgement, reminder and terminal send. A
 same-fold peer or alternate cache key is not an identity alias. A changed peer or missing exact
 context fails closed without trying another recipient.
+Main validates the exact authenticated wire peer both before and after its awaited Gateway route
+lookup, then caches the normalized sender and conversation without recanonicalizing them. The
+persisted consent identity remains canonical. Owner, consent, client, generation, or security
+changes during route resolution reject registration before a source can authorize delivery.
 The fixed-field diagnostic collector can also retain main-process source-cache acceptance,
-approved-origin presence, bound-run hashes, and typed delivery/rejection reasons. Its shared
+source-validation and route-resolution rejection, approved-origin presence, bound-run hashes,
+and typed delivery/rejection reasons. Source peer/account/route fields are fixed hashed descriptors,
+not raw identities or alternative lookup keys. Its shared
 allowlist rejects arbitrary output; commands, message text, identities, and credentials are not
 included in these frames.
 Delivery diagnostics use a separate versioned, primitive-only contract with fixed stage/kind/code

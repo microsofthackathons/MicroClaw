@@ -111,12 +111,14 @@ export function extractSafeMxcApprovalMetadataLine(line: string): string | null 
 }
 
 type WeixinDiagnosticStage =
+  | "weixin-source-validation"
   | "weixin-source-cached"
   | "weixin-run-registration"
   | "weixin-main-delivery";
 type WeixinDiagnosticReason =
   | WeixinRemoteDeliveryReason
   | "source-cached"
+  | "source-route-unresolved"
   | "source-run-bound"
   | "source-run-binding-rejected"
   | "prompt-delivered";
@@ -143,11 +145,13 @@ const weixinReasons: Record<WeixinDiagnosticReason, true> = {
   "approval-queued": true,
   "approval-no-longer-pending": true,
   "source-cached": true,
+  "source-route-unresolved": true,
   "source-run-bound": true,
   "source-run-binding-rejected": true,
   "prompt-delivered": true,
 };
 const weixinStages = new Set([
+  "weixin-source-validation",
   "weixin-source-cached",
   "weixin-run-registration",
   "weixin-main-delivery",
@@ -208,7 +212,11 @@ export function describeWeixinApprovalDecision(
     approvedOriginPresent: read(approval, "origin") !== undefined,
     approval: fields(approval, ["id", "sessionKey", "agent"]),
     source: fields(source, [
+      "accountId",
+      "senderId",
+      "conversationId",
       "sessionKey",
+      "providerSessionKey",
       "agentId",
       "messageId",
       "cursor",
@@ -232,7 +240,7 @@ export function describeWeixinApprovalDecision(
 export function isSafeMxcApprovalMetadataFrame(text: string): boolean {
   if (text.includes(WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT)) return isSafeWeixinDeliveryFrame(text);
   const words = new Set(
-    "contract stage envelope request plan defaults origin id sessionKey agentId runId toolCallId originatingClientId originatingDeviceId turnSourceChannel turnSourceTo turnSourceAccountId turnSourceThreadId runSessionKey notifySessionKey sessionId messageProvider currentChannelId accountId kind channel present type hash length true false null undefined reason approvedOriginPresent approval source agent messageId cursor gatewayGeneration executionSessionKey to boundRun".split(
+    "contract stage envelope request plan defaults origin id sessionKey agentId runId toolCallId originatingClientId originatingDeviceId turnSourceChannel turnSourceTo turnSourceAccountId turnSourceThreadId runSessionKey notifySessionKey sessionId messageProvider currentChannelId accountId senderId conversationId providerSessionKey kind channel present type hash length true false null undefined reason approvedOriginPresent approval source agent messageId cursor gatewayGeneration executionSessionKey to boundRun".split(
       " ",
     ),
   );

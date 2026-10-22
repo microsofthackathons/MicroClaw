@@ -123,7 +123,11 @@ describe("privacy-safe approval context diagnostics", () => {
       token: "PRIVATE TOKEN",
     };
     const source = {
+      accountId: "PRIVATE ACCOUNT",
+      senderId: "PRIVATE RECIPIENT",
+      conversationId: "PRIVATE RECIPIENT",
       sessionKey: "PRIVATE CHAT",
+      providerSessionKey: "PRIVATE PROVIDER CHAT",
       agentId: "PRIVATE AGENT",
       messageId: "PRIVATE MESSAGE",
       cursor: "PRIVATE CURSOR",
@@ -131,6 +135,9 @@ describe("privacy-safe approval context diagnostics", () => {
       gatewayGeneration: "PRIVATE GENERATION",
     };
     for (const [stage, reason, boundRun] of [
+      ["weixin-source-validation", "source-route-unresolved", undefined],
+      ["weixin-source-validation", "source-identity-mismatch", undefined],
+      ["weixin-source-validation", "security-binding-invalid", undefined],
       ["weixin-source-cached", "source-cached", undefined],
       ["weixin-run-registration", "source-run-bound", "PRIVATE RUN"],
       ["weixin-main-delivery", "source-run-mismatch", undefined],
@@ -139,6 +146,8 @@ describe("privacy-safe approval context diagnostics", () => {
       const frame = describeWeixinApprovalDecision(stage, reason, approval, source, boundRun);
       expect(frame.approvedOriginPresent).toBe(true);
       expect(frame.origin.runId.hash).toBe(digest("PRIVATE RUN"));
+      expect(frame.source.senderId.hash).toBe(digest("PRIVATE RECIPIENT"));
+      expect(frame.source.providerSessionKey.hash).toBe(digest("PRIVATE PROVIDER CHAT"));
       expect(frame.boundRun.hash).toBe(boundRun ? digest(boundRun) : undefined);
       const serialized = JSON.stringify(frame);
       expect(serialized).not.toContain("PRIVATE");

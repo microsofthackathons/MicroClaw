@@ -324,6 +324,7 @@ import {
   WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
   weixinRemoteApprovalConsentHash,
+  weixinRemoteApprovalWireSourceRejection,
   type WeixinRemoteApprovalOwnerBinding,
   type WeixinRemoteApprovalConfiguration,
   type WeixinRemoteApprovalNotice,
@@ -1674,11 +1675,30 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
     }
   }
   const revalidatedConfiguration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+  const sourceRejection = weixinRemoteApprovalWireSourceRejection(
+    revalidatedConfiguration,
+    inbound,
+    readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+  );
   if (
     !revalidatedConfiguration.enabled ||
     !revalidatedConfiguration.owner ||
+    sourceRejection !== null ||
     !windowsNodeMxcWeixinRemoteApprovalBroker.isAuthenticatedSource(inbound)
   ) {
+    if (inbound.sourcePhase === "start") {
+      console.info(
+        "[weixin-remote-approval-context]",
+        JSON.stringify(
+          describeWeixinApprovalDecision(
+            "weixin-source-validation",
+            sourceRejection ?? "source-owner-unavailable",
+            undefined,
+            inbound,
+          ),
+        ),
+      );
+    }
     return {
       consumed: candidateLike,
       acknowledgement: candidateLike
@@ -1743,6 +1763,17 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
         client.request(method, params, 3_000),
       );
     } catch {
+      console.info(
+        "[weixin-remote-approval-context]",
+        JSON.stringify(
+          describeWeixinApprovalDecision(
+            "weixin-source-validation",
+            "source-route-unresolved",
+            undefined,
+            inbound,
+          ),
+        ),
+      );
       console.warn("[weixin-remote-approval]", {
         reason: "source-route-unresolved",
         sessionBinding: describeWeixinSessionBinding(inbound.sessionKey),
@@ -1754,25 +1785,39 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
       return { consumed: false };
     }
     const current = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+    const currentSourceRejection = weixinRemoteApprovalWireSourceRejection(
+      current,
+      inbound,
+      readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+    );
     if (
       generation !== gatewayGenerationId ||
       client !== gwClient ||
       !client.connected ||
       !current.enabled ||
-      current.owner?.accountId !== inbound.accountId ||
-      current.owner.userId !== inbound.senderId ||
+      !current.owner ||
+      currentSourceRejection !== null ||
       current.owner.boundAt !== revalidatedConfiguration.owner.boundAt ||
       current.consentScope !== revalidatedConfiguration.consentScope ||
       windowsNodeMxcSecurityTransitionInProgress ||
       !currentWindowsNodeMxcWeixinRemoteApprovalSecurity()
     ) {
+      console.info(
+        "[weixin-remote-approval-context]",
+        JSON.stringify(
+          describeWeixinApprovalDecision(
+            "weixin-source-validation",
+            currentSourceRejection ?? "security-binding-invalid",
+            undefined,
+            inbound,
+          ),
+        ),
+      );
       return { consumed: false };
     }
     windowsNodeMxcWeixinRemoteApprovalSources.set(route.sessionKey, {
       ...inbound,
       ...route,
-      accountId: inbound.accountId.trim().toLowerCase(),
-      senderId: inbound.senderId.trim().toLowerCase(),
       providerSessionKey: inbound.sessionKey,
       gatewayGeneration: generation,
       runIds: [],

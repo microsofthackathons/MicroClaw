@@ -154,9 +154,12 @@ describe("WeChat remote approval transport", () => {
       to: "owner@im.wechat",
       text: "approval",
     });
+    const rejectedDelivery = expect(pendingDelivery).rejects.toMatchObject({
+      name: "WeixinRemoteTransportError",
+      diagnostic: { stage: "pipe", code: "transport-disconnected" },
+    });
     await waitFor(() => first.frames.some((frame) => frame.type === "deliver"));
 
-    const rejectedDelivery = expect(pendingDelivery).rejects.toThrow("disconnected");
     const second = await connect();
     await rejectedDelivery;
     first.socket.destroy();
