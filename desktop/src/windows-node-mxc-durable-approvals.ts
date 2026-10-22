@@ -21,6 +21,7 @@ export interface WindowsNodeMxcDurableApproval {
   agentId: string | null;
   sessionKey: string;
   policyFingerprint: string;
+  weixinConsentHash?: string;
   approvalPlanContract: typeof WINDOWS_NODE_MXC_APPROVAL_PLAN_CONTRACT;
   createdAt: string;
   lastUsedAt: string | null;
@@ -219,6 +220,7 @@ export function durableApprovalMatches(
     equalDeclaredAccess(record.declaredAccess, identity.declaredAccess) &&
     record.agentId === identity.agentId &&
     record.sessionKey === identity.sessionKey &&
+    record.weixinConsentHash === identity.weixinConsentHash &&
     record.policyFingerprint === identity.policyFingerprint.toLowerCase()
   );
 }
@@ -273,6 +275,9 @@ function isCurrentDurableApproval(value: unknown): value is WindowsNodeMxcDurabl
     value.sessionKey.length > 0 &&
     typeof value.policyFingerprint === "string" &&
     /^[a-f0-9]{64}$/.test(value.policyFingerprint) &&
+    (value.weixinConsentHash === undefined ||
+      (typeof value.weixinConsentHash === "string" &&
+        /^[a-f0-9]{64}$/.test(value.weixinConsentHash))) &&
     value.approvalPlanContract === WINDOWS_NODE_MXC_APPROVAL_PLAN_CONTRACT &&
     typeof value.createdAt === "string" &&
     !Number.isNaN(Date.parse(value.createdAt)) &&

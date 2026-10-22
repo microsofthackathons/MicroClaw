@@ -1,7 +1,8 @@
 import { createPinia } from "pinia";
+import { isProxy } from "vue";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -19,7 +20,6 @@ describe("SettingsView", () => {
   const exportGatewayLogs = vi.fn();
   const openExternal = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
-  const preflightWindowsNodeMxc = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
   const addUserDir = vi.fn();
   const stageUserDir = vi.fn();
@@ -28,9 +28,6 @@ describe("SettingsView", () => {
   const getUserDirs = vi.fn();
   const validateFolderPolicy = vi.fn();
   const applyFolderPolicy = vi.fn();
-  const getRemoteApprovalStatus = vi.fn();
-  const setRemoteApprovalEnabled = vi.fn();
-  const revokeRemoteApproval = vi.fn();
 
   const localNode = {
     id: "node-local",
@@ -179,7 +176,6 @@ describe("SettingsView", () => {
     routeState.section = "skills";
     setLocale("en-US");
     getWindowsNodeMxcStatus.mockReset().mockResolvedValue(status("diagnostic-unpaired-local-node"));
-    preflightWindowsNodeMxc.mockReset().mockResolvedValue(undefined);
     setWindowsNodeMxcEnabled
       .mockReset()
       .mockImplementation(
@@ -200,16 +196,6 @@ describe("SettingsView", () => {
     getUserDirs.mockReset().mockResolvedValue({ rw: [], ro: [] });
     validateFolderPolicy.mockReset().mockImplementation(async (draft) => draft);
     applyFolderPolicy.mockReset();
-    getRemoteApprovalStatus.mockReset().mockResolvedValue({
-      experimental: true,
-      enabled: false,
-      configured: false,
-      owner: null,
-      availableOwners: [],
-      blockedReason: "owner-ambiguous",
-    });
-    setRemoteApprovalEnabled.mockReset().mockResolvedValue({ ok: true });
-    revokeRemoteApproval.mockReset().mockResolvedValue({ ok: true });
     window.openclaw = {
       model: createBrowserOpenClawMock().model,
       config: {
@@ -231,16 +217,8 @@ describe("SettingsView", () => {
       shell: {
         openExternal,
       },
-      plugin: {
-        weixin: {
-          getRemoteApprovalStatus,
-          setRemoteApprovalEnabled,
-          revokeRemoteApproval,
-        },
-      },
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
-        preflight: preflightWindowsNodeMxc,
         setEnabled: setWindowsNodeMxcEnabled,
         validateFolderPolicy,
         applyFolderPolicy,
@@ -336,50 +314,14 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
   });
 
-  it("shows the default-off experimental WeChat remote approval owner and controls", async () => {
+  it("does not expose a standalone WeChat remote approval settings card", async () => {
     routeState.section = "security";
-    getRemoteApprovalStatus.mockResolvedValueOnce({
-      experimental: true,
-      enabled: false,
-      configured: true,
-      owner: {
-        contract: "microclaw.windows-weixin-remote-approval.v1",
-        accountId: "bot@im.wechat",
-        userId: "owner@im.wechat",
-        boundAt: "2026-10-14T00:00:00.000Z",
-      },
-      availableOwners: [],
-      blockedReason: null,
-    });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
     });
     await flushPromises();
 
-    const card = wrapper.find('[data-testid="weixin-remote-approval"]');
-    expect(card.text()).toContain("WeChat remote approval (Experimental)");
-    expect(card.text()).toContain("owner@im.wechat");
-    expect(card.text()).toContain("allowlisted openclaw-weixin plugin and Gateway");
-    expect(card.text()).toContain("never create durable approvals");
-    expect(card.text()).toContain("unclassified free-text command fields stay local-only");
-    await wrapper.find('[data-testid="weixin-remote-approval-enable"]').trigger("click");
-    await flushPromises();
-    expect(setRemoteApprovalEnabled).toHaveBeenCalledWith(true);
-  });
-
-  it("discloses the trusted plugin and Gateway metadata assumption in Chinese", async () => {
-    routeState.section = "security";
-    setLocale("zh-CN");
-    const wrapper = shallowMount(SettingsView, {
-      global: { plugins: [createPinia()] },
-    });
-    await flushPromises();
-
-    const card = wrapper.find('[data-testid="weixin-remote-approval"]');
-    expect(card.text()).toContain("微信远程审批（实验性）");
-    expect(card.text()).toContain("白名单 openclaw-weixin 插件和 Gateway");
-    expect(card.text()).toContain("绝不会创建永久审批");
-    expect(card.text()).toContain("无法分类的自由文本命令字段仅允许本地审批");
+    expect(wrapper.find('[data-testid="weixin-remote-approval"]').exists()).toBe(false);
   });
 
   it("keeps technical MXC details collapsed on a fresh Settings view", async () => {
@@ -633,7 +575,7 @@ describe("SettingsView", () => {
     expect(off.find('[data-testid="mxc-status-summary"]').text()).toBe("Containment — Off");
   });
 
-  it("returns to the loading gate before turning containment off", async () => {
+  it("leaves readiness unchanged until main-process lifecycle events gate the transition", async () => {
     routeState.section = "security";
     const pinia = createPinia();
     const wrapper = shallowMount(SettingsView, {
@@ -650,19 +592,20 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-select-off"]').trigger("click");
     await flushPromises();
 
-    expect(gateway.ready).toBe(false);
-    expect(chat.wsConnected).toBe(false);
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "off" });
   });
 
-  it("keeps the standard route ready when Full containment preflight rejects enablement", async () => {
+  it("keeps the standard route ready and settles when main-process validation rejects enablement", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
     });
-    preflightWindowsNodeMxc.mockRejectedValueOnce(new Error("exact backend unavailable"));
+    setWindowsNodeMxcEnabled.mockRejectedValueOnce(new Error("exact backend unavailable"));
+    const errorMessage = vi.spyOn(ElMessage, "error");
     const pinia = createPinia();
     const wrapper = shallowMount(SettingsView, {
       global: {
@@ -676,15 +619,17 @@ describe("SettingsView", () => {
     chat.wsConnected = true;
 
     await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
+    expect(errorMessage).toHaveBeenCalledWith("exact backend unavailable");
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(true);
   });
 
   it("requires explicit acknowledgement before enabling Limited containment", async () => {
@@ -711,7 +656,6 @@ describe("SettingsView", () => {
     expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("targetMode")).toBe(
       "limited-dacl",
     );
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
     await wrapper.vm.$nextTick();
@@ -722,9 +666,6 @@ describe("SettingsView", () => {
     await confirm.trigger("click");
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({
-      requestedMode: "limited-dacl",
-    });
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
       requestedMode: "limited-dacl",
       acknowledgeLimitedFilesystem: true,
@@ -753,7 +694,6 @@ describe("SettingsView", () => {
     expect(consent.props("modelValue")).toBe(true);
     expect(consent.props("targetMode")).toBe("full");
     expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
 
     consent.vm.$emit("cancel");
@@ -763,8 +703,67 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+  });
+
+  it("sends only a clone-safe mode request and leaves WeChat consent to main", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    setWindowsNodeMxcEnabled.mockImplementation(async (params) => {
+      expect(isProxy(params)).toBe(false);
+      expect(structuredClone(params)).toEqual({ requestedMode: "full" });
+      return status("node-local");
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await flushPromises();
+
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ requestedMode: "full" });
+    expect(wrapper.text()).not.toContain("Remote command approval");
+    wrapper.unmount();
+  });
+
+  it("sends only mode and explicit Limited acknowledgement, never a WeChat owner", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          "el-dialog": {
+            props: ["modelValue"],
+            template: '<div v-if="modelValue"><slot/><slot name="footer"/></div>',
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mxc-select-limited"]').trigger("click");
+    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await wrapper.vm.$nextTick();
+    await wrapper.find('[data-testid="mxc-limited-ack-checkbox"]').setValue(true);
+    await wrapper.find('[data-testid="mxc-confirm-limited"]').trigger("click");
+    await flushPromises();
+
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "limited-dacl",
+      acknowledgeLimitedFilesystem: true,
+    });
+    wrapper.unmount();
   });
 
   it("deduplicates disclosure requests and double-submit before applying Full once", async () => {
@@ -774,10 +773,10 @@ describe("SettingsView", () => {
       requestedMode: "off",
       desiredEnabled: false,
     });
-    let releasePreflight!: () => void;
-    preflightWindowsNodeMxc.mockReturnValueOnce(
+    let releaseSetEnabled!: () => void;
+    setWindowsNodeMxcEnabled.mockReturnValueOnce(
       new Promise<void>((resolve) => {
-        releasePreflight = resolve;
+        releaseSetEnabled = resolve;
       }),
     );
     const wrapper = shallowMount(SettingsView, {
@@ -793,13 +792,15 @@ describe("SettingsView", () => {
 
     consent.vm.$emit("accept");
     consent.vm.$emit("accept");
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledTimes(1);
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
 
-    releasePreflight();
+    releaseSetEnabled();
     await flushPromises();
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
+      requestedMode: "full",
+    });
   });
 
   it("prompts and applies an explicit Limited to Full switch", async () => {
@@ -818,12 +819,9 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
     const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
     expect(consent.props("targetMode")).toBe("full");
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
-
     consent.vm.$emit("accept");
     await flushPromises();
 
-    expect(preflightWindowsNodeMxc).toHaveBeenCalledWith({ requestedMode: "full" });
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
   });
 
@@ -848,7 +846,6 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(false);
-    expect(preflightWindowsNodeMxc).not.toHaveBeenCalled();
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Full containment");
   });

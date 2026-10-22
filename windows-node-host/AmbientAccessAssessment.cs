@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -32,6 +33,8 @@ public sealed record AmbientAccessPolicy(
 
 internal static class AmbientAccessAssessment
 {
+    private const int TargetTimeoutMs = 30_000;
+
     private static readonly HashSet<string> RequiredCategories =
         new(StringComparer.Ordinal)
         {
@@ -79,46 +82,88 @@ internal static class AmbientAccessAssessment
         AmbientAccessAssessmentRequest request,
         CancellationToken cancellationToken = default)
     {
+        return await RunAsync(
+            request,
+            (wxcExecPath, token) =>
+                MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
+                    wxcExecPath,
+                    "limited-dacl",
+                    "appcontainer-dacl",
+                    token),
+            (target, wxcExecPath, scratchRoot, token) =>
+                AssessTargetAsync(wxcExecPath, scratchRoot, target.Path, token),
+            message => Console.Error.WriteLine($"[ambient-assessment] {message}"),
+            cancellationToken);
+    }
+
+    internal static async Task<AmbientAccessAssessmentResult> RunAsync(
+        AmbientAccessAssessmentRequest request,
+        Func<string, CancellationToken, Task> ensureIsolation,
+        Func<AmbientAccessTarget, string, string, CancellationToken, Task<string>> assessTarget,
+        Action<string>? reportDiagnostic,
+        CancellationToken cancellationToken = default)
+    {
         if (request.Targets.Count == 0)
             throw new HostPolicyException(
                 "ambient-assessment-targets-missing",
                 "The Limited containment ambient-access assessment has no targets.");
         var wxcExecPath = WindowsPathCanonicalizer.CanonicalizeFile(request.WxcExecPath);
         var scratchRoot = WindowsPathCanonicalizer.CanonicalizeDirectory(request.ScratchRoot);
-        await MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
-            wxcExecPath,
-            "limited-dacl",
-            "appcontainer-dacl",
-            cancellationToken);
-
-        var entries = new List<AmbientAccessEntry>();
         var categories = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var target in request.Targets.OrderBy(entry => entry.Category, StringComparer.Ordinal))
-        {
-            if (!categories.Add(target.Category)
-                || string.IsNullOrWhiteSpace(target.Category)
-                || target.Category.Any(ch => !char.IsAsciiLetterOrDigit(ch) && ch != '-'))
-                throw new HostPolicyException(
-                    "ambient-assessment-target-invalid",
-                    "The Limited containment ambient-access assessment target is invalid.");
-            var targetPath = NormalizeAssessmentPath(target.Path);
-            var status = await AssessTargetAsync(
-                wxcExecPath,
-                scratchRoot,
-                targetPath,
-                cancellationToken);
-            entries.Add(new AmbientAccessEntry(target.Category, status, targetPath));
-        }
+        var targets = request.Targets
+            .OrderBy(entry => entry.Category, StringComparer.Ordinal)
+            .Select(target =>
+            {
+                if (!categories.Add(target.Category)
+                    || string.IsNullOrWhiteSpace(target.Category)
+                    || target.Category.Any(ch => !char.IsAsciiLetterOrDigit(ch) && ch != '-'))
+                    throw new HostPolicyException(
+                        "ambient-assessment-target-invalid",
+                        "The Limited containment ambient-access assessment target is invalid.");
+                return new AmbientAccessTarget(target.Category, NormalizeAssessmentPath(target.Path));
+            })
+            .ToArray();
         if (!categories.SetEquals(RequiredCategories))
             throw new HostPolicyException(
                 "ambient-assessment-categories-invalid",
                 "The Limited containment ambient-access assessment must cover every required path category.");
 
+        await ensureIsolation(wxcExecPath, cancellationToken);
+
+        var entries = new List<AmbientAccessEntry>();
+        var total = Stopwatch.StartNew();
+        foreach (var target in targets)
+        {
+            var elapsed = Stopwatch.StartNew();
+            try
+            {
+                var status = await assessTarget(target, wxcExecPath, scratchRoot, cancellationToken);
+                elapsed.Stop();
+                entries.Add(new AmbientAccessEntry(
+                    target.Category,
+                    status,
+                    target.Path));
+                reportDiagnostic?.Invoke(
+                    $"category={target.Category} status={status} elapsedMs={elapsed.ElapsedMilliseconds}");
+            }
+            catch (Exception error)
+            {
+                elapsed.Stop();
+                reportDiagnostic?.Invoke(
+                    $"category={target.Category} status=failed elapsedMs={elapsed.ElapsedMilliseconds} error={error.GetType().Name}");
+                throw;
+            }
+        }
+        total.Stop();
+        reportDiagnostic?.Invoke(
+            $"complete categories={targets.Length} elapsedMs={total.ElapsedMilliseconds}");
+
+        var orderedEntries = entries.ToArray();
         return new AmbientAccessAssessmentResult(
             AmbientAccessAssessmentContract.Version,
-            ComputeHash(entries),
+            ComputeHash(orderedEntries),
             DateTimeOffset.UtcNow.ToString("O"),
-            entries);
+            orderedEntries);
     }
 
     public static async Task RevalidateAsync(
@@ -225,7 +270,7 @@ internal static class AmbientAccessAssessment
                     CommandLine = WindowsCommandLine.Join(
                         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]),
                     Cwd = scratch,
-                    TimeoutMs = 30_000,
+                    TimeoutMs = TargetTimeoutMs,
                 },
                 ProcessContainer = new MxcProcessContainer
                 {

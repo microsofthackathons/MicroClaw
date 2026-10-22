@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import PermissionDialog from "./PermissionDialog.vue";
 
 describe("PermissionDialog", () => {
@@ -52,7 +52,7 @@ describe("PermissionDialog", () => {
       props: {
         request: {
           requestId: "mxc-request",
-          type: "mxc-approval",
+          type: "mxc-approval" as const,
           command,
           dirPath: "isolated-scratch:v1",
           declaredAccess: [
@@ -132,15 +132,11 @@ describe("PermissionDialog", () => {
     });
 
     expect(wrapper.find(".perm-title").text()).toBe("Limited filesystem containment");
-    expect(wrapper.find(".perm-subtitle").text()).toContain(
-      "Limited filesystem containment",
-    );
+    expect(wrapper.find(".perm-subtitle").text()).toContain("Limited filesystem containment");
     expect(wrapper.findAll(".perm-body")[0].text()).toBe(
       "AI wants to run this command with Limited filesystem containment.",
     );
-    expect(wrapper.find(".perm-command-label").text()).toBe(
-      "Additional filesystem grants",
-    );
+    expect(wrapper.find(".perm-command-label").text()).toBe("Additional filesystem grants");
     expect(wrapper.text()).not.toContain("Ambient filesystem access");
     expect(wrapper.find(".perm-mxc-ambient").exists()).toBe(false);
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
@@ -159,12 +155,8 @@ describe("PermissionDialog", () => {
   it("keeps high-risk actions visible without optional semantic color tokens", () => {
     const globalStyles = readFileSync(resolve(process.cwd(), "src/styles/global.css"), "utf8");
 
-    expect(globalStyles).toContain(
-      "--danger: var(--smtc-status-danger-foreground, #dc2626);",
-    );
-    expect(globalStyles).toContain(
-      "--danger: var(--smtc-status-danger-foreground, #ef4444);",
-    );
+    expect(globalStyles).toContain("--danger: var(--smtc-status-danger-foreground, #dc2626);");
+    expect(globalStyles).toContain("--danger: var(--smtc-status-danger-foreground, #ef4444);");
   });
 
   it("renders attended prompts above the startup loading gate", () => {
@@ -174,5 +166,35 @@ describe("PermissionDialog", () => {
     );
 
     expect(component).toContain("z-index: 10001;");
+  });
+
+  it("updates phone status without restarting the authoritative countdown and emits timeout denial", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const request = {
+      requestId: "deadline-request",
+      type: "mxc-approval" as const,
+      command: "test",
+      expiresAtUnixMs: 46_000,
+      remoteDelivery: { state: "sending" as const, reason: null, replyMode: null, revision: 1 },
+    };
+    const wrapper = mount(PermissionDialog, { props: { request } });
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await wrapper.setProps({
+        request: {
+          ...request,
+          remoteDelivery: { state: "sent", reason: null, replyMode: "code-required", revision: 2 },
+        },
+      });
+      expect(wrapper.get('[data-testid="mxc-phone-delivery"]').text()).toContain("request code");
+      await vi.advanceTimersByTimeAsync(34_000);
+      expect(wrapper.emitted("respond")).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(wrapper.emitted("respond")).toEqual([["deny", "timeout"]]);
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
   });
 });

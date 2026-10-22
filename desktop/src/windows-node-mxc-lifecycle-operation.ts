@@ -2,7 +2,10 @@ import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
 export type WindowsNodeMxcLifecycleOperationDescriptor =
   | { kind: "startup" }
-  | { kind: "set-enabled"; requestedMode: WindowsNodeMxcRequestedMode }
+  | {
+      kind: "set-enabled";
+      requestedMode: WindowsNodeMxcRequestedMode;
+    }
   | { kind: "apply-folder-policy" };
 
 interface TrackedWindowsNodeMxcLifecycleOperation {

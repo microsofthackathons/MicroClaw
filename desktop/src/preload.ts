@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+// Sandboxed preloads cannot require local modules; keep runtime IPC adapters self-contained.
 import type {
   ChatAttachment,
   ClipboardImageInput,
@@ -120,6 +121,16 @@ contextBridge.exposeInMainWorld("openclaw", {
 
     /** Load chat history for a session. */
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
+    observeSession: (sessionKey: string | null) =>
+      ipcRenderer.invoke("chat:observe-session", { sessionKey }),
+    onSessionUpdate: (callback: (payload: { sessionKey: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { sessionKey: string }) =>
+        callback(payload);
+      ipcRenderer.on("chat:session-update", handler);
+      return () => {
+        ipcRenderer.removeListener("chat:session-update", handler);
+      };
+    },
 
     /** Load titles derived by OpenClaw from session transcripts. */
     listSessionTitles: (keys: string[]) => ipcRenderer.invoke("chat:list-session-titles", { keys }),
@@ -211,7 +222,24 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- WeChat Plugin ---
   plugin: {
     weixin: {
-      getStatus: () => ipcRenderer.invoke("plugin:weixin:get-status"),
+      getStatus: () =>
+        ipcRenderer.invoke("plugin:weixin:get-status") as Promise<{
+          enabled: boolean;
+          requestedEnabled: boolean;
+          effectiveEnabled: boolean;
+          pausedByMxc: boolean;
+          installed: boolean;
+          loggedIn: boolean;
+          accountCount: number;
+          invariantState: "none" | "single" | "multiple" | "invalid";
+          currentAccount: {
+            accountId: string;
+            userId?: string;
+          } | null;
+          loginInProgress: boolean;
+          mutationLocked: boolean;
+          mutationLockRevision: number;
+        }>,
       setEnabled: (enabled: boolean) => ipcRenderer.invoke("plugin:weixin:set-enabled", enabled),
       login: () => ipcRenderer.invoke("plugin:weixin:login"),
       cancelLogin: () => ipcRenderer.invoke("plugin:weixin:cancel-login"),
@@ -221,10 +249,6 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.invoke("plugin:weixin:login-qr-wait", params),
       disconnect: (params?: { accountId?: string }) =>
         ipcRenderer.invoke("plugin:weixin:disconnect", params),
-      getRemoteApprovalStatus: () => ipcRenderer.invoke("plugin:weixin:remote-approval:get-status"),
-      setRemoteApprovalEnabled: (enabled: boolean) =>
-        ipcRenderer.invoke("plugin:weixin:remote-approval:set-enabled", enabled),
-      revokeRemoteApproval: () => ipcRenderer.invoke("plugin:weixin:remote-approval:revoke"),
       onLoginOutput: (callback: (text: string) => void) => {
         const handler = (_event: any, text: string) => callback(text);
         ipcRenderer.on("plugin:weixin:login-output", handler);
@@ -234,6 +258,14 @@ contextBridge.exposeInMainWorld("openclaw", {
         const handler = (_event: any, result: any) => callback(result);
         ipcRenderer.on("plugin:weixin:login-done", handler);
         return () => ipcRenderer.removeListener("plugin:weixin:login-done", handler);
+      },
+      onMutationLock: (callback: (status: { locked: boolean; revision: number }) => void) => {
+        const handler = (
+          _event: Electron.IpcRendererEvent,
+          status: { locked: boolean; revision: number },
+        ) => callback(status);
+        ipcRenderer.on("plugin:weixin:mutation-lock", handler);
+        return () => ipcRenderer.removeListener("plugin:weixin:mutation-lock", handler);
       },
     },
   },
@@ -347,8 +379,6 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
-    preflight: (params?: { requestedMode?: "off" | "full" | "limited-dacl" }) =>
-      ipcRenderer.invoke("windows-node-mxc:preflight", params),
     setEnabled: (params: {
       enabled?: boolean;
       requestedMode?: "off" | "full" | "limited-dacl";
@@ -368,11 +398,17 @@ contextBridge.exposeInMainWorld("openclaw", {
     respondApproval: (params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
+      origin?: "desktop" | "timeout";
     }) => ipcRenderer.invoke("windows-node-mxc:approval-respond", params),
     onApprovalRequest: (callback: (request: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, request: unknown) => callback(request);
       ipcRenderer.on("windows-node-mxc:approval-request", handler);
       return () => ipcRenderer.removeListener("windows-node-mxc:approval-request", handler);
+    },
+    onApprovalResolved: (callback: (result: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: unknown) => callback(result);
+      ipcRenderer.on("windows-node-mxc:approval-resolved", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-resolved", handler);
     },
     onLifecycleState: (callback: (state: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state);

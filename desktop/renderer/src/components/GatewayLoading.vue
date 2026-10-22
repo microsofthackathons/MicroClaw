@@ -95,6 +95,9 @@
         <div v-if="props.mxcDesired" class="loading-mxc-strength">
           {{ mxcStrengthText }}
         </div>
+        <div v-if="isMxcTransition && props.mxcDetail" class="loading-mxc-detail">
+          {{ props.mxcDetail }}
+        </div>
 
         <!-- Error detail (shown when gateway reports an error) -->
         <div v-if="isFailed && displayError" class="loading-error-detail">
@@ -175,7 +178,6 @@ const isMxcFailure = computed(
 );
 const isMxcTransition = computed(
   () =>
-    props.mxcDesired === true &&
     Boolean(props.mxcPhase) &&
     !["active", "idle", "locked", "failed"].includes(props.mxcPhase ?? ""),
 );
@@ -241,6 +243,7 @@ const targetProgress = computed(() => {
     case "stopped":
       return 5;
     case "starting":
+    case "restarting":
       return 70;
     case "running":
       return 90;
@@ -273,8 +276,17 @@ function tick() {
 watch(
   () => props.connected,
   (val) => {
-    if (val && displayProgress.value < 90) {
+    if (val && !isMxcTransition.value && !isMxcFailure.value && displayProgress.value < 90) {
       displayProgress.value = 90;
+    }
+  },
+);
+
+watch(
+  () => props.mxcPhase,
+  () => {
+    if (isMxcTransition.value) {
+      displayProgress.value = Math.min(displayProgress.value, targetProgress.value);
     }
   },
 );
@@ -290,6 +302,8 @@ const statusText = computed(() => {
     case "stopped":
     case "starting":
       return t("gateway.starting");
+    case "restarting":
+      return t("gateway.restarting");
     case "running":
       return t("gateway.connecting");
     case "timeout":
@@ -585,6 +599,15 @@ watch(
 
 .loading-status.error {
   color: var(--danger);
+}
+
+.loading-mxc-detail {
+  max-width: 420px;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
 }
 
 /* ── Error detail ── */

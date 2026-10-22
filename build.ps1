@@ -156,9 +156,9 @@ Write-Host "  AppContainerLauncher.exe built" -ForegroundColor Green
 
 Push-Location "$root\desktop"
 try {
-    npm run prepare-windows-node-resources
+    npm run prepare-packaged-resources
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: bundled Windows Node/MXC resource preparation failed" -ForegroundColor Red
+        Write-Host "  ERROR: packaged runtime resource preparation failed" -ForegroundColor Red
         exit 1
     }
 } finally {

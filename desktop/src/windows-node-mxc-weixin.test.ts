@@ -99,6 +99,10 @@ describe("Windows Node MXC WeChat lifecycle", () => {
       JSON.stringify({ userId: "owner@im.wechat" }),
     );
     fs.writeFileSync(
+      path.join(credentialsDir, "openclaw-weixin-owner-im-bot-allowFrom.json"),
+      JSON.stringify({ version: 1, allowFrom: ["existing@im.wechat"] }),
+    );
+    fs.writeFileSync(
       path.join(credentialsDir, "openclaw-weixin-paired-im-bot-allowFrom.json"),
       JSON.stringify({ version: 1, allowFrom: ["paired@im.wechat"] }),
     );
@@ -124,14 +128,18 @@ describe("Windows Node MXC WeChat lifecycle", () => {
           "utf8",
         ),
       ),
-    ).toMatchObject({ version: 1, allowFrom: ["owner@im.wechat"] });
+    ).toMatchObject({
+      version: 1,
+      allowFrom: ["existing@im.wechat", "owner@im.wechat"],
+    });
     expect(
       readWindowsNodeMxcWeixinAllowedSenders({
         stateDir: root,
         credentialsDir,
         accountId: "owner-im-bot",
       }),
-    ).toEqual(["owner@im.wechat"]);
+    ).toEqual(["existing@im.wechat", "owner@im.wechat"]);
+    expect(fs.readdirSync(credentialsDir).some((name) => name.endsWith(".tmp"))).toBe(false);
   });
 
   it("resolves legacy account filenames without weakening explicit sender allowlists", () => {

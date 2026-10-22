@@ -108,10 +108,7 @@ interface StartOptions {
   ambientAccess: BundledWindowsNodeAmbientAccess | null;
   approvalProof: BundledWindowsNodeApprovalProofContext;
   onApproval: (approval: BundledApprovalRequest | null) => void;
-  onDiagnostic?: (
-    event: string,
-    details: Record<string, string | number | boolean | null>,
-  ) => void;
+  onDiagnostic?: (event: string, details: Record<string, string | number | boolean | null>) => void;
 }
 
 export interface BundledWindowsNodeAmbientAccess extends WindowsNodeMxcAmbientAccessAssessment {
@@ -143,13 +140,11 @@ export class BundledWindowsNodeHost {
   private activationLeaseEpoch = 0;
   private activationLeaseWriteQueue: Promise<void> = Promise.resolve();
   private hostStderrTail: string[] = [];
-  private hostExit:
-    | {
-        processId: number | null;
-        exitCode: number | null;
-        signal: NodeJS.Signals | null;
-      }
-    | null = null;
+  private hostExit: {
+    processId: number | null;
+    exitCode: number | null;
+    signal: NodeJS.Signals | null;
+  } | null = null;
   private readonly resourceRoot = resolveBundledWindowsNodeResourceRoot();
   private readonly hostPath = path.join(
     this.resourceRoot,
@@ -440,7 +435,12 @@ export class BundledWindowsNodeHost {
           2,
         ),
       );
-      const stdout = await execFileText(this.hostPath, ["--ambient-assess", requestPath], 180_000);
+      const stdout = await execFileText(
+        this.hostPath,
+        ["--ambient-assess", requestPath],
+        180_000,
+        (diagnostic) => console.log(`[windows-node] ${diagnostic}`),
+      );
       const parsed = JSON.parse(stdout) as unknown;
       if (!validateWindowsNodeMxcAmbientAccessAssessment(parsed)) {
         throw new Error("Bundled Windows node returned an invalid ambient-access assessment");
@@ -776,18 +776,27 @@ function resolveAmbientAccessTargets(
   ];
 }
 
-function execFileText(executable: string, args: string[], timeout: number): Promise<string> {
+export function execFileText(
+  executable: string,
+  args: string[],
+  timeout: number,
+  onDiagnostic?: (message: string) => void,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
+    let settled = false;
+    let timedOut = false;
+    const child = execFile(
       executable,
       args,
       {
         windowsHide: true,
-        timeout,
         maxBuffer: 1024 * 1024,
         encoding: "utf8",
       },
       (error, stdout, stderr) => {
+        if (settled || timedOut) return;
+        settled = true;
+        clearTimeout(timer);
         if (error) {
           reject(
             new Error(
@@ -796,9 +805,38 @@ function execFileText(executable: string, args: string[], timeout: number): Prom
           );
           return;
         }
+        for (const line of stderr
+          .split(/\r?\n/u)
+          .map((entry) => entry.trim())
+          .filter(Boolean)) {
+          onDiagnostic?.(line);
+        }
         resolve(stdout);
       },
     );
+    const timer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      let terminationError: unknown = null;
+      try {
+        if (child.pid) terminateBundledWindowsNodeProcessTree(child.pid);
+      } catch (error) {
+        terminationError = error;
+      }
+      settled = true;
+      const timeoutError = new Error(
+        `Bundled Windows node ambient assessment timed out after ${timeout}ms`,
+      );
+      reject(
+        terminationError
+          ? new AggregateError(
+              [timeoutError, terminationError],
+              "Bundled Windows node ambient assessment timed out and its process tree could not be proven stopped",
+              { cause: terminationError },
+            )
+          : timeoutError,
+      );
+    }, timeout);
   });
 }
 
@@ -1024,7 +1062,9 @@ export function sanitizeBundledHostDiagnostic(value: string): string {
 export function classifyBundledHostDiagnostic(value: string): string | null {
   const connectionFailure = /^node-connection-failure:\s*([A-Za-z]+)$/i.exec(value);
   if (connectionFailure) return `node-connection-failure: ${connectionFailure[1]}`;
-  if (value === "node-device-token-recovery: cleared the exact bundled node token and reconnecting") {
+  if (
+    value === "node-device-token-recovery: cleared the exact bundled node token and reconnecting"
+  ) {
     return value;
   }
   const policyFailure = /^([a-z][a-z0-9-]+):/i.exec(value);

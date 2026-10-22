@@ -117,8 +117,23 @@ export interface WindowsNodeMxcFolderPlan {
 
 export type WindowsNodeMxcApprovalDecision = "deny" | "allow-once" | "allow-always";
 
+export interface WindowsNodeMxcApprovalOrigin {
+  contract: "microclaw.gateway-approval-origin.v1";
+  gatewayGeneration: string;
+  agentId: string;
+  runSessionKey: string;
+  executionSessionKey: string;
+  runId: string;
+  toolCallId: string;
+  nodeId: string;
+  channel: string;
+  accountId: string;
+  to: string;
+}
+
 export interface WindowsNodeMxcGatewayApproval {
   id: string;
+  expiresAtUnixMs?: number;
   command: string;
   executable: string;
   arguments: string[];
@@ -127,6 +142,7 @@ export interface WindowsNodeMxcGatewayApproval {
   canonicalCwd: string;
   agent: string | null;
   sessionKey: string;
+  origin?: WindowsNodeMxcApprovalOrigin;
   declaredAccess: Array<{
     access: SandboxFolderAccess;
     path: string;
@@ -235,14 +251,20 @@ function isNonEmptyStringArray(value: unknown): value is string[] {
   );
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
 export function normalizeWindowsNodeMxcGatewayApproval(
   payload: unknown,
   selectedNodeId: string,
+  gatewayGeneration?: string,
 ): WindowsNodeMxcGatewayApproval | null {
   const envelope = asRecord(payload);
   const request = asRecord(envelope.request);
   const plan = asRecord(request.systemRunPlan);
   const id = typeof envelope.id === "string" ? envelope.id.trim() : "";
+  const expiresAtMs = envelope.expiresAtMs;
   const host = typeof request.host === "string" ? request.host : "";
   const nodeId = typeof request.nodeId === "string" ? request.nodeId : "";
   const argv = plan.argv;
@@ -274,6 +296,8 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     typeof plan.commandPreview === "string";
   if (
     !id ||
+    (expiresAtMs !== undefined &&
+      (!Number.isSafeInteger(expiresAtMs) || Number(expiresAtMs) <= 0)) ||
     host !== "node" ||
     nodeId.toLowerCase() !== selectedNodeId.trim().toLowerCase() ||
     !isNonEmptyStringArray(argv) ||
@@ -305,8 +329,45 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   if (!allowed.includes("allow-once")) allowed.unshift("allow-once");
   if (!allowed.includes("allow-always")) allowed.push("allow-always");
 
+  const rawOrigin = asRecord(request.remoteApprovalOrigin);
+  const origin =
+    rawOrigin.contract === "microclaw.gateway-approval-origin.v1" &&
+    typeof gatewayGeneration === "string" &&
+    rawOrigin.gatewayGeneration === gatewayGeneration &&
+    rawOrigin.agentId === plan.agentId &&
+    rawOrigin.executionSessionKey === plan.sessionKey &&
+    rawOrigin.runId === request.runId &&
+    rawOrigin.toolCallId === request.toolCallId &&
+    rawOrigin.nodeId === request.nodeId &&
+    isNonEmptyString(rawOrigin.agentId) &&
+    isNonEmptyString(rawOrigin.runSessionKey) &&
+    isNonEmptyString(rawOrigin.runId) &&
+    isNonEmptyString(rawOrigin.toolCallId) &&
+    isNonEmptyString(rawOrigin.channel) &&
+    isNonEmptyString(rawOrigin.accountId) &&
+    isNonEmptyString(rawOrigin.to) &&
+    rawOrigin.channel === request.turnSourceChannel &&
+    rawOrigin.accountId === request.turnSourceAccountId &&
+    rawOrigin.to === request.turnSourceTo &&
+    isNonEmptyString(plan.sessionKey)
+      ? {
+          contract: "microclaw.gateway-approval-origin.v1" as const,
+          gatewayGeneration,
+          agentId: rawOrigin.agentId,
+          runSessionKey: rawOrigin.runSessionKey,
+          executionSessionKey: plan.sessionKey,
+          runId: rawOrigin.runId,
+          toolCallId: rawOrigin.toolCallId,
+          nodeId,
+          channel: rawOrigin.channel,
+          accountId: rawOrigin.accountId,
+          to: rawOrigin.to,
+        }
+      : undefined;
+
   return {
     id,
+    ...(typeof expiresAtMs === "number" ? { expiresAtUnixMs: expiresAtMs } : {}),
     command: commandText,
     executable: argv[0],
     arguments: argv.slice(1),
@@ -315,6 +376,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     canonicalCwd: cwdBinding,
     agent: typeof plan.agentId === "string" && plan.agentId.trim() ? plan.agentId : null,
     sessionKey: plan.sessionKey as string,
+    ...(origin ? { origin } : {}),
     declaredAccess,
     hasMutableFileOperand,
     allowedDecisions: [...new Set(allowed)],

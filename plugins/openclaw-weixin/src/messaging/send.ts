@@ -1,4 +1,5 @@
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
+import { createHash } from "node:crypto";
 
 import { sendMessage as sendMessageApi } from "../api/api.js";
 import type { WeixinApiOptions } from "../api/api.js";
@@ -7,13 +8,22 @@ import { generateId } from "../util/random.js";
 import type { MessageItem, SendMessageReq } from "../api/types.js";
 import { MessageItemType, MessageState, MessageType } from "../api/types.js";
 import type { UploadedFileInfo } from "../cdn/upload.js";
+import { WeixinMessageDeliveryError, type WeixinDeliveryDiagnostic } from "./delivery-diagnostics.js";
 
 export { StreamingMarkdownFilter } from "./markdown-filter.js";
 
 type WeixinMessageSendOptions = WeixinApiOptions & {
   contextToken?: string;
   runId?: string;
+  isActive?: () => boolean;
+  deliveryDiagnostic?: (diagnostic: WeixinDeliveryDiagnostic) => void;
 };
+
+function assertSendActive(opts: WeixinMessageSendOptions): void {
+  if (opts.isActive?.() === false) {
+    throw new Error("WeChat account changed before message delivery");
+  }
+}
 
 function generateClientId(): string {
   return generateId("openclaw-weixin");
@@ -76,6 +86,7 @@ export async function sendMessageWeixin(params: {
     logger.warn(`sendMessageWeixin: contextToken missing for to=${to}, sending without context`);
   }
   const clientId = generateClientId();
+  const providerClientHash = createHash("sha256").update(clientId).digest("hex").slice(0, 16);
   const req = buildSendMessageReq({
     to,
     contextToken: opts.contextToken,
@@ -84,13 +95,26 @@ export async function sendMessageWeixin(params: {
     clientId,
   });
   try {
+    assertSendActive(opts);
     await sendMessageApi({
       baseUrl: opts.baseUrl,
       token: opts.token,
       timeoutMs: opts.timeoutMs,
       body: req,
+      deliveryDiagnostic: opts.deliveryDiagnostic
+        ? (diagnostic) => opts.deliveryDiagnostic?.({ ...diagnostic, providerClientHash })
+        : undefined,
     });
   } catch (err) {
+    if (opts.deliveryDiagnostic) {
+      const diagnostic: WeixinDeliveryDiagnostic = {
+        ...(err instanceof WeixinMessageDeliveryError
+          ? err.diagnostic : { code: "request-failed" as const }),
+        providerClientHash,
+      };
+      opts.deliveryDiagnostic(diagnostic);
+      throw new WeixinMessageDeliveryError(diagnostic);
+    }
     logger.error(`sendMessageWeixin: failed to=${to} clientId=${clientId} err=${String(err)}`);
     throw err;
   }
@@ -123,6 +147,7 @@ export async function sendMessageItemWeixin(params: {
     },
   };
   try {
+    assertSendActive(opts);
     await sendMessageApi({
       baseUrl: opts.baseUrl,
       token: opts.token,
@@ -174,6 +199,7 @@ async function sendMediaItems(params: {
       },
     };
     try {
+      assertSendActive(opts);
       await sendMessageApi({
         baseUrl: opts.baseUrl,
         token: opts.token,

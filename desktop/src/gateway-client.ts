@@ -28,6 +28,7 @@ import {
 } from "./constants";
 import { buildGatewayConnectParams, GATEWAY_OPERATOR_SCOPES } from "./gateway-protocol";
 import type { ChatAttachment } from "./chat-attachments";
+import { GatewaySessionObserver } from "./gateway-session-observer";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ export type ChatEventPayload = {
   deltaText?: string;
   replace?: boolean;
   errorMessage?: string;
+  lifecyclePhase?: "start" | "end" | "error";
 };
 
 export type AgentWarmupResult = {
@@ -240,6 +242,9 @@ export class GatewayClient {
   private agentWarmupAbortPromise: Promise<void> | null = null;
   private sessionTitleWaiters = new Map<string, SessionTitleWaiter>();
   private sessionTitlePromises = new Map<string, Promise<string | null>>();
+  private sessionObserver = new GatewaySessionObserver((method, params) =>
+    this.request(method, params),
+  );
 
   constructor(private opts: GatewayClientOptions) {
     this.deviceIdentity = loadOrCreateDeviceIdentity();
@@ -273,6 +278,7 @@ export class GatewayClient {
   stop() {
     this.closed = true;
     this._connected = false;
+    this.sessionObserver.disconnect();
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = null;
@@ -285,6 +291,10 @@ export class GatewayClient {
   }
 
   // ── Public API ──
+
+  observeChatSession(sessionKey: string | null): Promise<void> {
+    return this.sessionObserver.select(sessionKey);
+  }
 
   async request<T = unknown>(
     method: string,
@@ -363,7 +373,12 @@ export class GatewayClient {
   }
 
   /** Load chat history for a session. */
-  loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }> {
+  loadHistory(sessionKey: string): Promise<{
+    sessionKey?: string;
+    messages?: unknown[];
+    thinkingLevel?: string;
+    sessionInfo?: import("./chat-run-lifecycle").ChatSessionRuntime;
+  }> {
     return this.request("chat.history", { sessionKey, limit: 200 });
   }
 
@@ -580,7 +595,12 @@ export class GatewayClient {
     sessionKey?: string;
     accountId?: string;
     timeoutMs?: number;
-  }): Promise<{ connected: boolean; message: string; accountId?: string }> {
+  }): Promise<{
+    connected: boolean;
+    message: string;
+    accountId?: string;
+    activationReloadRequested?: boolean;
+  }> {
     return this.request("web.login.wait", params);
   }
 
@@ -605,6 +625,7 @@ export class GatewayClient {
 
     this.ws.on("close", (_code, reason) => {
       this._connected = false;
+      this.sessionObserver.disconnect();
       this.ws = null;
       if (!shouldHandleGatewayDisconnect(this.closed)) return;
       this.agentWarmupWaiter?.("disconnected");
@@ -681,6 +702,9 @@ export class GatewayClient {
           : [];
         this.backoffMs = WS_RECONNECT_INITIAL_MS;
         this._mainSessionKey = extractMainSessionKey(hello);
+        void this.sessionObserver
+          .connect()
+          .catch((error) => console.error("[gateway-client] Session subscription failed:", error));
         this.opts.onConnected?.(hello ?? {});
       })
       .catch((err) => {
@@ -773,6 +797,11 @@ export class GatewayClient {
           return;
         }
       }
+      if (
+        (evt.event === "session.message" || evt.event === "sessions.changed") &&
+        !this.sessionObserver.accepts(evt.payload)
+      )
+        return;
       this.opts.onEvent?.(evt);
       return;
     }

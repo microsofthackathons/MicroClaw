@@ -29,7 +29,7 @@ describe("desktop startup order", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const handler = source.slice(
       source.indexOf('ipcMain.handle(\n    "windows-node-mxc:set-enabled"'),
-      source.indexOf('ipcMain.handle("windows-node-mxc:retry-readiness"'),
+      source.indexOf('"windows-node-mxc:approval-respond"'),
     );
     const suspensionBranch = handler.indexOf("if (suspendCronBeforePreflight)");
     const gatewayStop = handler.indexOf(
@@ -48,6 +48,66 @@ describe("desktop startup order", () => {
     expect(gatewayStop).toBeGreaterThan(suspensionBranch);
     expect(preflight).toBeGreaterThan(gatewayStop);
     expect(handler).toContain("Restoring standard Gateway after MXC preflight failure");
+  });
+
+  it("performs one tracked containment validation before mutation and reuses it for readiness", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const handler = source.slice(
+      source.indexOf('ipcMain.handle(\n    "windows-node-mxc:set-enabled"'),
+      source.indexOf('"windows-node-mxc:approval-respond"'),
+    );
+    const confirmation = handler.indexOf("await planWeixinRemoteApprovalNativeTransition(");
+    const validating = handler.indexOf(
+      'setWindowsNodeMxcLifecycleState("validating", validationDetail)',
+    );
+    const preparations = handler.match(/await prepareWindowsNodeMxcContainment\(requestedMode\)/gu);
+    const preparation = handler.indexOf("await prepareWindowsNodeMxcContainment(requestedMode)");
+    const policyMutation = handler.indexOf("applyWindowsNodeMxcGatewayPolicy(");
+    const remoteApprovalPersistence = handler.indexOf(
+      "persistWindowsNodeMxcWeixinRemoteApprovalPlan(",
+    );
+    const settingsMutation = handler.indexOf(
+      'settingsStore.set("windowsNodeMxcSelection", nextSelection)',
+    );
+    const readiness = handler.indexOf(
+      "await runAutomaticWindowsNodeMxcReadiness(preparedContainment)",
+    );
+
+    expect(confirmation).toBeGreaterThan(-1);
+    expect(handler.indexOf("assertTrustedRendererIpc(event)")).toBeLessThan(confirmation);
+    expect(handler.indexOf("assertNativeWeixinRemoteApprovalAuthority(params)")).toBeLessThan(
+      handler.indexOf("windowsNodeMxcLifecycleOperations.acquire<"),
+    );
+    expect(handler).toContain(
+      "readOptions: () => getWeixinRemoteApprovalActivationOptions(readConfig())",
+    );
+    expect(handler).toContain("selection: remoteApprovalSelection");
+    expect(handler).not.toContain("params?.remoteApproval");
+    expect(validating).toBeGreaterThan(confirmation);
+    expect(preparations).toHaveLength(1);
+    expect(preparation).toBeGreaterThan(validating);
+    expect(policyMutation).toBeGreaterThan(preparation);
+    expect(remoteApprovalPersistence).toBeGreaterThan(policyMutation);
+    expect(settingsMutation).toBeGreaterThan(remoteApprovalPersistence);
+    expect(readiness).toBeGreaterThan(settingsMutation);
+    expect(handler).toContain("mxc-validation-failed");
+    expect(handler).toContain('settingsStore.delete("windowsNodeMxcAmbientAccess")');
+    const automatic = source.slice(
+      source.indexOf("async function runAutomaticWindowsNodeMxcReadiness("),
+      source.indexOf("async function startApplicationServices("),
+    );
+    expect(automatic).toContain(
+      'await startGatewayWithWindowsNodeMxcPolicy("locked", preparedContainment)',
+    );
+    expect(automatic).toContain(
+      "assertPreparedWindowsNodeMxcContainment(preparedContainment, requestedMode)",
+    );
+    expect(source).toContain("prepared.transitionId !== windowsNodeMxcReadinessTransitionId");
+    const guardFailure = handler.indexOf("if (!transitionMutationStarted && !validationStarted)");
+    const failureEvent = handler.indexOf('setWindowsNodeMxcLifecycleState("failed", detail)');
+    expect(guardFailure).toBeGreaterThan(preparation);
+    expect(failureEvent).toBeGreaterThan(guardFailure);
+    expect(handler.slice(guardFailure, failureEvent)).toContain("throw error;");
   });
 
   it("blocks Gateway restart and generic config mutation before they can change Hooks state", () => {

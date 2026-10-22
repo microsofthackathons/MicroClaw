@@ -802,7 +802,9 @@ describe("pinned OpenClaw node approval proof backport", () => {
 
     describe("pinned OpenClaw approval schema projection", () => {
       it("validates the standard plan projection while retaining the original bound plan", () => {
-        const patched = patchPinnedOpenClawExecApproval(PINNED_EXEC_APPROVAL_VALIDATION_SOURCE);
+        const patched = patchPinnedOpenClawExecApproval(
+          `${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}\n\t\t\tif (requestRunId && context.chatRunState.hasAbortMarker(requestRunId)) {`,
+        );
 
         expect(patched).toContain("const validationParams = rawPlan");
         expect(patched).toContain('name !== "executablePath"');

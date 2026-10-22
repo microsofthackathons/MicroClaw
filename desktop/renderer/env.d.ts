@@ -14,6 +14,7 @@ interface ChatEventPayload {
   deltaText?: string;
   replace?: boolean;
   errorMessage?: string;
+  lifecyclePhase?: "start" | "end" | "error";
 }
 
 interface AppSettings {
@@ -238,9 +239,11 @@ interface OpenClawAPI {
     onIntegrityAlert(callback: (result: IntegrityResult) => void): () => void;
   };
   chat: {
+    observeSession(sessionKey: string | null): Promise<void>;
+    onSessionUpdate(callback: (payload: { sessionKey: string }) => void): () => void;
     isConnected(): Promise<boolean>;
     sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
-    loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
+    loadHistory(sessionKey: string): Promise<{ sessionKey?: string; messages?: unknown[]; thinkingLevel?: string; sessionInfo?: import("../src/chat-run-lifecycle").ChatSessionRuntime }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
     abort(sessionKey: string): Promise<void>;
@@ -294,7 +297,15 @@ interface OpenClawAPI {
         pausedByMxc: boolean;
         installed: boolean;
         loggedIn: boolean;
+        accountCount: number;
+        invariantState: "none" | "single" | "multiple" | "invalid";
+        currentAccount: {
+          accountId: string;
+          userId?: string;
+        } | null;
         loginInProgress: boolean;
+        mutationLocked: boolean;
+        mutationLockRevision: number;
       }>;
       setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
       login(): Promise<{ ok: boolean; error?: string }>;
@@ -312,30 +323,9 @@ interface OpenClawAPI {
         timeoutMs?: number;
       }): Promise<{ connected: boolean; message: string; accountId?: string }>;
       disconnect(params?: { accountId?: string }): Promise<{ ok: boolean; error?: string }>;
-      getRemoteApprovalStatus(): Promise<{
-        experimental: true;
-        enabled: boolean;
-        configured: boolean;
-        owner: {
-          contract: "microclaw.windows-weixin-remote-approval.v1";
-          accountId: string;
-          userId: string;
-          boundAt: string;
-        } | null;
-        availableOwners: Array<{
-          contract: "microclaw.windows-weixin-remote-approval.v1";
-          accountId: string;
-          userId: string;
-          boundAt: string;
-        }>;
-        blockedReason: "mxc-off" | "owner-ambiguous" | null;
-      }>;
-      setRemoteApprovalEnabled(
-        enabled: boolean,
-      ): Promise<{ ok: boolean; error?: string; cancelled?: boolean }>;
-      revokeRemoteApproval(): Promise<{ ok: boolean }>;
       onLoginOutput(callback: (text: string) => void): () => void;
       onLoginDone(callback: (result: { code: number | null }) => void): () => void;
+      onMutationLock(callback: (status: { locked: boolean; revision: number }) => void): () => void;
     };
   };
   model: {
@@ -539,9 +529,6 @@ interface OpenClawAPI {
       warnings: string[];
       remediation: string[];
     }>;
-    preflight(params?: {
-      requestedMode?: "off" | "full" | "limited-dacl";
-    }): Promise<unknown>;
     setEnabled(params: {
       enabled?: boolean;
       requestedMode?: "off" | "full" | "limited-dacl";
@@ -570,6 +557,8 @@ interface OpenClawAPI {
       executable: string;
       arguments: string[];
       commandText?: string;
+      expiresAtUnixMs?: number;
+      remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
       agent: string | null;
       canonicalCwd: string;
       approvalLayer: "gateway" | "node";
@@ -582,6 +571,7 @@ interface OpenClawAPI {
     respondApproval(params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
+      origin?: "desktop" | "timeout";
     }): Promise<void>;
     onApprovalRequest(
       callback: (
@@ -590,6 +580,8 @@ interface OpenClawAPI {
           executable: string;
           arguments: string[];
           commandText?: string;
+          expiresAtUnixMs?: number;
+          remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
           agent: string | null;
           canonicalCwd: string;
           approvalLayer: "gateway" | "node";
@@ -603,11 +595,13 @@ interface OpenClawAPI {
     ): () => void;
     onLifecycleState(
       callback: (
-        state: Awaited<
-          ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>
-        >["lifecycleState"],
+        state: Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["lifecycleState"],
       ) => void,
     ): () => void;
+    onApprovalResolved(callback: (result: {
+      requestId: string;
+      approvalLayer?: "gateway" | "node";
+    } & import("../src/windows-node-mxc-approval-lifecycle").MxcApprovalTerminal) => void): () => void;
   };
   sandbox: {
     getStatus(): Promise<{
@@ -638,10 +632,7 @@ interface OpenClawAPI {
       removedChildren?: string[];
       dirs: { rw: string[]; ro: string[] };
     }>;
-    stageUserDir(params: {
-      access: "rw" | "ro";
-      draft: { rw: string[]; ro: string[] };
-    }): Promise<{
+    stageUserDir(params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }): Promise<{
       ok: boolean;
       canceled?: boolean;
       reason?: string;

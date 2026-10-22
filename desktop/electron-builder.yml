@@ -6,6 +6,7 @@ directories:
   output: release
 
 afterSign: scripts/update-signed-windows-node-manifest.mjs
+afterPack: scripts/finalize-packaged-weixin-resource.mjs
 
 win:
   target:
@@ -67,6 +68,8 @@ extraResources:
     to: openclaw.asar
   - from: resources/windows-node/
     to: windows-node/
+  - from: resources/openclaw-weixin/
+    to: openclaw-weixin/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js

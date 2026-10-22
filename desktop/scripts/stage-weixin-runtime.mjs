@@ -56,8 +56,16 @@ export function stageWeixinRuntime(sourceDir, stageDir) {
     fs.writeFileSync(stagedRuntime, compiled.outputText);
     compiledCount++;
   }
-  for (const name of ["package.json", "README.md", "README.zh_CN.md"]) {
-    fs.copyFileSync(path.join(sourceDir, name), path.join(stageDir, name));
+  for (const name of [
+    "package.json",
+    "openclaw.plugin.json",
+    "README.md",
+    "README.zh_CN.md",
+    "CHANGELOG.md",
+    "CHANGELOG.zh_CN.md",
+  ]) {
+    const sourcePath = path.join(sourceDir, name);
+    if (fs.existsSync(sourcePath)) fs.copyFileSync(sourcePath, path.join(stageDir, name));
   }
   return compiledCount;
 }

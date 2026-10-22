@@ -11,12 +11,14 @@ import {
   type GatewayEventFrame,
 } from "./gateway-client";
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
+import { GatewaySessionObserver } from "./gateway-session-observer";
 
 describe("GatewayClient approval capability", () => {
   it("retains the negotiated version and advertised methods", async () => {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
     Object.assign(client, {
       opts: {},
+      sessionObserver: new GatewaySessionObserver(vi.fn()),
       connectSent: false,
       connectTimer: null,
       connectNonce: "test",
@@ -82,6 +84,7 @@ describe("GatewayClient approval capability", () => {
       const client = Object.create(GatewayClient.prototype) as GatewayClient;
       Object.assign(client, {
         opts: { port: 18789, token: "test-token", supportsExecApprovals },
+        sessionObserver: new GatewaySessionObserver(vi.fn()),
         connectSent: false,
         connectTimer: null,
         connectNonce: "test-nonce",

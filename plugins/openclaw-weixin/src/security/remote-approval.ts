@@ -1,10 +1,16 @@
 import net from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { WeixinMessage } from "../api/types.js";
 import { MessageItemType, MessageType } from "../api/types.js";
 import { getContextToken } from "../messaging/inbound.js";
 import { sendMessageWeixin } from "../messaging/send.js";
+import { isActiveWeixinAccount } from "../auth/accounts.js";
+import { normalizeProviderInteger, providerMetadataShape, type ProviderFieldShape } from "../api/provider-metadata.js";
+import {
+  WeixinMessageDeliveryError, WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT, isWeixinDeliveryKind,
+  type WeixinDeliveryDiagnostic, type WeixinDeliveryMetadata,
+} from "../messaging/delivery-diagnostics.js";
 
 const CONTRACT = "microclaw.windows-weixin-remote-approval.v1";
 const MAX_FRAME_BYTES = 64 * 1024;
@@ -22,7 +28,7 @@ interface InboundSource {
   senderId: string;
   conversationId: string;
   messageId: string;
-  cursor: number;
+  cursor: string;
   agentId: string;
   sessionKey: string;
   direct: boolean;
@@ -31,6 +37,7 @@ interface InboundSource {
   receivedAtUnixMs: number;
   text: string;
   ambiguous: boolean;
+  sentAtUnixMs?: number;
 }
 
 interface RemoteApprovalTransportOptions {
@@ -38,22 +45,37 @@ interface RemoteApprovalTransportOptions {
   baseUrl: string;
   token?: string;
   error?: (message: string) => void;
+  diagnostic?: (record: { code: string; phase: string; sessionHash: string; hasProviderSendTime: boolean; metadataProvenance: string; messageId: ProviderFieldShape; seq: ProviderFieldShape }) => void;
+  deliveryDiagnostic?: (record: WeixinDeliveryMetadata) => void;
 }
 
 export class WeixinRemoteApprovalTransport {
   private socket: net.Socket | null = null;
   private disposed = false;
   private buffer = "";
+  private activeApproval: { challengeId: string; to: string; expiresAtUnixMs: number } | null = null;
+  private reminderAt = 0;
+  private reminderCount = 0;
+  private approvalDeliveryRevision = 0;
+  private readonly terminalChallenges = new Map<string, number>();
   private readonly pending = new Map<
     string,
     {
       resolve: (value: { consumed: boolean; acknowledgement?: string }) => void;
       timer: NodeJS.Timeout;
       consumeOnDisconnect: boolean;
+      activeChallengeId: string | null;
     }
   >();
 
   constructor(private readonly options: RemoteApprovalTransportOptions) {}
+
+  private isActiveAccount(to?: string): boolean {
+    return (
+      Boolean(this.options.token?.trim()) &&
+      isActiveWeixinAccount(this.options.accountId, this.options.token, to)
+    );
+  }
 
   get enabled(): boolean {
     return Boolean(
@@ -61,6 +83,18 @@ export class WeixinRemoteApprovalTransport {
       process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE &&
         process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN,
     );
+  }
+
+  shouldReserveInbound(message: WeixinMessage): boolean {
+    return this.enabled && (this.isActiveOwnerMessage(message) || classifyWeixinRemoteApprovalCandidate(message).candidateLike);
+  }
+
+  private isActiveOwnerMessage(message: WeixinMessage): boolean {
+    return Boolean(this.activeApproval && Date.now() < this.activeApproval.expiresAtUnixMs &&
+      message.message_type === MessageType.USER && !message.group_id &&
+      typeof message.to_user_id === "string" && message.to_user_id.trim() &&
+      typeof message.from_user_id === "string" &&
+      message.from_user_id === this.activeApproval.to);
   }
 
   async start(): Promise<void> {
@@ -107,33 +141,54 @@ export class WeixinRemoteApprovalTransport {
     message: WeixinMessage;
     agentId: string;
     sessionKey: string;
-    sourcePhase: "candidate" | "start" | "complete";
+    sourcePhase: "candidate" | "start" | "run" | "complete";
+    runId?: string;
+    isActive?: () => boolean;
   }): Promise<boolean> {
     if (!this.enabled) return false;
     const candidate = classifyWeixinRemoteApprovalCandidate(params.message);
-    if (params.sourcePhase === "candidate" && !candidate.candidateLike) return false;
-    const reservedCandidate = params.sourcePhase === "candidate" && candidate.candidateLike;
+    const activeOwner = this.isActiveOwnerMessage(params.message);
+    const reservedCandidate = params.sourcePhase === "candidate" && this.shouldReserveInbound(params.message);
     if (!this.socket) {
       try {
         await this.start();
       } catch {
+        this.options.error?.("weixin-remote-approval reason=transport-registration-unavailable");
+        if (activeOwner) await this.remindLocally();
         return reservedCandidate;
       }
     }
-    const source = normalizeInboundSource(
+    if (!this.isActiveAccount() || (params.isActive && !params.isActive())) {
+      return reservedCandidate;
+    }
+    const normalized = normalizeInboundSourceResult(
       params.message,
       this.options.accountId,
       params.agentId,
       params.sessionKey,
     );
-    if (!source) return reservedCandidate;
+    this.options.diagnostic?.({
+      code: normalized.source ? "source-normalized" : normalized.reason,
+      phase: params.sourcePhase,
+      sessionHash: createHash("sha256").update(params.sessionKey).digest("hex").slice(0, 16),
+      hasProviderSendTime: Number.isSafeInteger(params.message.create_time_ms),
+      ...providerMetadataShape(params.message),
+    });
+    const source = normalized.source;
+    if (!source) {
+      if (activeOwner) await this.remindLocally();
+      return reservedCandidate;
+    }
     const requestId = randomUUID();
     const result = await new Promise<{ consumed: boolean; acknowledgement?: string }>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         resolve({ consumed: reservedCandidate });
       }, REQUEST_TIMEOUT_MS);
-      this.pending.set(requestId, { resolve, timer, consumeOnDisconnect: reservedCandidate });
+      this.pending.set(requestId, {
+        resolve, timer, consumeOnDisconnect: reservedCandidate,
+        activeChallengeId: this.activeApproval?.challengeId ?? null,
+      });
       this.write({
         contract: CONTRACT,
         type: "inbound",
@@ -143,21 +198,31 @@ export class WeixinRemoteApprovalTransport {
           text: params.sourcePhase === "candidate" ? candidate.text : source.text,
           ambiguous: params.sourcePhase === "candidate" && candidate.ambiguous,
           sourcePhase: params.sourcePhase,
+          ...(params.sourcePhase === "run" ? { runId: params.runId } : {}),
         },
       });
     });
-    if (result.acknowledgement) {
+    if (
+      result.acknowledgement &&
+      this.isActiveAccount() &&
+      (!params.isActive || params.isActive())
+    ) {
       try {
-        await this.sendSystemMessage(source.senderId, result.acknowledgement);
-      } catch (error) {
-        this.options.error?.(`weixin remote approval acknowledgement failed: ${String(error)}`);
+        await this.sendSystemMessage(source.senderId, result.acknowledgement, {
+          kind: "acknowledgement",
+          inboundHash: createHash("sha256").update(requestId).digest("hex").slice(0, 16),
+        });
+      } catch {
+        this.options.error?.("weixin-remote-approval reason=acknowledgement-delivery-unconfirmed");
       }
     }
-    return result.consumed;
+    if (activeOwner && !result.consumed && this.activeApproval) await this.remindLocally();
+    return result.consumed || Boolean(activeOwner && this.activeApproval);
   }
 
   close(): void {
     this.disposed = true;
+    this.activeApproval = null;
     this.disconnect();
   }
 
@@ -204,6 +269,9 @@ export class WeixinRemoteApprovalTransport {
         if (!pending) continue;
         this.pending.delete(frame.requestId);
         clearTimeout(pending.timer);
+        if (frame.approvalActive === false && this.activeApproval?.challengeId === pending.activeChallengeId) {
+          this.activeApproval = null;
+        }
         pending.resolve({
           consumed: frame.consumed === true,
           acknowledgement:
@@ -217,38 +285,130 @@ export class WeixinRemoteApprovalTransport {
         typeof frame.to === "string" &&
         typeof frame.text === "string"
       ) {
-        void this.sendSystemMessage(frame.to, frame.text)
-          .then(() =>
+        const recipient = frame.to;
+        const terminalChallengeId = typeof frame.terminalChallengeId === "string" ? frame.terminalChallengeId : null;
+        if (terminalChallengeId) {
+          this.terminalChallenges.set(terminalChallengeId, Date.now() + 120_000);
+          for (const [id, expiry] of this.terminalChallenges) {
+            if (expiry <= Date.now() || this.terminalChallenges.size > 256) this.terminalChallenges.delete(id);
+          }
+        }
+        if (terminalChallengeId && this.activeApproval?.challengeId === terminalChallengeId) {
+          this.activeApproval = null;
+        }
+        if (!this.isActiveAccount()) {
+          this.write({
+            contract: CONTRACT,
+            type: "delivery-result",
+            deliveryId: frame.deliveryId,
+            ok: false,
+            error: "WeChat account changed before remote approval delivery",
+          });
+          continue;
+        }
+        const approval = frame.approval && typeof frame.approval === "object"
+          ? frame.approval as Record<string, unknown> : null;
+        const deliveryRevision = approval ? ++this.approvalDeliveryRevision : null;
+        const deliverySocket = this.socket;
+        const deliveryHash = createHash("sha256").update(frame.deliveryId).digest("hex").slice(0, 16);
+        if (frame.kind !== undefined && !isWeixinDeliveryKind(frame.kind)) {
+          this.write({
+            contract: CONTRACT, type: "delivery-result", deliveryId: frame.deliveryId, ok: false,
+            failure: { code: "provider-response-invalid" },
+          });
+          continue;
+        }
+        const challengeId = typeof approval?.challengeId === "string" ? approval.challengeId : terminalChallengeId;
+        void this.sendSystemMessage(recipient, frame.text, {
+          kind: frame.kind ?? "notification", deliveryHash,
+          ...(challengeId ? { challengeHash: createHash("sha256").update(challengeId).digest("hex").slice(0, 16) } : {}),
+        })
+          .then((providerClientHash) => {
+            if (!this.disposed && this.socket === deliverySocket && this.socket &&
+              deliveryRevision === this.approvalDeliveryRevision &&
+              approval && typeof approval.challengeId === "string" &&
+              !this.terminalChallenges.has(approval.challengeId) &&
+              typeof approval.expiresAtUnixMs === "number" &&
+              Number.isSafeInteger(approval.expiresAtUnixMs) && approval.expiresAtUnixMs > Date.now()) {
+              this.activeApproval = {
+                challengeId: approval.challengeId,
+                to: recipient,
+                expiresAtUnixMs: approval.expiresAtUnixMs,
+              };
+              this.reminderAt = 0;
+              this.reminderCount = 0;
+            }
             this.write({
               contract: CONTRACT,
               type: "delivery-result",
               deliveryId: frame.deliveryId,
               ok: true,
-            }),
-          )
-          .catch((error) =>
+              providerClientHash,
+            });
+          })
+          .catch((error: unknown) =>
             this.write({
               contract: CONTRACT,
               type: "delivery-result",
               deliveryId: frame.deliveryId,
               ok: false,
-              error: error instanceof Error ? error.message : String(error),
+              error: "weixin-delivery-failed",
+              failure: error instanceof WeixinMessageDeliveryError
+                ? error.diagnostic : { code: "request-failed" },
             }),
           );
       }
+
     }
   }
 
-  private async sendSystemMessage(to: string, text: string): Promise<void> {
-    await sendMessageWeixin({
+  private async remindLocally(): Promise<void> {
+    if (!this.activeApproval || this.reminderCount >= 3 || Date.now() - this.reminderAt < 5_000) return;
+    this.reminderAt = Date.now();
+    this.reminderCount++;
+    try {
+      await this.sendSystemMessage(this.activeApproval.to,
+        "MicroClaw Security Approval: no decision. Use the current prompt's choices and request code, or use the Desktop. Original deadline unchanged.",
+        {
+          kind: "reminder",
+          challengeHash: createHash("sha256").update(this.activeApproval.challengeId).digest("hex").slice(0, 16),
+        });
+    } catch {
+      this.options.error?.("weixin-remote-approval reason=reminder-delivery-unconfirmed");
+    }
+  }
+
+  private async sendSystemMessage(
+    to: string,
+    text: string,
+    context: Pick<WeixinDeliveryMetadata, "kind" | "deliveryHash" | "challengeHash" | "inboundHash">,
+  ): Promise<string> {
+    const diagnostic = (record: WeixinDeliveryDiagnostic) => this.options.deliveryDiagnostic?.({
+      contract: WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT, stage: "provider", ...context, ...record,
+    });
+    if (!this.isActiveAccount(to)) {
+      const failure: WeixinDeliveryDiagnostic = { code: "owner-changed" };
+      diagnostic(failure);
+      throw new WeixinMessageDeliveryError(failure);
+    }
+    const contextToken = getContextToken(this.options.accountId, to);
+    if (!contextToken) {
+      const failure: WeixinDeliveryDiagnostic = { code: "context-unavailable" };
+      diagnostic(failure);
+      throw new WeixinMessageDeliveryError(failure);
+    }
+    const result = await sendMessageWeixin({
       to,
       text,
       opts: {
         baseUrl: this.options.baseUrl,
         token: this.options.token,
-        contextToken: getContextToken(this.options.accountId, to),
+        contextToken,
+        isActive: () => this.isActiveAccount(to),
+        deliveryDiagnostic: diagnostic,
       },
     });
+    return createHash("sha256").update(result.messageId).digest("hex").slice(0, 16);
   }
 
   private write(frame: object): void {
@@ -264,34 +424,38 @@ export function normalizeInboundSource(
   agentId: string,
   sessionKey: string,
 ): InboundSource | null {
-  const senderId = message.from_user_id?.trim() ?? "";
-  const messageId = message.message_id;
-  const cursor = message.seq;
+  return normalizeInboundSourceResult(message, accountId, agentId, sessionKey).source;
+}
+
+export function normalizeInboundSourceResult(
+  message: WeixinMessage,
+  accountId: string,
+  agentId: string,
+  sessionKey: string,
+): { source: InboundSource; reason: null } | { source: null; reason: string } {
+  const senderId = typeof message.from_user_id === "string" ? message.from_user_id : "";
+  const messageId = normalizeProviderInteger(message.message_id);
+  const cursor = normalizeProviderInteger(message.seq);
+  if (message.item_list !== undefined && !Array.isArray(message.item_list)) return { source: null, reason: "provider-items-invalid" };
   const textItems = message.item_list?.filter((item) => item.type === MessageItemType.TEXT) ?? [];
   const text =
     textItems.length === 1 && message.item_list?.length === 1
       ? (textItems[0]?.text_item?.text ?? "")
       : "";
-  if (
-    !accountId.trim() ||
-    !senderId ||
-    !senderId.toLowerCase().endsWith("@im.wechat") ||
-    !Number.isSafeInteger(messageId) ||
-    !Number.isSafeInteger(cursor) ||
-    !agentId.trim() ||
-    !sessionKey.trim()
-  ) {
-    return null;
-  }
+  if (!accountId.trim() || senderId !== senderId.trim() || !senderId.toLowerCase().endsWith("@im.wechat")) return { source: null, reason: "provider-identity-invalid" };
+  if (messageId === null) return { source: null, reason: "provider-message-id-unavailable" };
+  if (cursor === null) return { source: null, reason: "provider-cursor-unavailable" };
+  if (!agentId.trim() || !sessionKey.trim()) return { source: null, reason: "route-unavailable" };
   const quoted = textItems.some((item) => Boolean(item.ref_msg));
   const forwarded = message.message_type !== MessageType.USER;
-  const direct = message.message_type === MessageType.USER && !message.group_id && Boolean(message.to_user_id);
-  return {
+  const direct = message.message_type === MessageType.USER && !message.group_id &&
+    typeof message.to_user_id === "string" && Boolean(message.to_user_id.trim());
+  return { reason: null, source: {
     accountId: accountId.trim().toLowerCase(),
-    senderId: senderId.toLowerCase(),
-    conversationId: senderId.toLowerCase(),
-    messageId: String(messageId),
-    cursor: cursor!,
+    senderId,
+    conversationId: senderId,
+    messageId,
+    cursor,
     agentId: agentId.trim(),
     sessionKey: sessionKey.trim(),
     direct,
@@ -300,7 +464,9 @@ export function normalizeInboundSource(
     receivedAtUnixMs: Date.now(),
     text,
     ambiguous: false,
-  };
+    ...(Number.isSafeInteger(message.create_time_ms) && message.create_time_ms! >= 0
+      ? { sentAtUnixMs: message.create_time_ms } : {}),
+  } };
 }
 
 export function classifyWeixinRemoteApprovalCandidate(message: WeixinMessage): {
@@ -308,7 +474,7 @@ export function classifyWeixinRemoteApprovalCandidate(message: WeixinMessage): {
   ambiguous: boolean;
   text: string;
 } {
-  const items = message.item_list ?? [];
+  const items = Array.isArray(message.item_list) ? message.item_list : [];
   const textItems = items.filter((item) => item.type === MessageItemType.TEXT);
   const exactSingleText =
     items.length === 1 && textItems.length === 1 ? (textItems[0]?.text_item?.text ?? "") : null;

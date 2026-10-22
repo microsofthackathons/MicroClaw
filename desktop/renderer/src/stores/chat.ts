@@ -4,6 +4,7 @@ import { useSessionStore } from "./sessions";
 import { redactPii } from "@/utils/pii-scanner";
 import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
 import { canonicalAgentId } from "../../../src/agent-catalog";
+import { ChatRunTracker } from "./chat-run-tracker";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -247,6 +248,32 @@ export const useChatStore = defineStore("chat", () => {
     sending: boolean;
   }
   const sessionStateCache = new Map<string, SessionStreamState>();
+  const serverRuns = new ChatRunTracker();
+
+  function synchronizeServerRun(preferred?: string, authoritativeIdle = false) {
+    const key = resolvedSessionKey.value || sessionKey.value;
+    const active = serverRuns.active(key, preferred || chatRunId.value);
+    if (active) {
+      if (!streaming.value || (chatRunId.value !== null && chatRunId.value !== active.id)) {
+        streamText.value = "";
+        streamTextOffset.value = 0;
+        _toolPhaseActive.value = false;
+        streamToolCalls.value = [];
+      }
+      chatRunId.value = active.id;
+      streaming.value = true;
+      streamStartedAt.value = active.startedAt;
+      lastStreamEventAt.value = Date.now();
+    } else if (
+      authoritativeIdle ||
+      (chatRunId.value && serverRuns.isClosed(key, chatRunId.value))
+    ) {
+      streaming.value = false;
+      sending.value = false;
+      streamStartedAt.value = null;
+      lastStreamEventAt.value = null;
+    }
+  }
 
   /** Move all renderer-owned state from a local alias to its Gateway key. */
   function _canonicalizeSessionKey(aliasKey: string, canonicalKey: string) {
@@ -289,7 +316,11 @@ export const useChatStore = defineStore("chat", () => {
     const key = sessionKey.value;
     if (!key) return;
     const hasCompletedTools = Object.keys(completedToolCallsMap.value).length > 0;
-    if (streaming.value || sending.value || hasCompletedTools) {
+    const pendingTerminalOutput =
+      chatRunId.value &&
+      serverRuns.isClosed(resolvedSessionKey.value || key, chatRunId.value) &&
+      !serverRuns.outputCommitted(resolvedSessionKey.value || key, chatRunId.value);
+    if (streaming.value || sending.value || hasCompletedTools || pendingTerminalOutput) {
       sessionStateCache.set(key, {
         streaming: streaming.value,
         streamText: streamText.value,
@@ -632,6 +663,8 @@ export const useChatStore = defineStore("chat", () => {
    * tool_result, and thinking blocks.  Used for rendering the main chat bubble.
    */
   function extractTextOnly(message: unknown): string | null {
+    if (!message || typeof message !== "object")
+      return typeof message === "string" ? message : null;
     const m = message as Record<string, unknown>;
     if (typeof m.content === "string") return m.content;
     if (typeof m.text === "string") return m.text;
@@ -766,7 +799,9 @@ export const useChatStore = defineStore("chat", () => {
 
     // Try to restore cached state (streaming session we switched away from)
     if (_restoreState(targetKey)) {
-      return; // restored — don't overwrite with loadHistory
+      synchronizeServerRun();
+      await loadHistory({ showLoading: false });
+      return;
     }
 
     // Reset all volatile state for a clean session switch
@@ -790,7 +825,9 @@ export const useChatStore = defineStore("chat", () => {
     // Capture the session key at call time — if the user switches sessions
     // while we await, we must not write stale data into the new session.
     const callerSessionKey = sessionKey.value;
+    let acceptedSessionKey = callerSessionKey;
     const callerResolvedKey = resolvedSessionKey.value;
+    const runtimeRevision = serverRuns.revision(callerResolvedKey || callerSessionKey);
     // Only show loading spinner on initial load (no existing messages),
     // not during background refresh polls — avoids full-screen flicker.
     const isInitialLoad = messages.value.length === 0;
@@ -805,6 +842,15 @@ export const useChatStore = defineStore("chat", () => {
       // the user switched to a different session while we awaited.
       if (seq !== _loadSeq) return;
       if (sessionKey.value !== callerSessionKey) return;
+      const canonicalKey = typeof res.sessionKey === "string" ? res.sessionKey : key;
+      _canonicalizeSessionKey(callerSessionKey, canonicalKey);
+      acceptedSessionKey = sessionKey.value;
+      const runtimeAccepted = serverRuns.snapshot(
+        canonicalKey,
+        res.sessionInfo,
+        canonicalKey === key ? runtimeRevision : 0,
+      );
+      synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
       const raw = Array.isArray(res.messages) ? res.messages : [];
       const filtered = raw
         .map((m) => stripSystemLines(m))
@@ -821,9 +867,22 @@ export const useChatStore = defineStore("chat", () => {
         // Update last message preview only when content changed
         _updateLastPreview();
       }
+      if (
+        runtimeAccepted &&
+        !res.sessionInfo?.hasActiveRun &&
+        chatRunId.value &&
+        serverRuns.isClosed(canonicalKey, chatRunId.value)
+      ) {
+        serverRuns.commitOutput(canonicalKey, chatRunId.value);
+        streamToolCalls.value = [];
+      }
       // Only clear streaming state if we're not actively streaming
       // (a new stream may have started while loadHistory was in flight)
-      if (!streaming.value) {
+      const pendingTerminalOutput =
+        chatRunId.value &&
+        serverRuns.isClosed(canonicalKey, chatRunId.value) &&
+        !serverRuns.outputCommitted(canonicalKey, chatRunId.value);
+      if (!streaming.value && !pendingTerminalOutput) {
         streamText.value = "";
         chatRunId.value = null;
         streamStartedAt.value = null;
@@ -832,10 +891,10 @@ export const useChatStore = defineStore("chat", () => {
       if (changed) sessionStateCache.delete(sessionKey.value);
     } catch (err) {
       if (seq !== _loadSeq) return;
-      if (sessionKey.value !== callerSessionKey) return;
+      if (sessionKey.value !== acceptedSessionKey) return;
       lastError.value = classifyChatError(String(err));
     } finally {
-      if (seq === _loadSeq && sessionKey.value === callerSessionKey) loading.value = false;
+      if (seq === _loadSeq && sessionKey.value === acceptedSessionKey) loading.value = false;
     }
   }
 
@@ -907,6 +966,21 @@ export const useChatStore = defineStore("chat", () => {
   function handleChatEvent(payload: ChatEventPayload) {
     // The gateway normalizes session keys (e.g. "default" → "agent:main:default").
     const incoming = payload.sessionKey;
+    if (payload.state === "final" && serverRuns.outputCommitted(incoming, payload.runId)) {
+      if (incoming === sessionKey.value || incoming === resolvedSessionKey.value)
+        void loadHistory({ showLoading: false });
+      return;
+    }
+    const terminal =
+      payload.state === "final" ||
+      payload.state === "aborted" ||
+      payload.state === "error" ||
+      payload.lifecyclePhase === "end" ||
+      payload.lifecyclePhase === "error";
+    if (terminal) serverRuns.finish(incoming, payload.runId);
+    else if (payload.state === "status" || payload.state === "delta") {
+      if (!serverRuns.begin(incoming, payload.runId) && payload.runId) return;
+    }
 
     // Check if this event belongs to the current active session
     const isActive = incoming === sessionKey.value || incoming === resolvedSessionKey.value;
@@ -916,6 +990,21 @@ export const useChatStore = defineStore("chat", () => {
       // Try to match against cached sessions' resolved keys
       for (const [cachedKey, cached] of sessionStateCache) {
         if (incoming === cachedKey || incoming === cached.resolvedSessionKey) {
+          if (terminal && cached.chatRunId && cached.chatRunId !== payload.runId) return;
+          const active = serverRuns.active(incoming, cached.chatRunId);
+          if (!terminal && active && !cached.streaming) {
+            cached.streaming = true;
+            cached.chatRunId = active.id;
+            cached.streamStartedAt = active.startedAt;
+            cached.streamText = "";
+            cached.streamToolCalls = [];
+          }
+          if (payload.state === "status") {
+            cached.streaming = active !== null;
+            cached.chatRunId = active?.id ?? cached.chatRunId;
+            cached.streamStartedAt = active?.startedAt ?? null;
+            return;
+          }
           _handleBackgroundEvent(cachedKey, cached, payload);
           return;
         }
@@ -934,8 +1023,18 @@ export const useChatStore = defineStore("chat", () => {
 
     // Update activity timestamp only for events matching the active session
     lastStreamEventAt.value = Date.now();
+    if (terminal && chatRunId.value && chatRunId.value !== payload.runId) return;
+    if (payload.state === "status") {
+      synchronizeServerRun(payload.lifecyclePhase === "start" ? payload.runId : undefined);
+      if (payload.lifecyclePhase === "error")
+        lastError.value = classifyChatError(payload.errorMessage ?? "chat error");
+      if (payload.lifecyclePhase) void loadHistory({ showLoading: false });
+      return;
+    }
 
     if (payload.state === "delta") {
+      synchronizeServerRun();
+      if (chatRunId.value && chatRunId.value !== payload.runId) return;
       const legacyText =
         typeof payload.deltaText === "string" ? null : extractText(payload.message);
       streamText.value = applyChatDelta(streamText.value, payload, legacyText);
@@ -959,7 +1058,6 @@ export const useChatStore = defineStore("chat", () => {
       ) {
         lastError.value = null;
       }
-
       // Save tool calls to the completed map, keyed by assistant group index.
       // Count existing assistant groups in messages to align with the grouping
       // logic in ChatView (which maps groupIndex → assistantIdx).
@@ -1075,6 +1173,10 @@ export const useChatStore = defineStore("chat", () => {
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
     }
+    if (terminal) {
+      serverRuns.commitOutput(incoming, payload.runId);
+      synchronizeServerRun();
+    }
   }
 
   /** Handle an incoming agent tool event from the gateway. */
@@ -1099,6 +1201,12 @@ export const useChatStore = defineStore("chat", () => {
       incoming === resolvedSessionKey.value ||
       (streaming.value && incoming.endsWith(sessionKey.value));
     if (!isActive) return;
+    if (serverRuns.isClosed(incoming, payload.runId)) return;
+    if (payload.data.phase === "start") {
+      serverRuns.begin(incoming, payload.runId);
+      synchronizeServerRun();
+    }
+    if (chatRunId.value && chatRunId.value !== payload.runId) return;
 
     lastStreamEventAt.value = Date.now();
 
@@ -1345,6 +1453,7 @@ export const useChatStore = defineStore("chat", () => {
     if (!streaming.value) return;
     const key = resolvedSessionKey.value || sessionKey.value;
     const startedAt = streamStartedAt.value;
+    const runtimeRevision = serverRuns.revision(key);
     try {
       const res = await window.openclaw.chat.loadHistory(key);
       if (
@@ -1353,6 +1462,15 @@ export const useChatStore = defineStore("chat", () => {
         streamStartedAt.value !== startedAt
       )
         return;
+      const runtimeAccepted = serverRuns.snapshot(key, res.sessionInfo, runtimeRevision);
+      synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
+      if (
+        res.sessionInfo &&
+        (!streaming.value || chatRunId.value !== null || res.sessionInfo.hasActiveRun)
+      ) {
+        if (!streaming.value) await loadHistory({ showLoading: false });
+        return;
+      }
       const serverMsgs = (Array.isArray(res.messages) ? res.messages : [])
         .map((message) => stripSystemLines(message))
         .filter(
@@ -1380,13 +1498,24 @@ export const useChatStore = defineStore("chat", () => {
 
   /** Abort current generation. */
   async function abort() {
+    const key = resolvedSessionKey.value || sessionKey.value;
+    const runId = chatRunId.value;
     try {
-      const key = resolvedSessionKey.value || sessionKey.value;
       await window.openclaw.chat.abort(key);
-    } catch {
-      // ignore
+      if (runId) serverRuns.finish(key, runId);
+      if ((resolvedSessionKey.value || sessionKey.value) !== key) return;
+      synchronizeServerRun();
+    } catch (error) {
+      if ((resolvedSessionKey.value || sessionKey.value) === key) {
+        lastError.value = classifyChatError(String(error));
+      } else {
+        console.warn("[chat] Background cancellation failed", {
+          errorClass: error instanceof Error ? error.name : "unknown",
+        });
+      }
+      return;
     }
-    streaming.value = false;
+    if (!serverRuns.active(resolvedSessionKey.value || sessionKey.value)) streaming.value = false;
   }
 
   /** Start a new session (preserves the old one). */
@@ -1539,6 +1668,9 @@ export const useChatStore = defineStore("chat", () => {
       cached.streamStartedAt = null;
       cached.sending = false;
       sessionStateCache.set(cachedKey, cached);
+    }
+    if (payload.state === "final" || payload.state === "aborted" || payload.state === "error") {
+      serverRuns.commitOutput(payload.sessionKey, payload.runId);
     }
   }
 

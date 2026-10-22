@@ -277,8 +277,8 @@ openclaw config set session.dmScope per-account-channel-peer
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `seq` | `number?` | 消息序列号 |
-| `message_id` | `number?` | 消息唯一 ID |
+| `seq` | `number` / `string`（可选） | 消息序列号 |
+| `message_id` | `number` / `string`（可选） | 消息唯一 ID |
 | `from_user_id` | `string?` | 发送者 ID |
 | `to_user_id` | `string?` | 接收者 ID |
 | `create_time_ms` | `number?` | 创建时间戳（ms） |
@@ -287,6 +287,10 @@ openclaw config set session.dmScope per-account-channel-peer
 | `message_state` | `number?` | `0` = NEW, `1` = GENERATING, `2` = FINISH |
 | `item_list` | `MessageItem[]?` | 消息内容列表 |
 | `context_token` | `string?` | 会话上下文令牌，回复时需回传 |
+
+`getUpdates` 将数值形式的 `message_id` 和 `seq` 原始 JSON 字面量保留为十进制字符串，
+因此不会丢失超过 JavaScript 安全整数范围的精度。远程审批要求两个字段均为有效的非负
+uint64 十进制值；不会还原已舍入的数值，也不会补造缺失的游标。普通聊天仍允许这些字段缺省。
 
 #### MessageItem
 

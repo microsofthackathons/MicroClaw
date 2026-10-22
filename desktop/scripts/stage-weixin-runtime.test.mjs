@@ -6,6 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  prepareWeixinPluginResource,
+  WEIXIN_RUNTIME_MANIFEST_CONTRACT,
+} from "./prepare-weixin-plugin-resource.mjs";
 import { stageWeixinRuntime } from "./stage-weixin-runtime.mjs";
 
 const sourceDir = path.resolve(
@@ -130,7 +134,7 @@ test("staged source and JavaScript use only the retained 10.2 SDK subpaths", () 
   assert.equal(pkg.engines.node, ">=24.16.0 <25 || >=26.1.0");
 });
 
-test("emitted authorization preserves pairing and command access-group behavior", async () => {
+test("emitted authorization preserves pairing and fails closed without an allowlist", async () => {
   const { resolveWeixinCommandAuthorization: authorize } = await stagedImport(
     "dist/src/auth/authorization.js",
   );
@@ -138,6 +142,7 @@ test("emitted authorization preserves pairing and command access-group behavior"
     senderAllowedForCommands: true,
     commandAuthorized: true,
   });
+
   assert.deepEqual(authorize({}, "/status", "stranger", ["owner"]), {
     senderAllowedForCommands: false,
     commandAuthorized: false,
@@ -147,7 +152,7 @@ test("emitted authorization preserves pairing and command access-group behavior"
     commandAuthorized: undefined,
   });
   assert.deepEqual(authorize({}, "/status", "legacy", []), {
-    senderAllowedForCommands: true,
+    senderAllowedForCommands: false,
     commandAuthorized: false,
   });
   assert.deepEqual(
@@ -156,6 +161,46 @@ test("emitted authorization preserves pairing and command access-group behavior"
       senderAllowedForCommands: false,
       commandAuthorized: true,
     },
+  );
+});
+
+test("emitted dispatch aborts when the authenticated account generation changes", () => {
+  const source = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "messaging", "process-message.js"),
+    "utf8",
+  );
+  assert.match(source, /onWeixinAccountChanged/);
+  assert.match(source, /watchWeixinAccountState/);
+  assert.match(source, /setInterval\(abortIfAccountChanged,\s*50\)/);
+  assert.match(source, /accountAbortController\.abort/);
+  assert.match(source, /abortSignal:\s*accountAbortController\.signal/);
+  assert.match(source, /assertAccountStillActive\(\);\s*await sendMessageWeixin/);
+  assert.match(source, /assertAccountStillActive\(\);\s*await sendWeixinMediaFile/);
+  assert.doesNotMatch(source, /legacyUserId/);
+
+  const sendSource = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "messaging", "send.js"),
+    "utf8",
+  );
+  assert.match(sendSource, /assertSendActive\(opts\);\s*await sendMessageApi/g);
+
+  const mediaSource = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "messaging", "send-media.js"),
+    "utf8",
+  );
+  assert.match(mediaSource, /await uploadVideoToWeixin[\s\S]*assertActive\(\)/);
+  assert.match(mediaSource, /await uploadFileToWeixin[\s\S]*assertActive\(\)/);
+  assert.match(mediaSource, /await uploadFileAttachmentToWeixin[\s\S]*assertActive\(\)/);
+
+  const approvalSource = fs.readFileSync(
+    path.join(stageDir, "dist", "src", "security", "remote-approval.js"),
+    "utf8",
+  );
+  assert.match(approvalSource, /if \(!this\.isActiveAccount\(\)\)/);
+  assert.match(approvalSource, /isActive:\s*\(\) => this\.isActiveAccount\(to\)/);
+  assert.match(
+    approvalSource,
+    /isActiveWeixinAccount\(this\.options\.accountId, this\.options\.token, to\)/,
   );
 });
 
@@ -170,7 +215,7 @@ test("emitted login reload atomically updates only the Weixin timestamp", async 
     },
   };
   sdk.reset(original);
-  await triggerWeixinChannelReload();
+  assert.equal(await triggerWeixinChannelReload(), true);
   assert.notEqual(sdk.config, original);
   const stamp = sdk.config.channels["openclaw-weixin"].channelConfigUpdatedAt;
   assert.ok(Number.isFinite(Date.parse(stamp)));
@@ -180,8 +225,18 @@ test("emitted login reload atomically updates only the Weixin timestamp", async 
   assert.equal(original.channels["openclaw-weixin"].channelConfigUpdatedAt, undefined);
 
   sdk.reset({});
-  await triggerWeixinChannelReload();
+  assert.equal(await triggerWeixinChannelReload(), true);
   assert.ok(sdk.config.channels["openclaw-weixin"].channelConfigUpdatedAt);
+});
+
+test("emitted CLI login reports structured activation outcomes", () => {
+  const channel = fs.readFileSync(path.join(stageDir, "dist", "src", "channel.js"), "utf8");
+  assert.match(channel, /MICROCLAW_WEIXIN_LOGIN_OUTCOME_TOKEN/);
+  assert.match(channel, /\[microclaw-weixin-activation:/);
+  assert.match(channel, /reload-requested/);
+  assert.match(channel, /already-active/);
+  assert.match(channel, /reload-failed/);
+  assert.match(channel, /await triggerWeixinChannelReload\(\)/);
 });
 
 test("failed config mutation preserves configuration and logs the failure", async () => {
@@ -189,7 +244,7 @@ test("failed config mutation preserves configuration and logs the failure", asyn
   const { triggerWeixinChannelReload } = await stagedImport("dist/src/auth/accounts.js");
   const original = { gateway: { port: 18789 } };
   sdk.reset(original, new Error("write denied"));
-  await triggerWeixinChannelReload();
+  assert.equal(await triggerWeixinChannelReload(), false);
   assert.equal(sdk.config, original);
   const logs = fs
     .readdirSync(path.join(tempDir, "logs"))
@@ -204,4 +259,32 @@ test("staging rejects mismatched upstream versions", () => {
   fs.mkdirSync(mismatch);
   fs.writeFileSync(path.join(mismatch, "package.json"), JSON.stringify({ version: "0.0.0" }));
   assert.throws(() => stageWeixinRuntime(sourceDir, mismatch), /versions do not match/);
+});
+
+test("prepared package resource is provenance-pinned and excludes a nested OpenClaw core", () => {
+  const destination = path.join(tempDir, "packaged-resource");
+  const manifest = prepareWeixinPluginResource({ source: sourceDir, destination });
+  assert.equal(manifest.contract, WEIXIN_RUNTIME_MANIFEST_CONTRACT);
+  assert.equal(manifest.packageVersion, "2.4.6");
+  assert.equal(manifest.sdkCompatibility, "2026.10.2");
+  assert.ok(manifest.files.length > 0);
+  assert.ok(manifest.requiredOpenClawExports.includes("./plugin-sdk/command-auth-native"));
+  assert.ok(!manifest.requiredOpenClawExports.includes("./plugin-sdk/infra-runtime"));
+  assert.equal(fs.existsSync(path.join(destination, "node_modules", "openclaw")), false);
+  assert.equal(
+    JSON.parse(
+      fs.readFileSync(path.join(destination, "node_modules", "qrcode-terminal", "package.json")),
+    ).version,
+    "0.12.0",
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(destination, "node_modules", "zod", "package.json")))
+      .version,
+    "4.4.3",
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(destination, "microclaw-runtime.json"), "utf8"))
+      .treeSha256,
+    manifest.treeSha256,
+  );
 });

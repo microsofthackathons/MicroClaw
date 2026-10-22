@@ -1,10 +1,16 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import { classifyLiteralFilesystemCommand } from "./windows-node-mxc-literal-filesystem-command";
+import {
+  normalizeWeixinProviderInteger,
+  isLaterWeixinProviderCursor,
+} from "./weixin-provider-integer";
 
 export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT =
   "microclaw.windows-weixin-remote-approval.v1";
 export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS = 2 * 60_000;
+export const WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE = "native-exact-conversation-durable.v2";
 export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS = 3;
 
 const CHALLENGE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -19,10 +25,8 @@ const DANGEROUS_PROMPT_UNICODE_PATTERN =
   /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
 const SAFE_SIMPLE_ARGUMENT_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,15}$/;
 const SAFE_NUMERIC_ARGUMENT_PATTERN = /^-?(?:0|[1-9][0-9]{0,18})(?:\.[0-9]{1,8})?$/;
-const SAFE_SWITCH_PATTERN =
-  /^(?:--?[A-Za-z][A-Za-z0-9-]{0,31}|\/[A-Za-z][A-Za-z0-9-]{0,31})$/;
-const SAFE_RELATIVE_FILE_PATTERN =
-  /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.[A-Za-z0-9]{1,8}$/;
+const SAFE_SWITCH_PATTERN = /^(?:--?[A-Za-z][A-Za-z0-9-]{0,31}|\/[A-Za-z][A-Za-z0-9-]{0,31})$/;
+const SAFE_RELATIVE_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.[A-Za-z0-9]{1,8}$/;
 const SAFE_STRUCTURAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,159}$/;
 const SENSITIVE_SEMANTIC_PATTERN =
   /(?:accountkey|authorization|auth|bearer|clientsecret|cookie|credential|key|passphrase|passwd|password|privatekey|proxyauthorization|sas|secret|setcookie|signature|sig|token)/i;
@@ -53,6 +57,7 @@ export interface WeixinRemoteApprovalOwnerBinding {
 export interface WeixinRemoteApprovalConfiguration {
   enabled: boolean;
   owner: WeixinRemoteApprovalOwnerBinding | null;
+  consentScope?: typeof WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE;
 }
 
 export function migrateWeixinRemoteApprovalConfiguration(
@@ -73,10 +78,24 @@ export function migrateWeixinRemoteApprovalConfiguration(
       typeof owner.userId === "string" ? owner.userId : "",
       typeof owner.boundAt === "string" ? owner.boundAt : new Date(0).toISOString(),
     );
-    return { enabled: record.enabled === true, owner: normalized };
+    return {
+      enabled: record.enabled === true,
+      owner: normalized,
+      ...(record.consentScope === WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
+        ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
+        : {}),
+    };
   } catch {
     return { enabled: false, owner: null };
   }
+}
+
+export function projectWeixinRemoteApprovalRuntimeConfiguration(
+  stored: unknown,
+  runtimeAuthorized: boolean,
+): WeixinRemoteApprovalConfiguration {
+  const validated = migrateWeixinRemoteApprovalConfiguration(stored);
+  return { ...validated, enabled: validated.enabled && runtimeAuthorized };
 }
 
 export interface WeixinRemoteApprovalSource {
@@ -84,13 +103,17 @@ export interface WeixinRemoteApprovalSource {
   senderId: string;
   conversationId: string;
   messageId: string;
-  cursor: number;
+  cursor: number | string;
   agentId: string;
   sessionKey: string;
   direct: boolean;
   forwarded: boolean;
   quoted: boolean;
   receivedAtUnixMs: number;
+  sentAtUnixMs?: number;
+  runIds?: string[];
+  gatewayGeneration?: string;
+  providerSessionKey?: string;
 }
 
 export interface WeixinRemoteApprovalSecurityBinding {
@@ -100,6 +123,48 @@ export interface WeixinRemoteApprovalSecurityBinding {
   activationLeaseHash: string;
   requestedMode: "limited-dacl" | "full";
   effectiveMode: string;
+}
+
+export function weixinApprovalSourceSessionKey(approval: WindowsNodeMxcGatewayApproval): string {
+  return approval.origin?.runSessionKey ?? approval.sessionKey;
+}
+
+export function weixinApprovalOriginRejection(
+  approval: WindowsNodeMxcGatewayApproval,
+  source: WeixinRemoteApprovalSource,
+): WeixinRemoteApprovalRejectionReason | null {
+  const origin = approval.origin;
+  if (!origin) return "source-origin-unavailable";
+  if (
+    origin.channel !== "openclaw-weixin" ||
+    origin.accountId !== source.accountId ||
+    origin.to !== source.senderId
+  )
+    return "source-provider-mismatch";
+  if (
+    source.gatewayGeneration !== origin.gatewayGeneration ||
+    !source.runIds?.includes(origin.runId)
+  )
+    return "source-run-mismatch";
+  return null;
+}
+
+export function weixinApprovalOriginMatchesSecurity(
+  approval: WindowsNodeMxcGatewayApproval,
+  security: WeixinRemoteApprovalSecurityBinding,
+): boolean {
+  const origin = approval.origin;
+  return (
+    !origin ||
+    (origin.contract === "microclaw.gateway-approval-origin.v1" &&
+      origin.gatewayGeneration === security.gatewayGeneration &&
+      origin.nodeId === security.nodeId &&
+      origin.executionSessionKey === approval.sessionKey &&
+      origin.agentId === approval.agent &&
+      origin.runId.length > 0 &&
+      origin.toolCallId.length > 0 &&
+      origin.runSessionKey.length > 0)
+  );
 }
 
 export interface WeixinRemoteApprovalBatchRequest {
@@ -112,6 +177,7 @@ export interface WeixinRemoteApprovalCreateInput {
   security: WeixinRemoteApprovalSecurityBinding;
   locale: "en-US" | "zh-CN";
   now?: number;
+  expiresAtUnixMs?: number;
 }
 
 export interface WeixinRemoteApprovalDelivery {
@@ -122,7 +188,7 @@ export interface WeixinRemoteApprovalDelivery {
   senderId: string;
   conversationId: string;
   sourceMessageId: string;
-  sourceCursor: number;
+  sourceCursor: number | string;
   expiresAtUnixMs: number;
   text: string;
 }
@@ -132,13 +198,14 @@ export interface WeixinRemoteApprovalCandidate {
   senderId: string;
   conversationId: string;
   messageId: string;
-  cursor: number;
+  cursor: number | string;
   direct: boolean;
   forwarded: boolean;
   quoted: boolean;
   ambiguous?: boolean;
   text: string;
   now?: number;
+  sentAtUnixMs?: number;
   requests?: WeixinRemoteApprovalBatchRequest[];
   security?: WeixinRemoteApprovalSecurityBinding;
 }
@@ -153,7 +220,7 @@ export type WeixinRemoteApprovalResolution =
       status: "approved" | "denied";
       challengeId: string;
       approvalIds: string[];
-      decision: "allow-once" | "deny";
+      decision: "allow-once" | "allow-always" | "deny";
       acknowledgement: string;
     }
   | {
@@ -172,7 +239,8 @@ export type WeixinRemoteApprovalResolution =
         | "rate-limited"
         | "replayed"
         | "inactive"
-        | "malformed";
+        | "malformed"
+        | "consent-scope";
       acknowledgement: string;
     };
 
@@ -203,8 +271,11 @@ interface ActiveChallenge {
   createdAtUnixMs: number;
   expiresAtUnixMs: number;
   attempts: number;
-  lastCandidateCursor: number;
+  lastCandidateCursor: number | string;
   locale: "en-US" | "zh-CN";
+  deliveredAtUnixMs: number | null;
+  reminderAtUnixMs: number | null;
+  reminderCount: number;
 }
 
 interface ClosedChallenge {
@@ -217,6 +288,7 @@ export interface WeixinRemoteApprovalNotice {
   challengeId: string;
   accountId: string;
   senderId: string;
+  conversationId: string;
   acknowledgement: string;
 }
 
@@ -250,6 +322,16 @@ function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+export function weixinRemoteApprovalConsentHash(
+  configuration: WeixinRemoteApprovalConfiguration,
+): string | null {
+  return configuration.enabled &&
+    configuration.owner &&
+    configuration.consentScope === WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
+    ? hash(canonicalize({ owner: configuration.owner, consentScope: configuration.consentScope }))
+    : null;
+}
+
 function canonicalize(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
   if (value && typeof value === "object") {
@@ -277,16 +359,18 @@ function securityBindingHash(
     canonicalize({
       source: {
         accountId: normalizeIdentity(source.accountId),
-        senderId: normalizeIdentity(source.senderId),
+        senderId: source.senderId,
         conversationId: normalizeOpaqueId(source.conversationId),
         messageId: normalizeOpaqueId(source.messageId),
-        cursor: source.cursor,
+        cursor: normalizeWeixinProviderInteger(source.cursor),
         agentId: normalizeOpaqueId(source.agentId),
         sessionKey: normalizeOpaqueId(source.sessionKey),
         direct: source.direct,
         forwarded: source.forwarded,
         quoted: source.quoted,
         receivedAtUnixMs: source.receivedAtUnixMs,
+        runIds: source.runIds ?? [],
+        gatewayGeneration: source.gatewayGeneration ?? null,
       },
       requests: requests.map(({ approval }) => ({
         id: approval.id,
@@ -299,6 +383,7 @@ function securityBindingHash(
         declaredAccess: approval.declaredAccess,
         agent: approval.agent,
         sessionKey: approval.sessionKey,
+        origin: approval.origin ?? null,
         hasMutableFileOperand: approval.hasMutableFileOperand,
         allowedDecisions: approval.allowedDecisions,
       })),
@@ -437,9 +522,7 @@ function exactWindowsCommand(values: string[]): string {
   return values.map(quoteWindowsArgument).join(" ");
 }
 
-function approvalHasSafeStructuredPresentation(
-  approval: WindowsNodeMxcGatewayApproval,
-): boolean {
+function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayApproval): boolean {
   const canonicalCwdIsSafe =
     approval.canonicalCwd === "isolated-scratch:v1" || isSafeWindowsPath(approval.canonicalCwd);
   return (
@@ -448,7 +531,9 @@ function approvalHasSafeStructuredPresentation(
     canonicalCwdIsSafe &&
     SAFE_STRUCTURAL_ID_PATTERN.test(approval.sessionKey) &&
     (approval.agent === null || SAFE_STRUCTURAL_ID_PATTERN.test(approval.agent)) &&
-    argumentsCanBeSafelyRendered(approval.arguments) &&
+    (argumentsCanBeSafelyRendered(approval.arguments) ||
+      (classifyLiteralFilesystemCommand(approval) !== null &&
+        !approval.arguments.some(hasSensitiveSemantics))) &&
     approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
     approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path))
   );
@@ -475,19 +560,20 @@ function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]
     ) {
       return false;
     }
-    return [
-      exactPromptValue(approval.command),
-      exactPromptValue(approval.executablePath || approval.executable),
-      approval.executableSha256,
-      renderExactArguments(approval.arguments),
-      exactPromptValue(approval.canonicalCwd),
-      renderExactDeclarations(approval.declaredAccess),
-      exactPromptValue(approval.agent ?? ""),
-      exactPromptValue(approval.sessionKey),
-      String(approval.hasMutableFileOperand),
-      approval.allowedDecisions.join(","),
-    ].every((line) => line.length <= MAX_PROMPT_LINE);
+    return true;
   });
+}
+
+function renderExactField(label: string, value: string): string[] {
+  if (label.length + value.length + 2 <= MAX_PROMPT_LINE) return [`${label}: ${value}`];
+  const fragments: string[] = [];
+  for (let index = 0; index < value.length; index += 100) {
+    fragments.push(value.slice(index, index + 100));
+  }
+  return [
+    `${label} [JSON fragments; join without separators]:`,
+    ...fragments.map((fragment, index) => `  [${index + 1}/${fragments.length}] ${fragment}`),
+  ];
 }
 
 export function renderWeixinRemoteApprovalPrompt(params: {
@@ -496,48 +582,69 @@ export function renderWeixinRemoteApprovalPrompt(params: {
   requests: WeixinRemoteApprovalBatchRequest[];
   security: WeixinRemoteApprovalSecurityBinding;
   locale: "en-US" | "zh-CN";
+  bareReplies?: boolean;
+  allowDurable?: boolean;
 }): string {
+  const suffix = params.bareReplies ? "" : ` ${params.code}`;
   const lines =
     params.locale === "zh-CN"
       ? [
           `[MicroClaw 安全审批 #${params.code}]`,
-          "仅批准下列当前请求；不会创建永久授权，也不会批准未来请求。",
+          "决策仅绑定下列精确命令、可执行内容、参数、目录、文件权限、策略、代理和会话；永久审批也不会扩大范围。",
           ...params.requests.flatMap(({ approval }, index) => [
-            `请求 ${index + 1} 命令: ${exactPromptValue(approval.command)}`,
+            `请求标识: ${hash(approval.id).slice(0, 16)}`,
+            ...renderExactField(`请求 ${index + 1} 命令`, exactPromptValue(approval.command)),
             `可执行文件: ${exactPromptValue(approval.executablePath || approval.executable)}`,
             `SHA-256: ${approval.executableSha256}`,
-            `参数: ${renderExactArguments(approval.arguments)}`,
-            `工作目录: ${exactPromptValue(approval.canonicalCwd)}`,
-            `文件访问: ${renderExactDeclarations(approval.declaredAccess)}`,
-            `代理/会话: ${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
+            ...renderExactField("参数", renderExactArguments(approval.arguments)),
+            ...renderExactField("工作目录", exactPromptValue(approval.canonicalCwd)),
+            ...renderExactField("文件访问", renderExactDeclarations(approval.declaredAccess)),
+            ...renderExactField(
+              "代理/会话",
+              `${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
+            ),
             `可变文件操作数: ${approval.hasMutableFileOperand ? "是" : "否"}`,
             `本地可用决策: ${approval.allowedDecisions.join(", ")}`,
           ]),
           `模式: ${params.security.requestedMode} / ${exactPromptValue(params.security.effectiveMode)}`,
           `过期时间: ${new Date(params.expiresAtUnixMs).toISOString()}`,
-          `回复: 1 ${params.code}（仅批准此请求一次）`,
-          `      2 ${params.code}（拒绝）`,
-          `      3 ${params.code}（仅批准本消息列出的全部 ${params.requests.length} 个请求一次）`,
+          `回复: 1${suffix}（仅允许一次）`,
+          params.allowDurable
+            ? `      2${suffix}（在此精确范围永久允许）`
+            : `      2${suffix} 不可用：须先关闭 MXC，再通过唯一的本地原生提示重新启用审批。`,
+          `      3${suffix}（拒绝）`,
+          params.bareReplies
+            ? `若无法验证回复时序，请附带本请求代码，例如 1 ${params.code}。其他输入不作决策，截止时间不延长。`
+            : "无法预先验证裸数字回复的时序；请使用上述带代码的回复。其他输入不作决策，截止时间不延长。",
         ]
       : [
           `[MicroClaw Security Approval #${params.code}]`,
-          "This approves only the current request(s); it creates no durable or future approval.",
+          "Decisions bind only the exact command/content, arguments, CWD, access, policy, agent and conversation shown. Always does not broaden that scope.",
           ...params.requests.flatMap(({ approval }, index) => [
-            `Request ${index + 1} command: ${exactPromptValue(approval.command)}`,
+            `Request reference: ${hash(approval.id).slice(0, 16)}`,
+            ...renderExactField(`Request ${index + 1} command`, exactPromptValue(approval.command)),
             `Executable: ${exactPromptValue(approval.executablePath || approval.executable)}`,
             `SHA-256: ${approval.executableSha256}`,
-            `Args: ${renderExactArguments(approval.arguments)}`,
-            `CWD: ${exactPromptValue(approval.canonicalCwd)}`,
-            `File access: ${renderExactDeclarations(approval.declaredAccess)}`,
-            `Agent/session: ${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
+            ...renderExactField("Args", renderExactArguments(approval.arguments)),
+            ...renderExactField("CWD", exactPromptValue(approval.canonicalCwd)),
+            ...renderExactField("File access", renderExactDeclarations(approval.declaredAccess)),
+            ...renderExactField(
+              "Agent/session",
+              `${exactPromptValue(approval.agent ?? "")} / ${exactPromptValue(approval.sessionKey)}`,
+            ),
             `Mutable file operand: ${approval.hasMutableFileOperand ? "yes" : "no"}`,
             `Locally available decisions: ${approval.allowedDecisions.join(", ")}`,
           ]),
           `Mode: ${params.security.requestedMode} / ${exactPromptValue(params.security.effectiveMode)}`,
           `Expires: ${new Date(params.expiresAtUnixMs).toISOString()}`,
-          `Reply: 1 ${params.code} (approve this request once)`,
-          `       2 ${params.code} (deny)`,
-          `       3 ${params.code} (approve all ${params.requests.length} listed request(s) once)`,
+          `Reply: 1${suffix} (allow once)`,
+          params.allowDurable
+            ? `       2${suffix} (always for this exact scope)`
+            : `       2${suffix} unavailable: renew local native consent by turning MXC off and enabling it again.`,
+          `       3${suffix} (deny)`,
+          params.bareReplies
+            ? `If reply freshness cannot be verified, include this request's code, e.g. 1 ${params.code}. Other input makes no decision or deadline extension.`
+            : "Bare-reply freshness cannot be established in advance: use the coded replies above. Other input makes no decision or deadline extension.",
         ];
   return lines.join("\n");
 }
@@ -558,6 +665,48 @@ function acknowledgement(locale: "en-US" | "zh-CN", result: string): string {
   return (locale === "zh-CN" ? zh : en)[result] ?? en.invalid;
 }
 
+export type WeixinRemoteApprovalRejectionReason =
+  | "disabled"
+  | "source-not-direct"
+  | "source-identity-mismatch"
+  | "source-owner-unavailable"
+  | "source-metadata-invalid"
+  | "source-session-mismatch"
+  | "source-agent-mismatch"
+  | "source-origin-unavailable"
+  | "source-run-mismatch"
+  | "source-provider-mismatch"
+  | "ambiguous-request-set"
+  | "presentation-sensitive"
+  | "presentation-unsupported"
+  | "presentation-too-long"
+  | "security-binding-invalid";
+
+export type WeixinRemoteApprovalChallengeResult =
+  | { status: "created"; delivery: WeixinRemoteApprovalDelivery }
+  | { status: "rejected"; reason: WeixinRemoteApprovalRejectionReason };
+
+export function weixinRemoteApprovalWireSourceRejection(
+  configuration: WeixinRemoteApprovalConfiguration,
+  source: Pick<WeixinRemoteApprovalSource, "accountId" | "senderId" | "conversationId">,
+  wireOwner: { readonly accountId: string; readonly userId: string } | null,
+): "source-owner-unavailable" | "source-identity-mismatch" | null {
+  const owner = configuration.owner;
+  if (
+    !configuration.enabled ||
+    !owner ||
+    !wireOwner ||
+    wireOwner.accountId !== owner.accountId ||
+    normalizeIdentity(wireOwner.userId) !== owner.userId
+  )
+    return "source-owner-unavailable";
+  return source.accountId === wireOwner.accountId &&
+    source.senderId === wireOwner.userId &&
+    source.conversationId === wireOwner.userId
+    ? null
+    : "source-identity-mismatch";
+}
+
 export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   private configuration: WeixinRemoteApprovalConfiguration = { enabled: false, owner: null };
   private readonly challengesByChat = new Map<string, ActiveChallenge>();
@@ -566,14 +715,31 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   private readonly globalAttemptTimes: number[] = [];
   private readonly auditEvents: WeixinRemoteApprovalAuditEvent[] = [];
 
-  constructor(private readonly onAudit?: (event: WeixinRemoteApprovalAuditEvent) => void) {}
+  constructor(
+    private readonly onAudit?: (event: WeixinRemoteApprovalAuditEvent) => void,
+    private readonly readWireOwner: () => {
+      readonly accountId: string;
+      readonly userId: string;
+    } | null = () => null,
+  ) {}
+
+  isAuthenticatedSource(
+    source: Pick<WeixinRemoteApprovalSource, "accountId" | "senderId" | "conversationId">,
+  ): boolean {
+    return (
+      weixinRemoteApprovalWireSourceRejection(this.configuration, source, this.readWireOwner()) ===
+      null
+    );
+  }
 
   configure(configuration: WeixinRemoteApprovalConfiguration): void {
     const changed =
       this.configuration.enabled !== configuration.enabled ||
+      this.configuration.consentScope !== configuration.consentScope ||
       canonicalize(this.configuration.owner) !== canonicalize(configuration.owner);
     this.configuration = {
       enabled: configuration.enabled,
+      ...(configuration.consentScope ? { consentScope: configuration.consentScope } : {}),
       owner: configuration.owner
         ? normalizeWeixinRemoteApprovalOwner(
             configuration.owner.accountId,
@@ -588,6 +754,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   getConfiguration(): WeixinRemoteApprovalConfiguration {
     return {
       enabled: this.configuration.enabled,
+      ...(this.configuration.consentScope ? { consentScope: this.configuration.consentScope } : {}),
       owner: this.configuration.owner ? { ...this.configuration.owner } : null,
     };
   }
@@ -600,34 +767,66 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   }
 
   createChallenge(input: WeixinRemoteApprovalCreateInput): WeixinRemoteApprovalDelivery | null {
+    const result = this.createChallengeResult(input);
+    return result.status === "created" ? result.delivery : null;
+  }
+
+  createChallengeResult(
+    input: WeixinRemoteApprovalCreateInput,
+  ): WeixinRemoteApprovalChallengeResult {
     const now = input.now ?? Date.now();
     const owner = this.configuration.owner;
+    const reject = (
+      reason: WeixinRemoteApprovalRejectionReason,
+    ): WeixinRemoteApprovalChallengeResult => ({ status: "rejected", reason });
+    if (!this.configuration.enabled || !owner) return reject("disabled");
+    if (!input.source.direct || input.source.forwarded || input.source.quoted)
+      return reject("source-not-direct");
+    const ownerReason = weixinRemoteApprovalWireSourceRejection(
+      this.configuration,
+      input.source,
+      this.readWireOwner(),
+    );
+    if (ownerReason) return reject(ownerReason);
     if (
-      !this.configuration.enabled ||
-      !owner ||
-      !input.source.direct ||
-      input.source.forwarded ||
-      input.source.quoted ||
-      normalizeIdentity(input.source.accountId) !== owner.accountId ||
-      normalizeIdentity(input.source.senderId) !== owner.userId ||
-      normalizeOpaqueId(input.source.conversationId) !== normalizeOpaqueId(input.source.senderId) ||
-      !Number.isSafeInteger(input.source.cursor) ||
-      input.source.cursor < 0 ||
-      !promptCanRepresentRequests(input.requests) ||
-      !SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode)
+      normalizeWeixinProviderInteger(input.source.cursor) === null ||
+      normalizeWeixinProviderInteger(input.source.messageId) === null
     ) {
-      return null;
+      return reject("source-metadata-invalid");
     }
+    if (!SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode))
+      return reject("security-binding-invalid");
     const approvalIds = input.requests.map(({ approval }) => approval.id);
+    if (!approvalIds.length || new Set(approvalIds).size !== approvalIds.length)
+      return reject("ambiguous-request-set");
     if (
-      new Set(approvalIds).size !== approvalIds.length ||
       input.requests.some(
-        ({ approval }) =>
-          approval.sessionKey !== input.source.sessionKey ||
-          (approval.agent ?? "") !== input.source.agentId,
+        ({ approval }) => !weixinApprovalOriginMatchesSecurity(approval, input.security),
       )
-    ) {
-      return null;
+    )
+      return reject("security-binding-invalid");
+    if (
+      input.requests.some(
+        ({ approval }) => weixinApprovalSourceSessionKey(approval) !== input.source.sessionKey,
+      )
+    )
+      return reject("source-session-mismatch");
+    if (input.requests.some(({ approval }) => (approval.agent ?? "") !== input.source.agentId))
+      return reject("source-agent-mismatch");
+    for (const { approval } of input.requests) {
+      const reason = weixinApprovalOriginRejection(approval, input.source);
+      if (reason) return reject(reason);
+    }
+    if (!promptCanRepresentRequests(input.requests)) {
+      return reject(
+        input.requests.some(
+          ({ approval }) =>
+            approval.arguments.some(hasSensitiveSemantics) ||
+            approval.declaredAccess.some((entry) => hasSensitiveSemantics(entry.path)),
+        )
+          ? "presentation-sensitive"
+          : "presentation-unsupported",
+      );
     }
     const chatKey = this.chatKey(input.source.accountId, input.source.conversationId);
     this.invalidateChat(chatKey, "superseded");
@@ -635,7 +834,11 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     const id = randomBytes(16).toString("hex");
     const codeHash = hash(code);
     const challengeHash = hash(id);
-    const expiresAtUnixMs = now + WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS;
+    const expiresAtUnixMs = Math.min(
+      now + WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS,
+      input.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+    );
+    if (expiresAtUnixMs <= now) return reject("security-binding-invalid");
     const challenge: ActiveChallenge = {
       id,
       code,
@@ -649,8 +852,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       }),
       source: {
         ...input.source,
-        accountId: normalizeIdentity(input.source.accountId),
-        senderId: normalizeIdentity(input.source.senderId),
+        accountId: input.source.accountId,
+        senderId: input.source.senderId,
       },
       security: { ...input.security },
       approvalIds,
@@ -659,6 +862,9 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       attempts: 0,
       lastCandidateCursor: input.source.cursor,
       locale: input.locale,
+      deliveredAtUnixMs: null,
+      reminderAtUnixMs: null,
+      reminderCount: 0,
     };
     const text = renderWeixinRemoteApprovalPrompt({
       code,
@@ -666,31 +872,99 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       requests: input.requests,
       security: input.security,
       locale: input.locale,
+      bareReplies: false,
+      allowDurable:
+        weixinRemoteApprovalConsentHash(this.configuration) !== null &&
+        input.requests.every(
+          ({ approval }) =>
+            approval.allowedDecisions.includes("allow-always") && !approval.hasMutableFileOperand,
+        ),
     });
     if (
       text.length > MAX_PROMPT_LENGTH ||
       text.split("\n").some((line) => line.length > MAX_PROMPT_LINE)
     ) {
-      return null;
+      return reject("presentation-too-long");
     }
     this.challengesByChat.set(chatKey, challenge);
     return {
-      contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
-      challengeId: id,
-      challengeHash,
-      accountId: challenge.source.accountId,
-      senderId: challenge.source.senderId,
-      conversationId: challenge.source.conversationId,
-      sourceMessageId: challenge.source.messageId,
-      sourceCursor: challenge.source.cursor,
-      expiresAtUnixMs,
-      text,
+      status: "created",
+      delivery: {
+        contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
+        challengeId: id,
+        challengeHash,
+        accountId: challenge.source.accountId,
+        senderId: challenge.source.senderId,
+        conversationId: challenge.source.conversationId,
+        sourceMessageId: challenge.source.messageId,
+        sourceCursor: challenge.source.cursor,
+        expiresAtUnixMs,
+        text,
+      },
     };
+  }
+
+  markDelivered(challengeId: string, now = Date.now()): boolean {
+    for (const challenge of this.challengesByChat.values()) {
+      if (
+        challenge.id !== challengeId ||
+        now >= challenge.expiresAtUnixMs ||
+        !this.isAuthenticatedSource(challenge.source)
+      )
+        continue;
+      challenge.deliveredAtUnixMs = now;
+      return true;
+    }
+    return false;
   }
 
   resolveCandidate(candidate: WeixinRemoteApprovalCandidate): WeixinRemoteApprovalResolution {
     const chatKey = this.chatKey(candidate.accountId, candidate.conversationId);
     const challenge = this.challengesByChat.get(chatKey);
+    const now = candidate.now ?? Date.now();
+    if (challenge && !this.isAuthenticatedSource(challenge.source))
+      return this.rejectChallenge(chatKey, challenge, "stale", true);
+    const activeOwnerConversation =
+      challenge &&
+      challenge.deliveredAtUnixMs !== null &&
+      now < challenge.expiresAtUnixMs &&
+      candidate.direct &&
+      candidate.accountId === challenge.source.accountId &&
+      candidate.senderId === challenge.source.senderId;
+    const remind = (
+      reason: "malformed" | "cursor" | "quoted" | "forwarded" | "consent-scope",
+    ): WeixinRemoteApprovalResolution => {
+      let text = "";
+      if (
+        challenge &&
+        challenge.reminderCount < 3 &&
+        (challenge.reminderAtUnixMs === null || now - challenge.reminderAtUnixMs >= 5_000)
+      ) {
+        challenge.reminderAtUnixMs = now;
+        challenge.reminderCount++;
+        text =
+          weixinRemoteApprovalConsentHash(this.configuration) === null
+            ? challenge.locale === "zh-CN"
+              ? `MicroClaw 安全审批：尚未作出决策，原截止时间不变。2 须先关闭 MXC，再通过唯一的本地原生提示重新启用审批。现在可回复 1 ${challenge.code}（仅一次）或 3 ${challenge.code}（拒绝）。`
+              : `MicroClaw Security Approval: no decision; original deadline unchanged. 2 requires renewed local native consent: turn MXC off and enable again. Reply 1 ${challenge.code} (once) or 3 ${challenge.code} (deny).`
+            : challenge.locale === "zh-CN"
+              ? `MicroClaw 安全审批：尚未作出决策，原截止时间不变。请回复 1 ${challenge.code}（仅一次）、2 ${challenge.code}（此精确范围永久允许）或 3 ${challenge.code}（拒绝）。`
+              : `MicroClaw Security Approval: no decision; original deadline unchanged. Reply 1 ${challenge.code} (once), 2 ${challenge.code} (always for this exact scope), or 3 ${challenge.code} (deny).`;
+      }
+      return { consumed: true, status: "rejected", reason, acknowledgement: text };
+    };
+    if (activeOwnerConversation && (candidate.quoted || candidate.forwarded))
+      return remind(candidate.quoted ? "quoted" : "forwarded");
+    const bare = /^[123]$/.test(candidate.text);
+    // This provider has no authenticated delivery cursor/time fence.
+    if (activeOwnerConversation && bare) return remind("cursor");
+    if (
+      activeOwnerConversation &&
+      !bare &&
+      !/^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.test(candidate.text)
+    ) {
+      return remind("malformed");
+    }
     if (candidate.ambiguous) {
       if (!challenge) {
         return {
@@ -706,7 +980,6 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     const parsed = /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.exec(candidate.text);
     if (!parsed) return { consumed: false, status: "not-candidate" };
 
-    const now = candidate.now ?? Date.now();
     this.globalAttemptTimes.push(now);
     while (this.globalAttemptTimes[0] != null && this.globalAttemptTimes[0] < now - 60_000) {
       this.globalAttemptTimes.shift();
@@ -759,23 +1032,24 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     if (this.globalAttemptTimes.length > MAX_GLOBAL_ATTEMPTS_PER_MINUTE) {
       return reject("rate-limited", true);
     }
-    if (now > challenge.expiresAtUnixMs) return reject("expired", true);
+    if (now >= challenge.expiresAtUnixMs) return reject("expired", true);
+    if (challenge.deliveredAtUnixMs === null) return reject("inactive");
     if (!candidate.direct) return reject("group", true);
     if (candidate.forwarded) return reject("forwarded", true);
     if (candidate.quoted) return reject("quoted", true);
-    if (normalizeIdentity(candidate.accountId) !== challenge.source.accountId) {
+    if (candidate.accountId !== challenge.source.accountId) {
       return reject("identity");
     }
-    if (normalizeIdentity(candidate.senderId) !== challenge.source.senderId) {
+    if (candidate.senderId !== challenge.source.senderId) {
       return reject("identity");
     }
-    if (normalizeOpaqueId(candidate.conversationId) !== challenge.source.conversationId) {
+    if (candidate.conversationId !== challenge.source.conversationId) {
       return reject("chat");
     }
     if (
-      !Number.isSafeInteger(candidate.cursor) ||
-      candidate.cursor <= challenge.source.cursor ||
-      candidate.cursor <= challenge.lastCandidateCursor ||
+      !isLaterWeixinProviderCursor(candidate.cursor, challenge.source.cursor) ||
+      !isLaterWeixinProviderCursor(candidate.cursor, challenge.lastCandidateCursor) ||
+      normalizeWeixinProviderInteger(candidate.messageId) === null ||
       normalizeOpaqueId(candidate.messageId) === challenge.source.messageId
     ) {
       return reject("cursor");
@@ -798,6 +1072,18 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     ) {
       return reject("stale", true);
     }
+    if (parsed[1] === "2" && weixinRemoteApprovalConsentHash(this.configuration) === null) {
+      return remind("consent-scope");
+    }
+    if (
+      parsed[1] === "2" &&
+      candidate.requests.some(
+        ({ approval }) =>
+          !approval.allowedDecisions.includes("allow-always") || approval.hasMutableFileOperand,
+      )
+    ) {
+      return remind("malformed");
+    }
     this.challengesByChat.delete(chatKey);
     this.closedByChat.set(chatKey, {
       codeHash: challenge.codeHash,
@@ -806,8 +1092,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     });
     this.pendingResolutions.set(challenge.id, challenge);
     const option = parsed[1];
-    const decision = option === "2" ? "deny" : "allow-once";
-    const approvalIds = option === "3" ? [...challenge.approvalIds] : [challenge.approvalIds[0]];
+    const decision = option === "3" ? "deny" : option === "2" ? "allow-always" : "allow-once";
+    const approvalIds = [...challenge.approvalIds];
     return {
       consumed: true,
       status: decision === "deny" ? "denied" : "approved",
@@ -832,6 +1118,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       });
       this.challengesByChat.delete(chatKey);
     }
+
     for (const [challengeId, challenge] of this.pendingResolutions) {
       if (!challenge.approvalIds.includes(approvalId)) continue;
       this.recordAudit(challenge, "invalidated", `local-${result}`);
@@ -844,6 +1131,24 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     if (!challenge) return;
     this.pendingResolutions.delete(challengeId);
     this.recordAudit(challenge, result, result);
+  }
+
+  settleApproval(approvalId: string, result: string, origin: string): void {
+    for (const [chatKey, challenge] of this.challengesByChat) {
+      if (!challenge.approvalIds.includes(approvalId)) continue;
+      this.closedByChat.set(chatKey, {
+        codeHash: challenge.codeHash,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        locale: challenge.locale,
+      });
+      this.challengesByChat.delete(chatKey);
+      this.recordAudit(challenge, result, origin);
+    }
+    for (const [id, challenge] of this.pendingResolutions) {
+      if (!challenge.approvalIds.includes(approvalId)) continue;
+      this.pendingResolutions.delete(id);
+      this.recordAudit(challenge, result, origin);
+    }
   }
 
   failResolution(challengeId: string, reason: string): void {
@@ -928,7 +1233,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   }
 
   private chatKey(accountId: string, conversationId: string): string {
-    return `${normalizeIdentity(accountId)}\n${normalizeOpaqueId(conversationId)}`;
+    return `${accountId}\n${conversationId}`;
   }
 
   private recordAudit(challenge: ActiveChallenge, result: string, reason: string): void {
@@ -958,6 +1263,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       challengeId: challenge.id,
       accountId: challenge.source.accountId,
       senderId: challenge.source.senderId,
+      conversationId: challenge.source.conversationId,
       acknowledgement: acknowledgement(challenge.locale, result),
     };
   }
