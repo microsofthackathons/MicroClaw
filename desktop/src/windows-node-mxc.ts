@@ -157,6 +157,61 @@ export interface WindowsNodeMxcGatewayApproval {
   providerInitialization?: PowerShellFilesystemInitialization;
 }
 
+export interface WindowsNodeMxcApprovalActivity {
+  gatewayGeneration: string;
+  sessionKey: string;
+  runId: string;
+  toolCallId: string;
+}
+
+export interface WindowsNodeMxcRendererApproval extends Pick<
+  WindowsNodeMxcGatewayApproval,
+  | "id"
+  | "executable"
+  | "arguments"
+  | "canonicalCwd"
+  | "agent"
+  | "declaredAccess"
+  | "allowedDecisions"
+  | "expiresAtUnixMs"
+  | "providerInitialization"
+> {
+  commandText?: string;
+  approvalLayer: "gateway" | "node";
+  activity?: WindowsNodeMxcApprovalActivity;
+  remoteDelivery?:
+    | import("./windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState
+    | null;
+}
+
+/** Project an already authenticated origin for display, not approval authority. */
+export function projectWindowsNodeMxcApprovalForRenderer(
+  approval: WindowsNodeMxcGatewayApproval,
+  gatewayGeneration: string,
+): WindowsNodeMxcRendererApproval {
+  const { origin, ...details } = approval;
+  const activity =
+    origin?.gatewayGeneration === gatewayGeneration &&
+    origin.executionSessionKey === approval.sessionKey &&
+    origin.agentId === approval.agent &&
+    origin.runSessionKey.startsWith(`agent:${origin.agentId}:`) &&
+    origin.runId &&
+    origin.toolCallId
+      ? {
+          gatewayGeneration,
+          sessionKey: origin.runSessionKey,
+          runId: origin.runId,
+          toolCallId: origin.toolCallId,
+        }
+      : undefined;
+  return {
+    ...details,
+    approvalLayer: "gateway",
+    commandText: approval.command,
+    ...(activity ? { activity } : {}),
+  };
+}
+
 const DECLARED_ACCESS_TAG_PATTERN = /\[declare-access\]([\s\S]*?)\[\/declare-access\]/i;
 const LEADING_DECLARED_ACCESS_PATTERN =
   /^[ \t]*(?:(?:#|::|REM\b)[ \t]*)?\[declare-access\]([\s\S]*?)\[\/declare-access\][ \t]*(?:\r\n|\n|\r|$)/i;

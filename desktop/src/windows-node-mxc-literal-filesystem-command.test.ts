@@ -18,6 +18,95 @@ function plan(script: string) {
 }
 
 describe("closed literal filesystem presentation grammar", () => {
+  it.each(["ro", "rw"])(
+    "classifies the observed nested read-only existence check with %s coverage",
+    (access) => {
+      const value = plan("Test-Path 'C:\\Approved\\a folder'");
+      value.declaredAccess = [{ access, path: root }];
+      expect(classifyLiteralFilesystemCommand(value)).toMatchObject({
+        kind: "exists-path",
+        path: "C:\\Approved\\a folder",
+        force: false,
+        recursive: false,
+      });
+    },
+  );
+
+  it.each(["", "-Path ", "-LiteralPath "])(
+    "accepts only the literal Test-Path target form %s in direct and nested argv",
+    (parameter) => {
+      const script = `Test-Path ${parameter}'C:\\Approved\\a folder'`;
+      const nested = plan(script);
+      const direct = {
+        ...nested,
+        arguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      };
+      for (const value of [direct, nested]) {
+        expect(classifyLiteralFilesystemCommand(value)).toMatchObject({
+          kind: "exists-path",
+          path: "C:\\Approved\\a folder",
+          force: false,
+          recursive: false,
+          content: null,
+          encoding: null,
+          noNewline: false,
+        });
+      }
+    },
+  );
+
+  it.each([
+    "Test-Path 'C:\\Approved\\a' -Force",
+    "Test-Path 'C:\\Approved\\a' -Recurse",
+    "Test-Path -Path 'C:\\Approved\\a' -LiteralPath 'C:\\Approved\\b'",
+    "Test-Path -Path 'C:\\Approved\\a' -Path 'C:\\Approved\\b'",
+    "Test-Path 'C:\\Approved\\a' 'C:\\Approved\\b'",
+    "Test-Path -Path 'C:\\Approved\\a' -PathType Container",
+    "Test-Path -Path 'C:\\Approved\\a' -IsValid",
+    "Test-Path 'C:\\Approved\\*'",
+    "Test-Path 'C:\\Approved\\a'; Remove-Item 'C:\\Approved\\a'",
+    "Test-Path 'C:\\Approved\\a' | Out-String",
+    "Test-Path (Join-Path 'C:\\Approved' 'a')",
+    "Test-Path '$HOME\\a'",
+    "Test-Path 'C:\\Approved\\..\\outside'",
+    "Test-Path '\\\\server\\share\\a'",
+    "Test-Path 'C:\\Approved\\a:stream'",
+    "Test-Path 'C:\\Approved\\NUL.txt'",
+  ])("rejects existence-check expansions or semantics outside the closed form: %s", (script) => {
+    expect(classifyLiteralFilesystemCommand(plan(script))).toBeNull();
+  });
+
+  it("requires a covering declaration for read-only checks without relaxing mutating RO rejection", () => {
+    const value = plan("Test-Path 'C:\\Approved\\a'");
+    for (const declaredAccess of [
+      [],
+      [{ access: "ro", path: "C:\\Other" }],
+      [{ access: "rw", path: "C:\\ApprovedElsewhere" }],
+    ]) {
+      expect(classifyLiteralFilesystemCommand({ ...value, declaredAccess })).toBeNull();
+    }
+    for (const script of [
+      "Remove-Item -Path 'C:\\Approved\\a'",
+      "Clear-Content -Path 'C:\\Approved\\a'",
+      "Set-Content -Path 'C:\\Approved\\a' -Value '1'",
+    ]) {
+      expect(
+        classifyLiteralFilesystemCommand({
+          ...plan(script),
+          declaredAccess: [{ access: "ro", path: root }],
+        }),
+      ).toBeNull();
+    }
+    for (const arguments_ of [
+      ["-Command", "Test-Path 'C:\\Approved\\a'"],
+      ["-NoProfile", "-File", "Test-Path.ps1"],
+      ["-NoProfile", "-EncodedCommand", "dGVzdA=="],
+      ["-NoProfile", "-Interactive", "-Command", "Test-Path 'C:\\Approved\\a'"],
+      ["-NoProfile", "-Command", "Test-Path 'C:\\Approved\\a'", "extra"],
+    ])
+      expect(classifyLiteralFilesystemCommand({ ...value, arguments: arguments_ })).toBeNull();
+  });
+
   it.each([
     ["New-Item -ItemType Directory -Path 'C:\\Approved\\a folder' -Force", "create-directory"],
     ["New-Item -Path 'C:\\Approved\\a file.txt' -ItemType File -Force", "create-file"],

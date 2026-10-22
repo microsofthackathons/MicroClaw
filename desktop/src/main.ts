@@ -239,6 +239,7 @@ import {
   validateWindowsNodeMxcGatewayPolicy,
   type WindowsNodeMxcApprovalDecision,
   type WindowsNodeMxcGatewayApproval,
+  projectWindowsNodeMxcApprovalForRenderer,
 } from "./windows-node-mxc";
 import {
   annotateWindowsNodeMxcPausedCronJobs,
@@ -2370,7 +2371,7 @@ async function handleWindowsNodeMxcGatewayApproval(
     `[windows-node-mxc-approval-timing] stage=prompt-received layer=gateway unixMs=${receivedAtUnixMs} allowedDecisions=${rendererApproval.allowedDecisions.join(",")}`,
   );
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
-    ...rendererApproval,
+    ...projectWindowsNodeMxcApprovalForRenderer(rendererApproval, approvalGeneration),
     commandText: rendererApproval.command,
     approvalLayer: "gateway",
     expiresAtUnixMs,
@@ -2488,7 +2489,7 @@ function publishPendingWeixinRemoteDelivery(
   if (!pending.lifecycle.pending) return;
   pending.remoteDelivery = { ...state, revision: (pending.remoteDelivery?.revision ?? 0) + 1 };
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
-    ...pending.request,
+    ...projectWindowsNodeMxcApprovalForRenderer(pending.request, pending.gatewayGeneration),
     commandText: pending.request.command,
     approvalLayer: "gateway",
     expiresAtUnixMs: pending.expiresAtUnixMs,
@@ -2565,7 +2566,7 @@ function getPendingWindowsNodeMxcApprovalForRenderer() {
   if (pending) {
     const approval = pending.request;
     return {
-      ...approval,
+      ...projectWindowsNodeMxcApprovalForRenderer(approval, pending.gatewayGeneration),
       commandText: approval.command,
       approvalLayer: "gateway" as const,
       expiresAtUnixMs: pending.expiresAtUnixMs,

@@ -322,6 +322,7 @@ function closeApproval(id: string, layer: "gateway" | "node" = "gateway") {
   }
 }
 function invalidateApprovals() {
+  chatStore.clearApprovalActivities();
   approvalEpoch++;
   closedApprovals.clear();
   closedApprovalFloor = closedApprovalSequence;
@@ -333,6 +334,7 @@ watch(() => gateway.readinessEpoch, invalidateApprovals, { flush: "sync" });
 watch(
   () => windowsNodeMxcStatus.value?.gatewayGeneration,
   (generation, previous) => {
+    chatStore.setGatewayGeneration(generation ?? null);
     if (previous !== undefined && generation !== previous) invalidateApprovals();
   },
   { flush: "sync" },
@@ -406,12 +408,12 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     expiresAtUnixMs: request.expiresAtUnixMs,
     remoteDelivery: request.remoteDelivery,
   });
-  if (chatStore.streaming) {
-    chatStore.addPendingToolCall(
+  if (request.approvalLayer === "gateway" && request.activity) {
+    chatStore.trackApprovalActivity(
       request.id,
-      containmentStrength === "limited-dacl"
-        ? "Limited filesystem containment approval"
-        : "Contained MXC command approval",
+      request.activity,
+      t("chat.securityApproval"),
+      request.expiresAtUnixMs,
     );
   }
 }
@@ -440,7 +442,19 @@ async function handlePermissionResponse(
     window.openclaw.sandbox.respondPermission(req.requestId, decision);
   }
   // Show immediate permission decision in exec panel
-  if (decision === "deny") {
+  if (req.source === "windows-node-mxc" && (req.approvalLayer ?? "gateway") === "gateway") {
+    chatStore.settleApprovalActivity(
+      req.requestId,
+      origin === "timeout"
+        ? t("chat.approvalExpired")
+        : decision === "deny"
+          ? t("perm.denied")
+          : decision === "allow-once"
+            ? t("perm.allowedOnce")
+            : undefined,
+      decision === "deny",
+    );
+  } else if (decision === "deny") {
     chatStore.completeToolCall(req.requestId, t("perm.denied"), true);
   } else if (decision.startsWith("grant")) {
     // Mark as "granting..." — will be updated when ACL result arrives
@@ -598,13 +612,7 @@ onMounted(async () => {
   // Listen for sandbox permission requests
   unsubPermission = window.openclaw.sandbox.onPermissionRequest((data: PermissionRequestData) => {
     permissionQueue.value.push({ ...data, source: "sandbox" });
-    // Add a pending entry to the exec panel so user sees what's waiting for permission
-    if (chatStore.streaming) {
-      const path = data.targetPath || data.dirPath;
-      const access = data.accessNeeded === "ro" ? "Read" : "Write";
-      const label = `${access} permission: ${path}`;
-      chatStore.addPendingToolCall(data.requestId, label);
-    }
+    // This legacy callback has no authenticated conversation/run binding.
   });
 
   unsubWindowsNodeMxcApproval = window.openclaw.windowsNodeMxc.onApprovalRequest((request) => {
@@ -621,16 +629,21 @@ onMounted(async () => {
           approvalKey(pending.requestId, pending.approvalLayer) !==
             approvalKey(result.requestId, result.approvalLayer),
       );
-      if (result.status === "accepted") {
-        chatStore.completeToolCall(
+      if ((result.approvalLayer ?? "gateway") === "gateway")
+        chatStore.settleApprovalActivity(
           result.requestId,
-          result.decision === "deny"
-            ? t("perm.denied")
-            : result.decision === "allow-once"
-              ? t("perm.allowedOnce")
-              : undefined,
-          result.decision === "deny",
+          result.status === "accepted"
+            ? result.origin === "timeout"
+              ? t("chat.approvalExpired")
+              : result.decision === "deny"
+                ? t("perm.denied")
+                : result.decision === "allow-once"
+                  ? t("perm.allowedOnce")
+                  : undefined
+            : t("perm.mxcResolutionUnconfirmed"),
+          result.status !== "accepted" || result.decision === "deny",
         );
+      if (result.status === "accepted") {
         if (result.warning) ElMessage.error(t("perm.mxcDurableNotSaved"));
       } else if (result.status === "unconfirmed") {
         ElMessage.error(t("perm.mxcResolutionUnconfirmed"));
@@ -855,8 +868,8 @@ onMounted(async () => {
   // loadHistory() internally skips Vue reactivity update when messages
   // haven't changed, so the UI won't flicker on no-op polls.
   historyPollTimer = window.setInterval(() => {
-    if (chatStore.wsConnected && !chatStore.streaming && !chatStore.sending) {
-      chatStore.loadHistory({ showLoading: false });
+    if (chatStore.wsConnected && !chatStore.sending) {
+      void chatStore.loadHistory({ showLoading: false, passive: true });
     }
     chatStore.checkStaleStream();
   }, 5000);

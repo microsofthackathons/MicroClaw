@@ -35,4 +35,62 @@ describe("chat waiting feedback", () => {
     expect(wrapper.find(".chat-error__btn--primary").exists()).toBe(true);
     wrapper.unmount();
   });
+
+  it("keeps persisted Thinking content historical rather than creating a live activity signal", () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    store.messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Past reasoning" },
+          { type: "text", text: "Done" },
+        ],
+      },
+    ];
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+    expect(wrapper.text()).toContain("Thinking");
+    expect(wrapper.text()).toContain("Done");
+    expect(wrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps truthful activity visible after tools complete and live text arrives", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    store.setMainSessionKey("agent:main:main");
+    store.wsConnected = true;
+    store.handleToolEvent({
+      sessionKey: "agent:main:main",
+      runId: "phone-run",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "command" },
+    });
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+    expect(wrapper.get('[data-testid="chat-activity"]').text()).toBe("Running tool");
+    store.handleToolEvent({
+      sessionKey: "agent:main:main",
+      runId: "phone-run",
+      stream: "tool",
+      data: { phase: "result", name: "exec", toolCallId: "command" },
+    });
+    store.handleChatEvent({
+      sessionKey: "agent:main:main",
+      runId: "phone-run",
+      state: "delta",
+      deltaText: "Preparing the result",
+    });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-testid="chat-activity"]').text()).toBe("Working");
+    expect(wrapper.get('[data-testid="chat-activity"]').text()).not.toMatch(/Thinking/);
+    store.handleChatEvent({
+      sessionKey: "agent:main:main",
+      runId: "phone-run",
+      state: "status",
+      lifecyclePhase: "end",
+    });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
 });

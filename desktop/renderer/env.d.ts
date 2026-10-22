@@ -571,23 +571,7 @@ interface OpenClawAPI {
       Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
     >;
     revokeAllDurableApprovals(): Promise<[]>;
-    getPendingApproval(): Promise<{
-      id: string;
-      executable: string;
-      arguments: string[];
-      commandText?: string;
-      providerInitialization?: import("../src/windows-node-mxc-powershell-scope").PowerShellFilesystemInitialization;
-      expiresAtUnixMs?: number;
-      remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
-      agent: string | null;
-      canonicalCwd: string;
-      approvalLayer: "gateway" | "node";
-      allowedDecisions: Array<"deny" | "allow-once" | "allow-always">;
-      declaredAccess: Array<{
-        access: "ro" | "rw";
-        path: string;
-      }>;
-    } | null>;
+    getPendingApproval(): Promise<import("../src/windows-node-mxc").WindowsNodeMxcRendererApproval | null>;
     respondApproval(params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
@@ -595,23 +579,7 @@ interface OpenClawAPI {
     }): Promise<void>;
     onApprovalRequest(
       callback: (
-        request: {
-          id: string;
-          executable: string;
-          arguments: string[];
-          commandText?: string;
-          providerInitialization?: import("../src/windows-node-mxc-powershell-scope").PowerShellFilesystemInitialization;
-          expiresAtUnixMs?: number;
-          remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
-          agent: string | null;
-          canonicalCwd: string;
-          approvalLayer: "gateway" | "node";
-          allowedDecisions: Array<"deny" | "allow-once" | "allow-always">;
-          declaredAccess: Array<{
-            access: "ro" | "rw";
-            path: string;
-          }>;
-        } | null,
+        request: import("../src/windows-node-mxc").WindowsNodeMxcRendererApproval | null,
       ) => void,
     ): () => void;
     onLifecycleState(

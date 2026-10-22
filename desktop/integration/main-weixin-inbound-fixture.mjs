@@ -4,6 +4,10 @@ import ts from "typescript";
 
 // Execute the real Electron handler without starting Electron or replacing its source-store logic.
 export function createMainWeixinInboundFixture(dependencies) {
+  return createMainFunctionFixture("handleWindowsNodeMxcWeixinRemoteApprovalInbound", dependencies);
+}
+
+export function createMainFunctionFixture(name, dependencies) {
   const filename = fileURLToPath(new URL("../src/main.ts", import.meta.url));
   const source = ts.createSourceFile(
     filename,
@@ -11,7 +15,6 @@ export function createMainWeixinInboundFixture(dependencies) {
     ts.ScriptTarget.Latest,
     true,
   );
-  const name = "handleWindowsNodeMxcWeixinRemoteApprovalInbound";
   const declaration = source.statements.find(
     (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
   );

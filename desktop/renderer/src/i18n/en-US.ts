@@ -138,6 +138,12 @@ export default {
   "chat.disclaimer":
     "AI-generated content may be incorrect. AI is not a human and has no personality. Microsoft is not responsible for any AI-generated content.",
   "chat.executionSteps": "Execution Steps",
+  "chat.activityWaitingApproval": "Waiting for approval",
+  "chat.activityRunningTool": "Running tool",
+  "chat.activityWorking": "Working",
+  "chat.activityConnectionUnknown": "Connection unavailable — activity unknown",
+  "chat.securityApproval": "Security approval",
+  "chat.approvalExpired": "Expired — no decision",
   "chat.thinking": "Thinking",
   "chat.plan.stepsUnit": " steps",
   "chat.plan.stepN": "Step {n}/{total}",

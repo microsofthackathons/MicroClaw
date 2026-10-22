@@ -196,10 +196,19 @@ export async function deliverWeixinRemoteApproval(params: {
       publish("local-only", "source-owner-unavailable");
       return;
     }
+    const presentationOnly =
+      reason === "presentation-unsupported" || reason === "presentation-sensitive";
+    const detail = presentationOnly
+      ? params.locale === "zh-CN"
+        ? "此命令无法在微信中安全展示或审批，请在桌面允许或拒绝"
+        : "This command cannot be safely displayed or approved on WeChat; allow or deny on Desktop"
+      : params.locale === "zh-CN"
+        ? "另有一个请求须在桌面处理"
+        : "Another request needs a Desktop decision";
     const text =
       params.locale === "zh-CN"
-        ? `MicroClaw 安全审批：另有一个请求须在桌面处理（${reason}）。未授予任何权限，原截止时间不变；稍后会通知结果。`
-        : `MicroClaw Security Approval: another request needs a Desktop decision (${reason}). No permission granted; original deadline unchanged. A result will follow.`;
+        ? `MicroClaw 安全审批：${detail}（${reason}）。未授予任何权限，原截止时间不变；稍后会通知结果。`
+        : `MicroClaw Security Approval: ${detail} (${reason}). No permission granted; original deadline unchanged. A result will follow.`;
     try {
       await server.deliver({
         accountId: source.accountId,

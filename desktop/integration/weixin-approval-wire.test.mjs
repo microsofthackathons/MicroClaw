@@ -32,6 +32,7 @@ import {
 import {
   bindWeixinApprovalRun,
   deliverWeixinRemoteApproval,
+  WeixinRemoteDeliveryCoordinator,
   exactWeixinApprovalSource,
   findWeixinApprovalSource,
   remoteApprovalDiagnosticBinding,
@@ -54,7 +55,12 @@ import {
 } from "../../plugins/openclaw-weixin/src/messaging/inbound.js";
 import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
 import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
-import { createMainWeixinInboundFixture } from "./main-weixin-inbound-fixture.mjs";
+import {
+  createMainFunctionFixture,
+  createMainWeixinInboundFixture,
+} from "./main-weixin-inbound-fixture.mjs";
+import { projectWindowsNodeMxcApprovalForRenderer } from "../src/windows-node-mxc";
+import { classifyLiteralFilesystemCommand } from "../src/windows-node-mxc-literal-filesystem-command";
 import { windowsCommand } from "./windows-command-fixture.mjs";
 import { logger } from "../../plugins/openclaw-weixin/src/util/logger.js";
 import {
@@ -80,9 +86,15 @@ const root = String.raw`C:\Users\sunt\Desktop`;
 const target = `${root}\\wire_fixture_folder`;
 const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
 let captured;
-function approvalFor(script = `New-Item -ItemType Directory -Path '${target}' -Force`) {
+function approvalFor(
+  script = `New-Item -ItemType Directory -Path '${target}' -Force`,
+  access = "rw",
+  declaredAccess = [{ access, path: root }],
+) {
   const command = `powershell -NoProfile -Command "${script}"`;
-  const preview = `# [declare-access]rw:${root}[/declare-access]\n${command}`;
+  const preview = declaredAccess.length
+    ? `# [declare-access]${declaredAccess.map((entry) => `${entry.access}:${entry.path}`).join("; ")}[/declare-access]\n${command}`
+    : command;
   const argv = buildMicroclawWindowsNodeShellCommand(preview, { SystemRoot: "C:\\Windows" }).map(
     (argument) => (argument === preview ? command : argument),
   );
@@ -100,7 +112,7 @@ function approvalFor(script = `New-Item -ItemType Directory -Path '${target}' -F
         process.platform === "win32" ? readFileSync(executable) : Buffer.from("test-interpreter"),
       )
       .digest("hex"),
-    declaredAccess: [{ access: "rw", path: root }],
+    declaredAccess,
   };
   captured ??= runPinnedApprovalRequests(plan, rawPeer, security.nodeId).find(
     (entry) => entry.kind === "trusted",
@@ -284,7 +296,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     notify();
     await registration;
   }
-  async function deliver() {
+  async function deliver(expiresAtUnixMs = Date.now() + 60_000) {
     return deliverWeixinRemoteApproval({
       approval,
       configuration,
@@ -293,7 +305,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       server,
       broker,
       readWireOwner: () => readAuthenticatedWeixinWireOwner(stateDir),
-      expiresAtUnixMs: Date.now() + 60_000,
+      expiresAtUnixMs,
       locale: "en-US",
       isPending: () => pending,
       challenge: () => {},
@@ -302,95 +314,289 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       deliveryDiagnostic: (record) => records.push(record),
     });
   }
-  it("delivers the ordinary actual normalized folder plan with exact context and correlated provider receipt", async () => {
-    expect(approval.origin.to).toBe(rawPeer);
-    expect(gateway.request).toHaveBeenCalledWith(
-      "sessions.resolve",
-      {
-        key,
-        agentId: "main",
-        includeGlobal: false,
-        includeUnknown: false,
+  it("projects the authenticated canonical origin through actual Main initial, delivery-update and snapshot producers, without exposing peer authority", async () => {
+    const executionSessionKey = "agent:main:sandbox:execution-policy";
+    const request = {
+      ...approval,
+      sessionKey: executionSessionKey,
+      origin: { ...approval.origin, executionSessionKey, runSessionKey: key },
+    };
+    const before = JSON.stringify(request);
+    const send = vi.fn();
+    const dependencies = {
+      windowsNodeMxcApprovalResolutionCompletion: null,
+      windowsNodeMxcApprovalProofContext: null,
+      canUseWindowsNodeMxcDurableApproval: () => false,
+      getWindowsNodeMxcRequestedMode: () => "limited-dacl",
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcIngressGeneration: security.gatewayGeneration,
+      windowsNodeMxcActivationInProgress: false,
+      isWindowsNodeMxcIngressReleased: () => true,
+      findPendingWindowsNodeMxcGatewayApproval: () => null,
+      mxcApprovalDeadline: (now, expiry) => Math.min(now + 60_000, expiry ?? Infinity),
+      findWeixinApprovalSource: () => null,
+      windowsNodeMxcWeixinRemoteApprovalSources: sources,
+      currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => security,
+      windowsNodeMxcWeixinRemoteApprovalServer: null,
+      resolveSupportedLocale: () => "en-US",
+      settingsStore: { get: () => "en-US" },
+      WindowsNodeMxcApprovalLifecycle: class {
+        pending = true;
+        start() {}
       },
-      3_000,
-    );
-    expect(sources.get(key)).toBeDefined();
-    expect(sources.get(key).senderId).toBe(rawPeer);
-    expect(sources.get(key).conversationId).toBe(rawPeer);
-    expect(mainDiagnostics).toContainEqual(
-      expect.objectContaining({
-        stage: "weixin-source-cached",
-        reason: "source-cached",
-      }),
-    );
-    expect(mainDiagnostics).toContainEqual(
-      expect.objectContaining({
-        stage: "weixin-run-registration",
-        reason: "source-run-bound",
-      }),
-    );
-    for (const record of mainDiagnostics)
-      expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
-    expect(readWeixinAccountStatus(stateDir).currentAccount.userId).toBe(rawPeer.toLowerCase());
-    expect(getContextToken("bot", rawPeer.toLowerCase())).toBeUndefined();
-    const delivery = await deliver();
-    expect(delivery).not.toBeNull();
-    expect(delivery.senderId).toBe(rawPeer);
-    expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const body = JSON.parse(fetch.mock.calls[0][1].body);
-    expect(body.msg.to_user_id).toBe(rawPeer);
-    expect(body.msg.context_token).toBe("synthetic-exact-context");
-    expect(body.msg.item_list[0].text_item.text).toContain("Reply 1:");
-    expect(body.msg.item_list[0].text_item.text).toContain(target);
-    expect(body.msg.item_list[0].text_item.text).toContain(executable);
-    expect(body.msg.item_list[0].text_item.text).not.toContain("Args:");
-    expect(approval.command).toBe(windowsCommand([approval.executable, ...approval.arguments]));
-    expect(approval.command).toContain(target);
-    const receipt = records.find(
-      (record) => record.stage === "provider" && record.code === "provider-accepted",
-    );
-    expect(receipt.providerClientHash).toBe(
-      createHash("sha256").update(body.msg.client_id).digest("hex").slice(0, 16),
-    );
-    expect(records).toContainEqual(
-      expect.objectContaining({
-        stage: "pipe",
-        kind: "prompt",
-        code: "delivery-dispatched",
-        deliveryHash: receipt.deliveryHash,
-      }),
-    );
-    for (const record of records)
-      expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
-    const code = delivery.replyCode;
-    expect(
-      await transport.intercept({
-        message: message({
-          message_id: 1002,
-          seq: 43,
-          item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
-        }),
-        agentId: "main",
+      WeixinRemoteDeliveryCoordinator,
+      pendingWindowsNodeMxcGatewayApproval: null,
+      queuedWindowsNodeMxcGatewayApprovals: [],
+      beginPendingWindowsNodeMxcRemoteDelivery: () => undefined,
+      sendToWindow: send,
+      mainWindow: {},
+      projectWindowsNodeMxcApprovalForRenderer,
+      console: { info: vi.fn() },
+    };
+    const initial = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", dependencies);
+    await initial.handle(request, security.gatewayGeneration);
+    expect(send).toHaveBeenCalledTimes(1);
+    const pending = {
+      request,
+      gatewayGeneration: security.gatewayGeneration,
+      lifecycle: { pending: true },
+      expiresAtUnixMs: send.mock.calls[0][2].expiresAtUnixMs,
+      remoteDelivery: null,
+    };
+    const publication = createMainFunctionFixture("publishPendingWeixinRemoteDelivery", {
+      sendToWindow: send,
+      mainWindow: {},
+      projectWindowsNodeMxcApprovalForRenderer,
+    });
+    publication.handle(pending, {
+      state: "sent",
+      reason: null,
+      replyMode: "simple-current-prompt",
+      revision: 0,
+    });
+    const snapshot = createMainFunctionFixture("getPendingWindowsNodeMxcApprovalForRenderer", {
+      allPendingWindowsNodeMxcGatewayApprovals: () => [pending],
+      projectWindowsNodeMxcApprovalForRenderer,
+    });
+    for (const value of [...send.mock.calls.map((call) => call[2]), snapshot.handle()]) {
+      expect(value.activity).toEqual({
+        gatewayGeneration: security.gatewayGeneration,
         sessionKey: key,
-        sourcePhase: "candidate",
+        runId: request.origin.runId,
+        toolCallId: request.origin.toolCallId,
+      });
+      expect(value.origin).toBeUndefined();
+      expect(value.activity).not.toHaveProperty("accountId");
+      expect(value.activity).not.toHaveProperty("to");
+      expect(value.commandText).toBe(request.command);
+      expect(value.arguments).toEqual(request.arguments);
+      expect(value.canonicalCwd).toBe(request.canonicalCwd);
+      expect(value.declaredAccess).toEqual(request.declaredAccess);
+      expect(value.sessionKey).toBe(executionSessionKey);
+    }
+    expect(JSON.stringify(request)).toBe(before);
+    initial.replace("findPendingWindowsNodeMxcGatewayApproval", () => pending);
+    await initial.handle(request, security.gatewayGeneration);
+    expect(send).toHaveBeenCalledTimes(2); // An already pending replay creates no new popup/activity.
+    for (const invalid of [
+      { ...request, origin: undefined },
+      { ...request, origin: { ...request.origin, gatewayGeneration: "old" } },
+      { ...request, origin: { ...request.origin, executionSessionKey: "other-policy" } },
+      { ...request, origin: { ...request.origin, agentId: "other" } },
+    ])
+      expect(
+        projectWindowsNodeMxcApprovalForRenderer(invalid, security.gatewayGeneration).activity,
+      ).toBeUndefined();
+    const native = createMainFunctionFixture("getPendingWindowsNodeMxcApprovalForRenderer", {
+      allPendingWindowsNodeMxcGatewayApprovals: () => [],
+      bundledWindowsNodeHost: { status: () => ({ pendingApproval: { id: "native", executable } }) },
+    }).handle();
+    expect(native.approvalLayer).toBe("node");
+    expect(native.activity).toBeUndefined();
+
+    const resolve = vi.fn().mockResolvedValue({});
+    const proofContext = { policyFingerprint: security.policyFingerprint };
+    const durable = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", {
+      ...dependencies,
+      windowsNodeMxcApprovalProofContext: proofContext,
+      durableApprovalIdentityFromGateway: () => ({ sessionKey: executionSessionKey }),
+      canUseWindowsNodeMxcDurableApproval: () => true,
+      getWindowsNodeMxcDurableApprovalStore: () => ({
+        findExact: () => ({ id: "existing-exact-record" }),
       }),
-    ).toBe(true);
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0].decision).toBe("allow-once");
-    expect(JSON.stringify(records)).not.toContain(rawPeer);
-    expect(JSON.stringify(records)).not.toContain("synthetic-exact-context");
+      withWindowsNodeMxcApprovalResolution: (run) => run(),
+      requireEffectiveWindowsNodeMxc: async () => undefined,
+      withWindowsNodeMxcDurableApprovalLock: (run) => run(),
+      consumeExactDurableApproval: async (_store, _identity, _id, execute) => {
+        await execute();
+        return true;
+      },
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      gwClient: { connected: true, request: resolve },
+    });
+    await durable.handle(request, security.gatewayGeneration);
+    expect(resolve).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
+      id: request.id,
+      decision: "allow-once",
+    });
+    expect(send).toHaveBeenCalledTimes(2); // Existing exact durable use creates no pending display activity.
   });
+
   it.each([
-    ["1", "allow-once"],
-    ["3", "deny"],
+    ["no covering grant", `Test-Path '${target}'`, []],
+    [
+      "outside covering grant",
+      `Test-Path '${target}'`,
+      [{ access: "ro", path: String.raw`C:\Elsewhere` }],
+    ],
+    [
+      "mutating command under RO",
+      `Remove-Item -Path '${target}' -Recurse -Force`,
+      [{ access: "ro", path: root }],
+    ],
+    ["sensitive path", `Test-Path '${root}\\password_cache'`, [{ access: "ro", path: root }]],
+    [
+      "extra operation",
+      `Test-Path '${target}'; Remove-Item '${target}'`,
+      [{ access: "ro", path: root }],
+    ],
+    ["extra switch", `Test-Path '${target}' -Force`, [{ access: "ro", path: root }]],
   ])(
-    "runs actual plugin dispatch and pinned SDK callback through Main and bare %s before a second agent dispatch",
-    async (digit, decision) => {
+    "keeps actual normalized unsupported existence-related form local: %s",
+    async (_name, script, grants) => {
+      approval = approvalFor(script, "ro", grants);
+      const before = JSON.stringify(approval);
+      expect(await deliver()).toBeNull();
+      const notice = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
+      expect(notice).toContain("cannot be safely displayed or approved on WeChat");
+      expect(notice).toContain("allow or deny on Desktop");
+      expect(notice).not.toContain(script);
+      expect(notice).not.toContain("password_cache");
+      expect(JSON.stringify(approval)).toBe(before);
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([]);
+    },
+  );
+
+  it.each(["create", "exists-ro"])(
+    "delivers the actual normalized %s plan with exact context, coded backward compatibility and correlated provider receipt",
+    async (operation) => {
+      if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
+      expect(approval.origin.to).toBe(rawPeer);
+      expect(gateway.request).toHaveBeenCalledWith(
+        "sessions.resolve",
+        {
+          key,
+          agentId: "main",
+          includeGlobal: false,
+          includeUnknown: false,
+        },
+        3_000,
+      );
+      expect(sources.get(key)).toBeDefined();
+      expect(sources.get(key).senderId).toBe(rawPeer);
+      expect(sources.get(key).conversationId).toBe(rawPeer);
+      expect(mainDiagnostics).toContainEqual(
+        expect.objectContaining({
+          stage: "weixin-source-cached",
+          reason: "source-cached",
+        }),
+      );
+      expect(mainDiagnostics).toContainEqual(
+        expect.objectContaining({
+          stage: "weixin-run-registration",
+          reason: "source-run-bound",
+        }),
+      );
+      for (const record of mainDiagnostics)
+        expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
+      expect(readWeixinAccountStatus(stateDir).currentAccount.userId).toBe(rawPeer.toLowerCase());
+      expect(getContextToken("bot", rawPeer.toLowerCase())).toBeUndefined();
+      const delivery = await deliver();
+      expect(delivery).not.toBeNull();
+      expect(delivery.senderId).toBe(rawPeer);
+      expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(fetch.mock.calls[0][1].body);
+      expect(body.msg.to_user_id).toBe(rawPeer);
+      expect(body.msg.context_token).toBe("synthetic-exact-context");
+      expect(body.msg.item_list[0].text_item.text).toContain("Reply 1:");
+      expect(body.msg.item_list[0].text_item.text).toContain(target);
+      expect(body.msg.item_list[0].text_item.text).toContain(executable);
+      expect(body.msg.item_list[0].text_item.text).not.toContain("Args:");
+      expect(approval.command).toBe(windowsCommand([approval.executable, ...approval.arguments]));
+      expect(approval.command).toContain(target);
+      const receipt = records.find(
+        (record) => record.stage === "provider" && record.code === "provider-accepted",
+      );
+      expect(receipt.providerClientHash).toBe(
+        createHash("sha256").update(body.msg.client_id).digest("hex").slice(0, 16),
+      );
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          stage: "pipe",
+          kind: "prompt",
+          code: "delivery-dispatched",
+          deliveryHash: receipt.deliveryHash,
+        }),
+      );
+      for (const record of records)
+        expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
+      const code = delivery.replyCode;
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0].decision).toBe("allow-once");
+      expect(JSON.stringify(records)).not.toContain(rawPeer);
+      expect(JSON.stringify(records)).not.toContain("synthetic-exact-context");
+    },
+  );
+  it.each([
+    ["create", "1", "allow-once"],
+    ["create", "3", "deny"],
+    ["exists-ro", "1", "allow-once"],
+    ["exists-ro", "3", "deny"],
+    ["exists-rw", "1", "allow-once"],
+    ["exists-rw", "3", "deny"],
+  ])(
+    "runs actual %s plugin dispatch and pinned SDK callback through Main and bare %s before a second agent dispatch",
+    async (operation, digit, decision) => {
+      if (operation.startsWith("exists")) {
+        approval = approvalFor(`Test-Path '${target}'`, operation === "exists-ro" ? "ro" : "rw");
+        expect(classifyLiteralFilesystemCommand(approval)).toMatchObject({
+          kind: "exists-path",
+          path: target,
+          force: false,
+          recursive: false,
+        });
+      }
+      const original = JSON.stringify(approval);
       sources.clear();
       mainDiagnostics.length = 0;
       await registerUserInFrameworkStore({ accountId: "bot", userId: rawPeer });
       const order = [];
+      const originalDeadline = Date.now() + 45_000;
       const intercept = transport.intercept.bind(transport);
       vi.spyOn(transport, "intercept").mockImplementation(async (params) => {
         order.push(params.sourcePhase);
@@ -404,7 +610,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         );
         notify();
         await vi.waitFor(() => expect(sources.get(key)?.runIds).toEqual([approval.origin.runId]));
-        expect(await deliver()).not.toBeNull();
+        const delivered = await deliver(originalDeadline);
+        expect(delivered).not.toBeNull();
+        expect(delivered.expiresAtUnixMs).toBe(originalDeadline);
         order.push("delivery");
       });
       const deps = {
@@ -441,6 +649,17 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expect(sent.to_user_id).toBe(rawPeer);
       expect(sent.context_token).toBe("synthetic-exact-context");
       expect(sent.item_list[0].text_item.text).toContain("Reply 1:");
+      if (operation.startsWith("exists")) {
+        expect(sent.item_list[0].text_item.text).toContain("Check whether path exists");
+        expect(sent.item_list[0].text_item.text).toContain(
+          operation === "exists-ro" ? "read-only" : "read/write",
+        );
+        expect(approval.arguments.at(-1)).toBe(
+          `powershell -NoProfile -Command "Test-Path '${target}'"`,
+        );
+        expect(approval.providerInitialization).toBeUndefined();
+      }
+      expect(JSON.stringify(approval)).toBe(original);
       await processOneMessage(
         message({
           message_id: 1002,
@@ -466,9 +685,13 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     },
   );
 
-  it.each([false, true])(
-    "accepts bare 2 only for an actually normalized eligible plan with native durable consent=%s",
-    async (nativeConsent) => {
+  it.each(
+    [false, true].flatMap((nativeConsent) =>
+      ["whoami", "exists-ro"].map((operation) => [nativeConsent, operation]),
+    ),
+  )(
+    "accepts bare 2 only for an actually normalized eligible plan with native durable consent=%s (%s)",
+    async (nativeConsent, operation) => {
       const executable = String.raw`C:\Windows\System32\whoami.exe`;
       const argv = [executable, "/all"];
       const systemRunPlan = {
@@ -497,6 +720,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         security.nodeId,
         security.gatewayGeneration,
       );
+      if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
       expect(approval).not.toBeNull();
       expect(approval.hasMutableFileOperand).toBe(false);
       expect(approval.allowedDecisions).toContain("allow-always");
@@ -527,49 +751,91 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     },
   );
 
-  it.each([
-    ["no prompt", {}, "none"],
-    ["wrong authenticated peer", { from_user_id: rawPeer.toLowerCase() }, "sent"],
+  it.each(
     [
-      "quoted",
-      { item_list: [{ type: 1, text_item: { text: "1" }, ref_msg: { title: "synthetic quote" } }] },
-      "sent",
-    ],
-    ["forwarded", { message_type: 2 }, "sent"],
-    [
-      "mixed text and attachment",
-      { item_list: [{ type: 1, text_item: { text: "1" } }, { type: 2 }] },
-      "sent",
-    ],
-    ["missing cursor", { seq: undefined }, "sent"],
-    ["missing message ID", { message_id: undefined }, "sent"],
-    [
-      "malformed coded reply",
-      { item_list: [{ type: 1, text_item: { text: "1 WRONG123" } }] },
-      "sent",
-    ],
-    ["wrong canonical route", {}, "route"],
-    ["generation drift", {}, "generation"],
-    ["local resolution", {}, "local"],
-    ["expired prompt", {}, "expired"],
-  ])("keeps actual plugin→Main bare reply fail-closed: %s", async (_name, extra, state) => {
-    if (state !== "none") await deliver();
-    if (state === "route")
-      gateway.request.mockResolvedValue({ ok: true, key: "agent:main:other", agentId: "main" });
-    if (state === "generation") main.replace("gatewayGenerationId", "generation-changed");
-    if (state === "local") broker.markLocallyResolved(approval.id, "approved");
-    if (state === "expired") {
-      const now = Date.now();
-      vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
-    }
-    try {
+      ["no prompt", {}, "none"],
+      ["wrong authenticated peer", { from_user_id: rawPeer.toLowerCase() }, "sent"],
+      [
+        "quoted",
+        {
+          item_list: [{ type: 1, text_item: { text: "1" }, ref_msg: { title: "synthetic quote" } }],
+        },
+        "sent",
+      ],
+      ["forwarded", { message_type: 2 }, "sent"],
+      [
+        "mixed text and attachment",
+        { item_list: [{ type: 1, text_item: { text: "1" } }, { type: 2 }] },
+        "sent",
+      ],
+      ["missing cursor", { seq: undefined }, "sent"],
+      ["missing message ID", { message_id: undefined }, "sent"],
+      [
+        "malformed coded reply",
+        { item_list: [{ type: 1, text_item: { text: "1 WRONG123" } }] },
+        "sent",
+      ],
+      ["wrong canonical route", {}, "route"],
+      ["generation drift", {}, "generation"],
+      ["local resolution", {}, "local"],
+      ["expired prompt", {}, "expired"],
+    ].flatMap((entry) => ["create", "exists-ro"].map((operation) => [operation, ...entry])),
+  )(
+    "keeps actual %s plugin→Main bare reply fail-closed: %s",
+    async (operation, _name, extra, state) => {
+      if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
+      if (state !== "none") await deliver();
+      if (state === "route")
+        gateway.request.mockResolvedValue({ ok: true, key: "agent:main:other", agentId: "main" });
+      if (state === "generation") main.replace("gatewayGenerationId", "generation-changed");
+      if (state === "local") broker.markLocallyResolved(approval.id, "approved");
+      if (state === "expired") {
+        const now = Date.now();
+        vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+      }
+      try {
+        expect(
+          await transport.intercept({
+            message: message({
+              message_id: 1002,
+              seq: 43,
+              item_list: [{ type: 1, text_item: { text: "1" } }],
+              ...extra,
+            }),
+            agentId: "main",
+            sessionKey: key,
+            sourcePhase: "candidate",
+          }),
+        ).toBe(true);
+        expect(decisions).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    },
+  );
+
+  it.each(["authenticated-owner-replaced", "consent-revoked", "durable-capability-removed"])(
+    "keeps the delivered read-only existence approval fail-closed after %s",
+    async (change) => {
+      approval = approvalFor(`Test-Path '${target}'`, "ro");
+      configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+      broker.configure(configuration);
+      const delivered = await deliver();
+      expect(delivered.text).toContain("2: remember");
+      if (change === "authenticated-owner-replaced") credential(rawPeer.toLowerCase());
+      else {
+        configuration =
+          change === "consent-revoked"
+            ? { ...configuration, enabled: false }
+            : { ...configuration, consentScope: undefined };
+        broker.configure(configuration);
+      }
       expect(
         await transport.intercept({
           message: message({
             message_id: 1002,
             seq: 43,
-            item_list: [{ type: 1, text_item: { text: "1" } }],
-            ...extra,
+            item_list: [{ type: 1, text_item: { text: "2" } }],
           }),
           agentId: "main",
           sessionKey: key,
@@ -577,10 +843,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         }),
       ).toBe(true);
       expect(decisions).toEqual([]);
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
+    },
+  );
 
   it("pins acknowledgement eligibility at arrival, not after awaited effective-mode validation", async () => {
     let acknowledge;

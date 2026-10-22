@@ -97,7 +97,7 @@ type FilesystemOperation =
   | "clear-content"
   | "set-content"
   | "append-content";
-interface LiteralFilesystemOperation {
+interface MutatingLiteralFilesystemOperation {
   kind: FilesystemOperation;
   path: string;
   force: boolean;
@@ -106,6 +106,18 @@ interface LiteralFilesystemOperation {
   encoding: string | null;
   noNewline: boolean;
 }
+interface ReadOnlyLiteralFilesystemOperation {
+  kind: "exists-path";
+  path: string;
+  force: false;
+  recursive: false;
+  content: null;
+  encoding: null;
+  noNewline: false;
+}
+type LiteralFilesystemOperation =
+  | MutatingLiteralFilesystemOperation
+  | ReadOnlyLiteralFilesystemOperation;
 
 // Only these low-entropy public primitives may be disclosed as inline content.
 const PUBLIC_CONTENT_LITERALS = new Set(["", "0", "1", "true", "false", "null"]);
@@ -122,7 +134,8 @@ function filesystemPayload(
   }
   if (!tokens[0] || tokens[0].quoted) return null;
   const command = tokens[0].value.toLowerCase();
-  const rules = {
+  const rules: Record<string, { values: string[]; flags: string[] }> = {
+    "test-path": { values: ["-path", "-literalpath"], flags: [] },
     "new-item": { values: ["-itemtype", "-path", "-value"], flags: ["-force"] },
     "remove-item": { values: ["-path", "-literalpath"], flags: ["-force", "-recurse"] },
     "clear-content": { values: ["-path", "-literalpath"], flags: ["-force"] },
@@ -139,7 +152,12 @@ function filesystemPayload(
   if (!rule) return null;
   const values = new Map<string, string>();
   const flags = new Set<string>();
-  for (let index = 1; index < tokens.length; index++) {
+  const positionalTarget =
+    command === "test-path" &&
+    tokens.length === 2 &&
+    (tokens[1].quoted || !tokens[1].value.startsWith("-"));
+  if (positionalTarget) values.set("-path", tokens[1].value);
+  for (let index = positionalTarget ? 2 : 1; index < tokens.length; index++) {
     const token = tokens[index];
     if (token.quoted) return null;
     const flag = token.value.toLowerCase();
@@ -166,6 +184,16 @@ function filesystemPayload(
     encoding: encoding ?? null,
     noNewline: flags.has("-nonewline"),
   };
+  if (command === "test-path")
+    return {
+      kind: "exists-path",
+      path: target,
+      force: false,
+      recursive: false,
+      content: null,
+      encoding: null,
+      noNewline: false,
+    };
   if (command === "new-item") {
     const type = values.get("-itemtype")?.toLowerCase();
     if (type !== "directory" && type !== "file") return null;
@@ -212,7 +240,11 @@ export function classifyLiteralFilesystemCommand(approval: {
   const operation = filesystemPayload(payload, true);
   if (!operation) return null;
   const declared = approval.declaredAccess.some((entry) => {
-    if (entry.access !== "rw" || !literalLocalPath(entry.path)) return false;
+    if (
+      (entry.access !== "rw" && !(operation.kind === "exists-path" && entry.access === "ro")) ||
+      !literalLocalPath(entry.path)
+    )
+      return false;
     const relative = path.win32.relative(entry.path.toLowerCase(), operation.path.toLowerCase());
     return relative === "" || (!relative.startsWith("..") && !path.win32.isAbsolute(relative));
   });

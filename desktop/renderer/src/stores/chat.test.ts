@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 
 // ── Mock window.openclaw ──
@@ -75,6 +75,300 @@ import {
 } from "./chat";
 import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
+
+describe("fenced selected-session activity reconciliation", () => {
+  const key = "agent:main:main";
+  type History = Awaited<ReturnType<OpenClawAPI["chat"]["loadHistory"]>>;
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+  });
+  afterEach(() => vi.useRealTimers());
+  function activeStore() {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.wsConnected = true;
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "run",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "tool" },
+    });
+    return store;
+  }
+  function deferredHistory() {
+    let resolve!: (value: History) => void;
+    const promise = new Promise<History>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  it("coalesces overlapping active polls and reconnect reads, then applies the current authoritative idle once", async () => {
+    const store = activeStore();
+    const read = deferredHistory();
+    mockLoadHistory.mockReturnValueOnce(read.promise);
+    const first = store.loadHistory({ showLoading: false, passive: true });
+    const second = store.loadHistory({ showLoading: false, passive: true });
+    const reconnect = store.recoverAfterReconnect();
+    expect(mockLoadHistory).toHaveBeenCalledTimes(1);
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    read.resolve({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await Promise.all([first, second, reconnect]);
+    // One coalesced in-flight read plus at most one fresh event/reconnect read.
+    expect(mockLoadHistory).toHaveBeenCalledTimes(2);
+    expect(store.streaming).toBe(false);
+    expect(store.activityStatus).toBeNull();
+  });
+
+  it("preserves tool-row identity on no-op active polls rather than causing false new-message/scroll updates", async () => {
+    const store = activeStore();
+    const tools = store.streamToolCalls;
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["run"] },
+    });
+    await store.loadHistory({ passive: true });
+    await store.loadHistory({ passive: true });
+    expect(store.streamToolCalls).toBe(tools);
+    expect(store.activityStatus).toBe("running-tool");
+  });
+
+  it("does not revive a closed run with a late active snapshot and coalesces terminal follow-up reads", async () => {
+    const store = activeStore();
+    const read = deferredHistory();
+    mockLoadHistory.mockReturnValueOnce(read.promise);
+    const loading = store.loadHistory({ passive: true });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "run",
+      state: "status",
+      lifecyclePhase: "end",
+    });
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["run"] },
+    });
+    read.resolve({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["run"] },
+    });
+    await loading;
+    expect(mockLoadHistory).toHaveBeenCalledTimes(2);
+    expect(store.streaming).toBe(false);
+    expect(store.activityStatus).toBeNull();
+  });
+
+  it.each(["disconnect", "generation"] as const)(
+    "rejects an old in-flight idle snapshot after %s and preserves unknown-ID activity on the new read",
+    async (change) => {
+      const store = activeStore();
+      store.setGatewayGeneration("generation-1");
+      const old = deferredHistory();
+      const fresh = deferredHistory();
+      mockLoadHistory.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+      const first = store.loadHistory({ passive: true });
+      if (change === "disconnect") {
+        store.wsConnected = false;
+        expect(store.activityStatus).toBe("connection-unknown");
+        store.wsConnected = true;
+      } else store.setGatewayGeneration("generation-2");
+      const second = store.loadHistory({ passive: true });
+      old.resolve({
+        sessionKey: key,
+        messages: [],
+        sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+      });
+      await first;
+      expect(store.streaming).toBe(true);
+      fresh.resolve({ sessionKey: key, messages: [], sessionInfo: { key, hasActiveRun: true } });
+      await second;
+      expect(store.streaming).toBe(true);
+      expect(store.chatRunId).toBe("run");
+      expect(store.lastError).toBeNull();
+    },
+  );
+
+  it("uses sequence and canonical-route fences across rapid A→B→A switches", async () => {
+    const store = activeStore();
+    const old = deferredHistory();
+    const other = deferredHistory();
+    const selected = deferredHistory();
+    mockLoadHistory
+      .mockReturnValueOnce(old.promise)
+      .mockReturnValueOnce(other.promise)
+      .mockReturnValueOnce(selected.promise);
+    const first = store.loadHistory({ passive: true });
+    const switchingAway = store.switchSession("agent:other:main");
+    const switchingBack = store.switchSession(key);
+    selected.resolve({
+      sessionKey: key,
+      messages: [{ role: "assistant", content: "selected" }],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["run"] },
+    });
+    await switchingBack;
+    other.resolve({
+      sessionKey: "agent:other:main",
+      messages: [{ role: "assistant", content: "other" }],
+      sessionInfo: { key: "agent:other:main", hasActiveRun: true, activeRunIds: ["other-run"] },
+    });
+    old.resolve({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await Promise.all([first, switchingAway]);
+    expect(store.sessionKey).toBe(key);
+    expect(store.chatRunId).toBe("run");
+    expect(store.streaming).toBe(true);
+    expect(store.messages.at(-1)?.content).toBe("selected");
+  });
+
+  it("does not turn RPC errors, missing runtime, or an unrelated terminal into idle", async () => {
+    const store = activeStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error("runtime RPC failed"));
+    await store.loadHistory({ passive: true });
+    expect(store.streaming).toBe(true);
+    expect(store.lastError?.raw).toContain("runtime RPC failed");
+    mockLoadHistory.mockResolvedValueOnce({
+      sessionKey: key,
+      messages: [{ role: "assistant", content: "persisted reply" }],
+    });
+    await store.loadHistory({ passive: true });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "not-owned",
+      state: "status",
+      lifecyclePhase: "end",
+    });
+    expect(store.streaming).toBe(true);
+    expect(store.activityStatus).toBe("running-tool");
+  });
+
+  it.each([100_000, 700_000])(
+    "never completes known work or tools at the old %sms watchdog boundary",
+    async (age) => {
+      vi.useFakeTimers();
+      const store = activeStore();
+      if (age === 100_000)
+        store.handleToolEvent({
+          sessionKey: key,
+          runId: "run",
+          stream: "tool",
+          data: { phase: "result", name: "exec", toolCallId: "tool" },
+        });
+      store.streamStartedAt = Date.now();
+      store.lastStreamEventAt = Date.now();
+      const read = deferredHistory();
+      mockLoadHistory.mockReturnValueOnce(read.promise);
+      await vi.advanceTimersByTimeAsync(age);
+      store.checkStaleStream();
+      expect(store.streaming).toBe(true);
+      expect(store.streamToolCalls.find((tool) => tool.id === "tool")?.done).toBe(age === 100_000);
+      store.wsConnected = false;
+      await vi.advanceTimersByTimeAsync(age);
+      store.checkStaleStream();
+      expect(store.streaming).toBe(true);
+      expect(store.activityStatus).toBe("connection-unknown");
+      read.resolve({ sessionKey: key, messages: [] });
+    },
+  );
+
+  it("rejects pre-approval idle discovery without fabricating a run, and retires activity on a fresh exact idle", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.wsConnected = true;
+    store.setGatewayGeneration("generation-1");
+    const old = deferredHistory();
+    mockLoadHistory.mockReturnValueOnce(old.promise);
+    const loading = store.loadHistory({ passive: true });
+    store.trackApprovalActivity(
+      "approval",
+      {
+        gatewayGeneration: "generation-1",
+        sessionKey: key,
+        runId: "pending-run",
+        toolCallId: "tool",
+      },
+      "Security approval",
+      Date.now() + 60_000,
+    );
+    expect(store.activityStatus).toBe("waiting-approval");
+    expect(store.streaming).toBe(false);
+    expect(store.chatRunId).toBeNull();
+    expect(store.streamStartedAt).toBeNull();
+    old.resolve({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await loading;
+    expect(store.activityStatus).toBe("waiting-approval");
+    mockLoadHistory.mockResolvedValueOnce({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await store.loadHistory({ passive: true });
+    expect(store.activityStatus).toBeNull();
+    store.trackApprovalActivity(
+      "approval",
+      {
+        gatewayGeneration: "generation-1",
+        sessionKey: key,
+        runId: "pending-run",
+        toolCallId: "tool",
+      },
+      "Security approval",
+      Date.now() + 60_000,
+    );
+    expect(store.activityStatus).toBeNull();
+  });
+
+  it("keeps decision-row and actual-tool lifetimes separate even if their display IDs collide", () => {
+    const store = activeStore();
+    store.setGatewayGeneration("generation-1");
+    const id = "mxc-approval:gateway:approval";
+    store.handleToolEvent({
+      sessionKey: key,
+      runId: "run",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: id },
+    });
+    store.trackApprovalActivity(
+      "approval",
+      {
+        gatewayGeneration: "generation-1",
+        sessionKey: key,
+        runId: "run",
+        toolCallId: id,
+      },
+      "Security approval",
+      Date.now() + 60_000,
+    );
+    store.settleApprovalActivity("approval", "Allowed once");
+    expect(
+      store.streamToolCalls.find((tool) => tool.id === id && tool.kind !== "approval")?.done,
+    ).toBe(false);
+    expect(
+      store.streamToolCalls.find((tool) => tool.id === id && tool.kind === "approval")?.done,
+    ).toBe(true);
+    store.completeToolCall("tool", "Unbound permission completion");
+    expect(store.streamToolCalls.find((tool) => tool.id === "tool")?.done).toBe(false);
+    expect(store.activityStatus).toBe("running-tool");
+  });
+});
 
 describe("server-driven WeChat conversation busy state", () => {
   const key = "agent:main:main";
@@ -649,17 +943,18 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.streaming).toBe(true);
   });
 
-  it("checkStaleStream resets streaming after the timeout elapses", () => {
+  it("checkStaleStream refreshes runtime without forcing idle after the timeout", () => {
     const store = useChatStore();
+    store.wsConnected = true;
     store.streaming = true;
     store.streamStartedAt = Date.now() - 100_000; // 100 seconds ago
     (store as any).lastStreamEventAt = Date.now() - 100_000;
 
     store.checkStaleStream(); // default 90s threshold
-    expect(store.streaming).toBe(false);
+    expect(store.streaming).toBe(true);
     expect(store.chatRunId).toBeNull();
-    expect(store.streamStartedAt).toBeNull();
-    expect(store.lastStreamEventAt).toBeNull();
+    expect(store.streamStartedAt).not.toBeNull();
+    expect(store.lastStreamEventAt).not.toBeNull();
     expect(mockLoadHistory).toHaveBeenCalled();
   });
 
@@ -673,9 +968,9 @@ describe("useChatStore — stale stream recovery", () => {
     store.checkStaleStream();
     expect(store.streaming).toBe(true);
 
-    // Custom 30s — SHOULD reset
+    // Custom 30s requests reconciliation, never an invented terminal event.
     store.checkStaleStream(30_000);
-    expect(store.streaming).toBe(false);
+    expect(store.streaming).toBe(true);
   });
 
   it("checkStaleStream falls back to streamStartedAt when no events were received", () => {
@@ -685,7 +980,7 @@ describe("useChatStore — stale stream recovery", () => {
     // lastStreamEventAt is null — no events ever arrived
 
     store.checkStaleStream();
-    expect(store.streaming).toBe(false);
+    expect(store.streaming).toBe(true);
   });
 
   it("checkStaleStream extends timeout when a tool call is in progress", () => {
@@ -701,16 +996,17 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.streaming).toBe(true);
   });
 
-  it("checkStaleStream resets even with active tool after extended timeout", () => {
+  it("checkStaleStream preserves an unfinished tool even after the extended threshold", () => {
     const store = useChatStore();
     store.streaming = true;
     store.streamStartedAt = Date.now() - 700_000; // 700 seconds ago
     (store as any).lastStreamEventAt = Date.now() - 700_000;
     store.streamToolCalls = [{ id: "tc1", name: "exec", done: false }];
 
-    // 700s > 600s (10 min active-tool threshold) → should reset
+    // 700s > 600s does not establish that the command or run ended.
     store.checkStaleStream();
-    expect(store.streaming).toBe(false);
+    expect(store.streaming).toBe(true);
+    expect(store.streamToolCalls[0].done).toBe(false);
   });
 
   it("checkStaleStream uses normal timeout when all tool calls are done", () => {
@@ -721,9 +1017,9 @@ describe("useChatStore — stale stream recovery", () => {
     // Tool call is completed — no active tools
     store.streamToolCalls = [{ id: "tc1", name: "exec", done: true }];
 
-    // 100s > 90s default → should reset (no active tool protection)
+    // Completed tools do not establish that the model/run is idle.
     store.checkStaleStream();
-    expect(store.streaming).toBe(false);
+    expect(store.streaming).toBe(true);
   });
 
   it("handleChatEvent updates lastStreamEventAt on delta", () => {
@@ -820,7 +1116,7 @@ describe("useChatStore — stale stream recovery", () => {
     expect(store.lastStreamEventAt).toBeGreaterThanOrEqual(before);
   });
 
-  it("checkStaleStream clears streamToolCalls", () => {
+  it("checkStaleStream retains tool history until authoritative runtime reconciliation", () => {
     const store = useChatStore();
     store.streaming = true;
     store.streamStartedAt = Date.now() - 100_000;
@@ -829,8 +1125,8 @@ describe("useChatStore — stale stream recovery", () => {
     store.streamToolCalls = [{ id: "tc1", name: "exec", done: true }];
 
     store.checkStaleStream();
-    expect(store.streaming).toBe(false);
-    expect(store.streamToolCalls).toEqual([]);
+    expect(store.streaming).toBe(true);
+    expect(store.streamToolCalls).toEqual([{ id: "tc1", name: "exec", done: true }]);
   });
 });
 
@@ -872,10 +1168,10 @@ describe("useChatStore — recoverAfterReconnect", () => {
       expect(mockLoadHistory).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps recovery bounded even when a connected model never replies", () => {
+    it("keeps recovery bounded without inventing idle when a connected model never replies", () => {
       const store = waitingStore(610_000);
       store.checkStaleStream();
-      expect(store.streaming).toBe(false);
+      expect(store.streaming).toBe(true);
       expect(store.lastError?.code).toBe("response_delayed");
     });
 
@@ -965,7 +1261,7 @@ describe("useChatStore — recoverAfterReconnect", () => {
     expect(mockLoadHistory.mock.calls.length).toBe(callsBefore);
   });
 
-  it("resets streaming when server has more messages", async () => {
+  it("does not infer whole-run idle from a persisted final reply without runtime metadata", async () => {
     const store = useChatStore();
     store.streaming = true;
     store.sessionKey = "main";
@@ -980,7 +1276,7 @@ describe("useChatStore — recoverAfterReconnect", () => {
     });
 
     await store.recoverAfterReconnect();
-    expect(store.streaming).toBe(false);
+    expect(store.streaming).toBe(true);
     expect(store.streamToolCalls).toEqual([]);
     expect(store.lastStreamEventAt).toBeNull();
   });
@@ -1010,6 +1306,7 @@ describe("useChatStore — recoverAfterReconnect", () => {
     store.streamToolCalls = [{ id: "tc1", name: "exec", done: false }];
     // But server says it's done
     mockLoadHistory.mockResolvedValue({
+      sessionInfo: { key: "agent:main:main", hasActiveRun: false, activeRunIds: [] },
       messages: [
         { role: "user", content: "Build the project" },
         { role: "assistant", content: "Build complete." },
@@ -1017,7 +1314,7 @@ describe("useChatStore — recoverAfterReconnect", () => {
     });
 
     await store.recoverAfterReconnect();
-    // Should reset despite active tool call — server is authoritative
+    // Only explicit authoritative idle may retire an unfinished tool/run.
     expect(store.streaming).toBe(false);
     expect(store.streamToolCalls).toEqual([]);
   });

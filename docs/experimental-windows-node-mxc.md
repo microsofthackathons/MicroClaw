@@ -337,12 +337,38 @@ values, credential-semantic names, and every other unknown form remain local-onl
 literal PowerShell grammar also covers `New-Item` (File/Directory), `Remove-Item` (including
 explicit recursive deletion), `Clear-Content`, `Set-Content`, and `Add-Content`, including the
 pinned outer interpreter and one literal nested interpreter. Paths must be literal local paths
-covered by an explicit RW declaration. Script expansions, pipelines, extra invocations, unknown
+covered by an explicit RW declaration for these mutating operations. Separately typed read-only
+`Test-Path` supports one absolute literal positional target, `-Path`, or `-LiteralPath`, in the
+direct or single nested form; an explicit covering RO **or** RW declaration is required. Its
+phone action is “Check whether path exists,” with the unchanged target, executable and every
+grant. It needs its own approval: an earlier delete approval does not authorize verification.
+It does not add write rights or receive the create/delete-only scoped initializer.
+Script expansions, pipelines, extra invocations, unknown
 flags, wildcard/device/UNC/ADS paths and arbitrary inline contents are not eligible. Inline
 content is limited to the reviewed public primitives `""`, `"0"`, `"1"`, `"true"`, `"false"`,
 and `"null"`; other content writes stay local, even when the text happens to be non-secret.
 This is intentionally conservative: a non-secret command may still require local approval when its
 display sensitivity cannot be proven from the current execution contract.
+
+The bounded approval-surface inventory is:
+
+| Desktop family / producer | WeChat eligibility |
+| --- | --- |
+| Gateway `exec.approval.requested` for the selected bundled node, normalized from the pinned SDK's prepared `systemRunPlan` and admitted caller origin | Eligible only with the exact current authenticated owner/account/canonical run route, source registration, active generation/security and a representable command. The pinned shell producer wraps `-NoLogo -NoProfile -NonInteractive -Command`; a model-supplied literal nested interpreter is validated separately. |
+| Generic executable plus already-safe bounded argv (for example `whoami.exe /all`) | Existing exact-command presentation remains supported; it is not general script parsing or an executable trust attestation. |
+| Closed literal mutating PowerShell operations listed above | Existing explicit RW coverage and exact force/recurse/content/encoding/no-newline disclosures remain required. |
+| Closed literal `Test-Path` existence verification | The newly covered omission: positional / `-Path` / `-LiteralPath`, direct or one validated nested interpreter, with RO or RW coverage. No `-PathType`, `-IsValid`, wildcards, expressions, extra switches or additional operations. |
+| Bundled host `onApproval` / `approvalLayer=node` fallback | Desktop once/deny only. This layer has no authenticated canonical chat/run origin; no phone challenge or selected-chat activity is invented. Native proof, path/reparse and execution checks are unchanged. |
+| Legacy AppContainer `sandbox:permission-request`: `app-approval`, `file`, `shell` and `shell-async` application/folder/ACL decisions | Desktop only, separate from MXC Gateway decisions. The legacy callback lacks an authoritative canonical conversation/run binding, so its global popup does not create a selected-chat execution row. |
+| Native remote-approval owner/consent choices and exact durable records | Settings/native authority, not another phone command type. Existing eligible exact durable use can avoid a pending prompt; it does not synthesize a new run or execution-success event. |
+
+Arbitrary PowerShell, `Get-Content` / `Get-ChildItem` / other new operation families, encoded/file/
+profile/interactive forms, sensitive or unrepresentable data, and unsupported executable syntax
+remain Desktop-only rather than being accepted as loosely parsed scripts. Missing owner/source/
+route/security authority, undelivered or ambiguous challenges, queued requests, and expired/replayed
+replies are authorization/delivery states, **not** additional permission types to enable. No native
+permission family or general script support was added. The directly coupled safe `Test-Path` forms
+above are covered; this is not a claim that all Desktop approvals are phone-eligible.
 
 In Limited-DACL only, the Windows host prepares a versioned public PowerShell filesystem scope
 for the closed literal directory-creation and removal forms above (direct Windows PowerShell or
@@ -419,8 +445,43 @@ fields, and does not claim that a free-form agent's attribution has been fixed.
 Suppression is never silent: typed, hashed diagnostics distinguish source/route, security,
 transport and presentation failures, and the Desktop shows phone-delivery/local-only state.
 Unsupported or sensitive commands with a verified source get a data-free phone local-only notice
-and a terminal result, not leaked contents or a misleading masked consent. A prompt-send failure
+explaining that the command cannot be safely displayed or approved on WeChat and must be allowed
+or denied on Desktop, plus a terminal result, not leaked contents or a misleading masked consent.
+A prompt-send failure
 leaves the normal local approval pending and is not automatically resent.
+
+### Desktop activity while approvals and phone-originated runs are pending
+
+The live activity line is independent of the empty-stream illustration, live text, plans and
+completed execution rows. It says **Waiting for approval** only for a pending Main-projected
+approval bound to the selected canonical conversation/current run; **Running tool** requires a
+real unfinished tool; otherwise an observed active run says **Working**. Disconnection says that
+activity is unknown, not that the model is thinking or that execution ended. No current protocol
+signal proves a live reasoning phase, so the UI does not label all run activity “Thinking.”
+Persisted Thinking panels remain historical content, not live status.
+
+Main projects only Gateway generation, canonical origin conversation, run ID and tool-call ID for
+this display binding, not the origin's account/peer/recipient authority. The execution-policy
+session is not substituted for the canonical run conversation. An approval can display a wait
+before history discovers the run without fabricating a start time or run ID. If its decision
+arrives before discovery, the Main-observed activity stays generic Working until a real runtime/
+terminal observation; accepting a decision does not make the empty chat or send button look idle.
+Other-conversation,
+other-run, stale-generation and unbound native/global popups remain usable but do not change the
+selected run's tools. Approval decision rows are typed separately from real tools: accepting
+once/Always or denying completes the decision, never the command or whole run.
+
+The existing selected-session five-second history poll now also reconciles active work. Poll,
+session-update, lifecycle and reconnect reads share a coalesced in-flight request; event updates
+can request at most one fresh follow-up. Canonical route, load sequence, runtime revision,
+generation and disconnect fences reject stale responses. `hasActiveRun=true` with absent
+`activeRunIds` remains a supported unknown-ID projection, not an empty run list or invented ID.
+Only matching authoritative idle or an eligible exact terminal/cancel ends activity. A persisted
+final reply, completed tool rows, missing/invalid runtime data, a failed read, offline time, or
+the former 90/600-second watchdog boundaries do not establish global idle. Existing error and
+connection notices remain visible; watchdog reconciliation is bounded and never retries a command.
+These source regressions explain/fix the predicates and lifecycle contracts, not a claim that a
+particular historical Desktop packet or DOM state was observed.
 
 WeChat toggle/login/replace/disconnect controls are locked in both channel/plugin views while
 MXC is active or transitioning. Main enforces the same guard before writes/spawns/RPC, and

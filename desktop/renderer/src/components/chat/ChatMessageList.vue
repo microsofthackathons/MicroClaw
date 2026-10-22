@@ -6,7 +6,12 @@
     </div>
 
     <!-- Empty state -->
-    <div v-else-if="chatStore.messages.length === 0 && !chatStore.streaming" class="chat-empty">
+    <div
+      v-else-if="
+        chatStore.messages.length === 0 && !chatStore.streaming && !chatStore.activityStatus
+      "
+      class="chat-empty"
+    >
       <div class="chat-empty__logo">
         <svg
           width="32"
@@ -311,6 +316,18 @@
       </div>
     </template>
 
+    <div
+      v-if="chatStore.activityStatus"
+      class="chat-activity"
+      data-testid="chat-activity"
+      :data-phase="chatStore.activityStatus"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="exec-panel__spinner" aria-hidden="true"></span>
+      {{ t(activityLabel) }}
+    </div>
+
     <!-- Streaming: single group with one avatar -->
     <div v-if="chatStore.streaming" class="chat-group assistant">
       <img class="chat-avatar" :src="avatarImg" alt="" />
@@ -363,7 +380,7 @@
             <div v-if="execPanelOpen" class="exec-panel__body">
               <div
                 v-for="tool in chatStore.streamToolCalls"
-                :key="tool.id"
+                :key="`${tool.kind ?? 'tool'}:${tool.id}`"
                 class="exec-step"
                 :class="{ done: tool.done, 'exec-step--error': tool.isError }"
               >
@@ -632,6 +649,15 @@ watch(
 );
 
 const hasRunningTools = computed(() => chatStore.streamToolCalls.some((t) => !t.done));
+const activityLabel = computed(() =>
+  chatStore.activityStatus === "waiting-approval"
+    ? "chat.activityWaitingApproval"
+    : chatStore.activityStatus === "running-tool"
+      ? "chat.activityRunningTool"
+      : chatStore.activityStatus === "connection-unknown"
+        ? "chat.activityConnectionUnknown"
+        : "chat.activityWorking",
+);
 
 // ── Plan progress for history messages ──
 const _historyPlanCache = new Map<string, ReturnType<typeof parsePlanProgress>>();
@@ -1567,6 +1593,20 @@ function handleEditKeydown(e: KeyboardEvent) {
   border-radius: 50%;
   animation: exec-spin 0.8s linear infinite;
   margin-left: auto;
+}
+
+.chat-activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px 44px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chat-activity .exec-panel__spinner {
+  margin-left: 0;
+  flex-shrink: 0;
 }
 
 @keyframes exec-spin {

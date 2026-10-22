@@ -56,6 +56,66 @@ function prepared(script: string) {
 }
 
 describe("short phone summary of the independently validated actual prepared plan", () => {
+  it.each(["ro", "rw"] as const)(
+    "renders the literal existence operation with unchanged target, %s grants and no write initialization",
+    (grant) => {
+      const { approval } = prepared(`New-Item -ItemType Directory -Path '${target}'`);
+      const argv = [
+        executable,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `powershell -NoProfile -Command "Test-Path '${target}'"`,
+      ];
+      const declaredAccess = [{ access: grant, path: root }];
+      expect(createPowerShellFilesystemInitialization(argv, executable, declaredAccess)).toBeNull();
+      const direct = {
+        ...approval,
+        arguments: argv.slice(1),
+        command: windowsCommand(argv),
+        providerInitialization: undefined,
+        declaredAccess,
+      };
+      const before = JSON.stringify(direct);
+      for (const locale of ["en-US", "zh-CN"] as const) {
+        const text = renderWeixinRemoteApprovalPrompt({
+          code: "23456789",
+          expiresAtUnixMs: Date.parse("2026-10-22T11:30:00Z"),
+          requests: [{ approval: direct }],
+          security,
+          locale,
+          allowDurable: false,
+        });
+        console.info(
+          JSON.stringify({
+            fixture: `exists-${grant}-${locale}`,
+            renderedCharacters: text.length,
+            renderedUtf8Bytes: Buffer.byteLength(text),
+          }),
+        );
+        expect(text).toContain(
+          locale === "en-US" ? "Check whether path exists" : "检查路径是否存在",
+        );
+        expect(text).toContain(target);
+        expect(text).toContain(executable);
+        expect(text).toContain(
+          locale === "en-US"
+            ? grant === "ro"
+              ? "read-only"
+              : "read/write"
+            : grant === "ro"
+              ? "只读"
+              : "读写",
+        );
+        expect(text).not.toMatch(/initialization|2:|23456789|Force|Recurse/);
+        expect(text.length).toBeLessThanOrEqual(600);
+        expect(JSON.stringify(direct)).toBe(before);
+        expect(direct.command).toBe(windowsCommand([direct.executable, ...direct.arguments]));
+      }
+    },
+  );
+
   it.each([
     ["create", `New-Item -ItemType Directory -Path '${target}' -Force`],
     ["delete", `Remove-Item -Path '${target}' -Recurse -Force`],

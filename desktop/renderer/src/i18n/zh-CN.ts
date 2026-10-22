@@ -132,6 +132,12 @@ export default {
   "chat.disclaimer":
     "AI 生成的内容可能不正确。AI 不是具有人格的人类。Microsoft 不对 AI 生成的任何内容承担责任。",
   "chat.executionSteps": "执行过程",
+  "chat.activityWaitingApproval": "等待审批",
+  "chat.activityRunningTool": "正在运行工具",
+  "chat.activityWorking": "正在处理",
+  "chat.activityConnectionUnknown": "连接中断，活动状态未知",
+  "chat.securityApproval": "安全审批",
+  "chat.approvalExpired": "已过期，未作出决定",
   "chat.thinking": "思考过程",
   "chat.intermediateOutput": "中间过程",
   "chat.plan.stepsUnit": "步",

@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useSessionStore } from "./sessions";
 import { redactPii } from "@/utils/pii-scanner";
 import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
 import { canonicalAgentId } from "../../../src/agent-catalog";
 import { ChatRunTracker } from "./chat-run-tracker";
+import type { WindowsNodeMxcApprovalActivity } from "../../../src/windows-node-mxc";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -165,6 +166,7 @@ export const useChatStore = defineStore("chat", () => {
       input?: string;
       done: boolean;
       waitingPermission?: boolean;
+      kind?: "approval";
       actualCommand?: string;
       result?: string;
       isError?: boolean;
@@ -235,6 +237,7 @@ export const useChatStore = defineStore("chat", () => {
       input?: string;
       done: boolean;
       waitingPermission?: boolean;
+      kind?: "approval";
       actualCommand?: string;
       result?: string;
       isError?: boolean;
@@ -259,8 +262,161 @@ export const useChatStore = defineStore("chat", () => {
   }
   const sessionStateCache = new Map<string, SessionStreamState>();
   const serverRuns = new ChatRunTracker();
+  const gatewayGeneration = ref<string | null>(null);
+  const runtimeUiRevision = ref(0);
+  const approvalActivities = ref<
+    Record<
+      string,
+      WindowsNodeMxcApprovalActivity & {
+        expiresAtUnixMs?: number;
+        label: string;
+        pending: boolean;
+      }
+    >
+  >({});
+  const approvalToolId = (id: string) => `mxc-approval:gateway:${id}`;
+
+  function currentRunActivities() {
+    const key = resolvedSessionKey.value || sessionKey.value;
+    return Object.entries(approvalActivities.value).filter(
+      ([, activity]) =>
+        activity.gatewayGeneration === gatewayGeneration.value &&
+        activity.sessionKey === key &&
+        !serverRuns.isClosed(key, activity.runId) &&
+        (!chatRunId.value ||
+          serverRuns.isClosed(key, chatRunId.value) ||
+          chatRunId.value === activity.runId),
+    );
+  }
+
+  const activityStatus = computed<
+    "waiting-approval" | "running-tool" | "working" | "connection-unknown" | null
+  >(() => {
+    void runtimeUiRevision.value;
+    const activities = currentRunActivities();
+    const waitingApproval = activities.some(
+      ([, activity]) =>
+        activity.pending &&
+        (activity.expiresAtUnixMs === undefined || activity.expiresAtUnixMs > Date.now()),
+    );
+    if (!wsConnected.value && (activities.length || streaming.value)) return "connection-unknown";
+    if (waitingApproval) return "waiting-approval";
+    if (!streaming.value && !activities.length) return null;
+    return streaming.value &&
+      streamToolCalls.value.some((tool) => !tool.done && tool.kind !== "approval")
+      ? "running-tool"
+      : "working";
+  });
+
+  function synchronizeApprovalRows() {
+    for (const [id, activity] of Object.entries(approvalActivities.value)) {
+      if (serverRuns.isClosed(activity.sessionKey, activity.runId)) retireApprovalActivity(id);
+    }
+    const approvals = currentRunActivities().filter(
+      ([, activity]) =>
+        activity.pending &&
+        (activity.expiresAtUnixMs === undefined || activity.expiresAtUnixMs > Date.now()),
+    );
+    const pendingIds = new Set(approvals.map(([id]) => approvalToolId(id)));
+    const visible = streamToolCalls.value.filter(
+      (tool) => tool.kind !== "approval" || tool.done || pendingIds.has(tool.id),
+    );
+    if (visible.length !== streamToolCalls.value.length) streamToolCalls.value = visible;
+    if (!streaming.value) return;
+    for (const [id, activity] of approvals) {
+      const rowId = approvalToolId(id);
+      if (!streamToolCalls.value.some((tool) => tool.id === rowId && tool.kind === "approval")) {
+        streamToolCalls.value = [
+          ...streamToolCalls.value,
+          {
+            id: rowId,
+            name: activity.label,
+            kind: "approval",
+            done: false,
+            waitingPermission: true,
+          },
+        ];
+      }
+    }
+  }
+
+  function trackApprovalActivity(
+    id: string,
+    activity: WindowsNodeMxcApprovalActivity,
+    label: string,
+    expiresAtUnixMs?: number,
+  ) {
+    if (
+      activity.gatewayGeneration !== gatewayGeneration.value ||
+      serverRuns.isClosed(activity.sessionKey, activity.runId) ||
+      (expiresAtUnixMs !== undefined && expiresAtUnixMs <= Date.now()) ||
+      approvalActivities.value[id]
+    )
+      return;
+    approvalActivities.value = {
+      ...approvalActivities.value,
+      [id]: { ...activity, expiresAtUnixMs, label, pending: true },
+    };
+    // Reject pre-approval snapshots without inventing a run-start event or timestamp.
+    serverRuns.invalidateSnapshot(activity.sessionKey);
+    synchronizeApprovalRows();
+  }
+
+  function settleApprovalActivity(id: string, result?: string, isError?: boolean) {
+    const activity = approvalActivities.value[id];
+    // A decision ends the approval wait, not the originating run.
+    if (activity)
+      approvalActivities.value = {
+        ...approvalActivities.value,
+        [id]: { ...activity, pending: false },
+      };
+    const rowId = approvalToolId(id);
+    completeToolCall(rowId, result, isError);
+    const cached = activity && sessionStateCache.get(activity.sessionKey);
+    if (cached) {
+      cached.streamToolCalls = cached.streamToolCalls.map((tool) =>
+        tool.id === rowId && tool.kind === "approval"
+          ? {
+              ...tool,
+              done: true,
+              waitingPermission: false,
+              result: result ?? tool.result,
+              isError: isError ?? tool.isError,
+            }
+          : tool,
+      );
+    }
+  }
+
+  function retireApprovalActivity(id: string) {
+    settleApprovalActivity(id);
+    const remaining = { ...approvalActivities.value };
+    delete remaining[id];
+    approvalActivities.value = remaining;
+  }
+
+  function clearApprovalActivities() {
+    approvalActivities.value = {};
+    const visible = streamToolCalls.value.filter((tool) => tool.kind !== "approval" || tool.done);
+    if (visible.length !== streamToolCalls.value.length) streamToolCalls.value = visible;
+    for (const state of sessionStateCache.values()) {
+      const visibleCached = state.streamToolCalls.filter(
+        (tool) => tool.kind !== "approval" || tool.done,
+      );
+      if (visibleCached.length !== state.streamToolCalls.length)
+        state.streamToolCalls = visibleCached;
+    }
+  }
+
+  function setGatewayGeneration(generation: string | null) {
+    if (generation === gatewayGeneration.value) return;
+    gatewayGeneration.value = generation;
+    clearApprovalActivities();
+    invalidateHistoryObservation();
+  }
 
   function synchronizeServerRun(preferred?: string, authoritativeIdle = false) {
+    runtimeUiRevision.value++;
     const key = resolvedSessionKey.value || sessionKey.value;
     const active = serverRuns.active(key, preferred || chatRunId.value);
     if (active) {
@@ -282,7 +438,9 @@ export const useChatStore = defineStore("chat", () => {
       sending.value = false;
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
+      if (authoritativeIdle) streamToolCalls.value = [];
     }
+    synchronizeApprovalRows();
   }
 
   /** Move all renderer-owned state from a local alias to its Gateway key. */
@@ -829,9 +987,61 @@ export const useChatStore = defineStore("chat", () => {
     await loadHistory();
   }
 
+  type HistoryResult = Awaited<ReturnType<typeof window.openclaw.chat.loadHistory>>;
+  let historyEpoch = 0;
+  let historyFlight: {
+    sessionKey: string;
+    key: string;
+    epoch: number;
+    refreshAgain: boolean;
+    promise: Promise<HistoryResult | undefined>;
+  } | null = null;
+  function invalidateHistoryObservation() {
+    historyEpoch++;
+    _loadSeq++;
+    loading.value = false;
+  }
+  watch(wsConnected, invalidateHistoryObservation, { flush: "sync" });
+
+  /** Coalesce event, reconnect and poll reads of the same selected session. */
+  function loadHistory(
+    options: { showLoading?: boolean; passive?: boolean } = {},
+  ): Promise<HistoryResult | undefined> {
+    runtimeUiRevision.value++;
+    synchronizeApprovalRows();
+    const owner = sessionKey.value;
+    const key = resolvedSessionKey.value || owner;
+    if (
+      historyFlight?.sessionKey === owner &&
+      historyFlight.key === key &&
+      historyFlight.epoch === historyEpoch
+    ) {
+      if (!options.passive) historyFlight.refreshAgain = true;
+      return historyFlight.promise;
+    }
+    const flight = {
+      sessionKey: owner,
+      key,
+      epoch: historyEpoch,
+      refreshAgain: false,
+      promise: Promise.resolve<HistoryResult | undefined>(undefined),
+    };
+    historyFlight = flight;
+    flight.promise = loadHistoryNow(options).finally(async () => {
+      if (historyFlight === flight) historyFlight = null;
+      if (flight.refreshAgain && flight.epoch === historyEpoch && sessionKey.value === owner) {
+        await loadHistory({ showLoading: false });
+      }
+    });
+    return flight.promise;
+  }
+
   /** Fetch history from the gateway for the current session. */
-  async function loadHistory(options: { showLoading?: boolean } = {}) {
+  async function loadHistoryNow(
+    options: { showLoading?: boolean } = {},
+  ): Promise<HistoryResult | undefined> {
     const seq = ++_loadSeq;
+    const epoch = historyEpoch;
     // Capture the session key at call time — if the user switches sessions
     // while we await, we must not write stale data into the new session.
     const callerSessionKey = sessionKey.value;
@@ -851,6 +1061,7 @@ export const useChatStore = defineStore("chat", () => {
       // Discard stale result — a newer loadHistory() was called, or
       // the user switched to a different session while we awaited.
       if (seq !== _loadSeq) return;
+      if (epoch !== historyEpoch) return;
       if (sessionKey.value !== callerSessionKey) return;
       const canonicalKey = typeof res.sessionKey === "string" ? res.sessionKey : key;
       _canonicalizeSessionKey(callerSessionKey, canonicalKey);
@@ -860,6 +1071,14 @@ export const useChatStore = defineStore("chat", () => {
         res.sessionInfo,
         canonicalKey === key ? runtimeRevision : 0,
       );
+      if (runtimeAccepted && res.sessionInfo?.hasActiveRun === false) {
+        for (const [id, activity] of Object.entries(approvalActivities.value)) {
+          if (activity.sessionKey === canonicalKey) {
+            serverRuns.finish(canonicalKey, activity.runId);
+            retireApprovalActivity(id);
+          }
+        }
+      }
       synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
       const raw = Array.isArray(res.messages) ? res.messages : [];
       const filtered = raw
@@ -899,6 +1118,7 @@ export const useChatStore = defineStore("chat", () => {
       }
       // Remove from cache since we now have authoritative data
       if (changed) sessionStateCache.delete(sessionKey.value);
+      return res;
     } catch (err) {
       if (seq !== _loadSeq) return;
       if (sessionKey.value !== acceptedSessionKey) return;
@@ -911,7 +1131,13 @@ export const useChatStore = defineStore("chat", () => {
   /** Send a message to the current session. */
   async function sendMessage(text: string, attachments: ChatAttachment[] = []): Promise<boolean> {
     const msg = text.trim();
-    if ((!msg && attachments.length === 0) || sending.value || streaming.value) return false;
+    if (
+      (!msg && attachments.length === 0) ||
+      sending.value ||
+      streaming.value ||
+      currentRunActivities().length > 0
+    )
+      return false;
 
     sending.value = true;
     lastError.value = null;
@@ -1256,7 +1482,9 @@ export const useChatStore = defineStore("chat", () => {
     } else if (phase === "result") {
       const isError = !!(payload.data as Record<string, unknown>).isError;
       // Mark the tool call as completed
-      const idx = streamToolCalls.value.findIndex((t) => t.id === toolCallId);
+      const idx = streamToolCalls.value.findIndex(
+        (t) => t.id === toolCallId && t.kind !== "approval",
+      );
       if (idx >= 0) {
         const updated = [...streamToolCalls.value];
         // Keep existing input (from args) if meta is shorter or redundant
@@ -1290,7 +1518,10 @@ export const useChatStore = defineStore("chat", () => {
 
       // When ALL tool calls are done, snapshot the current streamText length.
       // Everything accumulated so far is tool context; the model's reply comes after.
-      if (_toolPhaseActive.value && streamToolCalls.value.every((t) => t.done)) {
+      if (
+        _toolPhaseActive.value &&
+        streamToolCalls.value.every((t) => t.kind === "approval" || t.done)
+      ) {
         _toolPhaseActive.value = false;
         // Use a small delay so the next delta (which may still carry tool output) lands first
         setTimeout(() => {
@@ -1306,13 +1537,13 @@ export const useChatStore = defineStore("chat", () => {
     if (streamToolCalls.value.some((t) => t.id === id)) return;
     streamToolCalls.value = [
       ...streamToolCalls.value,
-      { id, name, done: false, waitingPermission: waitingPermission || false },
+      { id, name, kind: "approval", done: false, waitingPermission: waitingPermission ?? true },
     ];
   }
 
   /** Mark a pending tool call as completed (e.g. after permission dialog response). */
   function completeToolCall(id: string, result?: string, isError?: boolean) {
-    const idx = streamToolCalls.value.findIndex((t) => t.id === id);
+    const idx = streamToolCalls.value.findIndex((t) => t.id === id && t.kind === "approval");
     if (idx >= 0) {
       const updated = [...streamToolCalls.value];
       updated[idx] = {
@@ -1347,15 +1578,14 @@ export const useChatStore = defineStore("chat", () => {
   // ── Stale stream recovery ──
   // If the WebSocket briefly disconnects and reconnects, fire-and-forget
   // gateway events (especially "final") can be lost, leaving streaming=true
-  // permanently.  This detector resets the UI after a period of inactivity.
+  // indefinitely. Silence requests reconciliation; it is not a terminal event.
   const STALE_STREAM_TIMEOUT_MS = 90_000;
 
   // When a tool call is in progress (tool:start received, waiting for
   // tool:result), the command may legitimately run for a long time with no
   // events (e.g. large file copy, build, database migration).  Use a much
-  // longer timeout to avoid falsely resetting the UI.
+  // longer threshold before showing an inactivity notice.
   const STALE_STREAM_ACTIVE_TOOL_TIMEOUT_MS = 600_000; // 10 minutes
-  const CONNECTED_RESPONSE_GRACE_MS = 600_000;
   let lastWaitingNoticeKey: string | null = null;
   let lastRecoveryProbeAt = 0;
   let recoveryProbePending = false;
@@ -1385,8 +1615,8 @@ export const useChatStore = defineStore("chat", () => {
 
   /**
    * Check whether the current streaming session has gone stale (no events
-   * for longer than `timeoutMs`).  If so, reset streaming state and reload
-   * history from the gateway so the UI reflects the actual conversation.
+   * for longer than `timeoutMs`). Refresh authoritative runtime state without
+   * treating a timer, completed tool, or persisted reply as whole-run completion.
    *
    * @param timeoutMs  Override the default inactivity threshold (e.g. use a
    *                   shorter value right after a WebSocket reconnect).
@@ -1415,95 +1645,25 @@ export const useChatStore = defineStore("chat", () => {
 
     if (Date.now() - lastEvent < threshold) return;
 
-    const hadAnyActivity = streamText.value.trim().length > 0 || streamToolCalls.value.length > 0;
-    if (
-      !hadAnyActivity &&
-      wsConnected.value &&
-      Date.now() - (streamStartedAt.value ?? lastEvent) < CONNECTED_RESPONSE_GRACE_MS
-    ) {
-      const noticeKey = `${resolvedSessionKey.value || sessionKey.value}:${streamStartedAt.value}`;
-      if (lastWaitingNoticeKey !== noticeKey) {
-        lastWaitingNoticeKey = noticeKey;
-        if (!lastError.value) lastError.value = { code: "response_delayed", source: "watchdog" };
-      }
-      if (!recoveryProbePending && Date.now() - lastRecoveryProbeAt >= 30_000) {
-        recoveryProbePending = true;
-        lastRecoveryProbeAt = Date.now();
-        void recoverAfterReconnect().finally(() => {
-          recoveryProbePending = false;
-        });
-      }
-      return;
+    const noticeKey = `${resolvedSessionKey.value || sessionKey.value}:${streamStartedAt.value}`;
+    if (lastWaitingNoticeKey !== noticeKey) {
+      lastWaitingNoticeKey = noticeKey;
+      if (!streamText.value.trim() && !streamToolCalls.value.length && !lastError.value)
+        lastError.value = { code: "response_delayed", source: "watchdog" };
     }
-
-    console.warn(
-      `[chat] Stale stream detected: no events for ${Math.round((Date.now() - lastEvent) / 1000)}s — resetting`,
-    );
-    streaming.value = false;
-    sending.value = false;
-    streamText.value = "";
-    streamToolCalls.value = [];
-    chatRunId.value = null;
-    streamStartedAt.value = null;
-    lastStreamEventAt.value = null;
-    if (!hadAnyActivity && !lastError.value) {
-      lastError.value = { code: "response_delayed", source: "watchdog" };
+    if (wsConnected.value && !recoveryProbePending && Date.now() - lastRecoveryProbeAt >= 30_000) {
+      recoveryProbePending = true;
+      lastRecoveryProbeAt = Date.now();
+      void loadHistory({ showLoading: false, passive: true }).finally(() => {
+        recoveryProbePending = false;
+      });
     }
-    loadHistory();
   }
 
-  /**
-   * After a WebSocket reconnect while streaming, ask the server whether the
-   * conversation has actually completed (the "final" event may have been lost
-   * during the disconnect).  This is authoritative — it compares server-side
-   * history with the local pre-stream message count instead of guessing via
-   * timeouts, so it works correctly even when a tool call is still in flight.
-   */
+  /** Reconnect uses the same fenced runtime read as event updates and polling. */
   async function recoverAfterReconnect() {
     if (!streaming.value) return;
-    const key = resolvedSessionKey.value || sessionKey.value;
-    const startedAt = streamStartedAt.value;
-    const runtimeRevision = serverRuns.revision(key);
-    try {
-      const res = await window.openclaw.chat.loadHistory(key);
-      if (
-        !streaming.value ||
-        (resolvedSessionKey.value || sessionKey.value) !== key ||
-        streamStartedAt.value !== startedAt
-      )
-        return;
-      const runtimeAccepted = serverRuns.snapshot(key, res.sessionInfo, runtimeRevision);
-      synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
-      if (
-        res.sessionInfo &&
-        (!streaming.value || chatRunId.value !== null || res.sessionInfo.hasActiveRun)
-      ) {
-        if (!streaming.value) await loadHistory({ showLoading: false });
-        return;
-      }
-      const serverMsgs = (Array.isArray(res.messages) ? res.messages : [])
-        .map((message) => stripSystemLines(message))
-        .filter(
-          (message): message is ChatMessage => message != null && !isGatewaySystemMessage(message),
-        );
-      // Additional tool messages alone do not establish a completed reply.
-      if (serverMsgs.length > messages.value.length && hasCompletedReply(serverMsgs)) {
-        console.warn(
-          `[chat] Server has ${serverMsgs.length} messages vs local ${messages.value.length} after reconnect — resetting stream`,
-        );
-        streaming.value = false;
-        streamText.value = "";
-        streamToolCalls.value = [];
-        chatRunId.value = null;
-        streamStartedAt.value = null;
-        lastStreamEventAt.value = null;
-        if (isInferredWaitError(lastError.value)) lastError.value = null;
-        loadHistory();
-      }
-    } catch (error) {
-      console.warn("[chat] Could not reconcile the pending response:", error);
-      // Network still unstable — the regular stale-stream poll will catch it later
-    }
+    await loadHistory({ showLoading: false });
   }
 
   /** Abort current generation. */
@@ -1783,6 +1943,11 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   return {
+    activityStatus,
+    setGatewayGeneration,
+    trackApprovalActivity,
+    settleApprovalActivity,
+    clearApprovalActivities,
     sessionKey,
     resolvedSessionKey,
     currentSessionAgentId,

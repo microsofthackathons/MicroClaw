@@ -592,6 +592,7 @@ export function renderWeixinRemoteApprovalPrompt(params: {
         `3${suffix}: deny`,
       ];
   const actions = {
+    "exists-path": zh ? "检查路径是否存在" : "Check whether path exists",
     "create-directory": zh ? "创建文件夹" : "Create folder",
     "create-file": zh ? "创建文件" : "Create file",
     "remove-path": zh ? "删除文件或文件夹" : "Delete file/folder",

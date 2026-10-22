@@ -68,7 +68,9 @@
             <ChatModelPicker
               :session-key="chatStore.sessionKey"
               :connected="chatStore.wsConnected"
-              :disabled="chatStore.streaming || submittingMessage"
+              :disabled="
+                Boolean(chatStore.activityStatus) || chatStore.streaming || submittingMessage
+              "
               @busy="modelChanging = $event"
               @manage="openModelSettings"
             />
@@ -106,7 +108,7 @@
     <ModelSetupDialog
       v-model="modelSetupVisible"
       :initial-family="modelSetupInitialFamily"
-      :streaming="chatStore.streaming"
+      :streaming="chatStore.streaming || Boolean(chatStore.activityStatus)"
       @configured="handleModelConfigured"
     />
   </div>
@@ -164,7 +166,9 @@ function onWindowResize() {
   isCompact.value = window.innerHeight < 700;
 }
 
-const hasMessages = computed(() => chatStore.messages.length > 0 || chatStore.streaming);
+const hasMessages = computed(
+  () => chatStore.messages.length > 0 || chatStore.streaming || Boolean(chatStore.activityStatus),
+);
 
 function handleCardSelect(prompt: string) {
   inputText.value = prompt;
@@ -224,6 +228,7 @@ const composePlaceholder = computed(() =>
 const canSend = computed(
   () =>
     chatStore.wsConnected &&
+    !chatStore.activityStatus &&
     !submittingMessage.value &&
     !modelChanging.value &&
     !pickingFiles.value &&
@@ -238,6 +243,7 @@ watch(
     chatStore.streamText,
     chatStore.streaming,
     chatStore.streamToolCalls.length,
+    chatStore.activityStatus,
   ],
   () => {
     if (!isUserScrolledUp) {

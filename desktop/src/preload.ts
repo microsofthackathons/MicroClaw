@@ -406,14 +406,24 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke", id),
     revokeAllDurableApprovals: () =>
       ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke-all"),
-    getPendingApproval: () => ipcRenderer.invoke("windows-node-mxc:approval-current"),
+    getPendingApproval: () =>
+      ipcRenderer.invoke("windows-node-mxc:approval-current") as Promise<
+        import("./windows-node-mxc").WindowsNodeMxcRendererApproval | null
+      >,
     respondApproval: (params: {
       requestId: string;
       decision: "deny" | "allow-once" | "allow-always";
       origin?: "desktop" | "timeout";
     }) => ipcRenderer.invoke("windows-node-mxc:approval-respond", params),
-    onApprovalRequest: (callback: (request: unknown) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, request: unknown) => callback(request);
+    onApprovalRequest: (
+      callback: (
+        request: import("./windows-node-mxc").WindowsNodeMxcRendererApproval | null,
+      ) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        request: import("./windows-node-mxc").WindowsNodeMxcRendererApproval | null,
+      ) => callback(request);
       ipcRenderer.on("windows-node-mxc:approval-request", handler);
       return () => ipcRenderer.removeListener("windows-node-mxc:approval-request", handler);
     },

@@ -10,6 +10,8 @@ import SettingsView from "@/views/SettingsView.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
 import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
 import PermissionDialog from "@/components/PermissionDialog.vue";
+import ChatMessageList from "@/components/chat/ChatMessageList.vue";
+import ChatView from "@/views/ChatView.vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -46,9 +48,12 @@ describe("App MXC loading gate with the real Gateway store", () => {
   const nativeDialog = vi.fn();
   const persist = vi.fn();
   let chatEvent: Parameters<OpenClawAPI["chat"]["onEvent"]>[0];
+  let toolEvent: Parameters<OpenClawAPI["chat"]["onToolEvent"]>[0];
+  let activityWrapper: ReturnType<typeof shallowMount> | undefined;
 
   beforeEach(async () => {
     vi.useFakeTimers();
+    activityWrapper = undefined;
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
       addEventListener: vi.fn(),
@@ -57,6 +62,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
     window.openclaw = createBrowserOpenClawMock();
     vi.spyOn(window.openclaw.chat, "onEvent").mockImplementation((callback) => {
       chatEvent = callback;
+      return vi.fn();
+    });
+    vi.spyOn(window.openclaw.chat, "onToolEvent").mockImplementation((callback) => {
+      toolEvent = callback;
       return vi.fn();
     });
     vi.spyOn(window.openclaw.chat, "onSessionUpdate").mockReturnValue(vi.fn());
@@ -107,6 +116,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
 
   afterEach(() => {
     wrapper?.unmount();
+    activityWrapper?.unmount();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -152,7 +162,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
     chat.wsConnected = true;
     expect(gateway.ready).toBe(true);
     expect(wrapper.find(".app-layout").exists()).toBe(true);
-    return { gateway, chat };
+    return { gateway, chat, pinia, router };
   }
 
   async function requestFullActivation() {
@@ -642,6 +652,300 @@ describe("App MXC loading gate with the real Gateway store", () => {
     });
     expect(gateway.ready).toBe(true);
     expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+  });
+
+  it("does not attach another conversation's global approval to the selected live tool list", async () => {
+    status.gatewayGeneration = "activity-generation";
+    const { chat } = await mountReadyApp();
+    chat.setMainSessionKey("agent:main:main");
+    chatEvent({
+      sessionKey: "agent:main:main",
+      runId: "selected-run",
+      state: "status",
+      lifecyclePhase: "start",
+    });
+    const originalTools = chat.streamToolCalls;
+    approvalRequest({
+      ...permission("other-chat"),
+      activity: {
+        gatewayGeneration: "activity-generation",
+        sessionKey: "agent:main:other",
+        runId: "other-run",
+        toolCallId: "other-tool",
+      },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("other-chat");
+    expect(chat.streamToolCalls).toEqual([]);
+    expect(chat.streamToolCalls).toBe(originalTools);
+    expect(chat.chatRunId).toBe("selected-run");
+    expect(chat.streaming).toBe(true);
+  });
+
+  it.each(["before", "after"] as const)(
+    "binds a phone approval %s run discovery and separates its decision from actual execution",
+    async (order) => {
+      const key = "agent:main:main";
+      status.gatewayGeneration = "activity-generation";
+      const { chat, pinia } = await mountReadyApp(true);
+      chat.setMainSessionKey(key);
+      await flushPromises();
+      activityWrapper = shallowMount(ChatMessageList, {
+        global: { plugins: [pinia], stubs: { PermissionDialog: false } },
+      });
+      const run = { sessionKey: key, runId: "phone-run" };
+      if (order === "after") chatEvent({ ...run, state: "status", lifecyclePhase: "start" });
+      const request = {
+        ...permission("phone-activity"),
+        commandText: "full exact Desktop command",
+        activity: { gatewayGeneration: "activity-generation", ...run, toolCallId: "real-tool" },
+      };
+      approvalRequest(request);
+      await flushPromises();
+      expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe(
+        "Waiting for approval",
+      );
+      expect(wrapper.findComponent(PermissionDialog).get(".perm-command-code").text()).toBe(
+        request.commandText,
+      );
+      if (order === "before") {
+        expect(chat.streaming).toBe(false);
+        expect(chat.chatRunId).toBeNull();
+        expect(chat.streamStartedAt).toBeNull();
+        chatEvent({ ...run, state: "status", lifecyclePhase: "start" });
+      }
+      toolEvent({
+        ...run,
+        stream: "tool",
+        data: { phase: "start", name: "exec", toolCallId: "real-tool" },
+      });
+      await flushPromises();
+      expect(chat.streamToolCalls).toContainEqual(
+        expect.objectContaining({
+          id: "mxc-approval:gateway:phone-activity",
+          kind: "approval",
+          waitingPermission: true,
+          done: false,
+        }),
+      );
+      approvalResolved({
+        requestId: request.id,
+        status: "accepted",
+        decision: "allow-once",
+        origin: "wechat",
+      });
+      await flushPromises();
+      expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+      expect(chat.streamToolCalls.find((tool) => tool.id === "real-tool")?.done).toBe(false);
+      expect(chat.streaming).toBe(true);
+      expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe("Running tool");
+      toolEvent({
+        ...run,
+        stream: "tool",
+        data: { phase: "result", name: "exec", toolCallId: "real-tool" },
+      });
+      await flushPromises();
+      expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe("Working");
+      chatEvent({ ...run, state: "status", lifecyclePhase: "end" });
+      await flushPromises();
+      expect(activityWrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    },
+  );
+
+  it("keeps unbound node and stale-generation popups usable without attributing them to the selected run", async () => {
+    status.gatewayGeneration = "activity-generation";
+    const { chat } = await mountReadyApp();
+    chat.setMainSessionKey("agent:main:main");
+    chatEvent({
+      sessionKey: "agent:main:main",
+      runId: "selected-run",
+      state: "status",
+      lifecyclePhase: "start",
+    });
+    approvalRequest({
+      ...permission("stale-origin"),
+      activity: {
+        gatewayGeneration: "old-generation",
+        sessionKey: "agent:main:main",
+        runId: "selected-run",
+        toolCallId: "tool",
+      },
+    });
+    approvalRequest({ ...permission("native-only"), approvalLayer: "node" });
+    await flushPromises();
+    expect(chat.activityStatus).toBe("working");
+    expect(chat.streamToolCalls).toEqual([]);
+    wrapper.findComponent(PermissionDialog).vm.$emit("respond", "deny");
+    await flushPromises();
+    expect(window.openclaw.windowsNodeMxc.respondApproval).toHaveBeenCalledWith({
+      requestId: "stale-origin",
+      decision: "deny",
+    });
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("native-only");
+    expect(chat.chatRunId).toBe("selected-run");
+    expect(chat.streaming).toBe(true);
+  });
+
+  it("shows the actual empty ChatView wait and preserves generic activity after a decision before run discovery", async () => {
+    const key = "agent:main:main";
+    status.gatewayGeneration = "activity-generation";
+    const { chat, pinia, router } = await mountReadyApp();
+    chat.setMainSessionKey(key);
+    await flushPromises();
+    activityWrapper = shallowMount(ChatView, {
+      global: {
+        plugins: [pinia, router],
+        stubs: {
+          PermissionDialog: false,
+          ChatMessageList: false,
+          ChatModelPicker: true,
+          ChatWelcome: true,
+          ChatAttachments: true,
+          ModelSetupDialog: true,
+        },
+      },
+    });
+    approvalRequest({
+      ...permission("before-discovery"),
+      activity: {
+        gatewayGeneration: "activity-generation",
+        sessionKey: key,
+        runId: "phone-run",
+        toolCallId: "tool",
+      },
+    });
+    await flushPromises();
+    expect(activityWrapper.find(".chat-welcome-area").exists()).toBe(false);
+    expect(activityWrapper.find(".chat-empty").exists()).toBe(false);
+    expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe(
+      "Waiting for approval",
+    );
+    await activityWrapper.get("textarea").setValue("Do not send another command");
+    expect(activityWrapper.get(".home-input-send").attributes("disabled")).toBeDefined();
+    approvalResolved({
+      requestId: "before-discovery",
+      status: "accepted",
+      decision: "allow-once",
+      origin: "wechat",
+    });
+    await flushPromises();
+    expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe("Working");
+    expect(activityWrapper.get(".home-input-send").attributes("disabled")).toBeDefined();
+    expect(chat.streaming).toBe(false);
+    expect(chat.chatRunId).toBeNull();
+    expect(chat.streamStartedAt).toBeNull();
+    expect(await chat.sendMessage("Do not send another command")).toBe(false);
+    vi.spyOn(window.openclaw.chat, "loadHistory").mockResolvedValue({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await chat.loadHistory({ passive: true });
+    await flushPromises();
+    expect(activityWrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    expect(activityWrapper.get(".home-input-send").attributes("disabled")).toBeUndefined();
+  });
+
+  it("keeps a same-ID native decision separate and labels a Gateway timeout without completing its command", async () => {
+    const key = "agent:main:main";
+    status.gatewayGeneration = "activity-generation";
+    const { chat } = await mountReadyApp();
+    chat.setMainSessionKey(key);
+    toolEvent({
+      sessionKey: key,
+      runId: "run",
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "real-tool" },
+    });
+    approvalRequest({
+      ...permission("shared-activity-id"),
+      activity: {
+        gatewayGeneration: "activity-generation",
+        sessionKey: key,
+        runId: "run",
+        toolCallId: "real-tool",
+      },
+    });
+    await flushPromises();
+    approvalResolved({
+      requestId: "shared-activity-id",
+      approvalLayer: "node",
+      status: "accepted",
+      decision: "deny",
+      origin: "desktop",
+    });
+    await flushPromises();
+    expect(chat.activityStatus).toBe("waiting-approval");
+    approvalResolved({
+      requestId: "shared-activity-id",
+      approvalLayer: "gateway",
+      status: "accepted",
+      decision: "deny",
+      origin: "timeout",
+    });
+    await flushPromises();
+    expect(chat.activityStatus).toBe("running-tool");
+    expect(chat.streamToolCalls.find((tool) => tool.kind === "approval")?.result).toBe(
+      "Expired — no decision",
+    );
+    expect(chat.streamToolCalls.find((tool) => tool.id === "real-tool")?.done).toBe(false);
+    expect(chat.streaming).toBe(true);
+  });
+
+  it("reconciles an active phone run on the existing five-second poll with one coalesced read and no terminal packet", async () => {
+    const key = "agent:main:main";
+    const { chat, pinia } = await mountReadyApp();
+    chat.setMainSessionKey(key);
+    chatEvent({ sessionKey: key, runId: "phone-run", state: "status", lifecyclePhase: "start" });
+    await flushPromises();
+    activityWrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+    let complete!: (result: Awaited<ReturnType<OpenClawAPI["chat"]["loadHistory"]>>) => void;
+    const read = vi.spyOn(window.openclaw.chat, "loadHistory").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(key);
+    expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe("Working");
+    complete({
+      sessionKey: key,
+      messages: [{ role: "assistant", content: "persisted final reply" }],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await flushPromises();
+    expect(chat.streaming).toBe(false);
+    expect(chat.messages.at(-1)?.content).toBe("persisted final reply");
+    expect(activityWrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a persisted final response busy until a later authoritative idle poll", async () => {
+    const key = "agent:main:main";
+    const { chat, pinia } = await mountReadyApp();
+    chat.setMainSessionKey(key);
+    await flushPromises();
+    activityWrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+    const read = vi.spyOn(window.openclaw.chat, "loadHistory").mockResolvedValue({
+      sessionKey: key,
+      messages: [{ role: "assistant", content: "already persisted" }],
+      sessionInfo: { key, hasActiveRun: true },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(chat.streaming).toBe(true);
+    expect(chat.chatRunId).toBeNull();
+    expect(chat.messages.at(-1)?.content).toBe("already persisted");
+    expect(activityWrapper.get('[data-testid="chat-activity"]').text()).toBe("Working");
+    read.mockResolvedValue({
+      sessionKey: key,
+      messages: [{ role: "assistant", content: "already persisted" }],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(chat.streaming).toBe(false);
+    expect(activityWrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
   });
 
   it.each(["resolved", "null", "generation"] as const)(

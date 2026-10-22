@@ -10,6 +10,9 @@ export class ChatRunTracker {
   revision(key: string): number {
     return this.revisions.get(key) ?? 0;
   }
+  invalidateSnapshot(key: string): void {
+    this.change(key);
+  }
   isClosed(key: string, id: string): boolean {
     return this.closed.has(`${key}\0${id}`);
   }
