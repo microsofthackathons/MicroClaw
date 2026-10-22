@@ -136,7 +136,8 @@ export class WeixinRemoteApprovalTransport {
     message: WeixinMessage;
     agentId: string;
     sessionKey: string;
-    sourcePhase: "candidate" | "start" | "complete";
+    sourcePhase: "candidate" | "start" | "run" | "complete";
+    runId?: string;
     isActive?: () => boolean;
   }): Promise<boolean> {
     if (!this.enabled) return false;
@@ -192,6 +193,7 @@ export class WeixinRemoteApprovalTransport {
           text: params.sourcePhase === "candidate" ? candidate.text : source.text,
           ambiguous: params.sourcePhase === "candidate" && candidate.ambiguous,
           sourcePhase: params.sourcePhase,
+          ...(params.sourcePhase === "run" ? { runId: params.runId } : {}),
         },
       });
     });

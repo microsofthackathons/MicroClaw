@@ -230,6 +230,20 @@ MXC compatibility diagnostics compare fixed, hashed fields at exec defaults, nod
 input/output, and the raw approval envelope before normalization. They do not establish route
 equivalence or authorize a request.
 
+Remote delivery requires a Gateway-derived approval origin from the already authenticated agent
+runtime, not a caller-supplied route alias. It preserves the prepared policy/execution session for
+execution and durable approval while separately identifying the originating conversation. The
+plugin's actual SDK run-start callback binds that run to the exact inbound provider message ID,
+cursor, account, sender, conversation, agent, route, and Gateway generation. The authenticated
+origin must also identify the WeChat channel, account, and recipient. Missing or invalid origins,
+unregistered runs, and mismatched providers remain local-only with explicit diagnostics; they
+never fall back to matching a legacy session key. Completed dispatch callbacks cannot register
+another run. No reply syntax or consent capability is upgraded by this binding.
+The fixed-field diagnostic collector can also retain main-process source-cache acceptance,
+approved-origin presence, bound-run hashes, and typed delivery/rejection reasons. Its shared
+allowlist rejects arbitrary output; commands, message text, identities, and credentials are not
+included in these frames.
+
 Desktop thinking state follows exact Gateway session/run lifecycle events, including external
 WeChat runs, rather than requiring a Desktop send. History's authoritative `sessionInfo` active-run
 snapshot restores state after switching or reconnecting. Older terminal events and stale snapshots
@@ -237,6 +251,12 @@ cannot clear a newer run; lifecycle-only completion clears thinking without inve
 Streamed text and tool evidence remain pending until the actual terminal chat event or
 authoritative history owns the output. Failed cancellation reports the error without falsely
 clearing authoritative busy state.
+The Desktop explicitly subscribes to the selected session's transcript and catalog lifecycle
+notifications. Only notifications matching the acknowledged selected session reach the renderer,
+and the IPC notification contains only its session key. It refreshes authoritative history during
+active runs and approval waits, so an inbound phone user turn need not wait for the assistant's
+final reply or a separate agent-start event. Subscription rejection is reported rather than
+treated as a successful observer.
 
 Electron main remains the sole approval authority. The WeChat plugin has a generation-local,
 token-authenticated named-pipe transport with only two operations: report a normalized inbound

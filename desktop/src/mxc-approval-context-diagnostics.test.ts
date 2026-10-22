@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { describeGatewayApprovalContext } from "./mxc-approval-context-diagnostics";
+import {
+  describeGatewayApprovalContext,
+  describeWeixinApprovalDecision,
+  isSafeMxcApprovalMetadataFrame,
+} from "./mxc-approval-context-diagnostics";
 // @ts-expect-error The Gateway compatibility preload is external ESM.
 import * as compat from "./openclaw-approval-replay-compat.mjs";
 
@@ -11,6 +15,87 @@ const digest = (value: string) =>
   crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 describe("privacy-safe approval context diagnostics", () => {
+  it("persists source-cache, approved-origin and exact bound-run hashes through the collector allowlist", () => {
+    const approval = {
+      id: "PRIVATE APPROVAL",
+      sessionKey: "PRIVATE POLICY",
+      agent: "PRIVATE AGENT",
+      origin: {
+        runId: "PRIVATE RUN",
+        runSessionKey: "PRIVATE CHAT",
+        executionSessionKey: "PRIVATE POLICY",
+        channel: "PRIVATE CHANNEL",
+        accountId: "PRIVATE ACCOUNT",
+        to: "PRIVATE RECIPIENT",
+        toolCallId: "PRIVATE TOOL",
+      },
+      command: "PRIVATE COMMAND",
+      token: "PRIVATE TOKEN",
+    };
+    const source = {
+      sessionKey: "PRIVATE CHAT",
+      agentId: "PRIVATE AGENT",
+      messageId: "PRIVATE MESSAGE",
+      cursor: "PRIVATE CURSOR",
+      runId: "PRIVATE RUN",
+      gatewayGeneration: "PRIVATE GENERATION",
+    };
+    for (const [stage, reason, boundRun] of [
+      ["weixin-source-cached", "source-cached", undefined],
+      ["weixin-run-registration", "source-run-bound", "PRIVATE RUN"],
+      ["weixin-main-delivery", "source-run-mismatch", undefined],
+      ["weixin-main-delivery", "prompt-delivered", "PRIVATE RUN"],
+    ] as const) {
+      const frame = describeWeixinApprovalDecision(stage, reason, approval, source, boundRun);
+      expect(frame.approvedOriginPresent).toBe(true);
+      expect(frame.origin.runId.hash).toBe(digest("PRIVATE RUN"));
+      expect(frame.boundRun.hash).toBe(boundRun ? digest(boundRun) : undefined);
+      const serialized = JSON.stringify(frame);
+      expect(serialized).not.toContain("PRIVATE");
+      expect(isSafeMxcApprovalMetadataFrame(serialized)).toBe(true);
+      expect(isSafeMxcApprovalMetadataFrame(serialized.replace(reason, "PRIVATE TOKEN"))).toBe(
+        false,
+      );
+      expect(
+        isSafeMxcApprovalMetadataFrame(serialized.slice(0, -1) + ',"command":"PRIVATE COMMAND"}'),
+      ).toBe(false);
+    }
+    expect(
+      isSafeMxcApprovalMetadataFrame(
+        JSON.stringify(describeGatewayApprovalContext({ request: { sessionKey: "PRIVATE CHAT" } })),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not invoke metadata getters or serializers for the new decision stages", () => {
+    const source = Object.defineProperty({}, "runId", {
+      get() {
+        throw new Error("PRIVATE GETTER");
+      },
+    });
+    const approval = Object.defineProperty({}, "origin", {
+      get() {
+        throw new Error("PRIVATE GETTER");
+      },
+    });
+    expect(() =>
+      describeWeixinApprovalDecision(
+        "weixin-main-delivery",
+        "source-origin-unavailable",
+        approval,
+        source,
+      ),
+    ).not.toThrow();
+    expect(
+      describeWeixinApprovalDecision(
+        "weixin-main-delivery",
+        "source-origin-unavailable",
+        approval,
+        source,
+      ).source.runId.type,
+    ).toBe("accessor");
+  });
+
   it("keeps the CommonJS main and injected ESM field contracts identical", () => {
     const envelope = {
       id: "private-approval",

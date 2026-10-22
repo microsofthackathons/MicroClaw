@@ -243,6 +243,8 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       }),
     },
     chat: {
+      observeSession: async () => {},
+      onSessionUpdate: () => () => {},
       isConnected: async () => true,
       loadHistory: async () => ({ messages: [] }),
       listSessionTitles: async () => ({ titles: {} }),

@@ -111,6 +111,9 @@ export interface WeixinRemoteApprovalSource {
   quoted: boolean;
   receivedAtUnixMs: number;
   sentAtUnixMs?: number;
+  runIds?: string[];
+  gatewayGeneration?: string;
+  providerSessionKey?: string;
 }
 
 export interface WeixinRemoteApprovalSecurityBinding {
@@ -120,6 +123,48 @@ export interface WeixinRemoteApprovalSecurityBinding {
   activationLeaseHash: string;
   requestedMode: "limited-dacl" | "full";
   effectiveMode: string;
+}
+
+export function weixinApprovalSourceSessionKey(approval: WindowsNodeMxcGatewayApproval): string {
+  return approval.origin?.runSessionKey ?? approval.sessionKey;
+}
+
+export function weixinApprovalOriginRejection(
+  approval: WindowsNodeMxcGatewayApproval,
+  source: WeixinRemoteApprovalSource,
+): WeixinRemoteApprovalRejectionReason | null {
+  const origin = approval.origin;
+  if (!origin) return "source-origin-unavailable";
+  if (
+    origin.channel !== "openclaw-weixin" ||
+    normalizeIdentity(origin.accountId) !== normalizeIdentity(source.accountId) ||
+    normalizeIdentity(origin.to) !== normalizeIdentity(source.senderId)
+  )
+    return "source-provider-mismatch";
+  if (
+    source.gatewayGeneration !== origin.gatewayGeneration ||
+    !source.runIds?.includes(origin.runId)
+  )
+    return "source-run-mismatch";
+  return null;
+}
+
+export function weixinApprovalOriginMatchesSecurity(
+  approval: WindowsNodeMxcGatewayApproval,
+  security: WeixinRemoteApprovalSecurityBinding,
+): boolean {
+  const origin = approval.origin;
+  return (
+    !origin ||
+    (origin.contract === "microclaw.gateway-approval-origin.v1" &&
+      origin.gatewayGeneration === security.gatewayGeneration &&
+      origin.nodeId === security.nodeId &&
+      origin.executionSessionKey === approval.sessionKey &&
+      origin.agentId === approval.agent &&
+      origin.runId.length > 0 &&
+      origin.toolCallId.length > 0 &&
+      origin.runSessionKey.length > 0)
+  );
 }
 
 export interface WeixinRemoteApprovalBatchRequest {
@@ -323,6 +368,8 @@ function securityBindingHash(
         forwarded: source.forwarded,
         quoted: source.quoted,
         receivedAtUnixMs: source.receivedAtUnixMs,
+        runIds: source.runIds ?? [],
+        gatewayGeneration: source.gatewayGeneration ?? null,
       },
       requests: requests.map(({ approval }) => ({
         id: approval.id,
@@ -335,6 +382,7 @@ function securityBindingHash(
         declaredAccess: approval.declaredAccess,
         agent: approval.agent,
         sessionKey: approval.sessionKey,
+        origin: approval.origin ?? null,
         hasMutableFileOperand: approval.hasMutableFileOperand,
         allowedDecisions: approval.allowedDecisions,
       })),
@@ -623,6 +671,9 @@ export type WeixinRemoteApprovalRejectionReason =
   | "source-metadata-invalid"
   | "source-session-mismatch"
   | "source-agent-mismatch"
+  | "source-origin-unavailable"
+  | "source-run-mismatch"
+  | "source-provider-mismatch"
   | "ambiguous-request-set"
   | "presentation-sensitive"
   | "presentation-unsupported"
@@ -710,10 +761,24 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     const approvalIds = input.requests.map(({ approval }) => approval.id);
     if (!approvalIds.length || new Set(approvalIds).size !== approvalIds.length)
       return reject("ambiguous-request-set");
-    if (input.requests.some(({ approval }) => approval.sessionKey !== input.source.sessionKey))
+    if (
+      input.requests.some(
+        ({ approval }) => !weixinApprovalOriginMatchesSecurity(approval, input.security),
+      )
+    )
+      return reject("security-binding-invalid");
+    if (
+      input.requests.some(
+        ({ approval }) => weixinApprovalSourceSessionKey(approval) !== input.source.sessionKey,
+      )
+    )
       return reject("source-session-mismatch");
     if (input.requests.some(({ approval }) => (approval.agent ?? "") !== input.source.agentId))
       return reject("source-agent-mismatch");
+    for (const { approval } of input.requests) {
+      const reason = weixinApprovalOriginRejection(approval, input.source);
+      if (reason) return reject(reason);
+    }
     if (!promptCanRepresentRequests(input.requests)) {
       return reject(
         input.requests.some(

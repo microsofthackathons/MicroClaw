@@ -526,6 +526,8 @@ let unsubWsConnected: (() => void) | null = null;
 let unsubWsDisconnected: (() => void) | null = null;
 let unsubServiceReady: (() => void) | null = null;
 let unsubChatEvent: (() => void) | null = null;
+let unsubSessionUpdate: (() => void) | null = null;
+let stopSessionObservation: (() => void) | null = null;
 let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
 let unsubPermission: (() => void) | null = null;
@@ -781,6 +783,23 @@ onMounted(async () => {
   unsubChatEvent = window.openclaw.chat.onEvent((payload) => {
     chatStore.handleChatEvent(payload);
   });
+  unsubSessionUpdate = window.openclaw.chat.onSessionUpdate(({ sessionKey }) => {
+    if (sessionKey === chatStore.sessionKey) void chatStore.loadHistory({ showLoading: false });
+  });
+  stopSessionObservation = watch(
+    () => [chatStore.sessionKey, chatStore.wsConnected] as const,
+    async ([sessionKey, connected]) => {
+      if (!connected) return;
+      try {
+        await window.openclaw.chat.observeSession(sessionKey);
+        if (chatStore.wsConnected && chatStore.sessionKey === sessionKey)
+          await chatStore.loadHistory({ showLoading: false });
+      } catch (error) {
+        gateway.addLog(`[error] Session updates unavailable: ${String(error)}`);
+      }
+    },
+    { immediate: true },
+  );
 
   // Agent tool events (start, result)
   unsubToolEvent = window.openclaw.chat.onToolEvent((payload) => {
@@ -848,6 +867,11 @@ onUnmounted(() => {
   unsubWsDisconnected?.();
   unsubServiceReady?.();
   unsubChatEvent?.();
+  unsubSessionUpdate?.();
+  stopSessionObservation?.();
+  void window.openclaw.chat
+    .observeSession(null)
+    .catch((error) => console.warn("[renderer] Session unsubscribe failed:", error));
   unsubToolEvent?.();
   unsubIntegrityAlert?.();
   unsubPermission?.();

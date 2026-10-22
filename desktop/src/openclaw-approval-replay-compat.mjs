@@ -640,6 +640,49 @@ export const PINNED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.reques
 \t\t\tif (!assertValidParams(params, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;
 \t\t\tconst p = params;`;
 
+export function buildGatewayApprovalOrigin(identity, request, gatewayGeneration) {
+  const nonempty = (value) => typeof value === "string" && value.length > 0;
+  if (
+    request.host !== "node" ||
+    !identity ||
+    identity.agentId !== request.agentId ||
+    identity.operationalRunInstance?.runId !== request.runId ||
+    ![
+      identity.sessionKey,
+      identity.operationalRunInstance?.instanceId,
+      request.agentId,
+      request.sessionKey,
+      request.runId,
+      request.toolCallId,
+      request.nodeId,
+      gatewayGeneration,
+      identity.turnSourceChannel,
+      identity.turnSourceAccountId,
+      identity.turnSourceTo,
+    ].every(nonempty)
+  )
+    return undefined;
+  return {
+    contract: "microclaw.gateway-approval-origin.v1",
+    gatewayGeneration,
+    agentId: request.agentId,
+    runSessionKey: identity.sessionKey,
+    executionSessionKey: request.sessionKey,
+    runId: request.runId,
+    toolCallId: request.toolCallId,
+    nodeId: request.nodeId,
+    channel: identity.turnSourceChannel,
+    accountId: identity.turnSourceAccountId,
+    to: identity.turnSourceTo,
+  };
+}
+
+const PINNED_EXEC_APPROVAL_ORIGIN_SOURCE = `\t\t\tif (requestRunId && context.chatRunState.hasAbortMarker(requestRunId)) {`;
+const PATCHED_EXEC_APPROVAL_ORIGIN_SOURCE = `\t\t\t// Only the already-validated internal runtime identity supplies conversation lineage.
+\t\t\tconst remoteApprovalOrigin = buildGatewayApprovalOrigin(trustedAgentRuntime, request, process.env.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION);
+\t\t\tif (remoteApprovalOrigin) request.remoteApprovalOrigin = remoteApprovalOrigin;
+${PINNED_EXEC_APPROVAL_ORIGIN_SOURCE}`;
+
 const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": async ({ params, respond, context, client }) => {
 \t\t\tconst rawPlan = params && typeof params === "object" && !Array.isArray(params) && params.systemRunPlan && typeof params.systemRunPlan === "object" && !Array.isArray(params.systemRunPlan) ? params.systemRunPlan : null;
 \t\t\tconst validationParams = rawPlan ? {
@@ -730,12 +773,18 @@ export function patchPinnedOpenClawSystemRun(source) {
 }
 
 export function patchPinnedOpenClawExecApproval(source) {
-  return replaceExactlyOnce(
+  const patched = replaceExactlyOnce(
     source,
     PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
     PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE,
     "exec approval schema projection",
   );
+  return `${buildGatewayApprovalOrigin.toString()}\n${replaceExactlyOnce(
+    patched,
+    PINNED_EXEC_APPROVAL_ORIGIN_SOURCE,
+    PATCHED_EXEC_APPROVAL_ORIGIN_SOURCE,
+    "authenticated approval origin projection",
+  )}`;
 }
 
 export const PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE = `/** Only NOT_CONNECTED plus explicit pre-dispatch provenance proves a retry cannot duplicate work. */

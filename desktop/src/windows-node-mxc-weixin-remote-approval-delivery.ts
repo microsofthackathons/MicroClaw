@@ -7,6 +7,8 @@ import {
   type WeixinRemoteApprovalSecurityBinding,
   type WeixinRemoteApprovalSource,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
+  weixinApprovalSourceSessionKey,
+  weixinApprovalOriginRejection,
 } from "./windows-node-mxc-weixin-remote-approval";
 import type { WindowsNodeMxcWeixinRemoteApprovalServer } from "./windows-node-mxc-weixin-remote-approval-transport";
 import { normalizeWeixinProviderInteger } from "./weixin-provider-integer";
@@ -27,6 +29,50 @@ export interface WeixinRemoteDeliveryState {
   revision: number;
 }
 
+export type WeixinRemoteDeliveryTrigger = "initial" | "source-bound" | "promoted";
+
+export class WeixinRemoteDeliveryCoordinator {
+  private tail: Promise<WeixinRemoteApprovalDelivery | null> | null = null;
+  private scheduled = new Map<
+    WeixinRemoteDeliveryTrigger,
+    Promise<WeixinRemoteApprovalDelivery | null>
+  >();
+
+  begin(
+    trigger: WeixinRemoteDeliveryTrigger,
+    current: () => {
+      pending: boolean;
+      challengeId: string | null;
+      state: WeixinRemoteDeliveryState | null;
+    },
+    send: () => Promise<WeixinRemoteApprovalDelivery | null>,
+  ): Promise<WeixinRemoteApprovalDelivery | null> {
+    const scheduled = this.scheduled.get(trigger);
+    if (scheduled) return this.tail ?? scheduled;
+    const previous = this.tail;
+    const attempt = (async () => {
+      await previous;
+      const { pending, challengeId, state } = current();
+      if (!pending || challengeId) return null;
+      const permitted =
+        trigger === "initial"
+          ? state === null
+          : state?.state === "local-only" &&
+            (state.reason === "source-run-mismatch" ||
+              (trigger === "promoted" && state.reason === "approval-queued"));
+      if (!permitted) return null;
+      return send();
+    })();
+    this.tail = attempt;
+    this.scheduled.set(trigger, attempt);
+    const clear = () => {
+      if (this.scheduled.get(trigger) === attempt) this.scheduled.delete(trigger);
+    };
+    void attempt.then(clear, clear);
+    return attempt;
+  }
+}
+
 export function remoteApprovalDiagnosticBinding(
   approval: Pick<WindowsNodeMxcGatewayApproval, "id" | "sessionKey">,
 ): {
@@ -44,6 +90,7 @@ export function exactWeixinApprovalSource(
 ): WeixinRemoteDeliveryReason | null {
   const owner = configuration.owner;
   if (!configuration.enabled || !owner) return "disabled";
+  if (!approval.origin) return "source-origin-unavailable";
   if (!source) return "source-unavailable";
   if (!source.direct || source.forwarded || source.quoted) return "source-not-direct";
   if (
@@ -58,8 +105,41 @@ export function exactWeixinApprovalSource(
   ) {
     return "source-metadata-invalid";
   }
-  if (source.sessionKey !== approval.sessionKey) return "source-session-mismatch";
+  if (source.sessionKey !== weixinApprovalSourceSessionKey(approval))
+    return "source-session-mismatch";
   if (source.agentId !== (approval.agent ?? "")) return "source-agent-mismatch";
+  return weixinApprovalOriginRejection(approval, source);
+}
+
+export function findWeixinApprovalSource(
+  sources: ReadonlyMap<string, WeixinRemoteApprovalSource>,
+  approval: WindowsNodeMxcGatewayApproval,
+): WeixinRemoteApprovalSource | undefined {
+  return approval.origin ? sources.get(weixinApprovalSourceSessionKey(approval)) : undefined;
+}
+
+export function bindWeixinApprovalRun(
+  sources: Map<string, WeixinRemoteApprovalSource>,
+  inbound: WeixinRemoteApprovalSource & { runId?: string },
+  gatewayGeneration: string,
+): WeixinRemoteApprovalSource | null {
+  if (!inbound.runId || !inbound.direct || inbound.forwarded || inbound.quoted) return null;
+  for (const [key, source] of sources) {
+    if (
+      source.gatewayGeneration !== gatewayGeneration ||
+      source.accountId !== inbound.accountId ||
+      source.senderId !== inbound.senderId ||
+      source.conversationId !== inbound.conversationId ||
+      source.messageId !== inbound.messageId ||
+      source.cursor !== inbound.cursor ||
+      source.agentId !== inbound.agentId ||
+      (source.providerSessionKey ?? source.sessionKey) !== inbound.sessionKey
+    )
+      continue;
+    const bound = { ...source, runIds: [...new Set([...(source.runIds ?? []), inbound.runId])] };
+    sources.set(key, bound);
+    return bound;
+  }
   return null;
 }
 

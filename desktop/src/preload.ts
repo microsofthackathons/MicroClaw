@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { subscribeChatSessionUpdates } from "./chat-session-update";
 import type {
   ChatAttachment,
   ClipboardImageInput,
@@ -120,6 +121,11 @@ contextBridge.exposeInMainWorld("openclaw", {
 
     /** Load chat history for a session. */
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
+    observeSession: (sessionKey: string | null) =>
+      ipcRenderer.invoke("chat:observe-session", { sessionKey }),
+    onSessionUpdate: (callback: (payload: { sessionKey: string }) => void) => {
+      return subscribeChatSessionUpdates(ipcRenderer, callback);
+    },
 
     /** Load titles derived by OpenClaw from session transcripts. */
     listSessionTitles: (keys: string[]) => ipcRenderer.invoke("chat:list-session-titles", { keys }),

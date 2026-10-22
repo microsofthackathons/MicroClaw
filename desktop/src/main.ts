@@ -197,12 +197,20 @@ import {
 import {
   deliverWeixinRemoteApproval,
   exactWeixinApprovalSource,
+  findWeixinApprovalSource,
+  bindWeixinApprovalRun,
   remoteApprovalDiagnosticBinding,
   type WeixinRemoteDeliveryState,
+  type WeixinRemoteDeliveryTrigger,
+  WeixinRemoteDeliveryCoordinator,
 } from "./windows-node-mxc-weixin-remote-approval-delivery";
 import { describeWeixinSessionBinding, resolveWeixinSessionRoute } from "./weixin-session-routing";
 import { agentRunLifecycleEvent } from "./chat-run-lifecycle";
-import { describeGatewayApprovalContext } from "./mxc-approval-context-diagnostics";
+import { forwardGatewaySessionUpdate } from "./chat-session-update";
+import {
+  describeGatewayApprovalContext,
+  describeWeixinApprovalDecision,
+} from "./mxc-approval-context-diagnostics";
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import { requiresPostSpawnChannelCheck, waitForPostSpawnChannels } from "./post-spawn-restart";
@@ -686,7 +694,8 @@ interface PendingWindowsNodeMxcGatewayApproval {
   remoteSecurity: WeixinRemoteApprovalSecurityBinding | null;
   remoteChallengeId: string | null;
   remoteAttempt: Promise<unknown> | null;
-  beginRemoteDelivery: () => void;
+  remoteCoordinator: WeixinRemoteDeliveryCoordinator;
+  beginRemoteDelivery: (trigger: WeixinRemoteDeliveryTrigger) => void;
 }
 let pendingWindowsNodeMxcGatewayApproval: PendingWindowsNodeMxcGatewayApproval | null = null;
 const queuedWindowsNodeMxcGatewayApprovals: PendingWindowsNodeMxcGatewayApproval[] = [];
@@ -1586,6 +1595,47 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
     }
     return { consumed: false };
   }
+  if (inbound.sourcePhase === "run") {
+    const source = bindWeixinApprovalRun(
+      windowsNodeMxcWeixinRemoteApprovalSources,
+      inbound,
+      gatewayGenerationId,
+    );
+    console.info(
+      "[weixin-remote-approval-context]",
+      JSON.stringify(
+        describeWeixinApprovalDecision(
+          "weixin-run-registration",
+          source ? "source-run-bound" : "source-run-binding-rejected",
+          undefined,
+          inbound,
+          source ? inbound.runId : undefined,
+        ),
+      ),
+    );
+    if (source) {
+      for (const pending of allPendingWindowsNodeMxcGatewayApprovals()) {
+        if (
+          pending.lifecycle.pending &&
+          pending.gatewayGeneration === gatewayGenerationId &&
+          !pending.remoteChallengeId &&
+          exactWeixinApprovalSource(
+            getWindowsNodeMxcWeixinRemoteApprovalConfiguration(),
+            source,
+            pending.request,
+          ) === null
+        ) {
+          pending.remoteSource = source;
+          // No send was attempted for an unbound source; never retry an unknown delivery.
+          if (pending.remoteDelivery?.reason === "source-run-mismatch")
+            pending.beginRemoteDelivery("source-bound");
+        }
+      }
+    } else {
+      console.warn("[weixin-remote-approval]", { reason: "source-run-binding-rejected" });
+    }
+    return { consumed: false };
+  }
   const exactCandidate = /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.test(inbound.text);
   const candidateLike =
     inbound.sourcePhase === "candidate" && (exactCandidate || inbound.ambiguous);
@@ -1713,7 +1763,21 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
       ...route,
       accountId: inbound.accountId.trim().toLowerCase(),
       senderId: inbound.senderId.trim().toLowerCase(),
+      providerSessionKey: inbound.sessionKey,
+      gatewayGeneration: generation,
+      runIds: [],
     });
+    console.info(
+      "[weixin-remote-approval-context]",
+      JSON.stringify(
+        describeWeixinApprovalDecision(
+          "weixin-source-cached",
+          "source-cached",
+          undefined,
+          windowsNodeMxcWeixinRemoteApprovalSources.get(route.sessionKey),
+        ),
+      ),
+    );
     console.info("[weixin-remote-approval]", {
       reason: "source-cached",
       aliasBinding: describeWeixinSessionBinding(inbound.sessionKey),
@@ -2029,7 +2093,7 @@ async function requireEffectiveWindowsNodeMxc(
 
 function currentApprovalWeixinConsentHash(
   approval: WindowsNodeMxcGatewayApproval,
-  source = windowsNodeMxcWeixinRemoteApprovalSources.get(approval.sessionKey),
+  source = findWeixinApprovalSource(windowsNodeMxcWeixinRemoteApprovalSources, approval),
 ): string | null {
   const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
   return exactWeixinApprovalSource(configuration, source, approval) === null
@@ -2127,7 +2191,10 @@ async function handleWindowsNodeMxcGatewayApproval(
   const rendererApproval = approval;
   if (findPendingWindowsNodeMxcGatewayApproval(approval.id)) return;
   const expiresAtUnixMs = mxcApprovalDeadline(receivedAtUnixMs, approval.expiresAtUnixMs);
-  const remoteSource = windowsNodeMxcWeixinRemoteApprovalSources.get(rendererApproval.sessionKey);
+  const remoteSource = findWeixinApprovalSource(
+    windowsNodeMxcWeixinRemoteApprovalSources,
+    rendererApproval,
+  );
   const remoteSecurity = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
   const deliveryServer = windowsNodeMxcWeixinRemoteApprovalServer;
   const locale = resolveSupportedLocale(settingsStore.get("language") ?? "en-US");
@@ -2141,8 +2208,9 @@ async function handleWindowsNodeMxcGatewayApproval(
     remoteSecurity,
     remoteChallengeId: null,
     remoteAttempt: null,
-    beginRemoteDelivery: () =>
-      beginPendingWindowsNodeMxcRemoteDelivery(pending, locale, deliveryServer),
+    remoteCoordinator: new WeixinRemoteDeliveryCoordinator(),
+    beginRemoteDelivery: (trigger) =>
+      beginPendingWindowsNodeMxcRemoteDelivery(pending, locale, deliveryServer, false, trigger),
     lifecycle: new WindowsNodeMxcApprovalLifecycle(expiresAtUnixMs, {
       resolve: (decision, origin) =>
         commitPendingWindowsNodeMxcGatewayApproval(
@@ -2185,6 +2253,7 @@ function beginPendingWindowsNodeMxcRemoteDelivery(
   locale: "en-US" | "zh-CN",
   deliveryServer: WindowsNodeMxcWeixinRemoteApprovalServer | null,
   queued = false,
+  trigger: WeixinRemoteDeliveryTrigger = "initial",
 ): void {
   const approval = pending.request;
   const expiresAtUnixMs = pending.expiresAtUnixMs;
@@ -2193,48 +2262,67 @@ function beginPendingWindowsNodeMxcRemoteDelivery(
     (queued
       ? findPendingWindowsNodeMxcGatewayApproval(approval.id) === pending
       : pendingWindowsNodeMxcGatewayApproval === pending);
-  const previousAttempt = pending.remoteAttempt;
-  pending.remoteAttempt = (async () => {
-    await previousAttempt;
-    if (!isPending()) return null;
-    const currentSecurity = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
-    return deliverWeixinRemoteApproval({
-      approval,
-      configuration: getWindowsNodeMxcWeixinRemoteApprovalConfiguration(),
-      source: pending.remoteSource ?? undefined,
-      security:
-        JSON.stringify(currentSecurity) === JSON.stringify(pending.remoteSecurity)
-          ? currentSecurity
-          : null,
-      server: deliveryServer,
-      broker: windowsNodeMxcWeixinRemoteApprovalBroker,
-      expiresAtUnixMs,
-      locale,
-      queued,
-      isPending,
-      challenge: (delivery) => {
-        pending.remoteChallengeId = delivery.challengeId;
-      },
-      state: (state) => {
-        if (!isPending()) return;
-        publishPendingWeixinRemoteDelivery(pending, state);
-      },
-      diagnostic: (reason) =>
-        console.info("[weixin-remote-approval]", {
-          reason,
-          ...remoteApprovalDiagnosticBinding(approval),
-          planSessionBinding: describeWeixinSessionBinding(approval.sessionKey),
-          ...(reason === "source-unavailable"
-            ? {
-                knownSourceBindings: [...windowsNodeMxcWeixinRemoteApprovalSources.values()]
-                  .filter((source) => source.agentId === approval.agent)
-                  .slice(0, 4)
-                  .map((source) => describeWeixinSessionBinding(source.sessionKey)),
-              }
-            : {}),
-        }),
-    });
-  })();
+  pending.remoteAttempt = pending.remoteCoordinator.begin(
+    trigger,
+    () => ({
+      pending: isPending(),
+      challengeId: pending.remoteChallengeId,
+      state: pending.remoteDelivery,
+    }),
+    async () => {
+      const currentSecurity = currentWindowsNodeMxcWeixinRemoteApprovalSecurity();
+      return deliverWeixinRemoteApproval({
+        approval,
+        configuration: getWindowsNodeMxcWeixinRemoteApprovalConfiguration(),
+        source: pending.remoteSource ?? undefined,
+        security:
+          JSON.stringify(currentSecurity) === JSON.stringify(pending.remoteSecurity)
+            ? currentSecurity
+            : null,
+        server: deliveryServer,
+        broker: windowsNodeMxcWeixinRemoteApprovalBroker,
+        expiresAtUnixMs,
+        locale,
+        queued,
+        isPending,
+        challenge: (delivery) => {
+          pending.remoteChallengeId = delivery.challengeId;
+        },
+        state: (state) => {
+          if (!isPending()) return;
+          publishPendingWeixinRemoteDelivery(pending, state);
+        },
+        diagnostic: (reason) => {
+          console.info("[weixin-remote-approval]", {
+            reason,
+            ...remoteApprovalDiagnosticBinding(approval),
+            planSessionBinding: describeWeixinSessionBinding(approval.sessionKey),
+            ...(reason === "source-unavailable"
+              ? {
+                  knownSourceBindings: [...windowsNodeMxcWeixinRemoteApprovalSources.values()]
+                    .filter((source) => source.agentId === approval.agent)
+                    .slice(0, 4)
+                    .map((source) => describeWeixinSessionBinding(source.sessionKey)),
+                }
+              : {}),
+          });
+          const runId = pending.request.origin?.runId;
+          console.info(
+            "[weixin-remote-approval-context]",
+            JSON.stringify(
+              describeWeixinApprovalDecision(
+                "weixin-main-delivery",
+                reason,
+                pending.request,
+                pending.remoteSource,
+                runId && pending.remoteSource?.runIds?.includes(runId) ? runId : undefined,
+              ),
+            ),
+          );
+        },
+      });
+    },
+  );
   void pending.remoteAttempt.catch((error) => {
     console.error("[weixin-remote-approval]", {
       reason: "delivery-internal-failure",
@@ -2306,7 +2394,7 @@ async function finishPendingWindowsNodeMxcGatewayApproval(
     if (pendingWindowsNodeMxcGatewayApproval === pending) {
       pendingWindowsNodeMxcGatewayApproval = queuedWindowsNodeMxcGatewayApprovals.shift() ?? null;
       if (pendingWindowsNodeMxcGatewayApproval?.lifecycle.pending) {
-        pendingWindowsNodeMxcGatewayApproval.beginRemoteDelivery();
+        pendingWindowsNodeMxcGatewayApproval.beginRemoteDelivery("promoted");
       }
     }
   }
@@ -6209,6 +6297,12 @@ function connectGatewayWs(): void {
       }
     },
     onEvent: (evt) => {
+      if (
+        forwardGatewaySessionUpdate(evt, (channel, payload) =>
+          mainWindow?.webContents.send(channel, payload),
+        )
+      )
+        return;
       if (evt.event === "exec.approval.requested" && isWindowsNodeMxcDesired()) {
         console.info(
           "[weixin-remote-approval-context]",
@@ -6217,6 +6311,7 @@ function connectGatewayWs(): void {
         const approval = normalizeWindowsNodeMxcGatewayApproval(
           evt.payload,
           settingsStore.get("windowsNodeMxcNodeId"),
+          gatewayGenerationId,
         );
         if (!approval) {
           const id =
@@ -7207,6 +7302,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:load-history", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     return await gwClient.loadHistory(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:observe-session", async (_event, params: { sessionKey: string | null }) => {
+    if (!gwClient) throw new Error("Gateway client unavailable");
+    if (params.sessionKey !== null && typeof params.sessionKey !== "string")
+      throw new Error("Invalid observed session");
+    await gwClient.observeChatSession(params.sessionKey);
   });
 
   ipcMain.handle("chat:list-session-titles", async (_event, params: { keys: string[] }) => {

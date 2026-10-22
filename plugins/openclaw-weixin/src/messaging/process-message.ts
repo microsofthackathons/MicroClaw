@@ -582,6 +582,7 @@ export async function processOneMessage(
     return;
   }
   logger.debug(`dispatchReplyFromConfig: starting agentId=${route.agentId ?? "(none)"}`);
+  let dispatchActive = true;
   try {
     await deps.channelRuntime.reply.withReplyDispatcher({
       dispatcher,
@@ -595,6 +596,20 @@ export async function processOneMessage(
             ...(replyProgressSender?.replyOptions ?? {}),
             abortSignal: accountAbortController.signal,
             disableBlockStreaming: true,
+            onAgentRunStart: (actualRunId) => {
+              if (!dispatchActive || !accountStillActive()) {
+                deps.errLog("weixin remote approval reason=source-run-callback-inactive");
+                return;
+              }
+              void deps.remoteApprovalTransport?.intercept({
+                message: full,
+                agentId: route.agentId ?? "",
+                sessionKey: route.sessionKey ?? "",
+                sourcePhase: "run",
+                runId: actualRunId,
+                isActive: accountStillActive,
+              }).catch(() => deps.errLog("weixin remote approval reason=source-run-binding-unavailable"));
+            },
           },
         }),
     });
@@ -605,6 +620,7 @@ export async function processOneMessage(
     );
     throw err;
   } finally {
+    dispatchActive = false;
     clearInterval(accountPoll);
     unwatchAccountState();
     unsubscribeAccountChange();

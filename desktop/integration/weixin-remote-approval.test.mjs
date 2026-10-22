@@ -17,11 +17,26 @@ vi.mock("../../plugins/openclaw-weixin/src/auth/accounts.js", () => ({
   onWeixinAccountChanged: () => () => {},
   watchWeixinAccountState: () => () => {},
 }));
+vi.mock("../../plugins/openclaw-weixin/src/auth/pairing.js", () => ({
+  readFrameworkAllowFromList: () => ["owner@im.wechat"],
+}));
+vi.mock("../../plugins/openclaw-weixin/src/messaging/debug-mode.js", () => ({
+  isDebugMode: () => false,
+}));
+vi.mock("../../plugins/openclaw-weixin/src/config/reply-progress.js", () => ({
+  resolveReplyProgressMessagesEnabled: () => false,
+}));
 vi.mock("../../plugins/openclaw-weixin/src/messaging/inbound.js", () => ({
   getContextToken: () => "test-context",
   setContextToken: () => {},
   getContextTokenFromMsgContext: () => "test-context",
-  weixinMessageToMsgContext: () => ({}),
+  weixinMessageToMsgContext: (message, accountId) => ({
+    From: message.from_user_id,
+    To: message.from_user_id,
+    Body: message.item_list?.[0]?.text_item?.text,
+    AccountId: accountId,
+    Provider: "openclaw-weixin",
+  }),
   isMediaItem: () => false,
 }));
 vi.mock("../../plugins/openclaw-weixin/src/messaging/send.js", () => ({
@@ -68,6 +83,7 @@ vi.mock("../../plugins/openclaw-weixin/src/security/mxc-policy.js", () => ({
   isMxcWeixinIngressReleased: () => true,
   assertMxcWeixinIngressReleased: () => {},
   waitForMxcWeixinIngressRelease: () => {},
+  isWeixinSenderAllowedByPolicy: (sender, allowed) => allowed.includes(sender.toLowerCase()),
 }));
 vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
   logger: {
@@ -94,7 +110,13 @@ import {
   durableApprovalIdentityFromGateway,
   WindowsNodeMxcDurableApprovalStore,
 } from "../src/windows-node-mxc-durable-approvals";
-import { deliverWeixinRemoteApproval } from "../src/windows-node-mxc-weixin-remote-approval-delivery";
+import {
+  deliverWeixinRemoteApproval,
+  findWeixinApprovalSource,
+  bindWeixinApprovalRun,
+} from "../src/windows-node-mxc-weixin-remote-approval-delivery";
+import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
+import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
 import {
   normalizeWeixinRemoteApprovalOwner,
   projectWeixinRemoteApprovalRuntimeConfiguration,
@@ -172,6 +194,24 @@ function normalizedApproval(operation = operations[0][1], envelope = {}) {
       request: {
         host: "node",
         nodeId: security.nodeId,
+        runId: "fixture-run",
+        toolCallId: "fixture-tool",
+        turnSourceChannel: "openclaw-weixin",
+        turnSourceAccountId: "bot",
+        turnSourceTo: "owner@im.wechat",
+        remoteApprovalOrigin: {
+          contract: "microclaw.gateway-approval-origin.v1",
+          gatewayGeneration: security.gatewayGeneration,
+          agentId: "main",
+          runSessionKey: sessionKey,
+          executionSessionKey: sessionKey,
+          runId: "fixture-run",
+          toolCallId: "fixture-tool",
+          nodeId: security.nodeId,
+          channel: "openclaw-weixin",
+          accountId: "bot",
+          to: "owner@im.wechat",
+        },
         systemRunPlan: {
           argv,
           commandText: windowsCommand(argv),
@@ -189,6 +229,7 @@ function normalizedApproval(operation = operations[0][1], envelope = {}) {
       ...envelope,
     },
     security.nodeId,
+    security.gatewayGeneration,
   );
   if (!approval) throw new Error("Production normalization rejected the replayed Gateway plan");
   return approval;
@@ -288,7 +329,13 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       "test-pipe-secret",
       async (source) => {
         if (source.sourcePhase === "start" && source.direct && !source.quoted && !source.forwarded)
-          sources.set(source.sessionKey, source);
+          sources.set(source.sessionKey, {
+            ...source,
+            gatewayGeneration: security.gatewayGeneration,
+            runIds: [],
+          });
+        if (source.sourcePhase === "run")
+          bindWeixinApprovalRun(sources, source, security.gatewayGeneration);
         if (source.sourcePhase !== "candidate") return { consumed: false };
         const result = broker.resolveCandidate({
           ...source,
@@ -396,7 +443,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         deliveryAttempt = deliverWeixinRemoteApproval({
           approval,
           configuration,
-          source: sources.get(approval.sessionKey),
+          source: findWeixinApprovalSource(sources, approval),
           security,
           server,
           broker,
@@ -420,6 +467,13 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
             "start",
           ),
         ).toBe(false);
+        await transport.intercept({
+          message: phoneMessage("Perform the requested filesystem operation"),
+          agentId: "main",
+          sessionKey,
+          sourcePhase: "run",
+          runId: approval.origin.runId,
+        });
         return this.deliver();
       },
       reply: (text, cursor = 43, extra = {}) =>
@@ -437,6 +491,143 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       ]),
     ),
   );
+
+  it("routes the real pinned builder/schema/handler's distinct policy/run lineage through source cache, broker, pipe and sender", async () => {
+    const base = normalizedApproval();
+    const executionSession = "agent:main:sandbox:policy-execution-fixture";
+    const results = runPinnedApprovalRequests({
+      argv: [base.executable, ...base.arguments],
+      commandText: base.command,
+      commandPreview: `# [declare-access]rw:${root}[/declare-access]\n${operations[0][1]}`,
+      cwd: null,
+      cwdBinding: base.canonicalCwd,
+      agentId: "main",
+      sessionKey: executionSession,
+      executablePath: base.executablePath,
+      executableSha256: base.executableSha256,
+      declaredAccess: base.declaredAccess,
+    });
+    const trusted = results.find((result) => result.kind === "trusted");
+    const approval = normalizeWindowsNodeMxcGatewayApproval(
+      {
+        id: "actual-approval",
+        request: trusted.request,
+      },
+      security.nodeId,
+      security.gatewayGeneration,
+    );
+    expect(approval.origin).toMatchObject({
+      runSessionKey: sessionKey,
+      executionSessionKey: executionSession,
+      runId: "actual-run",
+      toolCallId: "actual-tool",
+    });
+    expect(approval.sessionKey).toBe(executionSession);
+    const state = await pipeline(approval, false);
+    expect(findWeixinApprovalSource(state.sources, approval)).toBeUndefined();
+    const delivery = await state.start();
+    expect(delivery).not.toBeNull();
+    expect(state.diagnostics).toContainEqual({ reason: "prompt-delivered" });
+    expect(mocks.send).toHaveBeenCalled();
+    expect(state.sources.has(sessionKey)).toBe(true);
+    expect(state.sources.has(executionSession)).toBe(false);
+    expect(
+      durableApprovalIdentityFromGateway(approval, security.policyFingerprint).sessionKey,
+    ).toBe(executionSession);
+    for (const kind of ["caller-forgery", "cross-agent", "cross-run"]) {
+      expect(results.find((result) => result.kind === kind).request).toBeNull();
+    }
+    expect(
+      results.find((result) => result.kind === "untrusted").request.remoteApprovalOrigin,
+    ).toBeUndefined();
+    for (const kind of [
+      "producer-without-channel",
+      "producer-without-account",
+      "producer-without-recipient",
+    ]) {
+      const request = results.find((result) => result.kind === kind).request;
+      expect(request).not.toBeNull();
+      expect(request.remoteApprovalOrigin).toBeUndefined();
+      const local = normalizeWindowsNodeMxcGatewayApproval(
+        { id: kind, request },
+        security.nodeId,
+        security.gatewayGeneration,
+      );
+      expect(local.origin).toBeUndefined();
+      expect(await state.deliver({ approval: local })).toBeNull();
+      expect(state.states.at(-1).reason).toBe("source-origin-unavailable");
+    }
+    for (const kind of [
+      "valid-other-run",
+      "valid-other-channel",
+      "valid-other-account",
+      "valid-other-recipient",
+    ]) {
+      const independentlyAuthorized = results.find((result) => result.kind === kind).request;
+      expect(independentlyAuthorized).not.toBeNull();
+      const other = normalizeWindowsNodeMxcGatewayApproval(
+        {
+          id: kind,
+          request: independentlyAuthorized,
+        },
+        security.nodeId,
+        security.gatewayGeneration,
+      );
+      expect(other.origin).toBeDefined();
+      const sent = mocks.send.mock.calls.length;
+      expect(await state.deliver({ approval: other })).toBeNull();
+      expect(state.states.at(-1)).toMatchObject({
+        state: "local-only",
+        reason: kind === "valid-other-run" ? "source-run-mismatch" : "source-provider-mismatch",
+      });
+      expect(mocks.send).toHaveBeenCalledTimes(sent);
+    }
+    for (const remoteApprovalOrigin of [undefined, { contract: "invalid-present-origin" }]) {
+      const other = normalizeWindowsNodeMxcGatewayApproval(
+        {
+          id: "legacy-key-without-origin",
+          request: {
+            ...trusted.request,
+            sessionKey,
+            systemRunPlan: { ...trusted.request.systemRunPlan, sessionKey },
+            remoteApprovalOrigin,
+          },
+        },
+        security.nodeId,
+        security.gatewayGeneration,
+      );
+      expect(other.sessionKey).toBe(sessionKey);
+      expect(other.origin).toBeUndefined();
+      expect(findWeixinApprovalSource(state.sources, other)).toBeUndefined();
+      expect(await state.deliver({ approval: other })).toBeNull();
+      expect(state.states.at(-1).reason).toBe("source-origin-unavailable");
+    }
+    for (const patch of [
+      { gatewayGeneration: "old-generation" },
+      { runId: "another-run" },
+      { toolCallId: "another-tool" },
+      { agentId: "another-agent" },
+      { executionSessionKey: sessionKey },
+    ]) {
+      const rejected = normalizeWindowsNodeMxcGatewayApproval(
+        {
+          id: "mismatched-approval",
+          request: {
+            ...trusted.request,
+            remoteApprovalOrigin: { ...trusted.request.remoteApprovalOrigin, ...patch },
+          },
+        },
+        security.nodeId,
+        security.gatewayGeneration,
+      );
+      expect(rejected.sessionKey).toBe(executionSession);
+      expect(rejected.origin).toBeUndefined();
+      expect(findWeixinApprovalSource(state.sources, rejected)).toBeUndefined();
+    }
+    state.sources.set(sessionKey, { ...state.sources.get(sessionKey), agentId: "other" });
+    await expect(state.deliver()).resolves.toBeNull();
+    expect(state.diagnostics).toContainEqual({ reason: "source-agent-mismatch" });
+  }, 45_000);
 
   it.each([false, true])(
     "delivers the real folder-plan pipeline with lossless provider int64 wire metadata (quoted=%s)",
@@ -461,6 +652,17 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       expect(state.sources.get(sessionKey)).toMatchObject({
         messageId: "18446744073709551000",
         cursor: "9007199254740993",
+      });
+      await state.transport.intercept({
+        message: wireMessage(
+          "Create the requested Desktop folder",
+          "18446744073709551000",
+          "9007199254740993",
+        ),
+        agentId: "main",
+        sessionKey,
+        sourcePhase: "run",
+        runId: state.approval.origin.runId,
       });
       const delivery = await state.deliver();
       expect(delivery).not.toBeNull();
@@ -598,6 +800,13 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     async (change, reason) => {
       const state = await pipeline();
       await interceptWeixinRemoteApprovalMessage(phoneMessage("request"), state.deps, "start");
+      await state.transport.intercept({
+        message: phoneMessage("request"),
+        agentId: "main",
+        sessionKey,
+        sourcePhase: "run",
+        runId: state.approval.origin.runId,
+      });
       const source = { ...state.sources.get(sessionKey), ...change };
       expect(await state.deliver({ source })).toBeNull();
       expect(state.states.at(-1)).toMatchObject({ state: "local-only", reason });
@@ -664,9 +873,122 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
   ])("reports security/transport failures and grants nothing: %s", async (failure, reason) => {
     const state = await pipeline();
     await interceptWeixinRemoteApprovalMessage(phoneMessage("request"), state.deps, "start");
+    await state.transport.intercept({
+      message: phoneMessage("request"),
+      agentId: "main",
+      sessionKey,
+      sourcePhase: "run",
+      runId: state.approval.origin.runId,
+    });
     const overrides = failure === null ? { security: null } : { server: null };
     expect(await state.deliver(overrides)).toBeNull();
     expect(state.states.at(-1)).toMatchObject({ state: "local-only", reason });
+    expect(state.resolveGateway).not.toHaveBeenCalled();
+  });
+
+  it("binds the actual dispatch callback to the original provider message, before approval delivery; ignores callbacks after completion", async () => {
+    const { processOneMessage } = await vi.importActual(
+      "../../plugins/openclaw-weixin/src/messaging/process-message.js",
+    );
+    const state = await pipeline(normalizedApproval(), false);
+    const order = [];
+    const intercept = state.transport.intercept.bind(state.transport);
+    vi.spyOn(state.transport, "intercept").mockImplementation(async (params) => {
+      order.push(params.sourcePhase);
+      return intercept(params);
+    });
+    let callback;
+    const full = parseWeixinUpdatesJson(
+      JSON.stringify({
+        msgs: [
+          {
+            ...phoneMessage("Create the requested folder"),
+            message_id: "RAW_PROVIDER_ID",
+          },
+        ],
+      }).replace('"RAW_PROVIDER_ID"', "18446744073709551000"),
+    ).msgs[0];
+    const deps = {
+      ...state.deps,
+      log: vi.fn(),
+      errLog: mocks.error,
+      channelRuntime: {
+        ...state.deps.channelRuntime,
+        session: {
+          resolveStorePath: () => "test-only-store",
+          recordInboundSession: async () => {
+            order.push("record");
+          },
+        },
+        reply: {
+          finalizeInboundContext: (ctx) => ctx,
+          resolveHumanDelayConfig: () => undefined,
+          createReplyDispatcherWithTyping: () => ({
+            dispatcher: {},
+            replyOptions: {},
+            markDispatchIdle: vi.fn(),
+          }),
+          withReplyDispatcher: ({ run }) => run(),
+          dispatchReplyFromConfig: async ({ replyOptions }) => {
+            order.push("dispatch");
+            callback = replyOptions.onAgentRunStart;
+            const notify = createPinnedAgentRunStartNotifier(callback, state.approval.origin.runId);
+            notify();
+            notify();
+            await vi.waitFor(() =>
+              expect(state.sources.get(sessionKey).runIds).toEqual([state.approval.origin.runId]),
+            );
+            order.push("delivery");
+            expect(await state.deliver()).not.toBeNull();
+          },
+        },
+      },
+    };
+    await processOneMessage(full, deps);
+    expect(order).toEqual(["start", "record", "dispatch", "run", "delivery"]);
+    expect(state.sources.get(sessionKey)).toMatchObject({
+      messageId: "18446744073709551000",
+      cursor: "42",
+      runIds: [state.approval.origin.runId],
+    });
+    callback("late-other-run", "late-test-identity");
+    expect(order).toEqual(["start", "record", "dispatch", "run", "delivery"]);
+    expect(mocks.error).toHaveBeenCalledWith(
+      "weixin remote approval reason=source-run-callback-inactive",
+    );
+  });
+
+  it("cannot bind a missing/late callback to the next message, a reconnected generation, or a completed source", async () => {
+    const state = await pipeline(normalizedApproval(), false);
+    await interceptWeixinRemoteApprovalMessage(phoneMessage("original"), state.deps, "start");
+    expect(await state.deliver()).toBeNull();
+    expect(state.states.at(-1).reason).toBe("source-run-mismatch");
+    const original = state.sources.get(sessionKey);
+    await interceptWeixinRemoteApprovalMessage(phoneMessage("next", 44), state.deps, "start");
+    expect(
+      bindWeixinApprovalRun(
+        state.sources,
+        { ...original, runId: state.approval.origin.runId },
+        security.gatewayGeneration,
+      ),
+    ).toBeNull();
+    const next = state.sources.get(sessionKey);
+    expect(
+      bindWeixinApprovalRun(
+        state.sources,
+        { ...next, runId: state.approval.origin.runId },
+        "reconnected-generation",
+      ),
+    ).toBeNull();
+    state.sources.clear();
+    expect(
+      bindWeixinApprovalRun(
+        state.sources,
+        { ...next, runId: state.approval.origin.runId },
+        security.gatewayGeneration,
+      ),
+    ).toBeNull();
+    expect(mocks.send).not.toHaveBeenCalled();
     expect(state.resolveGateway).not.toHaveBeenCalled();
   });
 

@@ -2,6 +2,7 @@ import { createPinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { isProxy } from "vue";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessage } from "element-plus";
 import App from "./App.vue";
@@ -13,6 +14,14 @@ import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { agentRunLifecycleEvent } from "../../src/chat-run-lifecycle";
+import { GatewayClient } from "../../src/gateway-client";
+import { GatewaySessionObserver } from "../../src/gateway-session-observer";
+import {
+  forwardGatewaySessionUpdate,
+  subscribeChatSessionUpdates,
+} from "../../src/chat-session-update";
+// @ts-expect-error The pinned Gateway fixture executes external ESM in a separate Node process.
+import { runPinnedSessionFixture } from "../../integration/pinned-session-fixture.mjs";
 import { planWeixinRemoteApprovalNativeTransition } from "../../src/windows-node-mxc-weixin-remote-approval-consent";
 import { WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } from "../../src/windows-node-mxc-weixin-remote-approval";
 import {
@@ -48,6 +57,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       chatEvent = callback;
       return vi.fn();
     });
+    vi.spyOn(window.openclaw.chat, "onSessionUpdate").mockReturnValue(vi.fn());
     vi.spyOn(window.openclaw.windowsNodeMxc, "respondApproval").mockResolvedValue(undefined);
     status = await window.openclaw.windowsNodeMxc.getStatus();
     status.fullAvailability = {
@@ -149,6 +159,90 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await flushPromises();
     expect(settings.text()).not.toContain("Remote command approval");
   }
+
+  it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
+    "shows actual pinned session events through GatewayClient, main and preload before the terminal reply",
+    async () => {
+      const fixture = runPinnedSessionFixture();
+      const ipc = new EventEmitter();
+      vi.mocked(window.openclaw.chat.onSessionUpdate).mockImplementation((callback) =>
+        subscribeChatSessionUpdates(ipc, callback),
+      );
+      const observer = new GatewaySessionObserver(async (method, params) => {
+        if (method === "sessions.subscribe") return fixture.catalog.payload;
+        expect(method).toBe("sessions.messages.subscribe");
+        expect(params).toEqual(fixture.params);
+        return fixture.ack.payload;
+      });
+      await observer.select(fixture.params.key);
+      await observer.connect();
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      Object.assign(client, {
+        sessionObserver: observer,
+        sessionTitleWaiters: new Map(),
+        opts: {
+          onEvent: (event: { event: string; payload?: unknown }) =>
+            forwardGatewaySessionUpdate(event, (channel, payload) =>
+              ipc.emit(channel, {}, payload),
+            ),
+        },
+      });
+      const receive = (event: unknown) => client["handleMessage"](JSON.stringify(event));
+      const key = "agent:main:main";
+      const runId = "external-phone-run";
+      const history = vi.spyOn(window.openclaw.chat, "loadHistory").mockResolvedValue({
+        sessionKey: key,
+        messages: [],
+        sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+      });
+      const observe = vi.spyOn(window.openclaw.chat, "observeSession");
+      const { gateway, chat } = await mountReadyApp();
+      await flushPromises();
+      const epoch = gateway.readinessEpoch;
+      expect(observe).toHaveBeenCalledWith(key);
+      history.mockResolvedValue(fixture.history);
+      receive(fixture.events[0]);
+      await flushPromises();
+      expect(chat.messages).toHaveLength(1);
+      expect(chat.messages[0].role).toBe("user");
+      expect(chat.streaming).toBe(true);
+      expect(chat.chatRunId).toBe(runId);
+      approvalRequest(permission("phone-approval-wait"));
+      await flushPromises();
+      expect(chat.streaming).toBe(true);
+      expect(chat.messages.some((message) => message.role === "assistant")).toBe(false);
+      receive(fixture.events[1]);
+      await flushPromises();
+      expect(chat.messages).toHaveLength(1);
+      const calls = history.mock.calls.length;
+      receive({
+        ...fixture.events[0],
+        payload: { ...fixture.events[0].payload, sessionKey: "agent:other:main", agentId: "other" },
+      });
+      await flushPromises();
+      expect(history).toHaveBeenCalledTimes(calls);
+      expect(gateway.ready).toBe(true);
+      expect(gateway.readinessEpoch).toBe(epoch);
+      expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+      history.mockResolvedValue({
+        sessionKey: key,
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "Phone folder request" }],
+            timestamp: 1000,
+          },
+          { role: "assistant", content: [{ type: "text", text: "Completed" }], timestamp: 2000 },
+        ],
+        sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+      });
+      receive(fixture.events[1]);
+      await flushPromises();
+      expect(chat.messages).toHaveLength(2);
+      expect(chat.streaming).toBe(false);
+    },
+    45_000,
+  );
 
   it("routes actual external lifecycle through App+Pinia without a renderer send or global loader", async () => {
     const { gateway, chat } = await mountReadyApp();

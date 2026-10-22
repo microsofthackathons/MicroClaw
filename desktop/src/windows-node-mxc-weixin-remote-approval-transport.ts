@@ -13,7 +13,8 @@ const DELIVERY_TIMEOUT_MS = 10_000;
 export interface WeixinRemoteApprovalInboundEnvelope extends WeixinRemoteApprovalSource {
   text: string;
   ambiguous: boolean;
-  sourcePhase: "candidate" | "start" | "complete";
+  sourcePhase: "candidate" | "start" | "run" | "complete";
+  runId?: string;
 }
 
 interface RegisteredClient {
@@ -278,8 +279,10 @@ function isInboundEnvelope(value: unknown): value is WeixinRemoteApprovalInbound
         source.sentAtUnixMs >= 0)) &&
     typeof source.text === "string" &&
     typeof source.ambiguous === "boolean" &&
-    (source.sourcePhase === "candidate" ||
-      source.sourcePhase === "start" ||
-      source.sourcePhase === "complete")
+    (source.sourcePhase === "run"
+      ? typeof source.runId === "string" && source.runId.length > 0
+      : source.sourcePhase === "candidate" ||
+        source.sourcePhase === "start" ||
+        source.sourcePhase === "complete")
   );
 }

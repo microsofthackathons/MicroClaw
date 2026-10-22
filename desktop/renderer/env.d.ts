@@ -251,6 +251,8 @@ interface OpenClawAPI {
     onIntegrityAlert(callback: (result: IntegrityResult) => void): () => void;
   };
   chat: {
+    observeSession(sessionKey: string | null): Promise<void>;
+    onSessionUpdate(callback: (payload: { sessionKey: string }) => void): () => void;
     isConnected(): Promise<boolean>;
     sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
     loadHistory(sessionKey: string): Promise<{ sessionKey?: string; messages?: unknown[]; thinkingLevel?: string; sessionInfo?: import("../src/chat-run-lifecycle").ChatSessionRuntime }>;

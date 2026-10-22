@@ -142,9 +142,7 @@ describe("pinned OpenClaw package validation", () => {
         }
         if (target.module === "node-invoke-plugin-policy-DLQRKKVA.mjs") {
           expect(patched).toContain("const requestParams = override.params ?? params.params");
-          expect(patched).toContain(
-            "params.onNodeCommandDispatchPreparing?.(requestParams)",
-          );
+          expect(patched).toContain("params.onNodeCommandDispatchPreparing?.(requestParams)");
         }
         if (target.module === "node-registry-private-CyaYRwVd.mjs") {
           expect(patched.indexOf("params.isDispatchAuthorized?.()")).toBeLessThan(
@@ -457,10 +455,9 @@ describe("pinned OpenClaw node approval proof backport", () => {
 
   it("attaches the proof to the final plugin params before registry serialization", () => {
     const patchedPlugin = patchPinnedOpenClawNodeInvokePluginPolicy(
-      [
-        PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE,
-        PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE,
-      ].join("\n"),
+      [PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE, PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE].join(
+        "\n",
+      ),
     );
     const patchedRegistry = patchPinnedOpenClawNodeRegistryPrivate(
       [
@@ -473,9 +470,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
 
     expect(patchedPlugin).toContain("const requestParams = override.params ?? params.params");
     expect(patchedPlugin).toContain("onDispatchPreparing: () =>");
-    expect(patchedPlugin).toContain(
-      "params.onNodeCommandDispatchPreparing?.(requestParams)",
-    );
+    expect(patchedPlugin).toContain("params.onNodeCommandDispatchPreparing?.(requestParams)");
     expect(patchedRegistry.indexOf("params.isDispatchAuthorized?.()")).toBeLessThan(
       patchedRegistry.indexOf("params.onDispatchPreparing?.(params.params)"),
     );
@@ -523,9 +518,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
           },
         }),
       ).toMatchObject({ reason: "outcome-unknown", code: "transport-failed" });
-      expect(patched).toContain(
-        'nodeErrorDetails?.executionState === "rejectedBeforeExecution"',
-      );
+      expect(patched).toContain('nodeErrorDetails?.executionState === "rejectedBeforeExecution"');
       expect(patched).toContain(
         'payload.success === false && payload.executionState === "rejectedBeforeExecution"',
       );
@@ -716,9 +709,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
 
       expect(patched).not.toContain("MICROCLAW_UNRESOLVED_NODE_RUN_TTL_MS");
       expect(patched).not.toContain("expiresAt: Date.now()");
-      expect(patched).toContain(
-        "buildMicroclawUnresolvedNodeRunKey(target.nodeId, prepared.plan)",
-      );
+      expect(patched).toContain("buildMicroclawUnresolvedNodeRunKey(target.nodeId, prepared.plan)");
       expect(patched.indexOf("findMicroclawUnresolvedNodeRun")).toBeLessThan(
         patched.indexOf("analyzeNodeApprovalRequirement"),
       );
@@ -751,17 +742,19 @@ describe("pinned OpenClaw node approval proof backport", () => {
     { decision: "allow-once", resolutionSource: "operator", consumed: false, allowed: false },
     { decision: "allow-once", resolutionSource: "auto-review", consumed: true, allowed: false },
     { decision: "allow-always", resolutionSource: "operator", consumed: true, allowed: false },
-  ])("awaits one-use consumption before scheduling dispatch-time proof minting: %j", async (entry) => {
-    const patched = patchPinnedOpenClawNodeGateway(source);
-    const branch = patched.slice(
-      patched.indexOf("\tconst approvalDecision ="),
-      patched.indexOf("\tif (timedOut"),
-    );
-    const run = new Function(
-      "snapshot",
-      "recordedResolutionSource",
-      "manager",
-      `return (async () => {
+  ])(
+    "awaits one-use consumption before scheduling dispatch-time proof minting: %j",
+    async (entry) => {
+      const patched = patchPinnedOpenClawNodeGateway(source);
+      const branch = patched.slice(
+        patched.indexOf("\tconst approvalDecision ="),
+        patched.indexOf("\tif (timedOut"),
+      );
+      const run = new Function(
+        "snapshot",
+        "recordedResolutionSource",
+        "manager",
+        `return (async () => {
         const approvalSource = null, next = {}, runId = "approval", targetNodeId = "node", nowMs = 2000;
         const runtimeContext = {plan: {}};
         const systemRunApprovalRequired = () => ({ok: false});
@@ -769,28 +762,29 @@ describe("pinned OpenClaw node approval proof backport", () => {
         ${branch}
         return {ok: false};
       })();`,
-    );
-    const consumeAllowOnce = vi.fn().mockResolvedValue(entry.consumed);
-    const result = await run(
-      { decision: entry.decision, resolvedAtMs: 1000 },
-      entry.resolutionSource,
-      { consumeAllowOnce },
-    );
-    expect(result.ok).toBe(entry.allowed);
-    expect(result.microclawApprovalProofRequest).toEqual(
-      entry.allowed
-        ? {
-            approvalId: "approval",
-            nodeId: "node",
-            plan: {},
-            decisionAtUnixMs: 1000,
-          }
-        : undefined,
-    );
-    expect(consumeAllowOnce).toHaveBeenCalledTimes(
-      entry.decision === "allow-once" && entry.resolutionSource === "operator" ? 1 : 0,
-    );
-  });
+      );
+      const consumeAllowOnce = vi.fn().mockResolvedValue(entry.consumed);
+      const result = await run(
+        { decision: entry.decision, resolvedAtMs: 1000 },
+        entry.resolutionSource,
+        { consumeAllowOnce },
+      );
+      expect(result.ok).toBe(entry.allowed);
+      expect(result.microclawApprovalProofRequest).toEqual(
+        entry.allowed
+          ? {
+              approvalId: "approval",
+              nodeId: "node",
+              plan: {},
+              decisionAtUnixMs: 1000,
+            }
+          : undefined,
+      );
+      expect(consumeAllowOnce).toHaveBeenCalledTimes(
+        entry.decision === "allow-once" && entry.resolutionSource === "operator" ? 1 : 0,
+      );
+    },
+  );
 
   describe("pinned OpenClaw prepared-plan identity backport", () => {
     it("preserves the exact MicroClaw executable, CWD, and declared-access identity", () => {
@@ -808,7 +802,9 @@ describe("pinned OpenClaw node approval proof backport", () => {
 
     describe("pinned OpenClaw approval schema projection", () => {
       it("validates the standard plan projection while retaining the original bound plan", () => {
-        const patched = patchPinnedOpenClawExecApproval(PINNED_EXEC_APPROVAL_VALIDATION_SOURCE);
+        const patched = patchPinnedOpenClawExecApproval(
+          `${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}\n\t\t\tif (requestRunId && context.chatRunState.hasAbortMarker(requestRunId)) {`,
+        );
 
         expect(patched).toContain("const validationParams = rawPlan");
         expect(patched).toContain('name !== "executablePath"');
