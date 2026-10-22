@@ -906,11 +906,10 @@ export default {
   "localModel.removalNotice":
     "移除连接不会删除模型文件、缓存或运行时。移除当前本地模型前，请先选择其他默认模型。",
   "modelSetup.title": "设置模型",
-  "modelSetup.selectDesc": "选择引导供应商、连接账号，或配置任意兼容的模型服务。",
+  "modelSetup.selectDesc": "选择千问、MiniMax 或本地模型，开始使用。",
   "modelSetup.keyDesc": "请输入模型信息和 API 密钥，开始使用 MicroClaw。",
   "modelSetup.customDesc": "配置任意兼容的模型服务端点。",
-  "modelSetup.otherModel": "其他模型",
-  "modelSetup.configureCustom": "配置自定义供应商",
+  "modelSetup.customProvider": "自定义供应商",
   "modelSetup.getApiKey": "获取 API 密钥",
   "modelSetup.openProviderFailed": "无法打开模型服务商网站：{error}",
   "modelSetup.haveApiKey": "已获取 API 密钥",

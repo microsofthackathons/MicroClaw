@@ -110,16 +110,10 @@
         </div>
 
         <button class="primary-action" type="button" @click.stop="handlePrimaryAction">
-          {{
-            isLocalProvider
-              ? t("localModel.configure")
-              : isCustomProvider
-                ? t("modelSetup.configureCustom")
-                : t("modelSetup.getApiKey")
-          }}
+          {{ isLocalProvider ? t("localModel.configure") : t("modelSetup.getApiKey") }}
         </button>
         <button
-          v-if="!isCustomProvider && !isLocalProvider"
+          v-if="!isLocalProvider"
           class="text-action"
           type="button"
           @click.stop="goToKeyForm()"
@@ -377,16 +371,6 @@ const modelFamilies: ModelFamilyPreset[] = [
     providerKey: provider.id,
   })),
   {
-    id: "custom",
-    labelKey: "modelSetup.otherModel",
-    providerKey: "custom",
-    baseUrl: "",
-    apiFormat: "openai-chat",
-    models: [],
-    defaultModel: "",
-    apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
-  },
-  {
     id: "local",
     labelKey: "localModel.title",
     providerKey: "llama-cpp",
@@ -398,11 +382,23 @@ const modelFamilies: ModelFamilyPreset[] = [
   },
 ];
 
+const customModelFamily: ModelFamilyPreset = {
+  id: "custom",
+  labelKey: "modelSetup.customProvider",
+  providerKey: "custom",
+  baseUrl: "",
+  apiFormat: "openai-chat",
+  models: [],
+  defaultModel: "",
+  apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
+};
+
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
 }
 
 function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
+  if (familyId === "custom") return customModelFamily;
   return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
 }
 
@@ -609,10 +605,6 @@ function handlePrimaryAction() {
     localVisible.value = true;
     return;
   }
-  if (isCustomProvider.value) {
-    goToKeyForm();
-    return;
-  }
   handleGetApiKey();
 }
 
@@ -648,6 +640,7 @@ async function openProviderSignup() {
 function goToSelectStep() {
   if (configMutationInProgress.value) return;
   cancelPendingSubmission();
+  if (isCustomProvider.value) selectFamily("qwen");
   isKeyStep.value = false;
   errorMsg.value = "";
 }

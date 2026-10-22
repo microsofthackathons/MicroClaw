@@ -975,12 +975,10 @@ export default {
   "localModel.removalNotice":
     "Removing a connection does not delete model files, caches, or the runtime. Select another default before removing the active local model.",
   "modelSetup.title": "Set Up Model",
-  "modelSetup.selectDesc":
-    "Choose a guided provider, connect an account, or configure any compatible model endpoint.",
+  "modelSetup.selectDesc": "Choose Qwen, MiniMax, or a local model to get started.",
   "modelSetup.keyDesc": "Enter your model details and API key to start using MicroClaw.",
   "modelSetup.customDesc": "Configure any compatible model endpoint.",
-  "modelSetup.otherModel": "Other model",
-  "modelSetup.configureCustom": "Configure custom provider",
+  "modelSetup.customProvider": "Custom provider",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.openProviderFailed": "Could not open the provider website: {error}",
   "modelSetup.haveApiKey": "I already have an API Key",

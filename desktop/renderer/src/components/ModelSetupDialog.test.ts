@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
+import { setLocale } from "@/i18n";
 import type { LocalModelOperation } from "../../../src/local-model-types";
 import { MANAGED_MODEL_PROVIDERS } from "@/utils/managed-model-providers";
 import ModelSetupDialog from "./ModelSetupDialog.vue";
@@ -92,6 +93,7 @@ describe("ModelSetupDialog", () => {
   });
 
   afterEach(() => {
+    setLocale("en-US");
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -108,7 +110,7 @@ describe("ModelSetupDialog", () => {
       },
     });
     await flushPromises();
-    expect(wrapper.findAll(".model-family-card")).toHaveLength(4);
+    expect(wrapper.findAll(".model-family-card")).toHaveLength(3);
     expect(wrapper.text()).not.toContain("GitHub Copilot");
     expect(wrapper.find(".model-key-form").exists()).toBe(false);
     expect("features" in window.openclaw).toBe(false);
@@ -119,10 +121,10 @@ describe("ModelSetupDialog", () => {
 
   async function openCustomForm(wrapper: ReturnType<typeof mountDialog>) {
     const cards = wrapper.findAll(".model-family-card");
-    expect(cards).toHaveLength(4);
-    await cards[2].trigger("click");
-    expect(wrapper.text()).toContain("Configure custom provider");
-    await wrapper.find(".primary-action").trigger("click");
+    expect(cards).toHaveLength(3);
+    await wrapper.setProps({ modelValue: false });
+    await wrapper.setProps({ modelValue: true, initialFamily: "custom" });
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
   }
 
   async function enterCloudKey(wrapper: ReturnType<typeof mountDialog>) {
@@ -132,17 +134,21 @@ describe("ModelSetupDialog", () => {
     await wrapper.get("select").setValue("qwen3.7-plus");
   }
 
-  it("shows only supported managed providers, custom setup, and a first-time local entry", () => {
-    const wrapper = mountDialog();
-    const cards = wrapper.findAll(".model-family-card");
-    expect(cards.map((card) => card.text())).toEqual([
-      "千问",
-      "MiniMax",
-      "Other model",
-      "Local model",
-    ]);
-    expect(wrapper.text()).not.toContain("OpenClaw catalog");
-  });
+  it.each(["en-US", "zh-CN"] as const)(
+    "only offers Qwen, MiniMax, and local setup in %s",
+    (locale) => {
+      setLocale(locale);
+      const wrapper = mountDialog();
+      const cards = wrapper.findAll(".model-family-card");
+      expect(cards.map((card) => card.text())).toEqual([
+        "千问",
+        "MiniMax",
+        locale === "zh-CN" ? "本地模型" : "Local model",
+      ]);
+      expect(wrapper.text()).not.toMatch(/Other model|其他模型|OpenClaw catalog/);
+      wrapper.unmount();
+    },
+  );
 
   it.each([
     ["qwen", "千问"],
@@ -310,7 +316,7 @@ describe("ModelSetupDialog", () => {
 
   it("opens the local dialog from the family grid without starting an operation", async () => {
     const wrapper = mountDialog();
-    await wrapper.findAll(".model-family-card")[3].trigger("click");
+    await wrapper.findAll(".model-family-card")[2].trigger("click");
     expect(wrapper.find(".primary-action").text()).toBe("Set up a local model");
     await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
@@ -733,13 +739,31 @@ describe("ModelSetupDialog", () => {
     }
   });
 
-  it("shows an Other model path with custom provider fields", async () => {
-    const wrapper = mountDialog();
-    await openCustomForm(wrapper);
+  it("retains existing custom connection fields but returns to the supported picker", async () => {
+    const wrapper = mountDialog({
+      currentProvider: {
+        familyId: "custom",
+        providerKey: "private",
+        modelName: "my-model",
+        baseUrl: "https://model.example/v1",
+        apiKey: "",
+        apiFormat: "openai-chat",
+      },
+    });
 
     expect(wrapper.text()).toContain("Provider ID");
     expect(wrapper.text()).toContain("API Format");
     expect(wrapper.text()).toContain("API KEY (OPTIONAL)");
+    await wrapper.get(".text-action--back").trigger("click");
+    expect(wrapper.findAll(".model-family-card").map((card) => card.text())).toEqual([
+      "千问",
+      "MiniMax",
+      "Local model",
+    ]);
+    expect(wrapper.findAll(".model-family-card")[0].classes()).toContain("active");
+    expect(wrapper.find(".primary-action").text()).toBe("Get API Key");
+    expect(wrapper.text()).not.toContain("Configure custom provider");
+    wrapper.unmount();
   });
 
   it("validates and saves a keyless local provider using the tested Base URL", async () => {
