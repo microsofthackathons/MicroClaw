@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  send: vi.fn().mockResolvedValue({}),
+  send: vi.fn().mockResolvedValue({ messageId: "test-provider-client" }),
   error: vi.fn(),
   process: vi.fn(),
   getUpdates: vi.fn(),
@@ -117,6 +117,7 @@ import {
 } from "../src/windows-node-mxc-weixin-remote-approval-delivery";
 import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
 import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
+import { exactField, windowsCommand } from "./windows-command-fixture.mjs";
 import {
   normalizeWeixinRemoteApprovalOwner,
   projectWeixinRemoteApprovalRuntimeConfiguration,
@@ -157,30 +158,6 @@ const executableHash = createHash("sha256")
   )
   .digest("hex");
 
-function windowsCommand(argv) {
-  return argv
-    .map((value) => {
-      if (value && !/\s|"/.test(value)) return value;
-      let result = '"';
-      let slashes = 0;
-      for (const character of value) {
-        if (character === "\\") {
-          slashes++;
-          continue;
-        }
-        if (character === '"') {
-          result += "\\".repeat(slashes * 2 + 1) + '"';
-          slashes = 0;
-          continue;
-        }
-        result += "\\".repeat(slashes) + character;
-        slashes = 0;
-      }
-      return result + "\\".repeat(slashes * 2) + '"';
-    })
-    .join(" ");
-}
-
 function normalizedApproval(operation = operations[0][1], envelope = {}) {
   // Pinned wrapper plus source-derived replay of the unchanged host's declaration stripping/quoting.
   // This is not a captured historical Gateway payload. Windows uses the actual interpreter file hash.
@@ -198,7 +175,7 @@ function normalizedApproval(operation = operations[0][1], envelope = {}) {
         toolCallId: "fixture-tool",
         turnSourceChannel: "openclaw-weixin",
         turnSourceAccountId: "bot",
-        turnSourceTo: "owner@im.wechat",
+        turnSourceTo: "OWNER@IM.WECHAT",
         remoteApprovalOrigin: {
           contract: "microclaw.gateway-approval-origin.v1",
           gatewayGeneration: security.gatewayGeneration,
@@ -210,7 +187,7 @@ function normalizedApproval(operation = operations[0][1], envelope = {}) {
           nodeId: security.nodeId,
           channel: "openclaw-weixin",
           accountId: "bot",
-          to: "owner@im.wechat",
+          to: "OWNER@IM.WECHAT",
         },
         systemRunPlan: {
           argv,
@@ -248,22 +225,6 @@ function phoneMessage(text, cursor = 42, extra = {}) {
   };
 }
 
-function exactField(prompt, label) {
-  const lines = prompt.split("\n");
-  const simple = lines.find((line) => line.startsWith(`${label}: `));
-  if (simple) return simple.slice(label.length + 2);
-  const start = lines.indexOf(`${label} [JSON fragments; join without separators]:`);
-  if (start < 0) throw new Error(`Missing exact field ${label}`);
-  const fragments = [];
-  for (const line of lines.slice(start + 1)) {
-    const match = /^ {2}\[(\d+)\/(\d+)\] (.*)$/.exec(line);
-    if (!match) break;
-    expect(Number(match[1])).toBe(fragments.length + 1);
-    fragments.push(match[3]);
-  }
-  return fragments.join("");
-}
-
 describe("production source, plan, broker, pipe, decision and phone lifecycle", () => {
   const resources = [];
   const directories = [];
@@ -274,7 +235,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     for (const directory of directories.splice(0))
       rmSync(directory, { recursive: true, force: true });
     vi.unstubAllEnvs();
-    mocks.send.mockReset().mockResolvedValue({});
+    mocks.send.mockReset().mockResolvedValue({ messageId: "test-provider-client" });
     mocks.error.mockClear();
     mocks.process.mockReset();
     mocks.getUpdates.mockReset();
@@ -302,7 +263,8 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       },
       true,
     );
-    const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker();
+    const readWireOwner = () => ({ accountId: "bot", userId: "OWNER@IM.WECHAT" });
+    const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, readWireOwner);
     broker.configure(configuration);
     const directory = mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-approval-test-"));
     directories.push(directory);
@@ -391,7 +353,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         await deliveryAttempt;
         await server.deliver({
           accountId: "bot",
-          to: "owner@im.wechat",
+          to: "OWNER@IM.WECHAT",
           text: renderMxcApprovalTerminal(outcome, "en-US"),
           ...(challengeId ? { terminalChallengeId: challengeId } : {}),
         });
@@ -421,6 +383,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       approval,
       sources,
       broker,
+      readWireOwner,
       server,
       transport,
       deps,
@@ -443,6 +406,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         deliveryAttempt = deliverWeixinRemoteApproval({
           approval,
           configuration,
+          readWireOwner,
           source: findWeixinApprovalSource(sources, approval),
           security,
           server,
@@ -495,18 +459,21 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
   it("routes the real pinned builder/schema/handler's distinct policy/run lineage through source cache, broker, pipe and sender", async () => {
     const base = normalizedApproval();
     const executionSession = "agent:main:sandbox:policy-execution-fixture";
-    const results = runPinnedApprovalRequests({
-      argv: [base.executable, ...base.arguments],
-      commandText: base.command,
-      commandPreview: `# [declare-access]rw:${root}[/declare-access]\n${operations[0][1]}`,
-      cwd: null,
-      cwdBinding: base.canonicalCwd,
-      agentId: "main",
-      sessionKey: executionSession,
-      executablePath: base.executablePath,
-      executableSha256: base.executableSha256,
-      declaredAccess: base.declaredAccess,
-    });
+    const results = runPinnedApprovalRequests(
+      {
+        argv: [base.executable, ...base.arguments],
+        commandText: base.command,
+        commandPreview: `# [declare-access]rw:${root}[/declare-access]\n${operations[0][1]}`,
+        cwd: null,
+        cwdBinding: base.canonicalCwd,
+        agentId: "main",
+        sessionKey: executionSession,
+        executablePath: base.executablePath,
+        executableSha256: base.executableSha256,
+        declaredAccess: base.declaredAccess,
+      },
+      "OWNER@IM.WECHAT",
+    );
     const trusted = results.find((result) => result.kind === "trusted");
     const approval = normalizeWindowsNodeMxcGatewayApproval(
       {
@@ -715,7 +682,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       expect.objectContaining({ channel: "openclaw-weixin" }),
     );
     expect(state.sources.get(sessionKey)).toMatchObject({
-      senderId: "owner@im.wechat",
+      senderId: "OWNER@IM.WECHAT",
       agentId: "main",
       sessionKey,
     });
@@ -786,7 +753,9 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(state.resolveGateway).not.toHaveBeenCalled();
     expect(state.lifecycle.pending).toBe(true);
     expect(state.lifecycle.expiresAtUnixMs).toBe(state.expiresAtUnixMs);
-    expect(mocks.send.mock.calls.map(([value]) => value.text).join("\n")).toContain("1 CODE");
+    expect(mocks.send.mock.calls.map(([value]) => value.text).join("\n")).toContain(
+      "current prompt's choices and request code",
+    );
     expect(state.diagnostics).toContainEqual(
       expect.objectContaining({ code: "provider-cursor-unavailable" }),
     );

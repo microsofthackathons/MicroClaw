@@ -197,7 +197,11 @@ test("emitted dispatch aborts when the authenticated account generation changes"
     "utf8",
   );
   assert.match(approvalSource, /if \(!this\.isActiveAccount\(\)\)/);
-  assert.match(approvalSource, /isActive:\s*\(\) => this\.isActiveAccount\(\)/);
+  assert.match(approvalSource, /isActive:\s*\(\) => this\.isActiveAccount\(to\)/);
+  assert.match(
+    approvalSource,
+    /isActiveWeixinAccount\(this\.options\.accountId, this\.options\.token, to\)/,
+  );
 });
 
 test("emitted login reload atomically updates only the Weixin timestamp", async () => {

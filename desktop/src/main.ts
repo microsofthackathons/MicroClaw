@@ -342,6 +342,7 @@ import {
   type WeixinRemoteApprovalInboundEnvelope,
 } from "./windows-node-mxc-weixin-remote-approval-transport";
 import {
+  readAuthenticatedWeixinWireOwner,
   readWeixinAccountStatus,
   shouldRevokeWeixinRemoteApprovalOwner,
 } from "./weixin-account-status";
@@ -657,6 +658,7 @@ const windowsNodeMxcWeixinRemoteApprovalBroker = new WindowsNodeMxcWeixinRemoteA
       console.error("[weixin-remote-approval] Could not write audit event:", error);
     }
   },
+  () => readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
 );
 let windowsNodeMxcWeixinRemoteApprovalServer: WindowsNodeMxcWeixinRemoteApprovalServer | null =
   null;
@@ -1494,9 +1496,9 @@ function isAuthenticatedWeixinRemoteApprovalOwner(
 ): owner is WeixinRemoteApprovalOwnerBinding {
   return Boolean(
     owner &&
-    readAuthenticatedWeixinOwners().some(
-      (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
-    ),
+      readAuthenticatedWeixinOwners().some(
+        (candidate) => candidate.accountId === owner.accountId && candidate.userId === owner.userId,
+      ),
   );
 }
 
@@ -1572,10 +1574,18 @@ async function deliverWindowsNodeMxcWeixinRemoteApprovalNotice(
   server: WindowsNodeMxcWeixinRemoteApprovalServer,
   notice: WeixinRemoteApprovalNotice,
 ): Promise<void> {
+  if (!windowsNodeMxcWeixinRemoteApprovalBroker.isAuthenticatedSource(notice)) {
+    console.info("[weixin-remote-approval]", { reason: "notice-owner-unavailable" });
+    return;
+  }
   await server.deliver({
     accountId: notice.accountId,
+    kind: "terminal",
+    terminalChallengeId: notice.challengeId,
     to: notice.senderId,
     text: notice.acknowledgement,
+    onDiagnostic: (diagnostic) =>
+      console.info("[weixin-remote-approval-delivery]", JSON.stringify(diagnostic)),
   });
 }
 
@@ -1623,6 +1633,7 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
             getWindowsNodeMxcWeixinRemoteApprovalConfiguration(),
             source,
             pending.request,
+            readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
           ) === null
         ) {
           pending.remoteSource = source;
@@ -1666,8 +1677,7 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
   if (
     !revalidatedConfiguration.enabled ||
     !revalidatedConfiguration.owner ||
-    revalidatedConfiguration.owner.accountId !== inbound.accountId ||
-    revalidatedConfiguration.owner.userId !== inbound.senderId
+    !windowsNodeMxcWeixinRemoteApprovalBroker.isAuthenticatedSource(inbound)
   ) {
     return {
       consumed: candidateLike,
@@ -2096,7 +2106,12 @@ function currentApprovalWeixinConsentHash(
   source = findWeixinApprovalSource(windowsNodeMxcWeixinRemoteApprovalSources, approval),
 ): string | null {
   const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-  return exactWeixinApprovalSource(configuration, source, approval) === null
+  return exactWeixinApprovalSource(
+    configuration,
+    source,
+    approval,
+    readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+  ) === null
     ? weixinRemoteApprovalConsentHash(configuration)
     : null;
 }
@@ -2281,6 +2296,16 @@ function beginPendingWindowsNodeMxcRemoteDelivery(
             : null,
         server: deliveryServer,
         broker: windowsNodeMxcWeixinRemoteApprovalBroker,
+        readWireOwner: () => readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+        deliveryDiagnostic: (diagnostic) => {
+          console.info(
+            "[weixin-remote-approval-delivery]",
+            JSON.stringify({
+              ...remoteApprovalDiagnosticBinding(approval),
+              ...diagnostic,
+            }),
+          );
+        },
         expiresAtUnixMs,
         locale,
         queued,
@@ -2377,7 +2402,14 @@ async function finishPendingWindowsNodeMxcGatewayApproval(
     const source = pending.remoteSource;
     if (!source || !server) return;
     const current = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-    if (exactWeixinApprovalSource(current, source, pending.request) !== null) {
+    if (
+      exactWeixinApprovalSource(
+        current,
+        source,
+        pending.request,
+        readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+      ) !== null
+    ) {
       console.info("[weixin-remote-approval]", {
         reason: "terminal-owner-unavailable",
         ...remoteApprovalDiagnosticBinding(pending.request),
@@ -2386,9 +2418,18 @@ async function finishPendingWindowsNodeMxcGatewayApproval(
     }
     await server.deliver({
       accountId: source.accountId,
+      kind: "terminal",
       to: source.senderId,
       text: `${renderMxcApprovalTerminal(outcome, locale)} [${remoteApprovalDiagnosticBinding(pending.request).approvalHash}]`,
       ...(pending.remoteChallengeId ? { terminalChallengeId: pending.remoteChallengeId } : {}),
+      onDiagnostic: (diagnostic) =>
+        console.info(
+          "[weixin-remote-approval-delivery]",
+          JSON.stringify({
+            ...remoteApprovalDiagnosticBinding(pending.request),
+            ...diagnostic,
+          }),
+        ),
     });
   } finally {
     if (pendingWindowsNodeMxcGatewayApproval === pending) {
@@ -2461,6 +2502,7 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
         getWindowsNodeMxcWeixinRemoteApprovalConfiguration(),
         gatewayApproval.remoteSource ?? undefined,
         gatewayApproval.request,
+        readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
       ) !== null)
   ) {
     throw new Error("The exact WeChat approval owner is no longer available");
@@ -2517,6 +2559,7 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
         getWindowsNodeMxcWeixinRemoteApprovalConfiguration(),
         gatewayApproval.remoteSource ?? undefined,
         gatewayApproval.request,
+        readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
       ) !== null
     ) {
       throw new Error("The exact WeChat approval owner changed before resolution");
@@ -5277,7 +5320,7 @@ async function startGatewayInner(
           ...(await handleWindowsNodeMxcWeixinRemoteApprovalInbound(source)),
           approvalActive: Boolean(
             pendingWindowsNodeMxcGatewayApproval?.lifecycle.pending &&
-            pendingWindowsNodeMxcGatewayApproval.remoteChallengeId,
+              pendingWindowsNodeMxcGatewayApproval.remoteChallengeId,
           ),
         }),
         (accountId) => {
@@ -6770,8 +6813,8 @@ function registerIpcHandlers(): void {
         const hasEnv = (envName: string): boolean =>
           Boolean(
             process.env[envName] ||
-            skillCfg?.env?.[envName] ||
-            (skillCfg?.apiKey && requirements.primaryEnv === envName),
+              skillCfg?.env?.[envName] ||
+              (skillCfg?.apiKey && requirements.primaryEnv === envName),
           );
 
         const missingBins = requirements.bins.filter((b) => !hasBin(b));

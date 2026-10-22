@@ -22,6 +22,8 @@ import {
 } from "../../src/chat-session-update";
 // @ts-expect-error The pinned Gateway fixture executes external ESM in a separate Node process.
 import { runPinnedSessionFixture } from "../../integration/pinned-session-fixture.mjs";
+// @ts-expect-error The pinned runtime fixture executes the actual SDK constructors in isolated Node.
+import { runPinnedChatRuntimeFixture } from "../../integration/pinned-chat-runtime-fixture.mjs";
 import { planWeixinRemoteApprovalNativeTransition } from "../../src/windows-node-mxc-weixin-remote-approval-consent";
 import { WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } from "../../src/windows-node-mxc-weixin-remote-approval";
 import {
@@ -244,6 +246,69 @@ describe("App MXC loading gate with the real Gateway store", () => {
       await flushPromises();
       expect(chat.messages).toHaveLength(2);
       expect(chat.streaming).toBe(false);
+    },
+    45_000,
+  );
+
+  it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
+    "hydrates the inbound user before final output for actual SDK unknown-ID histories through App and the main event bridge",
+    async () => {
+      const fixture = runPinnedChatRuntimeFixture();
+      const ipc = new EventEmitter();
+      vi.mocked(window.openclaw.chat.onSessionUpdate).mockImplementation((callback) => {
+        const handler = (_event: unknown, payload: { sessionKey: string }) => callback(payload);
+        ipc.on(CHAT_SESSION_UPDATE_CHANNEL, handler);
+        return () => {
+          ipc.removeListener(CHAT_SESSION_UPDATE_CHANNEL, handler);
+        };
+      });
+      const observer = new GatewaySessionObserver(async (method) =>
+        method === "sessions.subscribe"
+          ? { subscribed: true }
+          : { subscribed: true, key: fixture.key, agentId: "main" },
+      );
+      await observer.select(fixture.key);
+      await observer.connect();
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      Object.assign(client, {
+        sessionObserver: observer,
+        sessionTitleWaiters: new Map(),
+        opts: {
+          onEvent: (event: { event: string; payload?: unknown }) =>
+            forwardGatewaySessionUpdate(event, (channel, payload) =>
+              ipc.emit(channel, {}, payload),
+            ),
+        },
+      });
+      const receive = (event: unknown) => client["handleMessage"](JSON.stringify(event));
+      const idle = fixture.records.find((record: { name: string }) => record.name === "idle");
+      const history = vi.spyOn(window.openclaw.chat, "loadHistory").mockResolvedValue(idle.history);
+      const { gateway, chat } = await mountReadyApp();
+      await flushPromises();
+      const epoch = gateway.readinessEpoch;
+      for (const record of fixture.records) {
+        if (
+          !record.history.sessionInfo.hasActiveRun ||
+          Object.hasOwn(record.history.sessionInfo, "activeRunIds")
+        )
+          continue;
+        history.mockResolvedValue(record.history);
+        receive(record.event);
+        await flushPromises();
+        expect(chat.lastError).toBeNull();
+        expect(chat.messages).toHaveLength(1);
+        expect(chat.messages[0].role).toBe("user");
+        expect(chat.messages.some((message) => message.role === "assistant")).toBe(false);
+        expect(chat.streaming).toBe(true);
+        expect(chat.chatRunId).toBeNull();
+        expect(gateway.ready).toBe(true);
+        expect(gateway.readinessEpoch).toBe(epoch);
+        expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+        history.mockResolvedValue(idle.history);
+        await chat.recoverAfterReconnect();
+        expect(chat.streaming).toBe(false);
+        expect(chat.lastError).toBeNull();
+      }
     },
     45_000,
   );

@@ -71,6 +71,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
     token,
     error: errLog,
     diagnostic: (record) => aLog.info(`weixin-remote-approval ${JSON.stringify(record)}`),
+    deliveryDiagnostic: (record) =>
+      aLog.info(`weixin-remote-approval-delivery ${JSON.stringify(record)}`),
   });
   if (remoteApprovalTransport.enabled) {
     try {

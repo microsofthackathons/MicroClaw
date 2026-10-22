@@ -9,8 +9,13 @@ import {
   WindowsNodeMxcWeixinRemoteApprovalBroker,
   weixinApprovalSourceSessionKey,
   weixinApprovalOriginRejection,
+  weixinRemoteApprovalWireSourceRejection,
 } from "./windows-node-mxc-weixin-remote-approval";
-import type { WindowsNodeMxcWeixinRemoteApprovalServer } from "./windows-node-mxc-weixin-remote-approval-transport";
+import type { AuthenticatedWeixinWireOwner } from "./weixin-account-status";
+import type {
+  WindowsNodeMxcWeixinRemoteApprovalServer,
+  WeixinRemoteTransportDiagnostic,
+} from "./windows-node-mxc-weixin-remote-approval-transport";
 import { normalizeWeixinProviderInteger } from "./weixin-provider-integer";
 
 export type WeixinRemoteDeliveryReason =
@@ -87,18 +92,15 @@ export function exactWeixinApprovalSource(
   configuration: WeixinRemoteApprovalConfiguration,
   source: WeixinRemoteApprovalSource | undefined,
   approval: WindowsNodeMxcGatewayApproval,
+  wireOwner: AuthenticatedWeixinWireOwner | null,
 ): WeixinRemoteDeliveryReason | null {
   const owner = configuration.owner;
   if (!configuration.enabled || !owner) return "disabled";
   if (!approval.origin) return "source-origin-unavailable";
   if (!source) return "source-unavailable";
   if (!source.direct || source.forwarded || source.quoted) return "source-not-direct";
-  if (
-    source.accountId.trim().toLowerCase() !== owner.accountId ||
-    source.senderId.trim().toLowerCase() !== owner.userId ||
-    source.conversationId.trim().toLowerCase() !== owner.userId
-  )
-    return "source-identity-mismatch";
+  const ownerReason = weixinRemoteApprovalWireSourceRejection(configuration, source, wireOwner);
+  if (ownerReason) return ownerReason;
   if (
     normalizeWeixinProviderInteger(source.cursor) === null ||
     normalizeWeixinProviderInteger(source.messageId) === null
@@ -150,6 +152,7 @@ export async function deliverWeixinRemoteApproval(params: {
   security: WeixinRemoteApprovalSecurityBinding | null;
   server: WindowsNodeMxcWeixinRemoteApprovalServer | null;
   broker: WindowsNodeMxcWeixinRemoteApprovalBroker;
+  readWireOwner: () => AuthenticatedWeixinWireOwner | null;
   expiresAtUnixMs: number;
   locale: "en-US" | "zh-CN";
   queued?: boolean;
@@ -157,6 +160,7 @@ export async function deliverWeixinRemoteApproval(params: {
   challenge: (delivery: WeixinRemoteApprovalDelivery) => void;
   state: (state: WeixinRemoteDeliveryState) => void;
   diagnostic: (reason: WeixinRemoteDeliveryReason | "prompt-delivered") => void;
+  deliveryDiagnostic?: (diagnostic: WeixinRemoteTransportDiagnostic) => void;
 }): Promise<WeixinRemoteApprovalDelivery | null> {
   let revision = 0;
   const publish = (
@@ -171,6 +175,7 @@ export async function deliverWeixinRemoteApproval(params: {
     params.configuration,
     params.source,
     params.approval,
+    params.readWireOwner(),
   );
   if (originReason) {
     publish("local-only", originReason);
@@ -186,12 +191,22 @@ export async function deliverWeixinRemoteApproval(params: {
   const notifyLocalOnly = async (reason: WeixinRemoteDeliveryReason) => {
     publish("local-only", reason);
     if (!params.isPending()) return;
+    if (!params.broker.isAuthenticatedSource(source)) {
+      publish("local-only", "source-owner-unavailable");
+      return;
+    }
     const text =
       params.locale === "zh-CN"
         ? `MicroClaw 安全审批：另有一个请求须在桌面处理（${reason}）。未授予任何权限，原截止时间不变；稍后会通知结果。`
         : `MicroClaw Security Approval: another request needs a Desktop decision (${reason}). No permission granted; original deadline unchanged. A result will follow.`;
     try {
-      await server.deliver({ accountId: source.accountId, to: source.senderId, text });
+      await server.deliver({
+        accountId: source.accountId,
+        to: source.senderId,
+        text,
+        kind: "fallback",
+        onDiagnostic: params.deliveryDiagnostic,
+      });
     } catch {
       publish("unconfirmed", "delivery-unconfirmed");
     }
@@ -226,11 +241,18 @@ export async function deliverWeixinRemoteApproval(params: {
       params.diagnostic("approval-no-longer-pending");
       return null;
     }
+    if (!params.broker.isAuthenticatedSource(source)) {
+      params.broker.invalidateChallenge(delivery.challengeId, "source-owner-unavailable");
+      publish("local-only", "source-owner-unavailable");
+      return null;
+    }
     await server.deliver({
       accountId: delivery.accountId,
+      kind: "prompt",
       to: delivery.senderId,
       text: delivery.text,
       approval: { challengeId: delivery.challengeId, expiresAtUnixMs: delivery.expiresAtUnixMs },
+      onDiagnostic: params.deliveryDiagnostic,
       onDelivered: () => {
         if (!params.isPending()) return;
         acknowledged = params.broker.markDelivered(delivery.challengeId);

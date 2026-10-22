@@ -33,8 +33,8 @@ describe("WeChat remote approval ingress normalization", () => {
       ),
     ).toMatchObject({
       accountId: "bot@im.wechat",
-      senderId: "owner@im.wechat",
-      conversationId: "owner@im.wechat",
+      senderId: "OWNER@IM.WECHAT",
+      conversationId: "OWNER@IM.WECHAT",
       messageId: "1001",
       cursor: "42",
       agentId: "main",

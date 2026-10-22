@@ -1,6 +1,115 @@
 import { createHash } from "node:crypto";
 import type { WeixinRemoteDeliveryReason } from "./windows-node-mxc-weixin-remote-approval-delivery";
 
+export const WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT = "microclaw.weixin-delivery-diagnostic.v1";
+export type WeixinDeliveryKind =
+  | "prompt"
+  | "fallback"
+  | "terminal"
+  | "reminder"
+  | "acknowledgement"
+  | "notification";
+const deliveryKinds = new Set([
+  "prompt",
+  "fallback",
+  "terminal",
+  "reminder",
+  "acknowledgement",
+  "notification",
+]);
+const deliveryProviderCodes = new Set([
+  "context-unavailable",
+  "owner-changed",
+  "http-rejected",
+  "request-timeout",
+  "request-failed",
+  "provider-response-invalid",
+  "provider-rejected",
+  "provider-accepted",
+  "provider-result-invalid",
+]);
+const deliveryPipeCodes = new Set([
+  "delivery-dispatched",
+  "delivery-timeout",
+  "transport-closed",
+  "transport-disconnected",
+  "transport-unavailable",
+]);
+const deliveryHashFields = new Set([
+  "deliveryHash",
+  "providerClientHash",
+  "challengeHash",
+  "inboundHash",
+  "approvalHash",
+  "sessionHash",
+]);
+
+function isSafeWeixinDeliveryFrame(text: string): boolean {
+  if (text.length > 4096) return false;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !("contract" in value) ||
+    value.contract !== WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT ||
+    !("stage" in value) ||
+    (value.stage !== "pipe" && value.stage !== "provider") ||
+    !("kind" in value) ||
+    typeof value.kind !== "string" ||
+    !deliveryKinds.has(value.kind) ||
+    !("code" in value) ||
+    typeof value.code !== "string" ||
+    !(value.stage === "pipe" ? deliveryPipeCodes : deliveryProviderCodes).has(value.code)
+  )
+    return false;
+  let hashes = 0;
+  for (const [key, field] of Object.entries(value)) {
+    if (["contract", "stage", "kind", "code"].includes(key)) continue;
+    if (deliveryHashFields.has(key)) {
+      if (typeof field !== "string" || !/^[a-f0-9]{16}$/.test(field)) return false;
+      hashes++;
+    } else if (key === "httpStatus") {
+      if (
+        value.stage !== "provider" ||
+        typeof field !== "number" ||
+        !Number.isSafeInteger(field) ||
+        field < 100 ||
+        field > 599
+      )
+        return false;
+    } else if (key === "providerRet") {
+      if (value.stage !== "provider" || !Number.isSafeInteger(field)) return false;
+    } else return false;
+  }
+  return hashes > 0;
+}
+
+export function extractSafeMxcApprovalMetadataLine(line: string): string | null {
+  for (const marker of [
+    "[mxc-approval-context]",
+    "[weixin-remote-approval-context]",
+    "[weixin-remote-approval-delivery]",
+    "weixin-remote-approval-delivery ",
+  ]) {
+    const index = line.indexOf(marker);
+    if (index < 0) continue;
+    const frame = line.slice(index + marker.length).trim();
+    try {
+      JSON.parse(frame);
+    } catch {
+      continue;
+    }
+    if (isSafeMxcApprovalMetadataFrame(frame)) return frame;
+  }
+  return null;
+}
+
 type WeixinDiagnosticStage =
   | "weixin-source-cached"
   | "weixin-run-registration"
@@ -15,6 +124,7 @@ const weixinReasons: Record<WeixinDiagnosticReason, true> = {
   disabled: true,
   "source-not-direct": true,
   "source-identity-mismatch": true,
+  "source-owner-unavailable": true,
   "source-metadata-invalid": true,
   "source-session-mismatch": true,
   "source-agent-mismatch": true,
@@ -120,6 +230,7 @@ export function describeWeixinApprovalDecision(
 
 // Shared by the detached collector; arbitrary stdout/stderr never reaches its metadata log.
 export function isSafeMxcApprovalMetadataFrame(text: string): boolean {
+  if (text.includes(WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT)) return isSafeWeixinDeliveryFrame(text);
   const words = new Set(
     "contract stage envelope request plan defaults origin id sessionKey agentId runId toolCallId originatingClientId originatingDeviceId turnSourceChannel turnSourceTo turnSourceAccountId turnSourceThreadId runSessionKey notifySessionKey sessionId messageProvider currentChannelId accountId kind channel present type hash length true false null undefined reason approvedOriginPresent approval source agent messageId cursor gatewayGeneration executionSessionKey to boundRun".split(
       " ",

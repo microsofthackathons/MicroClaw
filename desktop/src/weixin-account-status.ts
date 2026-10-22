@@ -18,6 +18,11 @@ export interface WeixinAccountStatus {
   currentAccount: SafeWeixinAccountIdentity | null;
 }
 
+export interface AuthenticatedWeixinWireOwner {
+  readonly accountId: string;
+  readonly userId: string;
+}
+
 export function shouldRevokeWeixinRemoteApprovalOwner(
   status: WeixinAccountStatus,
   owner: { accountId: string; userId: string } | null,
@@ -46,7 +51,10 @@ function normalizeSafeUserId(value: unknown): string | undefined {
   return SAFE_USER_ID_PATTERN.test(userId) ? userId : undefined;
 }
 
-export function readWeixinAccountStatus(stateDir: string): WeixinAccountStatus {
+function readWeixinAccountState(
+  stateDir: string,
+  identity: "canonical" | "wire",
+): WeixinAccountStatus {
   const indexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
   if (!fs.existsSync(indexPath)) {
     return {
@@ -105,11 +113,24 @@ export function readWeixinAccountStatus(stateDir: string): WeixinAccountStatus {
 
   try {
     const accountPath = path.join(stateDir, "openclaw-weixin", "accounts", `${accountId}.json`);
-    const account = JSON.parse(fs.readFileSync(accountPath, "utf8")) as Record<string, unknown>;
-    if (typeof account.token !== "string" || !account.token.trim()) {
+    const account: unknown = JSON.parse(fs.readFileSync(accountPath, "utf8"));
+    if (
+      !account ||
+      typeof account !== "object" ||
+      Array.isArray(account) ||
+      !("token" in account) ||
+      typeof account.token !== "string" ||
+      !account.token.trim()
+    ) {
       throw new Error("missing token");
     }
-    const userId = normalizeSafeUserId(account.userId);
+    const value = "userId" in account ? account.userId : undefined;
+    const userId =
+      identity === "canonical"
+        ? normalizeSafeUserId(value)
+        : typeof value === "string" && value === value.trim() && SAFE_USER_ID_PATTERN.test(value)
+          ? value
+          : undefined;
     return {
       loggedIn: true,
       accountCount: 1,
@@ -127,4 +148,19 @@ export function readWeixinAccountStatus(stateDir: string): WeixinAccountStatus {
       currentAccount: null,
     };
   }
+}
+
+export function readWeixinAccountStatus(stateDir: string): WeixinAccountStatus {
+  return readWeixinAccountState(stateDir, "canonical");
+}
+
+/** Main-only wire authority; persisted consent and public account status remain canonical. */
+export function readAuthenticatedWeixinWireOwner(
+  stateDir: string,
+): AuthenticatedWeixinWireOwner | null {
+  const status = readWeixinAccountState(stateDir, "wire");
+  const account = status.currentAccount;
+  return status.loggedIn && status.invariantState === "single" && account?.userId
+    ? { accountId: account.accountId, userId: account.userId }
+    : null;
 }

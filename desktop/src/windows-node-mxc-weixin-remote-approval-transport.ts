@@ -1,6 +1,10 @@
 import net from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { normalizeWeixinProviderInteger } from "./weixin-provider-integer";
+import {
+  WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
+  type WeixinDeliveryKind,
+} from "./mxc-approval-context-diagnostics";
 
 import {
   WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
@@ -9,6 +13,81 @@ import {
 
 const MAX_FRAME_BYTES = 64 * 1024;
 const DELIVERY_TIMEOUT_MS = 10_000;
+const PROVIDER_RESULT_CODES = new Set([
+  "context-unavailable",
+  "owner-changed",
+  "http-rejected",
+  "request-timeout",
+  "request-failed",
+  "provider-response-invalid",
+  "provider-rejected",
+]);
+
+export interface WeixinRemoteTransportDiagnostic {
+  contract: typeof WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT;
+  kind: WeixinDeliveryKind;
+  stage: "pipe" | "provider";
+  code: string;
+  deliveryHash: string;
+  providerClientHash?: string;
+  httpStatus?: number;
+  providerRet?: number;
+  challengeHash?: string;
+}
+
+export class WeixinRemoteTransportError extends Error {
+  constructor(readonly diagnostic: WeixinRemoteTransportDiagnostic) {
+    super("WeChat remote approval delivery is unconfirmed");
+    this.name = "WeixinRemoteTransportError";
+  }
+}
+
+function providerResult(
+  value: unknown,
+  providerClientHash: unknown,
+  accepted = false,
+): Pick<
+  WeixinRemoteTransportDiagnostic,
+  "stage" | "code" | "providerClientHash" | "httpStatus" | "providerRet"
+> {
+  const result: Pick<
+    WeixinRemoteTransportDiagnostic,
+    "stage" | "code" | "providerClientHash" | "httpStatus" | "providerRet"
+  > = {
+    stage: "provider",
+    code: "provider-result-invalid",
+  };
+  if (typeof providerClientHash === "string" && /^[a-f0-9]{16}$/.test(providerClientHash))
+    result.providerClientHash = providerClientHash;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+  if (
+    "code" in value &&
+    typeof value.code === "string" &&
+    (PROVIDER_RESULT_CODES.has(value.code) || (accepted && value.code === "provider-accepted"))
+  )
+    result.code = value.code;
+  if (
+    "providerClientHash" in value &&
+    typeof value.providerClientHash === "string" &&
+    /^[a-f0-9]{16}$/.test(value.providerClientHash)
+  )
+    result.providerClientHash = value.providerClientHash;
+  if (
+    "httpStatus" in value &&
+    typeof value.httpStatus === "number" &&
+    Number.isSafeInteger(value.httpStatus) &&
+    value.httpStatus >= 100 &&
+    value.httpStatus <= 599
+  )
+    result.httpStatus = value.httpStatus;
+  if (
+    "providerRet" in value &&
+    typeof value.providerRet === "number" &&
+    Number.isSafeInteger(value.providerRet)
+  )
+    result.providerRet = value.providerRet;
+  return result;
+}
 
 export interface WeixinRemoteApprovalInboundEnvelope extends WeixinRemoteApprovalSource {
   text: string;
@@ -27,6 +106,12 @@ interface RegisteredClient {
       reject: (error: Error) => void;
       timer: NodeJS.Timeout;
       delivered?: () => void;
+      diagnostic: (
+        detail: Pick<
+          WeixinRemoteTransportDiagnostic,
+          "stage" | "code" | "providerClientHash" | "httpStatus" | "providerRet"
+        >,
+      ) => WeixinRemoteTransportDiagnostic;
     }
   >;
 }
@@ -50,6 +135,8 @@ type ClientFrame =
       deliveryId: string;
       ok: boolean;
       error?: string;
+      failure?: unknown;
+      providerClientHash?: unknown;
     };
 
 export class WindowsNodeMxcWeixinRemoteApprovalServer {
@@ -97,6 +184,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
     terminalChallengeId?: string;
     onDelivered?: () => void;
     timeoutMs?: number;
+    kind?: WeixinDeliveryKind;
+    onDiagnostic?: (diagnostic: WeixinRemoteTransportDiagnostic) => void;
   }): Promise<void> {
     const timeoutMs = params.timeoutMs ?? DELIVERY_TIMEOUT_MS;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DELIVERY_TIMEOUT_MS) {
@@ -107,27 +196,52 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
       throw new Error("The WeChat remote approval transport is unavailable");
     }
     const deliveryId = randomUUID();
+    const deliveryHash = createHash("sha256").update(deliveryId).digest("hex").slice(0, 16);
+    const diagnostic = (
+      detail: Pick<
+        WeixinRemoteTransportDiagnostic,
+        "stage" | "code" | "providerClientHash" | "httpStatus" | "providerRet"
+      >,
+    ): WeixinRemoteTransportDiagnostic => {
+      const challengeId = params.approval?.challengeId ?? params.terminalChallengeId;
+      const record: WeixinRemoteTransportDiagnostic = {
+        contract: WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
+        kind: params.kind ?? "notification",
+        ...detail,
+        deliveryHash,
+        ...(challengeId
+          ? { challengeHash: createHash("sha256").update(challengeId).digest("hex").slice(0, 16) }
+          : {}),
+      };
+      params.onDiagnostic?.(record);
+      return record;
+    };
     const promise = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         client.pendingDeliveries.delete(deliveryId);
-        reject(new Error("The WeChat remote approval message timed out"));
+        reject(
+          new WeixinRemoteTransportError(diagnostic({ stage: "pipe", code: "delivery-timeout" })),
+        );
       }, timeoutMs);
       client.pendingDeliveries.set(deliveryId, {
         resolve,
         reject,
         timer,
         delivered: params.onDelivered,
+        diagnostic,
       });
     });
     this.write(client.socket, {
       contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
       type: "deliver",
       deliveryId,
+      kind: params.kind ?? "notification",
       to: params.to,
       text: params.text,
       ...(params.approval ? { approval: params.approval } : {}),
       ...(params.terminalChallengeId ? { terminalChallengeId: params.terminalChallengeId } : {}),
     });
+    diagnostic({ stage: "pipe", code: "delivery-dispatched" });
     await promise;
   }
 
@@ -135,7 +249,11 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
     for (const client of this.clients.values()) {
       for (const pending of client.pendingDeliveries.values()) {
         clearTimeout(pending.timer);
-        pending.reject(new Error("The WeChat remote approval transport was closed"));
+        pending.reject(
+          new WeixinRemoteTransportError(
+            pending.diagnostic({ stage: "pipe", code: "transport-closed" }),
+          ),
+        );
       }
       client.pendingDeliveries.clear();
       client.socket.destroy();
@@ -161,7 +279,11 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
       if (registered) {
         for (const pending of registered.pendingDeliveries.values()) {
           clearTimeout(pending.timer);
-          pending.reject(new Error("The WeChat remote approval transport disconnected"));
+          pending.reject(
+            new WeixinRemoteTransportError(
+              pending.diagnostic({ stage: "pipe", code: "transport-disconnected" }),
+            ),
+          );
         }
         registered.pendingDeliveries.clear();
       }
@@ -209,10 +331,18 @@ export class WindowsNodeMxcWeixinRemoteApprovalServer {
           if (!pending) continue;
           registered.pendingDeliveries.delete(frame.deliveryId);
           clearTimeout(pending.timer);
-          if (frame.ok) {
+          if (frame.ok === true) {
+            pending.diagnostic(
+              providerResult({ code: "provider-accepted" }, frame.providerClientHash, true),
+            );
             pending.delivered?.();
             pending.resolve();
-          } else pending.reject(new Error(frame.error || "WeChat remote approval delivery failed"));
+          } else
+            pending.reject(
+              new WeixinRemoteTransportError(
+                pending.diagnostic(providerResult(frame.failure, frame.providerClientHash)),
+              ),
+            );
           continue;
         }
         if (frame.type !== "inbound" || !frame.requestId || !frame.source) {

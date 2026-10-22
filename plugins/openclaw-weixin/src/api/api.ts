@@ -7,6 +7,7 @@ import { loadConfigBotAgent, loadConfigRouteTag } from "../auth/accounts.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactUrl } from "../util/redact.js";
 import { parseWeixinUpdatesJson } from "./provider-metadata.js";
+import { WeixinMessageDeliveryError, type WeixinDeliveryDiagnostic } from "../messaging/delivery-diagnostics.js";
 
 import type {
   BaseInfo,
@@ -380,11 +381,13 @@ export async function apiPostFetch(params: {
   timeoutMs?: number;
   label: string;
   abortSignal?: AbortSignal;
+  deliveryDiagnostic?: (diagnostic: WeixinDeliveryDiagnostic) => void;
 }): Promise<string> {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
   const hdrs = buildHeaders({ token: params.token });
-  logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
+  if (!params.deliveryDiagnostic)
+    logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
 
   const controller =
     params.timeoutMs !== undefined ? new AbortController() : undefined;
@@ -396,6 +399,7 @@ export async function apiPostFetch(params: {
     internal: controller,
     external: params.abortSignal,
   });
+  let httpRejected = false;
   try {
     const res = await fetch(url.toString(), {
       method: "POST",
@@ -405,13 +409,28 @@ export async function apiPostFetch(params: {
     });
     if (t !== undefined) clearTimeout(t);
     const rawText = await res.text();
-    logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
+    if (!params.deliveryDiagnostic)
+      logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
     if (!res.ok) {
+      if (params.deliveryDiagnostic) {
+        httpRejected = true;
+        const diagnostic: WeixinDeliveryDiagnostic = { code: "http-rejected", httpStatus: res.status };
+        params.deliveryDiagnostic(diagnostic);
+        throw new WeixinMessageDeliveryError(diagnostic);
+      }
       throw new Error(`${params.label} ${res.status}: ${rawText}`);
     }
     return rawText;
   } catch (err) {
     if (t !== undefined) clearTimeout(t);
+    if (params.deliveryDiagnostic) {
+      if (httpRejected) throw err;
+      const diagnostic: WeixinDeliveryDiagnostic = {
+        code: controller?.signal.aborted ? "request-timeout" : "request-failed",
+      };
+      params.deliveryDiagnostic(diagnostic);
+      throw new WeixinMessageDeliveryError(diagnostic);
+    }
     const classified = classifyFetchError(err);
     logger.error(
       `${params.label}: POST fetch failed url=${redactUrl(url.toString())} timeoutMs=${params.timeoutMs ?? "none"} type=${classified.type} description=${classified.description}${classified.code ? ` code=${classified.code}` : ""} error=${String(err)}`,
@@ -502,7 +521,10 @@ export async function getUploadUrl(
 
 /** Send a single message downstream. */
 export async function sendMessage(
-  params: WeixinApiOptions & { body: SendMessageReq },
+  params: WeixinApiOptions & {
+    body: SendMessageReq;
+    deliveryDiagnostic?: (diagnostic: WeixinDeliveryDiagnostic) => void;
+  },
 ): Promise<void> {
   const rawText = await apiPostFetch({
     baseUrl: params.baseUrl,
@@ -511,13 +533,35 @@ export async function sendMessage(
     token: params.token,
     timeoutMs: params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
     label: "sendMessage",
+    deliveryDiagnostic: params.deliveryDiagnostic,
   });
-  const resp: SendMessageResp = JSON.parse(rawText);
+  let resp: SendMessageResp;
+  try {
+    resp = JSON.parse(rawText);
+    if (!resp || typeof resp !== "object" || Array.isArray(resp))
+      throw new Error("Invalid WeChat send response");
+    if (Object.hasOwn(resp, "ret") && !Number.isSafeInteger(resp.ret))
+      throw new Error("Invalid WeChat send response return code");
+  } catch (error) {
+    if (!params.deliveryDiagnostic) throw error;
+    const diagnostic: WeixinDeliveryDiagnostic = { code: "provider-response-invalid" };
+    params.deliveryDiagnostic(diagnostic);
+    throw new WeixinMessageDeliveryError(diagnostic);
+  }
   if (resp.ret && resp.ret !== 0) {
+    if (params.deliveryDiagnostic) {
+      const diagnostic: WeixinDeliveryDiagnostic = {
+        code: "provider-rejected",
+        ...(Number.isSafeInteger(resp.ret) ? { providerRet: resp.ret } : {}),
+      };
+      params.deliveryDiagnostic(diagnostic);
+      throw new WeixinMessageDeliveryError(diagnostic);
+    }
     throw new Error(
       `sendMessage ret=${resp.ret} errmsg=${resp.errmsg ?? "(none)"}`,
     );
   }
+  params.deliveryDiagnostic?.({ code: "provider-accepted" });
 }
 
 /** Fetch bot config (includes typing_ticket) for a given user. */

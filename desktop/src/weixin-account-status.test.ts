@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  readAuthenticatedWeixinWireOwner,
   readWeixinAccountStatus,
   shouldRevokeWeixinRemoteApprovalOwner,
 } from "./weixin-account-status";
@@ -74,6 +75,44 @@ describe("readWeixinAccountStatus", () => {
       invariantState: "multiple",
       currentAccount: null,
     });
+  });
+
+  it("preserves raw authenticated peer bytes separately from canonical consent without exporting credentials", () => {
+    writeIndex(["account-im-bot"]);
+    writeAccount("account-im-bot", { token: "secret-token", userId: "MixedCase@im.wechat" });
+    expect(readAuthenticatedWeixinWireOwner(stateDir)).toEqual({
+      accountId: "account-im-bot",
+      userId: "MixedCase@im.wechat",
+    });
+    expect(readWeixinAccountStatus(stateDir).currentAccount?.userId).toBe("mixedcase@im.wechat");
+    expect(JSON.stringify(readAuthenticatedWeixinWireOwner(stateDir))).not.toContain(
+      "secret-token",
+    );
+    writeAccount("account-im-bot", { token: "secret-token", userId: "mixedcase@im.wechat" });
+    expect(readAuthenticatedWeixinWireOwner(stateDir)?.userId).toBe("mixedcase@im.wechat");
+  });
+
+  it.each([undefined, "", " ", " owner@im.wechat", "owner@im.wechat ", "owner\n@im.wechat", 7])(
+    "does not invent or trim raw wire authority from an invalid identity %#",
+    (userId) => {
+      writeIndex(["account-im-bot"]);
+      writeAccount("account-im-bot", { token: "secret-token", userId });
+      expect(readAuthenticatedWeixinWireOwner(stateDir)).toBeNull();
+    },
+  );
+
+  it("fails closed on unauthenticated, absent, malformed, ambiguous or replaced account authority", () => {
+    expect(readAuthenticatedWeixinWireOwner(stateDir)).toBeNull();
+    writeIndex(["account-im-bot"]);
+    writeAccount("account-im-bot", { userId: "MixedCase@im.wechat" });
+    expect(readAuthenticatedWeixinWireOwner(stateDir)).toBeNull();
+    writeAccount("account-im-bot", { token: "secret-token", userId: "MixedCase@im.wechat" });
+    writeIndex(["account-im-bot", "replacement"]);
+    expect(readAuthenticatedWeixinWireOwner(stateDir)).toBeNull();
+    writeIndex(["Account-im-bot"]);
+    expect(readAuthenticatedWeixinWireOwner(stateDir)).toBeNull();
+    writeIndex({ accountId: "account-im-bot" });
+    expect(readAuthenticatedWeixinWireOwner(stateDir)).toBeNull();
   });
 
   it("fails closed for an index-only account or unsafe account id", () => {

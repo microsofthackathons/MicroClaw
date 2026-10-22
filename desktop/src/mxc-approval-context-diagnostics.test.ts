@@ -6,6 +6,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   describeGatewayApprovalContext,
   describeWeixinApprovalDecision,
+  extractSafeMxcApprovalMetadataLine,
+  WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
   isSafeMxcApprovalMetadataFrame,
 } from "./mxc-approval-context-diagnostics";
 // @ts-expect-error The Gateway compatibility preload is external ESM.
@@ -15,6 +17,94 @@ const digest = (value: string) =>
   crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 describe("privacy-safe approval context diagnostics", () => {
+  const deliveryFrame = {
+    contract: WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
+    stage: "provider",
+    kind: "prompt",
+    code: "provider-rejected",
+    deliveryHash: "a".repeat(16),
+    providerClientHash: "b".repeat(16),
+    challengeHash: "c".repeat(16),
+    approvalHash: "d".repeat(16),
+    sessionHash: "e".repeat(16),
+    httpStatus: 200,
+    providerRet: -3,
+  };
+  it("collects both actual delivery log markers with only the fixed primitive delivery contract", () => {
+    const frame = JSON.stringify(deliveryFrame);
+    for (const prefix of [
+      "[weixin-remote-approval-delivery] ",
+      "[gateway] [openclaw-weixin] weixin-remote-approval-delivery ",
+    ])
+      expect(extractSafeMxcApprovalMetadataLine(prefix + frame)).toBe(frame);
+    expect(extractSafeMxcApprovalMetadataLine("[unrelated] PRIVATE TOKEN")).toBeNull();
+    expect(extractSafeMxcApprovalMetadataLine("[weixin-remote-approval-context] {")).toBeNull();
+  });
+  it.each([
+    { code: "PRIVATE EXCEPTION" },
+    { command: "PRIVATE COMMAND" },
+    { body: { ret: -3 } },
+    { deliveryHash: "raw-private-delivery-id" },
+    { providerClientHash: "a".repeat(64) },
+    { providerRet: null },
+    { providerRet: false },
+    { providerRet: "" },
+    { providerRet: 0.5 },
+    { providerRet: 9007199254740992 },
+    { httpStatus: 99 },
+    { httpStatus: 600 },
+    { kind: "PRIVATE RECIPIENT" },
+    { stage: "PRIVATE STAGE" },
+  ])("rejects invalid or non-whitelisted delivery metadata %j", (change) => {
+    const frame = JSON.stringify({ ...deliveryFrame, ...change });
+    expect(isSafeMxcApprovalMetadataFrame(frame)).toBe(false);
+    expect(
+      extractSafeMxcApprovalMetadataLine("[weixin-remote-approval-delivery] " + frame),
+    ).toBeNull();
+  });
+  it("requires a real hashed correlation and stage-appropriate fixed code", () => {
+    expect(
+      isSafeMxcApprovalMetadataFrame(
+        JSON.stringify({
+          contract: WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
+          stage: "provider",
+          kind: "acknowledgement",
+          code: "provider-accepted",
+          inboundHash: "f".repeat(16),
+          providerClientHash: "a".repeat(16),
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isSafeMxcApprovalMetadataFrame(
+        JSON.stringify({
+          contract: WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
+          stage: "pipe",
+          kind: "terminal",
+          code: "delivery-dispatched",
+          deliveryHash: "a".repeat(16),
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isSafeMxcApprovalMetadataFrame(
+        JSON.stringify({
+          contract: WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT,
+          stage: "provider",
+          kind: "prompt",
+          code: "provider-accepted",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isSafeMxcApprovalMetadataFrame(
+        JSON.stringify({
+          ...deliveryFrame,
+          stage: "pipe",
+        }),
+      ),
+    ).toBe(false);
+  });
   it("persists source-cache, approved-origin and exact bound-run hashes through the collector allowlist", () => {
     const approval = {
       id: "PRIVATE APPROVAL",

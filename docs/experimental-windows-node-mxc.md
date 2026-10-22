@@ -239,10 +239,25 @@ origin must also identify the WeChat channel, account, and recipient. Missing or
 unregistered runs, and mismatched providers remain local-only with explicit diagnostics; they
 never fall back to matching a legacy session key. Completed dispatch callbacks cannot register
 another run. No reply syntax or consent capability is upgraded by this binding.
+Persisted consent and public account status retain their canonical identity format. Delivery
+separately reads the exact, case-sensitive peer from the single authenticated credential record.
+The inbound sender, direct conversation, authenticated origin recipient and current credential
+peer must match byte-for-byte. The plugin uses that exact peer for its context-token cache and
+revalidates it before every prompt, fallback, acknowledgement, reminder and terminal send. A
+same-fold peer or alternate cache key is not an identity alias. A changed peer or missing exact
+context fails closed without trying another recipient.
 The fixed-field diagnostic collector can also retain main-process source-cache acceptance,
 approved-origin presence, bound-run hashes, and typed delivery/rejection reasons. Its shared
 allowlist rejects arbitrary output; commands, message text, identities, and credentials are not
 included in these frames.
+Delivery diagnostics use a separate versioned, primitive-only contract with fixed stage/kind/code
+values and hashed delivery, challenge, inbound-request and provider-client correlations where
+available. Provider HTTP acceptance is not proof that the user saw a phone message. Explicit
+malformed provider return codes are unconfirmed failures; an omitted protobuf-default return
+code remains supported. No response body, exception text, command, identity or credential enters
+these frames, and an unconfirmed send does not cause an automatic retry. Acknowledgement
+inbound-request hashes are not guessed approval bindings. Reminders defer to the current prompt's
+choices and code, so they do not imply that legacy once-only consent permits durable approval.
 
 Desktop thinking state follows exact Gateway session/run lifecycle events, including external
 WeChat runs, rather than requiring a Desktop send. History's authoritative `sessionInfo` active-run
@@ -251,6 +266,13 @@ cannot clear a newer run; lifecycle-only completion clears thinking without inve
 Streamed text and tool evidence remain pending until the actual terminal chat event or
 authoritative history owns the output. Failed cancellation reports the error without falsely
 clearing authoritative busy state.
+The pinned SDK legitimately reports active projected, queued, embedded/approval-wait and
+terminal-persistence states without an `activeRunIds` property. Those snapshots preserve explicit
+session-local busy state with no invented run ID, while retaining any previously identified run
+evidence. Identified snapshots still require consistent, unique nonempty IDs. A valid authoritative
+idle snapshot clears unidentified busy state; malformed, wrong-session or stale snapshots cannot.
+History hydrates inbound user turns during these active states rather than rejecting the snapshot
+before processing its messages.
 The Desktop explicitly subscribes to the selected session's transcript and catalog lifecycle
 notifications. Only notifications matching the acknowledged selected session reach the renderer,
 and the IPC notification contains only its session key. It refreshes authoritative history during

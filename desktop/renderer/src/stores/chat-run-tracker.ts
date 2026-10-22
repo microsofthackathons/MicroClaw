@@ -1,7 +1,8 @@
-import type { ChatSessionRuntime } from "../../../src/chat-run-lifecycle";
+import { isChatSessionRuntime } from "../../../src/chat-run-lifecycle";
 
 export class ChatRunTracker {
   private runs = new Map<string, Map<string, number>>();
+  private unidentified = new Map<string, number>();
   private revisions = new Map<string, number>();
   private closed = new Set<string>();
   private committed = new Set<string>();
@@ -41,24 +42,30 @@ export class ChatRunTracker {
     runs?.delete(id);
     if (!runs?.size) this.runs.delete(key);
   }
-  active(key: string, preferred?: string | null): { id: string; startedAt: number } | null {
+  active(key: string, preferred?: string | null): { id: string | null; startedAt: number } | null {
     const runs = this.runs.get(key);
     const id = preferred && runs?.has(preferred) ? preferred : [...(runs?.keys() ?? [])].at(-1);
     const startedAt = id ? runs?.get(id) : undefined;
-    return id && startedAt !== undefined ? { id, startedAt } : null;
+    if (id && startedAt !== undefined) return { id, startedAt };
+    const observedAt = this.unidentified.get(key);
+    return observedAt === undefined ? null : { id: null, startedAt: observedAt };
   }
-  snapshot(key: string, runtime: ChatSessionRuntime | undefined, revision: number): boolean {
+  snapshot(key: string, runtime: unknown, revision: number): boolean {
     if (runtime === undefined || this.revision(key) !== revision) return false;
-    if (
-      runtime.key !== key ||
-      typeof runtime.hasActiveRun !== "boolean" ||
-      !Array.isArray(runtime.activeRunIds) ||
-      !runtime.activeRunIds.every((id) => typeof id === "string" && id) ||
-      runtime.hasActiveRun !== runtime.activeRunIds.length > 0
-    ) {
+    if (!isChatSessionRuntime(runtime, key)) {
       throw new Error("Invalid Gateway chat runtime snapshot");
     }
-    const incoming = new Set(runtime.activeRunIds);
+    const ids = Object.hasOwn(runtime, "activeRunIds") ? runtime.activeRunIds : undefined;
+    if (!Array.isArray(ids)) {
+      // The SDK withholds IDs for projected, embedded and terminal-persistence activity.
+      if (!this.unidentified.has(key)) {
+        this.unidentified.set(key, Date.now());
+        this.change(key);
+      }
+      return true;
+    }
+    if (this.unidentified.delete(key)) this.change(key);
+    const incoming = new Set(ids);
     for (const id of this.runs.get(key)?.keys() ?? []) {
       if (!incoming.has(id)) this.finish(key, id);
     }

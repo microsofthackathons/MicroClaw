@@ -292,19 +292,28 @@ function readStrictAccountIndex(): string[] {
 }
 
 /** Fail closed when a running provider no longer owns the sole authenticated account. */
-export function isActiveWeixinAccount(accountId: string, expectedToken?: string): boolean {
+export function isActiveWeixinAccount(
+  accountId: string,
+  expectedToken?: string,
+  expectedWirePeer?: string,
+): boolean {
   try {
     const normalizedId = normalizeAccountId(accountId);
     const indexedIds = readStrictAccountIndex();
     if (indexedIds.length !== 1 || normalizeAccountId(indexedIds[0]) !== normalizedId) {
       return false;
     }
-    const account = loadStoredWeixinAccountFile(indexedIds[0]);
+    if (expectedWirePeer !== undefined &&
+      (accountId !== normalizedId || indexedIds[0] !== normalizedId)) return false;
+    const account = expectedWirePeer === undefined
+      ? loadStoredWeixinAccountFile(indexedIds[0])
+      : readAccountFile(resolveAccountPath(normalizedId));
     const token = account?.token?.trim();
     return Boolean(
-      token &&
+      account && token &&
         account.userId?.trim() &&
-        (expectedToken === undefined || token === expectedToken.trim()),
+        (expectedToken === undefined || token === expectedToken.trim()) &&
+        (expectedWirePeer === undefined || account.userId === expectedWirePeer),
     );
   } catch {
     return false;

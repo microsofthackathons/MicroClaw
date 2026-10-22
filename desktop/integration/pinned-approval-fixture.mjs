@@ -4,7 +4,7 @@ import path from "node:path";
 import { URL, pathToFileURL } from "node:url";
 import ts from "typescript";
 
-export function runPinnedApprovalRequests(plan) {
+export function runPinnedApprovalRequests(plan, recipient = "owner@im.wechat") {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
   const filename = path.join(packageDir, "dist", "bash-tools.exec-approval-request-BhOTs75A.mjs");
@@ -65,6 +65,7 @@ export function runPinnedApprovalRequests(plan) {
     const DEFAULT_APPROVAL_TIMEOUT_MS = 120000;
     ${builder}
     const plan = ${JSON.stringify(plan)};
+    const recipient = ${JSON.stringify(recipient)};
     const module = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
     const producer = ${JSON.stringify(producers)};
     const vm = await import("node:vm");
@@ -105,7 +106,7 @@ export function runPinnedApprovalRequests(plan) {
       await run({
         disableTools: true, agentId: "main", sessionKey: "agent:main:main",
         admittedRunContext: { operationalRunInstance: authority.operationalRunInstance },
-        messageProvider: "openclaw-weixin", agentAccountId: "bot", currentChannelId: "owner@im.wechat",
+        messageProvider: "openclaw-weixin", agentAccountId: "bot", currentChannelId: recipient,
         ...source,
       }, () => true, async () => undefined);
       const resolve = evaluate(producer.runtime, "resolveAgentRuntimeIdentityForGatewayTool", {
@@ -128,7 +129,7 @@ export function runPinnedApprovalRequests(plan) {
     assert.equal(identity.kind, "agentRuntime");
     assert.equal(identity.turnSourceChannel, "openclaw-weixin");
     assert.equal(identity.turnSourceAccountId, "bot");
-    assert.equal(identity.turnSourceTo, "owner@im.wechat");
+    assert.equal(identity.turnSourceTo, recipient);
     const stop = new Error("test-record-captured");
     let captured;
     const manager = {

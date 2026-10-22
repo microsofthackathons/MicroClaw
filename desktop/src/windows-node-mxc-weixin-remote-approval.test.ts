@@ -35,7 +35,7 @@ const approval: WindowsNodeMxcGatewayApproval = {
     toolCallId: "actual-tool",
     nodeId: "c".repeat(64),
     channel: "openclaw-weixin",
-    accountId: "BOT@IM.WECHAT",
+    accountId: "bot@im.wechat",
     to: "OWNER@IM.WECHAT",
   },
   declaredAccess: [],
@@ -79,7 +79,7 @@ describe("native consent capability across the real runtime configuration projec
 function input(now = 1_000): WeixinRemoteApprovalCreateInput {
   return {
     source: {
-      accountId: "BOT@IM.WECHAT",
+      accountId: "bot@im.wechat",
       senderId: "OWNER@IM.WECHAT",
       conversationId: "OWNER@IM.WECHAT",
       messageId: "100",
@@ -110,7 +110,10 @@ function input(now = 1_000): WeixinRemoteApprovalCreateInput {
 function configuredBroker(
   audit?: ConstructorParameters<typeof WindowsNodeMxcWeixinRemoteApprovalBroker>[0],
 ): WindowsNodeMxcWeixinRemoteApprovalBroker {
-  const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(audit);
+  const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(audit, () => ({
+    accountId: "bot@im.wechat",
+    userId: "OWNER@IM.WECHAT",
+  }));
   broker.configure({
     enabled: true,
     consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,

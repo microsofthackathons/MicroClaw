@@ -137,8 +137,8 @@ export function weixinApprovalOriginRejection(
   if (!origin) return "source-origin-unavailable";
   if (
     origin.channel !== "openclaw-weixin" ||
-    normalizeIdentity(origin.accountId) !== normalizeIdentity(source.accountId) ||
-    normalizeIdentity(origin.to) !== normalizeIdentity(source.senderId)
+    origin.accountId !== source.accountId ||
+    origin.to !== source.senderId
   )
     return "source-provider-mismatch";
   if (
@@ -288,6 +288,7 @@ export interface WeixinRemoteApprovalNotice {
   challengeId: string;
   accountId: string;
   senderId: string;
+  conversationId: string;
   acknowledgement: string;
 }
 
@@ -358,7 +359,7 @@ function securityBindingHash(
     canonicalize({
       source: {
         accountId: normalizeIdentity(source.accountId),
-        senderId: normalizeIdentity(source.senderId),
+        senderId: source.senderId,
         conversationId: normalizeOpaqueId(source.conversationId),
         messageId: normalizeOpaqueId(source.messageId),
         cursor: normalizeWeixinProviderInteger(source.cursor),
@@ -668,6 +669,7 @@ export type WeixinRemoteApprovalRejectionReason =
   | "disabled"
   | "source-not-direct"
   | "source-identity-mismatch"
+  | "source-owner-unavailable"
   | "source-metadata-invalid"
   | "source-session-mismatch"
   | "source-agent-mismatch"
@@ -684,6 +686,27 @@ export type WeixinRemoteApprovalChallengeResult =
   | { status: "created"; delivery: WeixinRemoteApprovalDelivery }
   | { status: "rejected"; reason: WeixinRemoteApprovalRejectionReason };
 
+export function weixinRemoteApprovalWireSourceRejection(
+  configuration: WeixinRemoteApprovalConfiguration,
+  source: Pick<WeixinRemoteApprovalSource, "accountId" | "senderId" | "conversationId">,
+  wireOwner: { readonly accountId: string; readonly userId: string } | null,
+): "source-owner-unavailable" | "source-identity-mismatch" | null {
+  const owner = configuration.owner;
+  if (
+    !configuration.enabled ||
+    !owner ||
+    !wireOwner ||
+    wireOwner.accountId !== owner.accountId ||
+    normalizeIdentity(wireOwner.userId) !== owner.userId
+  )
+    return "source-owner-unavailable";
+  return source.accountId === wireOwner.accountId &&
+    source.senderId === wireOwner.userId &&
+    source.conversationId === wireOwner.userId
+    ? null
+    : "source-identity-mismatch";
+}
+
 export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   private configuration: WeixinRemoteApprovalConfiguration = { enabled: false, owner: null };
   private readonly challengesByChat = new Map<string, ActiveChallenge>();
@@ -692,7 +715,22 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   private readonly globalAttemptTimes: number[] = [];
   private readonly auditEvents: WeixinRemoteApprovalAuditEvent[] = [];
 
-  constructor(private readonly onAudit?: (event: WeixinRemoteApprovalAuditEvent) => void) {}
+  constructor(
+    private readonly onAudit?: (event: WeixinRemoteApprovalAuditEvent) => void,
+    private readonly readWireOwner: () => {
+      readonly accountId: string;
+      readonly userId: string;
+    } | null = () => null,
+  ) {}
+
+  isAuthenticatedSource(
+    source: Pick<WeixinRemoteApprovalSource, "accountId" | "senderId" | "conversationId">,
+  ): boolean {
+    return (
+      weixinRemoteApprovalWireSourceRejection(this.configuration, source, this.readWireOwner()) ===
+      null
+    );
+  }
 
   configure(configuration: WeixinRemoteApprovalConfiguration): void {
     const changed =
@@ -744,12 +782,12 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     if (!this.configuration.enabled || !owner) return reject("disabled");
     if (!input.source.direct || input.source.forwarded || input.source.quoted)
       return reject("source-not-direct");
-    if (
-      normalizeIdentity(input.source.accountId) !== owner.accountId ||
-      normalizeIdentity(input.source.senderId) !== owner.userId ||
-      normalizeIdentity(input.source.conversationId) !== owner.userId
-    )
-      return reject("source-identity-mismatch");
+    const ownerReason = weixinRemoteApprovalWireSourceRejection(
+      this.configuration,
+      input.source,
+      this.readWireOwner(),
+    );
+    if (ownerReason) return reject(ownerReason);
     if (
       normalizeWeixinProviderInteger(input.source.cursor) === null ||
       normalizeWeixinProviderInteger(input.source.messageId) === null
@@ -814,8 +852,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       }),
       source: {
         ...input.source,
-        accountId: normalizeIdentity(input.source.accountId),
-        senderId: normalizeIdentity(input.source.senderId),
+        accountId: input.source.accountId,
+        senderId: input.source.senderId,
       },
       security: { ...input.security },
       approvalIds,
@@ -868,7 +906,12 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
 
   markDelivered(challengeId: string, now = Date.now()): boolean {
     for (const challenge of this.challengesByChat.values()) {
-      if (challenge.id !== challengeId || now >= challenge.expiresAtUnixMs) continue;
+      if (
+        challenge.id !== challengeId ||
+        now >= challenge.expiresAtUnixMs ||
+        !this.isAuthenticatedSource(challenge.source)
+      )
+        continue;
       challenge.deliveredAtUnixMs = now;
       return true;
     }
@@ -879,13 +922,15 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     const chatKey = this.chatKey(candidate.accountId, candidate.conversationId);
     const challenge = this.challengesByChat.get(chatKey);
     const now = candidate.now ?? Date.now();
+    if (challenge && !this.isAuthenticatedSource(challenge.source))
+      return this.rejectChallenge(chatKey, challenge, "stale", true);
     const activeOwnerConversation =
       challenge &&
       challenge.deliveredAtUnixMs !== null &&
       now < challenge.expiresAtUnixMs &&
       candidate.direct &&
-      normalizeIdentity(candidate.accountId) === challenge.source.accountId &&
-      normalizeIdentity(candidate.senderId) === challenge.source.senderId;
+      candidate.accountId === challenge.source.accountId &&
+      candidate.senderId === challenge.source.senderId;
     const remind = (
       reason: "malformed" | "cursor" | "quoted" | "forwarded" | "consent-scope",
     ): WeixinRemoteApprovalResolution => {
@@ -992,16 +1037,13 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     if (!candidate.direct) return reject("group", true);
     if (candidate.forwarded) return reject("forwarded", true);
     if (candidate.quoted) return reject("quoted", true);
-    if (normalizeIdentity(candidate.accountId) !== challenge.source.accountId) {
+    if (candidate.accountId !== challenge.source.accountId) {
       return reject("identity");
     }
-    if (normalizeIdentity(candidate.senderId) !== challenge.source.senderId) {
+    if (candidate.senderId !== challenge.source.senderId) {
       return reject("identity");
     }
-    if (
-      normalizeIdentity(candidate.conversationId) !==
-      normalizeIdentity(challenge.source.conversationId)
-    ) {
+    if (candidate.conversationId !== challenge.source.conversationId) {
       return reject("chat");
     }
     if (
@@ -1191,7 +1233,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   }
 
   private chatKey(accountId: string, conversationId: string): string {
-    return `${normalizeIdentity(accountId)}\n${normalizeIdentity(conversationId)}`;
+    return `${accountId}\n${conversationId}`;
   }
 
   private recordAudit(challenge: ActiveChallenge, result: string, reason: string): void {
@@ -1221,6 +1263,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       challengeId: challenge.id,
       accountId: challenge.source.accountId,
       senderId: challenge.source.senderId,
+      conversationId: challenge.source.conversationId,
       acknowledgement: acknowledgement(challenge.locale, result),
     };
   }

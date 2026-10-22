@@ -260,7 +260,7 @@ export const useChatStore = defineStore("chat", () => {
   const sessionStateCache = new Map<string, SessionStreamState>();
   const serverRuns = new ChatRunTracker();
 
-  function synchronizeServerRun(preferred?: string) {
+  function synchronizeServerRun(preferred?: string, authoritativeIdle = false) {
     const key = resolvedSessionKey.value || sessionKey.value;
     const active = serverRuns.active(key, preferred || chatRunId.value);
     if (active) {
@@ -274,7 +274,10 @@ export const useChatStore = defineStore("chat", () => {
       streaming.value = true;
       streamStartedAt.value = active.startedAt;
       lastStreamEventAt.value = Date.now();
-    } else if (chatRunId.value && serverRuns.isClosed(key, chatRunId.value)) {
+    } else if (
+      authoritativeIdle ||
+      (chatRunId.value && serverRuns.isClosed(key, chatRunId.value))
+    ) {
       streaming.value = false;
       sending.value = false;
       streamStartedAt.value = null;
@@ -857,7 +860,7 @@ export const useChatStore = defineStore("chat", () => {
         res.sessionInfo,
         canonicalKey === key ? runtimeRevision : 0,
       );
-      synchronizeServerRun();
+      synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
       const raw = Array.isArray(res.messages) ? res.messages : [];
       const filtered = raw
         .map((m) => stripSystemLines(m))
@@ -1469,8 +1472,8 @@ export const useChatStore = defineStore("chat", () => {
         streamStartedAt.value !== startedAt
       )
         return;
-      serverRuns.snapshot(key, res.sessionInfo, runtimeRevision);
-      synchronizeServerRun();
+      const runtimeAccepted = serverRuns.snapshot(key, res.sessionInfo, runtimeRevision);
+      synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
       if (
         res.sessionInfo &&
         (!streaming.value || chatRunId.value !== null || res.sessionInfo.hasActiveRun)
