@@ -257,6 +257,10 @@ and the IPC notification contains only its session key. It refreshes authoritati
 active runs and approval waits, so an inbound phone user turn need not wait for the assistant's
 final reply or a separate agent-start event. Subscription rejection is reported rather than
 treated as a successful observer.
+The Electron sandboxed preload keeps its runtime IPC adapters self-contained: relative runtime
+`require` imports are not supported there. Native Electron boundary regressions execute the
+emitted preload with the production sandbox defaults and verify bridge exposure plus session
+notification subscription and cleanup, rather than relying only on mocked renderer APIs.
 
 Electron main remains the sole approval authority. The WeChat plugin has a generation-local,
 token-authenticated named-pipe transport with only two operations: report a normalized inbound

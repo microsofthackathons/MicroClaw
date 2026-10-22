@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { subscribeChatSessionUpdates } from "./chat-session-update";
+// Sandboxed preloads cannot require local modules; keep runtime IPC adapters self-contained.
 import type {
   ChatAttachment,
   ClipboardImageInput,
@@ -124,7 +124,12 @@ contextBridge.exposeInMainWorld("openclaw", {
     observeSession: (sessionKey: string | null) =>
       ipcRenderer.invoke("chat:observe-session", { sessionKey }),
     onSessionUpdate: (callback: (payload: { sessionKey: string }) => void) => {
-      return subscribeChatSessionUpdates(ipcRenderer, callback);
+      const handler = (_event: Electron.IpcRendererEvent, payload: { sessionKey: string }) =>
+        callback(payload);
+      ipcRenderer.on("chat:session-update", handler);
+      return () => {
+        ipcRenderer.removeListener("chat:session-update", handler);
+      };
     },
 
     /** Load titles derived by OpenClaw from session transcripts. */

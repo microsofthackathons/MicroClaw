@@ -18,7 +18,7 @@ import { GatewayClient } from "../../src/gateway-client";
 import { GatewaySessionObserver } from "../../src/gateway-session-observer";
 import {
   forwardGatewaySessionUpdate,
-  subscribeChatSessionUpdates,
+  CHAT_SESSION_UPDATE_CHANNEL,
 } from "../../src/chat-session-update";
 // @ts-expect-error The pinned Gateway fixture executes external ESM in a separate Node process.
 import { runPinnedSessionFixture } from "../../integration/pinned-session-fixture.mjs";
@@ -161,13 +161,17 @@ describe("App MXC loading gate with the real Gateway store", () => {
   }
 
   it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
-    "shows actual pinned session events through GatewayClient, main and preload before the terminal reply",
+    "shows actual pinned session events through GatewayClient and main notifications before the terminal reply",
     async () => {
       const fixture = runPinnedSessionFixture();
       const ipc = new EventEmitter();
-      vi.mocked(window.openclaw.chat.onSessionUpdate).mockImplementation((callback) =>
-        subscribeChatSessionUpdates(ipc, callback),
-      );
+      vi.mocked(window.openclaw.chat.onSessionUpdate).mockImplementation((callback) => {
+        const handler = (_event: unknown, payload: { sessionKey: string }) => callback(payload);
+        ipc.on(CHAT_SESSION_UPDATE_CHANNEL, handler);
+        return () => {
+          ipc.removeListener(CHAT_SESSION_UPDATE_CHANNEL, handler);
+        };
+      });
       const observer = new GatewaySessionObserver(async (method, params) => {
         if (method === "sessions.subscribe") return fixture.catalog.payload;
         expect(method).toBe("sessions.messages.subscribe");
