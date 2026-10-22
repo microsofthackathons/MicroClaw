@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.1.0",
-    "openclaw": "2026.10.3",
+    "openclaw": "2026.10.5",
     "silk-wasm": "^3.7.1",
     "typescript": "^5.8.0",
     "vitest": "^3.1.0"
@@ -66,6 +66,6 @@
   "ilink_appid": "bot",
   "microclaw": {
     "upstreamVersion": "2.4.6",
-    "sdkCompatibility": "2026.10.3"
+    "sdkCompatibility": "2026.10.5"
   }
 }

@@ -82,8 +82,8 @@ _RETRYABLE_NPM_REGISTRY_ERROR = re.compile(
 )
 _LOCAL_MODEL_PLUGIN_ID = "llama-cpp"
 _LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider"
-_LOCAL_MODEL_PLUGIN_VERSION = "2026.9.3"
-_LOCAL_MODEL_PLUGIN_SHA256 = "0092cdf1656a013d6028f5e238eaf21fb41b1459facde3a3ea563a7567a846aa"
+_LOCAL_MODEL_PLUGIN_VERSION = OPENCLAW_TARGET_VERSION
+_LOCAL_MODEL_PLUGIN_SHA256 = "8c782ef30d528be1a7b57f80d9cfd30b18d52087452f98168894d2da387519e9"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
 _SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
 
@@ -2153,6 +2153,12 @@ class WindowsSetup:
         except (OSError, ValueError) as error:
             self.log.error(f"Cannot inspect OpenClaw package upgrade recovery: {error}")
             return False
+        if pending is not None and pending.data["targetVersion"] != OPENCLAW_TARGET_VERSION:
+            self.log.error(
+                f"Pending package upgrade requires the {pending.data['targetVersion']} installer; "
+                "its backup and recovery record are unchanged."
+            )
+            return False
         installation = self._detect_openclaw_installation()
         self._openclaw_upgrade_required = (
             pending is not None
@@ -2183,80 +2189,14 @@ class WindowsSetup:
         return True
 
     def update_openclaw_windows(self, installation: OpenClawInstallation) -> bool:
-        """Delegate package replacement, plugin convergence and migration to OpenClaw."""
+        """Replace the pinned package after backup, then run the target Doctor once."""
         if not self._allow_openclaw_update(installation):
             return False
-        if installation.version == "2026.9.3" and OPENCLAW_TARGET_VERSION == "2026.10.3":
-            return self._upgrade_openclaw_with_package_manager(installation)
         self.install_prefix = installation.prefix
         if installation.version == OPENCLAW_TARGET_VERSION:
             self.log.info("OpenClaw version unchanged; skipping core update and Doctor.")
             return True
-        self.log.step(
-            f"Updating OpenClaw {installation.version} to {OPENCLAW_TARGET_VERSION} "
-            "with openclaw update…"
-        )
-        registries = self._npm_registry_attempts()
-        self._successful_npm_registry = registries[0]
-        env = self._npm_registry_env(registries[0])
-        state_dir = Path.home() / ".openclaw"
-        env.update(self._load_openclaw_state_env(state_dir))
-        env["OPENCLAW_STATE_DIR"] = str(state_dir)
-        env = {key: value for key, value in env.items() if key.lower() != "npm_config_prefix"}
-        env["npm_config_prefix"] = str(installation.prefix)
-        env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
-        try:
-            result = self._run_official_update(
-                [
-                    str(self._resolve_validation_node()),
-                    str(installation.entry_path),
-                    "update",
-                    "--tag",
-                    OPENCLAW_TARGET_VERSION,
-                    "--yes",
-                    "--no-restart",
-                    "--timeout",
-                    "600",
-                    "--json",
-                ],
-                cwd=str(installation.prefix),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=1800,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            self.log.error(f"Official OpenClaw update failed: {error}")
-            return False
-        for output in (result.stdout, result.stderr):
-            if output and output.strip():
-                self.log.info(output.strip())
-        if result.returncode != 0:
-            self.log.error(
-                "Official OpenClaw update did not finish. Its recovery state is preserved; "
-                "MicroClaw will not overwrite it with npm install or a custom rollback."
-            )
-            return False
-        try:
-            outcome = json.loads(result.stdout)
-        except (TypeError, json.JSONDecodeError):
-            self.log.error("Official OpenClaw update did not return a valid JSON outcome")
-            return False
-        if not isinstance(outcome, dict) or not (
-            outcome.get("status") == "ok"
-            or (outcome.get("status") == "skipped" and outcome.get("reason") == "already-current")
-        ):
-            self.log.error(
-                "Official OpenClaw update reported an unfinished or unsuccessful outcome"
-            )
-            return False
-        if not self._validate_installed_version():
-            return False
-        self.log.success(f"OpenClaw officially updated to {OPENCLAW_TARGET_VERSION}")
-        return True
+        return self._upgrade_openclaw_with_package_manager(installation)
 
     def _package_upgrade_is_idle(self) -> bool:
         if not self._gateway_is_stopped_for_upgrade():
@@ -2336,20 +2276,27 @@ class WindowsSetup:
         try:
             with package_upgrade_lock(DEFAULT_DESKTOP_DIR):
                 upgrade = PackageManagerUpgrade.pending(DEFAULT_DESKTOP_DIR)
-                if OPENCLAW_TARGET_VERSION != "2026.10.3":
+                if upgrade and upgrade.data["targetVersion"] != OPENCLAW_TARGET_VERSION:
                     raise ValueError(
-                        "This pending package upgrade requires the 2026.10.3 installer"
+                        "This pending package upgrade requires the "
+                        f"{upgrade.data['targetVersion']} installer"
                     )
                 if not self._package_upgrade_is_idle():
                     return False
+                if installation is None and upgrade is None:
+                    raise ValueError("No OpenClaw installation or package recovery record")
                 prefix = upgrade.prefix if upgrade else installation.prefix
-                if installation and (
-                    installation.prefix != prefix
-                    or installation.version not in {"2026.9.3", "2026.10.3"}
-                ):
-                    raise ValueError(
-                        "Installed OpenClaw does not match the package recovery record"
-                    )
+                if installation:
+                    if not self._allow_openclaw_update(installation):
+                        return False
+                    if upgrade and (
+                        installation.prefix != prefix
+                        or installation.version
+                        not in {upgrade.data["sourceVersion"], OPENCLAW_TARGET_VERSION}
+                    ):
+                        raise ValueError(
+                            "Installed OpenClaw does not match the package recovery record"
+                        )
                 self.install_prefix = prefix
                 state_dir = Path.home() / ".openclaw"
                 env = self._get_env()
@@ -2395,20 +2342,27 @@ class WindowsSetup:
                 if not npm:
                     raise FileNotFoundError("npm not found for the package-manager upgrade")
                 if not upgrade or not upgrade.data.get("archiveSha256"):
-                    if not installation or installation.version != "2026.9.3":
+                    if not installation or installation.version == OPENCLAW_TARGET_VERSION:
                         raise ValueError(
                             "No verified pre-upgrade state backup; refusing replacement"
                         )
                     metadata = json.loads(
                         (installation.package_dir / "package.json").read_text(encoding="utf-8")
                     )
-                    if metadata.get("name") != "openclaw" or metadata.get("version") != "2026.9.3":
+                    if (
+                        metadata.get("name") != "openclaw"
+                        or metadata.get("version") != installation.version
+                    ):
                         raise ValueError("Unexpected source package identity")
-                    upgrade = PackageManagerUpgrade.create(DEFAULT_DESKTOP_DIR, prefix)
-                    self.log.warn(
-                        "Using the controlled npm upgrade for OpenClaw 2026.9.3 -> 2026.10.3. "
-                        "This avoids the old updater's Windows/DLP timestamp baseline; "
-                        "security settings and existing recovery artifacts are unchanged."
+                    upgrade = PackageManagerUpgrade.create(
+                        DEFAULT_DESKTOP_DIR,
+                        prefix,
+                        source_version=installation.version,
+                        target_version=OPENCLAW_TARGET_VERSION,
+                    )
+                    self.log.info(
+                        f"Upgrading OpenClaw {installation.version} -> {OPENCLAW_TARGET_VERSION} "
+                        "with npm after a verified data backup; no old runtime snapshot is taken."
                     )
                     backup = self._run_package_upgrade_phase(
                         "Backing up OpenClaw state and workspaces",
@@ -2447,18 +2401,19 @@ class WindowsSetup:
                         )
                     upgrade.save("backed-up", archiveSha256=upgrade.archive_digest())
                 upgrade.verify_archive()
-                self.log.info(f"Verified pre-upgrade state backup: {upgrade.archive}")
+                self.log.info(f"SHA-256 verified pre-upgrade data backup: {upgrade.archive}")
                 if not self._package_upgrade_is_idle():
                     return False
                 if not upgrade.data["packageReady"] or not installation:
                     upgrade.save("package-installing", packageReady=False)
                     self._run_package_upgrade_phase(
-                        "Replacing OpenClaw runtime with npm (2026.10.3)",
+                        f"Replacing OpenClaw runtime with npm ({OPENCLAW_TARGET_VERSION})",
                         [
                             npm,
                             "install",
                             "-g",
-                            "openclaw@2026.10.3",
+                            f"openclaw@{OPENCLAW_TARGET_VERSION}",
+                            "--allow-scripts=openclaw",
                             "--prefix",
                             str(prefix),
                             "--registry",
@@ -2473,30 +2428,26 @@ class WindowsSetup:
                         env,
                     )
                     installation = self._openclaw_installation_at_prefix(prefix)
-                    if not installation or installation.version != "2026.10.3":
+                    if not installation or installation.version != OPENCLAW_TARGET_VERSION:
                         raise ValueError(
                             "npm did not install the exact OpenClaw target at its old prefix"
                         )
                     upgrade.save("package-installed", packageReady=True)
-                if installation.version != "2026.10.3":
-                    raise ValueError("The replacement runtime is not OpenClaw 2026.10.3")
+                if installation.version != OPENCLAW_TARGET_VERSION:
+                    raise ValueError(
+                        f"The replacement runtime is not OpenClaw {OPENCLAW_TARGET_VERSION}"
+                    )
                 env = self._with_state_owner_compatibility(env, installation)
                 command = [node, str(installation.entry_path)]
                 if not self._package_upgrade_is_idle():
                     return False
-                upgrade.save("repairing")
-                repair = self._run_package_upgrade_phase(
-                    "Repairing OpenClaw update and plugin state",
-                    command
-                    + ["update", "repair", "--yes", "--no-restart", "--timeout", "600", "--json"],
+                upgrade.save("migrating")
+                self._run_package_upgrade_phase(
+                    "Repairing OpenClaw configuration and data with Doctor",
+                    command + ["doctor", "--fix", "--non-interactive"],
                     prefix,
                     env,
-                    json_output=True,
                 )
-                if repair.get("status") not in {"ok", "warning"}:
-                    raise ValueError(f"OpenClaw update repair did not finish: {repair}")
-                if repair["status"] == "warning":
-                    self.log.warn(f"OpenClaw update repair advisories: {json.dumps(repair)}")
                 if (
                     not self._validate_installed_version()
                     or not self._gateway_is_stopped_for_upgrade()
@@ -2504,7 +2455,9 @@ class WindowsSetup:
                     raise RuntimeError("OpenClaw verification failed after package-manager repair")
                 upgrade.save("complete")
                 self._successful_npm_registry = registry
-                self.log.success("OpenClaw 2026.10.3 package upgrade and repair completed")
+                self.log.success(
+                    f"OpenClaw {OPENCLAW_TARGET_VERSION} npm upgrade and Doctor completed"
+                )
                 return True
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             self.log.error(f"OpenClaw package-manager upgrade failed: {error}")
@@ -3173,7 +3126,12 @@ class WindowsSetup:
 
     def validate_running_gateway(self) -> bool:
         transaction = self._openclaw_transaction
+        started = time.monotonic()
         passed = bool(self._validate_gateway_health())
+        self.log.info(
+            f"Gateway /health timing: [{'success' if passed else 'failed'}] "
+            f"{time.monotonic() - started:.2f}s"
+        )
         if transaction is not None:
             transaction.record_validation("health", passed)
         if not passed:

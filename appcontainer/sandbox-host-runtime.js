@@ -11,36 +11,55 @@ var hostRealpathSync = fs.realpathSync.native || fs.realpathSync;
 var installed = false;
 var nativeProcessStartTime;
 var PINNED_MODULES = Object.freeze({
-  "dist/pid-alive-CPS_shDt.mjs": "15370817b8250160bfba29d3e0c46d8f1f09579b65abd0c83fc47c44c7ff4280",
-  "dist/native-hook-relay/pid-alive-Cnn-Mjdg.mjs":
+  "dist/pid-alive-CPS_shDt.mjs": Object.freeze([
+    "15370817b8250160bfba29d3e0c46d8f1f09579b65abd0c83fc47c44c7ff4280",
+  ]),
+  "dist/native-hook-relay/pid-alive-Cnn-Mjdg.mjs": Object.freeze([
     "6e3f9c71e55eceb3e7bfe1c6d27fc992026155e7eee38601d11f79d73955ce20",
-  "dist/gateway-state-owner-C3Vdziw8.mjs":
+  ]),
+  "dist/gateway-state-owner-C3Vdziw8.mjs": Object.freeze([
     "ec013bac1c0ef8620e100dd51293260dea8eeffed3ad10e4def459e2536a1629",
-  "dist/infra/sqlite-readonly-location.worker.js":
+  ]),
+  "dist/gateway-state-owner-DZeVbzO0.mjs": Object.freeze([
+    "e87d31aaa8c453ba22275c98003a77d537a9c5b648675fb39ff0f44e78d1761e",
+  ]),
+  "dist/infra/sqlite-readonly-location.worker.js": Object.freeze([
     "3217eaf9a6dc432f046675ecd38dd1b7ef3e315d6973b0157107c02194a67942",
-  "dist/managed-handoff-runtime.mjs":
+    "d54282147cf891e468449b0f2faccb0e632d675b78a4091ebed6dc5ab9d6163f",
+  ]),
+  "dist/managed-handoff-runtime.mjs": Object.freeze([
+    "ea9760365cb67600fbc23715ec081c2ba991a33bff82912c3d3cf3eda5ae6c65",
     "4a420be6ca65ee3e046be8f4eb7c1ae8aefd91d5bff625c03c2f6ec4173ea3dc",
-  "dist/native-hook-relay/sqlite-readonly-location-cleanup-B3jqoryh.mjs":
+    "17a2072eb86df9ad1e7a792fbcf677c158649a3296782e70dc2f0397b23bb2e3",
+  ]),
+  "dist/native-hook-relay/sqlite-readonly-location-cleanup-B3jqoryh.mjs": Object.freeze([
     "fa82681c7ace7282db05cb1ce9ed02c2d6135d8cc6ac57974b9a7540df0487d3",
-  "dist/package-update-activation-recovery.mjs":
+  ]),
+  "dist/native-hook-relay/sqlite-snapshot-staging-owner-Coa4BeBx.mjs": Object.freeze([
+    "3e4d9f956311ad8896c2c80460325088730f1e47dd1c5b17df4f12eadb70a0c0",
+  ]),
+  "dist/package-update-activation-recovery.mjs": Object.freeze([
     "0d866c09a3432e1cf7add4a39bed3bfc3e79c14eec12c1d1be759c4a57a6673f",
-  "dist/process/supervisor/service-child-group-anchor.js":
+    "0c80fdc24875916ae614a2b867aa9b3a73658d25cc92879cb7fe10cb5e038f8c",
+  ]),
+  "dist/process/supervisor/service-child-group-anchor.js": Object.freeze([
     "0d26c64945c664a42d9e3e583b894ac15983a50bb6bb2b0fb8085fb4d7a83fd8",
-  "dist/state/openclaw-state-lease-heartbeat.worker.js":
+    "3ed6cc44709ad6d397e4a87a8298ed42a44151f870476cf8010517f0ab2c49de",
+  ]),
+  "dist/state/openclaw-state-lease-heartbeat.worker.js": Object.freeze([
     "fa0bd52ec7656711f842aa24732f9c0583150c836e5c2d88a27c0e3f7520270a",
-  "dist/state/openclaw-state-read.worker.js":
+    "24bed18cb66a94de8637f538b1a13d43c5fec4a66e2d0472e968aab727c34ad3",
+  ]),
+  "dist/state/openclaw-state-read.worker.js": Object.freeze([
     "47b30b692100aea7a55edb7a4e912e3436eb3c88d780efed698acde9d20b4818",
-});
-var PINNED_MODULES_BY_VERSION = Object.freeze({
-  "2026.9.3": Object.freeze({
-    "dist/windows-process-start-zFVtrrwG.mjs":
-      "5219dff227af5e6fc51105d79a933729475e36ccb06bcc950421bb7f1d17167b",
-    "dist/managed-handoff-runtime.mjs":
-      "ea9760365cb67600fbc23715ec081c2ba991a33bff82912c3d3cf3eda5ae6c65",
-    "dist/update-managed-service-handoff-lease-nmNHRx6U.mjs":
-      "d7a79053b2c23fd585d9b51ef9462f7772b5e4a2a13ba5b3ebc73cab125aed58",
-  }),
-  "2026.10.3": PINNED_MODULES,
+    "b1227973b09d2551220c2ea6642bbdb4bcd1a1a91680ac3db6c121ebff920639",
+  ]),
+  "dist/windows-process-start-zFVtrrwG.mjs": Object.freeze([
+    "5219dff227af5e6fc51105d79a933729475e36ccb06bcc950421bb7f1d17167b",
+  ]),
+  "dist/update-managed-service-handoff-lease-nmNHRx6U.mjs": Object.freeze([
+    "d7a79053b2c23fd585d9b51ef9462f7772b5e4a2a13ba5b3ebc73cab125aed58",
+  ]),
 });
 var BOOT_ARGUMENTS = Object.freeze([
   "-NoProfile",
@@ -197,14 +216,8 @@ function createControlPlaneHooks(packageDirectory) {
   }
   var root = hostRealpathSync(packageDirectory);
   var metadata = JSON.parse(hostReadFileSync(path.join(root, "package.json"), "utf8"));
-  var pinnedModules = Object.prototype.hasOwnProperty.call(
-    PINNED_MODULES_BY_VERSION,
-    metadata.version,
-  )
-    ? PINNED_MODULES_BY_VERSION[metadata.version]
-    : undefined;
-  if (metadata.name !== "openclaw" || !pinnedModules) {
-    throw new Error("The OpenClaw host runtime bridge requires a pinned supported runtime");
+  if (metadata.name !== "openclaw") {
+    throw new Error("The host runtime bridge requires a trusted OpenClaw package");
   }
   var verifiedModules = new Set();
   var providerUrl = urls.pathToFileURL(__filename).href;
@@ -235,8 +248,8 @@ function createControlPlaneHooks(packageDirectory) {
       if (!url.startsWith("file:")) return result;
       var file = urls.fileURLToPath(url);
       var relative = path.relative(root, file).split(path.sep).join("/");
-      var expected = Object.prototype.hasOwnProperty.call(pinnedModules, relative)
-        ? pinnedModules[relative]
+      var expected = Object.prototype.hasOwnProperty.call(PINNED_MODULES, relative)
+        ? PINNED_MODULES[relative]
         : undefined;
       if (!expected) return result;
       verifiedModules.delete(url);
@@ -246,7 +259,7 @@ function createControlPlaneHooks(packageDirectory) {
       if (
         result.source === null ||
         result.source === undefined ||
-        crypto.createHash("sha256").update(result.source).digest("hex") !== expected
+        !expected.includes(crypto.createHash("sha256").update(result.source).digest("hex"))
       ) {
         throw new Error("The pinned OpenClaw control-plane module changed: " + relative);
       }
@@ -276,7 +289,6 @@ function initialize(packageDirectory) {
 
 module.exports = {
   PINNED_MODULES: PINNED_MODULES,
-  PINNED_MODULES_BY_VERSION: PINNED_MODULES_BY_VERSION,
   buildBootIdentityInvocation: buildBootIdentityInvocation,
   isBootIdentityInvocation: isBootIdentityInvocation,
   readWindowsBootIdentity: readWindowsBootIdentity,

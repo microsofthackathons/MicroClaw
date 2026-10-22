@@ -13,6 +13,7 @@ import * as compatibility from "./openclaw-local-model-compat.mjs";
 const {
   EXACT_SETUP_PLAN,
   EXACT_MODEL_SELECTION_PROMPT,
+  PINNED_LOCAL_PLUGIN_VERSION,
   patchLocalModelPlugin,
   createLocalModelCompatibilityLoadHook,
 } = compatibility;
@@ -40,7 +41,10 @@ function withProviderFiles(
       writeFileSync(join(directory, "dist", "index.js"), source);
       writeFileSync(
         join(directory, "package.json"),
-        JSON.stringify({ name: "@openclaw/llama-cpp-provider", version: "2026.9.3" }),
+        JSON.stringify({
+          name: "@openclaw/llama-cpp-provider",
+          version: PINNED_LOCAL_PLUGIN_VERSION,
+        }),
       );
     }
     run({ root, plugin, captured, entry: join(captured, "dist", "index.js") });

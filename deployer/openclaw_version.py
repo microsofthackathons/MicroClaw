@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-OPENCLAW_TARGET_VERSION = "2026.10.3"
+OPENCLAW_TARGET_VERSION = "2026.10.5"
 
 
 def packaged_openclaw_version(manifest_path: Path) -> str:

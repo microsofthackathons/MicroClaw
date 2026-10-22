@@ -79,7 +79,7 @@ describe("default model hot selection", () => {
     expect(f.request).not.toHaveBeenCalled();
   });
 
-  it.each(["2026.9.3", "2026.10.2", "2026.10.3"])(
+  it.each(["2026.9.3", "2026.10.2", "2026.10.3", "2026.10.5"])(
     "writes only the primary using CAS on %s without inference or restart",
     async (version) => {
       const f = fixture();

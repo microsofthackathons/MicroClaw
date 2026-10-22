@@ -1,4 +1,4 @@
-"""Verified state backups for the Windows 9.3 to 10.3 package-manager upgrade."""
+"""SHA-256 verified state backups for Windows package-manager upgrades."""
 
 import hashlib
 import json
@@ -17,9 +17,18 @@ from deployer.openclaw_upgrade import (
 )
 
 
+def _valid_upgrade_versions(source: object, target: object) -> bool:
+    if any(
+        not isinstance(version, str) or re.fullmatch(r"[0-9]{4}\.[0-9]+\.[0-9]+", version) is None
+        for version in (source, target)
+    ):
+        return False
+    return tuple(map(int, source.split("."))) < tuple(map(int, target.split(".")))
+
+
 @contextmanager
 def package_upgrade_lock(root: Path):
-    lock = _acquire_transaction_lock(root / "upgrade" / "openclaw-upgrade.lock", "npm-9.3-10.3")
+    lock = _acquire_transaction_lock(root / "upgrade" / "openclaw-upgrade.lock", "npm-upgrade")
     try:
         if _manifest_requires_recovery(root / "upgrade" / "openclaw-upgrade.json"):
             raise UpgradeRecoveryRequiredError(
@@ -56,8 +65,7 @@ class PackageManagerUpgrade:
         if not isinstance(data, dict) or data.get("schema") != 1:
             raise ValueError("Invalid package-manager upgrade record; keep it for recovery")
         if (
-            data.get("sourceVersion") != "2026.9.3"
-            or data.get("targetVersion") != "2026.10.3"
+            not _valid_upgrade_versions(data.get("sourceVersion"), data.get("targetVersion"))
             or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}", str(data.get("id"))) is None
             or data.get("phase")
             not in {
@@ -87,7 +95,11 @@ class PackageManagerUpgrade:
         return None if data["phase"] == "complete" else upgrade
 
     @classmethod
-    def create(cls, root: Path, prefix: Path) -> "PackageManagerUpgrade":
+    def create(
+        cls, root: Path, prefix: Path, *, source_version: str, target_version: str
+    ) -> "PackageManagerUpgrade":
+        if not _valid_upgrade_versions(source_version, target_version):
+            raise ValueError("Package replacement requires exact versions and a newer target")
         if prefix.resolve() not in trusted_openclaw_prefixes():
             raise ValueError("Package replacement requires a trusted OpenClaw npm prefix")
         upgrade = cls(
@@ -95,8 +107,8 @@ class PackageManagerUpgrade:
             {
                 "schema": 1,
                 "id": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8],
-                "sourceVersion": "2026.9.3",
-                "targetVersion": "2026.10.3",
+                "sourceVersion": source_version,
+                "targetVersion": target_version,
                 "prefix": str(prefix.resolve()),
                 "archiveSha256": None,
                 "packageReady": False,

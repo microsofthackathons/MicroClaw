@@ -257,7 +257,7 @@ describe("session model selection", () => {
     expect(f.sessions.size).toBe(0);
   });
 
-  it.each(["2026.9.3", "2026.10.2", "2026.10.3"])(
+  it.each(["2026.9.3", "2026.10.2", "2026.10.3", "2026.10.5"])(
     "selects a configured cloud model on %s with only an official metadata patch",
     async (version) => {
       const f = fixture();

@@ -126,7 +126,7 @@ test("staged source and JavaScript use only the retained 10.2 SDK subpaths", () 
   }
   const pkg = JSON.parse(fs.readFileSync(path.join(stageDir, "package.json"), "utf8"));
   assert.equal(pkg.peerDependencies.openclaw, ">=2026.10.2");
-  assert.equal(pkg.microclaw.sdkCompatibility, "2026.10.3");
+  assert.equal(pkg.microclaw.sdkCompatibility, "2026.10.5");
   assert.equal(pkg.engines.node, ">=24.16.0 <25 || >=26.1.0");
 });
 

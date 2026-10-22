@@ -41,7 +41,7 @@ Loaded via `NODE_OPTIONS="--require sandbox-preload.js"` into the Gateway proces
 | File | Purpose |
 |------|---------|
 | `sandbox-preload.js` | **Entry point** — external app whitelist (HMAC-verified), loads all modules, activates tool enforcement immediately |
-| `sandbox-host-runtime.js` | Version- and SHA256-pinned control-plane import bridge; exposes only read-only boot and process-creation identity probes |
+| `sandbox-host-runtime.js` | Canonical-path- and SHA256-verified control-plane import bridge; exposes only read-only boot and process-creation identity probes |
 | `sandbox-state.js` | Shared state: RO/RW directory lists, safe path detection, `isBlockedPath`/`isReadBlockedPath` |
 | `sandbox-permission.js` | Permission request logic: `shouldBlockWrite`/`shouldBlockRead`, sync IPC dialogs, TTL caches, async pending tracking |
 | `sandbox-sensitive.js` | **Sensitive path detection** — standalone module, single source of truth for protected directories (`.ssh`, `.gnupg`, `.aws`, `.azure`, `.config/gcloud`). Hard-denies access without IPC or dialogs. Does not depend on `sandbox-permission.js` or `sandbox-state.js` |
@@ -54,7 +54,7 @@ Loaded via `NODE_OPTIONS="--require sandbox-preload.js"` into the Gateway proces
 ### Activation Modes
 
 - **Gateway and workers**: Tool sandbox enforcement is active immediately, including before HTTP readiness. There is no startup bypass window.
-- **Trusted control plane**: Only the ten pinned OpenClaw 2026.10.3 bundles receive a restricted child-process adapter, after their canonical paths and loaded source hashes are verified. Their exact boot-identity query uses a fixed system PowerShell executable, arguments, environment, and timeout on the host. Process creation times use the read-only native Windows API, with a fixed PowerShell fallback accepting only a validated integer PID. Other commands still use the normal sandboxed child-process API. Agent/plugin imports never receive this adapter, even for the same query text.
+- **Trusted control plane**: Verified OpenClaw control-plane bundles receive a restricted child-process adapter based on their canonical paths and loaded source hashes, not the package version. There is no runtime version whitelist. Their exact boot-identity query uses a fixed system PowerShell executable, arguments, environment, and timeout on the host. Process creation times use the read-only native Windows API, with a fixed PowerShell fallback accepting only a validated integer PID. Unknown modules and other commands still use the normal sandboxed child-process API. Agent/plugin imports never receive this adapter, even for the same query text.
 - **Internal SQLite workers**: Existing canonical-path, argument, and state-directory checks continue to constrain their host-runtime access. This bridge does not grant a general shell exemption or change database access scope.
 
 OpenClaw's internal SQLite snapshot integration recognizes both the 2026.9.x

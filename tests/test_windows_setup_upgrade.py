@@ -1406,10 +1406,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             run.call_args.kwargs["env"]["OPENCLAW_STATE_DIR"],
             str(self.home / ".openclaw"),
         )
-        self.assertEqual(run.call_args.kwargs["env"]["MICROCLAW_WINDOWS_STATE_OWNER_COMPAT"], "1")
-        self.assertEqual(
-            run.call_args.kwargs["env"]["NODE_OPTIONS"], f'--import "{preload.as_uri()}"'
-        )
+        self.assertNotIn("MICROCLAW_WINDOWS_STATE_OWNER_COMPAT", run.call_args.kwargs["env"])
+        self.assertNotIn("NODE_OPTIONS", run.call_args.kwargs["env"])
 
     def test_same_version_desktop_update_does_not_migrate_unbacked_databases(self):
         prefix = self.appdata / "npm"
@@ -1453,7 +1451,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_migrate_openclaw_state_rejects_missing_compatibility_before_running_doctor(self):
         prefix = self.appdata / "npm"
-        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self._write_package(prefix, "2026.10.3")
         self.ws.install_prefix = prefix
         self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
         self.ws._get_env = unittest.mock.Mock(return_value={})
@@ -1466,7 +1464,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_state_owner_compatibility_preserves_environment_and_skips_other_versions(self):
         prefix = self.appdata / "npm"
-        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self._write_package(prefix, "2026.10.3")
         self.ws.install_prefix = prefix
         installation = self.ws._detect_openclaw_installation()
         preload = self.root / ".microclaw" / "resources" / "openclaw-state-owner-compat.mjs"
@@ -1482,10 +1480,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
         previous = SimpleNamespace(version="2026.10.2")
         self.assertIs(self.ws._with_state_owner_compatibility(env, previous), env)
+        current = SimpleNamespace(version=OPENCLAW_TARGET_VERSION)
+        self.assertIs(self.ws._with_state_owner_compatibility(env, current), env)
 
     def test_validation_gateway_loads_state_owner_compatibility(self):
         prefix = self.appdata / "npm"
-        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self._write_package(prefix, "2026.10.3")
         self.ws.install_prefix = prefix
         preload = self.root / ".microclaw" / "resources" / "openclaw-state-owner-compat.mjs"
         preload.parent.mkdir(parents=True)
@@ -1494,14 +1494,14 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._get_env = unittest.mock.Mock(return_value={})
         self.ws._load_openclaw_state_env = unittest.mock.Mock(return_value={})
         with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
-            self.ws._start_validation_gateway()
+            self.ws._start_validation_gateway(expected_version="2026.10.3")
         self.assertEqual(
             popen.call_args.kwargs["env"]["NODE_OPTIONS"], f'--import "{preload.as_uri()}"'
         )
 
     def test_frozen_state_owner_compatibility_does_not_depend_on_desktop_rollback(self):
         prefix = self.appdata / "npm"
-        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self._write_package(prefix, "2026.10.3")
         self.ws.install_prefix = prefix
         installation = self.ws._detect_openclaw_installation()
         bundle = self.root / "bundle"
@@ -2388,7 +2388,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._run.assert_called_once()
         self.assertEqual(
             self.ws._run.call_args.args[0],
-            ["openclaw.cmd", "plugins", "install", "@openclaw/parallel-plugin@2026.10.3"],
+            [
+                "openclaw.cmd",
+                "plugins",
+                "install",
+                f"@openclaw/parallel-plugin@{OPENCLAW_TARGET_VERSION}",
+            ],
         )
         self.assertEqual(
             self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
@@ -2571,7 +2576,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [
                 "plugins",
                 "install",
-                "clawhub:@openclaw/llama-cpp-provider@2026.9.3",
+                f"clawhub:@openclaw/llama-cpp-provider@{OPENCLAW_TARGET_VERSION}",
                 "--accept-capabilities",
             ],
         )

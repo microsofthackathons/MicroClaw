@@ -1,7 +1,7 @@
 ﻿# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
 param(
-    [ValidateSet('2026.9.3', '2026.10.3')]
-    [string]$OpenClawVersion = '2026.10.3'
+    [ValidateSet('2026.9.3', '2026.10.3', '2026.10.5')]
+    [string]$OpenClawVersion = '2026.10.5'
 )
 
 Set-StrictMode -Version Latest
@@ -77,7 +77,7 @@ if (-not $nodeFound) {
     Write-Host "  ERROR: supported node.exe not found in any of:" -ForegroundColor Red
     foreach ($candidate in $nodeCandidates) { Write-Host "    - $candidate" -ForegroundColor Red }
     Write-Host "    - PATH (Get-Command node.exe)" -ForegroundColor Red
-    Write-Host "  OpenClaw 2026.10.3 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
+    Write-Host "  OpenClaw 2026.10.5 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
     Write-Host "  Install Node.js 26 (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
     exit 1
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GatewayRequestError } from "./gateway-client";
@@ -11,6 +11,7 @@ import {
   validateLocalModelUrl,
   LOCAL_MODEL_DETECTION_TTL_MS,
   LOCAL_MODEL_APPLY_SETTLE_TIMEOUT_MS,
+  LOCAL_MODEL_PLUGIN_VERSION,
   buildLocalModelSelectionPatch,
   type LocalModelGateway,
 } from "./local-model-service";
@@ -196,6 +197,9 @@ function fixture(initialReceipt?: LocalModelReceipt) {
           return { status: "cancelled" };
         case "plugins.install":
         case "plugins.setEnabled":
+          if (method === "plugins.install") {
+            plugin.version = (params as { version?: string }).version ?? plugin.version;
+          }
           plugin = { ...plugin, installed: true, enabled: true };
           return { ok: true, restartRequired: true };
         default:
@@ -255,6 +259,15 @@ async function waitPhase(f: ReturnType<typeof fixture>, phase: LocalModelOperati
 }
 
 describe("local model protocol guards", () => {
+  it("keeps the installer and provider adapter on the reviewed default release", () => {
+    const installer = readFileSync(
+      path.join(__dirname, "../../deployer/openclaw_version.py"),
+      "utf8",
+    );
+    expect(installer).toContain(`OPENCLAW_TARGET_VERSION = "${LOCAL_MODEL_PLUGIN_VERSION}"`);
+    const adapter = readFileSync(path.join(__dirname, "openclaw-local-model-compat.mjs"), "utf8");
+    expect(adapter).toContain(`PINNED_LOCAL_PLUGIN_VERSION = "${LOCAL_MODEL_PLUGIN_VERSION}"`);
+  });
   it.each(LOCAL_MODEL_PRESETS.slice(2))(
     "requires consent for the exact $name download without changing defaults",
     async (model) => {
@@ -463,12 +476,21 @@ describe("local model protocol guards", () => {
     "2026.10.2+build.1",
     "2026.10.3",
     "2026.10.3+build.1",
+    "2026.10.5",
+    "2026.10.5+build.1",
   ])("accepts the verified Gateway release %s", (version) =>
     expect(supportsLocalModelGatewayVersion(version)).toBe(true),
   );
-  it.each(["2026.10.1", "2026.10.4", "2026.10.2-beta.1", "2026.10.3-beta.1", null])(
-    "does not broaden Gateway compatibility to %s",
-    (version) => expect(supportsLocalModelGatewayVersion(version)).toBe(false),
+  it.each([
+    "2026.10.1",
+    "2026.10.4",
+    "2026.10.6",
+    "2026.10.2-beta.1",
+    "2026.10.3-beta.1",
+    "2026.10.5-beta.1",
+    null,
+  ])("does not broaden Gateway compatibility to %s", (version) =>
+    expect(supportsLocalModelGatewayVersion(version)).toBe(false),
   );
   it("does not treat Gateway support as permission to replace the pinned provider", () => {
     expect(supportsLocalModelVersion("2026.10.2")).toBe(false);
@@ -796,51 +818,116 @@ describe("local model lifecycle", () => {
     expect(f.request).toHaveBeenCalledWith(
       "plugins.install",
       {
-        source: "official",
-        pluginId: "llama-cpp",
-        acknowledgeCapabilities: { reviewToken: "review-1" },
-      },
-      300_000,
-    );
-    expect(f.restartGateway).toHaveBeenCalledOnce();
-  });
-
-  it("uses a fixed release only after verifying the official ClawHub identity", async () => {
-    const f = fixture();
-    f.gateway.methods = [...METHODS, "plugins.search"];
-    const original = f.request.getMockImplementation()!;
-    f.request.mockImplementation(async (method, params, timeout) => {
-      if (method === "plugins.list") return { plugins: [], mutationAllowed: true };
-      if (method === "plugins.search")
-        return {
-          results: [
-            {
-              package: {
-                name: "@openclaw/llama-cpp-provider",
-                runtimeId: "llama-cpp",
-                isOfficial: true,
-                channel: "official",
-                family: "code-plugin",
-              },
-            },
-          ],
-        };
-      return original(method, params, timeout);
-    });
-    const review = await f.service.inspectProvider();
-    expect(review.version).toBe("2026.9.3");
-    expect(review.capabilities).toEqual({});
-    await f.service.installProvider({ confirmed: true });
-    expect(f.request).toHaveBeenCalledWith(
-      "plugins.install",
-      {
         source: "clawhub",
         packageName: "@openclaw/llama-cpp-provider",
         version: "2026.9.3",
       },
       300_000,
     );
+    expect(f.restartGateway).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ["2026.9.3", "2026.9.3"],
+    ["2026.10.3", "2026.9.3"],
+    ["2026.10.5", "2026.10.5"],
+    ["2026.10.5+build.1", "2026.10.5"],
+  ])(
+    "pins the official install for Gateway %s to provider %s",
+    async (gatewayVersion, pluginVersion) => {
+      const f = fixture();
+      f.gateway.serverVersion = gatewayVersion;
+      f.plugin({ installed: false, enabled: false });
+      const review = await f.service.inspectProvider();
+      expect(review.version).toBe(pluginVersion);
+      expect(review.source).toContain(`@${pluginVersion}`);
+      const result = await f.service.installProvider({ confirmed: true });
+      expect(result.supported).toBe(true);
+      expect(f.request).toHaveBeenCalledWith(
+        "plugins.install",
+        { source: "clawhub", packageName: "@openclaw/llama-cpp-provider", version: pluginVersion },
+        300_000,
+      );
+      expect(
+        f.request.mock.calls.some(
+          ([method, params]) =>
+            method === "plugins.install" && (params as { source: string }).source === "official",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects an installed provider from a different runtime release", async () => {
+    const f = fixture();
+    f.gateway.serverVersion = "2026.10.5";
+    const capabilities = await f.service.getCapabilities();
+    expect(capabilities.supported).toBe(false);
+    expect(capabilities.blockers.join(" ")).toContain("requires 2026.10.5");
+    await expect(f.service.installProvider({ confirmed: true })).rejects.toThrow(
+      "requires 2026.10.5",
+    );
+    expect(f.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
+  });
+
+  it("does not fall back to an unversioned install after a pinned install fails", async () => {
+    const f = fixture();
+    f.gateway.serverVersion = "2026.10.5";
+    f.plugin({ installed: false, enabled: false });
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params, timeout) => {
+      if (method === "plugins.install") throw new Error("Pinned release unavailable");
+      return original(method, params, timeout);
+    });
+    await expect(f.service.installProvider({ confirmed: true })).rejects.toThrow(
+      "Pinned release unavailable",
+    );
+    expect(f.request.mock.calls.filter(([method]) => method === "plugins.install")).toHaveLength(1);
+    expect(f.restartGateway).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["2026.10.3", "2026.9.3"],
+    ["2026.10.5", "2026.10.5"],
+  ])(
+    "pins the ClawHub fallback for Gateway %s to provider %s",
+    async (gatewayVersion, pluginVersion) => {
+      const f = fixture();
+      f.gateway.serverVersion = gatewayVersion;
+      f.gateway.methods = [...METHODS, "plugins.search"];
+      const original = f.request.getMockImplementation()!;
+      f.request.mockImplementation(async (method, params, timeout) => {
+        if (method === "plugins.list") return { plugins: [], mutationAllowed: true };
+        if (method === "plugins.search")
+          return {
+            results: [
+              {
+                package: {
+                  name: "@openclaw/llama-cpp-provider",
+                  runtimeId: "llama-cpp",
+                  isOfficial: true,
+                  channel: "official",
+                  family: "code-plugin",
+                },
+              },
+            ],
+          };
+        return original(method, params, timeout);
+      });
+      const review = await f.service.inspectProvider();
+      expect(review.version).toBe(pluginVersion);
+      expect(review.capabilities).toEqual({});
+      await f.service.installProvider({ confirmed: true });
+      expect(f.request).toHaveBeenCalledWith(
+        "plugins.install",
+        {
+          source: "clawhub",
+          packageName: "@openclaw/llama-cpp-provider",
+          version: pluginVersion,
+        },
+        300_000,
+      );
+    },
+  );
 
   it("requires a fresh review rather than silently acknowledging new capabilities", async () => {
     const f = fixture();

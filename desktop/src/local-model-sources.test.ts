@@ -20,6 +20,7 @@ import * as compatibility from "./openclaw-local-model-compat.mjs";
 const {
   MICROCLAW_LOCAL_MODEL_SOURCES,
   PINNED_LOCAL_CONFIG_FILE,
+  PINNED_LOCAL_PLUGIN_VERSION,
   MODEL_SCOPE_RECIPES,
   modelScopeModelUrl,
   modelScopeArtifact,
@@ -173,7 +174,7 @@ describe.skipIf(!directory)("real pinned provider ModelScope adapter", () => {
       "os",
       "resolveStateDir",
       "normalizeOptionalString",
-      `${executable}; return { resolveLlamaCppModelSource, resolveCachedLlamaCppModelPath, resolveLlamaCppEmbeddingModel, buildDefaultLlamaCppModel };`,
+      `${executable}; return { resolveLlamaCppModelSource, resolveCachedLlamaCppModelPath, resolveLlamaCppEmbeddingModel, buildLlamaCppProviderConfig };`,
     )(
       path,
       { homedir: () => path.join(tmpdir(), "modelscope-home") },
@@ -202,7 +203,7 @@ describe.skipIf(!directory)("real pinned provider ModelScope adapter", () => {
       source: local,
       isDefault: false,
     });
-    expect(api.buildDefaultLlamaCppModel()).toMatchObject({
+    expect(api.buildLlamaCppProviderConfig().models[0]).toMatchObject({
       id: "qwen3.5-4b-q4_k_m",
       params: { modelPath: modelScopeModelUrl(LOCAL_MODEL_PRESETS[0]) },
     });
@@ -235,8 +236,10 @@ describe.skipIf(!directory)("real pinned provider ModelScope adapter", () => {
       "resolveModelScopeSource",
       "resolvedModelArtifacts",
       "resolveModelArtifact",
+      "resolveCachedModelArtifact",
       "modelPromises",
       "sha256File",
+      "sha256File$1",
       "assertGguf",
       "downloadVerifiedFile",
       `${section(entry, "async function ensureLlamaCppModel(", "async function writePreset(")}; return ensureLlamaCppModel;`,
@@ -247,7 +250,9 @@ describe.skipIf(!directory)("real pinned provider ModelScope adapter", () => {
       resolveModelScopeSource,
       new Map(),
       async () => artifact,
+      async () => artifact,
       new Map(),
+      verify,
       verify,
       vi.fn(),
       download,
@@ -286,10 +291,15 @@ describe.skipIf(!directory)("real pinned provider ModelScope adapter", () => {
     const original = readFileSync(path.join(directory!, "dist", PINNED_LOCAL_CONFIG_FILE), "utf8");
     try {
       for (const folder of [plugin, captured]) {
-        mkdirSync(path.join(folder, "dist"), { recursive: true });
+        mkdirSync(path.dirname(path.join(folder, "dist", PINNED_LOCAL_CONFIG_FILE)), {
+          recursive: true,
+        });
         writeFileSync(
           path.join(folder, "package.json"),
-          JSON.stringify({ name: "@openclaw/llama-cpp-provider", version: "2026.9.3" }),
+          JSON.stringify({
+            name: "@openclaw/llama-cpp-provider",
+            version: PINNED_LOCAL_PLUGIN_VERSION,
+          }),
         );
         writeFileSync(path.join(folder, "dist", PINNED_LOCAL_CONFIG_FILE), original);
       }
@@ -404,8 +414,15 @@ describe.skipIf(!runtimeDirectory)("installed OpenClaw redirect guard", () => {
     "modelscope.cn.evil.example",
     "cdn-lfs-cn-1.modelscope.cn",
   ])("checks each redirect before requesting %s", async (host) => {
+    const { version } = JSON.parse(
+      readFileSync(path.join(runtimeDirectory!, "package.json"), "utf8"),
+    );
     const moduleUrl = pathToFileURL(
-      path.join(runtimeDirectory!, "dist", "fetch-guard-DL1_8oHh.mjs"),
+      path.join(
+        runtimeDirectory!,
+        "dist",
+        version === "2026.10.5" ? "fetch-guard-B3ufgyRR.mjs" : "fetch-guard-DL1_8oHh.mjs",
+      ),
     ).href;
     const { i: guardedFetch } = await import(moduleUrl);
     const fetchImpl = vi

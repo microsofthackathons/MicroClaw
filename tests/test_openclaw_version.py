@@ -13,7 +13,7 @@ from deployer.openclaw_version import (
 
 class OpenClawVersionTests(unittest.TestCase):
     def test_target_version(self) -> None:
-        self.assertEqual(OPENCLAW_TARGET_VERSION, "2026.10.3")
+        self.assertEqual(OPENCLAW_TARGET_VERSION, "2026.10.5")
         self.assertEqual(NODE_ENGINE_RANGE, ">=24.16.0 <25 || >=26.1.0")
 
     def test_unsupported_node_lines(self) -> None:
@@ -77,7 +77,7 @@ class OpenClawVersionTests(unittest.TestCase):
         self.assertTrue(is_supported_node_version(NODE_FALLBACK_VERSION))
 
     def test_extract_openclaw_version(self) -> None:
-        for version in ("2026.7.1-1", "2026.9.3", "2026.10.2", "2026.10.3"):
+        for version in ("2026.7.1-1", "2026.9.3", "2026.10.2", "2026.10.3", "2026.10.5"):
             with self.subTest(version=version):
                 output = f"""
                 npm list -g openclaw --depth=0
