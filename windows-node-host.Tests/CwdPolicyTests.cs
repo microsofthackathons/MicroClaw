@@ -6,6 +6,8 @@ using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Security.AccessControl;
+using OpenClaw.Shared.Mxc;
 using Xunit;
 
 namespace MicroClaw.WindowsNodeHost.Tests;
@@ -14,7 +16,9 @@ public sealed class CwdPolicyTests : IDisposable
 {
     private static readonly Func<CancellationToken, Task> NoopIsolationGuard =
         _ => Task.CompletedTask;
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "microclaw-cwd-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly string _root = Path.Combine(
+        Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_SCRATCH") ?? Path.GetTempPath(),
+        "microclaw-cwd-tests-" + Guid.NewGuid().ToString("N"));
 
     public CwdPolicyTests()
     {
@@ -185,6 +189,260 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(Directory.Exists(replacement));
     }
 
+    public static bool NativeMxcAvailable =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")) &&
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_SCRATCH"));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PowerShellFilesystemScopePreservesLiteralOperationBeforePreparation(bool nested)
+    {
+        var operation = @"Remove-Item -Path 'C:\workspace\folder' -Recurse -Force";
+        var payload = nested ? $"powershell -NoProfile -Command \"{operation}\"" : operation;
+        string[] argv = [@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", payload];
+        DeclaredAccess[] access = [new("rw", @"C:\workspace")];
+        var initialized = PowerShellFilesystemScope.Create(argv, access);
+        Assert.NotNull(initialized);
+        Assert.Equal(nested ? "nested" : "direct", initialized.Form);
+        Assert.Equal(payload, initialized.OriginalArgv[^1]);
+        Assert.Equal(argv[..^1], initialized.FinalArgv.Take(argv.Length - 1));
+        Assert.Equal(PowerShellFilesystemScope.Preview(access, payload), initialized.OriginalCommandPreview);
+        Assert.Equal(nested
+            ? $"powershell -NoProfile -Command \"{PowerShellFilesystemScope.Initializer}{operation}\""
+            : PowerShellFilesystemScope.Initializer + operation, initialized.FinalArgv[^1]);
+        argv[^1] = "changed source";
+        Assert.Equal(payload, initialized.OriginalArgv[^1]);
+        Assert.DoesNotContain('$', PowerShellFilesystemScope.Initializer);
+        Assert.DoesNotContain('\n', PowerShellFilesystemScope.Initializer);
+    }
+
+    [Theory]
+    [InlineData("New-Item -ItemType Directory -Path '.\\relative' -Force")]
+    [InlineData("New-Item -ItemType Directory -Path 'C:\\workspace\\..\\outside' -Force")]
+    [InlineData("New-Item -ItemType Directory -Path 'C:\\workspace\\folder'; Write-Output secret")]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\*' -Recurse")]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\folder' -Path 'C:\\workspace\\other'")]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\folder' -ErrorAction SilentlyContinue")]
+    [InlineData("powershell -NoProfile -EncodedCommand ZmFrZQ==")]
+    [InlineData("powershell -NoProfile -File C:\\workspace\\script.ps1")]
+    [InlineData("powershell -Command \"Remove-Item -Path 'C:\\workspace\\folder'\"")]
+    [InlineData("$target='C:\\workspace\\folder'; Remove-Item $target")]
+    [InlineData("Get-Date")]
+    public void PowerShellFilesystemScopeDoesNotRewriteUnsupportedForms(string payload)
+    {
+        string[] argv = ["powershell.exe", "-NoProfile", "-Command", payload];
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", @"C:\workspace")]));
+    }
+
+    [Fact]
+    public void PowerShellFilesystemScopeReconstructsExactPreparedMetadataAndRejectsTampering()
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "scope-grant")).FullName;
+        var operation = $"New-Item -ItemType Directory -Path '{grant}\\child' -Force";
+        string[] argv = ["powershell.exe", "-NoProfile", "-Command", operation];
+        DeclaredAccess[] access = [new("rw", grant)];
+        var initialization = PowerShellFilesystemScope.Create(argv, access)!;
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [new ApprovedRoot(grant, FolderAccess.ReadWrite)],
+            DeniedRoots = [], Canvas = Policy([]).Canvas,
+            WxcExecPath = Policy([]).WxcExecPath,
+            RequestedStrength = "limited-dacl", EffectiveTier = "appcontainer-dacl",
+        };
+        var preview = PowerShellFilesystemScope.Preview(access, initialization.FinalArgv[^1]);
+        var result = PowerShellFilesystemScope.Validate(
+            JsonSerializer.SerializeToElement(initialization), initialization.FinalArgv, preview, policy);
+        Assert.Equal(initialization.FinalArgv, result.Initialization.FinalArgv);
+        foreach (var changed in new[]
+        {
+            initialization with { Contract = "unknown" },
+            initialization with { Form = "encoded" },
+            initialization with { OriginalCommandPreview = initialization.OriginalCommandPreview + " " },
+            initialization with { OriginalArgv = ["powershell.exe", "-NoProfile", "-Command", "Get-Date"] },
+            initialization with { FinalArgv = argv },
+        })
+            Assert.Throws<HostPolicyException>(() => PowerShellFilesystemScope.Validate(
+                JsonSerializer.SerializeToElement(changed), initialization.FinalArgv, preview, policy));
+        Assert.Throws<HostPolicyException>(() => PowerShellFilesystemScope.Validate(
+            JsonSerializer.SerializeToElement(initialization), argv, preview, policy));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("ro", grant)]));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", Path.Combine(grant, "different"))]));
+    }
+
+    public static bool NativeApprovalBridgeAvailable => NativeMxcAvailable &&
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE"));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PowerShellFilesystemScopeRejectsTargetReparseAtPrepareOrRevalidation(bool replaceAfterPrepare)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "reparse-grant")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "ungranted")).FullName;
+        var target = Path.Combine(grant, "child");
+        DeclaredAccess[] access = [new("rw", grant)];
+        var initialization = PowerShellFilesystemScope.Create(
+            ["powershell.exe", "-NoProfile", "-Command", $"Remove-Item -LiteralPath '{target}' -Recurse"], access)!;
+        if (replaceAfterPrepare)
+        {
+            Directory.CreateDirectory(target);
+            PowerShellFilesystemScope.ValidateTarget(initialization, access);
+            Directory.Delete(target);
+        }
+        Directory.CreateSymbolicLink(target, outside);
+        try
+        {
+            var error = Assert.Throws<HostPolicyException>(() =>
+                PowerShellFilesystemScope.ValidateTarget(initialization, access));
+            Assert.Equal("powershell-initialization-target-reparse", error.Code);
+            Assert.True(Directory.Exists(outside));
+        }
+        finally { Directory.Delete(target); }
+    }
+
+    [Fact]
+    public void PowerShellFilesystemScopeAllowsMissingCreationTailButNotReadOnlyOrSiblingAccess()
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "literal-grant")).FullName;
+        DeclaredAccess[] access = [new("rw", grant)];
+        string[] argv = ["powershell.exe", "-NoProfile", "-Command",
+            $"New-Item -ItemType Directory -Path '{grant}\\missing\\child' -Force"];
+        var initialization = PowerShellFilesystemScope.Create(argv, access)!;
+        PowerShellFilesystemScope.ValidateTarget(initialization, access);
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("ro", grant)]));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", Path.Combine(_root, "sibling"))]));
+    }
+
+    [Fact(SkipUnless = nameof(NativeApprovalBridgeAvailable), Skip = "Requires the isolated Node approval bridge.")]
+    public async Task PowerShellFilesystemScopeNativeApprovalBridge()
+    {
+        var bridge = Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE")!;
+        var runtime = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!;
+        var proofSecret = Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE_SECRET")!;
+        Environment.SetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE_SECRET", null);
+        const string generation = "test-generation";
+        var fingerprint = new string('b', 64);
+        var nodeId = new string('c', 64);
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "operation-root")).FullName;
+        var cwd = Directory.CreateDirectory(Path.Combine(_root, "canonical-cwd")).FullName;
+        var state = Directory.CreateDirectory(Path.Combine(_root, "sdk-state")).FullName;
+        var ancestors = new Dictionary<string, string>();
+        for (var directory = Directory.GetParent(_root); directory is not null; directory = directory.Parent)
+            ancestors[directory.FullName] = Convert.ToHexString(SHA256.HashData(
+                directory.GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorBinaryForm()));
+        using var environment = ProcessEnvironmentOverride.Apply(new Dictionary<string, string> { ["MXC_DACL_STATE_DIR"] = state });
+        var leasePath = Path.Combine(_root, "test-lease.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        await WriteActivationLease(leasePath, leaseSecret, ActivationLeaseMode.Active,
+            generation, fingerprint, DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeMilliseconds());
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [new ApprovedRoot(grant, FolderAccess.ReadWrite), new ApprovedRoot(cwd, FolderAccess.ReadWrite)],
+            DeniedRoots = [], Canvas = Policy([]).Canvas, WxcExecPath = runtime,
+            RequestedStrength = "limited-dacl", EffectiveTier = "appcontainer-dacl", NetworkAllowed = false,
+        };
+        var capability = new BundledSystemCapability(policy, "unused-test-approval-pipe",
+            Path.Combine(_root, "test-approvals.json"),
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            approvalProof: new ApprovalProofVerifier(proofSecret, generation, fingerprint, nodeId),
+            isolationGuard: NoopIsolationGuard, ambientGuard: NoopIsolationGuard);
+        async Task Write(string file, object value)
+        {
+            var destination = Path.Combine(bridge, file);
+            await File.WriteAllTextAsync(destination + ".pending", JsonSerializer.Serialize(value),
+                TestContext.Current.CancellationToken);
+            File.Move(destination + ".pending", destination, overwrite: true);
+        }
+        async Task<JsonElement> Read(string file)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            var path = Path.Combine(bridge, file);
+            while (!File.Exists(path) && DateTime.UtcNow < deadline)
+            {
+                if (File.Exists(Path.Combine(bridge, "abort"))) throw new OperationCanceledException("Node bridge aborted");
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+            Assert.True(File.Exists(path), "Node bridge deadline elapsed");
+            return Parse(await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+        }
+        var results = new List<object>();
+        try
+        {
+            await Write("ready.json", new { grant, cwd, nodeId, generation, fingerprint });
+            for (var step = 0; step < 8; step++)
+            {
+                var input = await Read($"{step}.input.json");
+                var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+                {
+                    Command = "system.run.prepare", Args = input,
+                }, TestContext.Current.CancellationToken);
+                Assert.True(prepared.Ok, prepared.Error);
+                var preparedPayload = JsonSerializer.SerializeToElement(prepared.Payload);
+                var plan = preparedPayload.GetProperty("plan");
+                Assert.True(plan.TryGetProperty("providerInitialization", out _));
+                Assert.NotEqual(grant, plan.GetProperty("cwdBinding").GetString());
+                await Write($"{step}.prepared.json", prepared.Payload!);
+                var approved = await Read($"{step}.approved.json");
+                foreach (var mutation in new[] { "missing", "partial", "source", "argv" })
+                {
+                    var changed = System.Text.Json.Nodes.JsonNode.Parse(approved.GetRawText())!;
+                    var changedPlan = changed["systemRunPlan"]!;
+                    if (mutation == "missing") changedPlan.AsObject().Remove("providerInitialization");
+                    else if (mutation == "partial") changedPlan["providerInitialization"]!.AsObject().Remove("form");
+                    else if (mutation == "source") changedPlan["providerInitialization"]!["originalArgv"]![5] = "Get-Date";
+                    else changed["command"]![5] = changed["command"]![5]!.GetValue<string>() + "; Get-Date";
+                    var rejected = await capability.ExecuteAsync(new NodeInvokeRequest
+                    {
+                        Command = "system.run", Args = JsonSerializer.SerializeToElement(changed),
+                    }, TestContext.Current.CancellationToken);
+                    AssertRejectedBeforeExecution(rejected, mutation == "missing"
+                        ? "powershell-initialization-metadata-required" : "powershell-initialization-invalid");
+                }
+                var response = await capability.ExecuteAsync(new NodeInvokeRequest
+                {
+                    Command = "system.run", Args = approved,
+                }, TestContext.Current.CancellationToken);
+                Assert.True(response.Ok, response.Error);
+                var payload = JsonSerializer.SerializeToElement(response.Payload);
+                var expectedExit = step % 4 is 1 or 3 ? 1 : 0;
+                Assert.Equal(expectedExit, payload.GetProperty("exitCode").GetInt32());
+                Assert.Equal(expectedExit == 0, payload.GetProperty("success").GetBoolean());
+                var stdout = payload.GetProperty("stdout").GetString()!;
+                var stderr = payload.GetProperty("stderr").GetString()!;
+                Assert.DoesNotContain("MC_NATIVE_PROBE", stdout);
+                Assert.DoesNotContain("MicroClawCwd", stdout);
+                if (expectedExit != 0) Assert.NotEmpty(stderr);
+                if (step % 4 == 2) Assert.Empty(stdout);
+                var target = Path.Combine(grant, step < 4 ? "direct-child" : "nested-child");
+                Assert.Equal(step % 4 is 0 or 1, Directory.Exists(target));
+                var replay = await capability.ExecuteAsync(new NodeInvokeRequest
+                {
+                    Command = "system.run", Args = approved,
+                }, TestContext.Current.CancellationToken);
+                AssertRejectedBeforeExecution(replay, "approval-proof-replayed");
+                await Write($"{step}.result.json", response.Payload!);
+                results.Add(new { step, exitCode = expectedExit, success = expectedExit == 0,
+                    mutationRejects = 4, replayRejected = true, explicitCwdDistinctFromGrant = true,
+                    planSha256 = approved.GetProperty("microclawApprovalProof").GetProperty("planSha256").GetString() });
+            }
+        }
+        finally
+        {
+            var after = ancestors.Select(entry => new
+            {
+                pathHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(entry.Key))),
+                unchanged = entry.Value == Convert.ToHexString(SHA256.HashData(
+                    new DirectoryInfo(entry.Key).GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorBinaryForm())),
+            }).ToArray();
+            var privateStateEmpty = !Directory.EnumerateFiles(state, "*", SearchOption.AllDirectories).Any();
+            await Write("evidence.json", new { results, ancestors = after, privateStateEmpty });
+            Assert.All(after, entry => Assert.True(entry.unchanged));
+            Assert.True(privateStateEmpty);
+        }
+    }
+
     [Fact]
     public void DurableApprovalBindsExecutableArgsAndCwd()
     {
@@ -212,6 +470,7 @@ public sealed class CwdPolicyTests : IDisposable
             first,
             readAccess));
     }
+
 
     [Fact]
     public void ApprovalIdentityDetectsExecutableReplacement()

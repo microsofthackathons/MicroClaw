@@ -1,6 +1,11 @@
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { readAgentRoster } from "./agent-roster";
+import {
+  POWERSHELL_FILESYSTEM_SCOPE_MARKER,
+  validatePowerShellFilesystemInitialization,
+  type PowerShellFilesystemInitialization,
+} from "./windows-node-mxc-powershell-scope";
 
 export const WINDOWS_NODE_MXC_MODE = "windows-node-mxc";
 export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
@@ -149,6 +154,7 @@ export interface WindowsNodeMxcGatewayApproval {
   }>;
   hasMutableFileOperand: boolean;
   allowedDecisions: WindowsNodeMxcApprovalDecision[];
+  providerInitialization?: PowerShellFilesystemInitialization;
 }
 
 const DECLARED_ACCESS_TAG_PATTERN = /\[declare-access\]([\s\S]*?)\[\/declare-access\]/i;
@@ -259,6 +265,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   payload: unknown,
   selectedNodeId: string,
   gatewayGeneration?: string,
+  requestedMode?: string,
 ): WindowsNodeMxcGatewayApproval | null {
   const envelope = asRecord(payload);
   const request = asRecord(envelope.request);
@@ -268,8 +275,19 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const host = typeof request.host === "string" ? request.host : "";
   const nodeId = typeof request.nodeId === "string" ? request.nodeId : "";
   const argv = plan.argv;
-  const commandText = typeof plan.commandText === "string" ? plan.commandText.trim() : "";
-  const commandPreview = typeof plan.commandPreview === "string" ? plan.commandPreview.trim() : "";
+  const hasInitialization = Object.hasOwn(plan, "providerInitialization");
+  const commandText =
+    typeof plan.commandText === "string"
+      ? hasInitialization
+        ? plan.commandText
+        : plan.commandText.trim()
+      : "";
+  const commandPreview =
+    typeof plan.commandPreview === "string"
+      ? hasInitialization
+        ? plan.commandPreview
+        : plan.commandPreview.trim()
+      : "";
   const executablePath = typeof plan.executablePath === "string" ? plan.executablePath.trim() : "";
   const executableSha256 =
     typeof plan.executableSha256 === "string" ? plan.executableSha256.toLowerCase() : "";
@@ -315,6 +333,22 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   ) {
     return null;
   }
+  const providerInitialization =
+    hasInitialization && requestedMode === "limited-dacl"
+      ? validatePowerShellFilesystemInitialization(
+          plan.providerInitialization,
+          argv,
+          executablePath,
+          declaredAccess,
+          commandPreview,
+        )
+      : null;
+  if (
+    (hasInitialization && !providerInitialization) ||
+    (!hasInitialization &&
+      argv.some((argument) => argument.includes(POWERSHELL_FILESYSTEM_SCOPE_MARKER)))
+  )
+    return null;
 
   const advertised = Array.isArray(envelope.allowedDecisions)
     ? envelope.allowedDecisions
@@ -380,6 +414,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     declaredAccess,
     hasMutableFileOperand,
     allowedDecisions: [...new Set(allowed)],
+    ...(providerInitialization ? { providerInitialization } : {}),
   };
 }
 

@@ -92,7 +92,7 @@ internal sealed class BundledSystemCapability(
         try
         {
             await EnsureFilesystemIsolationAsync(cancellationToken);
-            var run = ParseRun(request.Args);
+            var run = PowerShellFilesystemScope.Prepare(ParseRun(request.Args), policy);
             var cwd = policy.ResolveCwd(run.Cwd);
             var commandText = WindowsCommandLine.Join(run.Argv);
             var commandPreview = BuildApprovalCommandPreview(run, commandText);
@@ -135,19 +135,11 @@ internal sealed class BundledSystemCapability(
             return new
             {
                 cmdText = commandText,
-                plan = new
-                {
-                    argv = run.Argv,
-                    cwd = string.IsNullOrEmpty(cwd.LaunchPath) ? null : cwd.LaunchPath,
-                    commandText,
-                    commandPreview,
-                    agentId = run.AgentId,
-                    sessionKey = run.SessionKey,
-                    executablePath = executableIdentity.ExecutablePath,
-                    executableSha256 = executableIdentity.ExecutableSha256,
-                    cwdBinding = cwd.ApprovalBinding,
-                    declaredAccess = run.DeclaredAccess,
-                },
+                plan = new PreparedSystemRunPlan(
+                    run.Argv, string.IsNullOrEmpty(cwd.LaunchPath) ? null : cwd.LaunchPath,
+                    commandText, commandPreview, run.AgentId, run.SessionKey,
+                    executableIdentity.ExecutablePath, executableIdentity.ExecutableSha256,
+                    cwd.ApprovalBinding, run.DeclaredAccess, run.ProviderInitialization),
                 cwdBinding = cwd.ApprovalBinding,
                 cwdAccess = cwd.Access.ToString(),
                 matchedRoot = cwd.MatchedRoot,
@@ -163,6 +155,7 @@ internal sealed class BundledSystemCapability(
 
     private static string? BuildApprovalCommandPreview(RunRequest run, string commandText)
     {
+        if (run.ProviderInitialization is not null) return run.CommandPreview;
         if (run.DeclaredAccess.Count == 0)
             return string.Equals(run.CommandPreview, commandText, StringComparison.Ordinal)
                 ? null
@@ -271,7 +264,8 @@ internal sealed class BundledSystemCapability(
                     exactArgs,
                     request.AgentId,
                     cwd.ApprovalBinding,
-                    request.DeclaredAccess),
+                    request.DeclaredAccess,
+                    request.ProviderInitialization),
                 cancellationToken);
             if (decision is ApprovalDecision.Deny)
                 return RejectedBeforeExecution(
@@ -368,7 +362,10 @@ internal sealed class BundledSystemCapability(
                     "approval-changed-before-launch",
                     "The executable, arguments, CWD, or declared access changed at process launch.");
             if (validatedApproval is not null)
+            {
+                PowerShellFilesystemScope.ValidateTarget(request.ProviderInitialization, request.DeclaredAccess);
                 approvalProof!.Revalidate(validatedApproval);
+            }
             if (validatedReadiness is not null)
             {
                 readinessProof!.Revalidate(validatedReadiness);
@@ -533,6 +530,21 @@ internal sealed class BundledSystemCapability(
                 ? rawCommandElement.GetString()
                 : null;
         var commandPreview = GetSystemRunPlanCommandPreview(args) ?? rawCommand;
+        if (args.TryGetProperty("systemRunPlan", out var initializedPlan) &&
+            initializedPlan.ValueKind == JsonValueKind.Object &&
+            initializedPlan.TryGetProperty("providerInitialization", out var initialization))
+        {
+            var verified = PowerShellFilesystemScope.Validate(initialization, argv, commandPreview, policy);
+            ValidatePreparedPlanBinding(args, argv, rawCommand);
+            if (rawCommand != WindowsCommandLine.Join(argv))
+                throw new HostPolicyException("powershell-initialization-invalid",
+                    "The initialized command text does not match the exact prepared argv.");
+            return new RunRequest(argv, cwd, timeout, agentId, sessionKey, rawCommand,
+                commandPreview, verified.Access, verified.Initialization);
+        }
+        if (PowerShellFilesystemScope.ContainsMarker(argv))
+            throw new HostPolicyException("powershell-initialization-metadata-required",
+                "The PowerShell filesystem initializer requires its complete prepared plan.");
         var declaredAccess = DeclaredAccessParser.ParseAndValidate(commandPreview, policy);
         var executableArgv = argv;
         var executableRawCommand = rawCommand;
@@ -702,7 +714,8 @@ internal sealed class BundledSystemCapability(
         string? SessionKey,
         string? RawCommand,
         string? CommandPreview,
-        IReadOnlyList<DeclaredAccess> DeclaredAccess);
+        IReadOnlyList<DeclaredAccess> DeclaredAccess,
+        PowerShellFilesystemInitialization? ProviderInitialization = null);
 }
 
 internal sealed record DeclaredAccess(
@@ -846,7 +859,10 @@ internal sealed record ApprovalRequest(
     [property: JsonPropertyName("arguments")] IReadOnlyList<string> Arguments,
     [property: JsonPropertyName("agent")] string? Agent,
     [property: JsonPropertyName("canonicalCwd")] string CanonicalCwd,
-    [property: JsonPropertyName("declaredAccess")] IReadOnlyList<DeclaredAccess> DeclaredAccess);
+    [property: JsonPropertyName("declaredAccess")] IReadOnlyList<DeclaredAccess> DeclaredAccess,
+    [property: JsonPropertyName("providerInitialization")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    PowerShellFilesystemInitialization? ProviderInitialization = null);
 
 internal static class ApprovalPipeClient
 {

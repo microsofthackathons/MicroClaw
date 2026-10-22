@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import { classifyLiteralFilesystemCommand } from "./windows-node-mxc-literal-filesystem-command";
+import { originalPowerShellFilesystemApproval } from "./windows-node-mxc-powershell-scope";
 import {
   normalizeWeixinProviderInteger,
   isLaterWeixinProviderCursor,
@@ -384,6 +385,9 @@ function securityBindingHash(
         agent: approval.agent,
         sessionKey: approval.sessionKey,
         origin: approval.origin ?? null,
+        ...(approval.providerInitialization
+          ? { providerInitialization: approval.providerInitialization }
+          : {}),
         hasMutableFileOperand: approval.hasMutableFileOperand,
         allowedDecisions: approval.allowedDecisions,
       })),
@@ -525,14 +529,16 @@ function exactWindowsCommand(values: string[]): string {
 function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayApproval): boolean {
   const canonicalCwdIsSafe =
     approval.canonicalCwd === "isolated-scratch:v1" || isSafeWindowsPath(approval.canonicalCwd);
+  const original = originalPowerShellFilesystemApproval(approval);
   return (
+    original !== null &&
     (isSafeRelativeFile(approval.executable) || isSafeWindowsPath(approval.executable)) &&
     isSafeWindowsPath(approval.executablePath) &&
     canonicalCwdIsSafe &&
     SAFE_STRUCTURAL_ID_PATTERN.test(approval.sessionKey) &&
     (approval.agent === null || SAFE_STRUCTURAL_ID_PATTERN.test(approval.agent)) &&
     (argumentsCanBeSafelyRendered(approval.arguments) ||
-      (classifyLiteralFilesystemCommand(approval) !== null &&
+      (classifyLiteralFilesystemCommand(original) !== null &&
         !approval.arguments.some(hasSensitiveSemantics))) &&
     approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
     approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path))
@@ -598,6 +604,11 @@ export function renderWeixinRemoteApprovalPrompt(params: {
             `SHA-256: ${approval.executableSha256}`,
             ...renderExactField("参数", renderExactArguments(approval.arguments)),
             ...renderExactField("工作目录", exactPromptValue(approval.canonicalCwd)),
+            ...(approval.providerInitialization
+              ? [
+                  "PowerShell 文件系统作用域：逻辑 $PWD 为 MicroClawCwd:\\；物理工作目录如上。所示命令包含精确初始化，不增加文件权限。",
+                ]
+              : []),
             ...renderExactField("文件访问", renderExactDeclarations(approval.declaredAccess)),
             ...renderExactField(
               "代理/会话",
@@ -627,6 +638,11 @@ export function renderWeixinRemoteApprovalPrompt(params: {
             `SHA-256: ${approval.executableSha256}`,
             ...renderExactField("Args", renderExactArguments(approval.arguments)),
             ...renderExactField("CWD", exactPromptValue(approval.canonicalCwd)),
+            ...(approval.providerInitialization
+              ? [
+                  "PowerShell filesystem scope: logical $PWD is MicroClawCwd:\\; physical CWD as shown. Exact initialization is included above; no extra file access.",
+                ]
+              : []),
             ...renderExactField("File access", renderExactDeclarations(approval.declaredAccess)),
             ...renderExactField(
               "Agent/session",
@@ -795,6 +811,12 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       return reject("source-metadata-invalid");
     }
     if (!SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode))
+      return reject("security-binding-invalid");
+    if (
+      input.requests.some(({ approval }) => approval.providerInitialization) &&
+      (input.security.requestedMode !== "limited-dacl" ||
+        input.security.effectiveMode !== "appcontainer-dacl")
+    )
       return reject("security-binding-invalid");
     const approvalIds = input.requests.map(({ approval }) => approval.id);
     if (!approvalIds.length || new Set(approvalIds).size !== approvalIds.length)

@@ -1059,6 +1059,8 @@ export default {
     "额外文件夹授权是叠加式授权，并非排他允许列表。对话范围授权仅记住此确切可执行文件、参数、工作目录、声明访问、智能体和对话。",
   "perm.mxcLimitedScopeOnce":
     "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表。",
+  "perm.mxcPowerShellScope":
+    "PowerShell 的逻辑 $PWD 为 MicroClawCwd:\\，物理工作目录如上。此命令包含精确初始化，不增加文件访问权限。",
   "perm.riskRead": "低风险：智能体只能查看该文件夹中的文件。",
   "perm.riskWrite": "中风险：智能体可以在该文件夹中创建或修改文件。",
   "perm.riskCommandRO": "中风险：允许前请确认该命令符合当前任务。",

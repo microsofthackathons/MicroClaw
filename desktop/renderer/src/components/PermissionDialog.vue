@@ -19,6 +19,7 @@ interface PermissionRequest {
   accessNeeded?: string;
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
   containmentStrength?: "full" | "limited-dacl";
   ambientAccess?: Array<{
     category: WindowsNodeMxcAmbientAccessCategory;
@@ -253,6 +254,16 @@ function respond(decision: string) {
         <div v-if="isMxcApproval && request.dirPath" class="perm-mxc-detail">
           <div class="perm-command-label">{{ t("perm.mxcCwdLabel") }}</div>
           <code class="perm-mxc-value">{{ request.dirPath }}</code>
+        </div>
+        <div
+          v-if="
+            isLimitedMxcApproval &&
+            request.providerInitialization?.contract === 'microclaw.powershell-filesystem-scope.v1'
+          "
+          class="perm-body"
+          data-testid="mxc-powershell-scope"
+        >
+          {{ t("perm.mxcPowerShellScope") }}
         </div>
         <div v-if="isMxcApproval" class="perm-body perm-mxc-scope">{{ mxcScopeText }}</div>
         <div v-if="SHOW_CALLER_STACK && request?.callerStack" class="perm-command">

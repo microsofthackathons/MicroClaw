@@ -159,6 +159,27 @@ describe("PermissionDialog", () => {
     expect(globalStyles).toContain("--danger: var(--smtc-status-danger-foreground, #ef4444);");
   });
 
+  it("discloses only Limited prepared provider scope without hiding executed command bytes", async () => {
+    const command =
+      "[void]'microclaw.powershell-filesystem-scope.v1';exact initializer;Remove-Item -Path 'C:\\workspace\\folder'";
+    const request = {
+      requestId: "initialized-request",
+      type: "mxc-approval" as const,
+      command,
+      dirPath: String.raw`C:\workspace\cwd`,
+      containmentStrength: "limited-dacl" as const,
+      providerInitialization: { contract: "microclaw.powershell-filesystem-scope.v1" as const },
+      declaredAccess: [{ access: "rw" as const, path: String.raw`C:\workspace` }],
+      allowedDecisions: ["deny" as const, "allow-once" as const],
+    };
+    const wrapper = mount(PermissionDialog, { props: { request } });
+    expect(wrapper.get('[data-testid="mxc-powershell-scope"]').text()).toContain("MicroClawCwd:");
+    expect(wrapper.get(".perm-command-code").text()).toBe(command);
+    expect(wrapper.findAll(".perm-actions button")).toHaveLength(2);
+    await wrapper.setProps({ request: { ...request, containmentStrength: "full" } });
+    expect(wrapper.find('[data-testid="mxc-powershell-scope"]').exists()).toBe(false);
+  });
+
   it("renders attended prompts above the startup loading gate", () => {
     const component = readFileSync(
       resolve(process.cwd(), "src/components/PermissionDialog.vue"),

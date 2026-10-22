@@ -286,6 +286,7 @@ interface PermissionRequestData {
   approvalLayer?: "gateway" | "node";
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
   containmentStrength?: "full" | "limited-dacl";
   ambientAccess?: NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"];
   expiresAtUnixMs?: number;
@@ -393,6 +394,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     dirPath: request.canonicalCwd,
     command,
     declaredAccess: request.declaredAccess,
+    providerInitialization: request.providerInitialization,
     source: "windows-node-mxc",
     approvalLayer: request.approvalLayer,
     containmentStrength,

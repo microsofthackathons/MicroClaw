@@ -1139,6 +1139,8 @@ export default {
     "Additional folder grants are additive, not an exclusive allowlist. Conversation-scoped approval remembers only this exact executable, arguments, working directory, declared access, agent, and conversation.",
   "perm.mxcLimitedScopeOnce":
     "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist.",
+  "perm.mxcPowerShellScope":
+    "PowerShell uses logical $PWD MicroClawCwd:\\ with the physical working directory shown above. The exact initialization is included in this command; it grants no extra file access.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",

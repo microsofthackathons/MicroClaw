@@ -576,6 +576,7 @@ interface OpenClawAPI {
       executable: string;
       arguments: string[];
       commandText?: string;
+      providerInitialization?: import("../src/windows-node-mxc-powershell-scope").PowerShellFilesystemInitialization;
       expiresAtUnixMs?: number;
       remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
       agent: string | null;
@@ -599,6 +600,7 @@ interface OpenClawAPI {
           executable: string;
           arguments: string[];
           commandText?: string;
+          providerInitialization?: import("../src/windows-node-mxc-powershell-scope").PowerShellFilesystemInitialization;
           expiresAtUnixMs?: number;
           remoteDelivery?: import("../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState | null;
           agent: string | null;

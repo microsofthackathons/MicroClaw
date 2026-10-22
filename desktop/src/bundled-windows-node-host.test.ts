@@ -30,6 +30,7 @@ import {
   validateBundledWindowsNodeRuntimeManifest,
 } from "./bundled-windows-node-host";
 import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
+import { createPowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
 
 vi.mock("electron", () => ({
   app: {
@@ -587,6 +588,46 @@ describe("bundled Windows node host", () => {
         canonicalCwd: "isolated-scratch:v1",
         declaredAccess: [{ access: "write", path: String.raw`C:\Users\test\Desktop` }],
       }),
+    ).toThrow(/Malformed/);
+  });
+
+  it("preserves only exactly reconstructed native PowerShell initialization", () => {
+    const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
+    const declaredAccess = [{ access: "rw" as const, path: String.raw`C:\workspace` }];
+    const initialization = createPowerShellFilesystemInitialization(
+      [
+        executable,
+        "-NoProfile",
+        "-Command",
+        String.raw`Remove-Item -LiteralPath 'C:\workspace\folder' -Recurse`,
+      ],
+      executable,
+      declaredAccess,
+    );
+    if (!initialization) throw new Error("Literal initialization fixture was rejected");
+    const request = {
+      id: "initialized-request",
+      executable,
+      arguments: initialization.finalArgv.slice(1),
+      canonicalCwd: "isolated-scratch:v1",
+      declaredAccess,
+      providerInitialization: initialization,
+    };
+    expect(validateApprovalRequest(request).providerInitialization).toEqual(initialization);
+    for (const metadata of [
+      null,
+      {},
+      { ...initialization, extra: true },
+      { ...initialization, originalArgv: [executable, "-NoProfile", "-Command", "Get-Date"] },
+    ])
+      expect(() =>
+        validateApprovalRequest({ ...request, providerInitialization: metadata }),
+      ).toThrow(/Malformed/);
+    expect(() =>
+      validateApprovalRequest({ ...request, arguments: ["-Command", "Get-Date"] }),
+    ).toThrow(/Malformed/);
+    expect(() =>
+      validateApprovalRequest({ ...request, executable: String.raw`C:\other.exe` }),
     ).toThrow(/Malformed/);
   });
 

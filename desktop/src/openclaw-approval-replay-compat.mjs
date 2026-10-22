@@ -590,7 +590,8 @@ export const PINNED_SYSTEM_RUN_PLAN_SOURCE = `function normalizeSystemRunApprova
 \t};
 }`;
 
-const PATCHED_SYSTEM_RUN_PLAN_SOURCE = `function normalizeMicroclawSystemRunDeclaredAccess(value) {
+const PATCHED_SYSTEM_RUN_PLAN_SOURCE = `${normalizePowerShellProviderInitialization.toString()}
+function normalizeMicroclawSystemRunDeclaredAccess(value) {
 \tif (!Array.isArray(value)) return null;
 \tconst entries = [];
 \tfor (const item of value) {
@@ -604,7 +605,9 @@ const PATCHED_SYSTEM_RUN_PLAN_SOURCE = `function normalizeMicroclawSystemRunDecl
 }
 function normalizeSystemRunApprovalPlan(candidate) {
 \tif (!isRecord(candidate)) return null;
-\tconst argv = normalizeStringArray(candidate.argv);
+\tconst argv = candidate.executablePath !== void 0
+\t\t? Array.isArray(candidate.argv) && candidate.argv.every(value => typeof value === "string" && value.length > 0) ? [...candidate.argv] : []
+\t\t: normalizeStringArray(candidate.argv);
 \tif (argv.length === 0) return null;
 \tconst mutableFileOperand = normalizeSystemRunApprovalFileOperand(candidate.mutableFileOperand);
 \tif (candidate.mutableFileOperand !== void 0 && mutableFileOperand === null) return null;
@@ -617,12 +620,17 @@ function normalizeSystemRunApprovalPlan(candidate) {
 \tconst executableSha256 = normalizeNullableString(candidate.executableSha256);
 \tconst cwdBinding = normalizeNullableString(candidate.cwdBinding);
 \tconst declaredAccess = normalizeMicroclawSystemRunDeclaredAccess(candidate.declaredAccess);
+\tconst providerInitialization = candidate.providerInitialization === void 0 ? void 0 : normalizePowerShellProviderInitialization(candidate.providerInitialization);
+\tif (candidate.providerInitialization !== void 0 && !providerInitialization) return null;
+\tif (providerInitialization && !hasMicroclawIdentity) return null;
+\tif (argv.some(argument => argument.includes("[void]'microclaw.powershell-filesystem-scope.")) && !providerInitialization) return null;
+\tif (providerInitialization && (providerInitialization.finalArgv.length !== argv.length || providerInitialization.finalArgv.some((argument, index) => argument !== argv[index]))) return null;
 \tif (hasMicroclawIdentity && (!executablePath || !/^[a-z]:\\\\/i.test(executablePath) || !executableSha256 || !/^[a-f0-9]{64}$/i.test(executableSha256) || !cwdBinding || declaredAccess === null)) return null;
 \treturn {
 \t\targv,
 \t\tcwd: normalizeNullableString(candidate.cwd),
 \t\tcommandText,
-\t\tcommandPreview: normalizeNullableString(candidate.commandPreview),
+\t\tcommandPreview: providerInitialization && typeof candidate.commandPreview === "string" ? candidate.commandPreview : normalizeNullableString(candidate.commandPreview),
 \t\tagentId: normalizeNullableString(candidate.agentId),
 \t\tsessionKey: normalizeNullableString(candidate.sessionKey),
 \t\t...policySnapshot ? { policySnapshot } : {},
@@ -631,7 +639,8 @@ function normalizeSystemRunApprovalPlan(candidate) {
 \t\t\texecutablePath,
 \t\t\texecutableSha256: executableSha256.toLowerCase(),
 \t\t\tcwdBinding,
-\t\t\tdeclaredAccess
+\t\t\tdeclaredAccess,
+\t\t\t...providerInitialization ? { providerInitialization } : {}
 \t\t} : {}
 \t};
 }`;
@@ -687,7 +696,7 @@ const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": as
 \t\t\tconst rawPlan = params && typeof params === "object" && !Array.isArray(params) && params.systemRunPlan && typeof params.systemRunPlan === "object" && !Array.isArray(params.systemRunPlan) ? params.systemRunPlan : null;
 \t\t\tconst validationParams = rawPlan ? {
 \t\t\t\t...params,
-\t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess"))
+\t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess" && name !== "providerInitialization"))
 \t\t\t} : params;
 \t\t\tif (!assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;
 \t\t\tconst p = params;`;
@@ -1462,6 +1471,41 @@ function encodeNullableField(name, value) {
   return value === null ? `${name}=-1:` : encodeField(name, value);
 }
 
+export function normalizePowerShellProviderInitialization(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 5
+  )
+    return null;
+  const keys = ["contract", "form", "originalArgv", "originalCommandPreview", "finalArgv"];
+  if (
+    Object.keys(value).some((key) => !keys.includes(key)) ||
+    value.contract !== "microclaw.powershell-filesystem-scope.v1" ||
+    (value.form !== "direct" && value.form !== "nested") ||
+    typeof value.originalCommandPreview !== "string" ||
+    !value.originalCommandPreview ||
+    value.originalCommandPreview.length > 8192
+  )
+    return null;
+  for (const argv of [value.originalArgv, value.finalArgv])
+    if (
+      !Array.isArray(argv) ||
+      argv.length < 4 ||
+      argv.length > 8 ||
+      argv.some((argument) => typeof argument !== "string" || !argument || argument.length > 4096)
+    )
+      return null;
+  return {
+    contract: value.contract,
+    form: value.form,
+    originalArgv: [...value.originalArgv],
+    originalCommandPreview: value.originalCommandPreview,
+    finalArgv: [...value.finalArgv],
+  };
+}
+
 function normalizeApprovalPlan(plan) {
   if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
     throw new Error("MicroClaw approval proof requires a prepared system.run plan");
@@ -1495,6 +1539,11 @@ function normalizeApprovalPlan(plan) {
     }
     return value;
   };
+  const providerInitialization = Object.hasOwn(plan, "providerInitialization")
+    ? normalizePowerShellProviderInitialization(plan.providerInitialization)
+    : undefined;
+  if (Object.hasOwn(plan, "providerInitialization") && !providerInitialization)
+    throw new Error("MicroClaw approval proof provider initialization is invalid");
   return {
     argv: [...plan.argv],
     cwd: nullableString("cwd", true),
@@ -1506,6 +1555,7 @@ function normalizeApprovalPlan(plan) {
     executableSha256: requiredString("executableSha256").toLowerCase(),
     cwdBinding: requiredString("cwdBinding"),
     declaredAccess: normalizeDeclaredAccess(plan.declaredAccess),
+    ...(providerInitialization ? { providerInitialization } : {}),
   };
 }
 
@@ -1550,6 +1600,24 @@ export function computeWindowsNodeMxcApprovalPlanSha256(plan) {
       encodeField("path", entry.path),
     ]),
   ];
+  const initialization = normalized.providerInitialization;
+  if (initialization)
+    fields.push(
+      encodeField("providerInitialization.contract", initialization.contract),
+      encodeField("providerInitialization.form", initialization.form),
+      `providerInitialization.originalArgv=${initialization.originalArgv.length}`,
+      ...initialization.originalArgv.map((argument) =>
+        encodeField("providerInitialization.originalArg", argument),
+      ),
+      encodeField(
+        "providerInitialization.originalCommandPreview",
+        initialization.originalCommandPreview,
+      ),
+      `providerInitialization.finalArgv=${initialization.finalArgv.length}`,
+      ...initialization.finalArgv.map((argument) =>
+        encodeField("providerInitialization.finalArg", argument),
+      ),
+    );
   return createHash("sha256").update(fields.join("\n"), "utf8").digest("hex");
 }
 

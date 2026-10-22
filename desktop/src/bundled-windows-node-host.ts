@@ -11,6 +11,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import {
+  type PowerShellFilesystemInitialization,
+  validateNativePowerShellFilesystemInitialization,
+} from "./windows-node-mxc-powershell-scope";
+import {
   WINDOWS_NODE_MXC_CANVAS_ACTIONS,
   WINDOWS_NODE_MXC_CANVAS_COMMANDS,
   WINDOWS_NODE_MXC_NODE_COMMANDS,
@@ -93,6 +97,7 @@ export interface BundledApprovalRequest {
     access: "ro" | "rw";
     path: string;
   }>;
+  providerInitialization?: PowerShellFilesystemInitialization;
 }
 
 interface StartOptions {
@@ -1413,6 +1418,8 @@ export function sensitiveWindowsRoots(...stateRoots: string[]): string[] {
 }
 
 export function validateApprovalRequest(value: unknown): BundledApprovalRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Malformed bundled Windows node approval request");
   const request = value as Partial<BundledApprovalRequest>;
   if (
     typeof request.id !== "string" ||
@@ -1430,6 +1437,16 @@ export function validateApprovalRequest(value: unknown): BundledApprovalRequest 
   ) {
     throw new Error("Malformed bundled Windows node approval request");
   }
+  const providerInitialization = Object.hasOwn(request, "providerInitialization")
+    ? validateNativePowerShellFilesystemInitialization(
+        request.providerInitialization,
+        request.executable,
+        request.arguments,
+        request.declaredAccess,
+      )
+    : undefined;
+  if (providerInitialization === null)
+    throw new Error("Malformed bundled Windows node PowerShell initialization");
   return {
     id: request.id,
     executable: request.executable,
@@ -1437,5 +1454,6 @@ export function validateApprovalRequest(value: unknown): BundledApprovalRequest 
     agent: typeof request.agent === "string" ? request.agent : null,
     canonicalCwd: request.canonicalCwd,
     declaredAccess: request.declaredAccess,
+    ...(providerInitialization ? { providerInitialization } : {}),
   };
 }

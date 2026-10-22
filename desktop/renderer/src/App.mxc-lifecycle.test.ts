@@ -594,6 +594,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
             finish = resolve;
           }),
       );
+
       const { gateway } = await mountReadyApp();
       const epoch = gateway.readinessEpoch;
       approvalRequest(permission("status-race"));
@@ -612,6 +613,35 @@ describe("App MXC loading gate with the real Gateway store", () => {
       expect(gateway.readinessEpoch).toBe(epoch);
     },
   );
+
+  it("forwards prepared provider metadata and full command into one ready Limited prompt", async () => {
+    status.requestedMode = "limited-dacl";
+    const { gateway } = await mountReadyApp();
+    const command =
+      "[void]'microclaw.powershell-filesystem-scope.v1';exact-initialization;Remove-Item";
+    const metadata = {
+      contract: "microclaw.powershell-filesystem-scope.v1" as const,
+      form: "direct" as const,
+      originalArgv: ["powershell.exe", "-NoProfile", "-Command", "Remove-Item"],
+      originalCommandPreview: "Remove-Item",
+      finalArgv: ["powershell.exe", "-NoProfile", "-Command", command],
+    };
+    await approvalRequest({
+      ...permission("initialized"),
+      commandText: command,
+      providerInitialization: metadata,
+    });
+    await flushPromises();
+    const prompts = wrapper.findAllComponents(PermissionDialog);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].props("request")).toMatchObject({
+      command,
+      providerInitialization: metadata,
+      containmentStrength: "limited-dacl",
+    });
+    expect(gateway.ready).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+  });
 
   it.each(["resolved", "null", "generation"] as const)(
     "ignores a late initial %s snapshot without hiding a newer request",

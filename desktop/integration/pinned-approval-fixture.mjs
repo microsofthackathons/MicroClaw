@@ -4,7 +4,11 @@ import path from "node:path";
 import { URL, pathToFileURL } from "node:url";
 import ts from "typescript";
 
-export function runPinnedApprovalRequests(plan, recipient = "owner@im.wechat") {
+export function runPinnedApprovalRequests(
+  plan,
+  recipient = "owner@im.wechat",
+  nodeId = "test-node",
+) {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
   const filename = path.join(packageDir, "dist", "bash-tools.exec-approval-request-BhOTs75A.mjs");
@@ -66,6 +70,7 @@ export function runPinnedApprovalRequests(plan, recipient = "owner@im.wechat") {
     ${builder}
     const plan = ${JSON.stringify(plan)};
     const recipient = ${JSON.stringify(recipient)};
+    const nodeId = ${JSON.stringify(nodeId)};
     const module = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
     const producer = ${JSON.stringify(producers)};
     const vm = await import("node:vm");
@@ -144,7 +149,7 @@ export function runPinnedApprovalRequests(plan, recipient = "owner@im.wechat") {
       captured = undefined;
       let response;
       const params = await buildHostApprovalDecisionParams({
-        approvalId: "fixture-" + kind, host: "node", nodeId: "test-node",
+        approvalId: "fixture-" + kind, host: "node", nodeId,
         systemRunPlan: plan, sessionKey: plan.sessionKey, agentId: "main",
         toolCallId: "actual-tool", runId: "caller-forged-run",
         turnSourceChannel: "openclaw-weixin",

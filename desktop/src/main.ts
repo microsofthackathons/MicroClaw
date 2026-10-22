@@ -6355,6 +6355,7 @@ function connectGatewayWs(): void {
           evt.payload,
           settingsStore.get("windowsNodeMxcNodeId"),
           gatewayGenerationId,
+          getWindowsNodeMxcRequestedMode(),
         );
         if (!approval) {
           const id =

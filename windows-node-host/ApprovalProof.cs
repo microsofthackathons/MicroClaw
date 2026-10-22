@@ -254,6 +254,19 @@ internal sealed class ApprovalProofVerifier
             fields.Add(EncodeField("access", entry.Access));
             fields.Add(EncodeField("path", entry.Path));
         }
+        if (plan.TryGetProperty("providerInitialization", out var initializationElement))
+        {
+            var initialization = PowerShellFilesystemScope.Read(initializationElement);
+            fields.Add(EncodeField("providerInitialization.contract", initialization.Contract));
+            fields.Add(EncodeField("providerInitialization.form", initialization.Form));
+            fields.Add($"providerInitialization.originalArgv={initialization.OriginalArgv.Count}");
+            fields.AddRange(initialization.OriginalArgv.Select(argument =>
+                EncodeField("providerInitialization.originalArg", argument)));
+            fields.Add(EncodeField("providerInitialization.originalCommandPreview", initialization.OriginalCommandPreview));
+            fields.Add($"providerInitialization.finalArgv={initialization.FinalArgv.Count}");
+            fields.AddRange(initialization.FinalArgv.Select(argument =>
+                EncodeField("providerInitialization.finalArg", argument)));
+        }
         return Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', fields)))).ToLowerInvariant();
     }

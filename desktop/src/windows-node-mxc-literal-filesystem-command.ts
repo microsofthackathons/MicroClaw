@@ -3,10 +3,17 @@ import path from "node:path";
 interface LiteralToken {
   value: string;
   quoted: boolean;
+  start?: number;
+  quote?: string | null;
 }
 
-function tokenizeLiteralCommand(text: string): LiteralToken[] | null {
-  if (!text || text.length > 2_048 || /[$`;\r\n|&<>#(){}\[\]\x00-\x08\x0b-\x1f]/.test(text)) {
+export function tokenizeLiteralCommand(text: string): LiteralToken[] | null {
+  if (
+    !text ||
+    text.length > 2_048 ||
+    /[$`;\r\n|&<>#(){}[\]]/.test(text) ||
+    [...text].some((character) => character.charCodeAt(0) < 32 && character !== "\t")
+  ) {
     return null;
   }
   const tokens: LiteralToken[] = [];
@@ -14,19 +21,25 @@ function tokenizeLiteralCommand(text: string): LiteralToken[] | null {
   while (index < text.length) {
     while (text[index] === " " || text[index] === "\t") index++;
     if (index === text.length) break;
+    const tokenStart = index;
     const quote = text[index] === "'" || text[index] === '"' ? text[index++] : null;
     const start = index;
     if (quote) {
       while (index < text.length && text[index] !== quote) index++;
       if (index === text.length) return null;
-      tokens.push({ value: text.slice(start, index++), quoted: true });
+      tokens.push({ value: text.slice(start, index++), quoted: true, start: tokenStart, quote });
       if (index < text.length && text[index] !== " " && text[index] !== "\t") return null;
     } else {
       while (index < text.length && text[index] !== " " && text[index] !== "\t") {
         if (text[index] === "'" || text[index] === '"') return null;
         index++;
       }
-      tokens.push({ value: text.slice(start, index), quoted: false });
+      tokens.push({
+        value: text.slice(start, index),
+        quoted: false,
+        start: tokenStart,
+        quote: null,
+      });
     }
     if (tokens.length > 16) return null;
   }

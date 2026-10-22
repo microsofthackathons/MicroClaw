@@ -1,5 +1,15 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID, randomBytes } from "node:crypto";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  renameSync,
+} from "node:fs";
+import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +17,10 @@ import {
   readAuthenticatedWeixinWireOwner,
   readWeixinAccountStatus,
 } from "../src/weixin-account-status";
-import { buildMicroclawWindowsNodeShellCommand } from "../src/openclaw-approval-replay-compat.mjs";
+import {
+  buildMicroclawWindowsNodeShellCommand,
+  createWindowsNodeMxcApprovalProofMinter,
+} from "../src/openclaw-approval-replay-compat.mjs";
 import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc";
 import {
   normalizeWeixinRemoteApprovalOwner,
@@ -43,7 +56,7 @@ const security = {
   nodeId: "test-node",
   activationLeaseHash: "d".repeat(64),
   requestedMode: "limited-dacl",
-  effectiveMode: "limited-dacl",
+  effectiveMode: "appcontainer-dacl",
 };
 const root = String.raw`C:\Users\sunt\Desktop`;
 const target = `${root}\\wire_fixture_folder`;
@@ -71,7 +84,7 @@ function approvalFor(script = `New-Item -ItemType Directory -Path '${target}' -F
       .digest("hex"),
     declaredAccess: [{ access: "rw", path: root }],
   };
-  captured ??= runPinnedApprovalRequests(plan, rawPeer).find(
+  captured ??= runPinnedApprovalRequests(plan, rawPeer, security.nodeId).find(
     (entry) => entry.kind === "trusted",
   ).request;
   const request = {
@@ -537,4 +550,210 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     expect(JSON.stringify(body)).not.toContain("synthetic-inline-secret");
     expect(JSON.stringify(body)).not.toContain("Invoke-Expression");
   });
+  it.skipIf(!process.env.MICROCLAW_NATIVE_APPROVAL_BRIDGE_TEST)(
+    "binds actual builder/closed consent/phone/proof to native create-delete with exact canonical CWD and error semantics",
+    async () => {
+      const bridge = mkdtempSync(path.join(os.tmpdir(), "microclaw-native-scope-"));
+      const secretBase64 = randomBytes(32).toString("base64");
+      const repository = path.resolve("..");
+      const nodeIdBefore = security.nodeId;
+      let exited = false;
+      let output = "";
+      let testError;
+      const child = spawn(
+        "dotnet",
+        [
+          "test",
+          path.join(
+            repository,
+            "windows-node-host.Tests",
+            "MicroClaw.WindowsNodeHost.Tests.csproj",
+          ),
+          "--no-build",
+          "--no-restore",
+          "-m:1",
+          "-p:BuildInParallel=false",
+          "-nodeReuse:false",
+          "--filter",
+          "FullyQualifiedName~PowerShellFilesystemScopeNativeApprovalBridge",
+          "--logger",
+          "trx;LogFileName=result.trx",
+          "--results-directory",
+          bridge,
+          "--verbosity",
+          "quiet",
+        ],
+        {
+          cwd: repository,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            MICROCLAW_NATIVE_APPROVAL_BRIDGE: bridge,
+            MICROCLAW_NATIVE_APPROVAL_BRIDGE_SECRET: secretBase64,
+            MICROCLAW_MXC_NATIVE_TEST_SCRATCH: bridge,
+          },
+        },
+      );
+      child.stdout.on("data", (value) => {
+        output = (output + value).slice(-20000);
+      });
+      child.stderr.on("data", (value) => {
+        output = (output + value).slice(-20000);
+      });
+      const completion = new Promise((resolve, reject) => {
+        child.once("error", () =>
+          reject(new Error("Native approval bridge process failed to start")),
+        );
+        child.once("exit", (code) => {
+          exited = true;
+          resolve(code);
+        });
+      });
+      async function read(file) {
+        const target = path.join(bridge, file);
+        const deadline = Date.now() + 60_000;
+        while (!existsSync(target) && !exited && Date.now() < deadline) await delay(25);
+        if (!existsSync(target))
+          throw new Error(`Native bridge failed before ${file}; see isolated test log`);
+        return JSON.parse(readFileSync(target, "utf8"));
+      }
+      function write(file, value) {
+        const target = path.join(bridge, file);
+        writeFileSync(target + ".pending", JSON.stringify(value));
+        renameSync(target + ".pending", target);
+      }
+      try {
+        const info = await read("ready.json");
+        security.nodeId = info.nodeId;
+        const minter = createWindowsNodeMxcApprovalProofMinter({
+          secretBase64,
+          gatewayGeneration: info.generation,
+          policyFingerprint: info.fingerprint,
+          nodeId: info.nodeId,
+        });
+        const evidence = [];
+        for (let step = 0; step < 8; step++) {
+          const target = path.win32.join(info.grant, step < 4 ? "direct-child" : "nested-child");
+          const operation =
+            step % 4 < 2
+              ? `New-Item -ItemType Directory -Path '${target}'${step % 4 === 0 ? " -Force" : ""}`
+              : `Remove-Item -Path '${target}' -Recurse -Force`;
+          const script = step < 4 ? operation : `powershell -NoProfile -Command "${operation}"`;
+          const rawCommand = `# [declare-access]rw:${info.grant}[/declare-access]\n${script}`;
+          const command = buildMicroclawWindowsNodeShellCommand(rawCommand);
+          write(`${step}.input.json`, {
+            command,
+            rawCommand,
+            cwd: info.cwd,
+            agentId: "main",
+            sessionKey: key,
+            timeoutMs: 30_000,
+          });
+          const prepared = await read(`${step}.prepared.json`);
+          const nativePlan = prepared.plan;
+          const captured = runPinnedApprovalRequests(nativePlan, rawPeer, info.nodeId).find(
+            (entry) => entry.kind === "trusted",
+          );
+          expect(captured.request.systemRunPlan.providerInitialization).toEqual(
+            nativePlan.providerInitialization,
+          );
+          approval = normalizeWindowsNodeMxcGatewayApproval(
+            {
+              id: randomUUID(),
+              request: captured.request,
+            },
+            info.nodeId,
+            security.gatewayGeneration,
+            "limited-dacl",
+          );
+          expect(approval).not.toBeNull();
+          expect(approval.canonicalCwd.toLowerCase()).not.toBe(info.grant.toLowerCase());
+          sources.clear();
+          await source({ message_id: 1001 + step * 4, seq: 42 + step * 4 });
+          const delivery = await deliver();
+          expect(delivery).not.toBeNull();
+          expect(delivery.text).toContain("logical $PWD is MicroClawCwd:");
+          const code = /#([A-Z0-9]{8})\]/.exec(delivery.text)[1];
+          expect(
+            await transport.intercept({
+              message: message({
+                message_id: 1002 + step * 4,
+                seq: 43 + step * 4,
+                item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+              }),
+              agentId: "main",
+              sessionKey: key,
+              sourcePhase: "candidate",
+            }),
+          ).toBe(true);
+          expect(decisions.at(-1).decision).toBe("allow-once");
+          expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+          const approvedPlan = captured.request.systemRunPlan;
+          const proof = minter.mint({
+            approvalId: approval.id,
+            nodeId: info.nodeId,
+            plan: approvedPlan,
+          });
+          write(`${step}.approved.json`, {
+            command: approvedPlan.argv,
+            rawCommand: approvedPlan.commandText,
+            cwd: approvedPlan.cwd,
+            agentId: approvedPlan.agentId,
+            sessionKey: approvedPlan.sessionKey,
+            systemRunPlan: approvedPlan,
+            microclawApprovalProof: proof,
+          });
+          const result = await read(`${step}.result.json`);
+          expect(result.exitCode).toBe(step % 4 === 1 || step % 4 === 3 ? 1 : 0);
+          expect(result.success).toBe(result.exitCode === 0);
+          await server.deliver({
+            accountId: "bot",
+            to: rawPeer,
+            kind: "terminal",
+            terminalChallengeId: delivery.challengeId,
+            text: "MicroClaw Security Approval: completed.",
+          });
+          evidence.push({
+            step,
+            planSha256: proof.planSha256,
+            exitCode: result.exitCode,
+            success: result.success,
+            exactPhoneScope: true,
+            legacyOnceOnly: true,
+            noRealPhoneSend: true,
+          });
+        }
+        expect(await completion).toBe(0);
+        const native = await read("evidence.json");
+        expect(native.results).toHaveLength(8);
+        expect(native.privateStateEmpty).toBe(true);
+        expect(native.ancestors.every((entry) => entry.unchanged)).toBe(true);
+        if (process.env.MICROCLAW_NATIVE_APPROVAL_EVIDENCE)
+          writeFileSync(
+            process.env.MICROCLAW_NATIVE_APPROVAL_EVIDENCE,
+            JSON.stringify({ evidence, native }, null, 2),
+          );
+      } catch (error) {
+        testError = error;
+      } finally {
+        security.nodeId = nodeIdBefore;
+        if (!exited) writeFileSync(path.join(bridge, "abort"), "abort");
+        await Promise.race([completion, delay(40_000)]);
+        const logs = process.env.MICROCLAW_NATIVE_APPROVAL_EVIDENCE;
+        if (logs) {
+          writeFileSync(logs + ".test.log", output);
+          if (existsSync(path.join(bridge, "result.trx")))
+            writeFileSync(logs + ".trx", readFileSync(path.join(bridge, "result.trx")));
+        }
+        if (exited) rmSync(bridge, { recursive: true, force: true });
+      }
+      if (!exited)
+        throw new AggregateError(
+          testError ? [testError] : [],
+          `Native bridge process ${child.pid} did not stop after bounded abort`,
+        );
+      if (testError) throw testError;
+    },
+    240_000,
+  );
 });

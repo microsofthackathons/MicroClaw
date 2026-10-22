@@ -333,6 +333,23 @@ and `"null"`; other content writes stay local, even when the text happens to be 
 This is intentionally conservative: a non-secret command may still require local approval when its
 display sensitivity cannot be proven from the current execution contract.
 
+In Limited-DACL only, the Windows host prepares a versioned public PowerShell filesystem scope
+for the closed literal directory-creation and removal forms above (direct Windows PowerShell or
+one literal nested Windows PowerShell). Windows PowerShell otherwise normalizes absolute paths
+against its default drive and can fail on ungranted ancestors even when the target has the approved
+RW rights. The scoped `MicroClawCwd:` PSDrive is rooted at the physical canonical or isolated
+working directory; logical `$PWD` becomes `MicroClawCwd:\`. The physical working directory,
+original absolute target, C: drive, filesystem grants and ancestor ACLs do not change.
+
+Initialization and immutable original/final argv metadata are generated **before** executable
+identity capture and approval. Main independently regenerates them, and the proof binds them.
+Execution revalidates the prepared bytes and target, then launches those exact approved argv;
+it does not rewrite an approved command. Both phone and Desktop disclose the scope and retain
+the complete executed command. Original command output, errors and exit status are preserved;
+initialization failure exits 125 without executing the operation. Reparse targets are rejected.
+Arbitrary scripts, encoded/file/interactive/profile/relative forms and other unsupported commands
+retain their existing behavior and approval rules; this is not a general PowerShell script rewrite.
+
 - `1 CODE` approves the exact first/current request once.
 - `2 CODE` saves the same exact conversation-scoped durable approval available on the Desktop,
   only when that exact request is eligible.
