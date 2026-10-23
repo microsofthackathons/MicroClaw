@@ -691,9 +691,9 @@ describe("SettingsView model integration", () => {
       apiKey: "fixture",
       models: [{ id: "saved", name: "Saved" }],
     };
-    window.openclaw.model.discoverModels = vi.fn().mockResolvedValue({
-      ok: true,
-      models: ["saved", "live-one", "live-two"],
+    vi.spyOn(window.openclaw.model, "discoverModels").mockImplementation((input) => {
+      structuredClone(input);
+      return Promise.resolve({ ok: true, models: ["saved", "live-one", "live-two"] });
     });
     const { wrapper } = await open();
     const picker = wrapper.getComponent(DefaultPickerStub);
