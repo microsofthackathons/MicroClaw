@@ -10,7 +10,7 @@ import {
 vi.mock("./local-model-files", () => ({ inspectLocalModelFiles: vi.fn(() => new Map()) }));
 
 type Row = Record<string, unknown>;
-function fixture() {
+function fixture(githubCopilotEnabled = true) {
   const config: Row = {
     agents: {
       defaults: { model: { primary: "cloud/a", fallbacks: ["cloud/b"] } },
@@ -44,6 +44,8 @@ function fixture() {
     model: ref.slice(ref.indexOf("/") + 1),
   });
   let hash = "one";
+  let authenticated = true;
+  let catalog: Row[] = [{ provider: "github-copilot", id: "gpt-5", available: true }];
   const handle = async (method: string, params: Row = {}): Promise<unknown> => {
     const key = canonical(String(params.key ?? ""));
     if (method === "config.get") return { valid: true, hash, config: structuredClone(config) };
@@ -51,6 +53,11 @@ function fixture() {
     if (method === "sessions.list") {
       return { defaults: modelFields(inherited(`agent:${params.agentId}:main`)), sessions: [] };
     }
+    if (method === "models.authStatus")
+      return {
+        providers: [{ provider: "github-copilot", status: authenticated ? "ok" : "missing" }],
+      };
+    if (method === "models.list") return { models: catalog };
     if (method === "sessions.patch") {
       const selected = params.model === null ? inherited(key) : String(params.model);
       const overridden = selected !== inherited(key);
@@ -84,7 +91,14 @@ function fixture() {
     connectionGeneration: 1,
     serverVersion: "2026.9.3",
     mainSessionKey: "agent:main:main",
-    methods: ["config.get", "sessions.describe", "sessions.list", "sessions.patch"],
+    methods: [
+      "config.get",
+      "sessions.describe",
+      "sessions.list",
+      "sessions.patch",
+      "models.list",
+      "models.authStatus",
+    ],
     request: request as <T>(method: string, params?: unknown) => Promise<T>,
   };
   let current: typeof gateway | null = gateway;
@@ -107,6 +121,7 @@ function fixture() {
   });
   const onRecoveryChanged = vi.fn();
   const service = new SessionModelService({
+    githubCopilotEnabled,
     gateway: () => current,
     readConfig: () => config,
     assertMutable,
@@ -134,27 +149,33 @@ function fixture() {
     setHash: (next: string) => {
       hash = next;
     },
+    setAuth: (next: boolean) => {
+      authenticated = next;
+    },
+    setCatalog: (next: Row[]) => {
+      catalog = next;
+    },
     patches: () => request.mock.calls.filter(([method]) => method === "sessions.patch"),
   };
 }
 
 beforeEach(() => vi.mocked(inspectLocalModelFiles).mockReset().mockReturnValue(new Map()));
 
-describe("removed GitHub Copilot session models", () => {
+describe("disabled GitHub Copilot session models", () => {
   it("rejects direct selection before making any Gateway request", async () => {
-    const f = fixture();
+    const f = fixture(false);
     await expect(
       f.service.select({ sessionKey: "chat", modelRef: "github-copilot/gpt-5" }),
-    ).rejects.toThrow("GitHub Copilot is not supported");
+    ).rejects.toThrow("GitHub Copilot is disabled");
     expect(f.request).not.toHaveBeenCalled();
   });
 
-  it("refuses resetting an override to a unsupported inherited model without patching the session", async () => {
-    const f = fixture();
+  it("refuses resetting an override to a disabled inherited model without patching the session", async () => {
+    const f = fixture(false);
     const agents = f.config.agents as Row;
     (agents.defaults as Row).model = { primary: "github-copilot/gpt-5" };
     await expect(f.service.select({ sessionKey: "chat", modelRef: null })).rejects.toThrow(
-      "GitHub Copilot is not supported",
+      "GitHub Copilot is disabled",
     );
     expect(f.patches()).toEqual([]);
   });
@@ -585,6 +606,34 @@ describe("session model selection", () => {
       f.service.select({ sessionKey: "chat", modelRef: "cloud/path/unknown" }),
     ).rejects.toThrow(/not configured/);
   });
+
+  it("validates Copilot auth and prepared official catalogue for the owning agent", async () => {
+    const f = fixture();
+    await expect(
+      f.service.select({ sessionKey: "agent:writer:chat", modelRef: "github-copilot/gpt-5" }),
+    ).resolves.toMatchObject({ modelRef: "github-copilot/gpt-5" });
+    expect(f.request).toHaveBeenCalledWith("models.authStatus", { agentId: "writer" });
+    expect(f.request).toHaveBeenCalledWith("models.list", {
+      agentId: "writer",
+      view: "all",
+      preparedOnly: true,
+    });
+  });
+
+  it.each(["missing-auth", "missing-model", "unavailable"])(
+    "rejects Copilot %s",
+    async (reason) => {
+      const f = fixture();
+      if (reason === "missing-auth") f.setAuth(false);
+      if (reason === "missing-model") f.setCatalog([]);
+      if (reason === "unavailable")
+        f.setCatalog([{ provider: "github-copilot", id: "gpt-5", available: false }]);
+      await expect(
+        f.service.select({ sessionKey: "chat", modelRef: "github-copilot/gpt-5" }),
+      ).rejects.toThrow();
+      expect(f.patches()).toHaveLength(0);
+    },
+  );
 
   it("rejects simultaneous selections and chat sends while validation or patch is pending", async () => {
     const f = fixture();

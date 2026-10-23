@@ -9,6 +9,9 @@ import type { LocalModelAPI, LocalModelOperation } from "./local-model-types";
 import type { SessionModelAPI } from "./session-model-types";
 
 contextBridge.exposeInMainWorld("openclaw", {
+  features: {
+    githubCopilot: process.argv.includes("--microclaw-internal-github-copilot"),
+  },
   // --- Gateway lifecycle ---
   gateway: {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),
@@ -286,6 +289,18 @@ contextBridge.exposeInMainWorld("openclaw", {
       modelName: string;
       reasoningEffort?: string;
     }) => ipcRenderer.invoke("model:test-connection", params),
+    prepareGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:prepare"),
+    startGitHubCopilotLogin: () => ipcRenderer.invoke("model:github-copilot:start-login"),
+    cancelGitHubCopilotLogin: (sessionId?: string) =>
+      ipcRenderer.invoke("model:github-copilot:cancel-login", sessionId),
+    disconnectGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:disconnect"),
+    getGitHubCopilotStatus: () => ipcRenderer.invoke("model:github-copilot:status"),
+    listGitHubCopilotModels: () => ipcRenderer.invoke("model:github-copilot:list-models"),
+    onGitHubCopilotLoginEvent: (callback: (event: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
+      ipcRenderer.on("model:github-copilot:login-event", listener);
+      return () => ipcRenderer.removeListener("model:github-copilot:login-event", listener);
+    },
   },
 
   // --- Usage ---

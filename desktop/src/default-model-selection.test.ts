@@ -3,7 +3,7 @@ import { selectDefaultModel } from "./default-model-selection";
 import { GatewayRequestError } from "./gateway-client";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 
-function fixture(target = "cloud/b") {
+function fixture(target = "cloud/b", githubCopilotEnabled = true) {
   const config = {
     agents: {
       defaults: {
@@ -41,6 +41,14 @@ function fixture(target = "cloud/b") {
         sentinel: { payload: { stats: { requiresRestart: false } } },
       };
     }
+    if (method === "models.authStatus")
+      return { providers: [{ provider: "github-copilot", status: "ok" }] };
+    if (method === "models.list")
+      return {
+        models: [
+          { provider: "github-copilot", id: "gpt-6-sol", name: "GPT-6 Sol", available: true },
+        ],
+      };
     throw new Error(`Unexpected RPC ${method}`);
   };
   const request = vi.fn(handle);
@@ -48,10 +56,11 @@ function fixture(target = "cloud/b") {
     connected: true,
     serverVersion: "2026.9.3",
     connectionGeneration: 1,
-    methods: ["config.get", "config.patch"],
+    methods: ["config.get", "config.patch", "models.authStatus", "models.list"],
     request,
   };
   const deps = {
+    githubCopilotEnabled,
     gateway: () => gateway,
     readConfig: () => config,
     assertMutable: vi.fn(),
@@ -103,9 +112,20 @@ describe("default model hot selection", () => {
     },
   );
 
-  it("rejects removed Copilot selection before accessing the Gateway or changing configuration", async () => {
+  it("uses only the authenticated prepared Copilot catalogue, never discovery", async () => {
     const f = fixture("github-copilot/gpt-6-sol");
-    await expect(f.select()).rejects.toThrow("GitHub Copilot is not supported");
+    await expect(f.select()).resolves.toEqual({ modelRef: "github-copilot/gpt-6-sol" });
+    expect(f.request).toHaveBeenCalledWith(
+      "models.list",
+      { view: "all", preparedOnly: true },
+      undefined,
+    );
+    expect(f.config.agents.defaults.modelPolicy).toEqual(f.before.agents.defaults.modelPolicy);
+  });
+
+  it("rejects disabled Copilot selection before accessing the Gateway or changing configuration", async () => {
+    const f = fixture("github-copilot/gpt-6-sol", false);
+    await expect(f.select()).rejects.toThrow("GitHub Copilot is disabled");
     expect(f.request).not.toHaveBeenCalled();
     expect(f.config).toEqual(f.before);
   });
@@ -235,9 +255,16 @@ describe("default model hot selection", () => {
     await expect(f.select()).rejects.toThrow(/requires a Gateway restart/);
   });
 
-  it("rejects unconfigured models without touching the default", async () => {
+  it("rejects unconfigured or unauthenticated models without touching the default", async () => {
     const f = fixture("cloud/unknown");
     await expect(f.select()).rejects.toThrow(/not configured/);
-    expect(f.config).toEqual(f.before);
+    const copilot = fixture("github-copilot/gpt-6-sol");
+    copilot.request.mockImplementation((method, params) =>
+      method === "models.authStatus"
+        ? Promise.resolve({ providers: [] })
+        : copilot.handle(method, params),
+    );
+    await expect(copilot.select()).rejects.toThrow(/Sign in/);
+    expect(copilot.config).toEqual(copilot.before);
   });
 });

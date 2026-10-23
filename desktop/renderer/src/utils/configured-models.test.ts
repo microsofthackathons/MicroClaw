@@ -27,28 +27,12 @@ describe("readConfiguredModels", () => {
       reasoningEffort: "low",
       input: ["text", "image"],
     });
-    expect(result.models).toHaveLength(1);
+    expect(result.models[1]).toMatchObject({
+      id: "gpt",
+      name: "My Copilot",
+      source: "auth-managed",
+    });
   });
-  it.each(["github-copilot/gpt-5", { primary: "github-copilot/gpt-5" }])(
-    "omits legacy Copilot providers and primaries without changing saved data: %j",
-    (model) => {
-      const config = {
-        models: {
-          providers: {
-            "github-copilot": { models: [{ id: "gpt-5" }] },
-            cloud: { models: [{ id: "remote" }] },
-          },
-        },
-        agents: { defaults: { model, models: { "github-copilot/gpt-5": {} } } },
-      };
-      const original = structuredClone(config);
-      const result = readConfiguredModels(config);
-      expect(result.primary).toBe("");
-      expect(result.models.map(getModelRef)).toEqual(["cloud/remote"]);
-      expect(config).toEqual(original);
-    },
-  );
-
   it("never invents a first default or rows for malformed model IDs", () => {
     const result = readConfiguredModels({
       models: { providers: { cloud: { models: [{}, { id: 123 }, { id: "real" }] } } },

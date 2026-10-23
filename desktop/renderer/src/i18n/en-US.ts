@@ -152,6 +152,9 @@ export default {
   "chat.error.not_found.title": "Model endpoint returned 404 Not Found",
   "chat.error.not_found.hint":
     "The Base URL appears to be incorrect or the path is wrong. Check the Base URL in Model Settings (e.g. it should usually end with /v1 for OpenAI-compatible providers).",
+  "chat.error.copilot_auth.title": "GitHub Copilot sign-in is no longer usable",
+  "chat.error.copilot_auth.hint":
+    "GitHub Copilot authentication is missing or no longer usable. Sign in again and verify that the GitHub account has active Copilot access.",
   "chat.error.missing_provider_auth.title": "Choose a model provider",
   "chat.error.missing_provider_auth.hint":
     "The current model provider has no usable credentials. Choose and configure a model provider to continue.",
@@ -618,6 +621,11 @@ export default {
   "settings.customModelAdded": "Custom model added",
   "settings.customModelUpdated": "Custom model updated",
   "settings.customModelDeleted": "Custom model deleted",
+  "settings.copilotDisconnected": "GitHub Copilot disconnected",
+  "settings.copilotDisconnectFailed": "Could not disconnect GitHub Copilot: {error}",
+  "settings.copilotDisconnectedRestartFailed":
+    "GitHub Copilot was disconnected, but the Gateway could not restart: {error}",
+  "settings.copilotConfigUnavailable": "The current model configuration could not be read",
   "settings.searchSettingsSaved": "Web search settings saved",
   "settings.searchConfigured": "Configured",
   "settings.searchNotConfigured": "Not configured",
@@ -658,6 +666,9 @@ export default {
   "settings.delete": "Delete",
   "settings.disconnect": "Disconnect",
   "settings.noCustomModels": "No configured models yet",
+  "settings.githubCopilotAuth": "GitHub Copilot · GitHub device login",
+  "settings.copilotDisconnectConfirm":
+    "Disconnect GitHub Copilot? Saved credentials and all GitHub Copilot models will be removed.",
   "settings.modelName": "Model Name",
   "settings.baseUrl": "Base URL",
   "settings.apiKey": "API Key",
@@ -735,6 +746,7 @@ export default {
   "fixedLocal.prepareModel": "Prepare",
   "fixedLocal.connectedHint":
     "The provider is connected. Select a model and confirm before downloading its weights from ModelScope.",
+  "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
   "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
   "modelManager.apiKeyHint": "Expand to get an API key and configure the connection.",
   "modelManager.expandProvider": "Expand {provider}",
@@ -981,6 +993,9 @@ export default {
   "modelSetup.selectDesc": "Choose Qwen, MiniMax, or a local model to get started.",
   "modelSetup.keyDesc": "Enter your model details and API key to start using MicroClaw.",
   "modelSetup.customDesc": "Configure any compatible model endpoint.",
+  "modelSetup.copilotDesc":
+    "Connect GitHub Copilot with GitHub's secure device login, then choose a model available to your account.",
+  "modelSetup.githubCopilot": "GitHub Copilot",
   "modelSetup.customProvider": "Custom provider",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.openProviderFailed": "Could not open the provider website: {error}",
@@ -1003,6 +1018,28 @@ export default {
   "modelSetup.start": "Validate & Start",
   "modelSetup.validating": "Validating…",
   "modelSetup.starting": "Applying…",
+  "modelSetup.copilotSignIn": "Sign in with GitHub",
+  "modelSetup.copilotSignInHint": "Use your GitHub account to authorize GitHub Copilot.",
+  "modelSetup.copilotStarting": "Starting GitHub sign-in…",
+  "modelSetup.copilotChecking": "Checking GitHub Copilot sign-in…",
+  "modelSetup.copilotWaiting": "Waiting for GitHub…",
+  "modelSetup.copilotEnterCode": "Enter this one-time code on GitHub",
+  "modelSetup.copilotCodeExpires": "This code expires in about {minutes} minutes.",
+  "modelSetup.copilotOpenGitHub": "Open GitHub authorization",
+  "modelSetup.copilotTokenPrivacy":
+    "MicroClaw stores the credential securely; it is never sent to this form.",
+  "modelSetup.copilotConnected": "GitHub Copilot connected",
+  "modelSetup.copilotUseAnotherAccount": "Sign in with another account",
+  "modelSetup.copilotModelPlaceholder": "Choose a GitHub Copilot model",
+  "modelSetup.copilotUseModel": "Use selected model",
+  "modelSetup.copilotCancel": "Cancel sign-in",
+  "modelSetup.copilotNoModels":
+    "Signed in successfully, but GitHub Copilot returned no models for this account.",
+  "modelSetup.copilotStatusFailed": "Could not check GitHub Copilot sign-in: {error}",
+  "modelSetup.copilotModelsFailed": "Could not load GitHub Copilot models: {error}",
+  "modelSetup.copilotLoginFailed": "GitHub sign-in failed: {error}",
+  "modelSetup.copilotCancelFailed": "Could not cancel GitHub sign-in: {error}",
+  "modelSetup.copilotSelectModel": "Choose a GitHub Copilot model",
   "modelSetup.enterProviderId": "Please enter a provider ID",
   "modelSetup.invalidProviderId":
     "Provider ID may only contain letters, numbers, hyphens, and underscores",

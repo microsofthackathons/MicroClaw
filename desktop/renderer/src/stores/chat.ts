@@ -33,6 +33,7 @@ export interface ChatMessage {
 export interface ChatErrorInfo {
   code:
     | "not_found" // 404 — likely wrong Base URL / endpoint path
+    | "copilot_auth" // GitHub login could not be exchanged for a Copilot API token
     | "missing_provider_auth" // current model provider has no usable credentials
     | "unauthorized" // 401 / invalid api key
     | "provider_access" // 403 or upstream-normalized authentication/authorization rejection
@@ -72,6 +73,9 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
 
   if (/missing-provider-auth/i.test(text) || /no api key found for provider/i.test(text)) {
     return { code: "missing_provider_auth", raw: text, status };
+  }
+  if (/copilot token exchange failed/i.test(text)) {
+    return { code: "copilot_auth", raw: text, status };
   }
   if (/UNSUPPORTED_CHAT_MODEL/.test(text)) return { code: "unsupported_model", raw: text, status };
   if (
@@ -119,7 +123,13 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
 }
 
 export function requiresModelAuthRecovery(error: ChatErrorInfo | null): boolean {
-  return error?.code === "missing_provider_auth";
+  return error?.code === "missing_provider_auth" || error?.code === "copilot_auth";
+}
+
+export function modelAuthRecoveryInitialFamily(
+  error: ChatErrorInfo | null,
+): "github-copilot" | undefined {
+  return error?.code === "copilot_auth" ? "github-copilot" : undefined;
 }
 
 export function applyChatDelta(

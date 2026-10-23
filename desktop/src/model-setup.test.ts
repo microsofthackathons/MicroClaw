@@ -30,6 +30,25 @@ describe("hasConfiguredModel", () => {
     ).toBe(true);
   });
 
+  it("recognizes GitHub Copilot selected with either supported primary shape", () => {
+    expect(
+      hasConfiguredModel(
+        {
+          agents: { defaults: { model: { primary: "github-copilot/claude-opus-4.8" } } },
+        },
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      hasConfiguredModel(
+        {
+          agents: { defaults: { model: "github-copilot/gpt-5.4" } },
+        },
+        true,
+      ),
+    ).toBe(true);
+  });
+
   it("does not treat an empty provider map or unrelated primary as configured", () => {
     expect(hasConfiguredModel({ models: { providers: {} } })).toBe(false);
     expect(
@@ -39,11 +58,12 @@ describe("hasConfiguredModel", () => {
     ).toBe(false);
   });
 
-  it("does not treat removed Copilot-only configuration as a usable model", () => {
+  it("does not treat disabled Copilot-only configuration as a usable model", () => {
     const config = {
       models: { providers: { "github-copilot": { models: [{ id: "gpt-5" }] } } },
       agents: { defaults: { model: "github-copilot/gpt-5" } },
     };
     expect(hasConfiguredModel(config)).toBe(false);
+    expect(hasConfiguredModel(config, true)).toBe(true);
   });
 });

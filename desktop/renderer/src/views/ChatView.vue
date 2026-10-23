@@ -105,6 +105,7 @@
 
     <ModelSetupDialog
       v-model="modelSetupVisible"
+      :initial-family="modelSetupInitialFamily"
       :streaming="chatStore.streaming"
       @configured="handleModelConfigured"
     />
@@ -114,7 +115,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { ElMessage } from "element-plus";
-import { requiresModelAuthRecovery, useChatStore } from "@/stores/chat";
+import {
+  modelAuthRecoveryInitialFamily,
+  requiresModelAuthRecovery,
+  useChatStore,
+} from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
 import { t } from "@/i18n";
 import {
@@ -141,6 +146,7 @@ const threadRef = ref<HTMLDivElement>();
 const showNewMessages = ref(false);
 const isCompact = ref(window.innerHeight < 700);
 const modelSetupVisible = ref(false);
+const modelSetupInitialFamily = ref<"github-copilot" | undefined>();
 const pendingModelSetupMessage = ref("");
 const pendingModelSetupAttachments = ref<ChatAttachment[]>([]);
 const pendingAttachments = ref<ChatAttachment[]>([]);
@@ -279,6 +285,7 @@ watch(
   (error) => {
     if (!requiresModelAuthRecovery(error)) return;
     pendingModelSetupMessage.value = "";
+    modelSetupInitialFamily.value = modelAuthRecoveryInitialFamily(error);
     modelSetupVisible.value = true;
   },
 );
@@ -348,6 +355,7 @@ async function handleSend() {
     if (await needsModelSetupBeforeSend()) {
       pendingModelSetupMessage.value = text;
       pendingModelSetupAttachments.value = attachments;
+      modelSetupInitialFamily.value = undefined;
       modelSetupVisible.value = true;
       return;
     }

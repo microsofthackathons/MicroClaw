@@ -82,6 +82,18 @@ interface ClipboardImageInput {
   data: ArrayBuffer;
 }
 
+type GitHubCopilotLoginEvent =
+  | {
+      sessionId: string;
+      status: "code";
+      verificationUrl: string;
+      userCode: string;
+      expiresInMs: number;
+    }
+  | { sessionId: string; status: "success"; defaultModel?: string }
+  | { sessionId: string; status: "cancelled" }
+  | { sessionId: string; status: "error"; message: string };
+
 interface SkillEntry {
   id: string;
   name: string;
@@ -178,6 +190,9 @@ type UpdateCheckResult =
     };
 
 interface OpenClawAPI {
+  readonly features: {
+    readonly githubCopilot: boolean;
+  };
   gateway: {
     getPort(): Promise<number>;
     getStatus(): Promise<string>;
@@ -357,6 +372,13 @@ interface OpenClawAPI {
       modelName: string;
       reasoningEffort?: string;
     }): Promise<{ ok: boolean; message: string; baseUrl?: string }>;
+    prepareGitHubCopilot(): Promise<{ restartRequired: boolean }>;
+    startGitHubCopilotLogin(): Promise<{ sessionId: string }>;
+    cancelGitHubCopilotLogin(sessionId?: string): Promise<{ cancelled: boolean }>;
+    disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
+    getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
+    listGitHubCopilotModels(): Promise<Array<{ id: string; name: string }>>;
+    onGitHubCopilotLoginEvent(callback: (event: GitHubCopilotLoginEvent) => void): () => void;
   };
   window: {
     minimize(): Promise<void>;

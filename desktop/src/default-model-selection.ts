@@ -1,6 +1,10 @@
 import { GatewayRequestError } from "./gateway-client";
 import { assertChatModelSupported } from "./provider-model-capabilities";
-import { assertModelProviderSupported } from "./model-provider-policy";
+import { assertModelProviderEnabled } from "./internal-features";
+import {
+  parseGitHubCopilotGatewayAuthStatus,
+  parseGitHubCopilotGatewayModels,
+} from "./github-copilot-auth";
 import { supportsLocalModelGatewayVersion, type LocalModelGateway } from "./local-model-service";
 import {
   assertModelConfigUnchanged,
@@ -14,6 +18,7 @@ export interface DefaultModelSelection {
 }
 
 interface Dependencies {
+  githubCopilotEnabled?: boolean;
   gateway():
     | (Pick<
         LocalModelGateway,
@@ -55,7 +60,7 @@ export async function selectDefaultModel(
     );
   if (ref.startsWith("llama-cpp/"))
     throw new Error("Use local model selection so preparation and file checks are preserved");
-  assertModelProviderSupported(ref);
+  assertModelProviderEnabled(ref, deps.githubCopilotEnabled);
   assertChatModelSupported(ref);
   deps.assertMutable();
   let expectedConfig = params.expectedConfig;
@@ -97,12 +102,33 @@ export async function selectDefaultModel(
   const slash = ref.indexOf("/");
   const providerId = ref.slice(0, slash);
   const modelId = ref.slice(slash + 1);
-  const provider = object(object(object(config.models).providers)[providerId]);
-  if (
-    !Array.isArray(provider.models) ||
-    !provider.models.some((model) => object(model).id === modelId)
-  )
-    throw new Error("The selected model is not configured");
+  if (providerId === "github-copilot") {
+    for (const method of ["models.authStatus", "models.list"]) {
+      if (!gateway.methods.includes(method)) throw new Error(`Gateway does not support ${method}`);
+    }
+    const status = await request("models.authStatus", {});
+    if (!parseGitHubCopilotGatewayAuthStatus(status))
+      throw new Error("Sign in to GitHub Copilot before selecting a Copilot model");
+    const catalog = await request("models.list", { view: "all", preparedOnly: true });
+    if (!parseGitHubCopilotGatewayModels(catalog).some((model) => model.id === ref))
+      throw new Error("The selected model is not in the authenticated GitHub Copilot catalog");
+    const row = Array.isArray(catalog.models)
+      ? catalog.models
+          .map(object)
+          .find(
+            (model) => model.provider === providerId && (model.id === modelId || model.id === ref),
+          )
+      : undefined;
+    if (row?.available === false)
+      throw new Error("The selected GitHub Copilot model is unavailable");
+  } else {
+    const provider = object(object(object(config.models).providers)[providerId]);
+    if (
+      !Array.isArray(provider.models) ||
+      !provider.models.some((model) => object(model).id === modelId)
+    )
+      throw new Error("The selected model is not configured");
+  }
   assertModelConfigUnchanged(expectedConfig, deps.readConfig());
   if (getPrimaryModel(config) !== ref) {
     let result: Record<string, unknown>;

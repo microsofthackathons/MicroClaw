@@ -75,6 +75,7 @@ describe("SettingsView model integration", () => {
       memory: { provider: "existing" },
     };
     const api = createBrowserOpenClawMock();
+    Object.assign(api.features, { githubCopilot: true });
     api.config.read = vi.fn(async () => structuredClone(config));
     write = vi.fn(async (next) => {
       config = structuredClone(next);
@@ -121,12 +122,17 @@ describe("SettingsView model integration", () => {
     return { wrapper, chat: useChatStore(pinia) };
   }
 
-  it("omits removed Copilot cards and saved models without deleting configuration", async () => {
+  it("hides disabled Copilot cards and saved models without reading authentication or deleting configuration", async () => {
+    Object.assign(window.openclaw.features, { githubCopilot: false });
+    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
+    window.openclaw.model.listGitHubCopilotModels = vi.fn();
     const original = structuredClone(config);
     const { wrapper } = await open(true);
     expect(wrapper.find('[data-provider="github-copilot"]').exists()).toBe(false);
     expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("GitHub Copilot");
+    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     expect(config).toEqual(original);
   });
@@ -261,7 +267,7 @@ describe("SettingsView model integration", () => {
     expect(wrapper.text()).not.toContain("OpenAI-compatible API");
     expect(
       wrapper.findAll(".provider-card").map((card) => card.attributes("data-provider")),
-    ).toEqual(["qwen", "minimax", "llama-cpp"]);
+    ).toEqual(["github-copilot", "qwen", "minimax", "llama-cpp"]);
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -274,7 +280,9 @@ describe("SettingsView model integration", () => {
     expect(picker.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
       "true",
     );
-    expect(picker.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
+    expect(picker.get('[data-provider-group="github-copilot"]').attributes("aria-expanded")).toBe(
+      "false",
+    );
     await picker.get('[data-provider-group="llama-cpp"]').trigger("click");
     expect(picker.get('[data-model-ref="llama-cpp/saved"]').isVisible()).toBe(false);
     await picker.get(".model-search").setValue("cloud");
@@ -402,19 +410,19 @@ describe("SettingsView model integration", () => {
     expect(config.agents.defaults.model.primary).toBe("llama-cpp/saved");
   });
 
-  it("retains legacy Copilot data while switching from a local default to a supported cloud model", async () => {
+  it("retains saved Copilot rows and profiles when switching from a local default", async () => {
     const original = structuredClone(config);
     const { wrapper } = await open();
-    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).not.toContain(
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toContain(
       "github-copilot/gpt-5.4",
     );
-    await wrapper.get("select.model-picker-select").setValue("cloud/remote");
+    await wrapper.get("select.model-picker-select").setValue("github-copilot/gpt-5.4");
     await flushPromises();
     await vi.runAllTimersAsync();
     expect(config.models).toEqual(original.models);
     expect(config.auth).toEqual(original.auth);
     expect(config.agents.defaults.models).toEqual(original.agents.defaults.models);
-    expect(config.agents.defaults.model.primary).toBe("cloud/remote");
+    expect(config.agents.defaults.model.primary).toBe("github-copilot/gpt-5.4");
   });
 
   it("blocks changes during streaming but does not disable cloud entry for local setup state", async () => {
@@ -514,6 +522,22 @@ describe("SettingsView model integration", () => {
     expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
     expect(window.openclaw.model.selectDefault).toHaveBeenCalledOnce();
     expect(write).not.toHaveBeenCalled();
+  });
+
+  it("passes the original snapshot when disconnecting Copilot", async () => {
+    config.agents.defaults.model.primary = "github-copilot/gpt-5.4";
+    const original = structuredClone(config);
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="manage-provider-github-copilot"]').trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Disconnect")!
+      .trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    expect(write.mock.calls[0][1]).toEqual(original);
+    expect(config.agents.list).toEqual(original.agents.list);
   });
 
   it("shows the default agent override caveat and forwards it to local setup", async () => {
@@ -748,7 +772,7 @@ describe("SettingsView model integration", () => {
   it("uses accessible arrows to expand and collapse provider editors without duplicate key links", async () => {
     const { wrapper } = await open();
     expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
-    for (const id of ["qwen", "minimax"]) {
+    for (const id of ["qwen", "minimax", "github-copilot"]) {
       const button = wrapper.get(`[data-testid="manage-provider-${id}"]`);
       expect(button.text()).toBe("");
       expect(button.attributes("aria-expanded")).toBe("false");

@@ -144,7 +144,16 @@ On first launch, the desktop app opens a SetupWizard only when model configurati
 
 You can add or edit models any time under **Settings → Models**. Credentials are stored locally by the desktop app. If `.env` already contains `MODEL_BASE_URL`, `MODEL_API_KEY`, and `MODEL_NAME`, MicroClaw can prefill or auto-apply that configuration.
 
-GitHub Copilot is not supported in MicroClaw. Existing credentials and configuration are retained, but its models cannot be selected or used for desktop chats. Other cloud and local model providers remain available.
+#### Internal provider testing
+
+GitHub Copilot is disabled by default: it is absent from onboarding, model settings and model pickers, and the desktop rejects its sign-in and model-selection requests. Existing credentials and configuration are retained, but cannot be used for desktop chats while disabled. Internal testing can opt in by setting `MICROCLAW_INTERNAL_GITHUB_COPILOT=1` in the process environment **before starting MicroClaw** (including packaged builds). Fully exit an existing app instance first; the flag is not a persisted user setting and takes effect after restart. Browser-only development keeps Copilot disabled.
+
+```powershell
+$env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
+& "$HOME\.microclaw\MicroClawDesktop.exe"
+```
+
+Remove the environment variable and fully restart the app to disable the internal feature again. Other cloud and local model providers remain available.
 
 #### Local models (experimental)
 

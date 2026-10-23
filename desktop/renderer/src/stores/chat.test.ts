@@ -66,7 +66,13 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
-import { applyChatDelta, classifyChatError, requiresModelAuthRecovery, useChatStore } from "./chat";
+import {
+  applyChatDelta,
+  classifyChatError,
+  modelAuthRecoveryInitialFamily,
+  requiresModelAuthRecovery,
+  useChatStore,
+} from "./chat";
 import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
@@ -96,6 +102,14 @@ describe("classifyChatError", () => {
     },
   );
 
+  it("treats a Copilot token-exchange 404 as an authentication failure", () => {
+    expect(classifyChatError("Copilot token exchange failed: HTTP 404")).toEqual({
+      code: "copilot_auth",
+      raw: "Copilot token exchange failed: HTTP 404",
+      status: 404,
+    });
+  });
+
   it("keeps ordinary 404 responses classified as endpoint errors", () => {
     expect(classifyChatError("Request failed: HTTP 404")).toMatchObject({
       code: "not_found",
@@ -110,6 +124,13 @@ describe("classifyChatError", () => {
 
     expect(error).toMatchObject({ code: "missing_provider_auth" });
     expect(requiresModelAuthRecovery(error)).toBe(true);
+    expect(modelAuthRecoveryInitialFamily(error)).toBeUndefined();
+  });
+
+  it("opens Copilot directly only for an explicit Copilot token failure", () => {
+    const error = classifyChatError("Copilot token exchange failed: HTTP 403");
+
+    expect(modelAuthRecoveryInitialFamily(error)).toBe("github-copilot");
   });
 });
 

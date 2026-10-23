@@ -21,6 +21,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
   ];
 
   return {
+    features: { githubCopilot: false },
     gateway: {
       getStatus: async () => "running",
       getPort: async () => 18789,
@@ -320,6 +321,13 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         throw new Error("Model registration requires the desktop Gateway");
       },
       testConnection: async () => ({ ok: true, message: "Connection successful" }),
+      prepareGitHubCopilot: async () => ({ restartRequired: false }),
+      startGitHubCopilotLogin: async () => ({ sessionId: "browser-dev" }),
+      cancelGitHubCopilotLogin: async () => ({ cancelled: true }),
+      disconnectGitHubCopilot: async () => ({ disconnected: true, removedProfiles: 0 }),
+      getGitHubCopilotStatus: async () => ({ authenticated: false }),
+      listGitHubCopilotModels: async () => [],
+      onGitHubCopilotLoginEvent: noopSub,
     },
     plugin: {
       weixin: {

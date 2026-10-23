@@ -3,8 +3,12 @@ import { randomUUID } from "node:crypto";
 import { inspectLocalModelFiles } from "./local-model-files";
 import { GatewayRequestError } from "./gateway-client";
 import { assertChatModelSupported } from "./provider-model-capabilities";
-import { assertModelProviderSupported } from "./model-provider-policy";
+import { assertModelProviderEnabled } from "./internal-features";
 import { supportsLocalModelGatewayVersion, validateLocalModelUrl } from "./local-model-service";
+import {
+  parseGitHubCopilotGatewayAuthStatus,
+  parseGitHubCopilotGatewayModels,
+} from "./github-copilot-auth";
 import type { LocalModelGateway } from "./local-model-service";
 import type { SessionModelRecovery, SessionModelState } from "./session-model-types";
 
@@ -15,6 +19,7 @@ interface SessionModelGateway extends LocalModelGateway {
 }
 
 interface Dependencies {
+  githubCopilotEnabled?: boolean;
   gateway(): SessionModelGateway | null;
   readConfig(): unknown;
   /** Must synchronously reject active chats, other model operations and locked configurations. */
@@ -468,6 +473,7 @@ export class SessionModelService {
   }
 
   private async validateModel(
+    ctx: Context,
     config: JsonObject,
     agentId: string,
     ref: string,
@@ -478,13 +484,39 @@ export class SessionModelService {
     const providerId = ref.slice(0, slash);
     const modelId = ref.slice(slash + 1);
     const provider = object(object(object(config.models).providers)[providerId]);
-    if (
-      !Array.isArray(provider.models) ||
-      !provider.models.some((value) => object(value).id === modelId)
-    ) {
-      throw new Error("The selected model is not configured");
+    if (providerId !== "github-copilot") {
+      if (
+        !Array.isArray(provider.models) ||
+        !provider.models.some((value) => object(value).id === modelId)
+      ) {
+        throw new Error("The selected model is not configured");
+      }
+      this.assertLocalFiles(config, ref);
+      return;
     }
-    this.assertLocalFiles(config, ref);
+    if (
+      !ctx.gateway.methods.includes("models.authStatus") ||
+      !ctx.gateway.methods.includes("models.list")
+    ) {
+      throw new Error("Gateway cannot validate GitHub Copilot authentication and models");
+    }
+    const status = await this.request(ctx, "models.authStatus", { agentId });
+    if (!parseGitHubCopilotGatewayAuthStatus(status)) {
+      throw new Error("Sign in to GitHub Copilot before selecting a Copilot model");
+    }
+    const catalog = await this.request(ctx, "models.list", {
+      agentId,
+      view: "all",
+      preparedOnly: true,
+    });
+    if (!parseGitHubCopilotGatewayModels(catalog).some((model) => model.id === ref)) {
+      throw new Error("The selected model is not in the authenticated GitHub Copilot catalog");
+    }
+    const row = (catalog.models as unknown[])
+      .map(object)
+      .find((model) => model.provider === providerId && (model.id === modelId || model.id === ref));
+    if (row?.available === false)
+      throw new Error("The selected GitHub Copilot model is unavailable");
   }
 
   async select(input: unknown): Promise<SessionModelState> {
@@ -494,7 +526,7 @@ export class SessionModelService {
     }
     const key = sessionKey(params.sessionKey);
     const ref = params.modelRef === null ? null : modelReference(params.modelRef);
-    assertModelProviderSupported(ref);
+    assertModelProviderEnabled(ref, this.deps.githubCopilotEnabled);
     if (ref !== null) assertChatModelSupported(ref);
     this.assertIdle();
     this.deps.assertMutable();
@@ -543,8 +575,8 @@ export class SessionModelService {
           )
         : before.state.modelRef;
       const selected = ref ?? inheritedModelRef;
-      assertModelProviderSupported(selected);
-      if (ref !== null) await this.validateModel(cfg, before.agentId, ref, inheritedModelRef);
+      assertModelProviderEnabled(selected, this.deps.githubCopilotEnabled);
+      if (ref !== null) await this.validateModel(ctx, cfg, before.agentId, ref, inheritedModelRef);
       const latest = await this.config(ctx);
       if (latest.hash !== snapshot.hash)
         throw new Error("Gateway configuration changed; reload the session model");

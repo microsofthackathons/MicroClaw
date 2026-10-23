@@ -12,8 +12,8 @@ const PopoverStub = defineComponent({
   template: `<div><div @click="$emit('update:visible', !visible)"><slot name="reference" /></div><div v-show="visible"><slot /></div></div>`,
 });
 const models: ConfiguredModel[] = [
-  { providerKey: "enterprise", id: "gpt-5.5", name: "GPT-5.5", source: "custom" },
-  { providerKey: "enterprise", id: "claude", name: "Claude", source: "custom" },
+  { providerKey: "github-copilot", id: "gpt-5.5", name: "GPT-5.5", source: "auth-managed" },
+  { providerKey: "github-copilot", id: "claude", name: "Claude", source: "auth-managed" },
   { providerKey: "llama-cpp", id: "qwen3.5-4b-q4_k_m", name: "Qwen3.5 4B", source: "managed" },
   { providerKey: "llama-cpp", id: "qwen3.5-9b-q4_k_m", name: "Qwen3.5 9B", source: "managed" },
 ];
@@ -28,7 +28,7 @@ async function open(realPopover = false) {
     attachTo: document.body,
     props: {
       models,
-      modelValue: "enterprise/gpt-5.5",
+      modelValue: "github-copilot/gpt-5.5",
       modelStatus: (model) => (model.providerKey === "llama-cpp" ? "Not downloaded" : ""),
     },
     global: {
@@ -95,18 +95,18 @@ describe("DefaultModelPicker", () => {
   it("groups the settings default list and expands only the current default's provider", async () => {
     const wrapper = await open();
     expect(wrapper.get('[data-testid="default-model-picker"]').text()).toContain(
-      "enterprise · GPT-5.5",
+      "GitHub Copilot · GPT-5.5",
     );
-    expect(wrapper.get('[data-provider-group="enterprise"]').attributes("aria-expanded")).toBe(
+    expect(wrapper.get('[data-provider-group="github-copilot"]').attributes("aria-expanded")).toBe(
       "true",
     );
     expect(wrapper.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
       "false",
     );
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen3.5-4b-q4_k_m"]').isVisible()).toBe(false);
-    await wrapper.get('[data-provider-group="enterprise"]').trigger("click");
+    await wrapper.get('[data-provider-group="github-copilot"]').trigger("click");
     await wrapper.get('[data-provider-group="llama-cpp"]').trigger("click");
-    expect(wrapper.get('[data-model-ref="enterprise/gpt-5.5"]').isVisible()).toBe(false);
+    expect(wrapper.get('[data-model-ref="github-copilot/gpt-5.5"]').isVisible()).toBe(false);
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen3.5-4b-q4_k_m"]').isVisible()).toBe(true);
     expect(wrapper.emitted("change")).toBeUndefined();
   });
@@ -115,11 +115,11 @@ describe("DefaultModelPicker", () => {
     const wrapper = await open();
     await wrapper.get(".model-search").setValue("qwen");
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen3.5-4b-q4_k_m"]').isVisible()).toBe(true);
-    expect(wrapper.find('[data-provider-group="enterprise"]').exists()).toBe(false);
+    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
     await wrapper.get(".model-search").setValue("absent");
     expect(wrapper.text()).toContain("No matching models.");
     await wrapper.get(".clear-search").trigger("click");
-    expect(wrapper.get('[data-provider-group="enterprise"]').attributes("aria-expanded")).toBe(
+    expect(wrapper.get('[data-provider-group="github-copilot"]').attributes("aria-expanded")).toBe(
       "true",
     );
     expect(wrapper.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
@@ -143,11 +143,11 @@ describe("DefaultModelPicker", () => {
 
   it("preserves collapsed groups on reopening and refreshes the current default without inventing one", async () => {
     const wrapper = await open();
-    await wrapper.get('[data-provider-group="enterprise"]').trigger("click");
+    await wrapper.get('[data-provider-group="github-copilot"]').trigger("click");
     await wrapper.get('[data-testid="default-model-picker"]').trigger("click");
     await wrapper.get('[data-testid="default-model-picker"]').trigger("click");
     await wrapper.setProps({ models: [...models] });
-    expect(wrapper.get('[data-provider-group="enterprise"]').attributes("aria-expanded")).toBe(
+    expect(wrapper.get('[data-provider-group="github-copilot"]').attributes("aria-expanded")).toBe(
       "false",
     );
     await wrapper.setProps({ modelValue: "" });
@@ -165,7 +165,7 @@ describe("DefaultModelPicker", () => {
     expect(wrapper.get('[data-testid="default-model-picker"]').attributes("aria-expanded")).toBe(
       "false",
     );
-    await wrapper.get('[data-model-ref="enterprise/gpt-5.5"]').trigger("click");
+    await wrapper.get('[data-model-ref="github-copilot/gpt-5.5"]').trigger("click");
     expect(wrapper.emitted("change")).toBeUndefined();
   });
 });
