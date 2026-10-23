@@ -51,7 +51,6 @@ export default {
   "sidebar.tagline": "Weave the future through conversation",
   "sidebar.usageSnapshotTitle": "Usage",
   "sidebar.usageSnapshotViewDetails": "Details",
-  "sidebar.usageSnapshotSpend": "Spend",
   "sidebar.usageSnapshotTokens": "Tokens",
   "sidebar.usageSnapshotRequests": "Requests",
   "sidebar.usageSnapshotHealth": "Health",

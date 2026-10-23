@@ -49,7 +49,6 @@ export default {
   "sidebar.tagline": "透过对话，编织万物未来",
   "sidebar.usageSnapshotTitle": "使用情况",
   "sidebar.usageSnapshotViewDetails": "查看详情",
-  "sidebar.usageSnapshotSpend": "花费",
   "sidebar.usageSnapshotTokens": "Tokens",
   "sidebar.usageSnapshotRequests": "请求",
   "sidebar.usageSnapshotHealth": "状态",
