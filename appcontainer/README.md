@@ -65,7 +65,13 @@ path, trusted runtime caller, supported mode, and a canonical database path
 inside the OpenClaw state directory. Redirected or malformed staging roots are
 rejected; this does not allow arbitrary Node commands outside the sandbox.
 Scoped SQLite sessions validate each IPC request before the runtime handles it;
-database requests must stay inside the canonical state directory. The separate
+database requests must stay inside the canonical state directory. OpenClaw
+2026.10.5 reads may include mode-specific `auth` or `operation` metadata carrying
+the captured file identity, an optional artifact-preserving flag, and an encoded
+read-only operation command. Only these known fields and types are accepted;
+OpenClaw still verifies the physical file identity and admits the read operation.
+Snapshot, staging, and transfer messages retain their two-field envelope. This
+shared session path serves cloud providers and local models alike. The separate
 state-ownership reader is restricted to its exact worker, caller, and database
 argument. Worker-thread startup uses the package root captured from the desktop
 when Node has not initialized the worker's entry arguments yet.

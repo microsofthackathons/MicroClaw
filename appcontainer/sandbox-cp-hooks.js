@@ -421,13 +421,18 @@ function isOpenClawInternalSqliteSessionMessage(message, runtime) {
     typeof message !== "object" ||
     Array.isArray(message) ||
     !Number.isSafeInteger(message.id) ||
-    message.id < 1 ||
-    Object.keys(message).length !== 2
+    message.id < 1
   ) {
     return false;
   }
   if (message.transfer) {
-    if (typeof message.transfer !== "object" || Array.isArray(message.transfer)) return false;
+    if (
+      Object.keys(message).length !== 2 ||
+      typeof message.transfer !== "object" ||
+      Array.isArray(message.transfer)
+    ) {
+      return false;
+    }
     return (
       Object.keys(message.transfer).length === 2 &&
       (message.transfer.type === "next" || message.transfer.type === "end") &&
@@ -448,6 +453,31 @@ function isOpenClawInternalSqliteSessionMessage(message, runtime) {
   }
   var mode = args[0];
   var target = args[1];
+  var metadataKey = mode === "operation" ? "operation" : mode === "auth-profile-rows" ? "auth" : "";
+  var hasMetadata = metadataKey && Object.prototype.hasOwnProperty.call(message, metadataKey);
+  if (Object.keys(message).length !== (hasMetadata ? 3 : 2)) return false;
+  if (hasMetadata) {
+    var metadata = message[metadataKey];
+    if (
+      !metadata ||
+      typeof metadata !== "object" ||
+      Array.isArray(metadata) ||
+      typeof metadata.expectedIdentity !== "string" ||
+      !metadata.expectedIdentity.startsWith("file:") ||
+      (metadata.artifactPreserving !== undefined &&
+        typeof metadata.artifactPreserving !== "boolean") ||
+      (mode === "operation" && typeof metadata.command !== "string") ||
+      !Object.keys(metadata).every(function (key) {
+        return (
+          key === "expectedIdentity" ||
+          key === "artifactPreserving" ||
+          (mode === "operation" && key === "command")
+        );
+      })
+    ) {
+      return false;
+    }
+  }
   if (!pathMod.isAbsolute(target)) return false;
   if (mode === "staging-create" || mode === "staging-create-legacy") {
     return args.length === 2 && isOpenClawSqliteStagingParent(target, runtime);

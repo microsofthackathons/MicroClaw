@@ -2680,6 +2680,74 @@ describe("OpenClaw internal SQLite worker", () => {
     ).toBe(false);
   });
 
+  it.each(["auth-profile-rows", "operation"])(
+    "accepts 10.5 %s metadata without weakening database scope",
+    (mode) => {
+      const metadata = {
+        expectedIdentity: "file:1:2",
+        ...(mode === "operation" ? { command: "AA==" } : {}),
+      };
+      const metadataKey = mode === "operation" ? "operation" : "auth";
+      const message = { id: 1, args: [mode, args[3]], [metadataKey]: metadata };
+      for (const artifactPreserving of [undefined, false, true]) {
+        expect(
+          cpHooks.isOpenClawInternalSqliteSessionMessage(
+            { ...message, [metadataKey]: { ...metadata, artifactPreserving } },
+            runtime,
+          ),
+        ).toBe(true);
+      }
+      expect(cpHooks.isOpenClawInternalSqliteSessionMessage(message, runtime)).toBe(true);
+      expect(
+        cpHooks.isOpenClawInternalSqliteSessionMessage(
+          { ...message, args: [mode, path.join(localAppData, "outside.sqlite")] },
+          runtime,
+        ),
+      ).toBe(false);
+      expect(
+        cpHooks.isOpenClawInternalSqliteSessionMessage(message, {
+          ...runtime,
+          realpath: (value: string) =>
+            value === args[3] ? path.join(localAppData, "outside.sqlite") : runtime.realpath(value),
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    { args: ["sync", args[3]], auth: { expectedIdentity: "file:1:2" } },
+    { args: ["staging-create", path.join(localAppData, "openclaw")], auth: {} },
+    { args: ["operation", args[3]], auth: { expectedIdentity: "file:1:2" } },
+    { args: ["auth-profile-rows", args[3]], operation: { expectedIdentity: "file:1:2" } },
+    { args: ["auth-profile-rows", args[3]], auth: null },
+    { args: ["auth-profile-rows", args[3]], auth: [] },
+    { args: ["auth-profile-rows", args[3]], auth: {} },
+    { args: ["auth-profile-rows", args[3]], auth: { expectedIdentity: 1 } },
+    { args: ["auth-profile-rows", args[3]], auth: { expectedIdentity: "other:1:2" } },
+    {
+      args: ["auth-profile-rows", args[3]],
+      auth: { expectedIdentity: "file:1:2", artifactPreserving: "true" },
+    },
+    {
+      args: ["auth-profile-rows", args[3]],
+      auth: { expectedIdentity: "file:1:2", command: "AA==" },
+    },
+    { args: ["operation", args[3]], operation: { expectedIdentity: "file:1:2" } },
+    {
+      args: ["operation", args[3]],
+      operation: { expectedIdentity: "file:1:2", command: {} },
+    },
+    {
+      args: ["operation", args[3]],
+      operation: { expectedIdentity: "file:1:2", command: "AA==", extra: true },
+    },
+    { transfer: { type: "next", transferId: 1 }, auth: { expectedIdentity: "file:1:2" } },
+  ])("rejects malformed or misplaced SQLite read metadata: %j", (request) => {
+    expect(cpHooks.isOpenClawInternalSqliteSessionMessage({ id: 1, ...request }, runtime)).toBe(
+      false,
+    );
+  });
+
   it("accepts the trusted package directory used before Node initializes argv[1]", () => {
     expect(
       cpHooks.isOpenClawInternalSqliteWorkerCommand(execPath, args, stack, {

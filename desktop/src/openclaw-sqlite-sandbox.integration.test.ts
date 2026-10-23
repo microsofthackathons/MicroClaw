@@ -169,7 +169,7 @@ describe.skipIf(!publishedPackage || process.platform !== "win32")(
         const metadata = JSON.parse(
           readFileSync(path.join(publishedPackage!, "package.json"), "utf8"),
         );
-        expect(metadata.version).toBe("2026.10.3");
+        expect(metadata.version).toBe("2026.10.5");
         const stateDir = path.join(root, "state");
         const localAppData = path.join(root, "local");
         const tempDir = path.join(root, "temp");
@@ -204,9 +204,18 @@ const invocation = hooks.buildInternalSqliteWorkerInvocation([], {
 assert.equal(invocation.options.env.NODE_COMPILE_CACHE, process.env.NODE_COMPILE_CACHE);
 assert.equal(invocation.options.env.NODE_OPTIONS, undefined);
 assert.equal(sandbox.state.sandboxActive, true);
-const worker = await import(pathToFileURL(path.join(packageRoot, "dist", "sqlite-readonly-worker-DPlfD0t8.mjs")).href);
-const stagingRuntime = await import(pathToFileURL(path.join(packageRoot, "dist", "sqlite-snapshot-staging-DxUHqJpO.mjs")).href);
-const cleanupRuntime = await import(pathToFileURL(path.join(packageRoot, "dist", "sqlite-readonly-location-cleanup-CPS8QEIp.mjs")).href);
+async function importChunk(prefix, exportName) {
+  const dist = path.join(packageRoot, "dist");
+  for (const name of fs.readdirSync(dist)) {
+    if (!name.startsWith(prefix) || name.length !== prefix.length + 12 || !name.endsWith(".mjs")) continue;
+    const candidate = await import(pathToFileURL(path.join(dist, name)).href);
+    if (typeof candidate[exportName] === "function") return candidate;
+  }
+  throw new Error("Missing OpenClaw runtime export: " + exportName);
+}
+const worker = await importChunk("sqlite-readonly-worker-", "runSqliteReadOnlyWorker");
+const stagingRuntime = await importChunk("sqlite-snapshot-staging-", "r");
+const cleanupRuntime = await importChunk("sqlite-readonly-location-cleanup-", "c");
 for (const mode of ["sync", "async", "session"]) {
   const staging = stagingRuntime.r(path.join(process.env.LOCALAPPDATA, "openclaw"));
   assert.match(path.basename(staging), /^openclaw-sqlite-readonly-v2-/);
@@ -222,6 +231,27 @@ for (const mode of ["sync", "async", "session"]) {
   fs.readdirSync(staging);
   assert.equal(cleanupRuntime.c(staging), true);
 }
+const identity = fs.statSync(databasePath, { bigint: true });
+const expectedIdentity = "file:" + identity.dev + ":" + identity.ino;
+const reads = worker.createScopedSqliteReadOnlyWorker(worker.captureSqliteReadOnlyWorkerLaunch());
+try {
+  for (const artifactPreserving of [false, true]) {
+    const auth = await reads.run(databasePath, { mode: "auth-profile-rows", expectedIdentity, artifactPreserving });
+    assert.equal(typeof auth.store.status, "string");
+    assert.equal(typeof auth.state.status, "string");
+    const operation = await reads.run(databasePath, {
+      mode: "operation",
+      expectedIdentity,
+      artifactPreserving,
+      command: { type: "pluginCatalog.read", input: { agentId: "main", pluginIds: [] } },
+    });
+    assert.equal(operation.operation, "pluginCatalog.read");
+    assert.deepEqual(operation.value, []);
+  }
+} finally {
+  await reads.close();
+}
+console.log("SQLite auth and operation metadata verified with sandbox active");
 const outsideDatabasePath = path.join(process.env.TEMP, "outside.sqlite");
 const outsideDatabase = new DatabaseSync(outsideDatabasePath);
 outsideDatabase.exec("CREATE TABLE secret (value TEXT);");
@@ -268,6 +298,7 @@ console.log("SQLite sync/async snapshots and cleanup verified with sandbox activ
         expect(result.stderr).toContain("spawn: OpenClaw SQLite worker -> BYPASS (internal IPC)");
         expect(result.stderr).not.toMatch(/permission requested|BLOCKED \(permission\)/i);
         expect(result.stdout).toContain("SQLite sync/async snapshots and cleanup verified");
+        expect(result.stdout).toContain("SQLite auth and operation metadata verified");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

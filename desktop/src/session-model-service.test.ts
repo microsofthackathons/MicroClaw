@@ -161,6 +161,39 @@ describe("removed GitHub Copilot session models", () => {
 });
 
 describe("session model reads", () => {
+  it.each(["qwen/qwen3.8-27b", "minimax/MiniMax-M2.5", "llama-cpp/local"])(
+    "uses the same session RPCs for the inherited and selected %s model",
+    async (modelRef) => {
+      const f = fixture();
+      const defaults = (f.config.agents as Row).defaults as Row;
+      defaults.model = { primary: modelRef };
+      await expect(f.service.get("chat")).resolves.toEqual({
+        sessionKey: "agent:main:chat",
+        modelRef,
+        overridden: false,
+      });
+      expect(f.request.mock.calls.map(([method]) => method)).toEqual([
+        "sessions.describe",
+        "config.get",
+        "sessions.list",
+      ]);
+      f.sessions.set("agent:main:chat", {
+        key: "agent:main:chat",
+        agentId: "main",
+        modelProvider: modelRef.slice(0, modelRef.indexOf("/")),
+        model: modelRef.slice(modelRef.indexOf("/") + 1),
+        modelOverrideSource: "user",
+      });
+      await expect(f.service.get("chat")).resolves.toEqual({
+        sessionKey: "agent:main:chat",
+        modelRef,
+        overridden: true,
+      });
+      expect(f.sessions.size).toBe(1);
+      expect(f.patches()).toEqual([]);
+    },
+  );
+
   it("uses the same canonical identity for send/terminal-event chat guards", () => {
     const f = fixture();
     expect(sessionModelChatKey(f.config, "main")).toBe(
