@@ -619,7 +619,9 @@ describe("SettingsView model integration", () => {
       expect(card.find(".provider-model-row").exists()).toBe(false);
       expect(card.text()).not.toContain("Saved model one");
       expect(card.text()).not.toContain("Saved model two");
-      expect(card.text()).not.toContain("Remove connection");
+      expect(card.get(`[data-testid="remove-provider-${provider}"]`).text()).toBe(
+        "Remove connection",
+      );
       expect(card.findAll("button").some((button) => button.text() === "Edit")).toBe(false);
       expect(
         wrapper.getComponent({ name: "ModelSetupDialog" }).props("currentProvider"),
@@ -633,6 +635,115 @@ describe("SettingsView model integration", () => {
       expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["qwen", "minimax"])(
+    "removes the last %s connection and its key after confirmation without selecting a fallback",
+    async (provider) => {
+      config.models.providers = {
+        [provider]: {
+          apiKey: "saved-key",
+          models: [{ id: "one" }, { id: "two" }],
+        },
+      };
+      config.agents = {
+        defaults: {
+          model: { primary: `${provider}/one` },
+          models: { [`${provider}/one`]: {}, [`${provider}/two`]: {} },
+        },
+      };
+      const original = structuredClone(config);
+      const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+      const { wrapper } = await open();
+      await wrapper.get(`[data-testid="manage-provider-${provider}"]`).trigger("click");
+      await flushPromises();
+      await wrapper.get(`[data-testid="remove-provider-${provider}"]`).trigger("click");
+      await flushPromises();
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledExactlyOnceWith(config, original);
+      expect(config.models.providers).toEqual({});
+      expect(config.agents.defaults.model).toBeUndefined();
+      expect(config.agents.defaults.models).toBeUndefined();
+      expect(wrapper.get(`[data-provider="${provider}"]`).text()).toContain("Not configured");
+      expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
+      expect(window.openclaw.gateway.restart).toHaveBeenCalledOnce();
+      expect(window.openclaw.model.selectDefault).not.toHaveBeenCalled();
+      expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["cancel", "close"])(
+    "keeps the connection when removal is dismissed with %s",
+    async (action) => {
+      config.models.providers.qwen = { apiKey: "saved-key", models: [{ id: "one" }] };
+      const original = structuredClone(config);
+      vi.spyOn(ElMessageBox, "confirm").mockRejectedValue(action);
+      const error = vi.spyOn(ElMessage, "error");
+      const { wrapper } = await open();
+      await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="remove-provider-qwen"]').trigger("click");
+      await flushPromises();
+      expect(config).toEqual(original);
+      expect(write).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks provider removal during streaming and rechecks before writing", async () => {
+    config.models.providers.qwen = { apiKey: "saved-key", models: [{ id: "one" }] };
+    const original = structuredClone(config);
+    let confirmRemoval!: () => void;
+    vi.spyOn(ElMessageBox, "confirm").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          confirmRemoval = () => resolve("confirm" as never);
+        }),
+    );
+    const { wrapper, chat } = await open();
+    await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    chat.streaming = true;
+    await flushPromises();
+    const remove = wrapper.get('[data-testid="remove-provider-qwen"]');
+    expect(remove.attributes("disabled")).toBeDefined();
+    chat.streaming = false;
+    await flushPromises();
+    await remove.trigger("click");
+    await flushPromises();
+    chat.streaming = true;
+    confirmRemoval();
+    await flushPromises();
+    expect(write).not.toHaveBeenCalled();
+    expect(config).toEqual(original);
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved key and model selection when provider removal fails a stale-write check", async () => {
+    config.models.providers.qwen = { apiKey: "saved-key", models: [{ id: "one" }] };
+    config.agents.defaults.model.primary = "qwen/one";
+    const original = structuredClone(config);
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    write.mockRejectedValueOnce(new Error("Configuration changed; reload before saving"));
+    const error = vi.spyOn(ElMessage, "error");
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="remove-provider-qwen"]').trigger("click");
+    await flushPromises();
+    expect(write.mock.calls[0]![1]).toEqual(original);
+    expect(config).toEqual(original);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("Configuration changed"));
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+  });
+
+  it("does not offer connection removal for unconfigured managed providers", async () => {
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="remove-provider-qwen"]').exists()).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
 
   it("uses accessible arrows to expand and collapse provider editors without duplicate key links", async () => {
     const { wrapper } = await open();

@@ -700,6 +700,10 @@ export default {
   "modelManager.configure": "Manage",
   "modelManager.add": "Configure",
   "modelManager.edit": "Edit",
+  "modelManager.removeProviderTitle": "Remove model connection",
+  "modelManager.removeProviderConfirm":
+    "Remove the {provider} connection, its saved API key, and model configuration? Related default and agent model selections will also be cleared. Conversations will stay, and no other model will be selected automatically. External environment variables and authentication credentials will not be deleted.",
+  "modelManager.providerRemoved": "Model connection removed",
   "modelManager.notConfigured": "Not configured",
   "modelManager.localHint":
     "Qwen3.5 4B, 9B, 35B-A3B and Qwen3.8 27B. Models download from ModelScope on demand.",

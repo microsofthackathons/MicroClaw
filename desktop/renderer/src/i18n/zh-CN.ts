@@ -660,6 +660,10 @@ export default {
   "modelManager.configure": "管理",
   "modelManager.add": "配置",
   "modelManager.edit": "编辑",
+  "modelManager.removeProviderTitle": "移除模型连接",
+  "modelManager.removeProviderConfirm":
+    "移除{provider}的连接、连接中保存的 API Key 和模型配置？相关的默认模型和智能体模型选择也会清除，但不会删除对话或自动选择其他模型。外部环境变量和授权凭据不会被删除。",
+  "modelManager.providerRemoved": "模型连接已移除",
   "modelManager.notConfigured": "未配置",
   "modelManager.localHint": "支持 Qwen3.5 4B、9B、35B-A3B 和 Qwen3.8 27B，模型从魔搭按需下载。",
   "fixedLocal.downloadConsent":
