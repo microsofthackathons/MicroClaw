@@ -128,7 +128,6 @@ describe("i18n", () => {
 
   it("localizes the global MXC folder policy and remediation", () => {
     setLocale("en-US");
-    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("Security diagnostics");
     expect(
       t("settings.windowsNodeMxcCompactStatus", {
         mode: t("settings.windowsNodeMxcModeLimited"),
@@ -143,6 +142,10 @@ describe("i18n", () => {
     );
     expect(t("settings.windowsNodeMxcProtected")).toBe("Protected");
     expect(t("settings.windowsNodeMxcStarting")).toBe("Starting");
+    expect(t("settings.windowsNodeMxcStopping")).toBe("Turning MXC off");
+    expect(t("settings.windowsNodeMxcOffDisclosure")).toBe(
+      "MXC is off. Tools run without MXC isolation.",
+    );
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("Action required");
     expect(t("settings.windowsNodeMxcFolders")).toBe("Global MXC approved folders");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("global capability ceiling");
@@ -161,7 +164,6 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcAmbientCategory.browser-edge")).toBe("Edge data");
 
     setLocale("zh-CN");
-    expect(t("settings.windowsNodeMxcTechnicalDetails")).toBe("安全诊断");
     expect(
       t("settings.windowsNodeMxcCompactStatus", {
         mode: t("settings.windowsNodeMxcModeLimited"),
@@ -174,6 +176,10 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe("所选文件夹授权前的环境访问");
     expect(t("settings.windowsNodeMxcProtected")).toBe("已保护");
     expect(t("settings.windowsNodeMxcStarting")).toBe("正在启动");
+    expect(t("settings.windowsNodeMxcStopping")).toBe("正在关闭 MXC");
+    expect(t("settings.windowsNodeMxcOffDisclosure")).toBe(
+      "MXC 已关闭。工具运行时不受 MXC 隔离保护。",
+    );
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("需要操作");
     expect(t("settings.windowsNodeMxcFolders")).toBe("MXC 全局批准文件夹");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("全局能力上限");

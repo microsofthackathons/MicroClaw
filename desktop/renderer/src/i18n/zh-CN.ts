@@ -368,6 +368,7 @@ export default {
   "settings.windowsNodeMxcStatusActive": "已启用",
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "隔离 — 已关闭",
+  "settings.windowsNodeMxcOffDisclosure": "MXC 已关闭。工具运行时不受 MXC 隔离保护。",
   "settings.windowsNodeMxcHooksPausedBoth":
     "MXC 处于已锁定或已激活状态时，Webhook 和内部钩子始终暂停。请求会被拒绝，内部事件会被丢弃，且均不会重放。",
   "settings.windowsNodeMxcHooksPausedExternal":
@@ -385,9 +386,9 @@ export default {
   "settings.windowsNodeMxcBlocked": "已阻止（故障关闭）",
   "settings.windowsNodeMxcProtected": "已保护",
   "settings.windowsNodeMxcStarting": "正在启动",
+  "settings.windowsNodeMxcStopping": "正在关闭 MXC",
   "settings.windowsNodeMxcActionRequired": "需要操作",
   "settings.windowsNodeMxcProtectionOff": "已关闭",
-  "settings.windowsNodeMxcTechnicalDetails": "安全诊断",
   "settings.windowsNodeMxcUnavailable": "不可用",
   "settings.windowsNodeMxcAvailable": "可用",
   "settings.windowsNodeMxcMissing": "缺失",
@@ -518,10 +519,6 @@ export default {
   "settings.windowsNodeMxcNotRun": "尚未运行",
   "settings.windowsNodeMxcActivationLease": "激活租约",
   "settings.windowsNodeMxcGatewayGeneration": "网关代次",
-  "settings.windowsNodeMxcCompatibility":
-    "MXC 0.7 下 PowerShell 需要“允许 Windows UI API”。这是兼容性放宽，并不启用屏幕、输入或其他 UI 能力。MXC 是唯一的工具执行沙箱；关闭后不使用沙箱。",
-  "settings.windowsNodeMxcDegraded":
-    "警告：此计算机使用基于 DACL 的降级 MXC 隔离。除非其余所有证明均通过，否则执行仍会被阻止。",
   "settings.externalApps": "允许在沙箱外运行的应用",
   "settings.externalAppsHint":
     "以下应用在被 AI 工具调用时将在沙箱外运行，因为它们需要 COM/RPC 等系统访问。仅添加你信任的应用。",

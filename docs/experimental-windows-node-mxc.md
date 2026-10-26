@@ -48,6 +48,17 @@ MicroClaw exposes three explicit requested states:
 | **Limited containment (DACL)** | `appcontainer-dacl` only | Selected roots are additive ACL grants; ambient Windows ACL access can remain |
 | **Off** | No bundled MXC host | Tools run unsandboxed with the current Windows account's permissions; no legacy backend |
 
+When MXC is confirmed Off, Security settings show only the three mode cards and a concise
+unsandboxed-execution disclosure. Folder policies, remembered commands, and the concise
+ambient-access summary reappear when containment is selected; hiding them does not clear saved settings.
+Selecting Off alone does not hide an incomplete transition, remaining MXC activity, or unresolved
+lifecycle/folder-policy recovery errors.
+
+Security settings do not display the internal attestation diagnostics or the verbose compatibility,
+probe, readiness-blocker, and remediation dump. Mode availability, concise protection status, and
+lifecycle/folder-policy recovery errors remain visible. This presentation change does not disable
+any containment, policy, approval, or readiness checks.
+
 Every explicit user transition from Off to Full or Limited, and every explicit switch between Full
 and Limited, first opens an in-app capability-disclosure consent dialog for the target mode. The
 dialog appears before backend preflight, requested-mode persistence, Gateway or Node shutdown,

@@ -392,6 +392,7 @@ export default {
   "settings.windowsNodeMxcStatusActive": "Active",
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "Containment — Off",
+  "settings.windowsNodeMxcOffDisclosure": "MXC is off. Tools run without MXC isolation.",
   "settings.windowsNodeMxcHooksPausedBoth":
     "Webhooks and internal hooks stay paused in MXC Locked and Active states. Requests are rejected, internal events are dropped, and neither is replayed.",
   "settings.windowsNodeMxcHooksPausedExternal":
@@ -410,9 +411,9 @@ export default {
   "settings.windowsNodeMxcBlocked": "Blocked (fail closed)",
   "settings.windowsNodeMxcProtected": "Protected",
   "settings.windowsNodeMxcStarting": "Starting",
+  "settings.windowsNodeMxcStopping": "Turning MXC off",
   "settings.windowsNodeMxcActionRequired": "Action required",
   "settings.windowsNodeMxcProtectionOff": "Off",
-  "settings.windowsNodeMxcTechnicalDetails": "Security diagnostics",
   "settings.windowsNodeMxcUnavailable": "Unavailable",
   "settings.windowsNodeMxcAvailable": "Available",
   "settings.windowsNodeMxcMissing": "Missing",
@@ -551,10 +552,6 @@ export default {
   "settings.windowsNodeMxcNotRun": "Not run",
   "settings.windowsNodeMxcActivationLease": "Activation lease",
   "settings.windowsNodeMxcGatewayGeneration": "Gateway generation",
-  "settings.windowsNodeMxcCompatibility":
-    "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. MXC is the only tool execution sandbox; Off runs without sandboxing.",
-  "settings.windowsNodeMxcDegraded":
-    "Warning: this machine uses degraded DACL-based MXC containment. Execution remains blocked unless every other proof passes.",
   "settings.externalApps": "Apps allowed outside the sandbox",
   "settings.externalAppsHint":
     "These apps run outside the sandbox when AI tools invoke them, because they need COM/RPC access. Only add apps you trust.",
