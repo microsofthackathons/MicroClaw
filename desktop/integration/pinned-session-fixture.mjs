@@ -7,7 +7,7 @@ import ts from "typescript";
 export function createPinnedAgentRunStartNotifier(callback, runId) {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
-  const filename = path.join(packageDir, "dist", "agent-runner.runtime-CnhVV0xq.mjs");
+  const filename = path.join(packageDir, "dist", "agent-runner-run-A-6vq8xD.mjs");
   const ast = ts.createSourceFile(
     filename,
     readFileSync(filename, "utf8"),
@@ -27,9 +27,9 @@ export function createPinnedAgentRunStartNotifier(callback, runId) {
     "runId",
     "admittedRunContext",
     "markReplyOperationExecutionStarted",
-    `let didNotifyAgentRunStart = false; return ${initializer};`,
+    `let active = true; let preparedTranscriptStart = null; let didNotifyAgentRunStart = false; return ${initializer};`,
   )(
-    { opts: { onAgentRunStart: callback } },
+    { opts: { onAgentRunStart: callback }, followupRun: { run: {} } },
     runId,
     { current: { executionIdentityToken: "test-only-sdk-execution-identity" } },
     () => {},
@@ -39,7 +39,7 @@ export function createPinnedAgentRunStartNotifier(callback, runId) {
 export function runPinnedSessionFixture() {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
-  const filename = path.join(packageDir, "dist", "sessions-subscriptions-CB1FwRcd.mjs");
+  const filename = path.join(packageDir, "dist", "sessions-subscriptions-Dzf50guT.mjs");
   const source = readFileSync(filename, "utf8");
   const ast = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
   const declaration = ast.statements.find(
@@ -53,14 +53,14 @@ export function runPinnedSessionFixture() {
   const url = (module) => pathToFileURL(path.join(packageDir, "dist", module)).href;
   const script = `
     import assert from "node:assert/strict";
-    const schema = await import(${JSON.stringify(url("src-l2dWvEsN.mjs"))});
-    const validation = await import(${JSON.stringify(url("validation-Bu27N0nv.mjs"))});
-    const targets = await import(${JSON.stringify(url("session-store-key-CY-EZpo5.mjs"))});
-    const subscription = await import(${JSON.stringify(url("session-request-agent-Dke1WQdw.mjs"))});
-    const shared = await import(${JSON.stringify(url("sessions-shared-X0HX6HbJ.mjs"))});
-    const errors = await import(${JSON.stringify(url("session-mutation-authorization-error-CCz8QGWh.mjs"))});
-    const { t: snapshot } = await import(${JSON.stringify(url("session-event-payload-q4CE5TPZ.mjs"))});
-    const { t: message } = await import(${JSON.stringify(url("session-transcript-message-1hd1eWEF.mjs"))});
+    const schema = await import(${JSON.stringify(url("src-yRoHchex.mjs"))});
+    const validation = await import(${JSON.stringify(url("validation-CX4u4B7f.mjs"))});
+    const targets = await import(${JSON.stringify(url("session-store-key-DWRWEBC7.mjs"))});
+    const subscription = await import(${JSON.stringify(url("session-request-agent-DL158H5j.mjs"))});
+    const shared = await import(${JSON.stringify(url("sessions-shared-Dr0eLQJX.mjs"))});
+    const errors = await import(${JSON.stringify(url("session-mutation-authorization-error-Cdqn6r49.mjs"))});
+    const { t: snapshot } = await import(${JSON.stringify(url("session-event-payload-CH4svjwS.mjs"))});
+    const { t: message } = await import(${JSON.stringify(url("session-transcript-message-e1G8Akuv.mjs"))});
     const factory = new Function(
       "defineValidatedGatewayHandler", "validateSessionsMessagesSubscribeParams",
       "validateSessionsMessagesUnsubscribeParams", "validateSessionsViewerPresenceSetParams",
@@ -70,8 +70,8 @@ export function runPinnedSessionFixture() {
       ${JSON.stringify(declaration.getText(ast) + "; return sessionSubscriptionHandlers;")}
     );
     const handlers = factory(
-      validation.n, schema.Qi, schema.$i, schema.ya, validation.t, schema.Zi,
-      targets.n, subscription.o, shared.o,
+      validation.n, schema.ea, schema.ta, schema.xa, validation.t, schema.$i,
+      targets.n, subscription.c, shared.o,
       () => ({ assertCurrent() {}, release() {} }),
       () => ({ sessionScope: "operator.sessions.read" }), errors.t
     );

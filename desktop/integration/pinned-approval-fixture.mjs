@@ -7,7 +7,7 @@ import ts from "typescript";
 export function resolvePinnedBaseExecApprovalDecision(params) {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
-  const filename = path.join(packageDir, "dist", "bash-tools-Bl8Bd3CR.mjs");
+  const filename = path.join(packageDir, "dist", "bash-tools-BpD5km6h.mjs");
   const ast = ts.createSourceFile(
     filename,
     readFileSync(filename, "utf8"),
@@ -29,7 +29,7 @@ export function runPinnedApprovalRequests(
 ) {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
-  const filename = path.join(packageDir, "dist", "bash-tools.exec-approval-request-BhOTs75A.mjs");
+  const filename = path.join(packageDir, "dist", "bash-tools.exec-approval-request-IQeW1aI0.mjs");
   const source = readFileSync(filename, "utf8");
   const ast = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
   function declaration(name) {
@@ -58,22 +58,32 @@ export function runPinnedApprovalRequests(
     return node.getText(ast);
   }
   const producers = {
-    attempt: sdkFunction("embedded-agent-gW15apSG.mjs", "withPreparedEmbeddedGatewayTools"),
+    attempt: sdkFunction("embedded-agent-w-EKmRVf.mjs", "withPreparedEmbeddedGatewayTools"),
     caller: sdkFunction(
-      "gateway-caller-context-DWr-fdGt.mjs",
+      "gateway-caller-context-C-_kezG_.mjs",
       "createAdmittedGatewayToolCallerIdentity",
     ),
-    receipt: sdkFunction("gateway-caller-context-DWr-fdGt.mjs", "composeReceiptAuthority"),
-    runtime: sdkFunction("gateway-DijOw8Pm.mjs", "resolveAgentRuntimeIdentityForGatewayTool"),
+    receipt: [
+      sdkFunction("gateway-caller-context-C-_kezG_.mjs", "composeReceiptAuthority"),
+      sdkFunction("gateway-caller-context-C-_kezG_.mjs", "captureGatewayToolReceiptAssertion"),
+    ].join("\n"),
+    assertion: sdkFunction(
+      "admitted-run-context-BWkQpJz9.mjs",
+      "captureAdmittedRunActiveAssertion",
+    ),
+    runtime: sdkFunction("gateway-RgmK3f47.mjs", "resolveAgentRuntimeIdentityForGatewayTool"),
     client: sdkFunction(
-      "server-plugin-runtime-client-woXKGHqY.mjs",
+      "server-plugin-runtime-client-CN_qrc-x.mjs",
       "projectPluginRuntimeClientExecution",
     ),
   };
   const identityModuleUrl = pathToFileURL(
-    path.join(packageDir, "dist", "agent-runtime-identity-token-BDLmOOL-.mjs"),
+    path.join(packageDir, "dist", "agent-runtime-identity-token-n9vMsjav.mjs"),
   ).href;
-  const modulePath = path.join(packageDir, "dist", "exec-approval-mGU7M4-K.mjs");
+  const sourceAuthorityModuleUrl = pathToFileURL(
+    path.join(packageDir, "dist", "session-source-authority-h1UO3u0I.mjs"),
+  ).href;
+  const modulePath = path.join(packageDir, "dist", "exec-approval-DbnOAIQO.mjs");
   const handlerSource = readFileSync(modulePath, "utf8");
   const alias =
     /createExecApprovalHandlers as (\w+)/.exec(handlerSource)?.[1] ??
@@ -93,9 +103,12 @@ export function runPinnedApprovalRequests(
     const producer = ${JSON.stringify(producers)};
     const vm = await import("node:vm");
     const fs = await import("node:fs/promises");
-    const authority = { operationalRunInstance: { runId: "actual-run", instanceId: "actual-instance" },
+    const { a: composeSessionSourceAssertion } = await import(${JSON.stringify(sourceAuthorityModuleUrl)});
+    const authority = { kind: "local",
+      operationalRunInstance: { runId: "actual-run", instanceId: "actual-instance" },
       lifecycleGeneration: "test-only-lifecycle", claimId: "test-only-admission-claim" };
-    // Only admission authority lookup is stubbed; constructor/schema/field projection are actual SDK source.
+    const delegatedAuthorityLeases = new WeakMap();
+    // Admission lease/source lookup is fixture-owned; assertions, schemas and projections are genuine SDK source.
     const identityModule = new vm.SourceTextModule(await fs.readFile(new URL(${JSON.stringify(identityModuleUrl)}), "utf8"), {
       identifier: ${JSON.stringify(identityModuleUrl)},
     });
@@ -103,7 +116,12 @@ export function runPinnedApprovalRequests(
       const url = specifier.startsWith(".") ? new URL(specifier, identityModule.identifier).href : specifier;
       const imported = await import(url);
       const values = { ...imported, ...(specifier.includes("agent-run-registry-") ? {
-        c: () => authority, A: value => value.claimId === authority.claimId,
+        l: () => authority,
+        j: value => value.kind === authority.kind &&
+          value.claimId === authority.claimId &&
+          value.lifecycleGeneration === authority.lifecycleGeneration &&
+          value.operationalRunInstance.runId === authority.operationalRunInstance.runId &&
+          value.operationalRunInstance.instanceId === authority.operationalRunInstance.instanceId,
       } : {}) };
       return new vm.SyntheticModule(Object.keys(values), function() {
         for (const [key, value] of Object.entries(values)) this.setExport(key, value);
@@ -114,12 +132,29 @@ export function runPinnedApprovalRequests(
       new Function(...Object.keys(deps), source + "; return " + name)(...Object.values(deps));
     async function produceIdentity(source = {}) {
       let caller;
+      const admittedRunContext = { operationalRunInstance: authority.operationalRunInstance };
+      delegatedAuthorityLeases.set(admittedRunContext, { authority, foregroundClosed: false });
+      const captureAdmittedRunActiveAssertion = evaluate(producer.assertion,
+        "captureAdmittedRunActiveAssertion", {
+          delegatedAuthorityLeases,
+          composeSessionSourceAssertion,
+          readAgentRunDelegatedAuthorityFailure: () => undefined,
+          captureAgentRunDelegatedSourceAssertion: (value, refuse) => {
+            if (value !== authority) return;
+            const assertCurrent = () => {
+              if (value !== authority) refuse();
+            };
+            return { assertCurrent, assertBinding: assertCurrent };
+          },
+        });
       const admitted = evaluate(producer.receipt + "\\n" + producer.caller,
         "createAdmittedGatewayToolCallerIdentity", {
-          getAdmittedRunDelegatedAuthority: () => authority,
+          getAdmittedRunDelegatedAuthority: context => delegatedAuthorityLeases.get(context)?.authority,
           readAdmittedRunOperatorAuthority: () => undefined,
           getGatewayContextResolver: () => undefined,
           bindGatewayToolContextResolver: value => value,
+          captureAdmittedRunActiveAssertion,
+          composeSessionSourceAssertion,
         });
       const run = evaluate(producer.attempt, "withPreparedEmbeddedGatewayTools", {
         createAdmittedGatewayToolCallerIdentity: admitted,
@@ -128,7 +163,7 @@ export function runPinnedApprovalRequests(
       });
       await run({
         disableTools: true, agentId: "main", sessionKey: "agent:main:main",
-        admittedRunContext: { operationalRunInstance: authority.operationalRunInstance },
+        admittedRunContext,
         messageProvider: "openclaw-weixin", agentAccountId: "bot", currentChannelId: recipient,
         ...source,
       }, () => true, async () => undefined);

@@ -8,7 +8,7 @@ const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
 assert.ok(packageDir);
 assert.equal(
   JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8")).version,
-  "2026.10.2",
+  "2026.10.5",
 );
 const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-pinned-runtime-"));
 process.env.OPENCLAW_STATE_DIR = root;
@@ -30,13 +30,13 @@ try {
     `${producer}\n${projection}\nreturn { activeRunState, sessionInfo };`,
   );
   const load = (name) => import(pathToFileURL(path.join(packageDir, "dist", name)).href);
-  const active = await load("session-active-runs-Du3LxqiP.mjs");
-  const registry = await load("agent-run-registry-BaxMDLZF.mjs");
-  const capacity = await load("agent-run-capacity-wait-DqF7E2c_.mjs");
-  const embedded = await load("runs-Ma7YZr5h.mjs");
-  const rows = await load("session-row-prepared-read-CPxnabxQ.mjs");
-  const snapshot = await load("session-event-payload-q4CE5TPZ.mjs");
-  const message = await load("session-transcript-message-1hd1eWEF.mjs");
+  const active = await load("session-active-runs-C2vrhM5v.mjs");
+  const registry = await load("agent-run-registry-zReSioYT.mjs");
+  const capacity = await load("agent-run-capacity-wait-XW_J_ywq.mjs");
+  const embedded = await load("runs-DgTH4Uy7.mjs");
+  const rows = await load("session-row-prepared-read-B7BTs5-H.mjs");
+  const snapshot = await load("session-event-payload-CH4svjwS.mjs");
+  const message = await load("session-transcript-message-e1G8Akuv.mjs");
   const key = "agent:main:main";
   const sessionId = "fixture-runtime";
   const cfg = {
@@ -116,20 +116,20 @@ try {
       ],
     ]),
   );
-  registry.y("fixture-projected", {
+  registry.b("fixture-projected", {
     sessionKey: key,
     sessionId,
     agentId: "main",
     projectSessionActive: true,
   });
   capture("projected-running");
-  const releaseCapacity = capacity.n("fixture-projected", registry.d());
+  const releaseCapacity = capacity.n("fixture-projected", registry.f());
   assert.equal(typeof releaseCapacity, "function");
   try {
     capture("projected-queued");
   } finally {
     releaseCapacity();
-    registry.a("fixture-projected");
+    registry.o("fixture-projected");
   }
   const handle = {
     runId: "fixture-embedded",

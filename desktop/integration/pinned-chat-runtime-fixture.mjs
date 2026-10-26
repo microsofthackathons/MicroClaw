@@ -8,7 +8,7 @@ import ts from "typescript";
 export function runPinnedChatRuntimeFixture() {
   const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
-  const filename = path.join(packageDir, "dist", "chat-history-handler-Bl3TJIG1.mjs");
+  const filename = path.join(packageDir, "dist", "chat-history-handler-BPX4wj3J.mjs");
   const ast = ts.createSourceFile(
     filename,
     readFileSync(filename, "utf8"),
