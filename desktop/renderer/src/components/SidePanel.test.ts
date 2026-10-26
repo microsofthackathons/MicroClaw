@@ -93,6 +93,15 @@ describe("SidePanel token-only usage snapshot", () => {
     expect(wrapper.get(".sp-usage-value").text()).toBe("0");
   });
 
+  it("shows incomplete background coverage next to the combined token total", async () => {
+    mocks.getStats.mockResolvedValue({ totalTokens: 41_967, backgroundUsageAvailable: false });
+    const wrapper = await mountPanel();
+    expect(wrapper.get(".sp-usage-value").text()).toBe("42K");
+    expect(wrapper.get('.sp-usage-snapshot [role="status"]').text()).toBe(
+      t("usage.backgroundUnavailable"),
+    );
+  });
+
   it("refreshes tokens and stops polling when unmounted", async () => {
     const wrapper = await mountPanel();
     mocks.getStats.mockResolvedValue({ totalSpend: 99, totalTokens: 5_000_000 });
@@ -136,8 +145,7 @@ describe("SidePanel token-only usage snapshot", () => {
   });
 
   it("uses one full-width column for the remaining token card", () => {
-    const gridRule = sidePanelSource.match(/\.sp-usage-grid\s*\{(?<body>[\s\S]*?)\}/)?.groups
-      ?.body;
+    const gridRule = sidePanelSource.match(/\.sp-usage-grid\s*\{(?<body>[\s\S]*?)\}/)?.groups?.body;
 
     expect(gridRule).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   });

@@ -149,6 +149,9 @@ export default {
   "chat.error.openSettings": "Open Model Settings",
   "chat.error.dismiss": "Dismiss",
   "chat.error.showDetails": "Show error details",
+  "chat.error.agent_initializing.title": "Preparing conversation data",
+  "chat.error.agent_initializing.hint":
+    "OpenClaw is running background checks. We will retry automatically. You can keep editing; your draft will be kept, not sent automatically. No model settings changes are needed.",
   "chat.error.not_found.title": "Model endpoint returned 404 Not Found",
   "chat.error.not_found.hint":
     "The Base URL appears to be incorrect or the path is wrong. Check the Base URL in Model Settings (e.g. it should usually end with /v1 for OpenAI-compatible providers).",
@@ -1170,6 +1173,12 @@ export default {
   "usage.tokenOutput": "Output",
   "usage.tokenCache": "Cache Read",
   "usage.tokenToday": "Today",
+  "usage.sourceSession": "Sessions (chat, heartbeat, etc.)",
+  "usage.sourceMemory": "Background memory processing",
+  "usage.sourceBackground": "Other independent background calls",
+  "usage.accountingHint":
+    "Session usage plus recorded independent background calls. Background history can only be recovered from retained logs; provider billing is authoritative.",
+  "usage.backgroundUnavailable": "Background usage is unavailable; totals may be incomplete.",
   "usage.requestsLabel": "requests",
   "usage.sessionsLabel": "sessions",
   "usage.toolCallsLabel": "tool calls",

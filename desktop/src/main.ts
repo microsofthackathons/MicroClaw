@@ -62,6 +62,8 @@ import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
+import { BackgroundUsageLedger } from "./background-usage-ledger";
+import { queryAccountedUsage } from "./usage-service";
 import {
   prepareChatAttachments,
   prepareClipboardImageAttachments,
@@ -7439,7 +7441,10 @@ function registerIpcHandlers(): void {
     return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
   });
 
-  // --- Usage (via gateway WebSocket sessions.usage) ---
+  const backgroundUsageLedger = new BackgroundUsageLedger(
+    path.join(app.getPath("userData"), "usage", "background-requests.json"),
+  );
+
   ipcMain.handle("usage:get-stats", async () => {
     if (!gwClient?.connected) throw new Error("Gateway 未连接");
     const endDate = new Date().toISOString().split("T")[0];
@@ -7447,19 +7452,18 @@ function registerIpcHandlers(): void {
       .toISOString()
       .split("T")[0];
 
-    // Query the gateway's sessions.usage method (same as OpenClaw web dashboard)
-    const result = await gwClient.request<any>("sessions.usage", {
-      startDate,
-      endDate,
-      limit: 1000,
-      includeContextWeight: true,
-    });
+    const result: any = await queryAccountedUsage(
+      (method, params) => gwClient!.request(method, params),
+      backgroundUsageLedger,
+      { startDate, endDate, limit: 1000 },
+      () =>
+        console.warn("[usage] Background usage could not be refreshed; totals may be incomplete"),
+    );
 
     const totals = result?.totals || {};
     const aggregates = result?.aggregates || {};
     const daily = aggregates.daily || [];
     const byModel = aggregates.byModel || [];
-    const messages = aggregates.messages || {};
 
     // Build model breakdown
     const modelBreakdown: Record<
@@ -7504,10 +7508,13 @@ function registerIpcHandlers(): void {
       totalPromptTokens: totals.input || 0,
       totalCompletionTokens: totals.output || 0,
       totalTokens: totals.totalTokens || 0,
-      totalRequests: messages.total || result?.sessions?.length || 0,
+      totalRequests: result.requestCount,
+      usageSources: result.usageSources,
+      backgroundUsageAvailable: result.backgroundUsageAvailable,
+      backgroundRequests: result.backgroundRequests,
       modelBreakdown,
       dailySpend,
-      hasDetailedLogs: (result?.sessions?.length || 0) > 0,
+      hasDetailedLogs: (result?.sessions?.length || 0) > 0 || result.backgroundRequests > 0,
       // Extra fields from gateway
       cacheReadTokens: totals.cacheRead || 0,
       cacheWriteTokens: totals.cacheWrite || 0,
@@ -7535,12 +7542,13 @@ function registerIpcHandlers(): void {
         params.startDate ||
         new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000).toISOString().split("T")[0];
 
-      const result = await gwClient.request<any>("sessions.usage", {
-        startDate,
-        endDate,
-        limit: 5000,
-        includeContextWeight: true,
-      });
+      const result: any = await queryAccountedUsage(
+        (method, input) => gwClient!.request(method, input),
+        backgroundUsageLedger,
+        { startDate, endDate, limit: 5000 },
+        () =>
+          console.warn("[usage] Background usage could not be refreshed; totals may be incomplete"),
+      );
 
       const totals = result?.totals || {};
       const aggregates = result?.aggregates || {};
@@ -7600,6 +7608,10 @@ function registerIpcHandlers(): void {
       }
 
       return {
+        usageSources: result.usageSources,
+        backgroundUsageAvailable: result.backgroundUsageAvailable,
+        backgroundRequests: result.backgroundRequests,
+        requestCount: result.requestCount,
         totals: {
           totalCost: totals.totalCost || 0,
           input: totals.input || 0,
@@ -7616,6 +7628,7 @@ function registerIpcHandlers(): void {
             input: d.input || 0,
             output: d.output || 0,
             cacheRead: d.cacheRead || 0,
+            cacheWrite: d.cacheWrite || 0,
             messages: d.messages || 0,
             toolCalls: d.toolCalls || 0,
             errors: d.errors || 0,

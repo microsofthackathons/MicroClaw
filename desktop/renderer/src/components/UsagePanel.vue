@@ -128,6 +128,21 @@
           </div>
         </div>
 
+        <div v-if="hasData" class="usage-sources" data-testid="usage-sources">
+          <div v-for="source in usageSources" :key="source.source" class="usage-source-row">
+            <span>{{ sourceLabel(source.source) }}</span>
+            <span>{{ formatTokens(source.tokens) }}</span>
+          </div>
+          <p class="usage-accounting-hint">{{ t("usage.accountingHint") }}</p>
+          <p
+            v-if="data.backgroundUsageAvailable === false"
+            class="usage-accounting-warning"
+            role="status"
+          >
+            {{ t("usage.backgroundUnavailable") }}
+          </p>
+        </div>
+
         <div class="chip-row">
           <template v-if="loading && !hasData">
             <span class="chip"><span class="skeleton skeleton-sm"></span></span>
@@ -239,11 +254,21 @@ const counts = computed(() => {
   const d = data.value;
   if (!d) return { requests: 0, sessions: 0, toolCalls: 0 };
   return {
-    requests: d.aggregates?.messages?.total || 0,
+    requests: d.requestCount ?? d.aggregates?.messages?.total ?? 0,
     sessions: d.sessions?.length || 0,
     toolCalls: d.aggregates?.tools?.totalCalls || 0,
   };
 });
+
+const usageSources = computed<Array<{ source: string; tokens: number }>>(
+  () => data.value?.usageSources ?? [],
+);
+
+function sourceLabel(source: string): string {
+  if (source === "session") return t("usage.sourceSession");
+  if (source === "memory") return t("usage.sourceMemory");
+  return t("usage.sourceBackground");
+}
 
 // --- Helpers ---
 function formatTokens(n: number): string {
@@ -601,6 +626,30 @@ html.dark .usage-backdrop {
 .section-sub {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.usage-sources {
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+.usage-source-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  color: var(--text-secondary);
+}
+
+.usage-accounting-hint,
+.usage-accounting-warning {
+  margin: 8px 0 0;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.usage-accounting-warning {
+  color: var(--el-color-warning, #b26a00);
 }
 
 .section-add {

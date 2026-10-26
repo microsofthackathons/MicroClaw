@@ -85,6 +85,8 @@ describe("classifyChatError", () => {
       undefined,
     ],
     ["HTTP 401 Invalid API key", "unauthorized", 401],
+    ["HTTP 503 Service unavailable", "server_error", 503],
+    ["UNAVAILABLE: provider is unavailable", "generic", undefined],
     [
       "UNSUPPORTED_CHAT_MODEL: qwen/realtime requires a different API",
       "unsupported_model",
@@ -131,6 +133,171 @@ describe("classifyChatError", () => {
     const error = classifyChatError("Copilot token exchange failed: HTTP 403");
 
     expect(modelAuthRecoveryInitialFamily(error)).toBe("github-copilot");
+  });
+
+  it.each(["main", "office-artisan"])("recognizes startup preparation for agent %s", (agentId) => {
+    const error = classifyChatError(
+      `Error invoking remote method 'chat:load-history': GatewayRequestError: Agent ${agentId} has not completed startup inspection and preparation. Inspection and writable admission continue after the Gateway listener binds.`,
+    );
+
+    expect(error.code).toBe("agent_initializing");
+    expect(requiresModelAuthRecovery(error)).toBe(false);
+  });
+});
+
+describe("useChatStore — agent preparation", () => {
+  const preparationMessage =
+    "Agent main has not completed startup inspection and preparation. Sessions remain unavailable until background inspection and preparation finish.";
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+    mockGetSettings.mockResolvedValue({});
+  });
+
+  it.each([{ messages: [] }, { messages: [{ role: "assistant", content: "Earlier reply" }] }])(
+    "clears preparation after a successful history read, including empty history: %j",
+    async ({ messages }) => {
+      const store = useChatStore();
+      mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+      await store.loadHistory();
+      expect(store.agentPreparationError?.code).toBe("agent_initializing");
+      expect(store.lastError).toBeNull();
+
+      mockLoadHistory.mockResolvedValueOnce({ messages });
+      await store.loadHistory({ showLoading: false });
+
+      expect(store.agentPreparationError).toBeNull();
+      expect(store.lastError).toBeNull();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a provider failure while preparation is retried and recovered", async () => {
+    const store = useChatStore();
+    const providerError = classifyChatError("HTTP 401 Invalid API key");
+    store.lastError = providerError;
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+
+    await store.loadHistory();
+    await store.loadHistory({ showLoading: false });
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    expect(store.lastError).toEqual(providerError);
+    await store.loadHistory({ showLoading: false });
+
+    expect(store.agentPreparationError).toBeNull();
+    expect(store.lastError).toEqual(providerError);
+  });
+
+  it("clears a preparation error left by an older renderer after a successful read", async () => {
+    const store = useChatStore();
+    store.lastError = { code: "generic", raw: preparationMessage };
+
+    await store.loadHistory();
+
+    expect(store.lastError).toBeNull();
+  });
+
+  it("blocks sends during preparation without losing or automatically sending the draft", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    await store.loadHistory();
+
+    expect(await store.sendMessage("My draft")).toBe(false);
+    expect(store.messages).toEqual([]);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    await store.loadHistory({ showLoading: false });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(await store.sendMessage("My draft")).toBe(true);
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles a send racing startup without retaining an optimistic message or resending it", async () => {
+    const store = useChatStore();
+    mockSendMessage.mockRejectedValueOnce(new Error(preparationMessage));
+
+    expect(await store.sendMessage("My draft")).toBe(false);
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    expect(store.lastError).toBeNull();
+    expect(store.messages).toEqual([]);
+    expect(store.streaming).toBe(false);
+    await store.loadHistory();
+    expect(store.agentPreparationError).toBeNull();
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles an asynchronous startup rejection as preparation, not a model failure", () => {
+    const store = useChatStore();
+    store.streaming = true;
+    store.handleChatEvent({
+      runId: "preparing-run",
+      sessionKey: store.sessionKey,
+      state: "error",
+      errorMessage: preparationMessage,
+    });
+
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    expect(store.lastError).toBeNull();
+    expect(store.streaming).toBe(false);
+  });
+
+  it("keeps preparation scoped to its agent across session switches", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    await store.loadHistory();
+
+    store.newSession("office-artisan");
+    expect(store.agentPreparationError).toBeNull();
+    await store.loadHistory();
+    store.newSession("main");
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    await store.loadHistory();
+    expect(store.agentPreparationError).toBeNull();
+  });
+
+  it("does not block another agent when a send from the previous session is rejected late", async () => {
+    const store = useChatStore();
+    let fail!: (error: Error) => void;
+    mockSendMessage.mockReturnValueOnce(new Promise((_resolve, reject) => (fail = reject)));
+    const pendingSend = store.sendMessage("My draft");
+    await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    store.newSession("office-artisan");
+    fail(new Error(preparationMessage));
+    await pendingSend;
+
+    expect(store.agentPreparationError).toBeNull();
+    store.newSession("main");
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+  });
+
+  it("ignores an older successful read while a newer read reports preparation", async () => {
+    const store = useChatStore();
+    let complete!: (value: { messages: [] }) => void;
+    mockLoadHistory.mockReturnValueOnce(new Promise((resolve) => (complete = resolve)));
+    const olderRead = store.loadHistory();
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    await store.loadHistory();
+    complete({ messages: [] });
+    await olderRead;
+
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+  });
+
+  it("ignores a preparation failure from a session that is no longer active", async () => {
+    const store = useChatStore();
+    let fail!: (error: Error) => void;
+    mockLoadHistory.mockReturnValueOnce(new Promise((_resolve, reject) => (fail = reject)));
+    const olderRead = store.loadHistory();
+    store.newSession("office-artisan");
+    fail(new Error(preparationMessage));
+    await olderRead;
+
+    expect(store.agentPreparationError).toBeNull();
+    expect(store.lastError).toBeNull();
   });
 });
 

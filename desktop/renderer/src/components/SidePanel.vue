@@ -189,6 +189,14 @@
         </div>
         <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
 
+        <div
+          v-if="usageSnapshot?.backgroundUsageAvailable === false"
+          class="sp-usage-state"
+          role="status"
+        >
+          {{ t("usage.backgroundUnavailable") }}
+        </div>
+
         <div class="sp-usage-foot">
           <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
           <span v-if="lastUpdatedLabel">{{
@@ -223,6 +231,7 @@ const agentStore = useAgentStore();
 
 interface UsageSnapshot {
   totalTokens: number;
+  backgroundUsageAvailable?: boolean;
 }
 
 const usageSnapshot = ref<UsageSnapshot | null>(null);
@@ -300,6 +309,7 @@ async function loadUsageSnapshot() {
     const stats = await usageApi();
     usageSnapshot.value = {
       totalTokens: Number(stats?.totalTokens || 0),
+      backgroundUsageAvailable: stats?.backgroundUsageAvailable,
     };
     usageLastUpdated.value = new Date();
   } catch {

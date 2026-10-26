@@ -144,6 +144,9 @@ export default {
   "chat.error.openSettings": "打开模型设置",
   "chat.error.dismiss": "关闭",
   "chat.error.showDetails": "查看错误详情",
+  "chat.error.agent_initializing.title": "正在准备会话数据",
+  "chat.error.agent_initializing.hint":
+    "OpenClaw 正在进行后台检查，完成后会自动恢复。你可以先编辑消息；草稿会保留，不会自动发送，无需修改模型设置。",
   "chat.error.not_found.title": "模型接口返回 404 Not Found",
   "chat.error.not_found.hint":
     "Base URL 可能填写错误或路径不正确。请在「模型设置」中检查 Base URL（对于 OpenAI 兼容接口，通常需要以 /v1 结尾）。",
@@ -1094,6 +1097,12 @@ export default {
   "usage.tokenOutput": "输出",
   "usage.tokenCache": "缓存读取",
   "usage.tokenToday": "今日用量",
+  "usage.sourceSession": "会话（聊天、心跳等）",
+  "usage.sourceMemory": "后台记忆整理",
+  "usage.sourceBackground": "其他独立后台调用",
+  "usage.accountingHint":
+    "会话用量与已记录的独立后台调用合计。后台历史仅可从保留日志补录，实际计费以供应商账单为准。",
+  "usage.backgroundUnavailable": "后台用量暂不可读，当前合计可能不完整。",
   "usage.requestsLabel": "请求",
   "usage.sessionsLabel": "会话",
   "usage.toolCallsLabel": "工具调用",
