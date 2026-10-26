@@ -66,6 +66,7 @@
 import { computed, ref, useId, watch } from "vue";
 import { t } from "@/i18n";
 import { getModelRef, providerName, type ConfiguredModel } from "@/utils/configured-models";
+import { sortModelsByFamily } from "@/utils/model-family-sort";
 import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
 
 const props = defineProps<{
@@ -97,7 +98,7 @@ const groups = computed(() => {
     group.push(model);
     result.set(model.providerKey, group);
   }
-  return [...result].map(([key, models]) => ({ key, models }));
+  return [...result].map(([key, models]) => ({ key, models: sortModelsByFamily(models) }));
 });
 
 function isExpanded(provider: string): boolean {

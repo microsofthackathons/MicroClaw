@@ -190,7 +190,7 @@ describe("ChatModelPicker", () => {
       wrapper
         .findAll('[data-model-ref^="qwen/"]')
         .map((model) => model.attributes("data-model-ref")),
-    ).toEqual(["qwen/saved", "qwen/live-one", "qwen/live-two"]);
+    ).toEqual(["qwen/live-one", "qwen/live-two", "qwen/saved"]);
     await wrapper.get('[data-model-ref="qwen/live-two"]').trigger("click");
     await flushPromises();
     expect(window.openclaw.model.session.select).toHaveBeenCalledWith({
