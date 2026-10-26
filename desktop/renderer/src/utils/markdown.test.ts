@@ -57,6 +57,45 @@ describe("renderMarkdown", () => {
     expect(result).toContain("<li>");
   });
 
+  it.each([
+    "javascript:alert(1)",
+    "jav&#x61;script:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+  ])("removes unsafe link destinations: %s", (destination) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(`<a href="${destination}">link</a>`);
+    const link = container.querySelector("a");
+
+    expect(link?.textContent).toBe("link");
+    expect(link?.hasAttribute("href")).toBe(false);
+  });
+
+  it.each([
+    '<svg><foreignObject><p><img src="x" onerror="alert(1)"></p></foreignObject></svg>',
+    '<math><mtext><img src="x" onerror="alert(1)"></mtext></math>',
+    '<iframe srcdoc="<script>alert(1)</script>"></iframe>',
+  ])("removes executable embedded HTML: %s", (input) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(input);
+
+    expect(container.querySelector("script, iframe, svg, math")).toBeNull();
+    expect(container.querySelector("[onerror], [onload], [srcdoc]")).toBeNull();
+  });
+
+  it("preserves tables and expandable details after sanitization", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(
+      "| Name | Value |\n| --- | --- |\n| **safe** | `value` |\n\n" +
+        "<details><summary>Details</summary><p>More text</p></details>",
+    );
+
+    expect(container.querySelector("th")?.textContent).toBe("Name");
+    expect(container.querySelector("td strong")?.textContent).toBe("safe");
+    expect(container.querySelector("td code")?.textContent).toBe("value");
+    expect(container.querySelector("details summary")?.textContent).toBe("Details");
+    expect(container.querySelector("details p")?.textContent).toBe("More text");
+  });
+
   it("handles malformed markdown gracefully (error boundary)", () => {
     // Extremely long input that could cause issues
     const longInput = "x".repeat(100_000);
