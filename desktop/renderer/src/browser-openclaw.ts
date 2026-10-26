@@ -1,3 +1,11 @@
+function rejectExcludedNativeBackend(): Promise<never> {
+  return Promise.reject(
+    new Error(
+      "This branch requires the mandatory Docker backend; native MXC controls are unavailable",
+    ),
+  );
+}
+
 export function createBrowserOpenClawMock(): OpenClawAPI {
   const noop = () => {};
   const noopAsync = async () => {};
@@ -19,6 +27,19 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     "[info] Browser development Gateway started",
     "[info] Mock Agent roster loaded",
   ];
+  const readyState: DockerSandboxState = { status: "ready", reason: "ready" };
+  const browserDockerReadiness = (): DockerSandboxReadiness => ({
+    checkedAt: new Date().toISOString(),
+    ready: true,
+    reasons: [],
+    windows: readyState,
+    wslCommand: readyState,
+    wsl2: readyState,
+    dockerCli: readyState,
+    dockerDaemon: readyState,
+    linuxContainers: readyState,
+    image: readyState,
+  });
 
   return {
     features: { githubCopilot: false },
@@ -74,104 +95,16 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onIntegrityAlert: noopSub,
     },
     windowsNodeMxc: {
-      getStatus: async () => ({
-        requestedMode: "off" as const,
-        effectiveStrength: "off" as const,
-        effectiveTier: null,
-        desiredEnabled: false,
-        effectiveEnabled: false,
-        hooks: {
-          requestedExternalEnabled: false,
-          requestedInternalEnabled: false,
-          effectiveExternalEnabled: false,
-          effectiveInternalEnabled: false,
-          pausedByMxc: false,
-        },
-        canvas: {
-          state: "off" as const,
-          commandCount: 8 as const,
-          nativeA2uiOnly: true as const,
-          localFilesAllowed: false as const,
-        },
-        lifecycleState: {
-          phase: "idle" as const,
-          detail: null,
-          updatedAt: new Date(0).toISOString(),
-        },
-        folderPolicyRecovery: null,
-        durableApprovals: { records: [], invalidRecords: 0, warning: null },
-        selectedNodeId: "",
-        settingsPath: "",
-        companionPath: "",
-        companionInstalled: false,
-        settingsLoaded: false,
-        settingsFingerprint: null,
-        strictFallbackEffective: false,
-        allowWindowsUiEffective: false,
-        folders: [],
-        nodes: [],
-        selectedNode: null,
-        helperRevision: undefined,
-        mxcRuntimeVersion: undefined,
-        cwdPolicyContract: undefined,
-        cwdAttestationReady: false,
-        activationLeaseContract: undefined,
-        gatewayGeneration: "",
-        activationLeaseMode: null,
-        activationLeaseExpiresAt: null,
-        gatewayPolicyState: "drift" as const,
-        gatewayPolicyReady: false,
-        effectiveToolsReady: false,
-        effectiveToolsState: "unverified" as const,
-        durableApprovalsPresent: null,
-        probe: {
-          outcome: "error" as const,
-          tier: null,
-          needsDaclAugmentation: false,
-          degraded: false,
-          warnings: [],
-          probes: {
-            baseContainerApiPresent: null,
-            bfscfgPresent: null,
-            bfsCompiledIn: null,
-          },
-          reason: "Unavailable in browser development",
-        },
-        fullAvailability: {
-          available: false,
-          summary: "Unavailable in browser development",
-          blockers: ["Unavailable in browser development"],
-          remediation: [],
-        },
-        limitedAvailability: {
-          available: false,
-          summary: "Unavailable in browser development",
-          blockers: ["Unavailable in browser development"],
-          remediation: [],
-        },
-        ambientAccess: null,
-        smoke: null,
-        blockers: ["Unavailable in browser development"],
-        warnings: [],
-        remediation: [],
-      }),
-      preflight: async () => {
-        throw new Error("Unavailable in browser development");
-      },
-      setEnabled: async () => {
-        throw new Error("Unavailable in browser development");
-      },
-      validateFolderPolicy: async (draft) => draft,
-      applyFolderPolicy: async () => {
-        throw new Error("Unavailable in browser development");
-      },
-      listDurableApprovals: async () => [],
-      revokeDurableApproval: async () => [],
-      revokeAllDurableApprovals: async () => [],
-      getPendingApproval: async () => null,
-      respondApproval: async () => {
-        throw new Error("Unavailable in browser development");
-      },
+      getStatus: rejectExcludedNativeBackend,
+      getPendingApproval: rejectExcludedNativeBackend,
+      preflight: rejectExcludedNativeBackend,
+      setEnabled: rejectExcludedNativeBackend,
+      validateFolderPolicy: rejectExcludedNativeBackend,
+      applyFolderPolicy: rejectExcludedNativeBackend,
+      listDurableApprovals: rejectExcludedNativeBackend,
+      revokeDurableApproval: rejectExcludedNativeBackend,
+      revokeAllDurableApprovals: rejectExcludedNativeBackend,
+      respondApproval: rejectExcludedNativeBackend,
       onApprovalRequest: noopSub,
       onLifecycleState: noopSub,
     },
@@ -186,13 +119,12 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         sandboxDirsRO: [],
         externalApps: [],
       }),
-      setEnabled: async () => ({ ok: true }),
+      setEnabled: noopAsync,
       getExternalApps: async () => [],
-      setExternalApps: async (apps) => ({ ok: true, apps }),
-      applyExternalApps: async () => ({ ok: true, restarted: false }),
+      setExternalApps: noopAsync,
+      applyExternalApps: noopAsync,
       getCapabilities: async () => [],
-      setCapabilities: async (caps) => ({ ok: true, caps, needsRestart: false }),
-      provision: async () => true,
+      setCapabilities: noopAsync,
       getUserDirs: async () => ({ rw: [], ro: [] }),
       addUserDir: async () => ({ ok: false, reason: "browser-dev", dirs: { rw: [], ro: [] } }),
       stageUserDir: async ({ draft }) => ({
@@ -210,6 +142,29 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       verifyAcls: async () => ({ missing: [], stale: [], ok: [], errors: [] }),
       repairAcl: async () => ({ ok: true }),
       revokeStaleAcl: async () => ({ ok: true }),
+    },
+    dockerSandbox: {
+      check: async () => browserDockerReadiness(),
+      getStatus: async () => browserDockerReadiness(),
+      buildImage: async () => browserDockerReadiness(),
+      getBindings: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      addBinding: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      removeBinding: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      retryBindings: async () => ({
+        agents: [{ id: "main", name: "Main", bindings: [] }],
+        statuses: {},
+      }),
+      onStatus: noopSub,
+      onBuildProgress: noopSub,
     },
     settings: {
       get: async () => ({
@@ -256,7 +211,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       clearHistory: async () => ({ cleared: 0 }),
       onEvent: noopSub,
       onToolEvent: noopSub,
-      onExecCommand: noopSub,
     },
     cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },
@@ -349,19 +303,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           message: "Unavailable in browser development",
         }),
         disconnect: async () => ({ ok: true }),
-        getRemoteApprovalStatus: async () => ({
-          experimental: true as const,
-          enabled: false,
-          configured: false,
-          owner: null,
-          availableOwners: [],
-          blockedReason: "mxc-off" as const,
-        }),
-        setRemoteApprovalEnabled: async () => ({
-          ok: false,
-          error: "Unavailable in browser development",
-        }),
-        revokeRemoteApproval: async () => ({ ok: true }),
+        getRemoteApprovalStatus: rejectExcludedNativeBackend,
+        setRemoteApprovalEnabled: rejectExcludedNativeBackend,
+        revokeRemoteApproval: rejectExcludedNativeBackend,
         onLoginOutput: noopSub,
         onLoginDone: noopSub,
       },

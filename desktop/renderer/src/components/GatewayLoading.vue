@@ -105,12 +105,8 @@
         <button v-if="isFailed" class="loading-retry" @click="$emit('retry')">
           {{ t("gateway.retry") }}
         </button>
-        <button
-          v-if="isMxcFailure && props.mxcDesired"
-          class="loading-retry loading-disable-mxc"
-          @click="$emit('disable-mxc')"
-        >
-          {{ t("gateway.disableMxc") }}
+        <button v-if="isFailed" class="loading-retry" @click="$emit('open-settings')">
+          {{ t("settings.dockerOpenSettings") }}
         </button>
       </div>
     </div>
@@ -165,7 +161,7 @@ const props = defineProps<{
   mxcEffectiveStrength?: "off" | "full" | "limited-dacl";
   mxcEffectiveTier?: string | null;
 }>();
-defineEmits<{ retry: []; "disable-mxc": [] }>();
+defineEmits<{ retry: []; "open-settings": [] }>();
 
 const isMxcFailure = computed(
   () =>

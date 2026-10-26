@@ -4,9 +4,8 @@
 # Acts as a fast pre-merge gate; the full build.ps1 packaging pipeline
 # runs separately in pr-build.yml.
 #
-# Covers all three language stacks:
+# Covers the active language stacks:
 #   - JavaScript / TypeScript (Electron + Vue)
-#   - C# / .NET 9 (AppContainerLauncher)
 #   - Python (Deployer / Installer)
 #
 # Each job only runs when its relevant files are changed (path filtering).

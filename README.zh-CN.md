@@ -5,6 +5,15 @@
 **MicroClaw** 的目标是让 [OpenClaw](https://github.com/openclaw) 在 Windows 上做到“装好就能用”。它把桌面客户端、本地 Gateway、运行时、预装技能和带权限控制的沙箱整合成一个熟悉、低摩擦的安装体验，让用户尽快进入真实任务。你只需要提供大模型连接信息，Windows 侧运行环境、桌面应用和信任边界都由 MicroClaw 预置完成。
 
 > [!WARNING]
+> **实验性 Docker 沙箱分支：**AppContainer 已停用。OpenClaw 工具必须通过 WSL2 在 Docker Desktop Linux 容器中运行。只有 WSL2、Docker Desktop、Linux 容器模式以及固定镜像 `microclaw-openclaw-sandbox:2026.7.1-1` 全部就绪后，MicroClaw 才会启动 Gateway 或发送对话；否则默认拒绝。MicroClaw 不会自动安装或提权安装 Docker/WSL。
+
+> Docker 是此分支唯一的后端，不提供原生 Windows Node + MXC 路径、主机或 AppContainer 回退，也没有关闭模式选择器。保留的旧设置和同意记录不会授权启用其他后端。
+>
+> 安装 WSL2 和 Docker Desktop 后，在**设置 → 安全**中构建镜像。生效策略为 `mode: all`、Docker 后端、每智能体隔离、独立工作区（`workspaceAccess: none`）、只读根目录、非 root 用户、移除全部能力、资源限制、无网络并禁用提权工具。“安全”页可为每个智能体分别授予经过验证的 Windows 文件夹只读或读写权限，并生成 `/mnt/microclaw/...` 目标路径。每项授权会暴露所选文件夹的整个子树且不会逐次询问；系统、应用数据、状态和凭据等高风险位置会被拒绝。附件由 OpenClaw 放入隔离工作区。已有 AppContainer 配置和 ACL 会被忽略，仅在用户明确卸载时清理。
+>
+> 安装 Docker 后的实机检查：确认“安全”页所有状态为绿色；构建固定镜像；重启 MicroClaw；运行文件工具并确认只能看到隔离工作区；确认附件可读；确认外网和 Windows 主机路径访问失败；停止 Docker 并确认 Gateway/对话默认拒绝；最后确认 EXE 和 MSIX 均包含 `resources/docker-sandbox/Dockerfile`。
+
+> [!WARNING]
 > **AI 与安全声明**
 > MicroClaw 是一个由 Microsoft 发起的实验性开源项目，为用户已安装在设备上的开源 [OpenClaw](https://github.com/openclaw) 软件提供安全执行环境和用户界面。MicroClaw **不是** AI 服务，不包含 AI 模型，也不会代替用户生成或修改用户提示、响应或任何 AI 生成的内容。
 >
@@ -19,7 +28,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 即装即用
 
 - **熟悉的 Windows 安装流程**：带桌面快捷方式、开始菜单入口和一键卸载
-- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端、托管技能和 AppContainer 配置
+- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端和托管技能；Docker/WSL 由用户另行准备
 - **安装完成即可启动**：不需要先手动搭本地 OpenClaw 运行环境
 
 ### 真正可用，而不是只装了个壳
@@ -32,8 +41,8 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 内建信任
 
 - **动作透明、权限可控**：文件和工具访问需要明确向用户申请，而不是静默放行
-- **基于 Windows AppContainer 的沙箱隔离**：在支持的系统上，工具执行运行在操作系统强制边界内
-- **Hook 加沙箱，形成纵深防御**：Hook 负责更好的交互体验，真正的安全边界仍由 AppContainer ACL 强制执行
+- **强制 Docker 隔离**：工具在每个智能体独立的 Linux 容器内运行，不在主机执行
+- **默认拒绝**：WSL2、Docker Desktop、Linux 容器模式或固定镜像未就绪时，禁止启动 Gateway 和发送对话
 - **敏感路径直接硬拦截**：例如 `.ssh`、云凭据目录等不会只是提醒，而是直接拒绝访问
 
 ---
@@ -43,7 +52,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 | 组件 | 路径 | 技术栈 | 说明 |
 |---|---|---|---|
 | **桌面应用** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
-| **AppContainer 沙盒** | `appcontainer/` | .NET 9 + Node.js preload hooks | Windows AppContainer 启动器 + 权限钩子，隔离工具执行 |
+| **旧 AppContainer 源码** | `appcontainer/` | .NET 9 + Node.js preload hooks | 此分支已停用，不准备或打包为回退后端 |
 | **安装器** | `deploy.py` + `deployer/` | Python 3 + Tkinter | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
 | **微信插件** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | 微信频道接入 |
@@ -261,7 +270,7 @@ npm run dev
 | **技能完整性校验** | SHA-256 哈希 + Ed25519 签名，启动时检测所有技能文件是否被篡改 |
 | **设备认证** | 每台设备生成 Ed25519 密钥对，Gateway 连接时签名认证 |
 | **技能白名单** | `allowBundled` / `allowManaged` 控制可用技能范围 |
-| **沙盒隔离** | Windows AppContainer 沙盒，限制 AI 工具执行环境 |
+| **沙盒隔离** | 强制每智能体独立 Docker Linux 容器，无主机回退 |
 | **本地 Gateway** | 仅绑定 loopback，不接受远程连接 |
 
 ---
@@ -284,7 +293,7 @@ npm run dev
 
 - Node.js 26.1+（推荐），或 24.x 系列的 24.16+
 - Python 3.10+ —— 通过 `pip install -r requirements.txt` 安装构建依赖（已包含 PyInstaller）
-- .NET 9 SDK（用于构建 AppContainer 启动器）
+- WSL2、Docker Desktop Linux 容器模式及固定镜像（运行应用所需）
 - .NET 10 SDK（用于构建内置 Windows Node 主机）
 - npm 依赖已安装（`cd desktop && npm install`）
 
@@ -305,7 +314,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ├── desktop/                     # Electron 桌面应用
 │   ├── src/                     # 主进程（TypeScript）
 │   └── renderer/                # Vue 3 渲染进程
-├── appcontainer/                # Windows AppContainer 沙盒（.NET + preload hooks）
+├── appcontainer/                # 旧 AppContainer 源码，此分支不启用
 ├── skills/                      # 托管技能定义
 ├── plugins/openclaw-weixin/     # 微信频道插件
 ├── scripts/

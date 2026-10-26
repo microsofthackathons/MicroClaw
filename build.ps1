@@ -1,4 +1,4 @@
-﻿# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
+﻿# One-click build: Docker-only desktop app -> portable zip -> installer exe
 param(
     [ValidateSet('2026.9.3', '2026.10.3', '2026.10.5')]
     [string]$OpenClawVersion = '2026.10.5'
@@ -82,100 +82,14 @@ if (-not $nodeFound) {
     exit 1
 }
 
-$windowsNodeSharedProject = "$root\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
-if (-not (Test-Path $windowsNodeSharedProject)) {
-    Write-Host "  Initializing pinned OpenClaw Windows Node source..." -ForegroundColor Yellow
-    git -C $root submodule update --init --recursive -- third_party/openclaw-windows-node/source
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $windowsNodeSharedProject)) {
-        Write-Host "  ERROR: unable to initialize the pinned OpenClaw Windows Node submodule" -ForegroundColor Red
-        exit 1
-    }
-}
-
-# Bootstrap desktop dependencies before building the Windows node, because the
-# resource preparation step consumes the pinned @microsoft/mxc-sdk package.
-Push-Location "$root\desktop"
-try {
-    $needsNpmInstall = -not (Test-Path "$root\desktop\node_modules")
-    if (-not $needsNpmInstall) {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        npm ls --depth=0 *> $null
-        $npmLsExit = $LASTEXITCODE
-        $ErrorActionPreference = $prev
-        if ($npmLsExit -ne 0) {
-            $needsNpmInstall = $true
-            Write-Host "  desktop dependencies are incomplete — running 'npm install'..." -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "  desktop\node_modules not found — running 'npm install'..." -ForegroundColor Yellow
-    }
-
-    if ($needsNpmInstall) {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        npm install 2>&1 | ForEach-Object { Write-Host "  $_" }
-        $ErrorActionPreference = $prev
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  ERROR: npm install failed" -ForegroundColor Red
-            exit 1
-        }
-    }
-} finally {
-    Pop-Location
-}
-
-# -- Step 1: Build native security helpers --
-Write-Host "`n=== Step 1/7: Build security helpers ===" -ForegroundColor Cyan
-$acProject = "$root\appcontainer"
-if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
-    Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
+# -- Step 1: Validate the deterministic Docker sandbox definition --
+Write-Host "`n=== Step 1/7: Validate Docker sandbox definition ===" -ForegroundColor Cyan
+$sandboxDockerfile = "$root\docker-sandbox\Dockerfile"
+if (-not (Test-Path $sandboxDockerfile)) {
+    Write-Host "  ERROR: Docker sandbox definition not found at $sandboxDockerfile" -ForegroundColor Red
     exit 1
 }
-
-# Pipe to ForEach-Object loses the native exit code in $LASTEXITCODE detection
-# under StrictMode, so temporarily relax ErrorActionPreference (matches the
-# npm/pyinstaller invocation style below) and then check $LASTEXITCODE.
-$prev = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-dotnet publish $acProject -c Release -o "$acProject\bin\Release\net9.0-windows\win-x64" 2>&1 |
-    ForEach-Object { Write-Host "  $_" }
-$publishExit = $LASTEXITCODE
-$ErrorActionPreference = $prev
-if ($publishExit -ne 0) {
-    Write-Host "  ERROR: dotnet publish failed with exit code $publishExit" -ForegroundColor Red
-    exit 1
-}
-
-$acExe = "$acProject\bin\Release\net9.0-windows\win-x64\AppContainerLauncher.exe"
-if (-not (Test-Path $acExe)) {
-    Write-Host "  ERROR: AppContainerLauncher.exe not found after build at $acExe" -ForegroundColor Red
-    exit 1
-}
-Write-Host "  AppContainerLauncher.exe built" -ForegroundColor Green
-
-Push-Location "$root\desktop"
-try {
-    npm run prepare-windows-node-resources
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: bundled Windows Node/MXC resource preparation failed" -ForegroundColor Red
-        exit 1
-    }
-} finally {
-    Pop-Location
-}
-
-# Copy sandbox-preload.js and its modules alongside launcher (used by electron-builder extraResources)
-$preloadSrc = "$acProject\sandbox-preload.js"
-if (Test-Path $preloadSrc) {
-    $releaseDir = "$acProject\bin\Release\net9.0-windows\win-x64"
-    Copy-Item $preloadSrc "$releaseDir\sandbox-preload.js" -Force
-    foreach ($mod in @('sandbox-state.js','sandbox-permission.js','sandbox-fs-hooks.js','sandbox-cp-hooks.js','sandbox-host-runtime.js','sandbox-sensitive.js','path-extraction.js')) {
-        $modSrc = "$acProject\$mod"
-        if (Test-Path $modSrc) { Copy-Item $modSrc "$releaseDir\$mod" -Force }
-    }
-    Write-Host "  sandbox-preload.js + modules copied" -ForegroundColor Green
-}
+Write-Host "  Docker sandbox definition found" -ForegroundColor Green
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
 Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan

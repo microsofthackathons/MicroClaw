@@ -487,937 +487,161 @@
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
-        <div class="section-label">{{ t("settings.security") }}</div>
-        <div class="card-group mxc-card">
-          <div class="mxc-heading">
-            <span class="row-label">{{ t("settings.windowsNodeMxc") }}</span>
-            <div class="mxc-subtitle">{{ t("settings.windowsNodeMxcExperimental") }}</div>
-          </div>
-          <div v-if="windowsNodeMxcStatus" class="mxc-mode-grid">
-            <section
-              class="mxc-mode-card"
-              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'full' }"
-              data-testid="mxc-mode-full"
-            >
-              <div class="mxc-mode-card-heading">
-                <strong>{{ t("settings.windowsNodeMxcModeFull") }}</strong>
-                <span class="mxc-mode-badge">{{ t("settings.windowsNodeMxcFullBadge") }}</span>
-              </div>
-              <p>{{ t("settings.windowsNodeMxcModeFullDesc") }}</p>
-              <p
-                v-if="windowsNodeMxcStatus.fullAvailability.summary"
-                class="mxc-availability-summary"
-              >
-                {{ windowsNodeMxcStatus.fullAvailability.summary }}
-              </p>
-              <ul
-                v-if="
-                  windowsNodeMxcStatus.fullAvailability.blockers.length ||
-                  windowsNodeMxcStatus.fullAvailability.remediation.length
-                "
-                class="mxc-availability-list"
-              >
-                <li
-                  v-for="blocker in windowsNodeMxcStatus.fullAvailability.blockers"
-                  :key="`full-blocker-${blocker}`"
-                  class="mxc-availability-blocker"
-                >
-                  {{ blocker }}
-                </li>
-                <li
-                  v-for="step in windowsNodeMxcStatus.fullAvailability.remediation"
-                  :key="`full-remediation-${step}`"
-                >
-                  {{ step }}
-                </li>
-              </ul>
+        <div class="section-label">{{ t("settings.dockerSandboxTitle") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+            <p>{{ t("settings.dockerSandboxRequired") }}</p>
+            <p>{{ t("settings.dockerSandboxIsolation") }}</p>
+            <p>{{ t("settings.dockerInstallNotice") }}</p>
+            <div v-for="item in dockerChecks" :key="item.key" class="docker-check-row">
+              <span class="row-label">{{ item.label }}</span>
+              <el-tag :type="item.state.status === 'ready' ? 'success' : 'danger'">
+                {{ dockerReasonLabel(item.state.reason) }}
+              </el-tag>
+            </div>
+            <div class="docker-actions">
+              <el-button :loading="dockerChecking" @click="refreshDockerSandbox">
+                {{ t("settings.dockerRecheck") }}
+              </el-button>
               <el-button
+                v-if="dockerReadiness?.image.reason === 'sandbox-image-missing'"
                 type="primary"
-                plain
-                data-testid="mxc-select-full"
-                :loading="windowsNodeMxcApplying"
-                :disabled="
-                  windowsNodeMxcApplying ||
-                  !windowsNodeMxcStatus.fullAvailability.available ||
-                  windowsNodeMxcStatus.requestedMode === 'full'
-                "
-                @click="selectWindowsNodeMxcMode('full')"
+                :loading="dockerBuilding"
+                @click="buildDockerImage"
               >
-                {{
-                  windowsNodeMxcStatus.requestedMode === "full"
-                    ? t("settings.windowsNodeMxcSelected")
-                    : t("settings.windowsNodeMxcUseFull")
-                }}
+                {{ t("settings.dockerBuildImage") }}
               </el-button>
-            </section>
-            <section
-              class="mxc-mode-card mxc-mode-card-limited"
-              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'limited-dacl' }"
-              data-testid="mxc-mode-limited"
-            >
-              <div class="mxc-mode-card-heading">
-                <strong>{{ t("settings.windowsNodeMxcModeLimited") }}</strong>
-                <span class="mxc-mode-badge mxc-mode-badge-warning">{{
-                  t("settings.windowsNodeMxcLimitedBadge")
-                }}</span>
-              </div>
-              <p>{{ t("settings.windowsNodeMxcModeLimitedDesc") }}</p>
-              <p class="mxc-mode-warning">
-                {{ t("settings.windowsNodeMxcLimitedFilesystemWarning") }}
-              </p>
-              <p
-                v-if="windowsNodeMxcStatus.limitedAvailability.summary"
-                class="mxc-availability-summary"
-              >
-                {{ windowsNodeMxcStatus.limitedAvailability.summary }}
-              </p>
-              <ul
-                v-if="
-                  windowsNodeMxcStatus.limitedAvailability.blockers.length ||
-                  windowsNodeMxcStatus.limitedAvailability.remediation.length
-                "
-                class="mxc-availability-list"
-              >
-                <li
-                  v-for="blocker in windowsNodeMxcStatus.limitedAvailability.blockers"
-                  :key="`limited-blocker-${blocker}`"
-                  class="mxc-availability-blocker"
-                >
-                  {{ blocker }}
-                </li>
-                <li
-                  v-for="step in windowsNodeMxcStatus.limitedAvailability.remediation"
-                  :key="`limited-remediation-${step}`"
-                >
-                  {{ step }}
-                </li>
-              </ul>
-              <el-button
-                type="warning"
-                plain
-                data-testid="mxc-select-limited"
-                :loading="windowsNodeMxcApplying"
-                :disabled="
-                  windowsNodeMxcApplying ||
-                  !windowsNodeMxcStatus.limitedAvailability.available ||
-                  windowsNodeMxcStatus.requestedMode === 'limited-dacl'
-                "
-                @click="selectWindowsNodeMxcMode('limited-dacl')"
-              >
-                {{
-                  windowsNodeMxcStatus.requestedMode === "limited-dacl"
-                    ? t("settings.windowsNodeMxcSelected")
-                    : t("settings.windowsNodeMxcUseLimited")
-                }}
-              </el-button>
-            </section>
-            <section
-              class="mxc-mode-card mxc-mode-card-off"
-              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'off' }"
-              data-testid="mxc-mode-off"
-            >
-              <div class="mxc-mode-card-heading">
-                <strong>{{ t("settings.windowsNodeMxcModeOff") }}</strong>
-              </div>
-              <p>{{ t("settings.windowsNodeMxcModeOffDesc") }}</p>
-              <p class="mxc-mode-warning">{{ t("settings.windowsNodeMxcOffWarning") }}</p>
-              <el-button
-                plain
-                data-testid="mxc-select-off"
-                :loading="windowsNodeMxcApplying"
-                :disabled="windowsNodeMxcApplying || windowsNodeMxcStatus.requestedMode === 'off'"
-                @click="selectWindowsNodeMxcMode('off')"
-              >
-                {{
-                  windowsNodeMxcStatus.requestedMode === "off"
-                    ? t("settings.windowsNodeMxcSelected")
-                    : t("settings.windowsNodeMxcUseOff")
-                }}
-              </el-button>
-            </section>
+              <el-button @click="openDockerGuide('wsl')">{{
+                t("settings.dockerWslDocs")
+              }}</el-button>
+              <el-button @click="openDockerGuide('docker')">{{
+                t("settings.dockerDesktopDocs")
+              }}</el-button>
+            </div>
+            <pre v-if="dockerBuildLog" class="docker-build-log">{{ dockerBuildLog }}</pre>
           </div>
-          <section
-            v-if="weixinRemoteApprovalStatus"
-            class="mxc-remote-approval"
-            data-testid="weixin-remote-approval"
-          >
-            <div class="mxc-mode-card-heading">
-              <strong>{{ t("settings.weixinRemoteApproval") }}</strong>
-            </div>
-            <p>{{ t("settings.weixinRemoteApprovalRisk") }}</p>
-            <div class="mxc-remote-owner">
-              <span>{{ t("settings.weixinRemoteApprovalOwner") }}</span>
-              <code>{{
-                weixinRemoteApprovalStatus.owner?.userId ??
-                t("settings.weixinRemoteApprovalUnbound")
-              }}</code>
-            </div>
-            <div
-              v-if="weixinRemoteApprovalStatus.blockedReason"
-              class="mxc-alert mxc-alert-warning"
-            >
-              {{
-                weixinRemoteApprovalStatus.blockedReason === "mxc-off"
-                  ? t("settings.weixinRemoteApprovalRequiresMxc")
-                  : t("settings.weixinRemoteApprovalRequiresOwner")
-              }}
-            </div>
-            <p class="mxc-mode-warning">{{ t("settings.weixinRemoteApprovalOnceOnly") }}</p>
-            <div class="mxc-remote-actions">
+        </div>
+        <div class="section-footer">{{ t("settings.dockerSandboxPosture") }}</div>
+        <div class="section-footer">{{ t("settings.dockerSandboxMigration") }}</div>
+        <div class="section-label">{{ t("settings.dockerBindingsTitle") }}</div>
+        <div class="card-group">
+          <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+            <div class="docker-binding-toolbar">
+              <el-select v-model="selectedDockerAgentId" style="min-width: 220px">
+                <el-option
+                  v-for="agent in dockerBindingState?.agents ?? []"
+                  :key="agent.id"
+                  :label="`${agent.name} (${agent.id})`"
+                  :value="agent.id"
+                />
+              </el-select>
+              <el-tag :type="dockerBindingStatusType">
+                {{ dockerBindingStatusLabel }}
+              </el-tag>
               <el-button
-                v-if="!weixinRemoteApprovalStatus.enabled"
-                type="warning"
-                plain
-                data-testid="weixin-remote-approval-enable"
-                :loading="weixinRemoteApprovalApplying"
-                :disabled="
-                  weixinRemoteApprovalApplying || weixinRemoteApprovalStatus.blockedReason !== null
-                "
-                @click="setWeixinRemoteApprovalEnabled(true)"
+                v-if="selectedDockerBindingStatus?.effective === 'error'"
+                :loading="dockerBindingsApplying"
+                @click="retryDockerBindings"
               >
-                {{ t("settings.weixinRemoteApprovalEnable") }}
-              </el-button>
-              <el-button
-                v-else
-                plain
-                data-testid="weixin-remote-approval-disable"
-                :loading="weixinRemoteApprovalApplying"
-                @click="setWeixinRemoteApprovalEnabled(false)"
-              >
-                {{ t("settings.weixinRemoteApprovalDisable") }}
-              </el-button>
-              <el-button
-                v-if="weixinRemoteApprovalStatus.configured"
-                type="danger"
-                plain
-                data-testid="weixin-remote-approval-revoke"
-                :loading="weixinRemoteApprovalApplying"
-                @click="revokeWeixinRemoteApproval"
-              >
-                {{ t("settings.weixinRemoteApprovalRevoke") }}
+                {{ t("settings.dockerBindingsRetry") }}
               </el-button>
             </div>
-          </section>
-          <template v-if="windowsNodeMxcStatus">
-            <div class="card-row mxc-status-summary" data-testid="mxc-status-summary">
-              <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
-                {{ windowsNodeMxcCompactStatus }}
-              </span>
-            </div>
-            <div v-if="windowsNodeMxcProtectionDetail" class="mxc-primary-detail">
-              {{ windowsNodeMxcProtectionDetail }}
-            </div>
-            <div
-              v-if="windowsNodeMxcHooksPausedSummary"
-              class="mxc-alert mxc-alert-warning"
-              data-testid="mxc-hooks-paused"
-            >
-              {{ windowsNodeMxcHooksPausedSummary }}
-            </div>
-            <div
-              v-if="windowsNodeMxcStatus.canvas.state !== 'off'"
-              class="mxc-alert"
-              :class="
-                windowsNodeMxcStatus.canvas.state === 'active'
-                  ? 'mxc-alert-success'
-                  : 'mxc-alert-warning'
-              "
-              data-testid="mxc-canvas-status"
-            >
-              {{
-                windowsNodeMxcStatus.canvas.state === "active"
-                  ? t("settings.windowsNodeMxcCanvasActive")
-                  : t("settings.windowsNodeMxcCanvasPaused")
-              }}
-            </div>
-            <div
-              v-if="
-                windowsNodeMxcStatus.requestedMode === 'limited-dacl' ||
-                windowsNodeMxcStatus.effectiveStrength === 'limited-dacl'
-              "
-              class="card-row no-border mxc-ambient-compact"
-              :class="windowsNodeMxcAmbientSummaryClass"
-              data-testid="mxc-ambient-compact"
-            >
-              {{ windowsNodeMxcAmbientSummary }}
-            </div>
-            <div
-              class="card-row no-border mxc-folder-policy"
-              style="flex-direction: column; align-items: stretch"
-            >
-              <span class="row-label">{{ windowsNodeMxcFolderTitle }}</span>
-              <div class="mxc-folder-policy-hint">
-                {{ windowsNodeMxcFolderHint }}
-              </div>
-              <div
-                v-if="windowsNodeMxcStatus.requestedMode !== 'off'"
-                class="mxc-alert mxc-alert-warning mxc-folder-policy-locked"
-              >
-                {{ t("settings.windowsNodeMxcFoldersStaged") }}
-              </div>
-              <div
-                v-if="windowsNodeMxcStatus.folderPolicyRecovery?.lastError"
-                class="mxc-alert mxc-alert-error"
-              >
-                {{ t("settings.windowsNodeMxcFolderRecovery") }}:
-                <strong v-if="windowsNodeMxcStatus.folderPolicyRecovery.failurePhase">
-                  {{ windowsNodeMxcStatus.folderPolicyRecovery.failurePhase }}:
-                </strong>
-                {{ windowsNodeMxcStatus.folderPolicyRecovery.lastError }}
-                <el-button text size="small" @click="stagePreviousWindowsNodeMxcFolderPolicy">
-                  {{ t("settings.windowsNodeMxcStagePreviousFolders") }}
-                </el-button>
-              </div>
-              <div class="dir-section">
-                <div class="mxc-folder-policy-heading">
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <el-button
-                    data-testid="mxc-add-rw"
-                    size="small"
-                    type="primary"
-                    plain
-                    :disabled="windowsNodeMxcFolderApplying"
-                    @click="addWindowsNodeMxcFolder('rw')"
-                  >
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="dir in windowsNodeMxcFolderDraft.rw"
-                  :key="'mxc-rw-' + dir"
-                  class="dir-item"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">{{
-                    t("settings.windowsNodeMxcGrantReadWrite")
-                  }}</span>
-                  <el-button
-                    data-testid="mxc-change-ro"
-                    text
-                    size="small"
-                    :disabled="windowsNodeMxcFolderApplying"
-                    @click="changeWindowsNodeMxcFolderAccess(dir, 'ro')"
-                  >
-                    {{ t("settings.windowsNodeMxcChangeToRo") }}
-                  </el-button>
-                  <button
-                    class="tag-remove"
-                    :disabled="windowsNodeMxcFolderApplying"
-                    @click="removeWindowsNodeMxcFolder(dir, 'rw')"
-                  >
-                    &times;
-                  </button>
-                </div>
-                <div v-if="windowsNodeMxcFolderDraft.rw.length === 0" class="dir-empty">
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-              <div class="dir-section" style="margin-top: 10px">
-                <div class="mxc-folder-policy-heading">
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <el-button
-                    data-testid="mxc-add-ro"
-                    size="small"
-                    type="primary"
-                    plain
-                    :disabled="windowsNodeMxcFolderApplying"
-                    @click="addWindowsNodeMxcFolder('ro')"
-                  >
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="dir in windowsNodeMxcFolderDraft.ro"
-                  :key="'mxc-ro-' + dir"
-                  class="dir-item"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">{{
-                    t("settings.windowsNodeMxcGrantReadOnly")
-                  }}</span>
-                  <el-button
-                    data-testid="mxc-change-rw"
-                    text
-                    size="small"
-                    :disabled="windowsNodeMxcFolderApplying"
-                    @click="changeWindowsNodeMxcFolderAccess(dir, 'rw')"
-                  >
-                    {{ t("settings.windowsNodeMxcChangeToRw") }}
-                  </el-button>
-                  <button
-                    class="tag-remove"
-                    :disabled="windowsNodeMxcFolderApplying"
-                    @click="removeWindowsNodeMxcFolder(dir, 'ro')"
-                  >
-                    &times;
-                  </button>
-                </div>
-                <div v-if="windowsNodeMxcFolderDraft.ro.length === 0" class="dir-empty">
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-              <div v-if="windowsNodeMxcFolderDraftDirty" class="mxc-folder-policy-actions">
+            <p>{{ t("settings.dockerBindingsWarning") }}</p>
+            <p>{{ t("settings.dockerBindingsLifecycle") }}</p>
+            <div v-for="access in dockerBindingAccesses" :key="access" class="docker-binding-group">
+              <div class="docker-binding-heading">
+                <strong>{{
+                  access === "ro"
+                    ? t("settings.dockerBindingsReadOnly")
+                    : t("settings.dockerBindingsReadWrite")
+                }}</strong>
                 <el-button
-                  type="primary"
-                  :loading="windowsNodeMxcFolderApplying"
-                  data-testid="mxc-apply-folder-policy"
-                  @click="applyWindowsNodeMxcFolderPolicy"
-                >
-                  {{ t("settings.windowsNodeMxcApplyFolders") }}
-                </el-button>
-                <el-button
-                  :disabled="windowsNodeMxcFolderApplying"
-                  @click="replaceWindowsNodeMxcFolderDraft(windowsNodeMxcFolderBaseline)"
-                >
-                  {{ t("common.cancel") }}
-                </el-button>
-              </div>
-            </div>
-            <div
-              v-if="!windowsNodeMxcLimitedMode"
-              class="card-row no-border mxc-folder-policy"
-              style="flex-direction: column; align-items: stretch"
-            >
-              <div class="mxc-folder-policy-heading">
-                <span class="row-label">{{ t("settings.windowsNodeMxcDurableApprovals") }}</span>
-                <el-button
-                  v-if="windowsNodeMxcStatus.durableApprovals.records.length"
                   size="small"
-                  type="danger"
-                  plain
-                  @click="revokeAllWindowsNodeMxcDurableApprovals"
+                  :disabled="!selectedDockerAgent || dockerBindingsApplying"
+                  @click="addDockerBinding(access)"
                 >
-                  {{ t("settings.windowsNodeMxcRevokeAllApprovals") }}
+                  {{ t("settings.dockerBindingsAdd") }}
                 </el-button>
               </div>
-              <div class="mxc-folder-policy-hint">
-                {{ t("settings.windowsNodeMxcDurableApprovalsHint") }}
-              </div>
               <div
-                v-for="approval in windowsNodeMxcStatus.durableApprovals.records"
-                :key="approval.id"
-                class="mxc-durable-approval"
+                v-for="binding in selectedDockerAgent?.bindings.filter(
+                  (item) => item.access === access,
+                ) ?? []"
+                :key="binding.source"
+                class="docker-binding-row"
               >
-                <strong>{{ approval.commandText }}</strong>
-                <span>{{ approval.executablePath }}</span>
-                <span
-                  >{{ t("settings.windowsNodeMxcApprovalCwd") }}: {{ approval.cwdBinding }}</span
-                >
-                <span>
-                  {{ t("settings.windowsNodeMxcApprovalAccess") }}:
-                  {{
-                    approval.declaredAccess
-                      .map((entry) => `${entry.access.toUpperCase()} ${entry.path}`)
-                      .join(", ") || "none"
-                  }}
-                </span>
-                <span>
-                  {{ t("settings.windowsNodeMxcApprovalScope") }}:
-                  {{ approval.agentId ?? "none" }} / {{ approval.sessionKey }}
-                </span>
-                <span>
-                  {{ t("settings.windowsNodeMxcApprovalCreated") }}: {{ approval.createdAt }} ·
-                  {{ t("settings.windowsNodeMxcApprovalLastUsed") }}:
-                  {{ approval.lastUsedAt ?? t("settings.windowsNodeMxcApprovalNever") }}
-                </span>
+                <div class="docker-binding-paths">
+                  <span>{{ binding.source }}</span>
+                  <code>{{ binding.target }}</code>
+                </div>
+                <el-tag :type="binding.access === 'ro' ? 'info' : 'warning'">
+                  {{ binding.access.toUpperCase() }}
+                </el-tag>
                 <el-button
                   size="small"
                   type="danger"
                   plain
-                  @click="revokeWindowsNodeMxcDurableApproval(approval.id)"
+                  :disabled="dockerBindingsApplying"
+                  @click="removeDockerBinding(binding)"
                 >
-                  {{ t("settings.windowsNodeMxcRevokeApproval") }}
+                  {{ t("settings.dockerBindingsRemove") }}
                 </el-button>
               </div>
-              <div
-                v-if="windowsNodeMxcStatus.durableApprovals.records.length === 0"
-                class="dir-empty"
+              <span
+                v-if="!selectedDockerAgent?.bindings.some((item) => item.access === access)"
+                class="placeholder-text"
               >
-                {{ t("settings.windowsNodeMxcNoDurableApprovals") }}
-              </div>
-              <div
-                v-if="windowsNodeMxcStatus.durableApprovals.warning"
-                class="mxc-alert mxc-alert-warning"
-              >
-                {{ windowsNodeMxcStatus.durableApprovals.warning }}
-              </div>
-            </div>
-            <div
-              v-else
-              class="card-row no-border mxc-folder-policy"
-              style="flex-direction: column; align-items: stretch"
-              data-testid="mxc-limited-approvals"
-            >
-              <span class="row-label">{{
-                t("settings.windowsNodeMxcLimitedCommandApprovals")
-              }}</span>
-              <div class="mxc-alert mxc-alert-warning">
-                {{ t("settings.windowsNodeMxcLimitedCommandApprovalsHint") }}
-              </div>
-            </div>
-            <button
-              type="button"
-              class="mxc-technical-summary"
-              :aria-expanded="windowsNodeMxcTechnicalDetailsOpen"
-              aria-controls="windows-node-mxc-technical-details"
-              data-testid="mxc-technical-details-toggle"
-              @click="windowsNodeMxcTechnicalDetailsOpen = !windowsNodeMxcTechnicalDetailsOpen"
-            >
-              <span>{{ t("settings.windowsNodeMxcTechnicalDetails") }}</span>
-              <span class="mxc-technical-chevron" aria-hidden="true">
-                {{ windowsNodeMxcTechnicalDetailsOpen ? "−" : "+" }}
+                {{ t("settings.dockerBindingsEmpty") }}
               </span>
-            </button>
-            <div
-              v-if="windowsNodeMxcTechnicalDetailsOpen"
-              id="windows-node-mxc-technical-details"
-              class="mxc-technical-details"
-              role="region"
-              :aria-label="t('settings.windowsNodeMxcTechnicalDetails')"
-              data-testid="mxc-technical-details"
-            >
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcRequestedMode") }}</span>
-                <span class="row-value">{{ windowsNodeMxcRequestedModeLabel }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcAttestedStrength") }}</span>
-                <span class="row-value">{{ windowsNodeMxcEffectiveStrengthLabel }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcAttestedTier") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.effectiveTier ?? t("settings.windowsNodeMxcUnavailable")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcEffective") }}</span>
-                <span class="row-value">{{ windowsNodeMxcProtectionLabel }}</span>
-              </div>
-              <div
-                v-if="windowsNodeMxcLimitedMode"
-                class="card-row mxc-ambient-diagnostics"
-                data-testid="mxc-ambient-diagnostics"
-              >
-                <span class="row-label">{{ t("settings.windowsNodeMxcAmbientBeforeGrants") }}</span>
-                <template v-if="windowsNodeMxcStatus.ambientAccess">
-                  <div class="mxc-ambient-grid">
-                    <span
-                      v-for="entry in windowsNodeMxcStatus.ambientAccess.entries"
-                      :key="entry.category"
-                      class="mxc-ambient-entry"
-                    >
-                      <span>{{ windowsNodeMxcAmbientCategoryLabel(entry.category) }}</span>
-                      <strong :class="`mxc-ambient-status-${entry.status}`">{{
-                        windowsNodeMxcAmbientStatusLabel(entry.status)
-                      }}</strong>
-                    </span>
-                  </div>
-                  <div class="mxc-ambient-metadata">
-                    <span>
-                      {{ t("settings.windowsNodeMxcAmbientContract") }}:
-                      {{ windowsNodeMxcStatus.ambientAccess.contract }}
-                    </span>
-                    <span>
-                      {{ t("settings.windowsNodeMxcAmbientHash") }}:
-                      {{ windowsNodeMxcStatus.ambientAccess.hash }}
-                    </span>
-                    <span>
-                      {{ t("settings.windowsNodeMxcAmbientCheckedAt") }}:
-                      {{ windowsNodeMxcStatus.ambientAccess.checkedAt }}
-                    </span>
-                  </div>
-                </template>
-                <div v-else class="mxc-alert mxc-alert-warning">
-                  {{ t("settings.windowsNodeMxcAmbientUnavailable") }}
-                </div>
-                <div class="mxc-folder-policy-hint">
-                  {{ t("settings.windowsNodeMxcAmbientAccessHint") }}
-                </div>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcSelectedNode") }}</span>
-                <span class="row-value">
-                  {{
-                    windowsNodeMxcStatus.selectedNode
-                      ? `${windowsNodeMxcStatus.selectedNode.displayName} (${windowsNodeMxcStatus.selectedNode.id})`
-                      : t("settings.windowsNodeMxcUnavailable")
-                  }}
-                </span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcLifecycle") }}</span>
-                <span class="row-value">
-                  {{
-                    t(
-                      `settings.windowsNodeMxcLifecyclePhase.${windowsNodeMxcStatus.lifecycleState.phase}`,
-                    )
-                  }}
-                  <template v-if="windowsNodeMxcStatus.lifecycleState.detail">
-                    · {{ windowsNodeMxcStatus.lifecycleState.detail }}
-                  </template>
-                </span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcGatewayPolicy") }}</span>
-                <span class="row-value">{{ windowsNodeMxcStatus.gatewayPolicyState }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcTier") }}</span>
-                <span class="row-value">
-                  {{ windowsNodeMxcStatus.probe.tier ?? windowsNodeMxcStatus.probe.outcome }}
-                  <template v-if="windowsNodeMxcStatus.probe.needsDaclAugmentation">
-                    · {{ t("settings.windowsNodeMxcDaclRequired") }}
-                  </template>
-                </span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcBaseContainerApi") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.probe.probes.baseContainerApiPresent === null
-                    ? t("settings.windowsNodeMxcUnknown")
-                    : windowsNodeMxcStatus.probe.probes.baseContainerApiPresent
-                      ? t("settings.windowsNodeMxcAvailable")
-                      : t("settings.windowsNodeMxcMissing")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcBfsRuntime") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.probe.probes.bfsCompiledIn === null
-                    ? t("settings.windowsNodeMxcUnknown")
-                    : windowsNodeMxcStatus.probe.probes.bfsCompiledIn
-                      ? t("settings.windowsNodeMxcCompiledIn")
-                      : t("settings.windowsNodeMxcCompiledOut")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcBfsHostTool") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.probe.probes.bfscfgPresent === null
-                    ? t("settings.windowsNodeMxcUnknown")
-                    : windowsNodeMxcStatus.probe.probes.bfscfgPresent
-                      ? t("settings.windowsNodeMxcAvailable")
-                      : t("settings.windowsNodeMxcMissing")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcBundledHelper") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.helperRevision
-                    ? windowsNodeMxcStatus.helperRevision.slice(0, 12)
-                    : t("settings.windowsNodeMxcUnavailable")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcRuntimeContract") }}</span>
-                <span class="row-value">{{
-                  `${windowsNodeMxcStatus.mxcRuntimeVersion ?? t("settings.windowsNodeMxcUnavailable")} / ${
-                    windowsNodeMxcStatus.cwdPolicyContract ??
-                    t("settings.windowsNodeMxcUnavailable")
-                  }`
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcSettingsFingerprint") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.settingsFingerprint ??
-                  t("settings.windowsNodeMxcUnavailable")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcActivationLease") }}</span>
-                <span class="row-value">
-                  {{
-                    `${windowsNodeMxcStatus.activationLeaseMode ?? "none"} / ${
-                      windowsNodeMxcStatus.activationLeaseContract ??
-                      t("settings.windowsNodeMxcUnavailable")
-                    }`
-                  }}
-                </span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcGatewayGeneration") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.gatewayGeneration || t("settings.windowsNodeMxcUnavailable")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcStrictFallback") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.strictFallbackEffective
-                    ? t("settings.windowsNodeMxcEnabled")
-                    : t("settings.windowsNodeMxcDisabled")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcCwdAttestation") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.cwdAttestationReady
-                    ? t("settings.windowsNodeMxcVerified")
-                    : t("settings.windowsNodeMxcUnverified")
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcEffectiveTools") }}</span>
-                <span class="row-value">{{ windowsNodeMxcStatus.effectiveToolsState }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcCommands") }}</span>
-                <span class="row-value">{{
-                  windowsNodeMxcStatus.selectedNode?.commands.join(", ") || "—"
-                }}</span>
-              </div>
-              <div class="card-row">
-                <span class="row-label">{{ t("settings.windowsNodeMxcConnection") }}</span>
-                <span class="row-value">
-                  {{
-                    windowsNodeMxcStatus.selectedNode
-                      ? `${windowsNodeMxcStatus.selectedNode.connected ? "connected" : "disconnected"} / ${
-                          windowsNodeMxcStatus.selectedNode.paired
-                            ? "paired"
-                            : "reapproval required"
-                        }`
-                      : "not selected"
-                  }}
-                </span>
-              </div>
-              <div class="card-row no-border">
-                <span class="row-label">{{ t("settings.windowsNodeMxcSmoke") }}</span>
-                <span class="row-value">
-                  {{
-                    windowsNodeMxcStatus.smoke
-                      ? `${windowsNodeMxcStatus.smoke.profile}: ${windowsNodeMxcStatus.smoke.execution.outcome}${
-                          windowsNodeMxcStatus.smoke.deniedOutsideRoot
-                            ? ` / outside-root ${windowsNodeMxcStatus.smoke.deniedOutsideRoot.outcome}`
-                            : ""
-                        }`
-                      : t("settings.windowsNodeMxcNotRun")
-                  }}
-                </span>
-              </div>
             </div>
-          </template>
-        </div>
-        <div class="section-footer">{{ t("settings.windowsNodeMxcCompatibility") }}</div>
-
-        <div v-if="windowsNodeMxcStatus?.probe.degraded" class="mxc-alert mxc-alert-warning">
-          {{ t("settings.windowsNodeMxcDegraded") }}
-        </div>
-        <div
-          v-for="blocker in windowsNodeMxcStatus?.blockers ?? []"
-          :key="`blocker-${blocker}`"
-          class="mxc-alert mxc-alert-error"
-        >
-          {{ blocker }}
-        </div>
-        <div
-          v-for="warning in windowsNodeMxcStatus?.warnings ?? []"
-          :key="`warning-${warning}`"
-          class="mxc-alert mxc-alert-warning"
-        >
-          {{ warning }}
-        </div>
-        <div
-          v-for="step in windowsNodeMxcStatus?.remediation ?? []"
-          :key="`remediation-${step}`"
-          class="mxc-alert"
-        >
-          {{ step }}
-        </div>
-
-        <div
-          v-if="windowsNodeMxcStatus?.requestedMode === 'off'"
-          class="card-group"
-          style="margin-top: 12px"
-        >
-          <div class="card-row">
-            <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
-            <div style="display: flex; align-items: center; gap: 10px">
-              <span v-if="sandboxRestarting" class="restart-hint">{{
-                t("settings.sandboxCapsRestarting")
-              }}</span>
-              <el-switch
-                v-model="sandboxStatus.enabled"
-                :disabled="sandboxRestarting"
-                @change="toggleSandbox"
-              />
+            <div v-if="selectedDockerBindingStatus?.error" class="docker-binding-error">
+              {{ selectedDockerBindingStatus.error }}
             </div>
           </div>
         </div>
+      </div>
 
-        <div
-          v-if="windowsNodeMxcStatus?.requestedMode === 'off'"
-          :class="{ 'sandbox-disabled': !sandboxStatus.enabled }"
-        >
-          <!-- Sandbox capabilities (network) -->
-          <div class="card-group" style="margin-top: 12px">
+      <template v-if="false">
+        <div v-if="activeSection === 'security'" class="section">
+          <div class="section-label">{{ t("settings.security") }}</div>
+          <div class="card-group">
             <div class="card-row">
-              <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
+              <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
               <div style="display: flex; align-items: center; gap: 10px">
-                <span v-if="capsRestarting" class="restart-hint">{{
+                <span v-if="sandboxRestarting" class="restart-hint">{{
                   t("settings.sandboxCapsRestarting")
                 }}</span>
                 <el-switch
-                  :model-value="sandboxCapabilities.includes('internetClient')"
-                  :disabled="capsRestarting"
-                  @change="(v: boolean) => toggleCapability('internetClient', v)"
+                  v-model="sandboxStatus.enabled"
+                  :disabled="sandboxRestarting"
+                  @change="toggleSandbox"
                 />
               </div>
             </div>
           </div>
-          <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
 
-          <!-- External apps whitelist -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
-              </div>
-              <div class="external-apps-list">
-                <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
-                  <span>{{ app }}</span>
-                  <button class="tag-remove" @click="removeExternalApp(idx)">&times;</button>
-                </div>
-                <div class="app-tag app-tag-add">
-                  <input
-                    v-model="newAppName"
-                    class="app-add-input"
-                    :placeholder="t('settings.addApp')"
-                    @keyup.enter="addExternalApp"
+          <div :class="{ 'sandbox-disabled': !sandboxStatus.enabled }">
+            <!-- Sandbox capabilities (network) -->
+            <div class="card-group" style="margin-top: 12px">
+              <div class="card-row">
+                <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
+                <div style="display: flex; align-items: center; gap: 10px">
+                  <span v-if="capsRestarting" class="restart-hint">{{
+                    t("settings.sandboxCapsRestarting")
+                  }}</span>
+                  <el-switch
+                    :model-value="sandboxCapabilities.includes('internetClient')"
+                    :disabled="capsRestarting"
+                    @change="(v: boolean) => toggleCapability('internetClient', v)"
                   />
-                  <button class="tag-add-btn" @click="addExternalApp">+</button>
                 </div>
               </div>
             </div>
-          </div>
-          <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
+            <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
 
-          <!-- Sandbox directory permissions -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span
-                  class="row-label"
-                  style="margin: 0; cursor: default; user-select: none"
-                  @click="onSandboxDirsLabelClick"
-                  >{{ t("settings.sandboxDirs") }}</span
-                >
-              </div>
-              <!-- Read-Write directories -->
-              <div class="dir-section">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <el-button
-                    data-testid="sandbox-add-rw"
-                    size="small"
-                    type="primary"
-                    plain
-                    @click="addSandboxDir('rw')"
-                  >
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.rw"
-                  :key="'srw-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.rw" :key="'rw-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'rw')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.rw.length === 0 && sandboxUserDirs.rw.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- Read-Only directories -->
-              <div class="dir-section" style="margin-top: 10px">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <el-button
-                    data-testid="sandbox-add-ro"
-                    size="small"
-                    type="primary"
-                    plain
-                    @click="addSandboxDir('ro')"
-                  >
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.ro"
-                  :key="'sro-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.ro" :key="'ro-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'ro')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.ro.length === 0 && sandboxUserDirs.ro.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- ACL Verify Button (dev/testing tool, triple-click to show) -->
-              <div
-                v-if="showAclVerify"
-                class="dir-section"
-                style="
-                  margin-top: 14px;
-                  border-top: 1px solid var(--border-color);
-                  padding-top: 12px;
-                "
-              >
+            <!-- External apps whitelist -->
+            <div class="card-group" style="margin-top: 12px">
+              <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
                 <div
                   style="
                     display: flex;
@@ -1426,106 +650,242 @@
                     margin-bottom: 8px;
                   "
                 >
-                  <span class="dir-section-label">🔍 ACL 验证</span>
-                  <button class="dir-add-btn" :disabled="aclVerifying" @click="verifyAcls">
-                    {{ aclVerifying ? "扫描中..." : "验证权限一致性" }}
-                  </button>
+                  <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
                 </div>
-                <div v-if="aclVerifyResult" class="acl-verify-results">
-                  <!-- OK -->
-                  <div v-if="aclVerifyResult.ok.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-ok">
-                      ✓ 正常 ({{ aclVerifyResult.ok.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.ok"
-                      :key="'ok-' + item.dir"
-                      class="dir-item dir-item-system"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span
-                        class="dir-badge"
-                        :class="item.access === 'rw' ? 'dir-badge-rw' : 'dir-badge-ro'"
-                        >{{ item.access.toUpperCase() }}</span
-                      >
-                    </div>
+                <div class="external-apps-list">
+                  <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
+                    <span>{{ app }}</span>
+                    <button class="tag-remove" @click="removeExternalApp(idx)">&times;</button>
                   </div>
-                  <!-- Missing -->
-                  <div v-if="aclVerifyResult.missing.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      ⚠ 缺少 ACL ({{ aclVerifyResult.missing.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.missing"
-                      :key="'miss-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-ro">{{ item.access.toUpperCase() }}</span>
-                      <span class="acl-reason">{{ item.reason }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="repairAcl(item)"
-                      >
-                        修复
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Stale -->
-                  <div v-if="aclVerifyResult.stale.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      🗑 残留 ACL ({{ aclVerifyResult.stale.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.stale"
-                      :key="'stale-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="revokeStaleAcl(item)"
-                      >
-                        清除
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Errors -->
-                  <div v-if="aclVerifyResult.errors.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-err">
-                      ✗ 错误 ({{ aclVerifyResult.errors.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.errors"
-                      :key="'err-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="acl-reason">{{ item.error }}</span>
-                    </div>
-                  </div>
-                  <!-- Summary -->
-                  <div
-                    v-if="
-                      aclVerifyResult.missing.length === 0 &&
-                      aclVerifyResult.stale.length === 0 &&
-                      aclVerifyResult.errors.length === 0
-                    "
-                    class="acl-summary-ok"
-                  >
-                    ✓ 所有权限均已正确设置
+                  <div class="app-tag app-tag-add">
+                    <input
+                      v-model="newAppName"
+                      class="app-add-input"
+                      :placeholder="t('settings.addApp')"
+                      @keyup.enter="addExternalApp"
+                    />
+                    <button class="tag-add-btn" @click="addExternalApp">+</button>
                   </div>
                 </div>
               </div>
             </div>
+            <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
+
+            <!-- Sandbox directory permissions -->
+            <div class="card-group" style="margin-top: 12px">
+              <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
+                <div
+                  style="
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    margin-bottom: 8px;
+                  "
+                >
+                  <span
+                    class="row-label"
+                    style="margin: 0; cursor: default; user-select: none"
+                    @click="onSandboxDirsLabelClick"
+                    >{{ t("settings.sandboxDirs") }}</span
+                  >
+                </div>
+                <!-- Read-Write directories -->
+                <div class="dir-section">
+                  <div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      margin-bottom: 6px;
+                    "
+                  >
+                    <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
+                    <el-button size="small" type="primary" plain @click="addSandboxDir('rw')">
+                      {{ t("settings.sandboxAddDir") }}
+                    </el-button>
+                  </div>
+                  <div
+                    v-for="(dir, idx) in sandboxSystemDirs.rw"
+                    :key="'srw-' + idx"
+                    class="dir-item dir-item-system"
+                  >
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-rw">RW</span>
+                    <span class="dir-badge dir-badge-system">{{
+                      t("settings.sandboxSystemDir")
+                    }}</span>
+                  </div>
+                  <div v-for="dir in sandboxUserDirs.rw" :key="'rw-' + dir" class="dir-item">
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-rw">RW</span>
+                    <button class="tag-remove" @click="removeSandboxDir(dir, 'rw')">&times;</button>
+                  </div>
+                  <div
+                    v-if="sandboxSystemDirs.rw.length === 0 && sandboxUserDirs.rw.length === 0"
+                    class="dir-empty"
+                  >
+                    {{ t("settings.sandboxNoDirs") }}
+                  </div>
+                </div>
+
+                <!-- Read-Only directories -->
+                <div class="dir-section" style="margin-top: 10px">
+                  <div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      margin-bottom: 6px;
+                    "
+                  >
+                    <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
+                    <el-button size="small" type="primary" plain @click="addSandboxDir('ro')">
+                      {{ t("settings.sandboxAddDir") }}
+                    </el-button>
+                  </div>
+                  <div
+                    v-for="(dir, idx) in sandboxSystemDirs.ro"
+                    :key="'sro-' + idx"
+                    class="dir-item dir-item-system"
+                  >
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-ro">RO</span>
+                    <span class="dir-badge dir-badge-system">{{
+                      t("settings.sandboxSystemDir")
+                    }}</span>
+                  </div>
+                  <div v-for="dir in sandboxUserDirs.ro" :key="'ro-' + dir" class="dir-item">
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <span class="dir-badge dir-badge-ro">RO</span>
+                    <button class="tag-remove" @click="removeSandboxDir(dir, 'ro')">&times;</button>
+                  </div>
+                  <div
+                    v-if="sandboxSystemDirs.ro.length === 0 && sandboxUserDirs.ro.length === 0"
+                    class="dir-empty"
+                  >
+                    {{ t("settings.sandboxNoDirs") }}
+                  </div>
+                </div>
+
+                <!-- ACL Verify Button (dev/testing tool, triple-click to show) -->
+                <div
+                  v-if="showAclVerify"
+                  class="dir-section"
+                  style="
+                    margin-top: 14px;
+                    border-top: 1px solid var(--border-color);
+                    padding-top: 12px;
+                  "
+                >
+                  <div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      margin-bottom: 8px;
+                    "
+                  >
+                    <span class="dir-section-label">🔍 ACL 验证</span>
+                    <button class="dir-add-btn" :disabled="aclVerifying" @click="verifyAcls">
+                      {{ aclVerifying ? "扫描中..." : "验证权限一致性" }}
+                    </button>
+                  </div>
+                  <div v-if="aclVerifyResult" class="acl-verify-results">
+                    <!-- OK -->
+                    <div v-if="aclVerifyResultSafe.ok.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-ok">
+                        ✓ 正常 ({{ aclVerifyResultSafe.ok.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.ok"
+                        :key="'ok-' + item.dir"
+                        class="dir-item dir-item-system"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span
+                          class="dir-badge"
+                          :class="item.access === 'rw' ? 'dir-badge-rw' : 'dir-badge-ro'"
+                          >{{ item.access.toUpperCase() }}</span
+                        >
+                      </div>
+                    </div>
+                    <!-- Missing -->
+                    <div v-if="aclVerifyResultSafe.missing.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-warn">
+                        ⚠ 缺少 ACL ({{ aclVerifyResultSafe.missing.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.missing"
+                        :key="'miss-' + item.dir"
+                        class="dir-item"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span class="dir-badge dir-badge-ro">{{ item.access.toUpperCase() }}</span>
+                        <span class="acl-reason">{{ item.reason }}</span>
+                        <button
+                          class="dir-add-btn"
+                          style="margin-left: auto"
+                          @click="repairAcl(item)"
+                        >
+                          修复
+                        </button>
+                      </div>
+                    </div>
+                    <!-- Stale -->
+                    <div v-if="aclVerifyResultSafe.stale.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-warn">
+                        🗑 残留 ACL ({{ aclVerifyResultSafe.stale.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.stale"
+                        :key="'stale-' + item.dir"
+                        class="dir-item"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
+                        <button
+                          class="dir-add-btn"
+                          style="margin-left: auto"
+                          @click="revokeStaleAcl(item)"
+                        >
+                          清除
+                        </button>
+                      </div>
+                    </div>
+                    <!-- Errors -->
+                    <div v-if="aclVerifyResultSafe.errors.length > 0" class="acl-section">
+                      <div class="acl-section-header acl-err">
+                        ✗ 错误 ({{ aclVerifyResultSafe.errors.length }})
+                      </div>
+                      <div
+                        v-for="item in aclVerifyResultSafe.errors"
+                        :key="'err-' + item.dir"
+                        class="dir-item"
+                      >
+                        <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
+                        <span class="acl-reason">{{ item.error }}</span>
+                      </div>
+                    </div>
+                    <!-- Summary -->
+                    <div
+                      v-if="
+                        aclVerifyResultSafe.missing.length === 0 &&
+                        aclVerifyResultSafe.stale.length === 0 &&
+                        aclVerifyResultSafe.errors.length === 0
+                      "
+                      class="acl-summary-ok"
+                    >
+                      ✓ 所有权限均已正确设置
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
           </div>
-          <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
+          <!-- .sandbox-disabled wrapper -->
         </div>
-        <!-- .sandbox-disabled wrapper -->
-      </div>
+      </template>
 
       <!-- Data & Privacy -->
       <div v-if="activeSection === 'privacy'" class="section">
@@ -1698,51 +1058,6 @@
           </a>
         </div>
       </div>
-      <MxcCapabilityConsentDialog
-        v-model="windowsNodeMxcConsentVisible"
-        :target-mode="windowsNodeMxcConsentTarget"
-        :submitting="windowsNodeMxcConsentSubmitting"
-        @accept="acceptWindowsNodeMxcCapabilityConsent"
-        @cancel="cancelWindowsNodeMxcCapabilityConsent"
-      />
-      <el-dialog
-        v-model="windowsNodeMxcLimitedAcknowledgementVisible"
-        :title="t('settings.windowsNodeMxcLimitedAcknowledgeTitle')"
-        width="560"
-        :close-on-click-modal="!windowsNodeMxcApplying"
-        :close-on-press-escape="!windowsNodeMxcApplying"
-        :show-close="!windowsNodeMxcApplying"
-      >
-        <p class="mxc-limited-dialog-warning">
-          {{ t("settings.windowsNodeMxcLimitedAcknowledgeBody") }}
-        </p>
-        <label class="mxc-limited-checkbox">
-          <input
-            v-model="windowsNodeMxcLimitedAcknowledged"
-            type="checkbox"
-            data-testid="mxc-limited-ack-checkbox"
-            :disabled="windowsNodeMxcApplying"
-          />
-          <span>{{ t("settings.windowsNodeMxcLimitedAcknowledgeCheckbox") }}</span>
-        </label>
-        <template #footer>
-          <el-button
-            :disabled="windowsNodeMxcApplying"
-            @click="windowsNodeMxcLimitedAcknowledgementVisible = false"
-          >
-            {{ t("common.cancel") }}
-          </el-button>
-          <el-button
-            type="warning"
-            data-testid="mxc-confirm-limited"
-            :loading="windowsNodeMxcApplying"
-            :disabled="!windowsNodeMxcLimitedAcknowledged"
-            @click="confirmWindowsNodeMxcLimitedMode"
-          >
-            {{ t("settings.windowsNodeMxcEnableLimited") }}
-          </el-button>
-        </template>
-      </el-dialog>
     </div>
   </div>
 </template>
@@ -1758,8 +1073,6 @@ import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
-import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
-import type { WindowsNodeMxcDisclosureTargetMode } from "../../../src/windows-node-mxc-disclosure";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
@@ -1878,7 +1191,7 @@ watch(
   },
 );
 
-// -- Sandbox state --
+// Legacy AppContainer settings are unreachable migration code on the Docker experiment.
 const sandboxStatus = reactive({ available: false, enabled: false });
 const externalApps = ref<string[]>([]);
 const newAppName = ref("");
@@ -1887,356 +1200,10 @@ const sandboxApplying = ref(false);
 /** Snapshot of external apps at load time, used to detect changes */
 let externalAppsOriginal: string[] = [];
 const sandboxUserDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
-const windowsNodeMxcFolderDraft = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
-const windowsNodeMxcFolderBaseline = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 const sandboxSystemDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 const sandboxCapabilities = ref<string[]>([]);
 const capsRestarting = ref(false);
 const sandboxRestarting = ref(false);
-type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
-type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
-type WeixinRemoteApprovalStatus = Awaited<
-  ReturnType<typeof window.openclaw.plugin.weixin.getRemoteApprovalStatus>
->;
-type WindowsNodeMxcAmbientEntry = NonNullable<
-  WindowsNodeMxcStatus["ambientAccess"]
->["entries"][number];
-const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
-const weixinRemoteApprovalStatus = ref<WeixinRemoteApprovalStatus | null>(null);
-const weixinRemoteApprovalApplying = ref(false);
-const windowsNodeMxcApplying = ref(false);
-const windowsNodeMxcFolderApplying = ref(false);
-const windowsNodeMxcTechnicalDetailsOpen = ref(false);
-const windowsNodeMxcConsentVisible = ref(false);
-const windowsNodeMxcConsentTarget = ref<WindowsNodeMxcDisclosureTargetMode | null>(null);
-const windowsNodeMxcConsentSubmitting = ref(false);
-const windowsNodeMxcLimitedAcknowledgementVisible = ref(false);
-const windowsNodeMxcLimitedAcknowledged = ref(false);
-const windowsNodeMxcTransitionPhases = new Set([
-  "locking",
-  "validating",
-  "persisting",
-  "starting-locked",
-  "smoking-locked",
-  "starting-active",
-  "smoking-active",
-  "promoting-active",
-  "verifying-active",
-  "starting-standard",
-]);
-
-const windowsNodeMxcProtectionLabel = computed(() => {
-  const status = windowsNodeMxcStatus.value;
-  if (!status || status.requestedMode === "off") {
-    return t("settings.windowsNodeMxcProtectionOff");
-  }
-  if (status.effectiveEnabled && status.lifecycleState.phase === "active") {
-    if (status.effectiveStrength === "limited-dacl") {
-      return t("settings.windowsNodeMxcLimitedActive");
-    }
-    return t("settings.windowsNodeMxcProtected");
-  }
-  if (windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)) {
-    return t("settings.windowsNodeMxcStarting");
-  }
-  return t("settings.windowsNodeMxcActionRequired");
-});
-
-const windowsNodeMxcProtectionClass = computed(() => {
-  const status = windowsNodeMxcStatus.value;
-  if (status?.effectiveEnabled && status.lifecycleState.phase === "active") {
-    return "mxc-state-ok";
-  }
-  return status?.requestedMode !== "off" ? "mxc-state-blocked" : "mxc-state-neutral";
-});
-
-const windowsNodeMxcProtectionDetail = computed(() => {
-  const status = windowsNodeMxcStatus.value;
-  if (
-    !status ||
-    status.requestedMode === "off" ||
-    (status.effectiveEnabled && status.lifecycleState.phase === "active")
-  ) {
-    return "";
-  }
-  const phase = t(`settings.windowsNodeMxcLifecyclePhase.${status.lifecycleState.phase}`);
-  return status.lifecycleState.detail ? `${phase} · ${status.lifecycleState.detail}` : phase;
-});
-
-const windowsNodeMxcHooksPausedSummary = computed(() => {
-  const hooks = windowsNodeMxcStatus.value?.hooks;
-  if (!hooks?.pausedByMxc) return "";
-  if (hooks.requestedExternalEnabled && hooks.requestedInternalEnabled) {
-    return t("settings.windowsNodeMxcHooksPausedBoth");
-  }
-  return hooks.requestedExternalEnabled
-    ? t("settings.windowsNodeMxcHooksPausedExternal")
-    : t("settings.windowsNodeMxcHooksPausedInternal");
-});
-
-const windowsNodeMxcLimitedMode = computed(() => {
-  const status = windowsNodeMxcStatus.value;
-  return status?.requestedMode === "limited-dacl" || status?.effectiveStrength === "limited-dacl";
-});
-
-const windowsNodeMxcRequestedModeLabel = computed(() =>
-  windowsNodeMxcModeLabel(windowsNodeMxcStatus.value?.requestedMode ?? "off"),
-);
-
-const windowsNodeMxcEffectiveStrengthLabel = computed(() =>
-  windowsNodeMxcModeLabel(windowsNodeMxcStatus.value?.effectiveStrength ?? "off"),
-);
-
-const windowsNodeMxcCompactStatus = computed(() => {
-  const status = windowsNodeMxcStatus.value;
-  if (!status || status.requestedMode === "off") {
-    return t("settings.windowsNodeMxcCompactOff");
-  }
-  const mode =
-    status.effectiveEnabled && status.lifecycleState.phase === "active"
-      ? windowsNodeMxcModeLabel(status.effectiveStrength)
-      : windowsNodeMxcModeLabel(status.requestedMode);
-  const state =
-    status.effectiveEnabled && status.lifecycleState.phase === "active"
-      ? t("settings.windowsNodeMxcStatusActive")
-      : windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)
-        ? t("settings.windowsNodeMxcStarting")
-        : t("settings.windowsNodeMxcActionRequired");
-  return t("settings.windowsNodeMxcCompactStatus", { mode, state });
-});
-
-const windowsNodeMxcAmbientEntries = computed(
-  () => windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [],
-);
-
-const windowsNodeMxcAmbientExceptions = computed(() =>
-  windowsNodeMxcAmbientEntries.value.filter((entry) => entry.status !== "denied"),
-);
-
-const windowsNodeMxcAmbientSummary = computed(() => {
-  const entries = windowsNodeMxcAmbientEntries.value;
-  if (entries.length === 0) {
-    return t("settings.windowsNodeMxcAmbientUnavailable");
-  }
-  const denied = entries.length - windowsNodeMxcAmbientExceptions.value.length;
-  if (windowsNodeMxcAmbientExceptions.value.length === 0) {
-    return t("settings.windowsNodeMxcAmbientAllDenied", {
-      denied,
-      total: entries.length,
-    });
-  }
-  const details = windowsNodeMxcAmbientExceptions.value
-    .map(
-      (entry) =>
-        `${windowsNodeMxcAmbientCategoryLabel(entry.category)} — ${windowsNodeMxcAmbientStatusLabel(entry.status)}`,
-    )
-    .join(", ");
-  return t("settings.windowsNodeMxcAmbientExceptions", {
-    details,
-    denied,
-    total: entries.length,
-  });
-});
-
-const windowsNodeMxcAmbientSummaryClass = computed(() => {
-  if (windowsNodeMxcAmbientEntries.value.length === 0) {
-    return "mxc-summary-warning";
-  }
-  return windowsNodeMxcAmbientExceptions.value.length === 0
-    ? "mxc-summary-ok"
-    : "mxc-summary-error";
-});
-
-const windowsNodeMxcFolderTitle = computed(() => {
-  if (windowsNodeMxcLimitedMode.value) {
-    return t("settings.windowsNodeMxcLimitedFolders");
-  }
-  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-    return t("settings.windowsNodeMxcConfiguredFolders");
-  }
-  return t("settings.windowsNodeMxcFullFolders");
-});
-
-const windowsNodeMxcFolderHint = computed(() => {
-  if (windowsNodeMxcLimitedMode.value) {
-    return t("settings.windowsNodeMxcLimitedFoldersHint");
-  }
-  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-    return t("settings.windowsNodeMxcConfiguredFoldersHint");
-  }
-  return t("settings.windowsNodeMxcFoldersHint");
-});
-
-function windowsNodeMxcModeLabel(mode: WindowsNodeMxcMode) {
-  if (mode === "full") return t("settings.windowsNodeMxcModeFull");
-  if (mode === "limited-dacl") return t("settings.windowsNodeMxcModeLimited");
-  return t("settings.windowsNodeMxcModeOff");
-}
-
-function windowsNodeMxcAmbientCategoryLabel(category: WindowsNodeMxcAmbientEntry["category"]) {
-  return t(`settings.windowsNodeMxcAmbientCategory.${category}`);
-}
-
-function windowsNodeMxcAmbientStatusLabel(status: WindowsNodeMxcAmbientEntry["status"]) {
-  return t(`settings.windowsNodeMxcAmbientStatus.${status}`);
-}
-
-const windowsNodeMxcFolderDraftDirty = computed(
-  () => policyIdentity(windowsNodeMxcFolderDraft) !== policyIdentity(windowsNodeMxcFolderBaseline),
-);
-
-function policyIdentity(policy: { rw: string[]; ro: string[] }) {
-  const normalize = (values: string[]) =>
-    values
-      .map((value) => value.toLowerCase())
-      .sort()
-      .join("\n");
-  return `${normalize(policy.rw)}\u0000${normalize(policy.ro)}`;
-}
-
-function replaceWindowsNodeMxcFolderDraft(policy: { rw: string[]; ro: string[] }) {
-  windowsNodeMxcFolderDraft.rw.splice(0, windowsNodeMxcFolderDraft.rw.length, ...policy.rw);
-  windowsNodeMxcFolderDraft.ro.splice(0, windowsNodeMxcFolderDraft.ro.length, ...policy.ro);
-}
-
-function replaceWindowsNodeMxcFolderBaseline(policy: { rw: string[]; ro: string[] }) {
-  windowsNodeMxcFolderBaseline.rw.splice(0, windowsNodeMxcFolderBaseline.rw.length, ...policy.rw);
-  windowsNodeMxcFolderBaseline.ro.splice(0, windowsNodeMxcFolderBaseline.ro.length, ...policy.ro);
-}
-
-function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
-  windowsNodeMxcStatus.value = status;
-  const effectiveFolders = {
-    rw: status.folders.filter((entry) => entry.access === "rw").map((entry) => entry.path),
-    ro: status.folders.filter((entry) => entry.access === "ro").map((entry) => entry.path),
-  };
-  if (!windowsNodeMxcFolderDraftDirty.value || windowsNodeMxcFolderApplying.value) {
-    replaceWindowsNodeMxcFolderDraft(effectiveFolders);
-  }
-  replaceWindowsNodeMxcFolderBaseline(effectiveFolders);
-}
-
-async function loadWindowsNodeMxcStatus() {
-  try {
-    const status = await window.openclaw.windowsNodeMxc.getStatus();
-    updateWindowsNodeMxcStatus(status);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function loadWeixinRemoteApprovalStatus() {
-  try {
-    weixinRemoteApprovalStatus.value =
-      await window.openclaw.plugin.weixin.getRemoteApprovalStatus();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function setWeixinRemoteApprovalEnabled(enabled: boolean) {
-  if (weixinRemoteApprovalApplying.value) return;
-  weixinRemoteApprovalApplying.value = true;
-  try {
-    const result = await window.openclaw.plugin.weixin.setRemoteApprovalEnabled(enabled);
-    if (!result.ok && !result.cancelled) {
-      throw new Error(result.error || t("settings.weixinRemoteApprovalFailed"));
-    }
-    await loadWeixinRemoteApprovalStatus();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  } finally {
-    weixinRemoteApprovalApplying.value = false;
-  }
-}
-
-async function revokeWeixinRemoteApproval() {
-  if (weixinRemoteApprovalApplying.value) return;
-  weixinRemoteApprovalApplying.value = true;
-  try {
-    await window.openclaw.plugin.weixin.revokeRemoteApproval();
-    await loadWeixinRemoteApprovalStatus();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  } finally {
-    weixinRemoteApprovalApplying.value = false;
-  }
-}
-
-function selectWindowsNodeMxcMode(mode: WindowsNodeMxcMode) {
-  if (
-    windowsNodeMxcApplying.value ||
-    windowsNodeMxcConsentVisible.value ||
-    windowsNodeMxcLimitedAcknowledgementVisible.value ||
-    windowsNodeMxcStatus.value?.requestedMode === mode
-  ) {
-    return;
-  }
-  if (mode === "off") {
-    void applyWindowsNodeMxcMode(mode);
-    return;
-  }
-  windowsNodeMxcConsentTarget.value = mode;
-  windowsNodeMxcConsentVisible.value = true;
-}
-
-function cancelWindowsNodeMxcCapabilityConsent() {
-  if (windowsNodeMxcConsentSubmitting.value) return;
-  windowsNodeMxcConsentVisible.value = false;
-  windowsNodeMxcConsentTarget.value = null;
-}
-
-async function acceptWindowsNodeMxcCapabilityConsent() {
-  const requestedMode = windowsNodeMxcConsentTarget.value;
-  if (!requestedMode || windowsNodeMxcConsentSubmitting.value) return;
-
-  windowsNodeMxcConsentSubmitting.value = true;
-  windowsNodeMxcConsentVisible.value = false;
-  windowsNodeMxcConsentTarget.value = null;
-  try {
-    if (requestedMode === "limited-dacl") {
-      windowsNodeMxcLimitedAcknowledged.value = false;
-      windowsNodeMxcLimitedAcknowledgementVisible.value = true;
-      return;
-    }
-    await applyWindowsNodeMxcMode(requestedMode);
-  } finally {
-    windowsNodeMxcConsentSubmitting.value = false;
-  }
-}
-
-async function confirmWindowsNodeMxcLimitedMode() {
-  if (!windowsNodeMxcLimitedAcknowledged.value || windowsNodeMxcApplying.value) return;
-  await applyWindowsNodeMxcMode("limited-dacl", true);
-  if (windowsNodeMxcStatus.value?.requestedMode === "limited-dacl") {
-    windowsNodeMxcLimitedAcknowledgementVisible.value = false;
-  }
-}
-
-async function applyWindowsNodeMxcMode(
-  requestedMode: WindowsNodeMxcMode,
-  acknowledgeLimitedFilesystem = false,
-) {
-  windowsNodeMxcApplying.value = true;
-  try {
-    if (requestedMode !== "off") {
-      await window.openclaw.windowsNodeMxc.preflight({ requestedMode });
-    }
-    gateway.resetReady();
-    chatStore.wsConnected = false;
-    const status = await window.openclaw.windowsNodeMxc.setEnabled({
-      requestedMode,
-      ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),
-    });
-    updateWindowsNodeMxcStatus(status);
-    await loadSandboxStatus();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-    await loadWindowsNodeMxcStatus();
-  } finally {
-    windowsNodeMxcApplying.value = false;
-  }
-}
 
 async function loadSandboxStatus() {
   try {
@@ -2347,10 +1314,9 @@ async function _applyExternalApps() {
   }
 }
 
-async function addSandboxDir(access: "rw" | "ro", policy?: "windows-node-mxc") {
+async function addSandboxDir(access: "rw" | "ro") {
   const result = await window.openclaw.sandbox.addUserDir({
     access,
-    ...(policy ? { policy } : {}),
   });
   if (result.reason === "parent-covers") {
     const accessLabel =
@@ -2364,10 +1330,6 @@ async function addSandboxDir(access: "rw" | "ro", policy?: "windows-node-mxc") {
     ElMessage.warning(t("settings.sandboxParentRWCovers", { parentDir: result.parentDir || "" }));
     return;
   }
-  if (result.reason && policy === "windows-node-mxc") {
-    showWindowsNodeMxcFolderPolicyError(result.reason);
-    return;
-  }
   if (result.ok) {
     sandboxUserDirs.rw = result.dirs.rw;
     sandboxUserDirs.ro = result.dirs.ro;
@@ -2377,153 +1339,6 @@ async function addSandboxDir(access: "rw" | "ro", policy?: "windows-node-mxc") {
       );
     }
   }
-}
-
-function showWindowsNodeMxcFolderPolicyError(reason: string) {
-  const keyByReason: Record<string, string> = {
-    duplicate: "settings.windowsNodeMxcFolderDuplicate",
-    "path-nonlocal": "settings.windowsNodeMxcFolderNonlocal",
-    "path-not-found": "settings.windowsNodeMxcFolderMissing",
-    "path-reparse-point": "settings.windowsNodeMxcFolderReparse",
-    "path-sensitive": "settings.windowsNodeMxcFolderSensitive",
-    "acl-failed": "settings.windowsNodeMxcFolderAclFailed",
-    "folder-not-configured": "settings.windowsNodeMxcFolderNotConfigured",
-  };
-  ElMessage.error(t(keyByReason[reason] ?? "settings.windowsNodeMxcFolderMutationFailed"));
-}
-
-async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
-  try {
-    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-      await addSandboxDir(access, "windows-node-mxc");
-      await loadWindowsNodeMxcStatus();
-      return;
-    }
-    const result = await window.openclaw.sandbox.stageUserDir({
-      access,
-      draft: {
-        rw: [...windowsNodeMxcFolderDraft.rw],
-        ro: [...windowsNodeMxcFolderDraft.ro],
-      },
-    });
-    if (result.canceled) return;
-    if (!result.ok) {
-      showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
-      return;
-    }
-    replaceWindowsNodeMxcFolderDraft(result.dirs);
-    if (result.removedChildren?.length) {
-      ElMessage.info(
-        t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
-      );
-    }
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro") {
-  try {
-    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-      const result = await window.openclaw.sandbox.setUserDirAccess({ dir, access });
-      if (!result.ok) showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
-      await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
-      return;
-    }
-    const next = {
-      rw: windowsNodeMxcFolderDraft.rw.filter((entry) => entry !== dir),
-      ro: windowsNodeMxcFolderDraft.ro.filter((entry) => entry !== dir),
-    };
-    next[access].push(dir);
-    replaceWindowsNodeMxcFolderDraft(
-      await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
-    );
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function removeWindowsNodeMxcFolder(dir: string, access: "rw" | "ro") {
-  try {
-    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-      await removeSandboxDir(dir, access);
-      await loadWindowsNodeMxcStatus();
-      return;
-    }
-    const next = {
-      rw: [...windowsNodeMxcFolderDraft.rw],
-      ro: [...windowsNodeMxcFolderDraft.ro],
-    };
-    next[access] = next[access].filter((entry) => entry !== dir);
-    replaceWindowsNodeMxcFolderDraft(
-      await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
-    );
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function applyWindowsNodeMxcFolderPolicy() {
-  try {
-    await ElMessageBox.confirm(
-      t("settings.windowsNodeMxcApplyFoldersWarning"),
-      t("settings.windowsNodeMxcApplyFolders"),
-      {
-        type: "warning",
-        confirmButtonText: t("settings.windowsNodeMxcApplyFolders"),
-        cancelButtonText: t("common.cancel"),
-      },
-    );
-  } catch {
-    return;
-  }
-  windowsNodeMxcFolderApplying.value = true;
-  try {
-    const status = await window.openclaw.windowsNodeMxc.applyFolderPolicy({
-      rw: [...windowsNodeMxcFolderDraft.rw],
-      ro: [...windowsNodeMxcFolderDraft.ro],
-    });
-    updateWindowsNodeMxcStatus(status);
-    await loadSandboxStatus();
-    ElMessage.success(t("settings.windowsNodeMxcApplyFoldersComplete"));
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-    await loadWindowsNodeMxcStatus();
-  } finally {
-    windowsNodeMxcFolderApplying.value = false;
-  }
-}
-
-function stagePreviousWindowsNodeMxcFolderPolicy() {
-  const previous = windowsNodeMxcStatus.value?.folderPolicyRecovery?.previous;
-  if (previous) replaceWindowsNodeMxcFolderDraft(previous);
-}
-
-async function revokeWindowsNodeMxcDurableApproval(id: string) {
-  try {
-    await window.openclaw.windowsNodeMxc.revokeDurableApproval(id);
-    await loadWindowsNodeMxcStatus();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function revokeAllWindowsNodeMxcDurableApprovals() {
-  try {
-    await ElMessageBox.confirm(
-      t("settings.windowsNodeMxcRevokeAllApprovalsWarning"),
-      t("settings.windowsNodeMxcRevokeAllApprovals"),
-      {
-        type: "warning",
-        confirmButtonText: t("settings.windowsNodeMxcRevokeAllApprovals"),
-        cancelButtonText: t("common.cancel"),
-      },
-    );
-  } catch {
-    return;
-  }
-  await window.openclaw.windowsNodeMxc.revokeAllDurableApprovals();
-  await loadWindowsNodeMxcStatus();
 }
 
 async function removeSandboxDir(dir: string, access: "rw" | "ro") {
@@ -2547,6 +1362,9 @@ const aclVerifyResult = ref<{
   ok: Array<{ dir: string; access: string }>;
   errors: Array<{ dir: string; error: string }>;
 } | null>(null);
+const aclVerifyResultSafe = computed(
+  () => aclVerifyResult.value ?? { missing: [], stale: [], ok: [], errors: [] },
+);
 let _aclTripleClickCount = 0;
 let _aclTripleClickTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2588,6 +1406,149 @@ async function repairAcl(item: { dir: string; access: string }) {
 async function revokeStaleAcl(item: { dir: string }) {
   const result = await window.openclaw.sandbox.revokeStaleAcl(item.dir);
   if (result.ok) await verifyAcls();
+}
+const dockerReadiness = ref<DockerSandboxReadiness | null>(null);
+const dockerChecking = ref(false);
+const dockerBuilding = ref(false);
+const dockerBuildLog = ref("");
+const dockerBindingAccesses = ["ro", "rw"] as const;
+const dockerBindingState = ref<DockerBindingState | null>(null);
+const selectedDockerAgentId = ref("main");
+const dockerBindingsApplying = ref(false);
+
+const selectedDockerAgent = computed(() =>
+  dockerBindingState.value?.agents.find((agent) => agent.id === selectedDockerAgentId.value),
+);
+const selectedDockerBindingStatus = computed(
+  () => dockerBindingState.value?.statuses[selectedDockerAgentId.value],
+);
+const dockerBindingStatusType = computed(() => {
+  const effective = selectedDockerBindingStatus.value?.effective ?? "unknown";
+  if (effective === "applied") return "success";
+  if (effective === "error") return "danger";
+  return "info";
+});
+const dockerBindingStatusLabel = computed(() =>
+  t(`settings.dockerBindingsStatus.${selectedDockerBindingStatus.value?.effective ?? "unknown"}`),
+);
+
+const dockerChecks = computed(() => {
+  if (!dockerReadiness.value) return [];
+  return [
+    {
+      key: "windows",
+      label: t("settings.dockerCheckWindows"),
+      state: dockerReadiness.value.windows,
+    },
+    { key: "wsl2", label: t("settings.dockerCheckWsl2"), state: dockerReadiness.value.wsl2 },
+    {
+      key: "docker",
+      label: t("settings.dockerCheckDaemon"),
+      state: dockerReadiness.value.dockerDaemon,
+    },
+    {
+      key: "linux",
+      label: t("settings.dockerCheckLinux"),
+      state: dockerReadiness.value.linuxContainers,
+    },
+    { key: "image", label: t("settings.dockerCheckImage"), state: dockerReadiness.value.image },
+  ];
+});
+
+function dockerReasonLabel(reason: DockerSandboxReason) {
+  return t(`settings.dockerReason.${reason}`);
+}
+
+function openDockerGuide(guide: "wsl" | "docker") {
+  const url =
+    guide === "wsl"
+      ? "https://learn.microsoft.com/windows/wsl/install"
+      : "https://docs.docker.com/desktop/setup/install/windows-install/";
+  void window.openclaw.shell.openExternal(url);
+}
+
+async function refreshDockerSandbox() {
+  dockerChecking.value = true;
+  try {
+    [dockerReadiness.value, dockerBindingState.value] = await Promise.all([
+      window.openclaw.dockerSandbox.check(),
+      window.openclaw.dockerSandbox.getBindings(),
+    ]);
+    if (
+      !dockerBindingState.value.agents.some((agent) => agent.id === selectedDockerAgentId.value)
+    ) {
+      selectedDockerAgentId.value = dockerBindingState.value.agents[0]?.id ?? "main";
+    }
+  } finally {
+    dockerChecking.value = false;
+  }
+}
+
+async function addDockerBinding(access: "ro" | "rw") {
+  if (!selectedDockerAgent.value) return;
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.addBinding({
+      agentId: selectedDockerAgent.value.id,
+      access,
+    });
+    const status = dockerBindingState.value.statuses[selectedDockerAgent.value.id];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else if (status?.effective === "applied")
+      ElMessage.success(t("settings.dockerBindingsApplied"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function removeDockerBinding(binding: ManagedDockerBinding) {
+  if (!selectedDockerAgent.value) return;
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.removeBinding({
+      agentId: selectedDockerAgent.value.id,
+      source: binding.source,
+    });
+    const status = dockerBindingState.value.statuses[selectedDockerAgent.value.id];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else ElMessage.success(t("settings.dockerBindingsApplied"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function retryDockerBindings() {
+  dockerBindingsApplying.value = true;
+  try {
+    dockerBindingState.value = await window.openclaw.dockerSandbox.retryBindings(
+      selectedDockerAgentId.value,
+    );
+    const status = dockerBindingState.value.statuses[selectedDockerAgentId.value];
+    if (status?.effective === "error") ElMessage.error(status.error);
+    else ElMessage.success(t("settings.dockerBindingsApplied"));
+  } finally {
+    dockerBindingsApplying.value = false;
+  }
+}
+
+async function buildDockerImage() {
+  dockerBuilding.value = true;
+  dockerBuildLog.value = "";
+  const unsubscribe = window.openclaw.dockerSandbox.onBuildProgress((line) => {
+    dockerBuildLog.value = `${dockerBuildLog.value}${line}\n`.slice(-12000);
+  });
+  try {
+    dockerReadiness.value = await window.openclaw.dockerSandbox.buildImage();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    unsubscribe();
+    dockerBuilding.value = false;
+  }
 }
 
 const settings = reactive({
@@ -2985,9 +1946,6 @@ watch(
   },
 );
 
-watch(activeSection, (section) => {
-  if (section === "security") windowsNodeMxcTechnicalDetailsOpen.value = false;
-});
 watch(
   () => settings.autoStart,
   (v) => window.openclaw.settings.set("autoStart", v),
@@ -3035,11 +1993,7 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    void Promise.all([
-      loadSandboxStatus(),
-      loadWindowsNodeMxcStatus(),
-      loadWeixinRemoteApprovalStatus(),
-    ]);
+    void refreshDockerSandbox();
   }
 });
 
@@ -3134,7 +2088,7 @@ function handleSettingsWindowFocus(): void {
   if (activeSection.value === "models" && !showProviderSetup.value) {
     void refreshModelsConfig();
   } else if (activeSection.value === "security") {
-    void Promise.all([loadWindowsNodeMxcStatus(), loadWeixinRemoteApprovalStatus()]);
+    void refreshDockerSandbox();
   }
 }
 
@@ -3177,11 +2131,7 @@ onMounted(async () => {
   // Load web search provider configuration
   loadSearchConfig(config);
   if (activeSection.value === "security") {
-    await Promise.all([
-      loadSandboxStatus(),
-      loadWindowsNodeMxcStatus(),
-      loadWeixinRemoteApprovalStatus(),
-    ]);
+    await Promise.all([loadSandboxStatus()]);
   }
 });
 
@@ -4790,6 +3740,51 @@ async function clearChatHistory() {
   font-weight: 400;
   color: var(--text-primary);
 }
+.docker-binding-toolbar,
+.docker-binding-heading,
+.docker-binding-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.docker-binding-toolbar,
+.docker-binding-heading {
+  justify-content: space-between;
+}
+
+.docker-binding-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.docker-binding-row {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.docker-binding-paths {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.docker-binding-paths code {
+  color: var(--text-secondary);
+}
+
+.docker-binding-error {
+  margin-top: 10px;
+  color: var(--el-color-danger);
+  overflow-wrap: anywhere;
+}
+
 .sandbox-disabled {
   opacity: 0.45;
   pointer-events: none;

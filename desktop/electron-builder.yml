@@ -5,24 +5,12 @@ copyright: Copyright © 2026 MicroClaw
 directories:
   output: release
 
-afterSign: scripts/update-signed-windows-node-manifest.mjs
-
 win:
   target:
     - target: nsis
       arch:
         - x64
   icon: assets/microclaw.ico
-  signExts:
-    # These are unmodified third-party MXC binaries. MicroClaw-owned helpers,
-    # including microclaw-mxc-host-prep.exe, remain eligible for product signing.
-    - "!mxc-diagnostic-console.exe"
-    - "!winhttp-proxy-shim.exe"
-    - "!wxc-exec.exe"
-    - "!wxc-host-prep.exe"
-    - "!wxc-test-proxy.exe"
-    - "!wxc-windows-sandbox-daemon.exe"
-    - "!wxc-windows-sandbox-guest.exe"
 
 appx:
   artifactName: MicroClawDesktop-${version}-${arch}.msix
@@ -49,8 +37,6 @@ nsis:
 extraResources:
   - from: dist/github-copilot-auth-worker.js
     to: github-copilot-auth-worker.js
-  - from: src/openclaw-approval-replay-compat.mjs
-    to: openclaw-approval-replay-compat.mjs
   - from: src/openclaw-fs-safe-compat.mjs
     to: openclaw-fs-safe-compat.mjs
   - from: src/openclaw-state-owner-compat.mjs
@@ -67,26 +53,8 @@ extraResources:
     to: openclaw/
   - from: resources/openclaw.asar
     to: openclaw.asar
-  - from: resources/windows-node/
-    to: windows-node/
-  - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
-    to: AppContainerLauncher.exe
-  - from: ../appcontainer/sandbox-preload.js
-    to: sandbox-preload.js
-  - from: ../appcontainer/sandbox-host-runtime.js
-    to: sandbox-host-runtime.js
-  - from: ../appcontainer/sandbox-state.js
-    to: sandbox-state.js
-  - from: ../appcontainer/sandbox-permission.js
-    to: sandbox-permission.js
-  - from: ../appcontainer/sandbox-fs-hooks.js
-    to: sandbox-fs-hooks.js
-  - from: ../appcontainer/sandbox-cp-hooks.js
-    to: sandbox-cp-hooks.js
-  - from: ../appcontainer/sandbox-sensitive.js
-    to: sandbox-sensitive.js
-  - from: ../appcontainer/path-extraction.js
-    to: path-extraction.js
+  - from: ../docker-sandbox/Dockerfile
+    to: docker-sandbox/Dockerfile
   - from: ../skills/rednote-publisher/
     to: agent-skills/rednote-publisher/
 

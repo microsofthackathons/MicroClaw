@@ -21,8 +21,6 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     # Use standard GitHub-hosted runners:
-    #   - windows-latest for C# (net9.0-windows requires Windows)
-    #   - ubuntu-latest for everything else (faster, cheaper)
     runs-on: ${{ matrix.language == 'csharp' && 'windows-latest' || 'ubuntu-latest' }}
     permissions:
       # required for all workflows

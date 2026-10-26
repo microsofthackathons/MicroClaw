@@ -5,6 +5,15 @@
 **MicroClaw** makes [OpenClaw](https://github.com/openclaw) instantly available on Windows through a familiar, low-friction install experience. It packages the desktop client, local Gateway, managed runtime, preloaded skills, and permission-controlled sandbox into one product so users can get to real tasks quickly. You bring the LLM connection; MicroClaw brings the Windows app, local runtime, and trust boundary.
 
 > [!WARNING]
+> **Experimental Docker sandbox branch:** AppContainer is inactive. OpenClaw tools are required to run in Docker Desktop Linux containers through WSL2. MicroClaw fails closed and does not start the Gateway or send chat requests until WSL2, Docker Desktop, Linux-container mode, and the pinned `microclaw-openclaw-sandbox:2026.7.1-1` image are ready. MicroClaw never installs or elevates Docker/WSL automatically.
+
+> Docker is the sole backend on this branch. There is no native Windows Node + MXC route, host/AppContainer fallback, or off-mode selector. Retained legacy settings and consents do not authorize another backend.
+>
+> Build the image from **Settings → Security** after installing WSL2 and Docker Desktop. The effective policy uses `mode: all`, Docker backend, per-agent scope, an isolated workspace (`workspaceAccess: none`), read-only root, non-root user, dropped capabilities, resource limits, no network, and disabled elevated tools. The Security page can grant each agent explicit read-only or read-write access to validated Windows folders at generated `/mnt/microclaw/...` targets. Each grant exposes the whole selected subtree without per-read prompts; broad system, application-data, state, and credential locations are rejected. Attachments are staged by OpenClaw into the isolated workspace. Existing AppContainer profiles/ACLs are ignored and only removed by explicit uninstall cleanup.
+>
+> Live validation after installing Docker: confirm every Security check is green; build the pinned image; restart MicroClaw; run a filesystem tool and verify it sees only the isolated workspace; verify an attachment is readable; verify outbound network access and Windows host paths fail; stop Docker and confirm Gateway/chat fail closed; then confirm both EXE and MSIX builds retain `resources/docker-sandbox/Dockerfile`.
+
+> [!WARNING]
 > **AI & Security Notice**
 > MicroClaw is an experimental open-source project initiated by Microsoft that provides a secure execution environment and user interface for the open-source [OpenClaw](https://github.com/openclaw) software that users have installed on their devices. MicroClaw is **not** an AI service, it doesn't contain an AI model, nor does it generate or alter user prompts, responses, or any AI-generated contents on behalf of users.
 >
@@ -19,7 +28,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Instant Availability
 
 - **Familiar Windows install flow**: packaged installer with desktop shortcut, Start menu entry, and one-click uninstall
-- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, managed skills, and AppContainer provisioning
+- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, and managed skills; Docker/WSL remain explicit prerequisites
 - **Ready after install**: launch the app immediately after setup instead of building a local OpenClaw environment by hand
 
 ### Ready-to-Use Experience
@@ -32,8 +41,8 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Built-In Trust
 
 - **Transparent, permission-controlled actions**: file and tool access requests are surfaced to the user instead of being silently granted
-- **Sandboxed with Windows AppContainer**: tool execution runs inside an OS-enforced AppContainer boundary on supported systems
-- **Hooks plus sandbox, defense in depth**: hook-based prechecks improve UX while AppContainer ACL enforcement remains the actual security boundary
+- **Mandatory Docker isolation**: tools run in per-agent Linux containers, never on the host
+- **Fail-closed readiness**: missing WSL2, Docker Desktop, Linux-container mode, or the pinned image blocks startup and chat
 - **Hard blocks for sensitive paths**: credential-heavy locations such as `.ssh` and cloud config folders are denied rather than merely warned about
 
 ---
@@ -88,7 +97,7 @@ graph TB
 | Gateway → LLM | HTTPS | Streaming API calls to Claude / OpenAI / Gemini |
 | Gateway → Skills | In-process | Agent loop invokes tool calls; results fed back to LLM |
 | WeChat Plugin → WeChat | HTTPS | Long-poll `getUpdates` + `sendMessage` |
-| Permission Manager → AppContainer | Win32 API | AppContainer security capabilities + Job Object resource limits |
+| Legacy Permission Manager → AppContainer | Win32 API | Inactive on this Docker-only branch |
 
 ---
 
@@ -97,7 +106,7 @@ graph TB
 | Component | Path | Stack | Description |
 |---|---|---|---|
 | **Desktop App** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
-| **AppContainer Sandbox** | `appcontainer/` | .NET 9 + Node.js preload hooks | Windows AppContainer launcher + permission hooks for tool isolation |
+| **Legacy AppContainer source** | `appcontainer/` | .NET 9 + Node.js preload hooks | Inactive; not prepared or packaged by this branch |
 | **Installer** | `deploy.py` + `deployer/` | Python 3 + Tkinter | Wizard-style graphical installer (can be packaged as a single exe) |
 | **Skill Packs** | `skills/` | Markdown + JSON + Python/Node | Office, search, browser automation managed skills |
 | **WeChat Plugin** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | WeChat channel integration |
@@ -281,13 +290,13 @@ npm run lint:sarif    # outputs eslint-results.sarif
 
 ## Sandbox Isolation
 
-`appcontainer/` provides a Windows AppContainer-based sandbox for isolating tool execution:
+`docker-sandbox/` defines the mandatory pinned image. The effective policy is
+`mode: all`, `scope: agent`, an isolated workspace, no network, and no elevated
+tools. Validated per-agent folder grants expose the selected subtree read-only
+or read-write; pending or failed container recreation blocks execution.
 
-- **.NET launcher** (`AppContainerLauncher.exe`) runs child processes inside an AppContainer with restricted ACLs
-- **Node.js preload hooks** (`sandbox-preload.js`, `sandbox-fs-hooks.js`, …) intercept `fs.*` / `child_process.*` calls and prompt the user for permission
-- **Sensitive-path shield** hard-denies access to `~/.ssh`, `~/.azure`, and other credential directories — no override
-
-See [appcontainer/README.md](appcontainer/README.md) for details.
+`appcontainer/` and native Windows Node + MXC sources remain available for source
+audits only. Neither is an active or packaged fallback on this branch.
 
 ---
 
@@ -349,7 +358,7 @@ when their owning specialist agent is added:
 | **Skill Integrity Checks** | SHA-256 hashes + Ed25519 signatures — detects tampering of all skill files at startup |
 | **Device Authentication** | Each device generates an Ed25519 key pair; Gateway connections are signature-authenticated |
 | **Skill Allowlist** | `allowBundled` / `allowManaged` control the available skill scope |
-| **Sandbox Isolation** | OS-native AppContainer + Job Object isolation for file system, network, and resource limits |
+| **Sandbox Isolation** | Mandatory per-agent Docker Linux containers with no host fallback |
 | **Local Gateway** | Binds to loopback only — does not accept remote connections |
 
 ---
@@ -372,7 +381,7 @@ This script sequentially:
 
 The CI and release workflows also build `desktop/release/MicroClawDesktop-<version>-x64.msix`
 with Electron Builder. The package includes the Electron app, the pinned OpenClaw
-runtime, Node.js, and the AppContainer launcher resources. On first launch, the
+runtime, Node.js, and the Dockerfile. Native host/AppContainer resources are excluded. On first launch, the
 read-only bundled runtime archive is expanded under Electron's per-user
 `userData` directory; configuration and other writable state remain in per-user
 application data.
@@ -404,8 +413,7 @@ download-update path.
 
 - Node.js 26.1+ (recommended), or 24.16+ on the 24.x line
 - Python 3.10+ — install build deps with `pip install -r requirements.txt` (includes PyInstaller)
-- .NET 9 SDK (for the AppContainer launcher)
-- .NET 10 SDK (for the bundled Windows Node host)
+- WSL2, Docker Desktop in Linux-container mode, and the pinned image for running the app
 - npm dependencies installed (`cd desktop && npm install`)
 
 ---
@@ -425,7 +433,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── desktop/                     # Electron desktop app
 │   ├── src/                     # Main process (TypeScript)
 │   └── renderer/                # Vue 3 renderer process
-├── appcontainer/                # Windows AppContainer sandbox (.NET + preload hooks)
+├── appcontainer/                # Legacy inactive AppContainer source
 ├── skills/                      # Managed skill definitions
 ├── plugins/openclaw-weixin/     # WeChat channel plugin
 ├── scripts/

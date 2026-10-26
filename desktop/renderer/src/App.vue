@@ -9,14 +9,8 @@
     :connected="chatStore.wsConnected"
     :warming="gateway.warming"
     :error-message="gateway.lastError"
-    :mxc-desired="windowsNodeMxcStatus?.requestedMode !== 'off'"
-    :mxc-phase="windowsNodeMxcStatus?.lifecycleState.phase"
-    :mxc-detail="windowsNodeMxcStatus?.lifecycleState.detail"
-    :mxc-requested-mode="windowsNodeMxcStatus?.requestedMode"
-    :mxc-effective-strength="windowsNodeMxcStatus?.effectiveStrength"
-    :mxc-effective-tier="windowsNodeMxcStatus?.effectiveTier"
     @retry="handleRetry"
-    @disable-mxc="disableWindowsNodeMxc"
+    @open-settings="router.push('/settings/security')"
   />
 
   <!-- Main app (shown after first successful WS connection) -->
@@ -146,9 +140,6 @@
       </el-button>
     </template>
   </el-dialog>
-
-  <!-- In-app permission dialog (replaces native OS dialog) -->
-  <PermissionDialog :request="currentPermission" @respond="handlePermissionResponse" />
 </template>
 
 <script setup lang="ts">
@@ -157,7 +148,6 @@ import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import SidePanel from "@/components/SidePanel.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
-import PermissionDialog from "@/components/PermissionDialog.vue";
 import { useAgentStore } from "@/stores/agents";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -166,7 +156,6 @@ import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
 import { runStartupWarmup } from "@/startup-warmup";
 import { watchStartupServiceReadiness } from "@/startup-service-readiness";
-import { resolveWindowsNodeMxcAllowedDecisions } from "@/windows-node-mxc-approval";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -175,19 +164,6 @@ const taskStore = useTaskStore();
 const router = useRouter();
 const route = useRoute();
 const agentStore = useAgentStore();
-type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
-const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
-
-function applyWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
-  const currentUpdatedAt = windowsNodeMxcStatus.value?.lifecycleState.updatedAt;
-  if (
-    currentUpdatedAt &&
-    Date.parse(status.lifecycleState.updatedAt) < Date.parse(currentUpdatedAt)
-  ) {
-    return;
-  }
-  windowsNodeMxcStatus.value = status;
-}
 
 // ── Setup wizard gate ──
 const showSetup = ref(false);
@@ -197,7 +173,7 @@ const setupActive = computed(() => showSetup.value || route.path === "/setup");
 // Once the first WS connection succeeds and the progress bar finishes,
 // the loading screen hides.  It reappears on explicit gateway restart
 // (e.g. from the Plugins page) via gateway.resetReady().
-const gatewayReady = computed(() => gateway.ready);
+const gatewayReady = computed(() => gateway.ready || route.name === "settings");
 const headerTitle = computed(() => {
   void locale.value;
   if (route.name === "settings") return t("settings.title");
@@ -240,157 +216,13 @@ async function warmThenMarkConnected() {
 async function handleRetry() {
   gateway.resetReady();
   chatStore.wsConnected = false;
-  if (windowsNodeMxcStatus.value?.desiredEnabled) {
-    try {
-      windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-        requestedMode: windowsNodeMxcStatus.value.requestedMode,
-      });
-    } catch (error) {
-      gateway.addLog(
-        `[error] ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    return;
-  }
   await window.openclaw.gateway.restart();
-}
-
-async function disableWindowsNodeMxc() {
-  gateway.resetReady();
-  chatStore.wsConnected = false;
-  try {
-    windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-      requestedMode: "off",
-    });
-  } catch (error) {
-    gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
-  }
 }
 
 // ── Integrity check state ──
 const integrityDialogVisible = ref(false);
 const integrityResult = ref<IntegrityResult | null>(null);
 const integrityLoading = ref(false);
-
-// ── Permission dialog state (queue of pending requests) ──
-interface PermissionRequestData {
-  requestId: string;
-  type: "file" | "shell" | "shell-async" | "app-approval" | "mxc-approval";
-  targetPath: string;
-  dirPath: string;
-  command?: string;
-  accessNeeded?: string;
-  app?: string;
-  source?: "sandbox" | "windows-node-mxc";
-  approvalLayer?: "gateway" | "node";
-  allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
-  declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
-  containmentStrength?: "full" | "limited-dacl";
-  ambientAccess?: NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"];
-}
-const permissionQueue = ref<PermissionRequestData[]>([]);
-const currentPermission = computed(() =>
-  permissionQueue.value.length > 0 ? permissionQueue.value[0] : null,
-);
-
-type WindowsNodeMxcApproval = NonNullable<
-  Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getPendingApproval>>
->;
-
-async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | null) {
-  if (!request) {
-    permissionQueue.value = permissionQueue.value.filter(
-      (pending) => pending.source !== "windows-node-mxc",
-    );
-    return;
-  }
-  if (
-    permissionQueue.value.some(
-      (pending) =>
-        pending.source === "windows-node-mxc" && pending.requestId === request.id,
-    )
-  ) {
-    return;
-  }
-  if (!windowsNodeMxcStatus.value) {
-    try {
-      applyWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.getStatus());
-    } catch (error) {
-      gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (
-    permissionQueue.value.some(
-      (pending) =>
-        pending.source === "windows-node-mxc" && pending.requestId === request.id,
-    )
-  ) {
-    return;
-  }
-  const containmentStrength =
-    windowsNodeMxcStatus.value &&
-    windowsNodeMxcStatus.value.effectiveStrength !== "limited-dacl" &&
-    windowsNodeMxcStatus.value.requestedMode !== "limited-dacl"
-      ? "full"
-      : "limited-dacl";
-  const allowedDecisions = resolveWindowsNodeMxcAllowedDecisions(request);
-  const command = request.commandText ?? [request.executable, ...request.arguments].join(" ");
-  permissionQueue.value.push({
-    requestId: request.id,
-    type: "mxc-approval",
-    targetPath: request.executable,
-    dirPath: request.canonicalCwd,
-    command,
-    declaredAccess: request.declaredAccess,
-    source: "windows-node-mxc",
-    approvalLayer: request.approvalLayer,
-    containmentStrength,
-    ambientAccess:
-      containmentStrength === "limited-dacl"
-        ? (windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [])
-        : undefined,
-    allowedDecisions,
-  });
-  if (chatStore.streaming) {
-    chatStore.addPendingToolCall(
-      request.id,
-      containmentStrength === "limited-dacl"
-        ? "Limited filesystem containment approval"
-        : "Contained MXC command approval",
-    );
-  }
-}
-
-async function handlePermissionResponse(decision: string) {
-  const req = permissionQueue.value[0];
-  if (!req) return;
-  if (req.source === "windows-node-mxc") {
-    try {
-      await window.openclaw.windowsNodeMxc.respondApproval({
-        requestId: req.requestId,
-        decision: decision as "deny" | "allow-once" | "allow-always",
-      });
-    } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : String(error));
-      return;
-    }
-  } else {
-    window.openclaw.sandbox.respondPermission(req.requestId, decision);
-  }
-  // Show immediate permission decision in exec panel
-  if (decision === "deny") {
-    chatStore.completeToolCall(req.requestId, t("perm.denied"), true);
-  } else if (decision.startsWith("grant")) {
-    // Mark as "granting..." — will be updated when ACL result arrives
-    const access = decision === "grant-ro" ? t("perm.grantingRo") : t("perm.grantingRw");
-    chatStore.completeToolCall(req.requestId, access);
-  } else if (decision === "allow-once") {
-    chatStore.completeToolCall(req.requestId, t("perm.allowedOnce"));
-  } else {
-    chatStore.completeToolCall(req.requestId);
-  }
-  permissionQueue.value.shift();
-}
 
 const modifiedChanges = computed(
   () => integrityResult.value?.changes.filter((c) => c.type === "modified") ?? [],
@@ -463,12 +295,6 @@ let unsubServiceReady: (() => void) | null = null;
 let unsubChatEvent: (() => void) | null = null;
 let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
-let unsubPermission: (() => void) | null = null;
-let unsubWindowsNodeMxcApproval: (() => void) | null = null;
-let unsubWindowsNodeMxcLifecycle: (() => void) | null = null;
-let unsubAclTimeout: (() => void) | null = null;
-let unsubAclIneffective: (() => void) | null = null;
-let unsubPermCompleted: (() => void) | null = null;
 let unsubMaximizeChange: (() => void) | null = null;
 let historyPollTimer: number | null = null;
 
@@ -525,83 +351,6 @@ onMounted(async () => {
     }
   } catch {}
 
-  // Listen for sandbox permission requests
-  unsubPermission = window.openclaw.sandbox.onPermissionRequest((data: PermissionRequestData) => {
-    permissionQueue.value.push({ ...data, source: "sandbox" });
-    // Add a pending entry to the exec panel so user sees what's waiting for permission
-    if (chatStore.streaming) {
-      const path = data.targetPath || data.dirPath;
-      const access = data.accessNeeded === "ro" ? "Read" : "Write";
-      const label = `${access} permission: ${path}`;
-      chatStore.addPendingToolCall(data.requestId, label);
-    }
-  });
-
-  unsubWindowsNodeMxcApproval =
-    window.openclaw.windowsNodeMxc.onApprovalRequest(enqueueWindowsNodeMxcApproval);
-  void window.openclaw.windowsNodeMxc
-    .getPendingApproval()
-    .then(enqueueWindowsNodeMxcApproval)
-    .catch((error) =>
-      gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`),
-    );
-
-  // Listen for ACL verification timeout after user approved permission
-  unsubAclTimeout =
-    window.openclaw.sandbox.onAclTimeout?.((data: { dir: string; access: string }) => {
-      // Mark the corresponding permission tool call as failed
-      const pending = permissionQueue.value.find(
-        (p) => p.dirPath === data.dir || p.targetPath === data.dir,
-      );
-      if (pending) {
-        chatStore.completeToolCall(
-          pending.requestId,
-          t("perm.aclTimeout", { dir: data.dir }),
-          true,
-        );
-      }
-      // Also check streamToolCalls for already-completed entries
-      for (const tc of chatStore.streamToolCalls) {
-        if (tc.name.includes(data.dir) && !tc.isError) {
-          chatStore.completeToolCall(tc.id, t("perm.aclTimeout", { dir: data.dir }), true);
-        }
-      }
-      ElMessage.warning({
-        message: t("perm.aclTimeout", { dir: data.dir }),
-        duration: 8000,
-        showClose: true,
-      });
-    }) ?? null;
-
-  // Listen for ACL-ineffective reports (ACL set but AppContainer still Access Denied)
-  unsubAclIneffective =
-    window.openclaw.sandbox.onAclIneffective?.(
-      (data: { dir: string; deniedPath: string; access: string; command?: string }) => {
-        const detail = data.command
-          ? `\n${t("perm.commandLabel")}: ${data.command.substring(0, 120)}`
-          : "";
-        ElMessage.error({
-          message: t("perm.aclIneffective", { dir: data.dir, path: data.deniedPath }) + detail,
-          duration: 12000,
-          showClose: true,
-        });
-      },
-    ) ?? null;
-
-  // Listen for ACL grant results to update exec panel with final status
-  unsubPermCompleted =
-    window.openclaw.sandbox.onPermissionCompleted?.((data) => {
-      if (data.result === "verified") {
-        const access = data.access === "rw" ? t("perm.grantedRw") : t("perm.grantedRo");
-        chatStore.completeToolCall(data.requestId, access);
-      } else if (data.result === "verify-timeout") {
-        const access = data.access === "rw" ? t("perm.grantedRw") : t("perm.grantedRo");
-        chatStore.completeToolCall(data.requestId, `${access} (${t("perm.verifyPending")})`);
-      } else if (data.result === "failed") {
-        chatStore.completeToolCall(data.requestId, t("perm.aclFailed"), true);
-      }
-    }) ?? null;
-
   // Gateway process status
   unsubStatus = window.openclaw.gateway.onStatus((status) => {
     gateway.status = status;
@@ -639,21 +388,6 @@ onMounted(async () => {
   unsubWsDisconnected = window.openclaw.gateway.onWsDisconnected(() => {
     chatStore.wsConnected = false;
   });
-  unsubWindowsNodeMxcLifecycle = window.openclaw.windowsNodeMxc.onLifecycleState((state) => {
-    if (windowsNodeMxcStatus.value) {
-      windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
-    }
-    if (!["active", "idle"].includes(state.phase)) {
-      gateway.resetReady();
-      chatStore.wsConnected = false;
-    }
-    void window.openclaw.windowsNodeMxc
-      .getStatus()
-      .then(applyWindowsNodeMxcStatus)
-      .catch((error) =>
-        gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`),
-      );
-  });
   unsubServiceReady = watchStartupServiceReadiness({
     isServiceReady: window.openclaw.gateway.isServiceReady,
     onServiceReady: window.openclaw.gateway.onServiceReady,
@@ -671,13 +405,6 @@ onMounted(async () => {
     chatStore.handleToolEvent(payload);
   });
 
-  // Actual shell command notifications from sandbox-preload
-  if (window.openclaw.chat.onExecCommand) {
-    window.openclaw.chat.onExecCommand((data) => {
-      chatStore.updateLatestExecCommand(data.command);
-    });
-  }
-
   // Get initial status
   window.openclaw.gateway.getStatus().then((s) => (gateway.status = s));
   window.openclaw.gateway.getPort().then((p) => (gateway.port = p));
@@ -691,18 +418,6 @@ onMounted(async () => {
       agentStore.fetchAgents();
     }
   });
-  window.openclaw.windowsNodeMxc
-    .getStatus()
-    .then((status) => {
-      applyWindowsNodeMxcStatus(status);
-      if (status.desiredEnabled && status.lifecycleState.phase !== "active") {
-        gateway.resetReady();
-        chatStore.wsConnected = false;
-      }
-    })
-    .catch((error) =>
-      gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`),
-    );
 
   // (Theme, accent, locale already applied above before setup check)
 
@@ -734,12 +449,6 @@ onUnmounted(() => {
   unsubChatEvent?.();
   unsubToolEvent?.();
   unsubIntegrityAlert?.();
-  unsubPermission?.();
-  unsubWindowsNodeMxcApproval?.();
-  unsubWindowsNodeMxcLifecycle?.();
-  unsubAclTimeout?.();
-  unsubAclIneffective?.();
-  unsubPermCompleted?.();
   unsubMaximizeChange?.();
   if (historyPollTimer) window.clearInterval(historyPollTimer);
 });

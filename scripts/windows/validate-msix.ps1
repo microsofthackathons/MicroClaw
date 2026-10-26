@@ -33,15 +33,11 @@ try {
         'MicroClawDesktop.exe',
         'resources\node.exe',
         'resources\openclaw.asar',
-        'resources\AppContainerLauncher.exe',
-        'resources\sandbox-preload.js',
-        'resources\sandbox-host-runtime.js',
-        'resources\sandbox-state.js',
-        'resources\sandbox-permission.js',
-        'resources\sandbox-fs-hooks.js',
-        'resources\sandbox-cp-hooks.js',
-        'resources\sandbox-sensitive.js',
-        'resources\path-extraction.js'
+        'resources\docker-sandbox\Dockerfile',
+        'resources\openclaw-fs-safe-compat.mjs',
+        'resources\openclaw-state-owner-compat.mjs',
+        'resources\openclaw-local-model-compat.mjs',
+        'resources\local-model-sources.json'
     )
     $packageFiles = $archive.Entries.FullName | ForEach-Object { $_.Replace('/', '\') }
     foreach ($relativePath in $required) {
