@@ -177,7 +177,9 @@
       </div>
 
       <template v-if="!usageCollapsed">
-        <div v-if="usageLoading" class="sp-usage-state">{{ t("settings.usageLoading") }}</div>
+        <div v-if="usageLoading && !usageSnapshot" class="sp-usage-state">
+          {{ t("settings.usageLoading") }}
+        </div>
         <div v-else-if="usageSnapshot" class="sp-usage-grid">
           <div class="sp-usage-card">
             <span class="sp-usage-label">{{ t("sidebar.usageSnapshotTokens") }}</span>

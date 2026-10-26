@@ -102,6 +102,54 @@ describe("SidePanel token-only usage snapshot", () => {
     );
   });
 
+  it("shows loading only until the first usage snapshot arrives", async () => {
+    let resolveStats!: (stats: { totalTokens: number }) => void;
+    mocks.getStats.mockReturnValueOnce(
+      new Promise<{ totalTokens: number }>((resolve) => {
+        resolveStats = resolve;
+      }),
+    );
+    const wrapper = await mountPanel();
+
+    expect(wrapper.get(".sp-usage-state").text()).toBe(t("settings.usageLoading"));
+    expect(wrapper.find(".sp-usage-card").exists()).toBe(false);
+
+    resolveStats({ totalTokens: 4_400_000 });
+    await flushPromises();
+
+    expect(wrapper.find(".sp-usage-state").exists()).toBe(false);
+    expect(wrapper.get(".sp-usage-value").text()).toBe("4.4M");
+  });
+
+  it.each([
+    { totalTokens: 4_400_000, label: "4.4M" },
+    { totalTokens: 0, label: "0" },
+  ])("keeps $label visible during background refresh", async ({ totalTokens, label }) => {
+    mocks.getStats.mockResolvedValueOnce({ totalTokens });
+    const wrapper = await mountPanel();
+    const tokenCard = wrapper.get(".sp-usage-card").element;
+    let resolveStats!: (stats: { totalTokens: number }) => void;
+    mocks.getStats.mockReturnValueOnce(
+      new Promise<{ totalTokens: number }>((resolve) => {
+        resolveStats = resolve;
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mocks.getStats).toHaveBeenCalledTimes(2);
+    expect(wrapper.find(".sp-usage-card").exists()).toBe(true);
+    expect(wrapper.get(".sp-usage-card").element).toBe(tokenCard);
+    expect(wrapper.get(".sp-usage-value").text()).toBe(label);
+    expect(wrapper.find(".sp-usage-state").exists()).toBe(false);
+
+    resolveStats({ totalTokens: 5_000_000 });
+    await flushPromises();
+
+    expect(wrapper.get(".sp-usage-card").element).toBe(tokenCard);
+    expect(wrapper.get(".sp-usage-value").text()).toBe("5M");
+  });
+
   it("refreshes tokens and stops polling when unmounted", async () => {
     const wrapper = await mountPanel();
     mocks.getStats.mockResolvedValue({ totalSpend: 99, totalTokens: 5_000_000 });

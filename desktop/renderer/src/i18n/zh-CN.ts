@@ -129,7 +129,7 @@ export default {
   "chat.editCancel": "取消",
   "chat.composeHint": "MicroClaw 已接入端到端加密防护。按 Enter 发送指令。",
   "chat.disclaimer":
-    "AI 生成的内容可能不正确。AI 不是具有人格的人类。Microsoft 不对 AI 生成的任何内容承担责任。",
+    "AI 生成的内容可能不正确。AI 不是具有人格的人类。MicroClaw 不对 AI 生成的任何内容承担责任。",
   "chat.executionSteps": "执行过程",
   "chat.thinking": "思考过程",
   "chat.intermediateOutput": "中间过程",

@@ -135,7 +135,7 @@ export default {
   "chat.editCancel": "Cancel",
   "chat.composeHint": "MicroClaw is secured with end-to-end encryption. Press Enter to send.",
   "chat.disclaimer":
-    "AI-generated content may be incorrect. AI is not a human and has no personality. Microsoft is not responsible for any AI-generated content.",
+    "AI-generated content may be incorrect. AI is not a human and has no personality. MicroClaw is not responsible for any AI-generated content.",
   "chat.executionSteps": "Execution Steps",
   "chat.thinking": "Thinking",
   "chat.plan.stepsUnit": " steps",

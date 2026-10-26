@@ -301,6 +301,86 @@ describe("useChatStore — agent preparation", () => {
   });
 });
 
+describe("useChatStore — history reconnect", () => {
+  const connectionErrors = [
+    "Gateway not connected",
+    "Error invoking remote method 'chat:load-history': Error: gateway not connected",
+    "Error invoking remote method 'chat:load-history': Error: disconnected",
+    "Error invoking remote method 'chat:load-history': Error: client stopped",
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+  });
+
+  it.each(connectionErrors)(
+    "does not report a model failure for a transient history error: %s",
+    async (error) => {
+      const store = useChatStore();
+      store.messages = [{ role: "assistant", content: "Earlier reply" }];
+      mockLoadHistory.mockRejectedValueOnce(new Error(error));
+
+      await store.loadHistory();
+
+      expect(store.lastError).toBeNull();
+      expect(store.messages).toEqual([{ role: "assistant", content: "Earlier reply" }]);
+      expect(store.loading).toBe(false);
+
+      mockLoadHistory.mockResolvedValueOnce({
+        messages: [{ role: "assistant", content: "Recovered history" }],
+      });
+      await store.loadHistory({ showLoading: false });
+
+      expect(store.lastError).toBeNull();
+      expect(store.messages).toEqual([{ role: "assistant", content: "Recovered history" }]);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(connectionErrors)(
+    "clears a stale connection banner after a successful history read: %s",
+    async (raw) => {
+      const store = useChatStore();
+      store.lastError = { code: "generic", raw };
+
+      await store.loadHistory();
+
+      expect(store.lastError).toBeNull();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves an actual provider error across a history disconnect and reconnect", async () => {
+    const store = useChatStore();
+    const providerError = classifyChatError("ECONNREFUSED at model endpoint");
+    store.lastError = providerError;
+    mockLoadHistory.mockRejectedValueOnce(new Error("Gateway not connected"));
+
+    await store.loadHistory({ showLoading: false });
+    expect(store.lastError).toEqual(providerError);
+
+    await store.loadHistory({ showLoading: false });
+    expect(store.lastError).toEqual(providerError);
+  });
+
+  it("still reports unexpected history failures", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error("Failed to read transcript"));
+
+    await store.loadHistory();
+
+    expect(store.lastError).toMatchObject({
+      code: "generic",
+      raw: "Error: Failed to read transcript",
+    });
+    expect(store.loading).toBe(false);
+  });
+});
+
 describe("useChatStore — stale stream recovery", () => {
   beforeEach(() => {
     Object.keys(storage).forEach((k) => delete storage[k]);

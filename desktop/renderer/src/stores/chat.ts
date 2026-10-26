@@ -54,6 +54,10 @@ export interface ChatErrorInfo {
   source?: "watchdog";
 }
 
+function isGatewayConnectionError(raw: string): boolean {
+  return /(?:^|:\s*)(?:gateway not connected|disconnected|client stopped)\s*$/i.test(raw);
+}
+
 function isInferredWaitError(error: ChatErrorInfo | null): boolean {
   return (
     error?.source === "watchdog" ||
@@ -836,7 +840,8 @@ export const useChatStore = defineStore("chat", () => {
       delete agentPreparationErrors.value[currentSessionAgentId.value];
       if (
         lastError.value?.raw &&
-        classifyChatError(lastError.value.raw).code === "agent_initializing"
+        (classifyChatError(lastError.value.raw).code === "agent_initializing" ||
+          isGatewayConnectionError(lastError.value.raw))
       ) {
         lastError.value = null;
       }
@@ -868,7 +873,9 @@ export const useChatStore = defineStore("chat", () => {
     } catch (err) {
       if (seq !== _loadSeq) return;
       if (sessionKey.value !== callerSessionKey) return;
-      reportChatError(String(err));
+      const raw = String(err);
+      if (isGatewayConnectionError(raw)) return;
+      reportChatError(raw);
     } finally {
       if (seq === _loadSeq && sessionKey.value === callerSessionKey) loading.value = false;
     }

@@ -3969,6 +3969,7 @@ async function restartManagedGateway(
   const restart = (async () => {
     gatewayRestarting = true;
     setGatewayStatus("restarting");
+    sendToWindow(mainWindow, "gateway:ws-disconnected", reason);
     mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
     try {
       await hardRestartGateway({

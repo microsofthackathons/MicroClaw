@@ -17,6 +17,25 @@ describe("ChatView agent preparation", () => {
     window.openclaw = createBrowserOpenClawMock();
   });
 
+  it.each([false, true])(
+    "keeps the composer free of model selection while streaming is %s",
+    (streaming) => {
+      const pinia = createPinia();
+      setActivePinia(pinia);
+      const store = useChatStore(pinia);
+      store.wsConnected = true;
+      store.streaming = streaming;
+      const wrapper = shallowMount(ChatView, { global: { plugins: [pinia] } });
+
+      expect(wrapper.findComponent({ name: "ChatModelPicker" }).exists()).toBe(false);
+      expect(wrapper.get(".home-input-right").element.children).toHaveLength(1);
+      expect(wrapper.get(".home-input-right").find(".home-input-send").exists()).toBe(true);
+      expect(wrapper.find(".home-input-send--stop").exists()).toBe(streaming);
+      expect(wrapper.find(".home-input-plus").exists()).toBe(true);
+      wrapper.unmount();
+    },
+  );
+
   it("shows preparation in an empty session and keeps the draft until an explicit send", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
