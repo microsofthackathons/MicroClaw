@@ -90,13 +90,12 @@ export class WeixinMutationCoordinator {
   }
 
   assertActivationAvailable(cliLoginRunning: boolean): void {
-    if (
-      this.inFlight ||
-      this.cancelling ||
-      this.qrPending ||
-      this.qrOutcomeUnknown ||
-      cliLoginRunning
-    ) {
+    if (this.qrOutcomeUnknown) {
+      throw new Error(
+        "The previous WeChat login outcome is unconfirmed; restart the Gateway to cancel it before enabling MXC",
+      );
+    }
+    if (this.inFlight || this.cancelling || this.qrPending || cliLoginRunning) {
       throw new Error("Finish or cancel the pending WeChat account change before enabling MXC");
     }
   }

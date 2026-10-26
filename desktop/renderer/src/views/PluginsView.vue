@@ -299,6 +299,7 @@ async function fetchAndRenderQr(force = false): Promise<boolean> {
       force,
       accountId: "default",
     });
+    if (loginAborted) return false;
     if (!result.ok) {
       qrError.value = result.error || result.message;
       return false;
@@ -344,6 +345,7 @@ async function startLogin() {
   // Try the fast gateway RPC path first
   try {
     const ok = await fetchAndRenderQr();
+    if (loginAborted) return;
     if (ok) {
       loginStarting.value = false;
       startQrRefreshTimer();
@@ -355,6 +357,7 @@ async function startLogin() {
   }
 
   // Fallback: use the old CLI-based login (spawns subprocess)
+  if (loginAborted) return;
   console.log("[weixin-login] Fast path unavailable, falling back to CLI login");
   useFallbackLogin.value = true;
   loginStarting.value = false;
@@ -436,6 +439,7 @@ async function cancelLogin() {
     );
     return;
   }
+  loginStarting.value = false;
   loginActive.value = false;
   qrError.value = "";
   qrScanned.value = false;

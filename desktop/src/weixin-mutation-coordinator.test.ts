@@ -93,7 +93,7 @@ describe("WeChat account mutation versus MXC activation", () => {
     coordinator.qrUnconfirmed();
     coordinator.qrConnected();
     await expect(coordinator.cancelQr()).rejects.toThrow("may still be committing");
-    expect(() => coordinator.assertActivationAvailable(false)).toThrow();
+    expect(() => coordinator.assertActivationAvailable(false)).toThrow("restart the Gateway");
     expect(() => coordinator.beginQr()).toThrow("unconfirmed");
     coordinator.gatewayStopped();
     expect(() => coordinator.assertActivationAvailable(false)).not.toThrow();
