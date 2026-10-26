@@ -54,8 +54,12 @@ extraResources:
     to: openclaw-approval-replay-compat.mjs
   - from: src/openclaw-fs-safe-compat.mjs
     to: openclaw-fs-safe-compat.mjs
+  - from: src/openclaw-state-owner-compat.mjs
+    to: openclaw-state-owner-compat.mjs
   - from: src/openclaw-local-model-compat.mjs
     to: openclaw-local-model-compat.mjs
+  - from: src/local-model-sources.json
+    to: local-model-sources.json
   - from: ../NOTICE
     to: NOTICE
   - from: resources/node.exe
@@ -72,6 +76,8 @@ extraResources:
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js
     to: sandbox-preload.js
+  - from: ../appcontainer/sandbox-host-runtime.js
+    to: sandbox-host-runtime.js
   - from: ../appcontainer/sandbox-state.js
     to: sandbox-state.js
   - from: ../appcontainer/sandbox-permission.js

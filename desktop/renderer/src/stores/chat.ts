@@ -44,6 +44,7 @@ export interface ChatErrorInfo {
     | "rate_limited" // 429
     | "model_not_found" // model name typo
     | "network" // ECONNREFUSED / ENOTFOUND / timeout
+    | "agent_initializing"
     | "response_delayed" // UI inactivity estimate, not a reported model/network failure
     | "empty_response" // server responded but message was blank (often bad key/model)
     | "server_error" // 5xx
@@ -53,6 +54,10 @@ export interface ChatErrorInfo {
   /** HTTP status code when discernible from the raw error string. */
   status?: number;
   source?: "watchdog";
+}
+
+function isGatewayConnectionError(raw: string): boolean {
+  return /(?:^|:\s*)(?:gateway not connected|disconnected|client stopped)\s*$/i.test(raw);
 }
 
 function isInferredWaitError(error: ChatErrorInfo | null): boolean {
@@ -73,6 +78,9 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
   const statusMatch = text.match(/\b(4\d{2}|5\d{2})\b\s*(status\s*code|status|error)?/i);
   const status = statusMatch ? Number(statusMatch[1]) : undefined;
 
+  if (/\bAgent\s+\S+\s+has not completed startup inspection and preparation\b/i.test(text)) {
+    return { code: "agent_initializing", raw: text, status };
+  }
   if (/missing-provider-auth/i.test(text) || /no api key found for provider/i.test(text)) {
     return { code: "missing_provider_auth", raw: text, status };
   }
@@ -202,6 +210,7 @@ export const useChatStore = defineStore("chat", () => {
   const streamStartedAt = ref<number | null>(null);
   const chatRunId = ref<string | null>(null);
   const lastError = ref<ChatErrorInfo | null>(null);
+  const agentPreparationErrors = ref<Record<string, ChatErrorInfo>>({});
   const wsConnected = ref(false);
   const mainSessionKey = ref<string | null>(null);
   /** Timestamp of the last streaming event (delta, tool, final). Used for stale-stream detection. */
@@ -221,6 +230,19 @@ export const useChatStore = defineStore("chat", () => {
     if (match) return canonicalAgentId(match[1]);
     return pendingSessionAgentId.value || "main";
   });
+
+  const agentPreparationError = computed(
+    () => agentPreparationErrors.value[currentSessionAgentId.value] ?? null,
+  );
+
+  function reportChatError(raw: string, agentId = currentSessionAgentId.value) {
+    const error = classifyChatError(raw);
+    if (error.code === "agent_initializing") {
+      agentPreparationErrors.value[agentId] = error;
+    } else {
+      lastError.value = error;
+    }
+  }
 
   /** Per-agent last message preview text */
   const lastMessageMap = ref<Record<string, string>>({});
@@ -1003,7 +1025,7 @@ export const useChatStore = defineStore("chat", () => {
   }
   watch(wsConnected, invalidateHistoryObservation, { flush: "sync" });
 
-  /** Coalesce event, reconnect and poll reads of the same selected session. */
+  /** Coalesce background observations without delaying explicit history reads. */
   function loadHistory(
     options: { showLoading?: boolean; passive?: boolean } = {},
   ): Promise<HistoryResult | undefined> {
@@ -1014,7 +1036,8 @@ export const useChatStore = defineStore("chat", () => {
     if (
       historyFlight?.sessionKey === owner &&
       historyFlight.key === key &&
-      historyFlight.epoch === historyEpoch
+      historyFlight.epoch === historyEpoch &&
+      (options.passive === true || options.showLoading === false)
     ) {
       if (!options.passive) historyFlight.refreshAgain = true;
       return historyFlight.promise;
@@ -1080,6 +1103,14 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
       synchronizeServerRun(undefined, runtimeAccepted && res.sessionInfo?.hasActiveRun === false);
+      delete agentPreparationErrors.value[currentSessionAgentId.value];
+      if (
+        lastError.value?.raw &&
+        (classifyChatError(lastError.value.raw).code === "agent_initializing" ||
+          isGatewayConnectionError(lastError.value.raw))
+      ) {
+        lastError.value = null;
+      }
       const raw = Array.isArray(res.messages) ? res.messages : [];
       const filtered = raw
         .map((m) => stripSystemLines(m))
@@ -1122,7 +1153,9 @@ export const useChatStore = defineStore("chat", () => {
     } catch (err) {
       if (seq !== _loadSeq) return;
       if (sessionKey.value !== acceptedSessionKey) return;
-      lastError.value = classifyChatError(String(err));
+      const raw = String(err);
+      if (isGatewayConnectionError(raw)) return;
+      reportChatError(raw);
     } finally {
       if (seq === _loadSeq && sessionKey.value === acceptedSessionKey) loading.value = false;
     }
@@ -1135,12 +1168,14 @@ export const useChatStore = defineStore("chat", () => {
       (!msg && attachments.length === 0) ||
       sending.value ||
       streaming.value ||
-      currentRunActivities().length > 0
+      currentRunActivities().length > 0 ||
+      agentPreparationError.value
     )
       return false;
 
     sending.value = true;
     lastError.value = null;
+    const sendingAgentId = currentSessionAgentId.value;
     let optimisticTimestamp: number | undefined;
     try {
       // Strict privacy mode redacts PII before sending.
@@ -1182,7 +1217,7 @@ export const useChatStore = defineStore("chat", () => {
       return true;
     } catch (err) {
       const error = String(err);
-      lastError.value = classifyChatError(error);
+      reportChatError(error, sendingAgentId);
       streaming.value = false;
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
@@ -1400,7 +1435,7 @@ export const useChatStore = defineStore("chat", () => {
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
     } else if (payload.state === "error") {
-      lastError.value = classifyChatError(payload.errorMessage ?? "chat error");
+      reportChatError(payload.errorMessage ?? "chat error");
       streamText.value = "";
       streamToolCalls.value = [];
       streaming.value = false;
@@ -1963,6 +1998,8 @@ export const useChatStore = defineStore("chat", () => {
     streamStartedAt,
     chatRunId,
     lastError,
+    agentPreparationErrors,
+    agentPreparationError,
     wsConnected,
     mainSessionKey,
     lastMessageMap,

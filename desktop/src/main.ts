@@ -22,6 +22,12 @@ import {
   supportsLocalModelGatewayVersion,
 } from "./local-model-service";
 import { assertChatModelSupported } from "./provider-model-capabilities";
+import {
+  assertGitHubCopilotEnabled,
+  assertModelProviderEnabled,
+  INTERNAL_GITHUB_COPILOT_ARGUMENT,
+  readInternalFeatures,
+} from "./internal-features";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
 import { registerSessionModelHandlers } from "./session-model-ipc";
@@ -64,6 +70,8 @@ import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
+import { BackgroundUsageLedger } from "./background-usage-ledger";
+import { queryAccountedUsage } from "./usage-service";
 import {
   prepareChatAttachments,
   prepareClipboardImageAttachments,
@@ -120,7 +128,7 @@ import {
   requestModelEndpoint,
   resolveModelApiKey,
 } from "./model-connection";
-import { assertModelConfigUnchanged, hasConfiguredModel } from "./model-setup";
+import { assertModelConfigUnchanged, getPrimaryModel, hasConfiguredModel } from "./model-setup";
 import { selectDefaultModel } from "./default-model-selection";
 import { discoverProviderModels } from "./provider-model-catalog";
 import {
@@ -384,6 +392,7 @@ if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release(
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
+const internalFeatures = readInternalFeatures(process.env);
 const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
   defaults: { windowBounds: null },
 });
@@ -540,6 +549,7 @@ const localModelService = new LocalModelService({
   onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
 });
 const sessionModelService = new SessionModelService({
+  githubCopilotEnabled: internalFeatures.githubCopilot,
   gateway: () => gwClient,
   prepareModel: (modelRef) =>
     withModelConfigurationMutation(async () => {
@@ -623,7 +633,19 @@ function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown):
   );
 }
 
-async function withInternalModelChat<T>(operation: () => Promise<T>): Promise<T> {
+async function assertChatModelEnabled(sessionKey?: string): Promise<void> {
+  let modelRef = getPrimaryModel(readConfig());
+  if (sessionKey && gwClient && supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
+    modelRef = (await sessionModelService.get(sessionKey)).modelRef ?? modelRef;
+  }
+  assertModelProviderEnabled(modelRef, internalFeatures.githubCopilot);
+  if (modelRef) assertChatModelSupported(modelRef);
+}
+
+async function withInternalModelChat<T>(
+  operation: () => Promise<T>,
+  sessionKey?: string,
+): Promise<T> {
   if (modelConfigurationMutationInProgress)
     throw new Error("A model configuration change is being applied; wait for it to finish");
   localModelService.assertChatAllowed();
@@ -631,6 +653,7 @@ async function withInternalModelChat<T>(operation: () => Promise<T>): Promise<T>
   const key = `internal:model-operation:${randomUUID()}`;
   activeModelSessions.add(key);
   try {
+    await assertChatModelEnabled(sessionKey);
     return await operation();
   } finally {
     activeModelSessions.delete(key);
@@ -3527,7 +3550,7 @@ function isConfigured(): boolean {
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (hasConfiguredModel(config)) return false;
+  if (hasConfiguredModel(config, internalFeatures.githubCopilot)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -4179,6 +4202,7 @@ function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      additionalArguments: internalFeatures.githubCopilot ? [INTERNAL_GITHUB_COPILOT_ARGUMENT] : [],
       backgroundThrottling: !backgroundLaunch,
     },
   });
@@ -4656,6 +4680,7 @@ async function restartManagedGateway(
   const restart = (async () => {
     gatewayRestarting = true;
     setGatewayStatus("restarting");
+    sendToWindow(mainWindow, "gateway:ws-disconnected", reason);
     mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
     try {
       await hardRestartGateway({
@@ -5514,6 +5539,7 @@ async function startGatewayInner(
       // the OpenClaw launcher from self-respawning through the tool sandbox.
       OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
       OPENCLAW_NO_RESPAWN: "1",
+      OPENCLAW_NO_AUTO_UPDATE: "1",
       // HMAC key for verifying the external apps whitelist file
       OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
     };
@@ -5545,6 +5571,7 @@ async function startGatewayInner(
     // Initialize tool sandbox for AI agent command sandboxing.
     // Gateway runs outside AppContainer, but tool commands are routed
     // through AppContainer via preload interception.
+    logStartupTiming("sandbox-configuration-start");
     toolSandbox = new ToolSandbox(launcherPath, nodePath);
 
     // Restore sandbox enabled state from settings
@@ -5598,21 +5625,25 @@ async function startGatewayInner(
       if (fs.existsSync(dir)) toolSandbox.addDirRO(dir);
     }
 
+    logStartupTiming("sandbox-configuration-complete");
     if (toolSandbox.isActive()) {
       // ACL inheritance changes plugin file ctime. Finish before OpenClaw captures
       // its startup inventory, otherwise its migration fingerprint never converges.
       await toolSandbox.provisionAsync().then(async (provisioned) => {
+        logStartupTiming("sandbox-provision-complete");
         if (provisioned) {
           console.log("[sandbox] AppContainer tool sandbox provisioned");
           mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
           // Clean up any stale ACLs from previous failed revokes
           await cleanupStaleAcls();
+          logStartupTiming("sandbox-stale-acls-cleaned");
           // Apply explicit DENY ACEs on credential / private files inside the
           // OpenClaw state dir. The state dir as a whole is granted rw to the
           // AppContainer (skills need it for logs/scratch/plugin state), but
           // .env / openclaw.json / device-identity.json / sessions/ must be
           // shielded from sandboxed skill subprocesses.
           hardenOpenClawStateDir();
+          logStartupTiming("sandbox-state-hardened");
         } else {
           console.warn("[sandbox] AppContainer provisioning failed — sandbox disabled");
           toolSandbox!.setEnabled(false);
@@ -5642,6 +5673,15 @@ async function startGatewayInner(
     const localModelCompatPath = app.isPackaged
       ? path.join(process.resourcesPath, "openclaw-local-model-compat.mjs")
       : path.join(__dirname, "..", "src", "openclaw-local-model-compat.mjs");
+    const stateOwnerCompatPath = app.isPackaged
+      ? path.join(process.resourcesPath, "openclaw-state-owner-compat.mjs")
+      : path.join(__dirname, "..", "src", "openclaw-state-owner-compat.mjs");
+    if (!fs.existsSync(stateOwnerCompatPath)) {
+      throw new Error(
+        `OpenClaw state owner compatibility preload is missing: ${stateOwnerCompatPath}`,
+      );
+    }
+    gwEnv.MICROCLAW_WINDOWS_STATE_OWNER_COMPAT = "1";
     if (!fs.existsSync(localModelCompatPath))
       throw new Error("The exact local model adapter is missing");
     gwEnv.MICROCLAW_EXACT_LOCAL_MODELS = "1";
@@ -5675,6 +5715,8 @@ async function startGatewayInner(
     }
 
     const gwArgs = [
+      "--import",
+      pathToFileURL(stateOwnerCompatPath).href,
       "--import",
       pathToFileURL(fsSafeCompatPath).href,
       "--import",
@@ -7461,10 +7503,7 @@ function registerIpcHandlers(): void {
       const activeKey = modelChatKey(params.sessionKey);
       activeModelSessions.add(activeKey);
       try {
-        if (supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
-          const selection = await sessionModelService.get(params.sessionKey);
-          if (selection.modelRef) assertChatModelSupported(selection.modelRef);
-        }
+        await assertChatModelEnabled(params.sessionKey);
         await gwClient.sendChat(
           params.sessionKey,
           params.message,
@@ -7498,7 +7537,10 @@ function registerIpcHandlers(): void {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     sessionModelService.assertChatAllowed();
     const client = gwClient;
-    return withInternalModelChat(() => client.generateSessionTitle(params.sessionKey));
+    return withInternalModelChat(
+      () => client.generateSessionTitle(params.sessionKey),
+      params.sessionKey,
+    );
   });
 
   ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
@@ -7528,7 +7570,11 @@ function registerIpcHandlers(): void {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     if (modelConfigurationMutationInProgress || localModelService.busy || sessionModelService.busy)
       return { outcome: "skipped", transcriptDeleted: true };
-    if (hasLocalModelPrimary(readConfig())) {
+    if (
+      hasLocalModelPrimary(readConfig()) ||
+      (!internalFeatures.githubCopilot &&
+        getPrimaryModel(readConfig())?.startsWith("github-copilot/"))
+    ) {
       return { outcome: "skipped", transcriptDeleted: true };
     }
     if (
@@ -8075,6 +8121,7 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle("model:github-copilot:prepare", async () => {
+    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
     assertWindowsNodeMxcConfigurationMutable();
     return withModelConfigurationMutation(async () => {
       const config = readConfig();
@@ -8091,6 +8138,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("model:github-copilot:start-login", () => {
+    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
     assertWindowsNodeMxcConfigurationMutable();
     if (modelConfigurationMutationInProgress) {
       throw new Error("A model configuration change is in progress");
@@ -8121,6 +8169,7 @@ function registerIpcHandlers(): void {
       try {
         const selected = await selectDefaultModel(
           {
+            githubCopilotEnabled: internalFeatures.githubCopilot,
             gateway: () => gwClient,
             readConfig,
             assertMutable: assertCloudModelMutable,
@@ -8139,12 +8188,14 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle("model:github-copilot:status", () => {
+    if (!internalFeatures.githubCopilot) return { authenticated: false };
     const client = gwClient;
     const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
+    if (!internalFeatures.githubCopilot) return [];
     if (gwClient?.connected) {
       try {
         const result = await requestGatewayModelCatalog();
@@ -8157,7 +8208,10 @@ function registerIpcHandlers(): void {
     return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
   });
 
-  // --- Usage (via gateway WebSocket sessions.usage) ---
+  const backgroundUsageLedger = new BackgroundUsageLedger(
+    path.join(app.getPath("userData"), "usage", "background-requests.json"),
+  );
+
   ipcMain.handle("usage:get-stats", async () => {
     if (!gwClient?.connected) throw new Error("Gateway 未连接");
     const endDate = new Date().toISOString().split("T")[0];
@@ -8165,19 +8219,18 @@ function registerIpcHandlers(): void {
       .toISOString()
       .split("T")[0];
 
-    // Query the gateway's sessions.usage method (same as OpenClaw web dashboard)
-    const result = await gwClient.request<any>("sessions.usage", {
-      startDate,
-      endDate,
-      limit: 1000,
-      includeContextWeight: true,
-    });
+    const result: any = await queryAccountedUsage(
+      (method, params) => gwClient!.request(method, params),
+      backgroundUsageLedger,
+      { startDate, endDate, limit: 1000 },
+      () =>
+        console.warn("[usage] Background usage could not be refreshed; totals may be incomplete"),
+    );
 
     const totals = result?.totals || {};
     const aggregates = result?.aggregates || {};
     const daily = aggregates.daily || [];
     const byModel = aggregates.byModel || [];
-    const messages = aggregates.messages || {};
 
     // Build model breakdown
     const modelBreakdown: Record<
@@ -8222,10 +8275,13 @@ function registerIpcHandlers(): void {
       totalPromptTokens: totals.input || 0,
       totalCompletionTokens: totals.output || 0,
       totalTokens: totals.totalTokens || 0,
-      totalRequests: messages.total || result?.sessions?.length || 0,
+      totalRequests: result.requestCount,
+      usageSources: result.usageSources,
+      backgroundUsageAvailable: result.backgroundUsageAvailable,
+      backgroundRequests: result.backgroundRequests,
       modelBreakdown,
       dailySpend,
-      hasDetailedLogs: (result?.sessions?.length || 0) > 0,
+      hasDetailedLogs: (result?.sessions?.length || 0) > 0 || result.backgroundRequests > 0,
       // Extra fields from gateway
       cacheReadTokens: totals.cacheRead || 0,
       cacheWriteTokens: totals.cacheWrite || 0,
@@ -8253,12 +8309,13 @@ function registerIpcHandlers(): void {
         params.startDate ||
         new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000).toISOString().split("T")[0];
 
-      const result = await gwClient.request<any>("sessions.usage", {
-        startDate,
-        endDate,
-        limit: 5000,
-        includeContextWeight: true,
-      });
+      const result: any = await queryAccountedUsage(
+        (method, input) => gwClient!.request(method, input),
+        backgroundUsageLedger,
+        { startDate, endDate, limit: 5000 },
+        () =>
+          console.warn("[usage] Background usage could not be refreshed; totals may be incomplete"),
+      );
 
       const totals = result?.totals || {};
       const aggregates = result?.aggregates || {};
@@ -8318,6 +8375,10 @@ function registerIpcHandlers(): void {
       }
 
       return {
+        usageSources: result.usageSources,
+        backgroundUsageAvailable: result.backgroundUsageAvailable,
+        backgroundRequests: result.backgroundRequests,
+        requestCount: result.requestCount,
         totals: {
           totalCost: totals.totalCost || 0,
           input: totals.input || 0,
@@ -8334,6 +8395,7 @@ function registerIpcHandlers(): void {
             input: d.input || 0,
             output: d.output || 0,
             cacheRead: d.cacheRead || 0,
+            cacheWrite: d.cacheWrite || 0,
             messages: d.messages || 0,
             toolCalls: d.toolCalls || 0,
             errors: d.errors || 0,

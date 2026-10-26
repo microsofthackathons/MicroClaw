@@ -1,4 +1,4 @@
-import { createPinia } from "pinia";
+import { createPinia, setActivePinia } from "pinia";
 import { shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
@@ -91,6 +91,32 @@ describe("chat waiting feedback", () => {
     });
     await wrapper.vm.$nextTick();
     expect(wrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("automatically removes preparation feedback after history becomes available", async () => {
+    setLocale("zh-CN");
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useChatStore(pinia);
+    const loadHistory = vi
+      .spyOn(window.openclaw.chat, "loadHistory")
+      .mockRejectedValueOnce(
+        new Error("Agent main has not completed startup inspection and preparation."),
+      )
+      .mockResolvedValue({ messages: [] });
+    await store.loadHistory();
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+
+    expect(wrapper.get(".chat-error").attributes("role")).toBe("status");
+    expect(wrapper.get(".chat-error").classes()).toContain("chat-error--waiting");
+    expect(wrapper.text()).toContain("正在准备会话数据");
+    expect(wrapper.find(".chat-error__actions").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("对话请求失败");
+
+    await store.loadHistory({ showLoading: false });
+    expect(loadHistory).toHaveBeenCalledTimes(2);
+    expect(wrapper.find(".chat-error").exists()).toBe(false);
     wrapper.unmount();
   });
 });

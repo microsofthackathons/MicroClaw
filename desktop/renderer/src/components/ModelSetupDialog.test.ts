@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
+import { setLocale } from "@/i18n";
 import type { LocalModelOperation } from "../../../src/local-model-types";
 import { MANAGED_MODEL_PROVIDERS } from "@/utils/managed-model-providers";
 import ModelSetupDialog from "./ModelSetupDialog.vue";
@@ -94,6 +95,7 @@ describe("ModelSetupDialog", () => {
     listGitHubCopilotModels.mockResolvedValue([]);
     githubCopilotLoginListener = undefined;
     window.openclaw = {
+      features: { githubCopilot: true },
       config: { read, write },
       gateway: { restart },
       model: {
@@ -115,16 +117,50 @@ describe("ModelSetupDialog", () => {
   });
 
   afterEach(() => {
+    setLocale("en-US");
     vi.useRealTimers();
     vi.clearAllMocks();
   });
 
+  it.each([
+    ["recovery", undefined],
+    ["saved provider", undefined],
+    ["recovery", false],
+    ["saved provider", false],
+  ] as const)("hides Copilot for %s with feature capability %s", async (entry, githubCopilot) => {
+    window.openclaw = {
+      ...window.openclaw,
+      features: githubCopilot === undefined ? undefined : { githubCopilot },
+    } as unknown as OpenClawAPI;
+    const props =
+      entry === "recovery"
+        ? { initialFamily: "github-copilot" as const }
+        : {
+            currentProvider: {
+              familyId: "github-copilot",
+              providerKey: "github-copilot",
+              modelName: "gpt-5",
+              baseUrl: "",
+              apiKey: "",
+              apiFormat: "openai-chat" as const,
+            },
+          };
+    const wrapper = mountDialog(props);
+    await flushPromises();
+    expect(wrapper.findAll(".model-family-card")).toHaveLength(3);
+    expect(wrapper.text()).not.toContain("GitHub Copilot");
+    expect(getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(prepareGitHubCopilot).not.toHaveBeenCalled();
+    expect(startGitHubCopilotLogin).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   async function openCustomForm(wrapper: ReturnType<typeof mountDialog>) {
     const cards = wrapper.findAll(".model-family-card");
-    expect(cards).toHaveLength(5);
-    await cards[3].trigger("click");
-    expect(wrapper.text()).toContain("Configure custom provider");
-    await wrapper.find(".primary-action").trigger("click");
+    expect(cards).toHaveLength(4);
+    await wrapper.setProps({ modelValue: false });
+    await wrapper.setProps({ modelValue: true, initialFamily: "custom" });
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
   }
 
   async function enterCloudKey(wrapper: ReturnType<typeof mountDialog>) {
@@ -136,21 +172,20 @@ describe("ModelSetupDialog", () => {
 
   async function openGitHubCopilotForm(wrapper: ReturnType<typeof mountDialog>) {
     const cards = wrapper.findAll(".model-family-card");
-    expect(cards).toHaveLength(5);
+    expect(cards).toHaveLength(4);
     await cards[2].trigger("click");
     expect(wrapper.text()).toContain("GitHub Copilot");
     await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
   }
 
-  it("shows managed providers, Copilot, custom setup, and a first-time local entry", () => {
+  it("shows managed providers, Copilot, and a first-time local entry", () => {
     const wrapper = mountDialog();
     const cards = wrapper.findAll(".model-family-card");
     expect(cards.map((card) => card.text())).toEqual([
       "千问",
       "MiniMax",
       "GitHub Copilot",
-      "Other model",
       "Local model",
     ]);
     expect(cards[2].findAll(".family-icon img")).toHaveLength(1);
@@ -161,6 +196,23 @@ describe("ModelSetupDialog", () => {
     expect(copilotLogo).toContain("fill='black'");
     expect(wrapper.text()).not.toContain("OpenClaw catalog");
   });
+
+  it.each(["en-US", "zh-CN"] as const)(
+    "only offers Qwen, MiniMax, and local setup in %s",
+    (locale) => {
+      setLocale(locale);
+      window.openclaw = { ...window.openclaw, features: { githubCopilot: false } };
+      const wrapper = mountDialog();
+      const cards = wrapper.findAll(".model-family-card");
+      expect(cards.map((card) => card.text())).toEqual([
+        "千问",
+        "MiniMax",
+        locale === "zh-CN" ? "本地模型" : "Local model",
+      ]);
+      expect(wrapper.text()).not.toMatch(/Other model|其他模型|OpenClaw catalog/);
+      wrapper.unmount();
+    },
+  );
 
   it.each([
     ["qwen", "千问"],
@@ -328,7 +380,7 @@ describe("ModelSetupDialog", () => {
 
   it("opens the local dialog from the family grid without starting an operation", async () => {
     const wrapper = mountDialog();
-    await wrapper.findAll(".model-family-card")[4].trigger("click");
+    await wrapper.findAll(".model-family-card")[3].trigger("click");
     expect(wrapper.find(".primary-action").text()).toBe("Set up a local model");
     await wrapper.find(".primary-action").trigger("click");
     await flushPromises();
@@ -778,13 +830,32 @@ describe("ModelSetupDialog", () => {
     }
   });
 
-  it("shows an Other model path with custom provider fields", async () => {
-    const wrapper = mountDialog();
-    await openCustomForm(wrapper);
+  it("retains existing custom connection fields but returns to the supported picker", async () => {
+    const wrapper = mountDialog({
+      currentProvider: {
+        familyId: "custom",
+        providerKey: "private",
+        modelName: "my-model",
+        baseUrl: "https://model.example/v1",
+        apiKey: "",
+        apiFormat: "openai-chat",
+      },
+    });
 
     expect(wrapper.text()).toContain("Provider ID");
     expect(wrapper.text()).toContain("API Format");
     expect(wrapper.text()).toContain("API KEY (OPTIONAL)");
+    await wrapper.get(".text-action--back").trigger("click");
+    expect(wrapper.findAll(".model-family-card").map((card) => card.text())).toEqual([
+      "千问",
+      "MiniMax",
+      "GitHub Copilot",
+      "Local model",
+    ]);
+    expect(wrapper.findAll(".model-family-card")[0].classes()).toContain("active");
+    expect(wrapper.find(".primary-action").text()).toBe("Get API Key");
+    expect(wrapper.text()).not.toContain("Configure custom provider");
+    wrapper.unmount();
   });
 
   it("signs into GitHub Copilot with a device code and saves a full model reference", async () => {

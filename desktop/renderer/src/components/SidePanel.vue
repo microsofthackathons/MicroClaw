@@ -177,12 +177,10 @@
       </div>
 
       <template v-if="!usageCollapsed">
-        <div v-if="usageLoading" class="sp-usage-state">{{ t("settings.usageLoading") }}</div>
+        <div v-if="usageLoading && !usageSnapshot" class="sp-usage-state">
+          {{ t("settings.usageLoading") }}
+        </div>
         <div v-else-if="usageSnapshot" class="sp-usage-grid">
-          <div class="sp-usage-card">
-            <span class="sp-usage-label">{{ t("sidebar.usageSnapshotSpend") }}</span>
-            <span class="sp-usage-value">{{ formatCny(usageSnapshot.totalSpend) }}</span>
-          </div>
           <div class="sp-usage-card">
             <span class="sp-usage-label">{{ t("sidebar.usageSnapshotTokens") }}</span>
             <span class="sp-usage-value">{{ formatCompact(usageSnapshot.totalTokens) }}</span>
@@ -192,6 +190,14 @@
           {{ t("sidebar.usageSnapshotOffline") }}
         </div>
         <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
+
+        <div
+          v-if="usageSnapshot?.backgroundUsageAvailable === false"
+          class="sp-usage-state"
+          role="status"
+        >
+          {{ t("usage.backgroundUnavailable") }}
+        </div>
 
         <div class="sp-usage-foot">
           <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
@@ -226,13 +232,9 @@ const sessionStore = useSessionStore();
 const agentStore = useAgentStore();
 
 interface UsageSnapshot {
-  totalSpend: number;
   totalTokens: number;
-  exchangeRate: number | null;
+  backgroundUsageAvailable?: boolean;
 }
-
-// Fallback mirrors USD_TO_CNY_FALLBACK_RATE in SettingsView.vue / the main process.
-const USD_TO_CNY_FALLBACK_RATE = 7.2;
 
 const usageSnapshot = ref<UsageSnapshot | null>(null);
 const usageLoading = ref(false);
@@ -308,9 +310,8 @@ async function loadUsageSnapshot() {
 
     const stats = await usageApi();
     usageSnapshot.value = {
-      totalSpend: Number(stats?.totalSpend || 0),
       totalTokens: Number(stats?.totalTokens || 0),
-      exchangeRate: Number(stats?.exchangeRate) || null,
+      backgroundUsageAvailable: stats?.backgroundUsageAvailable,
     };
     usageLastUpdated.value = new Date();
   } catch {
@@ -326,9 +327,7 @@ async function loadUsageSnapshot() {
 
 function applyMockSnapshot() {
   usageSnapshot.value = {
-    totalSpend: 42.35,
     totalTokens: 128400,
-    exchangeRate: null,
   };
   usageLastUpdated.value = new Date();
 }
@@ -345,11 +344,6 @@ function formatCompact(value: number) {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value || 0);
-}
-
-function formatCny(value: number) {
-  const rate = usageSnapshot.value?.exchangeRate ?? USD_TO_CNY_FALLBACK_RATE;
-  return `${t("settings.currencySymbol")}${((value || 0) * rate).toFixed(2)}`;
 }
 
 /**
@@ -807,8 +801,7 @@ html.dark .sp-usage-toggle:hover {
 
 .sp-usage-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sp-usage-card {

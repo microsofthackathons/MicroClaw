@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { inspectLocalModelFiles } from "./local-model-files";
 import { GatewayRequestError } from "./gateway-client";
 import { assertChatModelSupported } from "./provider-model-capabilities";
+import { assertModelProviderEnabled } from "./internal-features";
 import { supportsLocalModelGatewayVersion, validateLocalModelUrl } from "./local-model-service";
 import {
   parseGitHubCopilotGatewayAuthStatus,
@@ -18,6 +19,7 @@ interface SessionModelGateway extends LocalModelGateway {
 }
 
 interface Dependencies {
+  githubCopilotEnabled?: boolean;
   gateway(): SessionModelGateway | null;
   readConfig(): unknown;
   /** Must synchronously reject active chats, other model operations and locked configurations. */
@@ -524,6 +526,7 @@ export class SessionModelService {
     }
     const key = sessionKey(params.sessionKey);
     const ref = params.modelRef === null ? null : modelReference(params.modelRef);
+    assertModelProviderEnabled(ref, this.deps.githubCopilotEnabled);
     if (ref !== null) assertChatModelSupported(ref);
     this.assertIdle();
     this.deps.assertMutable();
@@ -572,6 +575,7 @@ export class SessionModelService {
           )
         : before.state.modelRef;
       const selected = ref ?? inheritedModelRef;
+      assertModelProviderEnabled(selected, this.deps.githubCopilotEnabled);
       if (ref !== null) await this.validateModel(ctx, cfg, before.agentId, ref, inheritedModelRef);
       const latest = await this.config(ctx);
       if (latest.hash !== snapshot.hash)

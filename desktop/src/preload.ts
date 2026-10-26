@@ -10,6 +10,9 @@ import type { LocalModelAPI, LocalModelOperation } from "./local-model-types";
 import type { SessionModelAPI } from "./session-model-types";
 
 contextBridge.exposeInMainWorld("openclaw", {
+  features: {
+    githubCopilot: process.argv.includes("--microclaw-internal-github-copilot"),
+  },
   // --- Gateway lifecycle ---
   gateway: {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),

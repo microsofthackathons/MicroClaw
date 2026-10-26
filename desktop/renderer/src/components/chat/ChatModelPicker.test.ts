@@ -30,6 +30,7 @@ describe("ChatModelPicker", () => {
   beforeEach(() => {
     setLocale("en-US");
     const api = createBrowserOpenClawMock();
+    Object.assign(api.features, { githubCopilot: true });
     api.config.read = vi.fn().mockResolvedValue({
       models: {
         providers: {
@@ -83,6 +84,22 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     return wrapper;
   }
+
+  it("hides saved Copilot models and skips authentication when the internal feature is disabled", async () => {
+    Object.assign(window.openclaw.features, { githubCopilot: false });
+    window.openclaw.config.read = vi.fn().mockResolvedValue({
+      models: { providers: { cloud: { models: [{ id: "remote", name: "Cloud model" }] } } },
+      agents: { defaults: { models: { "github-copilot/gpt-5": { alias: "Copilot" } } } },
+    });
+    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
+    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    const wrapper = await open();
+    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Copilot");
+    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(window.openclaw.config.write).not.toHaveBeenCalled();
+  });
 
   it("preserves accessible expanded state with the real Element Plus popover", async () => {
     const wrapper = await open(true);
@@ -173,7 +190,7 @@ describe("ChatModelPicker", () => {
       wrapper
         .findAll('[data-model-ref^="qwen/"]')
         .map((model) => model.attributes("data-model-ref")),
-    ).toEqual(["qwen/saved", "qwen/live-one", "qwen/live-two"]);
+    ).toEqual(["qwen/live-one", "qwen/live-two", "qwen/saved"]);
     await wrapper.get('[data-model-ref="qwen/live-two"]').trigger("click");
     await flushPromises();
     expect(window.openclaw.model.session.select).toHaveBeenCalledWith({
@@ -256,7 +273,7 @@ describe("ChatModelPicker", () => {
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("true");
     expect(trigger.attributes("aria-busy")).toBe("false");
-    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(3);
+    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(LOCAL_MODEL_PRESETS.length + 1);
     expect(wrapper.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
       "true",
     );
@@ -335,7 +352,7 @@ describe("ChatModelPicker", () => {
     local.resolve(fixture.snapshot);
     await flushPromises();
     expect(trigger.attributes("aria-expanded")).toBe("true");
-    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(3);
+    expect(wrapper.findAll("[data-model-ref]")).toHaveLength(LOCAL_MODEL_PRESETS.length + 1);
   });
 
   it("waits for a new conversation's selection before choosing its initially expanded provider", async () => {

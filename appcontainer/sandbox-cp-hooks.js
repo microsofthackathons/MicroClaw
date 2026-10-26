@@ -41,7 +41,12 @@ var extractReadPaths = _pathExtraction.extractReadPaths;
 var extractShellPayloadFromString = _pathExtraction.extractShellPayloadFromString;
 var filterSystemPaths = _pathExtraction.filterSystemPaths;
 var TRUSTED_NODE_EXEC_PATH = process.execPath;
-var TRUSTED_OPENCLAW_ENTRY_PATH = process.argv[1] || "";
+var TRUSTED_OPENCLAW_ENTRY_PATH = (function () {
+  if (process.argv[1]) return process.argv[1];
+  var packageDir = process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR || "";
+  if (require("worker_threads").isMainThread || !pathMod.isAbsolute(packageDir)) return "";
+  return pathMod.join(packageDir, "openclaw.mjs");
+})();
 var TRUSTED_OPENCLAW_PACKAGE_ROOT = process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR || "";
 var TRUSTED_OPENCLAW_STATE_DIR = process.env.OPENCLAW_STATE_DIR || "";
 var TRUSTED_PRELOAD_PATH = pathMod.join(__dirname, "sandbox-preload.js");
@@ -55,6 +60,7 @@ var TRUSTED_WORKER_ENV = (function () {
     "HOMEPATH",
     "LOCALAPPDATA",
     "NUMBER_OF_PROCESSORS",
+    "NODE_COMPILE_CACHE",
     "OS",
     "Path",
     "PATHEXT",
@@ -288,8 +294,10 @@ function isOpenClawInternalSqliteWorkerSpawnOptions(options, runtime) {
   var effectiveCwd =
     options.cwd !== undefined ? options.cwd : runtime && runtime.cwd ? runtime.cwd : process.cwd();
   if (typeof effectiveCwd !== "string" || !pathMod.isAbsolute(effectiveCwd)) return false;
+  var canonicalPackageRoot = canonicalExistingPath(packageRoot, runtime);
   return (
-    canonicalExistingPath(effectiveCwd, runtime) === canonicalExistingPath(packageRoot, runtime)
+    canonicalPackageRoot !== "" &&
+    canonicalExistingPath(effectiveCwd, runtime) === canonicalPackageRoot
   );
 }
 
@@ -356,6 +364,8 @@ function isOpenClawInternalStateOwnershipWorkerCommand(cmd, args, stack, runtime
     runtime && runtime.entryPath ? runtime.entryPath : TRUSTED_OPENCLAW_ENTRY_PATH,
   );
   if (!packageRoot) return false;
+  var canonicalPackageRoot = canonicalExistingPath(packageRoot, runtime);
+  if (!canonicalPackageRoot) return false;
   var expectedWorker = normalizeComparablePath(
     pathMod.join(packageRoot, "dist", "state", "openclaw-state-ownership.worker.js"),
   );
@@ -388,7 +398,7 @@ function isOpenClawInternalStateOwnershipWorkerCommand(cmd, args, stack, runtime
     options.cwd !== undefined &&
     (typeof options.cwd !== "string" ||
       !pathMod.isAbsolute(options.cwd) ||
-      canonicalExistingPath(options.cwd, runtime) !== canonicalExistingPath(packageRoot, runtime))
+      canonicalExistingPath(options.cwd, runtime) !== canonicalPackageRoot)
   ) {
     return false;
   }
@@ -406,20 +416,68 @@ function isOpenClawInternalStateOwnershipWorkerCommand(cmd, args, stack, runtime
 
 function isOpenClawInternalSqliteSessionMessage(message, runtime) {
   if (message === "close") return true;
-  if (!message || typeof message !== "object" || !Number.isSafeInteger(message.id)) return false;
-  if (!Array.isArray(message.args)) {
-    return Boolean(
-      message.transfer &&
-      typeof message.transfer === "object" &&
-      (message.transfer.type === "next" || message.transfer.type === "end"),
+  if (
+    !message ||
+    typeof message !== "object" ||
+    Array.isArray(message) ||
+    !Number.isSafeInteger(message.id) ||
+    message.id < 1
+  ) {
+    return false;
+  }
+  if (message.transfer) {
+    if (
+      Object.keys(message).length !== 2 ||
+      typeof message.transfer !== "object" ||
+      Array.isArray(message.transfer)
+    ) {
+      return false;
+    }
+    return (
+      Object.keys(message.transfer).length === 2 &&
+      (message.transfer.type === "next" || message.transfer.type === "end") &&
+      Number.isSafeInteger(message.transfer.transferId) &&
+      message.transfer.transferId > 0
     );
   }
   var args = message.args;
-  if (args.length < 2 || args.length > 4 || !args.every((arg) => typeof arg === "string")) {
+  if (
+    !Array.isArray(args) ||
+    args.length < 2 ||
+    args.length > 4 ||
+    !args.every(function (value) {
+      return typeof value === "string";
+    })
+  ) {
     return false;
   }
   var mode = args[0];
   var target = args[1];
+  var metadataKey = mode === "operation" ? "operation" : mode === "auth-profile-rows" ? "auth" : "";
+  var hasMetadata = metadataKey && Object.prototype.hasOwnProperty.call(message, metadataKey);
+  if (Object.keys(message).length !== (hasMetadata ? 3 : 2)) return false;
+  if (hasMetadata) {
+    var metadata = message[metadataKey];
+    if (
+      !metadata ||
+      typeof metadata !== "object" ||
+      Array.isArray(metadata) ||
+      typeof metadata.expectedIdentity !== "string" ||
+      !metadata.expectedIdentity.startsWith("file:") ||
+      (metadata.artifactPreserving !== undefined &&
+        typeof metadata.artifactPreserving !== "boolean") ||
+      (mode === "operation" && typeof metadata.command !== "string") ||
+      !Object.keys(metadata).every(function (key) {
+        return (
+          key === "expectedIdentity" ||
+          key === "artifactPreserving" ||
+          (mode === "operation" && key === "command")
+        );
+      })
+    ) {
+      return false;
+    }
+  }
   if (!pathMod.isAbsolute(target)) return false;
   if (mode === "staging-create" || mode === "staging-create-legacy") {
     return args.length === 2 && isOpenClawSqliteStagingParent(target, runtime);

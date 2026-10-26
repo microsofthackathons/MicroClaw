@@ -3,7 +3,7 @@ import { selectDefaultModel } from "./default-model-selection";
 import { GatewayRequestError } from "./gateway-client";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 
-function fixture(target = "cloud/b") {
+function fixture(target = "cloud/b", githubCopilotEnabled = true) {
   const config = {
     agents: {
       defaults: {
@@ -59,7 +59,12 @@ function fixture(target = "cloud/b") {
     methods: ["config.get", "config.patch", "models.authStatus", "models.list"],
     request,
   };
-  const deps = { gateway: () => gateway, readConfig: () => config, assertMutable: vi.fn() };
+  const deps = {
+    githubCopilotEnabled,
+    gateway: () => gateway,
+    readConfig: () => config,
+    assertMutable: vi.fn(),
+  };
   const select = () => selectDefaultModel(deps, { modelRef: target, expectedConfig: before });
   return {
     config,
@@ -83,7 +88,7 @@ describe("default model hot selection", () => {
     expect(f.request).not.toHaveBeenCalled();
   });
 
-  it.each(["2026.9.3", "2026.10.2"])(
+  it.each(["2026.9.3", "2026.10.2", "2026.10.3", "2026.10.5"])(
     "writes only the primary using CAS on %s without inference or restart",
     async (version) => {
       const f = fixture();
@@ -116,6 +121,13 @@ describe("default model hot selection", () => {
       undefined,
     );
     expect(f.config.agents.defaults.modelPolicy).toEqual(f.before.agents.defaults.modelPolicy);
+  });
+
+  it("rejects disabled Copilot selection before accessing the Gateway or changing configuration", async () => {
+    const f = fixture("github-copilot/gpt-6-sol", false);
+    await expect(f.select()).rejects.toThrow("GitHub Copilot is disabled");
+    expect(f.request).not.toHaveBeenCalled();
+    expect(f.config).toEqual(f.before);
   });
 
   it.each([

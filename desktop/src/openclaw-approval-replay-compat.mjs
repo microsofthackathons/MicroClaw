@@ -7,49 +7,131 @@ import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
-const EXPECTED_VERSION = "2026.10.2";
-const EXPECTED_NODE_GATEWAY_MODULE = "nodes-CUbe_1MQ.mjs";
+const EXPECTED_VERSION = "2026.10.5";
+const EXPECTED_NODE_GATEWAY_MODULE = "nodes-Cl-Air2F.mjs";
 const EXPECTED_NODE_GATEWAY_SHA256 =
-  "3bc901af8f195d8b5d7ed41b2c50656f3da2ff160938d94d97d0c2fa8e42e676";
-const EXPECTED_NODE_INVOKE_PLUGIN_POLICY_MODULE = "node-invoke-plugin-policy-DLQRKKVA.mjs";
+  "b9a4037588bbf8405a6f9149cb85f7750ae58fa777bd1dc675fc8eb857d5a978";
+const EXPECTED_NODE_INVOKE_PLUGIN_POLICY_MODULE = "node-invoke-plugin-policy-GeGCY71G.mjs";
 const EXPECTED_NODE_INVOKE_PLUGIN_POLICY_SHA256 =
-  "6da4ee5c889ad2c236265b7f3290b4fd9c0ee1bcaa91bde0bd8f5a3c1ff532e9";
+  "29e2ad3edc93dc39ce03bffae28926f53bd7f432bbf417accc79302997603a27";
 const EXPECTED_NODE_REGISTRY_PRIVATE_MODULE = "node-registry-private-CyaYRwVd.mjs";
 const EXPECTED_NODE_REGISTRY_PRIVATE_SHA256 =
   "31510d11a6f80614e8c1d3d3b3c44eec42a61feb17cb05e051ad613ce6475228";
 const EXPECTED_SYSTEM_RUN_MODULE = "system-run-approval-plan-Cu-Ftdkp.mjs";
 const EXPECTED_SYSTEM_RUN_SHA256 =
   "c0df5badb2a8cc6adfdfb8bac48e5379e0825005e0dec827d01b2fb3e223820e";
-const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-mGU7M4-K.mjs";
+const EXPECTED_EXEC_APPROVAL_MODULE = "exec-approval-BKqqOMdp.mjs";
 const EXPECTED_EXEC_APPROVAL_SHA256 =
-  "aacf6a38e1ea77a9ce02fc4f60069230eec6b9c0a2e7123d35032eb105253267";
-const EXPECTED_BASH_TOOLS_MODULE = "bash-tools-Bl8Bd3CR.mjs";
+  "8090cab45823ea945c7ee3852e5751c60c2743a0e5edd63424dbc8c0cd882c9b";
+const EXPECTED_BASH_TOOLS_MODULE = "bash-tools-DQS9-f8q.mjs";
 const EXPECTED_BASH_TOOLS_SHA256 =
-  "e5fd9fdfb6815da55188856b7215c406337f45d21b89fb87bb7a8a6ca48c0c90";
-const EXPECTED_WEB_TOOLS_MODULE = "openclaw-tools-Dxfbrtff.mjs";
+  "eee02a0bf16cbe6608b48e740cd4f2021b6f353b63eb324eb3ba224df77cfb2e";
+const EXPECTED_WEB_TOOLS_MODULE = "openclaw-tools-BA3mvtXt.mjs";
 const EXPECTED_WEB_TOOLS_SHA256 =
-  "181c5f9673480fbdacfa3ff88ae83686d8d1cb6402f583c3546d87b6e468d53e";
-const EXPECTED_CRON_SERVICE_MODULE = "service-31u04axN.mjs";
+  "cb69cd89f05f264a3258970c9b1e14c8fb5ba84966030841f0f5e116965ad270";
+const EXPECTED_CRON_SERVICE_MODULE = "service-B3JlUlHg.mjs";
 const EXPECTED_CRON_SERVICE_SHA256 =
-  "5f3fda2b466273f79606dbccb53e2952d3c33e198d32c8a0eed30f7be5cda3ab";
-const EXPECTED_CRON_HANDLERS_MODULE = "cron-D3Bd3ZFt.mjs";
+  "80b7e584751b1b260377c9e856d5b97c3d4540e525a5f29d7b7309ac8e1d9320";
+const EXPECTED_CRON_HANDLERS_MODULE = "cron-Bz6F4quM.mjs";
 const EXPECTED_CRON_HANDLERS_SHA256 =
-  "3dd84c2aebf7cfe326f1ae4d3f40e5c68e4c897a623d834c60a613888c1f6ea1";
-const EXPECTED_HOOKS_SERVER_MODULE = "server-start-DfGddYU-.mjs";
+  "da2ef23428fa4eea0ac27b2ba9c7cf2c6e92ec2979bef692ba76fc5f50d11f83";
+const EXPECTED_HOOKS_SERVER_MODULE = "server-start-CZZFIc7j.mjs";
 const EXPECTED_HOOKS_SERVER_SHA256 =
-  "86b9912a5458cd617e22dcdb24cc8ba757ea2206b298bf8831b22cd874e5efae";
-const EXPECTED_INTERNAL_HOOKS_MODULE = "internal-hooks-DfVqU7ax.mjs";
+  "a0450d72ae6d4e37014cd9e36bb5fa613fb660ea5e8e33f4dab6c0f80d0366b2";
+const EXPECTED_INTERNAL_HOOKS_MODULE = "internal-hooks-C3ju7znI.mjs";
 const EXPECTED_INTERNAL_HOOKS_SHA256 =
-  "3e0200cbe95b537ac5c4fc36509197b2d13700a72688e26839620248c6c967d0";
+  "6a16a588d98621cac5ede209e53ccda37e11e21d14e3291e538a09dc0356c471";
 const EXPECTED_CANVAS_EXTENSION_MODULE = "extensions/canvas/index.js";
 const EXPECTED_CANVAS_EXTENSION_SHA256 =
-  "81a8476cf4bdf208710f7be014aa2bb72321399d2b46f3d8101826223182b9df";
-const EXPECTED_CANVAS_TOOL_MODULE = "tool-CpRzQ0s7.mjs";
+  "fb82b88b91a8b10963541ac4d8cba58ee944540be8408652816f19ce7c3b316d";
+const EXPECTED_CANVAS_TOOL_MODULE = "tool-QdensQdF.mjs";
 const EXPECTED_CANVAS_TOOL_SHA256 =
-  "2e45e3320ec6f3e8eb6005b06b90a29f1e620541079cf2b0f14d4342be60056a";
-const EXPECTED_CANVAS_ELIGIBILITY_MODULE = "node-eligibility-UXb9xB0F.mjs";
+  "0330910945a2eebcad5a779097810606687d617ee72c823aa3718eda558e1fdd";
+const EXPECTED_CANVAS_ELIGIBILITY_MODULE = "node-eligibility-CYxKvUWR.mjs";
 const EXPECTED_CANVAS_ELIGIBILITY_SHA256 =
-  "4e80d6add8a2cd46f315e1698b65001fe837d1b16056a8255d34f546358c6431";
+  "db074a408f22f683aab4f22422c968d8e8cde9dfd8a47c5509320bdddcc00071";
+const PINNED_RELEASE_MODULES = {
+  "2026.10.3": {
+    nodeGateway: [EXPECTED_NODE_GATEWAY_MODULE, EXPECTED_NODE_GATEWAY_SHA256],
+    nodeInvokePluginPolicy: [
+      EXPECTED_NODE_INVOKE_PLUGIN_POLICY_MODULE,
+      EXPECTED_NODE_INVOKE_PLUGIN_POLICY_SHA256,
+    ],
+    nodeRegistryPrivate: [
+      EXPECTED_NODE_REGISTRY_PRIVATE_MODULE,
+      EXPECTED_NODE_REGISTRY_PRIVATE_SHA256,
+    ],
+    systemRun: [EXPECTED_SYSTEM_RUN_MODULE, EXPECTED_SYSTEM_RUN_SHA256],
+    execApproval: [EXPECTED_EXEC_APPROVAL_MODULE, EXPECTED_EXEC_APPROVAL_SHA256],
+    bashTools: [EXPECTED_BASH_TOOLS_MODULE, EXPECTED_BASH_TOOLS_SHA256],
+    webTools: [EXPECTED_WEB_TOOLS_MODULE, EXPECTED_WEB_TOOLS_SHA256],
+    cronService: [EXPECTED_CRON_SERVICE_MODULE, EXPECTED_CRON_SERVICE_SHA256],
+    cronHandlers: [EXPECTED_CRON_HANDLERS_MODULE, EXPECTED_CRON_HANDLERS_SHA256],
+    hooksServer: [EXPECTED_HOOKS_SERVER_MODULE, EXPECTED_HOOKS_SERVER_SHA256],
+    internalHooks: [EXPECTED_INTERNAL_HOOKS_MODULE, EXPECTED_INTERNAL_HOOKS_SHA256],
+    canvasExtension: [EXPECTED_CANVAS_EXTENSION_MODULE, EXPECTED_CANVAS_EXTENSION_SHA256],
+    canvasTool: [EXPECTED_CANVAS_TOOL_MODULE, EXPECTED_CANVAS_TOOL_SHA256],
+    canvasEligibility: [EXPECTED_CANVAS_ELIGIBILITY_MODULE, EXPECTED_CANVAS_ELIGIBILITY_SHA256],
+  },
+  "2026.10.5": {
+    nodeGateway: [
+      "nodes-50M4rpyG.mjs",
+      "36df67f03cdb38c108abf1b8d806596deeab12a5cd8d2b493da6b6d8070684de",
+    ],
+    nodeInvokePluginPolicy: [
+      "node-invoke-plugin-policy-C3OHtaj0.mjs",
+      "5fb041bbf5b92197b1a0bee62a8833a00910506c443cd0b1dcf0f95af37a9bc3",
+    ],
+    nodeRegistryPrivate: [
+      "node-registry-private-Cy7k5cze.mjs",
+      "93cdf5cdcc30b97741fd4057418f64658f0e515ad92536a6d3e15c38828cdb03",
+    ],
+    systemRun: [
+      "system-run-approval-plan-B2O_CKga.mjs",
+      "6dc1d895e06ccc1ce656895185be69522711606bf9ccf8475373ac5d0b4e5e08",
+    ],
+    execApproval: [
+      "exec-approval-DbnOAIQO.mjs",
+      "bb78df7f275897a9fe37c916290bab76d3901205fa7a43124111a458108ff9b9",
+    ],
+    bashTools: [
+      "bash-tools-BpD5km6h.mjs",
+      "2aa533524662ac2e205f1ded47be742fa22c955efb9fc87b6f190a6b843aa73a",
+    ],
+    webTools: [
+      "openclaw-tools-BzG0r_Mx.mjs",
+      "892e8dc378297ee04528b2dabf654d9fbe4f71dab01a42b2e2c392aececfd218",
+    ],
+    cronService: [
+      "service-BlXGdNfC.mjs",
+      "811e2fac7e3dc0c3ddf647d8407afd180a7d3e65c43f6e1ed87f9b8133761633",
+    ],
+    cronHandlers: [
+      "cron-CtU5MS3t.mjs",
+      "e212a5ae674b2350ab1b7cd1eb828af0bec7aa2419879dcc20bfb2efcdd2e4f6",
+    ],
+    hooksServer: [
+      "server-start-D9FwRIP_.mjs",
+      "9a057e3dadcfe264a5c227373467e056b3ead17dcee8fc45b53c52f070983a48",
+    ],
+    internalHooks: [
+      "internal-hooks-u9Bo9D-Q.mjs",
+      "d9c6169c252b941e3b2d1d2f1c4dd101f4bb1d6345489bcf0fa9e9116b5040f8",
+    ],
+    canvasExtension: [
+      "extensions/canvas/index.js",
+      "4cdc18f497664b3c81eac4584b15b2cf8f357c0d09c2e3cee667a25cc83cca55",
+    ],
+    canvasTool: [
+      "tool-DjtevMZn.mjs",
+      "d221da1656624cf554158dc4d09199c993c4126ef05ec68a756c215b0a8fba2f",
+    ],
+    canvasEligibility: [
+      "node-eligibility-Cv0dWQeV.mjs",
+      "815455fa32ec86dbe3eb483759cca0f4204643ef519b47179594523c72e67ee4",
+    ],
+  },
+};
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 30_000;
@@ -338,9 +420,14 @@ export function buildMicroclawWindowsNodeShellCommand(command, env = process.env
 
 export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
   'if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("Invalid URL: must be http or https");';
+export const PINNED_WEB_FETCH_HTTP_ONLY_10_5_SOURCE =
+  'if (!parsedUrl || !["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("Invalid URL: must be http or https");';
 
 export function attestPinnedOpenClawWebFetchHttpOnly(source) {
-  if (!source.includes(PINNED_WEB_FETCH_HTTP_ONLY_SOURCE)) {
+  if (
+    !source.includes(PINNED_WEB_FETCH_HTTP_ONLY_SOURCE) &&
+    !source.includes(PINNED_WEB_FETCH_HTTP_ONLY_10_5_SOURCE)
+  ) {
     throw new Error("Pinned OpenClaw web_fetch no longer rejects non-HTTP URL schemes");
   }
   return source;
@@ -509,6 +596,11 @@ export const PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE = `\tconst requestId = ra
 \t\tcommand: params.command,
 \t\tparams: invokeParams
 \t});`;
+export const PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE =
+  PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE.replace(
+    "\t\tparams: invokeParams\n",
+    "\t\tparams: invokeParams,\n\t\tturnSource\n",
+  );
 const PATCHED_NODE_REGISTRY_SERIALIZATION_SOURCE = `\tconst requestId = randomUUID();
 \tlet payloadTimeoutMs = timeoutMs;
 \tlet invokeParams;
@@ -646,8 +738,7 @@ function normalizeSystemRunApprovalPlan(candidate) {
 }`;
 
 export const PINNED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": async ({ params, respond, context, client }) => {
-\t\t\tif (!assertValidParams(params, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;
-\t\t\tconst p = params;`;
+\t\t\tif (!assertValidParams(params, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;`;
 
 export function buildGatewayApprovalOrigin(identity, request, gatewayGeneration) {
   const nonempty = (value) => typeof value === "string" && value.length > 0;
@@ -698,8 +789,14 @@ const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": as
 \t\t\t\t...params,
 \t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess" && name !== "providerInitialization"))
 \t\t\t} : params;
-\t\t\tif (!assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;
-\t\t\tconst p = params;`;
+\t\t\tif (!assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;`;
+
+function withPositionalApprovalGuards(source) {
+  return source.replaceAll(
+    /systemRunApprovalGuardError\(\{\n\t+code: ("[^"]+"),\n\t+message: ("[^"]+"),\n\t+details: \{ runId \}\n\t+\}\)/g,
+    "systemRunApprovalGuardError($1, $2, runId)",
+  );
+}
 
 function replaceExactlyOnce(source, expected, replacement, label) {
   const first = source.indexOf(expected);
@@ -710,6 +807,11 @@ function replaceExactlyOnce(source, expected, replacement, label) {
 }
 
 export function patchPinnedOpenClawNodeGateway(source) {
+  const approvalGuards = source.includes(
+    "function systemRunApprovalGuardError(code, message, runId) {",
+  )
+    ? withPositionalApprovalGuards
+    : (snippet) => snippet;
   let patched = replaceExactlyOnce(
     source,
     PINNED_NODE_GATEWAY_MINT_INSERT_SOURCE,
@@ -718,13 +820,13 @@ export function patchPinnedOpenClawNodeGateway(source) {
   );
   patched = replaceExactlyOnce(
     patched,
-    PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
-    PATCHED_NODE_GATEWAY_APPROVAL_SOURCE,
+    approvalGuards(PINNED_NODE_GATEWAY_APPROVAL_SOURCE),
+    approvalGuards(PATCHED_NODE_GATEWAY_APPROVAL_SOURCE),
     "node approval proof handoff",
   );
   patched = replaceExactlyOnce(
     patched,
-    PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
+    approvalGuards(PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE),
     PATCHED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
     "node ask-fallback approval proof handoff",
   );
@@ -758,16 +860,24 @@ export function patchPinnedOpenClawNodeInvokePluginPolicy(source) {
 }
 
 export function patchPinnedOpenClawNodeRegistryPrivate(source) {
+  const hasTurnSource = source.includes(PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE);
   let patched = replaceExactlyOnce(
     source,
-    PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE,
+    hasTurnSource
+      ? PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE
+      : PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE,
     PATCHED_NODE_REGISTRY_SERIALIZATION_SOURCE,
     "node registry deferred serialization",
   );
   return replaceExactlyOnce(
     patched,
     PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
-    PATCHED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
+    hasTurnSource
+      ? PATCHED_NODE_REGISTRY_PRE_DISPATCH_SOURCE.replace(
+          "\t\tparams: invokeParams\n",
+          "\t\tparams: invokeParams,\n\t\tturnSource\n",
+        )
+      : PATCHED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
     "node registry pre-serialization dispatch callback",
   );
 }
@@ -1812,97 +1922,48 @@ export function validatePinnedOpenClawApprovalPackage(
 
   const canonicalPackageDir = realpathSync(packageDir);
   const packageJson = JSON.parse(readFileSync(join(canonicalPackageDir, "package.json"), "utf8"));
-  if (packageJson.version !== EXPECTED_VERSION) {
+  const modules = Object.hasOwn(PINNED_RELEASE_MODULES, packageJson.version)
+    ? PINNED_RELEASE_MODULES[packageJson.version]
+    : null;
+  if (!modules) {
     throw new Error(
       `Windows Node + MXC approval compatibility requires OpenClaw ${EXPECTED_VERSION}; found ${packageJson.version ?? "unknown"}`,
     );
   }
 
+  const createTarget = (name, patch) => {
+    const [module, sha256] = modules[name];
+    return { module, sha256, patch };
+  };
   const requestedTargets = [];
   if (capabilities.approval) {
     requestedTargets.push(
-      {
-        module: EXPECTED_NODE_GATEWAY_MODULE,
-        sha256: EXPECTED_NODE_GATEWAY_SHA256,
-        patch: patchPinnedOpenClawNodeGateway,
-      },
-      {
-        module: EXPECTED_NODE_INVOKE_PLUGIN_POLICY_MODULE,
-        sha256: EXPECTED_NODE_INVOKE_PLUGIN_POLICY_SHA256,
-        patch: patchPinnedOpenClawNodeInvokePluginPolicy,
-      },
-      {
-        module: EXPECTED_NODE_REGISTRY_PRIVATE_MODULE,
-        sha256: EXPECTED_NODE_REGISTRY_PRIVATE_SHA256,
-        patch: patchPinnedOpenClawNodeRegistryPrivate,
-      },
-      {
-        module: EXPECTED_SYSTEM_RUN_MODULE,
-        sha256: EXPECTED_SYSTEM_RUN_SHA256,
-        patch: patchPinnedOpenClawSystemRun,
-      },
-      {
-        module: EXPECTED_EXEC_APPROVAL_MODULE,
-        sha256: EXPECTED_EXEC_APPROVAL_SHA256,
-        patch: patchPinnedOpenClawExecApproval,
-      },
-      {
-        module: EXPECTED_BASH_TOOLS_MODULE,
-        sha256: EXPECTED_BASH_TOOLS_SHA256,
-        patch: patchPinnedOpenClawBashTools,
-      },
-      {
-        module: EXPECTED_WEB_TOOLS_MODULE,
-        sha256: EXPECTED_WEB_TOOLS_SHA256,
-        patch: attestPinnedOpenClawWebFetchHttpOnly,
-      },
+      createTarget("nodeGateway", patchPinnedOpenClawNodeGateway),
+      createTarget("nodeInvokePluginPolicy", patchPinnedOpenClawNodeInvokePluginPolicy),
+      createTarget("nodeRegistryPrivate", patchPinnedOpenClawNodeRegistryPrivate),
+      createTarget("systemRun", patchPinnedOpenClawSystemRun),
+      createTarget("execApproval", patchPinnedOpenClawExecApproval),
+      createTarget("bashTools", patchPinnedOpenClawBashTools),
+      createTarget("webTools", attestPinnedOpenClawWebFetchHttpOnly),
     );
   }
   if (capabilities.cronResume) {
-    requestedTargets.push({
-      module: EXPECTED_CRON_SERVICE_MODULE,
-      sha256: EXPECTED_CRON_SERVICE_SHA256,
-      patch: patchPinnedOpenClawCronService,
-    });
+    requestedTargets.push(createTarget("cronService", patchPinnedOpenClawCronService));
   }
   if (capabilities.cronPause) {
-    requestedTargets.push({
-      module: EXPECTED_CRON_HANDLERS_MODULE,
-      sha256: EXPECTED_CRON_HANDLERS_SHA256,
-      patch: patchPinnedOpenClawCronHandlers,
-    });
+    requestedTargets.push(createTarget("cronHandlers", patchPinnedOpenClawCronHandlers));
   }
   if (capabilities.hooksPause) {
     requestedTargets.push(
-      {
-        module: EXPECTED_HOOKS_SERVER_MODULE,
-        sha256: EXPECTED_HOOKS_SERVER_SHA256,
-        patch: patchPinnedOpenClawExternalHooks,
-      },
-      {
-        module: EXPECTED_INTERNAL_HOOKS_MODULE,
-        sha256: EXPECTED_INTERNAL_HOOKS_SHA256,
-        patch: patchPinnedOpenClawInternalHooks,
-      },
+      createTarget("hooksServer", patchPinnedOpenClawExternalHooks),
+      createTarget("internalHooks", patchPinnedOpenClawInternalHooks),
     );
   }
   if (capabilities.canvasPhase1) {
     requestedTargets.push(
-      {
-        module: EXPECTED_CANVAS_EXTENSION_MODULE,
-        sha256: EXPECTED_CANVAS_EXTENSION_SHA256,
-        patch: patchPinnedOpenClawCanvasExtension,
-      },
-      {
-        module: EXPECTED_CANVAS_TOOL_MODULE,
-        sha256: EXPECTED_CANVAS_TOOL_SHA256,
-        patch: patchPinnedOpenClawCanvasTool,
-      },
-      {
-        module: EXPECTED_CANVAS_ELIGIBILITY_MODULE,
-        sha256: EXPECTED_CANVAS_ELIGIBILITY_SHA256,
-        patch: patchPinnedOpenClawCanvasEligibility,
-      },
+      createTarget("canvasExtension", patchPinnedOpenClawCanvasExtension),
+      createTarget("canvasTool", patchPinnedOpenClawCanvasTool),
+      createTarget("canvasEligibility", patchPinnedOpenClawCanvasEligibility),
     );
   }
 

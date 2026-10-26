@@ -10,7 +10,7 @@ import {
 vi.mock("./local-model-files", () => ({ inspectLocalModelFiles: vi.fn(() => new Map()) }));
 
 type Row = Record<string, unknown>;
-function fixture() {
+function fixture(githubCopilotEnabled = true) {
   const config: Row = {
     agents: {
       defaults: { model: { primary: "cloud/a", fallbacks: ["cloud/b"] } },
@@ -121,6 +121,7 @@ function fixture() {
   });
   const onRecoveryChanged = vi.fn();
   const service = new SessionModelService({
+    githubCopilotEnabled,
     gateway: () => current,
     readConfig: () => config,
     assertMutable,
@@ -160,7 +161,60 @@ function fixture() {
 
 beforeEach(() => vi.mocked(inspectLocalModelFiles).mockReset().mockReturnValue(new Map()));
 
+describe("disabled GitHub Copilot session models", () => {
+  it("rejects direct selection before making any Gateway request", async () => {
+    const f = fixture(false);
+    await expect(
+      f.service.select({ sessionKey: "chat", modelRef: "github-copilot/gpt-5" }),
+    ).rejects.toThrow("GitHub Copilot is disabled");
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("refuses resetting an override to a disabled inherited model without patching the session", async () => {
+    const f = fixture(false);
+    const agents = f.config.agents as Row;
+    (agents.defaults as Row).model = { primary: "github-copilot/gpt-5" };
+    await expect(f.service.select({ sessionKey: "chat", modelRef: null })).rejects.toThrow(
+      "GitHub Copilot is disabled",
+    );
+    expect(f.patches()).toEqual([]);
+  });
+});
+
 describe("session model reads", () => {
+  it.each(["qwen/qwen3.8-27b", "minimax/MiniMax-M2.5", "llama-cpp/local"])(
+    "uses the same session RPCs for the inherited and selected %s model",
+    async (modelRef) => {
+      const f = fixture();
+      const defaults = (f.config.agents as Row).defaults as Row;
+      defaults.model = { primary: modelRef };
+      await expect(f.service.get("chat")).resolves.toEqual({
+        sessionKey: "agent:main:chat",
+        modelRef,
+        overridden: false,
+      });
+      expect(f.request.mock.calls.map(([method]) => method)).toEqual([
+        "sessions.describe",
+        "config.get",
+        "sessions.list",
+      ]);
+      f.sessions.set("agent:main:chat", {
+        key: "agent:main:chat",
+        agentId: "main",
+        modelProvider: modelRef.slice(0, modelRef.indexOf("/")),
+        model: modelRef.slice(modelRef.indexOf("/") + 1),
+        modelOverrideSource: "user",
+      });
+      await expect(f.service.get("chat")).resolves.toEqual({
+        sessionKey: "agent:main:chat",
+        modelRef,
+        overridden: true,
+      });
+      expect(f.sessions.size).toBe(1);
+      expect(f.patches()).toEqual([]);
+    },
+  );
+
   it("uses the same canonical identity for send/terminal-event chat guards", () => {
     const f = fixture();
     expect(sessionModelChatKey(f.config, "main")).toBe(
@@ -257,7 +311,7 @@ describe("session model selection", () => {
     expect(f.sessions.size).toBe(0);
   });
 
-  it.each(["2026.9.3", "2026.10.2"])(
+  it.each(["2026.9.3", "2026.10.2", "2026.10.3", "2026.10.5"])(
     "selects a configured cloud model on %s with only an official metadata patch",
     async (version) => {
       const f = fixture();

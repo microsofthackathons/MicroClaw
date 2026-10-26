@@ -75,6 +75,7 @@ describe("SettingsView model integration", () => {
       memory: { provider: "existing" },
     };
     const api = createBrowserOpenClawMock();
+    Object.assign(api.features, { githubCopilot: true });
     api.config.read = vi.fn(async () => structuredClone(config));
     write = vi.fn(async (next) => {
       config = structuredClone(next);
@@ -120,6 +121,21 @@ describe("SettingsView model integration", () => {
     await flushPromises();
     return { wrapper, chat: useChatStore(pinia) };
   }
+
+  it("hides disabled Copilot cards and saved models without reading authentication or deleting configuration", async () => {
+    Object.assign(window.openclaw.features, { githubCopilot: false });
+    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
+    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    const original = structuredClone(config);
+    const { wrapper } = await open(true);
+    expect(wrapper.find('[data-provider="github-copilot"]').exists()).toBe(false);
+    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("GitHub Copilot");
+    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(config).toEqual(original);
+  });
 
   it("exposes the shared recovery entry and blocks default changes until saved state is confirmed", async () => {
     const { wrapper } = await open();
@@ -209,7 +225,21 @@ describe("SettingsView model integration", () => {
 
   it("shows a local setup entry even without configured providers and never starts setup on mount", async () => {
     config = {};
+    window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        supported: true,
+        mutable: true,
+        blockers: [],
+        gatewayVersion: "2026.10.3",
+        plugin: { installed: false, enabled: false, canInstall: true },
+      },
+    });
+    const inspectProvider = vi.spyOn(window.openclaw.model.local, "inspectProvider");
+    const installProvider = vi.spyOn(window.openclaw.model.local, "installProvider");
+    const prepare = vi.spyOn(window.openclaw.model.local, "prepare");
     const { wrapper } = await open();
+    expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(false);
     expect(wrapper.find("select.model-picker-select").exists()).toBe(false);
     expect(wrapper.text()).toContain("No model provider configured");
     expect(
@@ -219,6 +249,9 @@ describe("SettingsView model integration", () => {
     expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(true);
     expect(write).not.toHaveBeenCalled();
     expect(wrapper.getComponent(LocalModelSetupDialog).props("inline")).toBe(true);
+    expect(inspectProvider).not.toHaveBeenCalled();
+    expect(installProvider).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it("uses section headings and removes unused compatible API entry points from the overview", async () => {
@@ -267,7 +300,7 @@ describe("SettingsView model integration", () => {
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
   });
 
-  it("shows a connected local provider without weights and offers only 4B and 9B presets", async () => {
+  it("shows a connected local provider without weights and offers all four managed presets", async () => {
     config = {};
     window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
       ok: true,
@@ -297,9 +330,10 @@ describe("SettingsView model integration", () => {
         .findAll("select.model-picker-select option")
         .map((option) => option.attributes("value")),
     ).toEqual(LOCAL_MODEL_PRESETS.map((model) => model.modelRef));
-    await wrapper.get("select.model-picker-select").setValue(LOCAL_MODEL_PRESETS[0].modelRef);
+    expect(LOCAL_MODEL_PRESETS).toHaveLength(4);
+    await wrapper.get("select.model-picker-select").setValue(LOCAL_MODEL_PRESETS[2].modelRef);
     expect(wrapper.getComponent(LocalModelDownloadDialog).props("modelRef")).toBe(
-      LOCAL_MODEL_PRESETS[0].modelRef,
+      LOCAL_MODEL_PRESETS[2].modelRef,
     );
     expect(write).not.toHaveBeenCalled();
   });
@@ -609,7 +643,9 @@ describe("SettingsView model integration", () => {
       expect(card.find(".provider-model-row").exists()).toBe(false);
       expect(card.text()).not.toContain("Saved model one");
       expect(card.text()).not.toContain("Saved model two");
-      expect(card.text()).not.toContain("Remove connection");
+      expect(card.get(`[data-testid="remove-provider-${provider}"]`).text()).toBe(
+        "Remove connection",
+      );
       expect(card.findAll("button").some((button) => button.text() === "Edit")).toBe(false);
       expect(
         wrapper.getComponent({ name: "ModelSetupDialog" }).props("currentProvider"),
@@ -623,6 +659,115 @@ describe("SettingsView model integration", () => {
       expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["qwen", "minimax"])(
+    "removes the last %s connection and its key after confirmation without selecting a fallback",
+    async (provider) => {
+      config.models.providers = {
+        [provider]: {
+          apiKey: "saved-key",
+          models: [{ id: "one" }, { id: "two" }],
+        },
+      };
+      config.agents = {
+        defaults: {
+          model: { primary: `${provider}/one` },
+          models: { [`${provider}/one`]: {}, [`${provider}/two`]: {} },
+        },
+      };
+      const original = structuredClone(config);
+      const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+      const { wrapper } = await open();
+      await wrapper.get(`[data-testid="manage-provider-${provider}"]`).trigger("click");
+      await flushPromises();
+      await wrapper.get(`[data-testid="remove-provider-${provider}"]`).trigger("click");
+      await flushPromises();
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledExactlyOnceWith(config, original);
+      expect(config.models.providers).toEqual({});
+      expect(config.agents.defaults.model).toBeUndefined();
+      expect(config.agents.defaults.models).toBeUndefined();
+      expect(wrapper.get(`[data-provider="${provider}"]`).text()).toContain("Not configured");
+      expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
+      expect(window.openclaw.gateway.restart).toHaveBeenCalledOnce();
+      expect(window.openclaw.model.selectDefault).not.toHaveBeenCalled();
+      expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["cancel", "close"])(
+    "keeps the connection when removal is dismissed with %s",
+    async (action) => {
+      config.models.providers.qwen = { apiKey: "saved-key", models: [{ id: "one" }] };
+      const original = structuredClone(config);
+      vi.spyOn(ElMessageBox, "confirm").mockRejectedValue(action);
+      const error = vi.spyOn(ElMessage, "error");
+      const { wrapper } = await open();
+      await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="remove-provider-qwen"]').trigger("click");
+      await flushPromises();
+      expect(config).toEqual(original);
+      expect(write).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks provider removal during streaming and rechecks before writing", async () => {
+    config.models.providers.qwen = { apiKey: "saved-key", models: [{ id: "one" }] };
+    const original = structuredClone(config);
+    let confirmRemoval!: () => void;
+    vi.spyOn(ElMessageBox, "confirm").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          confirmRemoval = () => resolve("confirm" as never);
+        }),
+    );
+    const { wrapper, chat } = await open();
+    await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    chat.streaming = true;
+    await flushPromises();
+    const remove = wrapper.get('[data-testid="remove-provider-qwen"]');
+    expect(remove.attributes("disabled")).toBeDefined();
+    chat.streaming = false;
+    await flushPromises();
+    await remove.trigger("click");
+    await flushPromises();
+    chat.streaming = true;
+    confirmRemoval();
+    await flushPromises();
+    expect(write).not.toHaveBeenCalled();
+    expect(config).toEqual(original);
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved key and model selection when provider removal fails a stale-write check", async () => {
+    config.models.providers.qwen = { apiKey: "saved-key", models: [{ id: "one" }] };
+    config.agents.defaults.model.primary = "qwen/one";
+    const original = structuredClone(config);
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    write.mockRejectedValueOnce(new Error("Configuration changed; reload before saving"));
+    const error = vi.spyOn(ElMessage, "error");
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="remove-provider-qwen"]').trigger("click");
+    await flushPromises();
+    expect(write.mock.calls[0]![1]).toEqual(original);
+    expect(config).toEqual(original);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("Configuration changed"));
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+  });
+
+  it("does not offer connection removal for unconfigured managed providers", async () => {
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="remove-provider-qwen"]').exists()).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
 
   it("uses accessible arrows to expand and collapse provider editors without duplicate key links", async () => {
     const { wrapper } = await open();
@@ -681,9 +826,9 @@ describe("SettingsView model integration", () => {
       apiKey: "fixture",
       models: [{ id: "saved", name: "Saved" }],
     };
-    window.openclaw.model.discoverModels = vi.fn().mockResolvedValue({
-      ok: true,
-      models: ["saved", "live-one", "live-two"],
+    vi.spyOn(window.openclaw.model, "discoverModels").mockImplementation((input) => {
+      structuredClone(input);
+      return Promise.resolve({ ok: true, models: ["saved", "live-one", "live-two"] });
     });
     const { wrapper } = await open();
     const picker = wrapper.getComponent(DefaultPickerStub);

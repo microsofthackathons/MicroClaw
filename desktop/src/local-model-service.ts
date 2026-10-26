@@ -47,7 +47,7 @@ interface LocalModelDependencies {
 const PROVIDER = "llama-cpp";
 const PREFIX = `${PROVIDER}/`;
 export const LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider";
-export const LOCAL_MODEL_PLUGIN_VERSION = "2026.9.3";
+export const LOCAL_MODEL_PLUGIN_VERSION = "2026.10.5";
 const METHODS = [
   "plugins.list",
   "plugins.inspect",
@@ -168,14 +168,22 @@ export function validateLocalModelUrl(value: unknown): string {
 }
 
 export function supportsLocalModelVersion(version: string | null, minimumPatch = 3): boolean {
+  if (/^2026\.10\.5(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")) return true;
   const match = /^2026\.9\.(\d+)(?:\+[a-zA-Z0-9.-]+)?$/.exec(version ?? "");
   return Boolean(match && Number(match[1]) >= minimumPatch);
 }
 
 export function supportsLocalModelGatewayVersion(version: string | null): boolean {
   return (
-    supportsLocalModelVersion(version) || /^2026\.10\.2(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
+    supportsLocalModelVersion(version) ||
+    /^2026\.10\.(?:2|3|5)(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
   );
+}
+
+function providerVersionForGateway(version: string | null): string {
+  return /^2026\.10\.5(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
+    ? LOCAL_MODEL_PLUGIN_VERSION
+    : "2026.9.3";
 }
 
 export class LocalModelService {
@@ -370,9 +378,10 @@ export class LocalModelService {
       };
     }
     const versionSupported = supportsLocalModelGatewayVersion(gateway.serverVersion);
+    const pluginVersion = providerVersionForGateway(gateway.serverVersion);
     if (!versionSupported) {
       blockers.push(
-        "Local setup requires OpenClaw 2026.10.2 or a supported 2026.9.3+ (2026.9.x) Gateway",
+        "Local setup requires OpenClaw 2026.10.5, 2026.10.3, 2026.10.2 or a supported 2026.9.3+ (2026.9.x) Gateway",
       );
     }
     const missing = METHODS.filter((method) => !gateway.methods.includes(method));
@@ -405,10 +414,16 @@ export class LocalModelService {
             install.source === "official" &&
             install.pluginId === PROVIDER,
         };
-        if (plugin.canInstall) this.installRequest = { source: "official", pluginId: PROVIDER };
-        if (plugin.installed && !supportsLocalModelVersion(plugin.version ?? null)) {
+        if (plugin.canInstall) {
+          this.installRequest = {
+            source: "clawhub",
+            packageName: LOCAL_MODEL_PLUGIN_PACKAGE,
+            version: pluginVersion,
+          };
+        }
+        if (plugin.installed && plugin.version?.split("+", 1)[0] !== pluginVersion) {
           blockers.push(
-            "The installed llama.cpp provider version is not supported (requires 2026.9.3+ in 2026.9.x)",
+            `The installed llama.cpp provider version is not supported (requires ${pluginVersion} for OpenClaw ${gateway.serverVersion})`,
           );
         }
         pluginError = entry.state === "error" || entry.origin === "workspace";
@@ -440,9 +455,9 @@ export class LocalModelService {
         this.installRequest = {
           source: "clawhub",
           packageName: LOCAL_MODEL_PLUGIN_PACKAGE,
-          version: LOCAL_MODEL_PLUGIN_VERSION,
+          version: pluginVersion,
         };
-        plugin = { ...plugin, canInstall: true, version: LOCAL_MODEL_PLUGIN_VERSION };
+        plugin = { ...plugin, canInstall: true, version: pluginVersion };
       }
     }
     if (!resolveInstallSource && !plugin.installed && !plugin.canInstall) {
@@ -462,7 +477,7 @@ export class LocalModelService {
         versionSupported &&
         missing.length === 0 &&
         !pluginError &&
-        (!plugin.installed || supportsLocalModelVersion(plugin.version ?? null)),
+        (!plugin.installed || plugin.version?.split("+", 1)[0] === pluginVersion),
       mutable,
       blockers,
       plugin,
@@ -597,8 +612,8 @@ export class LocalModelService {
       this.reviewedToken = undefined;
       return {
         pluginId: PROVIDER,
-        version: LOCAL_MODEL_PLUGIN_VERSION,
-        source: `ClawHub official: ${LOCAL_MODEL_PLUGIN_PACKAGE}@${LOCAL_MODEL_PLUGIN_VERSION}`,
+        version: text(this.installRequest.version),
+        source: `ClawHub official: ${LOCAL_MODEL_PLUGIN_PACKAGE}@${text(this.installRequest.version)}`,
         capabilities: {},
       };
     }
@@ -675,7 +690,7 @@ export class LocalModelService {
         const widened = optionalRecord(details.widened);
         this.pendingReview = {
           pluginId: PROVIDER,
-          version: LOCAL_MODEL_PLUGIN_VERSION,
+          version: providerVersionForGateway(this.gateway().serverVersion),
           source: "Official llama.cpp provider (staged capability review)",
           capabilities: Object.fromEntries(
             Object.entries(widened).map(([key, value]) => [
@@ -709,7 +724,7 @@ export class LocalModelService {
           : text(params.modelRef)
         : undefined;
     if (modelRef && !isManagedLocalModel(modelRef))
-      throw new Error("Only the managed Qwen3.5 4B and 9B presets can be prepared");
+      throw new Error("Only models in the managed ModelScope catalog can be prepared");
     this.assertIdle();
     this.mutationPending = true;
     try {

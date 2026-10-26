@@ -201,6 +201,9 @@ var isLauncherConfigured =
   !isAuthorizedInternalOwnershipWorker;
 
 if (isLauncherConfigured) {
+  require(path.join(__dirname, "sandbox-host-runtime.js")).initialize(
+    process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR,
+  );
   var S = require(path.join(__dirname, "sandbox-state.js"));
   var fsMod = require("fs");
   var cp = require("child_process");

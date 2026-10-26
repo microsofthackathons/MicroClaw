@@ -128,6 +128,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
 import { mergeGitHubCopilotModelEntries } from "@/utils/auth-managed-models";
+import { isGitHubCopilotEnabled, isModelProviderEnabled } from "@/utils/model-features";
 import { getModelRef, readConfiguredModels, type ConfiguredModel } from "@/utils/configured-models";
 import type { LocalModelFileStatus } from "../../../../src/local-model-types";
 import type { SessionModelRecovery, SessionModelState } from "../../../../src/session-model-types";
@@ -310,6 +311,7 @@ async function refreshCatalog() {
     const catalogInputs = readConfiguredCatalogs(rawConfig);
     if (!current()) return;
     const loadCopilot = async () => {
+      if (!isGitHubCopilotEnabled()) return [];
       const status = await window.openclaw.model.getGitHubCopilotStatus();
       return current() && status.authenticated
         ? window.openclaw.model.listGitHubCopilotModels()
@@ -328,7 +330,7 @@ async function refreshCatalog() {
     const errors: string[] = [];
     const report = (cause: unknown) =>
       errors.push(cause instanceof Error ? cause.message : String(cause));
-    let nextModels = config.models;
+    let nextModels = config.models.filter((model) => isModelProviderEnabled(model.providerKey));
     let nextCatalog: LocalModelCatalogEntry[] = [];
     const nextFiles = new Map<string, LocalModelFileStatus | "not-downloaded">();
     let filesKnown = false;

@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 import unittest.mock
 import weakref
@@ -325,6 +326,117 @@ class DurabilityHelperTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_windows_move_file_ex_retries_transient_lock_errors(self) -> None:
+        kernel32 = unittest.mock.MagicMock()
+        kernel32.MoveFileExW.side_effect = [False, False, True]
+        source = Path(r"C:\upgrade\source")
+        destination = Path(r"C:\upgrade\destination")
+        with (
+            unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+            unittest.mock.patch("ctypes.get_last_error", side_effect=[5, 32], create=True),
+            unittest.mock.patch.object(upgrade.time, "sleep") as sleep,
+        ):
+            upgrade._windows_move_file(source, destination, replace=False)
+        self.assertEqual(kernel32.MoveFileExW.call_count, 3)
+        sleep.assert_has_calls([unittest.mock.call(0.05), unittest.mock.call(0.1)])
+        for call in kernel32.MoveFileExW.call_args_list:
+            self.assertEqual(
+                call.args,
+                (
+                    str(upgrade._native_io_path(source)),
+                    str(upgrade._native_io_path(destination)),
+                    0x8,
+                ),
+            )
+
+    def test_windows_move_file_ex_permanent_denial_is_bounded_and_names_both_paths(self) -> None:
+        kernel32 = unittest.mock.MagicMock()
+        kernel32.MoveFileExW.return_value = False
+        source = Path(r"C:\upgrade\source")
+        destination = Path(r"C:\upgrade\destination")
+        error = PermissionError(errno.EACCES, "Access is denied")
+        error.winerror = 5
+        with (
+            unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+            unittest.mock.patch("ctypes.get_last_error", return_value=5, create=True),
+            unittest.mock.patch("ctypes.WinError", return_value=error, create=True),
+            unittest.mock.patch.object(upgrade.time, "sleep") as sleep,
+            self.assertRaises(PermissionError) as caught,
+        ):
+            upgrade._windows_move_file(source, destination, replace=False)
+        self.assertEqual(kernel32.MoveFileExW.call_count, 8)
+        self.assertEqual(sleep.call_count, 7)
+        self.assertEqual(caught.exception.winerror, 5)
+        self.assertEqual(caught.exception.filename, str(source))
+        self.assertEqual(caught.exception.filename2, str(destination))
+        self.assertIn(repr(str(source)), str(caught.exception))
+        self.assertIn(repr(str(destination)), str(caught.exception))
+
+    def test_windows_move_file_ex_does_not_retry_unrelated_errors(self) -> None:
+        for winerror in (2, 3, 17, 80, 183):
+            with self.subTest(winerror=winerror):
+                kernel32 = unittest.mock.MagicMock()
+                kernel32.MoveFileExW.return_value = False
+                error = OSError(errno.EIO, "move failed")
+                error.winerror = winerror
+                with (
+                    unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+                    unittest.mock.patch(
+                        "ctypes.get_last_error", return_value=winerror, create=True
+                    ),
+                    unittest.mock.patch("ctypes.WinError", return_value=error, create=True),
+                    unittest.mock.patch.object(upgrade.time, "sleep") as sleep,
+                    self.assertRaises(OSError),
+                ):
+                    upgrade._windows_move_file(Path("source"), Path("destination"), replace=True)
+                kernel32.MoveFileExW.assert_called_once()
+                sleep.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows file sharing behavior")
+    def test_windows_directory_publication_waits_for_open_descendant_file(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "backup.staging"
+            destination = root / "backup"
+            source.mkdir()
+            payload = source / "installer.bin"
+            payload.write_bytes(b"backup-payload")
+            handle = kernel32.CreateFileW(str(payload), 0x80000000, 0x3, None, 3, 0x80, None)
+            self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+            closed = threading.Event()
+
+            def release() -> None:
+                if not closed.is_set():
+                    kernel32.CloseHandle(handle)
+                    closed.set()
+
+            timer = threading.Timer(0.25, release)
+            timer.start()
+            try:
+                upgrade._durable_rename(source, destination)
+            finally:
+                timer.cancel()
+                timer.join(timeout=5)
+                release()
+            self.assertFalse(source.exists())
+            self.assertEqual((destination / "installer.bin").read_bytes(), b"backup-payload")
 
     @unittest.skipUnless(os.name == "nt", "Windows extended path behavior")
     def test_native_io_path_uses_extended_windows_syntax(self) -> None:

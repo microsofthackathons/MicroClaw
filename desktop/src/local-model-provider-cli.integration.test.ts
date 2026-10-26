@@ -22,7 +22,7 @@ it.skipIf(!entry || process.env.MICROCLAW_TEST_INSTALL_LOCAL_PROVIDER !== "1")(
         [
           "plugins",
           "install",
-          "clawhub:@openclaw/llama-cpp-provider@2026.9.3",
+          "clawhub:@openclaw/llama-cpp-provider@2026.10.5",
           "--accept-capabilities",
         ],
         ["plugins", "enable", "llama-cpp", "--accept-capabilities"],
@@ -61,7 +61,7 @@ it.skipIf(!entry || process.env.MICROCLAW_TEST_INSTALL_LOCAL_PROVIDER !== "1")(
         readFileSync(path.join(root, "extensions", "llama-cpp", "package.json"), "utf8"),
       );
       expect(pkg.name).toBe("@openclaw/llama-cpp-provider");
-      expect(pkg.version).toBe("2026.9.3");
+      expect(pkg.version).toBe("2026.10.5");
       expect(readdirSync(root).includes("models")).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

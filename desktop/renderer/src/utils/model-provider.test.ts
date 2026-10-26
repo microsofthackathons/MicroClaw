@@ -6,6 +6,7 @@ import {
   mergeModelProviderConfig,
   normalizeModelInput,
   removeModelProviderConfig,
+  removeProviderConnectionConfig,
   resolveApiValue,
   selectPrimaryModelConfig,
   updateModelProviderConfig,
@@ -411,6 +412,95 @@ describe("model provider config", () => {
       },
       hooks: { mappings: [{ model: "custom/model-a" }] },
     });
+  });
+});
+
+describe("removing a provider connection", () => {
+  it("removes the last provider and clears its default without choosing a replacement", () => {
+    const existing = {
+      models: {
+        mode: "merge",
+        providers: {
+          qwen: { apiKey: "saved-key", models: [{ id: "one" }, { id: "two" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen/one", fallbacks: ["qwen/two"] },
+          models: { "qwen/one": {}, "qwen/two": {} },
+          workspace: "keep",
+        },
+      },
+      memory: { provider: "keep" },
+    };
+    const original = structuredClone(existing);
+    const result = removeProviderConnectionConfig(existing, "qwen");
+    expect(result).toEqual({
+      models: { mode: "merge", providers: {} },
+      agents: { defaults: { workspace: "keep" } },
+      memory: { provider: "keep" },
+    });
+    expect(existing).toEqual(original);
+  });
+
+  it("clears only the provider's model references in both agent layouts", () => {
+    const policy = { allow: ["qwen/one", "other/keep"] };
+    const existing = {
+      models: {
+        providers: {
+          qwen: { apiKey: "${QWEN_API_KEY}", models: [{ id: "one" }] },
+          "qwen-extra": { apiKey: "keep", models: [{ id: "keep" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen-extra/keep", fallbacks: ["qwen/one", "other/keep"] },
+          models: { "qwen/one": {}, "qwen-extra/keep": { alias: "keep" } },
+          modelPolicy: policy,
+        },
+        list: [
+          { id: "first", model: "qwen/one" },
+          { id: "second", model: "other/keep" },
+        ],
+        entries: {
+          main: { model: { primary: "qwen/one", fallbacks: ["other/keep"] } },
+          other: { model: "other/keep" },
+        },
+      },
+      auth: { profiles: { external: { provider: "qwen", mode: "api_key" } } },
+      hooks: { mappings: [{ model: "qwen/one" }] },
+    };
+    const result = removeProviderConnectionConfig(existing, "qwen");
+    expect(result).toEqual({
+      ...existing,
+      models: { providers: { "qwen-extra": existing.models.providers["qwen-extra"] } },
+      agents: {
+        defaults: {
+          model: { primary: "qwen-extra/keep", fallbacks: ["other/keep"] },
+          models: { "qwen-extra/keep": { alias: "keep" } },
+          modelPolicy: policy,
+        },
+        list: [{ id: "first" }, { id: "second", model: "other/keep" }],
+        entries: {
+          main: { model: { fallbacks: ["other/keep"] } },
+          other: { model: "other/keep" },
+        },
+      },
+    });
+  });
+
+  it("removes credentials even if no models have been saved", () => {
+    const result = removeProviderConnectionConfig(
+      { models: { providers: { qwen: { apiKey: "saved-key", models: [] } } } },
+      "qwen",
+    );
+    expect(result.models).toEqual({ providers: {} });
+  });
+
+  it("rejects removal of a provider that is no longer configured", () => {
+    expect(() => removeProviderConnectionConfig({}, "qwen")).toThrow(
+      'Provider "qwen" is not configured',
+    );
   });
 });
 

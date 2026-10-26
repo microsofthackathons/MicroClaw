@@ -51,7 +51,6 @@ export default {
   "sidebar.tagline": "Weave the future through conversation",
   "sidebar.usageSnapshotTitle": "Usage",
   "sidebar.usageSnapshotViewDetails": "Details",
-  "sidebar.usageSnapshotSpend": "Spend",
   "sidebar.usageSnapshotTokens": "Tokens",
   "sidebar.usageSnapshotRequests": "Requests",
   "sidebar.usageSnapshotHealth": "Health",
@@ -136,7 +135,7 @@ export default {
   "chat.editCancel": "Cancel",
   "chat.composeHint": "MicroClaw is secured with end-to-end encryption. Press Enter to send.",
   "chat.disclaimer":
-    "AI-generated content may be incorrect. AI is not a human and has no personality. Microsoft is not responsible for any AI-generated content.",
+    "AI-generated content may be incorrect. AI is not a human and has no personality. MicroClaw is not responsible for any AI-generated content.",
   "chat.executionSteps": "Execution Steps",
   "chat.activityWaitingApproval": "Waiting for approval",
   "chat.activityRunningTool": "Running tool",
@@ -156,6 +155,9 @@ export default {
   "chat.error.openSettings": "Open Model Settings",
   "chat.error.dismiss": "Dismiss",
   "chat.error.showDetails": "Show error details",
+  "chat.error.agent_initializing.title": "Preparing conversation data",
+  "chat.error.agent_initializing.hint":
+    "OpenClaw is running background checks. We will retry automatically. You can keep editing; your draft will be kept, not sent automatically. No model settings changes are needed.",
   "chat.error.not_found.title": "Model endpoint returned 404 Not Found",
   "chat.error.not_found.hint":
     "The Base URL appears to be incorrect or the path is wrong. Check the Base URL in Model Settings (e.g. it should usually end with /v1 for OpenAI-compatible providers).",
@@ -713,17 +715,21 @@ export default {
   "modelManager.configure": "Manage",
   "modelManager.add": "Configure",
   "modelManager.edit": "Edit",
+  "modelManager.removeProviderTitle": "Remove model connection",
+  "modelManager.removeProviderConfirm":
+    "Remove the {provider} connection, its saved API key, and model configuration? Related default and agent model selections will also be cleared. Conversations will stay, and no other model will be selected automatically. External environment variables and authentication credentials will not be deleted.",
+  "modelManager.providerRemoved": "Model connection removed",
   "modelManager.notConfigured": "Not configured",
   "modelManager.localHint":
-    "Qwen3.5 4B and 9B on this computer. Confirm the download on first use.",
+    "Qwen3.5 4B, 9B, 35B-A3B and Qwen3.8 27B. Models download from ModelScope on demand.",
   "fixedLocal.downloadConsent":
-    "Prepare this exact model and any missing components? Your current model stays selected until preparation succeeds.",
+    "Download this model and embeddings from ModelScope, and prepare missing runtime components? Your current model stays selected until preparation succeeds.",
   "fixedLocal.modelDownload": "Model download",
   "fixedLocal.embeddingDownload": "Embedding download",
   "fixedLocal.runtimeSpace": "Runtime disk reserve",
   "fixedLocal.execution": "Execution",
   "fixedLocal.cpuWarning":
-    "CPU inference can be slow, especially with 9B. 4B is the lightweight choice.",
+    "Larger models need more memory and can be slow on CPU. 4B is the lightweight choice.",
   "fixedLocal.downloadAndUse": "Download and select",
   "fixedLocal.selecting": "Applying model selection...",
   "fixedLocal.confirming": "Starting the confirmed download...",
@@ -732,7 +738,8 @@ export default {
   "fixedLocal.preparing": "Preparing the selected model...",
   "fixedLocal.downloading": "Downloading / preparing",
   "fixedLocal.cached": "Already available",
-  "fixedLocal.unsupportedModel": "Only the Qwen3.5 4B and 9B managed presets are supported.",
+  "fixedLocal.unsupportedModel":
+    "Choose a managed model from the list. Models download only from ModelScope.",
   "fixedLocal.providerRequired":
     "Enable the official local provider in model settings before preparing a model.",
   "fixedLocal.agentRequired": "Select an agent conversation before preparing a local model.",
@@ -742,7 +749,7 @@ export default {
   "fixedLocal.lightweight": "Lightweight",
   "fixedLocal.prepareModel": "Prepare",
   "fixedLocal.connectedHint":
-    "The provider is connected. Select 4B or 9B from the model list; weights download only after confirmation.",
+    "The provider is connected. Select a model and confirm before downloading its weights from ModelScope.",
   "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
   "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
   "modelManager.apiKeyHint": "Expand to get an API key and configure the connection.",
@@ -857,7 +864,7 @@ export default {
     "Compatibility is checked before use. Runtime components are an additional download.",
   "localModel.startDownload": "Start download",
   "localModel.notNow": "Not now",
-  "localModel.prepareIntro": "Choose Qwen3.5 4B or 9B from the model list.",
+  "localModel.prepareIntro": "Choose a model from the list and confirm its ModelScope download.",
   "localModel.preparedHint":
     "The model is prepared. Select it as the default without an AI connection test.",
   "localModel.useModel": "Start using",
@@ -988,15 +995,13 @@ export default {
   "localModel.removalNotice":
     "Removing a connection does not delete model files, caches, or the runtime. Select another default before removing the active local model.",
   "modelSetup.title": "Set Up Model",
-  "modelSetup.selectDesc":
-    "Choose a guided provider, connect an account, or configure any compatible model endpoint.",
+  "modelSetup.selectDesc": "Choose Qwen, MiniMax, or a local model to get started.",
   "modelSetup.keyDesc": "Enter your model details and API key to start using MicroClaw.",
   "modelSetup.customDesc": "Configure any compatible model endpoint.",
   "modelSetup.copilotDesc":
     "Connect GitHub Copilot with GitHub's secure device login, then choose a model available to your account.",
   "modelSetup.githubCopilot": "GitHub Copilot",
-  "modelSetup.otherModel": "Other model",
-  "modelSetup.configureCustom": "Configure custom provider",
+  "modelSetup.customProvider": "Custom provider",
   "modelSetup.getApiKey": "Get API Key",
   "modelSetup.openProviderFailed": "Could not open the provider website: {error}",
   "modelSetup.haveApiKey": "I already have an API Key",
@@ -1187,6 +1192,12 @@ export default {
   "usage.tokenOutput": "Output",
   "usage.tokenCache": "Cache Read",
   "usage.tokenToday": "Today",
+  "usage.sourceSession": "Sessions (chat, heartbeat, etc.)",
+  "usage.sourceMemory": "Background memory processing",
+  "usage.sourceBackground": "Other independent background calls",
+  "usage.accountingHint":
+    "Session usage plus recorded independent background calls. Background history can only be recovered from retained logs; provider billing is authoritative.",
+  "usage.backgroundUnavailable": "Background usage is unavailable; totals may be incomplete.",
   "usage.requestsLabel": "requests",
   "usage.sessionsLabel": "sessions",
   "usage.toolCallsLabel": "tool calls",

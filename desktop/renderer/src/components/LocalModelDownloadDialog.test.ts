@@ -87,9 +87,9 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
-async function open(sessionKey: string | null = "agent:main:one") {
+async function open(sessionKey: string | null = "agent:main:one", selectedModelRef = modelRef) {
   const wrapper = mount(LocalModelDownloadDialog, {
-    props: { modelRef, sessionKey: sessionKey ?? undefined, streaming: false },
+    props: { modelRef: selectedModelRef, sessionKey: sessionKey ?? undefined, streaming: false },
     global: { stubs: { teleport: true } },
   });
   wrappers.push(wrapper);
@@ -97,6 +97,23 @@ async function open(sessionKey: string | null = "agent:main:one") {
   return wrapper;
 }
 describe("fixed local model first-use dialog", () => {
+  it.each(LOCAL_MODEL_PRESETS.slice(2))(
+    "shows exact $name and ModelScope consent before starting downloads",
+    async (model) => {
+      active.modelRef = model.modelRef;
+      active.download = {
+        ...active.download!,
+        modelRef: model.modelRef,
+        modelName: model.name,
+        modelBytes: model.downloadBytes,
+      };
+      const wrapper = await open("agent:main:one", model.modelRef);
+      expect(wrapper.text()).toContain(model.name);
+      expect(wrapper.text()).toContain("ModelScope");
+      expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
+      expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
+    },
+  );
   it.each(["session", "default"])(
     "never mounts a modal during slow metadata or prepared %s selection",
     async (scope) => {
@@ -377,7 +394,7 @@ describe("fixed local model first-use dialog", () => {
       agentId: "main",
     });
     expect(wrapper.text()).toContain("2.7 GB");
-    expect(wrapper.text()).toContain("CPU inference can be slow");
+    expect(wrapper.text()).toContain("Larger models need more memory");
     expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
     await wrapper.get('[data-testid="confirm-local-download"]').trigger("click");

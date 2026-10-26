@@ -5,13 +5,97 @@ import { registerHooks } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 
-export const PINNED_LOCAL_PLUGIN_VERSION = "2026.9.3";
+export const PINNED_LOCAL_PLUGIN_VERSION = "2026.10.5";
 export const PINNED_LOCAL_PLUGIN_SHA256 =
-  "0092cdf1656a013d6028f5e238eaf21fb41b1459facde3a3ea563a7567a846aa";
+  "8c782ef30d528be1a7b57f80d9cfd30b18d52087452f98168894d2da387519e9";
+export const PINNED_LOCAL_CONFIG_FILE = ".setup/defaults-ATX0SyoG.mjs";
+export const PINNED_LOCAL_CONFIG_SHA256 =
+  "252d8fb7bb99a6d103e25f7cdb83f86e1bbf305448193014c4af4ef3c2d6f113";
+const LOCAL_PLUGIN_RELEASES = {
+  [PINNED_LOCAL_PLUGIN_VERSION]: {
+    entrySha256: PINNED_LOCAL_PLUGIN_SHA256,
+    configFile: PINNED_LOCAL_CONFIG_FILE,
+    configSha256: PINNED_LOCAL_CONFIG_SHA256,
+  },
+  "2026.9.3": {
+    entrySha256: "0092cdf1656a013d6028f5e238eaf21fb41b1459facde3a3ea563a7567a846aa",
+    configFile: "managed-provider-config-D9X1wNEo.js",
+    configSha256: "a42f1683c1c262a42f7967ede540e89398e5c626290c77ffa36292dbfa4191b0",
+  },
+};
 export const EXACT_MODEL_SELECTION_PROMPT = "MicroClaw: select the exact local model";
 export const EXACT_MODEL_DOWNLOAD_PROMPT = "MicroClaw: confirm the exact local model download";
+export const MICROCLAW_LOCAL_MODEL_SOURCES = JSON.parse(
+  readFileSync(new URL("./local-model-sources.json", import.meta.url), "utf8"),
+);
+
+export function modelScopeModelUrl(model) {
+  return `https://modelscope.cn/api/v1/models/${model.repository}/repo?Revision=${model.revision}&FilePath=${encodeURIComponent(model.file)}`;
+}
+
+export function modelScopeArtifact(source) {
+  const model = [
+    ...MICROCLAW_LOCAL_MODEL_SOURCES.models,
+    MICROCLAW_LOCAL_MODEL_SOURCES.embedding,
+  ].find((entry) => modelScopeModelUrl(entry) === source || entry.legacySources.includes(source));
+  if (!model) return undefined;
+  return {
+    fileName: model.cacheFile,
+    url: modelScopeModelUrl(model),
+    expectedSize: model.downloadBytes,
+    expectedSha256: model.sha256,
+  };
+}
+
+export function resolveModelScopeSource(source) {
+  const artifact = modelScopeArtifact(source);
+  if (artifact) return artifact.url;
+  if (/^(?:https?|hf|huggingface):/iu.test(source)) {
+    throw new Error(
+      "Managed model downloads require a pinned ModelScope source; no fallback is allowed.",
+    );
+  }
+  return source;
+}
+
+export function modelScopeDownloadPolicy(url, policy) {
+  const parsed = new URL(url);
+  if (parsed.hostname === "modelscope.cn" && parsed.pathname.startsWith("/api/v1/models/")) {
+    return { ...policy, hostnameAllowlist: ["modelscope.cn", "*.modelscope.cn"] };
+  }
+  return policy;
+}
+
+const MODEL_SCOPE_SOURCE_HELPERS = `const MICROCLAW_LOCAL_MODEL_SOURCES = ${JSON.stringify(MICROCLAW_LOCAL_MODEL_SOURCES)};
+${modelScopeModelUrl.toString()}
+${modelScopeArtifact.toString()}
+${resolveModelScopeSource.toString()}
+${modelScopeDownloadPolicy.toString()}
+`;
+
+export const MODEL_SCOPE_RECIPES = `const LLAMA_CPP_MODEL_RECIPES = MICROCLAW_LOCAL_MODEL_SOURCES.models.map(entry => ({
+  model: {
+    id: entry.modelRef.slice("llama-cpp/".length),
+    name: entry.name,
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: DEFAULT_LLAMA_CPP_CONTEXT_SIZE,
+    contextTokens: DEFAULT_LLAMA_CPP_CONTEXT_SIZE,
+    maxTokens: 16384,
+    params: { modelPath: modelScopeModelUrl(entry), contextSize: DEFAULT_LLAMA_CPP_CONTEXT_SIZE },
+    compat: { supportsTools: true, supportsUsageInStreaming: true, toolSchemaProfile: "llamacpp" }
+  },
+  sizeBytes: entry.downloadBytes,
+  memoryBytes: entry.memoryGiB * GIB,
+  minimumSystemMemoryBytes: entry.minimumSystemGiB * GIB,
+  requiresAcceleration: entry.requiresAcceleration,
+  artifact: modelScopeArtifact(modelScopeModelUrl(entry))
+}));
+`;
 
 // Official artifact verification and persistence remain owned by OpenClaw.
 // The adapter adds exact model selection and bounded Windows runtime publication retries.
@@ -78,7 +162,7 @@ export async function publishLlamaRuntime(fs, sourcePath, targetPath, signal) {
 }
 
 export const EXACT_SETUP_PLAN = `async function resolveSetupPlan(ctx, candidates, embeddingModelIsDefault, localMemoryIntent, hardware, asset, runtimeNote) {
-  const presets = ["qwen3.5-4b-q4_k_m", "qwen3.5-9b-q4_k_m"].map(id => {
+  const presets = ${JSON.stringify(MICROCLAW_LOCAL_MODEL_SOURCES.models.map((model) => model.modelRef.slice("llama-cpp/".length)))}.map(id => {
     const recipe = LLAMA_CPP_MODEL_RECIPES.find(item => item.model.id === id);
     if (!recipe) throw new Error("The pinned local model catalog is unavailable.");
     return recipe;
@@ -145,14 +229,157 @@ function replaceExactly(source, before, after) {
   return source.slice(0, index) + after + source.slice(index + before.length);
 }
 
+function replaceSection(source, startMarker, endMarker, replacement) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0) throw new Error("The pinned ModelScope adapter section is unavailable");
+  return source.slice(0, start) + replacement + source.slice(end);
+}
+
+export function patchLocalModelConfig(source) {
+  const digest = createHash("sha256").update(source).digest("hex");
+  const legacy = digest === LOCAL_PLUGIN_RELEASES["2026.9.3"].configSha256;
+  if (!legacy && digest !== PINNED_LOCAL_CONFIG_SHA256) {
+    throw new Error("The llama.cpp config differs from the pinned ModelScope source");
+  }
+  const model = MICROCLAW_LOCAL_MODEL_SOURCES.models[0];
+  const embedding = MICROCLAW_LOCAL_MODEL_SOURCES.embedding;
+  const constants = {
+    DEFAULT_LLAMA_CPP_MODEL_ID: model.modelRef.slice("llama-cpp/".length),
+    DEFAULT_LLAMA_CPP_MODEL_URI: modelScopeModelUrl(model),
+    DEFAULT_LLAMA_CPP_MODEL_REVISION: model.revision,
+    DEFAULT_LLAMA_CPP_MODEL_CACHE_FILE: model.cacheFile,
+    DEFAULT_LLAMA_CPP_MODEL_SIZE_BYTES: model.downloadBytes,
+    DEFAULT_LLAMA_CPP_MODEL_SHA256: model.sha256,
+    DEFAULT_LLAMA_CPP_EMBEDDING_MODEL: modelScopeModelUrl(embedding),
+    DEFAULT_LLAMA_CPP_EMBEDDING_MODEL_REVISION: embedding.revision,
+  };
+  let patched = source;
+  for (const [name, value] of Object.entries(constants)) {
+    const declaration = source.match(new RegExp(`const ${name} = [^;]+;`, "u"))?.[0];
+    if (!declaration) throw new Error("The pinned local provider defaults are unavailable");
+    patched = replaceExactly(patched, declaration, `const ${name} = ${JSON.stringify(value)};`);
+  }
+  patched = replaceSection(
+    patched,
+    "function resolveLlamaCppEmbeddingModel(",
+    "function resolveHomePath(",
+    `function resolveLlamaCppEmbeddingModel(local = {}) {
+  const source = resolveModelScopeSource(normalizeOptionalString(local.modelPath) ?? DEFAULT_LLAMA_CPP_EMBEDDING_MODEL);
+  const cacheDir = normalizeOptionalString(local.modelCacheDir) ?? resolveLlamaCppModelCacheDir();
+  const resolvedPath = /^https:/iu.test(source) ? undefined : path.resolve(cacheDir, source);
+  return {
+    source,
+    cacheDir,
+    isDefault: source === DEFAULT_LLAMA_CPP_EMBEDDING_MODEL ||
+      resolvedPath === path.resolve(cacheDir, DEFAULT_LLAMA_CPP_EMBEDDING_CACHE_FILE) ||
+      resolvedPath === path.resolve(resolveLegacyLlamaCppModelCacheDir(), DEFAULT_LLAMA_CPP_EMBEDDING_CACHE_FILE)
+  };
+}
+`,
+  );
+  patched = replaceExactly(
+    patched,
+    "return resolveHomePath(configured.trim());",
+    "return resolveModelScopeSource(resolveHomePath(configured.trim()));",
+  );
+  patched = replaceExactly(
+    patched,
+    'return model.id === "gemma-4-e4b-it-q4_k_m" ? DEFAULT_LLAMA_CPP_MODEL_URI : resolveHomePath(model.id);',
+    "return model.id === DEFAULT_LLAMA_CPP_MODEL_ID ? DEFAULT_LLAMA_CPP_MODEL_URI : resolveModelScopeSource(resolveHomePath(model.id));",
+  );
+  patched = replaceSection(
+    patched,
+    "function resolveCachedLlamaCppModelPath(",
+    legacy ? "function buildDefaultLlamaCppModel(" : "function buildLlamaCppModel(",
+    `function resolveCachedLlamaCppModelPath(params) {
+  const source = resolveLlamaCppModelSource(params.model);
+  const cacheDir = resolveLlamaCppModelCacheDir(params.provider);
+  const artifact = modelScopeArtifact(source);
+  if (artifact) return path.join(cacheDir, artifact.fileName);
+  return path.isAbsolute(source) ? source : path.resolve(cacheDir, source);
+}
+`,
+  );
+  patched = replaceExactly(
+    patched,
+    'name: "Gemma 4 E4B (Q4_K_M)"',
+    `name: ${JSON.stringify(model.name)}`,
+  );
+  patched = replaceExactly(
+    patched,
+    legacy ? "reasoning: false" : "reasoning: model.reasoning ?? false",
+    legacy ? "reasoning: true" : "reasoning: model.reasoning ?? true",
+  );
+  patched = replaceExactly(
+    patched,
+    legacy ? "maxTokens: 2048" : "maxTokens: model.maxTokens ?? 2048",
+    legacy ? "maxTokens: 16384" : "maxTokens: model.maxTokens ?? 16384",
+  );
+  return MODEL_SCOPE_SOURCE_HELPERS + patched;
+}
+
 export function patchLocalModelPlugin(source) {
-  if (createHash("sha256").update(source).digest("hex") !== PINNED_LOCAL_PLUGIN_SHA256) {
+  const digest = createHash("sha256").update(source).digest("hex");
+  const legacy = digest === LOCAL_PLUGIN_RELEASES["2026.9.3"].entrySha256;
+  if (!legacy && digest !== PINNED_LOCAL_PLUGIN_SHA256) {
     throw new Error("The llama.cpp provider differs from the pinned exact-model setup source");
   }
   const start = source.indexOf("async function resolveSetupPlan(");
   const end = source.indexOf("async function runLlamaCppSetup(ctx) {", start);
   if (start < 0 || end < 0) throw new Error("The pinned model selection function is unavailable");
   let patched = source.slice(0, start) + EXACT_SETUP_PLAN + source.slice(end);
+  patched = replaceSection(
+    patched,
+    "function modelRecipe(",
+    "function resolveLlamaCppCatalogArtifact(",
+    legacy
+      ? MODEL_SCOPE_RECIPES
+      : MODEL_SCOPE_RECIPES.replaceAll("DEFAULT_LLAMA_CPP_CONTEXT_SIZE", "65536"),
+  );
+  patched = replaceSection(
+    patched,
+    "function parseHuggingFaceSource(",
+    "async function assertGguf(",
+    `function defaultArtifact(source) {
+  return modelScopeArtifact(source);
+}
+`,
+  );
+  patched = replaceSection(
+    patched,
+    "async function resolveModelArtifact(",
+    legacy ? "async function ensureLlamaCppModel(" : "async function resolveCachedModelArtifact(",
+    `async function resolveModelArtifact(source) {
+  const artifact = modelScopeArtifact(source);
+  if (!artifact) throw new Error("Managed model downloads require a pinned ModelScope source; no fallback is allowed.");
+  return artifact;
+}
+`,
+  );
+  patched = replaceExactly(
+    patched,
+    "const localSource = resolveHomePath(params.source);",
+    "const localSource = resolveModelScopeSource(resolveHomePath(params.source));",
+  );
+  patched = replaceExactly(
+    patched,
+    "policy: ssrfPolicyFromHttpBaseUrlAllowedOrigin(params.url),",
+    "policy: modelScopeDownloadPolicy(params.url, ssrfPolicyFromHttpBaseUrlAllowedOrigin(params.url)),",
+  );
+  patched = replaceExactly(
+    patched,
+    'resolveLlamaCppModelSource(params.model) === "hf:unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"',
+    "resolveLlamaCppModelSource(params.model) === DEFAULT_LLAMA_CPP_MODEL_URI",
+  );
+  if (legacy) {
+    patched = replaceExactly(
+      patched,
+      'embeddingModel.source !== "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf"',
+      "embeddingModel.source !== DEFAULT_LLAMA_CPP_EMBEDDING_MODEL",
+    );
+  }
+  patched = MODEL_SCOPE_SOURCE_HELPERS + patched;
   patched = `import { setTimeout as microclawRuntimeDelay } from "node:timers/promises";
 const publishLlamaRuntime = (({ isAbsolute, resolve, dirname }, delay) =>
   (${publishLlamaRuntime.toString()}))(path, microclawRuntimeDelay);
@@ -203,34 +430,43 @@ export function createLocalModelCompatibilityLoadHook(
   const providerStateDir = stateDir ?? dirname(dirname(pluginDir));
   if (!providerStateDir || !isAbsolute(providerStateDir))
     throw new Error("An absolute OpenClaw state directory is required");
-  const target = join(pluginDir, "dist", "index.js");
   const captureRoot = join(providerStateDir, "tmp", "plugin-captures");
   return function load(url, context, nextLoad) {
     const result = nextLoad(url, context);
     if (!url.startsWith("file:")) return result;
     const filename = fileURLToPath(url);
-    const candidateRoot = dirname(dirname(filename));
+    const entry = [
+      "index.js",
+      ...Object.values(LOCAL_PLUGIN_RELEASES).map((release) => release.configFile),
+    ].find((entry) => filename.endsWith(join("dist", entry)));
+    if (!entry) return result;
+    const target = join(pluginDir, "dist", entry);
+    const candidateRoot = resolve(filename, ...Array(entry.split("/").length + 1).fill(".."));
     const capturedPath = relative(captureRoot, filename);
     const captured =
       capturedPath !== "" &&
       !capturedPath.startsWith("..") &&
       !isAbsolute(capturedPath) &&
-      basename(filename) === "index.js" &&
-      basename(dirname(filename)) === "dist" &&
+      filename === join(candidateRoot, "dist", entry) &&
       basename(candidateRoot) === basename(pluginDir) &&
       basename(dirname(candidateRoot)) === "node_modules";
     if (filename !== target && !captured) return result;
 
+    let installedVersion;
     for (const root of new Set([pluginDir, candidateRoot])) {
       const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+      const release = LOCAL_PLUGIN_RELEASES[metadata.version];
       if (
         metadata.name !== "@openclaw/llama-cpp-provider" ||
-        metadata.version !== PINNED_LOCAL_PLUGIN_VERSION
+        !release ||
+        (entry !== "index.js" && entry !== release.configFile) ||
+        (installedVersion !== undefined && metadata.version !== installedVersion)
       ) {
         throw new Error("Exact model setup requires the pinned official llama.cpp provider");
       }
-      const entry = join(root, "dist", "index.js");
-      if (realpathSync(entry) !== entry)
+      installedVersion = metadata.version;
+      const entryPath = join(root, "dist", entry);
+      if (realpathSync(entryPath) !== entryPath)
         throw new Error("The local provider entry must not be redirected");
     }
     const source =
@@ -239,7 +475,14 @@ export function createLocalModelCompatibilityLoadHook(
         : Buffer.from(result.source ?? "").toString();
     if (captured && source !== readFileSync(target, "utf8"))
       throw new Error("The captured local provider differs from its installed source");
-    return { ...result, source: patchLocalModelPlugin(source) };
+    const release = LOCAL_PLUGIN_RELEASES[installedVersion];
+    const expectedSha256 = entry === "index.js" ? release.entrySha256 : release.configSha256;
+    if (createHash("sha256").update(source).digest("hex") !== expectedSha256)
+      throw new Error("The local provider source differs from its pinned release");
+    return {
+      ...result,
+      source: entry === "index.js" ? patchLocalModelPlugin(source) : patchLocalModelConfig(source),
+    };
   };
 }
 

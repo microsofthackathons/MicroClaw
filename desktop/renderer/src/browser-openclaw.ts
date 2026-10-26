@@ -21,6 +21,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
   ];
 
   return {
+    features: { githubCopilot: false },
     gateway: {
       getStatus: async () => "running",
       getPort: async () => 18789,

@@ -1,7 +1,15 @@
 <template>
   <div class="chat-view">
     <!-- Welcome (no messages yet) -->
-    <div v-if="!hasMessages && !chatStore.loading" class="chat-welcome-area">
+    <div
+      v-if="
+        !hasMessages &&
+        !chatStore.loading &&
+        !chatStore.agentPreparationError &&
+        !chatStore.lastError
+      "
+      class="chat-welcome-area"
+    >
       <ChatWelcome mode="hero" :agent="currentAgent" @select="handleCardSelect" />
     </div>
 
@@ -65,15 +73,6 @@
             </svg>
           </button>
           <div class="home-input-right">
-            <ChatModelPicker
-              :session-key="chatStore.sessionKey"
-              :connected="chatStore.wsConnected"
-              :disabled="
-                Boolean(chatStore.activityStatus) || chatStore.streaming || submittingMessage
-              "
-              @busy="modelChanging = $event"
-              @manage="openModelSettings"
-            />
             <button
               v-if="chatStore.streaming"
               class="home-input-send home-input-send--stop"
@@ -134,11 +133,9 @@ import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ChatAttachments from "@/components/chat/ChatAttachments.vue";
 import ChatWelcome from "@/components/ChatWelcome.vue";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
-import ChatModelPicker from "@/components/chat/ChatModelPicker.vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 
 const route = useRoute();
-const router = useRouter();
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
 
@@ -155,10 +152,6 @@ const pendingAttachments = ref<ChatAttachment[]>([]);
 const pickingFiles = ref(false);
 const importingClipboardImages = ref(0);
 const submittingMessage = ref(false);
-const modelChanging = ref(false);
-function openModelSettings(provider?: string) {
-  void router.push({ path: "/settings/models", query: provider ? { provider } : {} });
-}
 let isUserScrolledUp = false;
 let attachmentImportQueue: Promise<void> = Promise.resolve();
 
@@ -223,14 +216,18 @@ watch(
 );
 
 const composePlaceholder = computed(() =>
-  chatStore.wsConnected ? t("chat.inputPlaceholder") : t("chat.waitingGateway"),
+  !chatStore.wsConnected
+    ? t("chat.waitingGateway")
+    : chatStore.agentPreparationError
+      ? t("chat.error.agent_initializing.title")
+      : t("chat.inputPlaceholder"),
 );
 const canSend = computed(
   () =>
     chatStore.wsConnected &&
     !chatStore.activityStatus &&
+    !chatStore.agentPreparationError &&
     !submittingMessage.value &&
-    !modelChanging.value &&
     !pickingFiles.value &&
     importingClipboardImages.value === 0 &&
     (inputText.value.trim().length > 0 || pendingAttachments.value.length > 0),
@@ -348,8 +345,8 @@ async function handleSend() {
   if (
     (!text && pendingAttachments.value.length === 0) ||
     !chatStore.wsConnected ||
+    chatStore.agentPreparationError ||
     submittingMessage.value ||
-    modelChanging.value ||
     pickingFiles.value ||
     importingClipboardImages.value > 0
   ) {

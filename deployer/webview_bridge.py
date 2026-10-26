@@ -1,5 +1,4 @@
 import json
-import locale
 import os
 import re
 import shutil
@@ -202,31 +201,14 @@ def _read_saved_lang(settings_path):
 
 
 def _detect_lang(settings_path=None):
-    """Detect installer language from override, existing app setting, then OS locale."""
+    """Use explicit or saved language preferences, defaulting to Simplified Chinese."""
     override = _normalize_lang(os.environ.get("MICROCLAW_LANG"))
     if override:
         return override
     saved = _read_saved_lang(Path(settings_path or _app_settings_path()))
     if saved:
         return saved
-    # On Windows, query the user's UI language directly. locale.getlocale()
-    # returns (None, None) on Python 3.11+ without an explicit setlocale call.
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            lcid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
-            # Primary language ID (low 10 bits): 0x04 == LANG_CHINESE
-            if (lcid & 0x3FF) == 0x04:
-                return "zh"
-            return "en"
-        except Exception:
-            pass
-    try:
-        loc = locale.getlocale()[0] or locale.getdefaultlocale()[0] or ""
-    except Exception:
-        loc = ""
-    return "zh" if loc.lower().startswith("zh") else "en"
+    return "zh"
 
 
 def _assets_dir():
@@ -247,8 +229,9 @@ _STRINGS = {
     "zh": {
         "language": "语言",
         "welcomeTitle": "欢迎来到 MicroClaw",
-        "legalLine": "安装包含官方 llama.cpp 提供商及其声明能力；模型与推理运行时在首次选用时另行确认下载。点击“快速安装”，即表示你同意 MicroClaw",
+        "legalLine": "点击“快速安装”即同意",
         "serviceAgreement": "MicroClaw 最终用户许可协议",
+        "serviceAgreementLink": "用户协议",
         "and": "和",
         "privacyStatement": "隐私声明",
         "quickInstall": "快速安装",
@@ -286,7 +269,6 @@ _STRINGS = {
             "config": "正在写入 MicroClaw 配置…",
             "compileCache": "正在预热启动缓存…",
             "searchProvider": "正在安装网络搜索插件…",
-            "localProvider": "正在准备本地模型提供商（不下载模型）…",
             "sandbox": "正在配置 AppContainer 沙箱…",
             "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
@@ -303,8 +285,9 @@ _STRINGS = {
     "en": {
         "language": "Language",
         "welcomeTitle": "Welcome to MicroClaw",
-        "legalLine": 'Includes the official llama.cpp provider and its declared capabilities. Model and inference runtime downloads require separate first-use confirmation. By clicking "Quick Install", you agree to the MicroClaw',
+        "legalLine": 'By clicking "Quick Install", you agree to the',
         "serviceAgreement": "MicroClaw End User License Agreement",
+        "serviceAgreementLink": "User Agreement",
         "and": "and",
         "privacyStatement": "Privacy Statement",
         "quickInstall": "Quick Install",
@@ -342,7 +325,6 @@ _STRINGS = {
             "config": "Writing MicroClaw configuration...",
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
-            "localProvider": "Preparing local model provider (no model download)...",
             "sandbox": "Provisioning AppContainer sandbox...",
             "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
@@ -593,21 +575,20 @@ class WebInstallerBridge:
                 50,
                 steps["openclaw"],
                 lambda: self._ensure_openclaw(ws),
-                NETWORK_RETRIES,
+                0,
             ),
+            (52, steps["prepareUpgrade"], ws.prepare_openclaw_upgrade, 0),
             (55, steps["path"], ws.add_to_path, LOCAL_RETRIES),
             (60, steps["desktop"], ws.install_desktop_client, NETWORK_RETRIES),
             (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
             (65, steps["apiKeys"], lambda: self._write_env_file(), LOCAL_RETRIES),
             (70, steps["config"], ws.write_config, LOCAL_RETRIES),
-            (76, steps["localProvider"], ws.install_local_model_provider, NETWORK_RETRIES),
             (
                 80,
                 steps["searchProvider"],
                 ws.install_search_provider_plugin,
                 NETWORK_RETRIES,
             ),
-            (82, steps["migrateOpenClaw"], ws.migrate_openclaw_state, LOCAL_RETRIES),
             (84, steps["compileCache"], ws.warmup_compile_cache, LOCAL_RETRIES),
             (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
@@ -762,7 +743,7 @@ class WebInstallerBridge:
                 raise InstallationCancelled
             if not ws.stop_active_installation_for_upgrade(active):
                 raise RuntimeError(_STRINGS[self._lang]["runningAppsCloseFailed"])
-        return ws.prepare_openclaw_upgrade()
+        return ws.prepare_openclaw_update()
 
     def _confirm_close_running_apps(self, active: ActiveInstallation) -> bool:
         if _ACTIVE_WINDOW is None:

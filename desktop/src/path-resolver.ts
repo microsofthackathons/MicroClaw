@@ -67,7 +67,7 @@ export function loadGatewayEnvironment(
 }
 
 /**
- * Stable Node releases supported by OpenClaw 2026.10.2.
+ * Stable Node releases supported by OpenClaw 2026.10.5.
  */
 export function isSupportedNodeVersion(value: string): boolean {
   const match = /^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(value);
@@ -118,7 +118,7 @@ export function resolveNodePath(): string {
     console.warn(`[path-resolver] Skipping unsupported Node.js ${version} at ${candidate}`);
   }
   throw new Error(
-    "OpenClaw 2026.10.2 requires Node.js >=24.16.0 <25 || >=26.1.0. " +
+    "OpenClaw 2026.10.5 requires Node.js >=24.16.0 <25 || >=26.1.0. " +
       "Run the MicroClaw installer or install Node.js 26.",
   );
 }

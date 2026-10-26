@@ -28,6 +28,15 @@ describe("i18n", () => {
     expect(t("nonexistent.key")).toBe("nonexistent.key");
   });
 
+  it("attributes the chat disclaimer to MicroClaw in both locales", () => {
+    for (const locale of ["en-US", "zh-CN"] as const) {
+      setLocale(locale);
+      expect(t("chat.disclaimer")).toContain("MicroClaw");
+      expect(t("chat.disclaimer")).not.toContain("Microsoft");
+    }
+    setLocale("en-US");
+  });
+
   it("interpolates params", () => {
     setLocale("en-US");
     const result = t("integrity.updateFailed", { error: "disk full" });

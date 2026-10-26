@@ -12,6 +12,11 @@ import {
 } from "./gateway-lifecycle";
 
 describe("Gateway startup convergence", () => {
+  it("keeps runtime self-updating out of the Desktop-managed Gateway lifecycle", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    expect(main).toContain('OPENCLAW_NO_AUTO_UPDATE: "1"');
+    expect(main).toContain("return checkForUpdates({");
+  });
   it("awaits AppContainer ACL work before taking the Gateway plugin inventory", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     const prepare = main.indexOf("await toolSandbox.provisionAsync()");
@@ -66,6 +71,21 @@ describe("requiresExternalGatewayStop", () => {
 });
 
 describe("hardRestartGateway", () => {
+  it("notifies the renderer of a managed disconnect before stopping the client", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    const restart = main.slice(
+      main.indexOf("async function restartManagedGateway("),
+      main.indexOf("async function restartManagedGatewayAndRequireReady("),
+    );
+    const notification = restart.indexOf(
+      'sendToWindow(mainWindow, "gateway:ws-disconnected", reason)',
+    );
+    const stopClient = restart.indexOf("stopClient: () => gwClient?.stop()");
+
+    expect(notification).toBeGreaterThan(0);
+    expect(stopClient).toBeGreaterThan(notification);
+  });
+
   it("waits for verified asynchronous shutdown and does not start after a shutdown failure", async () => {
     let stopped!: () => void;
     const shutdown = new Promise<void>((resolve) => {

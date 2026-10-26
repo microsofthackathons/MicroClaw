@@ -115,13 +115,11 @@
               ? t("localModel.configure")
               : isGitHubCopilot
                 ? t("modelSetup.copilotSignIn")
-                : isCustomProvider
-                  ? t("modelSetup.configureCustom")
-                  : t("modelSetup.getApiKey")
+                : t("modelSetup.getApiKey")
           }}
         </button>
         <button
-          v-if="!isCustomProvider && !isGitHubCopilot && !isLocalProvider"
+          v-if="!isGitHubCopilot && !isLocalProvider"
           class="text-action"
           type="button"
           @click.stop="goToKeyForm()"
@@ -414,6 +412,7 @@ import {
   type ManagedModelPreset,
 } from "@/utils/managed-model-providers";
 import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
+import { isModelProviderEnabled } from "@/utils/model-features";
 import githubCopilotBlack from "@/assets/github-copilot-black.svg";
 import LocalModelSetupDialog from "./LocalModelSetupDialog.vue";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
@@ -464,7 +463,7 @@ const emit = defineEmits<{
   busy: [value: boolean];
 }>();
 
-const modelFamilies: ModelFamilyPreset[] = [
+const allModelFamilies: ModelFamilyPreset[] = [
   ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
     ...provider,
     providerKey: provider.id,
@@ -481,16 +480,6 @@ const modelFamilies: ModelFamilyPreset[] = [
     logo: githubCopilotBlack,
   },
   {
-    id: "custom",
-    labelKey: "modelSetup.otherModel",
-    providerKey: "custom",
-    baseUrl: "",
-    apiFormat: "openai-chat",
-    models: [],
-    defaultModel: "",
-    apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
-  },
-  {
     id: "local",
     labelKey: "localModel.title",
     providerKey: "llama-cpp",
@@ -501,12 +490,25 @@ const modelFamilies: ModelFamilyPreset[] = [
     apiKeyPlaceholder: "",
   },
 ];
+const modelFamilies = allModelFamilies.filter((family) => isModelProviderEnabled(family.id));
+
+const customModelFamily: ModelFamilyPreset = {
+  id: "custom",
+  labelKey: "modelSetup.customProvider",
+  providerKey: "custom",
+  baseUrl: "",
+  apiFormat: "openai-chat",
+  models: [],
+  defaultModel: "",
+  apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
+};
 
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
 }
 
 function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
+  if (familyId === "custom") return customModelFamily;
   return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
 }
 
@@ -662,7 +664,11 @@ watch(
       localVisible.value = true;
       return;
     }
-    if (prefill) {
+    if (
+      prefill &&
+      isModelProviderEnabled(prefill.familyId) &&
+      isModelProviderEnabled(prefill.providerKey)
+    ) {
       // Reopen on the configured provider, pre-filled and jumped to the key form so the user
       // can adjust the model, base URL or key without re-selecting the family.
       selectFamily(prefill.familyId as ModelFamilyId);
@@ -676,7 +682,7 @@ watch(
       errorMsg.value = "";
       return;
     }
-    if (props.initialFamily) {
+    if (props.initialFamily && isModelProviderEnabled(props.initialFamily)) {
       selectFamily(props.initialFamily);
       isKeyStep.value = true;
       apiKey.value = "";
@@ -756,7 +762,7 @@ function handlePrimaryAction() {
     localVisible.value = true;
     return;
   }
-  if (isCustomProvider.value || isGitHubCopilot.value) {
+  if (isGitHubCopilot.value) {
     goToKeyForm();
     return;
   }
@@ -795,6 +801,7 @@ async function openProviderSignup() {
 function goToSelectStep() {
   if (configMutationInProgress.value) return;
   cancelPendingSubmission();
+  if (isCustomProvider.value) selectFamily("qwen");
   void resetGitHubCopilotState();
   isKeyStep.value = false;
   errorMsg.value = "";

@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -233,12 +234,21 @@ def _windows_move_file(source: Path, destination: Path, *, replace: bool) -> Non
         wintypes.DWORD,
     ]
     kernel32.MoveFileExW.restype = wintypes.BOOL
-    if not kernel32.MoveFileExW(
-        str(_native_io_path(source)),
-        str(_native_io_path(destination)),
-        flags,
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
+    retry_delays = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 2.0)
+    for attempt in range(len(retry_delays) + 1):
+        if kernel32.MoveFileExW(
+            str(_native_io_path(source)),
+            str(_native_io_path(destination)),
+            flags,
+        ):
+            return
+        winerror = ctypes.get_last_error()
+        if winerror not in {5, 32, 33} or attempt == len(retry_delays):
+            error = ctypes.WinError(winerror)
+            error.filename = os.fspath(source)
+            error.filename2 = os.fspath(destination)
+            raise error
+        time.sleep(retry_delays[attempt])
 
 
 def _durable_rename(source: Path, destination: Path, *, replace: bool = False) -> None:

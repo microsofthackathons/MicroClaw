@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import json
 import re
+import sys
+from pathlib import Path
 
-OPENCLAW_TARGET_VERSION = "2026.10.2"
+OPENCLAW_TARGET_VERSION = "2026.10.5"
+
+
+def packaged_openclaw_version(manifest_path: Path) -> str:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    version = manifest["openClawVersion"]
+    if not isinstance(version, str) or re.fullmatch(r"[0-9]{4}\.[0-9]+\.[0-9]+", version) is None:
+        raise ValueError("Invalid packaged OpenClaw target version")
+    return version
+
+
+if getattr(sys, "frozen", False):
+    OPENCLAW_TARGET_VERSION = packaged_openclaw_version(
+        Path(sys._MEIPASS) / "install-manifest.json"
+    )
+
 NODE_DEFAULT_MAJOR = "26"
 NODE_ENGINE_RANGE = ">=24.16.0 <25 || >=26.1.0"
 NODE_FALLBACK_VERSION = "26.1.0"

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,6 +16,7 @@ const {
   describeWindowsNodeSystemRunResponseShape,
   normalizeWindowsNodeSystemRunResponse,
   PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
+  PINNED_WEB_FETCH_HTTP_ONLY_10_5_SOURCE,
   PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
   PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
   PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
@@ -41,6 +42,7 @@ const {
   PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE,
   PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
   PINNED_NODE_REGISTRY_SERIALIZATION_SOURCE,
+  PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE,
   PINNED_SYSTEM_RUN_PLAN_SOURCE,
   attestPinnedOpenClawWebFetchHttpOnly,
   createWindowsNodeMxcApprovalProofMinter,
@@ -82,18 +84,28 @@ describe("pinned OpenClaw package validation", () => {
     expect(() => validatePinnedOpenClawApprovalPackage(dir)).toThrow(/absolute path/);
   });
 
-  it.each(["2026.8.2", "2026.9.3", "2026.10.1", "2026.10.2-beta.1", "2026.10.3"])(
-    "rejects an unpinned OpenClaw version: %s",
-    (version) => {
-      expect(() => validatePinnedOpenClawApprovalPackage(createPackage(version))).toThrow(
-        /requires OpenClaw 2026\.10\.2/,
-      );
-    },
-  );
+  it.each([
+    "2026.8.2",
+    "2026.9.3",
+    "2026.10.1",
+    "2026.10.2",
+    "2026.10.3-beta.1",
+    "2026.10.4",
+    "2026.10.5-beta.1",
+    "2026.10.6",
+    "toString",
+  ])("rejects an unpinned OpenClaw version: %s", (version) => {
+    expect(() => validatePinnedOpenClawApprovalPackage(createPackage(version))).toThrow(
+      /requires OpenClaw 2026\.10\.5/,
+    );
+  });
 
-  it("rejects modified 10.2 approval bundles", () => {
-    const packageDir = createPackage("2026.10.2");
-    writeFileSync(join(packageDir, "dist", "nodes-CUbe_1MQ.mjs"), "// changed");
+  it.each([
+    ["2026.10.3", "nodes-Cl-Air2F.mjs"],
+    ["2026.10.5", "nodes-50M4rpyG.mjs"],
+  ])("rejects modified %s approval bundles", (version, module) => {
+    const packageDir = createPackage(version);
+    writeFileSync(join(packageDir, "dist", module), "// changed");
     expect(() => validatePinnedOpenClawApprovalPackage(packageDir)).toThrow(/hash mismatch/);
   });
 
@@ -107,22 +119,44 @@ describe("pinned OpenClaw package validation", () => {
         hooksPause: true,
         canvasPhase1: true,
       });
-      expect(targets.map((target: { module: string }) => target.module)).toEqual([
-        "nodes-CUbe_1MQ.mjs",
-        "node-invoke-plugin-policy-DLQRKKVA.mjs",
-        "node-registry-private-CyaYRwVd.mjs",
-        "system-run-approval-plan-Cu-Ftdkp.mjs",
-        "exec-approval-mGU7M4-K.mjs",
-        "bash-tools-Bl8Bd3CR.mjs",
-        "openclaw-tools-Dxfbrtff.mjs",
-        "service-31u04axN.mjs",
-        "cron-D3Bd3ZFt.mjs",
-        "server-start-DfGddYU-.mjs",
-        "internal-hooks-DfVqU7ax.mjs",
-        "extensions/canvas/index.js",
-        "tool-CpRzQ0s7.mjs",
-        "node-eligibility-UXb9xB0F.mjs",
-      ]);
+      const version = JSON.parse(
+        readFileSync(join(publishedPackage!, "package.json"), "utf8"),
+      ).version;
+      expect(targets.map((target: { module: string }) => target.module)).toEqual(
+        version === "2026.10.5"
+          ? [
+              "nodes-50M4rpyG.mjs",
+              "node-invoke-plugin-policy-C3OHtaj0.mjs",
+              "node-registry-private-Cy7k5cze.mjs",
+              "system-run-approval-plan-B2O_CKga.mjs",
+              "exec-approval-DbnOAIQO.mjs",
+              "bash-tools-BpD5km6h.mjs",
+              "openclaw-tools-BzG0r_Mx.mjs",
+              "service-BlXGdNfC.mjs",
+              "cron-CtU5MS3t.mjs",
+              "server-start-D9FwRIP_.mjs",
+              "internal-hooks-u9Bo9D-Q.mjs",
+              "extensions/canvas/index.js",
+              "tool-DjtevMZn.mjs",
+              "node-eligibility-Cv0dWQeV.mjs",
+            ]
+          : [
+              "nodes-Cl-Air2F.mjs",
+              "node-invoke-plugin-policy-GeGCY71G.mjs",
+              "node-registry-private-CyaYRwVd.mjs",
+              "system-run-approval-plan-Cu-Ftdkp.mjs",
+              "exec-approval-BKqqOMdp.mjs",
+              "bash-tools-DQS9-f8q.mjs",
+              "openclaw-tools-BA3mvtXt.mjs",
+              "service-B3JlUlHg.mjs",
+              "cron-Bz6F4quM.mjs",
+              "server-start-CZZFIc7j.mjs",
+              "internal-hooks-C3ju7znI.mjs",
+              "extensions/canvas/index.js",
+              "tool-QdensQdF.mjs",
+              "node-eligibility-CYxKvUWR.mjs",
+            ],
+      );
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));
         const checked = spawnSync(process.execPath, ["--check", "--input-type=module"], {
@@ -140,11 +174,11 @@ describe("pinned OpenClaw package validation", () => {
             "attachMicroclawNodeApprovalProof(dispatchParams, forwardedParams.microclawApprovalProofRequest)",
           );
         }
-        if (target.module === "node-invoke-plugin-policy-DLQRKKVA.mjs") {
+        if (target.module.startsWith("node-invoke-plugin-policy-")) {
           expect(patched).toContain("const requestParams = override.params ?? params.params");
           expect(patched).toContain("params.onNodeCommandDispatchPreparing?.(requestParams)");
         }
-        if (target.module === "node-registry-private-CyaYRwVd.mjs") {
+        if (target.module.startsWith("node-registry-private-")) {
           expect(patched.indexOf("params.isDispatchAuthorized?.()")).toBeLessThan(
             patched.indexOf("params.onDispatchPreparing?.(params.params)"),
           );
@@ -154,19 +188,33 @@ describe("pinned OpenClaw package validation", () => {
           expect(patched.indexOf("invokeParams = normalizeSystemRunInvokeParams")).toBeLessThan(
             patched.indexOf("payload = buildNodeInvokeRequest"),
           );
+          if (version === "2026.10.5") {
+            expect(patched).toContain("params: invokeParams,\n\t\tturnSource");
+          }
+        }
+        if (version === "2026.10.5" && target.module.startsWith("exec-approval-")) {
+          expect(patched).toContain("const rejectRequest = (message) =>");
+          expect(patched).toContain(
+            'rejectRequest("agent runtime approval authority is no longer active")',
+          );
+        }
+        if (version === "2026.10.5" && target.module.startsWith("nodes-")) {
+          expect(patched).toContain(
+            'systemRunApprovalGuardError("APPROVAL_PLAN_REQUIRED", "operator approval requires an approved execution plan", runId)',
+          );
         }
         if (target.module === "extensions/canvas/index.js") {
           expect(patched).toContain('"canvas.snapshot"');
           expect(patched).not.toContain('"canvas.navigate"');
           expect(patched).toContain('defaultPlatforms: ["windows"]');
         }
-        if (target.module === "tool-CpRzQ0s7.mjs") {
+        if (target.module.startsWith("tool-")) {
           expect(patched).not.toContain('case "navigate"');
           expect(patched).not.toContain("presentTarget");
           expect(patched).toContain('case "a2ui_push"');
           expect(patched).toContain('"canvas.snapshot"');
         }
-        if (target.module === "node-eligibility-UXb9xB0F.mjs") {
+        if (target.module.startsWith("node-eligibility-")) {
           expect(patched).toContain("/^windows(?:\\s|$)/i");
           expect(patched).not.toContain('"navigate"');
           expect(patched).toContain('"a2ui_push"');
@@ -238,6 +286,9 @@ describe("pinned OpenClaw web fetch contract", () => {
   it("attests the HTTP(S)-only URL scheme guard", () => {
     expect(attestPinnedOpenClawWebFetchHttpOnly(PINNED_WEB_FETCH_HTTP_ONLY_SOURCE)).toBe(
       PINNED_WEB_FETCH_HTTP_ONLY_SOURCE,
+    );
+    expect(attestPinnedOpenClawWebFetchHttpOnly(PINNED_WEB_FETCH_HTTP_ONLY_10_5_SOURCE)).toBe(
+      PINNED_WEB_FETCH_HTTP_ONLY_10_5_SOURCE,
     );
     expect(() =>
       attestPinnedOpenClawWebFetchHttpOnly(
@@ -427,6 +478,27 @@ describe("pinned OpenClaw node approval proof backport", () => {
     PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
   ].join("\n");
 
+  it("retains the 10.5 positional approval guards and one-use operator requirement", () => {
+    const modern =
+      "function systemRunApprovalGuardError(code, message, runId) {}\n" +
+      source.replaceAll(
+        /systemRunApprovalGuardError\(\{\n\t+code: ("[^"]+"),\n\t+message: ("[^"]+"),\n\t+details: \{ runId \}\n\t+\}\)/g,
+        "systemRunApprovalGuardError($1, $2, runId)",
+      );
+    const patched = patchPinnedOpenClawNodeGateway(modern);
+    expect(patched).toContain(
+      'systemRunApprovalGuardError("APPROVAL_SOURCE_MISMATCH", "approval source does not match approval record", runId)',
+    );
+    expect(patched).toContain(
+      'systemRunApprovalGuardError("APPROVAL_PLAN_REQUIRED", "operator approval requires an approved execution plan", runId)',
+    );
+    expect(patched).not.toContain("systemRunApprovalGuardError({");
+    expect(patched).toContain(
+      'approvalDecision !== "allow-once" || recordedResolutionSource !== "operator"',
+    );
+    expect(patched).toContain("manager.consumeAllowOnce(runId)");
+  });
+
   it("mints a proof only at the latest trusted dispatch boundary", () => {
     const patched = patchPinnedOpenClawNodeGateway(source);
 
@@ -479,6 +551,19 @@ describe("pinned OpenClaw node approval proof backport", () => {
     );
     expect(patchedRegistry.indexOf("invokeParams = normalizeSystemRunInvokeParams")).toBeLessThan(
       patchedRegistry.indexOf("payload = buildNodeInvokeRequest"),
+    );
+  });
+
+  it("retains 10.5 turn source metadata across deferred registry serialization", () => {
+    const patched = patchPinnedOpenClawNodeRegistryPrivate(
+      [
+        PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE,
+        PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE,
+      ].join("\n"),
+    );
+    expect(patched).toContain("params: invokeParams,\n\t\tturnSource");
+    expect(patched.indexOf("params.onDispatchPreparing?.(params.params)")).toBeLessThan(
+      patched.indexOf("systemRunEvent = resolvePendingSystemRunEvent"),
     );
   });
 
@@ -801,21 +886,28 @@ describe("pinned OpenClaw node approval proof backport", () => {
     });
 
     describe("pinned OpenClaw approval schema projection", () => {
-      it("validates the standard plan projection while retaining the original bound plan", () => {
-        const patched = patchPinnedOpenClawExecApproval(
-          `${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}\n\t\t\tif (requestRunId && context.chatRunState.hasAbortMarker(requestRunId)) {`,
-        );
+      it.each([
+        "",
+        "\n\t\t\tconst rejectRequest = (message) => respond(false, undefined, message);",
+      ])(
+        "validates the plan projection and retains upstream rejection helpers: %s",
+        (rejectHelper) => {
+          const patched = patchPinnedOpenClawExecApproval(
+            `${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}${rejectHelper}\n\t\t\tconst p = params;\n\t\t\tif (requestRunId && context.chatRunState.hasAbortMarker(requestRunId)) {`,
+          );
 
-        expect(patched).toContain("const validationParams = rawPlan");
-        expect(patched).toContain('name !== "executablePath"');
-        expect(patched).toContain('name !== "executableSha256"');
-        expect(patched).toContain('name !== "cwdBinding"');
-        expect(patched).toContain('name !== "declaredAccess"');
-        expect(patched).toContain("const p = params");
-        expect(patched).toContain(
-          'assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)',
-        );
-      });
+          expect(patched).toContain("const validationParams = rawPlan");
+          expect(patched).toContain('name !== "executablePath"');
+          expect(patched).toContain('name !== "executableSha256"');
+          expect(patched).toContain('name !== "cwdBinding"');
+          expect(patched).toContain('name !== "declaredAccess"');
+          expect(patched).toContain("const p = params");
+          expect(patched).toContain(`${rejectHelper}\n\t\t\tconst p = params;`);
+          expect(patched).toContain(
+            'assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)',
+          );
+        },
+      );
 
       it("fails closed when the pinned approval handler drifts or appears twice", () => {
         expect(() => patchPinnedOpenClawExecApproval("unrecognized source")).toThrow(

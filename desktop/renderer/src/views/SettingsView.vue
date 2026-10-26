@@ -399,6 +399,17 @@
                 @busy="providerSaving = $event"
                 @configured="handleProviderConfigured"
               />
+              <div v-if="provider.removable" class="provider-connection-actions">
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :data-testid="`remove-provider-${provider.key}`"
+                  :disabled="modelMutationBlocked"
+                  @click="removeProviderConnection(provider.key)"
+                  >{{ t("localModel.removeConnection") }}</el-button
+                >
+              </div>
             </div>
           </section>
         </div>
@@ -1696,12 +1707,17 @@ import { mergeLocalModelCatalog } from "@/utils/local-model-catalog";
 import { isManagedLocalModel, type LocalModelCatalogEntry } from "../../../src/local-model-catalog";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
 import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
-import { getDefaultAgentModelOverride, removeModelProviderConfig } from "@/utils/model-provider";
+import {
+  getDefaultAgentModelOverride,
+  removeModelProviderConfig,
+  removeProviderConnectionConfig,
+} from "@/utils/model-provider";
 import {
   mergeGitHubCopilotModelEntries,
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
 import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
+import { isGitHubCopilotEnabled, isModelProviderEnabled } from "@/utils/model-features";
 import {
   useProviderModelCatalog,
   readConfiguredCatalogs,
@@ -2545,7 +2561,7 @@ const providerCards = computed(() => {
     "llama-cpp",
     ...customModels.value.map((model) => model.providerKey),
   ]);
-  return [...keys].map((key) => {
+  return [...keys].filter(isModelProviderEnabled).map((key) => {
     const models = customModels.value.filter((model) => model.providerKey === key);
     return {
       key,
@@ -2558,6 +2574,7 @@ const providerCards = computed(() => {
       models,
       signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
       editableModels: key === "github-copilot" || getManagedModelProvider(key) ? [] : models,
+      removable: Boolean(getManagedModelProvider(key) && providerCatalogInputs.value[key]),
       missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
     };
   });
@@ -2916,8 +2933,10 @@ watch(activeSection, (v) => {
 function applyModelsConfig(config: any): void {
   defaultAgentOverride.value = getDefaultAgentModelOverride(config);
   const parsed = readConfiguredModels(config);
-  customModels.value = parsed.models;
-  selectedModel.value = parsed.primary;
+  customModels.value = parsed.models.filter((model) => isModelProviderEnabled(model.providerKey));
+  selectedModel.value = isModelProviderEnabled(parsed.primary.split("/", 1)[0])
+    ? parsed.primary
+    : "";
   providerCatalogInputs.value = readConfiguredCatalogs(config);
   const revision = ++providerCatalogRevision;
   providerCatalogLoading.value = true;
@@ -2955,6 +2974,7 @@ async function loadLocalFileStatus(): Promise<void> {
 }
 
 async function loadSettingsGitHubCopilotModels(): Promise<void> {
+  if (!isGitHubCopilotEnabled()) return;
   const generation = ++copilotModelsGeneration;
   copilotModelsLoading.value = true;
   const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
@@ -3112,6 +3132,62 @@ async function selectModel(modelRef: string) {
     await refreshModelsConfig();
   } finally {
     switchingModelRef.value = "";
+  }
+}
+
+async function removeProviderConnection(providerKey: string): Promise<void> {
+  if (modelMutationBlocked.value || !getManagedModelProvider(providerKey)) return;
+  removingModelRef.value = `${providerKey}/*`;
+  try {
+    const existing = await window.openclaw.config.read();
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const nextConfig = removeProviderConnectionConfig(existing, providerKey);
+    await ElMessageBox.confirm(
+      t("modelManager.removeProviderConfirm", { provider: providerName(providerKey) }),
+      t("modelManager.removeProviderTitle"),
+      {
+        type: "warning",
+        confirmButtonText: t("localModel.removeConnection"),
+        cancelButtonText: t("settings.cancel"),
+      },
+    );
+    if (modelViewDisposed) return;
+    if (
+      chatStore.streaming ||
+      localOperation.value?.busy ||
+      sessionRecovery.value ||
+      sessionRecovering.value
+    ) {
+      throw new Error(t("localModel.operationBusy"));
+    }
+    await window.openclaw.config.write(nextConfig, existing);
+    showProviderSetup.value = false;
+    editingProviderKey.value = "";
+    editingModelRef.value = "";
+    applyModelsConfig(nextConfig);
+    ElMessage.success(t("modelManager.providerRemoved"));
+    try {
+      await restartGatewayAfterModelConfig({ waitForRendererReconnect: false });
+    } catch (error) {
+      ElMessage.warning(
+        t("settings.restartFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") {
+      ElMessage.error(
+        t("settings.configSaveFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  } finally {
+    await refreshModelsConfig();
+    removingModelRef.value = "";
   }
 }
 
@@ -3463,6 +3539,9 @@ async function clearChatHistory() {
 }
 .provider-editor {
   border-top: 1px solid var(--el-border-color-lighter);
+}
+.provider-connection-actions {
+  padding: 0 24px 20px;
 }
 .provider-model-row {
   display: flex;

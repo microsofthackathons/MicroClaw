@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isProxy, ref } from "vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { readConfiguredModels } from "@/utils/configured-models";
 import { readConfiguredCatalogs, useProviderModelCatalog } from "./use-provider-model-catalog";
@@ -24,6 +25,41 @@ beforeEach(() => {
 });
 
 describe("shared provider catalogs", () => {
+  it.each(["load", "loadConfigured"] as const)(
+    "passes cloneable requests from reactive provider configuration through %s",
+    async (method) => {
+      const shared = useProviderModelCatalog();
+      const inputs = ref(readConfiguredCatalogs(config));
+      expect(isProxy(inputs.value.qwen)).toBe(true);
+      vi.mocked(window.openclaw.model.discoverModels).mockImplementation((input) => {
+        structuredClone(input);
+        return Promise.resolve({ ok: true, models: ["old", "new", "latest"] });
+      });
+
+      if (method === "load") {
+        await shared.load(inputs.value.qwen);
+      } else {
+        await shared.loadConfigured(inputs.value);
+      }
+
+      expect(window.openclaw.model.discoverModels).toHaveBeenCalledOnce();
+      const [request] = vi.mocked(window.openclaw.model.discoverModels).mock.calls[0];
+      expect(isProxy(request)).toBe(false);
+      expect(request).not.toBe(inputs.value.qwen);
+      expect(request).toEqual({
+        baseUrl: config.models.providers.qwen.baseUrl,
+        apiKey: config.models.providers.qwen.apiKey,
+      });
+      expect(shared.errors(inputs.value)).toBe("");
+      expect(
+        shared
+          .merge(readConfiguredModels(config).models, inputs.value)
+          .filter((model) => model.providerKey === "qwen")
+          .map((model) => model.id),
+      ).toEqual(["old", "new", "latest"]);
+    },
+  );
+
   it("shares the full live list between form, default and conversation consumers without writes", async () => {
     const form = useProviderModelCatalog();
     const defaults = useProviderModelCatalog();

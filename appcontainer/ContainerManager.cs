@@ -274,10 +274,6 @@ internal static class ContainerManager
         Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SID resolved: {sidStr}");
         var sid = new SecurityIdentifier(sidStr);
 
-        var rights = readOnly
-            ? FileSystemRights.ReadAndExecute | FileSystemRights.ListDirectory
-            : FileSystemRights.Modify | FileSystemRights.ListDirectory;
-
         if (Directory.Exists(dirPath))
         {
             var info = new DirectoryInfo(dirPath);
@@ -292,18 +288,15 @@ internal static class ContainerManager
                 return;
             }
 
-            // Remove existing rules for this SID first (avoid duplicates)
-            security.PurgeAccessRules(sid);
-
-            security.AddAccessRule(new FileSystemAccessRule(
-                sid,
-                rights,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Allow));
-
-            info.SetAccessControl(security);
-            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SetAccessControl done for dir: {dirPath} (readOnly={readOnly})");
+            if (UpdateGrantRules(security, sid, readOnly, isDirectory: true))
+            {
+                info.SetAccessControl(security);
+                Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SetAccessControl done for dir: {dirPath} (readOnly={readOnly})");
+            }
+            else
+            {
+                Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] ACL unchanged for dir: {dirPath}");
+            }
         }
         else if (File.Exists(dirPath))
         {
@@ -316,14 +309,15 @@ internal static class ContainerManager
                 return;
             }
 
-            security.PurgeAccessRules(sid);
-            security.AddAccessRule(new FileSystemAccessRule(
-                sid, rights,
-                InheritanceFlags.None,
-                PropagationFlags.None,
-                AccessControlType.Allow));
-            info.SetAccessControl(security);
-            Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SetAccessControl done for file: {dirPath} (readOnly={readOnly})");
+            if (UpdateGrantRules(security, sid, readOnly, isDirectory: false))
+            {
+                info.SetAccessControl(security);
+                Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] SetAccessControl done for file: {dirPath} (readOnly={readOnly})");
+            }
+            else
+            {
+                Console.Error.WriteLine($"[grant] [{sw.ElapsedMilliseconds}ms] ACL unchanged for file: {dirPath}");
+            }
         }
         else
         {
@@ -870,6 +864,28 @@ internal static class ContainerManager
     /// </summary>
     public static string[] GetDefaultSensitiveDirs() => DefaultSensitiveDirs;
 
+    internal static bool UpdateGrantRules(FileSystemSecurity security, SecurityIdentifier sid, bool readOnly, bool isDirectory)
+    {
+        string before = security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        var rights = readOnly
+            ? FileSystemRights.ReadAndExecute | FileSystemRights.ListDirectory
+            : FileSystemRights.Modify | FileSystemRights.ListDirectory;
+        security.PurgeAccessRules(sid);
+        security.AddAccessRule(new FileSystemAccessRule(
+            sid, rights,
+            isDirectory ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None,
+            PropagationFlags.None, AccessControlType.Allow));
+        return before != security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+    }
+
+    internal static bool UpdateShieldRules(DirectorySecurity security, SecurityIdentifier sid)
+    {
+        string before = security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
+        security.PurgeAccessRules(sid);
+        return before != security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+    }
+
     /// <summary>
     /// Break ACL inheritance on sensitive subdirectories and remove the
     /// AppContainer SID, so that the sandbox process cannot access these
@@ -896,13 +912,7 @@ internal static class ContainerManager
                 var info = new DirectoryInfo(fullPath);
                 var security = info.GetAccessControl();
 
-                // Step 1: Break inheritance, copy existing inherited ACEs as explicit
-                security.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
-
-                // Step 2: Remove all explicit rules for this Container SID
-                security.PurgeAccessRules(sid);
-
-                info.SetAccessControl(security);
+                if (UpdateShieldRules(security, sid)) info.SetAccessControl(security);
                 shielded.Add(fullPath);
                 Console.Error.WriteLine($"[shield] Shielded sensitive dir: {fullPath}");
             }

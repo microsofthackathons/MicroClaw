@@ -57,7 +57,7 @@ function createCatalog(api: Window["openclaw"]["model"]) {
     if (entry.pending) return entry.pending;
     const current = entry;
     current.pending = api
-      .discoverModels(input)
+      .discoverModels({ baseUrl: input.baseUrl, apiKey: input.apiKey })
       .catch((): ProviderCatalogResult => ({ ok: false, error: "network" }))
       .then((result) => {
         current.result.value = result;

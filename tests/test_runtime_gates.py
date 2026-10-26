@@ -16,6 +16,10 @@ POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 
 class RuntimeGateTests(unittest.TestCase):
+    def test_build_default_matches_installer_openclaw_version(self):
+        build_script = (ROOT / "build.ps1").read_text(encoding="utf-8")
+        self.assertIn(f"[string]$OpenClawVersion = '{OPENCLAW_TARGET_VERSION}'", build_script)
+
     def test_approval_replay_hook_targets_installer_openclaw_version(self):
         hook = (ROOT / "desktop" / "src" / "openclaw-approval-replay-compat.mjs").read_text(
             encoding="utf-8"
