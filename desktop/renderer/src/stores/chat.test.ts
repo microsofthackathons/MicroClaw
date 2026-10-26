@@ -75,6 +75,33 @@ import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
 describe("classifyChatError", () => {
+  it.each([
+    ["HTTP 403 Forbidden", "provider_access", 403],
+    [
+      "⚠️ Couldn't sign in to the AI service. Sign in again under Models.",
+      "provider_access",
+      undefined,
+    ],
+    ["HTTP 401 Invalid API key", "unauthorized", 401],
+    ["HTTP 503 Service unavailable", "server_error", 503],
+    ["UNAVAILABLE: provider is unavailable", "generic", undefined],
+    [
+      "UNSUPPORTED_CHAT_MODEL: qwen/realtime requires a different API",
+      "unsupported_model",
+      undefined,
+    ],
+    [
+      "The AI service couldn't accept this request. Try a new conversation.",
+      "request_rejected",
+      undefined,
+    ],
+  ])(
+    "classifies provider failures without assuming every access rejection is an invalid key",
+    (raw, code, status) => {
+      expect(classifyChatError(String(raw))).toMatchObject({ code, status });
+    },
+  );
+
   it("treats a Copilot token-exchange 404 as an authentication failure", () => {
     expect(classifyChatError("Copilot token exchange failed: HTTP 404")).toEqual({
       code: "copilot_auth",
@@ -104,6 +131,251 @@ describe("classifyChatError", () => {
     const error = classifyChatError("Copilot token exchange failed: HTTP 403");
 
     expect(modelAuthRecoveryInitialFamily(error)).toBe("github-copilot");
+  });
+
+  it.each(["main", "office-artisan"])("recognizes startup preparation for agent %s", (agentId) => {
+    const error = classifyChatError(
+      `Error invoking remote method 'chat:load-history': GatewayRequestError: Agent ${agentId} has not completed startup inspection and preparation. Inspection and writable admission continue after the Gateway listener binds.`,
+    );
+
+    expect(error.code).toBe("agent_initializing");
+    expect(requiresModelAuthRecovery(error)).toBe(false);
+  });
+});
+
+describe("useChatStore — agent preparation", () => {
+  const preparationMessage =
+    "Agent main has not completed startup inspection and preparation. Sessions remain unavailable until background inspection and preparation finish.";
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+    mockGetSettings.mockResolvedValue({});
+  });
+
+  it.each([{ messages: [] }, { messages: [{ role: "assistant", content: "Earlier reply" }] }])(
+    "clears preparation after a successful history read, including empty history: %j",
+    async ({ messages }) => {
+      const store = useChatStore();
+      mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+      await store.loadHistory();
+      expect(store.agentPreparationError?.code).toBe("agent_initializing");
+      expect(store.lastError).toBeNull();
+
+      mockLoadHistory.mockResolvedValueOnce({ messages });
+      await store.loadHistory({ showLoading: false });
+
+      expect(store.agentPreparationError).toBeNull();
+      expect(store.lastError).toBeNull();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a provider failure while preparation is retried and recovered", async () => {
+    const store = useChatStore();
+    const providerError = classifyChatError("HTTP 401 Invalid API key");
+    store.lastError = providerError;
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+
+    await store.loadHistory();
+    await store.loadHistory({ showLoading: false });
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    expect(store.lastError).toEqual(providerError);
+    await store.loadHistory({ showLoading: false });
+
+    expect(store.agentPreparationError).toBeNull();
+    expect(store.lastError).toEqual(providerError);
+  });
+
+  it("clears a preparation error left by an older renderer after a successful read", async () => {
+    const store = useChatStore();
+    store.lastError = { code: "generic", raw: preparationMessage };
+
+    await store.loadHistory();
+
+    expect(store.lastError).toBeNull();
+  });
+
+  it("blocks sends during preparation without losing or automatically sending the draft", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    await store.loadHistory();
+
+    expect(await store.sendMessage("My draft")).toBe(false);
+    expect(store.messages).toEqual([]);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    await store.loadHistory({ showLoading: false });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(await store.sendMessage("My draft")).toBe(true);
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles a send racing startup without retaining an optimistic message or resending it", async () => {
+    const store = useChatStore();
+    mockSendMessage.mockRejectedValueOnce(new Error(preparationMessage));
+
+    expect(await store.sendMessage("My draft")).toBe(false);
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    expect(store.lastError).toBeNull();
+    expect(store.messages).toEqual([]);
+    expect(store.streaming).toBe(false);
+    await store.loadHistory();
+    expect(store.agentPreparationError).toBeNull();
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles an asynchronous startup rejection as preparation, not a model failure", () => {
+    const store = useChatStore();
+    store.streaming = true;
+    store.handleChatEvent({
+      runId: "preparing-run",
+      sessionKey: store.sessionKey,
+      state: "error",
+      errorMessage: preparationMessage,
+    });
+
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    expect(store.lastError).toBeNull();
+    expect(store.streaming).toBe(false);
+  });
+
+  it("keeps preparation scoped to its agent across session switches", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    await store.loadHistory();
+
+    store.newSession("office-artisan");
+    expect(store.agentPreparationError).toBeNull();
+    await store.loadHistory();
+    store.newSession("main");
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+    await store.loadHistory();
+    expect(store.agentPreparationError).toBeNull();
+  });
+
+  it("does not block another agent when a send from the previous session is rejected late", async () => {
+    const store = useChatStore();
+    let fail!: (error: Error) => void;
+    mockSendMessage.mockReturnValueOnce(new Promise((_resolve, reject) => (fail = reject)));
+    const pendingSend = store.sendMessage("My draft");
+    await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    store.newSession("office-artisan");
+    fail(new Error(preparationMessage));
+    await pendingSend;
+
+    expect(store.agentPreparationError).toBeNull();
+    store.newSession("main");
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+  });
+
+  it("ignores an older successful read while a newer read reports preparation", async () => {
+    const store = useChatStore();
+    let complete!: (value: { messages: [] }) => void;
+    mockLoadHistory.mockReturnValueOnce(new Promise((resolve) => (complete = resolve)));
+    const olderRead = store.loadHistory();
+    mockLoadHistory.mockRejectedValueOnce(new Error(preparationMessage));
+    await store.loadHistory();
+    complete({ messages: [] });
+    await olderRead;
+
+    expect(store.agentPreparationError?.code).toBe("agent_initializing");
+  });
+
+  it("ignores a preparation failure from a session that is no longer active", async () => {
+    const store = useChatStore();
+    let fail!: (error: Error) => void;
+    mockLoadHistory.mockReturnValueOnce(new Promise((_resolve, reject) => (fail = reject)));
+    const olderRead = store.loadHistory();
+    store.newSession("office-artisan");
+    fail(new Error(preparationMessage));
+    await olderRead;
+
+    expect(store.agentPreparationError).toBeNull();
+    expect(store.lastError).toBeNull();
+  });
+});
+
+describe("useChatStore — history reconnect", () => {
+  const connectionErrors = [
+    "Gateway not connected",
+    "Error invoking remote method 'chat:load-history': Error: gateway not connected",
+    "Error invoking remote method 'chat:load-history': Error: disconnected",
+    "Error invoking remote method 'chat:load-history': Error: client stopped",
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+  });
+
+  it.each(connectionErrors)(
+    "does not report a model failure for a transient history error: %s",
+    async (error) => {
+      const store = useChatStore();
+      store.messages = [{ role: "assistant", content: "Earlier reply" }];
+      mockLoadHistory.mockRejectedValueOnce(new Error(error));
+
+      await store.loadHistory();
+
+      expect(store.lastError).toBeNull();
+      expect(store.messages).toEqual([{ role: "assistant", content: "Earlier reply" }]);
+      expect(store.loading).toBe(false);
+
+      mockLoadHistory.mockResolvedValueOnce({
+        messages: [{ role: "assistant", content: "Recovered history" }],
+      });
+      await store.loadHistory({ showLoading: false });
+
+      expect(store.lastError).toBeNull();
+      expect(store.messages).toEqual([{ role: "assistant", content: "Recovered history" }]);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(connectionErrors)(
+    "clears a stale connection banner after a successful history read: %s",
+    async (raw) => {
+      const store = useChatStore();
+      store.lastError = { code: "generic", raw };
+
+      await store.loadHistory();
+
+      expect(store.lastError).toBeNull();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves an actual provider error across a history disconnect and reconnect", async () => {
+    const store = useChatStore();
+    const providerError = classifyChatError("ECONNREFUSED at model endpoint");
+    store.lastError = providerError;
+    mockLoadHistory.mockRejectedValueOnce(new Error("Gateway not connected"));
+
+    await store.loadHistory({ showLoading: false });
+    expect(store.lastError).toEqual(providerError);
+
+    await store.loadHistory({ showLoading: false });
+    expect(store.lastError).toEqual(providerError);
+  });
+
+  it("still reports unexpected history failures", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockRejectedValueOnce(new Error("Failed to read transcript"));
+
+    await store.loadHistory();
+
+    expect(store.lastError).toMatchObject({
+      code: "generic",
+      raw: "Error: Failed to read transcript",
+    });
+    expect(store.loading).toBe(false);
   });
 });
 
@@ -408,6 +680,119 @@ describe("useChatStore — recoverAfterReconnect", () => {
     mockLoadHistory.mockResolvedValue({ messages: [] });
   });
 
+  describe("slow model response notices", () => {
+    beforeEach(() => {
+      Object.keys(storage).forEach((key) => delete storage[key]);
+      setActivePinia(createPinia());
+      mockLoadHistory.mockClear().mockResolvedValue({ messages: [] });
+    });
+
+    function waitingStore(age = 100_000) {
+      const store = useChatStore();
+      store.sessionKey = "main";
+      store.resolvedSessionKey = "agent:main:main";
+      store.wsConnected = true;
+      store.streaming = true;
+      store.streamStartedAt = Date.now() - age;
+      store.lastStreamEventAt = store.streamStartedAt + 1;
+      store.messages = [{ role: "user", content: "Hello" }];
+      return store;
+    }
+
+    it("keeps a connected slow request alive and does not call it a network failure", () => {
+      const store = waitingStore();
+      store.checkStaleStream();
+      expect(store.streaming).toBe(true);
+      expect(store.lastError).toEqual({ code: "response_delayed", source: "watchdog" });
+      store.lastError = null;
+      store.checkStaleStream();
+      expect(store.lastError).toBeNull();
+      expect(mockLoadHistory).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps recovery bounded even when a connected model never replies", () => {
+      const store = waitingStore(610_000);
+      store.checkStaleStream();
+      expect(store.streaming).toBe(false);
+      expect(store.lastError?.code).toBe("response_delayed");
+    });
+
+    it("clears only the inferred notice when the actual reply arrives late", () => {
+      const store = waitingStore();
+      store.checkStaleStream();
+      store.handleChatEvent({
+        sessionKey: "agent:main:main",
+        runId: "slow",
+        state: "final",
+        message: { role: "assistant", content: "Hello!" },
+      });
+      expect(store.lastError).toBeNull();
+      expect(store.messages.at(-1)?.content).toBe("Hello!");
+    });
+
+    it("removes the legacy synthetic network banner when history confirms a reply", async () => {
+      const store = useChatStore();
+      store.lastError = { code: "network" };
+      mockLoadHistory.mockResolvedValue({
+        messages: [
+          { role: "user", content: "Hello" },
+          { role: "assistant", content: "Hello!" },
+        ],
+      });
+      await store.loadHistory();
+      expect(store.lastError).toBeNull();
+    });
+
+    it("does not hide a real provider error just because an older reply is present", async () => {
+      const store = useChatStore();
+      store.lastError = classifyChatError("ECONNREFUSED at model endpoint");
+      mockLoadHistory.mockResolvedValue({
+        messages: [
+          { role: "user", content: "Hello" },
+          { role: "assistant", content: "Earlier reply" },
+        ],
+      });
+      await store.loadHistory();
+      expect(store.lastError?.raw).toContain("ECONNREFUSED");
+    });
+
+    it("does not clear waiting state for an unanswered user message or tool-only history", async () => {
+      const store = waitingStore();
+      store.lastError = { code: "response_delayed", source: "watchdog" };
+      mockLoadHistory.mockResolvedValue({
+        messages: [
+          { role: "user", content: "Hello" },
+          { role: "assistant", content: [{ type: "toolCall", id: "t", name: "read" }] },
+        ],
+      });
+      await store.recoverAfterReconnect();
+      expect(store.streaming).toBe(true);
+      expect(store.lastError?.code).toBe("response_delayed");
+    });
+
+    it("does not end a different session when a recovery request returns late", async () => {
+      const store = waitingStore();
+      let complete!: (value: { messages: Array<{ role: string; content: string }> }) => void;
+      mockLoadHistory.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const pending = store.recoverAfterReconnect();
+      store.sessionKey = "other";
+      store.resolvedSessionKey = "agent:main:other";
+      store.streamStartedAt = Date.now();
+      complete({
+        messages: [
+          { role: "user", content: "Hello" },
+          { role: "assistant", content: "Old reply" },
+        ],
+      });
+      await pending;
+      expect(store.streaming).toBe(true);
+    });
+  });
+
   it("is a no-op when not streaming", async () => {
     const store = useChatStore();
     store.streaming = false;
@@ -564,10 +949,10 @@ describe("useChatStore — draft sessions", () => {
     const store = useChatStore();
     store.messages = [{ role: "user", content: "existing" }];
 
-    store.newSession();
+    store.newSession("main");
 
     const persisted = JSON.parse(storage["openclaw-sessions"] ?? "[]");
-    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.sessionKey).toMatch(/^agent:main:session-/);
     expect(store.messages).toEqual([]);
     expect(persisted.some((s: { key: string }) => s.key === store.sessionKey)).toBe(false);
   });
@@ -595,11 +980,41 @@ describe("useChatStore — draft sessions", () => {
     expect(store.currentSessionAgentId).toBe("coder");
   });
 
-  it("keeps a bare session key for the default (main) agent", () => {
+  it("identifies the main agent before a draft has messages or Gateway events", () => {
     const store = useChatStore();
     store.newSession("main");
-    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.sessionKey).toMatch(/^agent:main:session-/);
     expect(store.currentSessionAgentId).toBe("main");
+    expect(store.messages).toEqual([]);
+    expect(store.resolvedSessionKey).toBeNull();
+  });
+
+  it("attributes historical Singer session keys to Creative Muse", () => {
+    const store = useChatStore();
+    store.newSession("singer");
+    expect(store.sessionKey).toMatch(/^agent:singer:session-/);
+    expect(store.currentSessionAgentId).toBe("creative-muse");
+  });
+
+  it("attributes historical Master session keys to Dr. Pulse", () => {
+    const store = useChatStore();
+    store.newSession("master");
+    expect(store.sessionKey).toMatch(/^agent:master:session-/);
+    expect(store.currentSessionAgentId).toBe("dr-pulse");
+  });
+
+  it("attributes historical Leopard session keys to Market Sentinel", () => {
+    const store = useChatStore();
+    store.newSession("leopard");
+    expect(store.sessionKey).toMatch(/^agent:leopard:session-/);
+    expect(store.currentSessionAgentId).toBe("market-sentinel");
+  });
+
+  it("attributes historical Painter session keys to Office Artisan", () => {
+    const store = useChatStore();
+    store.newSession("painter");
+    expect(store.sessionKey).toMatch(/^agent:painter:session-/);
+    expect(store.currentSessionAgentId).toBe("office-artisan");
   });
 });
 

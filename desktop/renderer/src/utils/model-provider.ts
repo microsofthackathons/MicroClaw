@@ -52,6 +52,17 @@ function getPrimaryModel(value: unknown): string | undefined {
   return typeof selector.primary === "string" ? selector.primary : undefined;
 }
 
+export function getDefaultAgentModelOverride(
+  config: unknown,
+): { agentId: string; modelRef: string } | null {
+  const agents = asJsonObject(asJsonObject(config).agents);
+  const entries = Array.isArray(agents.list) ? agents.list.filter(isJsonObject) : [];
+  const defaultAgent = entries.find((agent) => agent.default === true) ?? entries[0];
+  const modelRef = getPrimaryModel(defaultAgent?.model);
+  if (typeof defaultAgent?.id !== "string" || !modelRef?.trim()) return null;
+  return { agentId: defaultAgent.id, modelRef };
+}
+
 function replacePrimaryModel(value: unknown, modelRef?: string): unknown {
   if (typeof value === "string") return modelRef;
   const selector = { ...asJsonObject(value) };
@@ -108,6 +119,19 @@ export function resolveApiValue(apiFormat: ModelApiFormat): string {
   return "openai-completions";
 }
 
+export function matchesProviderConnection(config: unknown, input: ModelProviderInput): boolean {
+  const provider = asJsonObject(
+    asJsonObject(asJsonObject(asJsonObject(config).models).providers)[input.providerKey.trim()],
+  );
+  return (
+    typeof provider.baseUrl === "string" &&
+    provider.baseUrl.trim().replace(/\/+$/, "") === input.baseUrl.trim().replace(/\/+$/, "") &&
+    typeof provider.apiKey === "string" &&
+    provider.apiKey.trim() === input.apiKey.trim() &&
+    provider.api === resolveApiValue(input.apiFormat)
+  );
+}
+
 export function normalizeModelInput(value: unknown): ModelInputCapability[] {
   if (!Array.isArray(value)) return ["text"];
   const capabilities = value.filter(
@@ -145,7 +169,12 @@ function updateModelDefaults(
     else delete nextEntry.params;
   }
 
-  if (Object.keys(nextEntry).length > 0) nextModelDefaults[newModelRef] = nextEntry;
+  if (
+    Object.keys(nextEntry).length > 0 ||
+    Object.hasOwn(existingModelDefaults, oldModelRef) ||
+    Object.hasOwn(existingModelDefaults, newModelRef)
+  )
+    nextModelDefaults[newModelRef] = nextEntry;
   else delete nextModelDefaults[newModelRef];
   if (Object.keys(nextModelDefaults).length > 0) nextDefaults.models = nextModelDefaults;
   else delete nextDefaults.models;
@@ -199,8 +228,7 @@ function writeProviderModel(
     (entry) => isJsonObject(entry) && entry.id === modelName,
   );
   const providerModels = existingProviderModels.filter(
-    (entry) =>
-      !isJsonObject(entry) || (entry.id !== originalModelName && entry.id !== modelName),
+    (entry) => !isJsonObject(entry) || (entry.id !== originalModelName && entry.id !== modelName),
   );
   const insertionIndex =
     originalModelIndex >= 0
@@ -218,6 +246,10 @@ function writeProviderModel(
     newModelRef,
     options.reasoningEffort,
   );
+  const allowed = asJsonObject(nextDefaults.models);
+  if (!options.select && Object.keys(allowed).length && !Object.hasOwn(allowed, newModelRef)) {
+    nextDefaults.models = { ...allowed, [newModelRef]: {} };
+  }
   if (options.select) {
     nextDefaults = {
       ...nextDefaults,
@@ -251,45 +283,13 @@ function writeProviderModel(
 export function mergeModelProviderConfig(
   existing: JsonObject,
   input: ModelProviderInput,
+  options: { select?: boolean; displayName?: string } = {},
 ): JsonObject {
   return writeProviderModel(existing, input, {
     originalModelName: input.modelName,
-    displayName: input.modelName,
-    select: true,
+    displayName: options.displayName ?? input.modelName,
+    select: options.select ?? true,
   });
-}
-
-/**
- * Removes every configured model provider (the `models.providers` map). The single-provider
- * setup flow calls this before writing so that only the newly configured provider survives.
- */
-export function clearModelProviders(existing: JsonObject): JsonObject {
-  const existingModels = asJsonObject(existing.models);
-  if (!isJsonObject(existingModels.providers)) return existing;
-  const nextModels = { ...existingModels };
-  delete nextModels.providers;
-  return { ...existing, models: nextModels };
-}
-
-/**
- * Keeps only `providerKey` in the `models.providers` map, dropping every other configured
- * provider so a single active provider remains. When the active model is auth-managed and has no
- * `providers` entry (e.g. GitHub Copilot), pass its key and all providers are cleared.
- */
-export function retainOnlyProvider(existing: JsonObject, providerKey: string): JsonObject {
-  const existingModels = asJsonObject(existing.models);
-  if (!isJsonObject(existingModels.providers)) return existing;
-  const existingProviders = existingModels.providers;
-  const providerKeys = Object.keys(existingProviders);
-  if (providerKeys.length === 0) return existing;
-  if (providerKeys.length === 1 && providerKeys[0] === providerKey) return existing;
-  const nextModels = { ...existingModels };
-  if (Object.prototype.hasOwnProperty.call(existingProviders, providerKey)) {
-    nextModels.providers = { [providerKey]: existingProviders[providerKey] };
-  } else {
-    delete nextModels.providers;
-  }
-  return { ...existing, models: nextModels };
 }
 
 export function updateModelProviderConfig(
@@ -362,7 +362,8 @@ export function removeModelProviderConfig(
   const existingDefaults = asJsonObject(existingAgents.defaults);
   const nextDefaults = { ...existingDefaults };
   if (getPrimaryModel(existingDefaults.model) === modelRef) {
-    const replacement = fallbackModelRef && fallbackModelRef !== modelRef ? fallbackModelRef : undefined;
+    const replacement =
+      fallbackModelRef && fallbackModelRef !== modelRef ? fallbackModelRef : undefined;
     const nextSelector = replacePrimaryModel(existingDefaults.model, replacement);
     if (nextSelector === undefined) delete nextDefaults.model;
     else nextDefaults.model = nextSelector;
@@ -385,5 +386,66 @@ export function removeModelProviderConfig(
       ...existingAgents,
       defaults: nextDefaults,
     },
+  };
+}
+
+export function removeProviderConnectionConfig(
+  existing: JsonObject,
+  providerKey: string,
+): JsonObject {
+  const models = asJsonObject(existing.models);
+  const providers = asJsonObject(models.providers);
+  if (!Object.hasOwn(providers, providerKey)) {
+    throw new Error(`Provider "${providerKey}" is not configured`);
+  }
+  const nextProviders = { ...providers };
+  delete nextProviders[providerKey];
+
+  const belongsToProvider = (value: unknown) =>
+    typeof value === "string" && value.startsWith(`${providerKey}/`);
+  const clearModelReferences = (value: unknown): unknown => {
+    if (!isJsonObject(value)) return value;
+    const scope = { ...value };
+    if (belongsToProvider(scope.model)) {
+      delete scope.model;
+    } else if (isJsonObject(scope.model)) {
+      const selector = { ...scope.model };
+      if (belongsToProvider(selector.primary)) delete selector.primary;
+      if (Array.isArray(selector.fallbacks)) {
+        const remaining = selector.fallbacks.filter((model) => !belongsToProvider(model));
+        if (remaining.length !== selector.fallbacks.length) {
+          if (remaining.length) selector.fallbacks = remaining;
+          else delete selector.fallbacks;
+        }
+      }
+      if (Object.keys(selector).length) scope.model = selector;
+      else delete scope.model;
+    }
+    if (isJsonObject(scope.models)) {
+      const remaining = Object.fromEntries(
+        Object.entries(scope.models).filter(([modelRef]) => !belongsToProvider(modelRef)),
+      );
+      if (Object.keys(remaining).length !== Object.keys(scope.models).length) {
+        if (Object.keys(remaining).length) scope.models = remaining;
+        else delete scope.models;
+      }
+    }
+    return scope;
+  };
+  const agents = asJsonObject(existing.agents);
+  const nextAgents = { ...agents };
+  if (Object.hasOwn(agents, "defaults")) {
+    nextAgents.defaults = clearModelReferences(agents.defaults);
+  }
+  if (Array.isArray(agents.list)) nextAgents.list = agents.list.map(clearModelReferences);
+  if (isJsonObject(agents.entries)) {
+    nextAgents.entries = Object.fromEntries(
+      Object.entries(agents.entries).map(([id, agent]) => [id, clearModelReferences(agent)]),
+    );
+  }
+  return {
+    ...existing,
+    models: { ...models, providers: nextProviders },
+    agents: nextAgents,
   };
 }

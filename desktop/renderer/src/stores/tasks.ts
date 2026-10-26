@@ -7,6 +7,7 @@ export interface ScheduledTask {
   cron: string;
   agentId: string;
   enabled: boolean;
+  pausedByMxc: boolean;
   lastRun?: number;
   lastStatus?: string;
 }
@@ -14,6 +15,8 @@ export interface ScheduledTask {
 export const useTaskStore = defineStore("tasks", () => {
   const tasks = ref<ScheduledTask[]>([]);
   const loading = ref(false);
+  const pausedByMxc = ref(false);
+  const requestedMode = ref<"off" | "full" | "limited-dacl">("off");
 
   const error = ref("");
 
@@ -28,6 +31,11 @@ export const useTaskStore = defineStore("tasks", () => {
       }
       const res = await window.openclaw.cron.list();
       const jobs = Array.isArray(res?.jobs) ? res.jobs : [];
+      pausedByMxc.value = res?.pausedByMxc === true;
+      requestedMode.value =
+        res?.requestedMode === "full" || res?.requestedMode === "limited-dacl"
+          ? res.requestedMode
+          : "off";
       tasks.value = jobs.map((j: any) => {
         let cronExpr = "";
         if (j.schedule?.kind === "cron") cronExpr = j.schedule.expr || "";
@@ -39,7 +47,8 @@ export const useTaskStore = defineStore("tasks", () => {
           name: j.name || j.jobId || "unnamed",
           cron: cronExpr,
           agentId: j.agentId || "",
-          enabled: j.enabled ?? true,
+          enabled: j.requestedEnabled ?? j.enabled ?? true,
+          pausedByMxc: j.pausedByMxc === true && (j.requestedEnabled ?? j.enabled ?? true),
           lastRun: j.lastRun,
           lastStatus: j.lastStatus,
         } as ScheduledTask;
@@ -52,5 +61,5 @@ export const useTaskStore = defineStore("tasks", () => {
     }
   }
 
-  return { tasks, loading, error, fetchTasks };
+  return { tasks, loading, pausedByMxc, requestedMode, error, fetchTasks };
 });

@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { useSessionStore } from "./sessions";
 import { redactPii } from "@/utils/pii-scanner";
 import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
+import { canonicalAgentId } from "../../../src/agent-catalog";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -21,6 +22,7 @@ export interface ChatMessage {
   text?: string;
   attachments?: ChatAttachment[];
   originalText?: string;
+  stopReason?: string;
 }
 
 /**
@@ -33,10 +35,15 @@ export interface ChatErrorInfo {
     | "not_found" // 404 — likely wrong Base URL / endpoint path
     | "copilot_auth" // GitHub login could not be exchanged for a Copilot API token
     | "missing_provider_auth" // current model provider has no usable credentials
-    | "unauthorized" // 401 / 403 / invalid api key
+    | "unauthorized" // 401 / invalid api key
+    | "provider_access" // 403 or upstream-normalized authentication/authorization rejection
+    | "unsupported_model"
+    | "request_rejected"
     | "rate_limited" // 429
     | "model_not_found" // model name typo
     | "network" // ECONNREFUSED / ENOTFOUND / timeout
+    | "agent_initializing"
+    | "response_delayed" // UI inactivity estimate, not a reported model/network failure
     | "empty_response" // server responded but message was blank (often bad key/model)
     | "server_error" // 5xx
     | "aborted"
@@ -44,6 +51,18 @@ export interface ChatErrorInfo {
   raw?: string;
   /** HTTP status code when discernible from the raw error string. */
   status?: number;
+  source?: "watchdog";
+}
+
+function isGatewayConnectionError(raw: string): boolean {
+  return /(?:^|:\s*)(?:gateway not connected|disconnected|client stopped)\s*$/i.test(raw);
+}
+
+function isInferredWaitError(error: ChatErrorInfo | null): boolean {
+  return (
+    error?.source === "watchdog" ||
+    (error?.code === "network" && error.raw === undefined && error.status === undefined)
+  );
 }
 
 /**
@@ -57,26 +76,34 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
   const statusMatch = text.match(/\b(4\d{2}|5\d{2})\b\s*(status\s*code|status|error)?/i);
   const status = statusMatch ? Number(statusMatch[1]) : undefined;
 
+  if (/\bAgent\s+\S+\s+has not completed startup inspection and preparation\b/i.test(text)) {
+    return { code: "agent_initializing", raw: text, status };
+  }
   if (/missing-provider-auth/i.test(text) || /no api key found for provider/i.test(text)) {
     return { code: "missing_provider_auth", raw: text, status };
   }
   if (/copilot token exchange failed/i.test(text)) {
     return { code: "copilot_auth", raw: text, status };
   }
+  if (/UNSUPPORTED_CHAT_MODEL/.test(text)) return { code: "unsupported_model", raw: text, status };
+  if (
+    status === 403 ||
+    /forbidden|access[_ .-]*denied|couldn['’]t sign in to the ai service/i.test(text)
+  )
+    return { code: "provider_access", raw: text, status };
   if (status === 404 || /\b404\b/.test(text) || /not\s*found/i.test(text)) {
     if (/model/i.test(text)) return { code: "model_not_found", raw: text, status };
     return { code: "not_found", raw: text, status };
   }
   if (
     status === 401 ||
-    status === 403 ||
-    /\b(401|403)\b/.test(text) ||
-    /unauthorized|forbidden|invalid[_\s-]*api[_\s-]*key|incorrect api key|authentication/i.test(
-      lower,
-    )
+    /\b401\b/.test(text) ||
+    /unauthorized|invalid[_\s-]*api[_\s-]*key|incorrect api key|authentication/i.test(lower)
   ) {
     return { code: "unauthorized", raw: text, status };
   }
+  if (status === 400 || status === 422 || /ai service couldn['’]t accept this request/i.test(text))
+    return { code: "request_rejected", raw: text, status };
   if (
     status === 429 ||
     /\b429\b/.test(text) ||
@@ -180,6 +207,7 @@ export const useChatStore = defineStore("chat", () => {
   const streamStartedAt = ref<number | null>(null);
   const chatRunId = ref<string | null>(null);
   const lastError = ref<ChatErrorInfo | null>(null);
+  const agentPreparationErrors = ref<Record<string, ChatErrorInfo>>({});
   const wsConnected = ref(false);
   const mainSessionKey = ref<string | null>(null);
   /** Timestamp of the last streaming event (delta, tool, final). Used for stale-stream detection. */
@@ -191,15 +219,27 @@ export const useChatStore = defineStore("chat", () => {
 
   /**
    * The agent bound to the currently-active session.
-   * Non-default agents are encoded into the session key as `agent:<id>:...`;
-   * for a freshly-created session not yet synced, fall back to the pending
-   * agent; otherwise the session belongs to the default (main) agent.
+   * New sessions encode their agent as `agent:<id>:...`; legacy bare keys
+   * fall back to the pending agent or the default (main) agent.
    */
   const currentSessionAgentId = computed(() => {
     const match = /^agent:([^:]+):/.exec(sessionKey.value);
-    if (match) return match[1];
+    if (match) return canonicalAgentId(match[1]);
     return pendingSessionAgentId.value || "main";
   });
+
+  const agentPreparationError = computed(
+    () => agentPreparationErrors.value[currentSessionAgentId.value] ?? null,
+  );
+
+  function reportChatError(raw: string, agentId = currentSessionAgentId.value) {
+    const error = classifyChatError(raw);
+    if (error.code === "agent_initializing") {
+      agentPreparationErrors.value[agentId] = error;
+    } else {
+      lastError.value = error;
+    }
+  }
 
   /** Per-agent last message preview text */
   const lastMessageMap = ref<Record<string, string>>({});
@@ -788,11 +828,8 @@ export const useChatStore = defineStore("chat", () => {
     const isInitialLoad = messages.value.length === 0;
     const shouldShowLoading = options.showLoading ?? isInitialLoad;
     if (shouldShowLoading) loading.value = true;
-    // NOTE: do NOT clear lastError here.  loadHistory() is called by the
-    // 5s polling loop, and clearing would cause chat errors (e.g. 404 from
-    // a wrong Base URL, or an invalid API key) to flash and disappear.
-    // lastError is cleared only when the user takes a new action
-    // (sendMessage, switchSession, newSession, deleteSession).
+    // Polling must preserve reported provider errors. Only an inferred waiting
+    // notice can be retired when a completed reply is present.
     try {
       const key = callerResolvedKey || callerSessionKey;
       const res = await window.openclaw.chat.loadHistory(key);
@@ -800,11 +837,22 @@ export const useChatStore = defineStore("chat", () => {
       // the user switched to a different session while we awaited.
       if (seq !== _loadSeq) return;
       if (sessionKey.value !== callerSessionKey) return;
+      delete agentPreparationErrors.value[currentSessionAgentId.value];
+      if (
+        lastError.value?.raw &&
+        (classifyChatError(lastError.value.raw).code === "agent_initializing" ||
+          isGatewayConnectionError(lastError.value.raw))
+      ) {
+        lastError.value = null;
+      }
       const raw = Array.isArray(res.messages) ? res.messages : [];
       const filtered = raw
         .map((m) => stripSystemLines(m))
         .filter((m): m is ChatMessage => m != null && !isGatewaySystemMessage(m));
       const reconciled = preserveOptimisticAttachmentMetadata(messages.value, filtered);
+      if (isInferredWaitError(lastError.value) && hasCompletedReply(reconciled)) {
+        lastError.value = null;
+      }
       // Only replace messages if content actually changed — avoids
       // unnecessary Vue reactivity triggers and DOM re-renders.
       const changed = !_messagesEqual(messages.value, reconciled);
@@ -825,7 +873,9 @@ export const useChatStore = defineStore("chat", () => {
     } catch (err) {
       if (seq !== _loadSeq) return;
       if (sessionKey.value !== callerSessionKey) return;
-      lastError.value = classifyChatError(String(err));
+      const raw = String(err);
+      if (isGatewayConnectionError(raw)) return;
+      reportChatError(raw);
     } finally {
       if (seq === _loadSeq && sessionKey.value === callerSessionKey) loading.value = false;
     }
@@ -834,10 +884,17 @@ export const useChatStore = defineStore("chat", () => {
   /** Send a message to the current session. */
   async function sendMessage(text: string, attachments: ChatAttachment[] = []): Promise<boolean> {
     const msg = text.trim();
-    if ((!msg && attachments.length === 0) || sending.value || streaming.value) return false;
+    if (
+      (!msg && attachments.length === 0) ||
+      sending.value ||
+      streaming.value ||
+      agentPreparationError.value
+    )
+      return false;
 
     sending.value = true;
     lastError.value = null;
+    const sendingAgentId = currentSessionAgentId.value;
     let optimisticTimestamp: number | undefined;
     try {
       // Strict privacy mode redacts PII before sending.
@@ -867,6 +924,8 @@ export const useChatStore = defineStore("chat", () => {
       streamToolCalls.value = [];
       streamStartedAt.value = Date.now();
       lastStreamEventAt.value = Date.now();
+      lastWaitingNoticeKey = null;
+      lastRecoveryProbeAt = 0;
       streaming.value = true;
 
       await window.openclaw.chat.sendMessage(
@@ -877,7 +936,7 @@ export const useChatStore = defineStore("chat", () => {
       return true;
     } catch (err) {
       const error = String(err);
-      lastError.value = classifyChatError(error);
+      reportChatError(error, sendingAgentId);
       streaming.value = false;
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
@@ -929,6 +988,7 @@ export const useChatStore = defineStore("chat", () => {
       const legacyText =
         typeof payload.deltaText === "string" ? null : extractText(payload.message);
       streamText.value = applyChatDelta(streamText.value, payload, legacyText);
+      if (streamText.value.trim() && isInferredWaitError(lastError.value)) lastError.value = null;
     } else if (payload.state === "final") {
       // Track whether the model actually produced any observable output.
       // A silent "final" with no text + no tool calls usually indicates a
@@ -942,6 +1002,12 @@ export const useChatStore = defineStore("chat", () => {
       const hadStreamText = streamText.value.trim().length > 0;
       const finalMsgText = extractTextOnly(payload.message) ?? "";
       const hadFinalText = finalMsgText.trim().length > 0;
+      if (
+        (hadStreamText || hadFinalText || hadToolActivity) &&
+        isInferredWaitError(lastError.value)
+      ) {
+        lastError.value = null;
+      }
 
       // Save tool calls to the completed map, keyed by assistant group index.
       // Count existing assistant groups in messages to align with the grouping
@@ -1028,6 +1094,7 @@ export const useChatStore = defineStore("chat", () => {
       // Reload history to get the authoritative server-side version (like webchat)
       loadHistory();
     } else if (payload.state === "aborted") {
+      if (isInferredWaitError(lastError.value)) lastError.value = null;
       const msg = payload.message as ChatMessage | undefined;
       if (msg) {
         messages.value = [...messages.value, msg];
@@ -1048,7 +1115,7 @@ export const useChatStore = defineStore("chat", () => {
       streamStartedAt.value = null;
       lastStreamEventAt.value = null;
     } else if (payload.state === "error") {
-      lastError.value = classifyChatError(payload.errorMessage ?? "chat error");
+      reportChatError(payload.errorMessage ?? "chat error");
       streamText.value = "";
       streamToolCalls.value = [];
       streaming.value = false;
@@ -1219,6 +1286,33 @@ export const useChatStore = defineStore("chat", () => {
   // events (e.g. large file copy, build, database migration).  Use a much
   // longer timeout to avoid falsely resetting the UI.
   const STALE_STREAM_ACTIVE_TOOL_TIMEOUT_MS = 600_000; // 10 minutes
+  const CONNECTED_RESPONSE_GRACE_MS = 600_000;
+  let lastWaitingNoticeKey: string | null = null;
+  let lastRecoveryProbeAt = 0;
+  let recoveryProbePending = false;
+
+  function hasCompletedReply(history: ChatMessage[]): boolean {
+    const last = history.at(-1);
+    if (!last || last.role !== "assistant" || !history.some((message) => message.role === "user"))
+      return false;
+    if (
+      last.stopReason === "toolUse" ||
+      last.stopReason === "error" ||
+      last.stopReason === "aborted"
+    )
+      return false;
+    if (
+      Array.isArray(last.content) &&
+      last.content.some(
+        (block) =>
+          block &&
+          typeof block === "object" &&
+          (block.type === "toolCall" || block.type === "tool_use"),
+      )
+    )
+      return false;
+    return Boolean(extractTextOnly(last)?.trim());
+  }
 
   /**
    * Check whether the current streaming session has gone stale (no events
@@ -1241,10 +1335,8 @@ export const useChatStore = defineStore("chat", () => {
     const lastEvent = lastStreamEventAt.value ?? streamStartedAt.value;
     if (!lastEvent) return;
 
-    // Shorter timeout for the "never got a single event" case — typical
-    // symptom of an invalid API key / wrong model name where the provider
-    // closes the stream before emitting anything.  Without this, the user
-    // stares at "three dots" for 90s with no feedback.
+    // Check an entirely silent request earlier, but silence alone is not
+    // evidence of an authentication or network failure.
     const neverGotAnyEvent = lastStreamEventAt.value === null;
     const INITIAL_SILENCE_TIMEOUT_MS = 30_000;
     const threshold =
@@ -1254,17 +1346,30 @@ export const useChatStore = defineStore("chat", () => {
 
     if (Date.now() - lastEvent < threshold) return;
 
+    const hadAnyActivity = streamText.value.trim().length > 0 || streamToolCalls.value.length > 0;
+    if (
+      !hadAnyActivity &&
+      wsConnected.value &&
+      Date.now() - (streamStartedAt.value ?? lastEvent) < CONNECTED_RESPONSE_GRACE_MS
+    ) {
+      const noticeKey = `${resolvedSessionKey.value || sessionKey.value}:${streamStartedAt.value}`;
+      if (lastWaitingNoticeKey !== noticeKey) {
+        lastWaitingNoticeKey = noticeKey;
+        if (!lastError.value) lastError.value = { code: "response_delayed", source: "watchdog" };
+      }
+      if (!recoveryProbePending && Date.now() - lastRecoveryProbeAt >= 30_000) {
+        recoveryProbePending = true;
+        lastRecoveryProbeAt = Date.now();
+        void recoverAfterReconnect().finally(() => {
+          recoveryProbePending = false;
+        });
+      }
+      return;
+    }
+
     console.warn(
       `[chat] Stale stream detected: no events for ${Math.round((Date.now() - lastEvent) / 1000)}s — resetting`,
     );
-    // Capture whether we ever received anything for this turn.  If we've
-    // been streaming for the full timeout without a single delta or tool
-    // event, the model request likely never produced output (common when
-    // the API key is wrong — some providers reject auth by closing the
-    // stream silently instead of returning a proper 401 through openclaw).
-    const neverGotAnyEventFinal =
-      lastStreamEventAt.value === null || lastStreamEventAt.value === streamStartedAt.value;
-    const hadAnyActivity = streamText.value.trim().length > 0 || streamToolCalls.value.length > 0;
     streaming.value = false;
     sending.value = false;
     streamText.value = "";
@@ -1273,7 +1378,7 @@ export const useChatStore = defineStore("chat", () => {
     streamStartedAt.value = null;
     lastStreamEventAt.value = null;
     if (!hadAnyActivity && !lastError.value) {
-      lastError.value = { code: neverGotAnyEventFinal ? "empty_response" : "network" };
+      lastError.value = { code: "response_delayed", source: "watchdog" };
     }
     loadHistory();
   }
@@ -1288,12 +1393,22 @@ export const useChatStore = defineStore("chat", () => {
   async function recoverAfterReconnect() {
     if (!streaming.value) return;
     const key = resolvedSessionKey.value || sessionKey.value;
+    const startedAt = streamStartedAt.value;
     try {
       const res = await window.openclaw.chat.loadHistory(key);
-      const serverMsgs = Array.isArray(res.messages) ? res.messages : [];
-      // If the server has more messages than we had locally before streaming
-      // started, the task completed during the disconnect window.
-      if (serverMsgs.length > messages.value.length) {
+      if (
+        !streaming.value ||
+        (resolvedSessionKey.value || sessionKey.value) !== key ||
+        streamStartedAt.value !== startedAt
+      )
+        return;
+      const serverMsgs = (Array.isArray(res.messages) ? res.messages : [])
+        .map((message) => stripSystemLines(message))
+        .filter(
+          (message): message is ChatMessage => message != null && !isGatewaySystemMessage(message),
+        );
+      // Additional tool messages alone do not establish a completed reply.
+      if (serverMsgs.length > messages.value.length && hasCompletedReply(serverMsgs)) {
         console.warn(
           `[chat] Server has ${serverMsgs.length} messages vs local ${messages.value.length} after reconnect — resetting stream`,
         );
@@ -1303,9 +1418,11 @@ export const useChatStore = defineStore("chat", () => {
         chatRunId.value = null;
         streamStartedAt.value = null;
         lastStreamEventAt.value = null;
+        if (isInferredWaitError(lastError.value)) lastError.value = null;
         loadHistory();
       }
-    } catch {
+    } catch (error) {
+      console.warn("[chat] Could not reconcile the pending response:", error);
       // Network still unstable — the regular stale-stream poll will catch it later
     }
   }
@@ -1322,17 +1439,14 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** Start a new session (preserves the old one). */
-  function newSession(agentId?: string) {
-    // Save the current session before switching
+  function newSession(agentId: string) {
     // Save the current session before switching
     _syncToSessionStore();
     _saveCurrentState();
 
     const suffix = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Encode the agent into the session key so the gateway routes the message
-    // to the selected agent. Bare keys (and "main") are normalised to the
-    // default (main) agent server-side, so only non-default agents are prefixed.
-    const key = agentId && agentId !== "main" ? `agent:${agentId}:${suffix}` : suffix;
+    // Multi-agent Gateways require an explicit owner, including for main-agent drafts.
+    const key = `agent:${agentId}:${suffix}`;
     pendingSessionAgentId.value = agentId;
     sessionKey.value = key;
     resolvedSessionKey.value = null;
@@ -1591,6 +1705,8 @@ export const useChatStore = defineStore("chat", () => {
     streamStartedAt,
     chatRunId,
     lastError,
+    agentPreparationErrors,
+    agentPreparationError,
     wsConnected,
     mainSessionKey,
     lastMessageMap,

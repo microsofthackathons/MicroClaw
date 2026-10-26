@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -51,6 +52,7 @@ _UNINSTALLER_STATE_PATHS = (
     Path("_internal"),
 )
 _MANAGED_STATE_PATHS = _MANAGED_STATE_CORE_PATHS + _UNINSTALLER_STATE_PATHS
+_ALLOWED_MANAGED_STATE_PATHS = _MANAGED_STATE_PATHS + (Path("extensions") / "llama-cpp",)
 
 
 def managed_state_paths(*, include_uninstaller: bool) -> tuple[Path, ...]:
@@ -232,12 +234,21 @@ def _windows_move_file(source: Path, destination: Path, *, replace: bool) -> Non
         wintypes.DWORD,
     ]
     kernel32.MoveFileExW.restype = wintypes.BOOL
-    if not kernel32.MoveFileExW(
-        str(_native_io_path(source)),
-        str(_native_io_path(destination)),
-        flags,
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
+    retry_delays = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 2.0)
+    for attempt in range(len(retry_delays) + 1):
+        if kernel32.MoveFileExW(
+            str(_native_io_path(source)),
+            str(_native_io_path(destination)),
+            flags,
+        ):
+            return
+        winerror = ctypes.get_last_error()
+        if winerror not in {5, 32, 33} or attempt == len(retry_delays):
+            error = ctypes.WinError(winerror)
+            error.filename = os.fspath(source)
+            error.filename2 = os.fspath(destination)
+            raise error
+        time.sleep(retry_delays[attempt])
 
 
 def _durable_rename(source: Path, destination: Path, *, replace: bool = False) -> None:
@@ -726,7 +737,7 @@ class OpenClawUpgradeTransaction:
             paths = self.manifest.managed_paths
             if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
                 raise ValueError("schema 2 manifest must declare managed paths")
-            allowed = {path.as_posix() for path in _MANAGED_STATE_PATHS}
+            allowed = {path.as_posix() for path in _ALLOWED_MANAGED_STATE_PATHS}
             if len(paths) != len(set(paths)) or any(path not in allowed for path in paths):
                 raise ValueError("manifest contains an invalid managed path")
             if self.manifest.backup_mode == UpgradeBackupMode.FULL and paths:

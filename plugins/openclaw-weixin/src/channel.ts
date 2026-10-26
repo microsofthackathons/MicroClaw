@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { ChannelPlugin, OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/core";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 
 import {
   registerWeixinAccountId,
@@ -33,26 +33,28 @@ import { applyWeixinMessageSendingHook, emitWeixinMessageSent } from "./messagin
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import { sendMessageWeixin, StreamingMarkdownFilter } from "./messaging/send.js";
 import { downloadRemoteImageToTemp } from "./cdn/upload.js";
+import {
+  assertMxcWeixinIngressReleased,
+  assertMxcWeixinOutboundMediaSource,
+  authorizeMxcWeixinOutboundMedia,
+  isMxcManagedWeixin,
+  resolveWeixinLocalMediaPath,
+  resolveWeixinOutboundTempRoot,
+} from "./security/mxc-policy.js";
 
 /** Returns true when mediaUrl refers to a local filesystem path (absolute or relative). */
 function isLocalFilePath(mediaUrl: string): boolean {
-  // Treat anything without a URL scheme (no "://") as a local path.
-  return !mediaUrl.includes("://");
+  return mediaUrl.startsWith("file://") || !mediaUrl.includes("://");
 }
 
 function isRemoteUrl(mediaUrl: string): boolean {
   return mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 }
 
-const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
-
-/** Resolve any local path scheme to an absolute filesystem path. */
-function resolveLocalPath(mediaUrl: string): string {
-  if (mediaUrl.startsWith("file://")) return new URL(mediaUrl).pathname;
-  // Resolve any relative path (./foo, ../foo, .openclaw/foo, foo/bar) against cwd
-  if (!path.isAbsolute(mediaUrl)) return path.resolve(mediaUrl);
-  return mediaUrl;
-}
+const LEGACY_MEDIA_OUTBOUND_TEMP_DIR = path.join(
+  resolvePreferredOpenClawTmpDir(),
+  "weixin/media/outbound-temp",
+);
 
 /**
  * Resolve the effective accountId for an outbound message when the caller
@@ -113,6 +115,7 @@ async function sendWeixinOutbound(params: {
   accountId?: string | null;
   contextToken?: string;
 }): Promise<{ channel: string; messageId: string }> {
+  assertMxcWeixinIngressReleased();
   const account = resolveWeixinAccount(params.cfg, params.accountId);
   const aLog = logger.withAccount(account.accountId);
   assertSessionActive(account.accountId);
@@ -139,6 +142,7 @@ async function sendWeixinOutbound(params: {
   filteredText = sendingResult.text;
 
   try {
+    assertMxcWeixinIngressReleased();
     const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
       baseUrl: account.baseUrl,
       token: account.token,
@@ -194,13 +198,22 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
     },
   },
   agentPrompt: {
-    messageToolHints: () => [
-      "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a local file path or a remote URL. You do not need to specify 'to' — the current conversation recipient is used automatically.",
-      "When the user asks you to find an image from the web, use a web search or browser tool to find a suitable image URL, then send it using the message tool with 'media' set to that HTTPS image URL — do NOT download the image first.",
-      "IMPORTANT: When generating or saving a file to send, always use an absolute path (e.g. /tmp/photo.png), never a relative path like ./photo.png. Relative paths cannot be resolved and the file will not be delivered.",
-      "IMPORTANT: When creating a cron job (scheduled task) for the current Weixin user, you MUST set delivery.to to the user's Weixin ID (the xxx@im.wechat address from the current conversation) AND set delivery.accountId to the current AccountId. Without an explicit 'to', the cron delivery will fail with 'requires target'. Without an explicit 'accountId', the message may be sent from the wrong bot account. Example: delivery: { mode: 'announce', channel: 'openclaw-weixin', to: '<current_user_id@im.wechat>', accountId: '<current_AccountId>' }.",
-      "IMPORTANT: When outputting a MEDIA: directive to send a file, the MEDIA: tag MUST be on its own line — never inline with other text. Correct:\nSome text here\nMEDIA:/path/to/file.mp4\nIncorrect: Some text here MEDIA:/path/to/file.mp4",
-    ],
+    messageToolHints: () => {
+      const mediaHints = isMxcManagedWeixin()
+        ? [
+            "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a broker-approved local file path. Remote HTTP(S) media URLs are blocked in MXC mode. You do not need to specify 'to' — the current conversation recipient is used automatically.",
+          ]
+        : [
+            "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a local file path or a remote URL. You do not need to specify 'to' — the current conversation recipient is used automatically.",
+            "When the user asks you to find an image from the web, use a web search or browser tool to find a suitable image URL, then send it using the message tool with 'media' set to that HTTPS image URL — do NOT download the image first.",
+          ];
+      return [
+        ...mediaHints,
+        "IMPORTANT: When generating or saving a file to send, always use an absolute path (e.g. /tmp/photo.png), never a relative path like ./photo.png. Relative paths cannot be resolved and the file will not be delivered.",
+        "IMPORTANT: When creating a cron job (scheduled task) for the current Weixin user, you MUST set delivery.to to the user's Weixin ID (the xxx@im.wechat address from the current conversation) AND set delivery.accountId to the current AccountId. Without an explicit 'to', the cron delivery will fail with 'requires target'. Without an explicit 'accountId', the message may be sent from the wrong bot account. Example: delivery: { mode: 'announce', channel: 'openclaw-weixin', to: '<current_user_id@im.wechat>', accountId: '<current_AccountId>' }.",
+        "IMPORTANT: When outputting a MEDIA: directive to send a file, the MEDIA: tag MUST be on its own line — never inline with other text. Correct:\nSome text here\nMEDIA:/path/to/file.mp4\nIncorrect: Some text here MEDIA:/path/to/file.mp4",
+      ];
+    },
   },
   reload: { configPrefixes: ["channels.openclaw-weixin"] },
   config: {
@@ -229,6 +242,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       return result;
     },
     sendMedia: async (ctx) => {
+      assertMxcWeixinIngressReleased();
       const accountId = ctx.accountId || resolveOutboundAccountId(ctx.cfg, ctx.to);
       const account = resolveWeixinAccount(ctx.cfg, accountId);
       const aLog = logger.withAccount(account.accountId);
@@ -241,6 +255,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       }
 
       const mediaUrl = ctx.mediaUrl;
+      if (mediaUrl) assertMxcWeixinOutboundMediaSource(mediaUrl);
       let text = ctx.text ?? "";
 
       const sendingResult = await applyWeixinMessageSendingHook({
@@ -258,15 +273,20 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       if (mediaUrl && (isLocalFilePath(mediaUrl) || isRemoteUrl(mediaUrl))) {
         let filePath: string;
         if (isLocalFilePath(mediaUrl)) {
-          filePath = resolveLocalPath(mediaUrl);
+          filePath = resolveWeixinLocalMediaPath(mediaUrl);
           aLog.debug(`sendMedia: uploading local file ${filePath}`);
         } else {
           aLog.debug(`sendMedia: downloading remote mediaUrl=${mediaUrl.slice(0, 80)}...`);
-          filePath = await downloadRemoteImageToTemp(mediaUrl, MEDIA_OUTBOUND_TEMP_DIR);
+          filePath = await downloadRemoteImageToTemp(
+            mediaUrl,
+            resolveWeixinOutboundTempRoot(LEGACY_MEDIA_OUTBOUND_TEMP_DIR),
+          );
           aLog.debug(`sendMedia: remote image downloaded to ${filePath}`);
         }
+        filePath = await authorizeMxcWeixinOutboundMedia(filePath);
         const contextToken = getContextToken(account.accountId, ctx.to);
         try {
+          assertMxcWeixinIngressReleased();
           const result = await sendWeixinMediaFile({
             filePath,
             to: ctx.to,
@@ -284,6 +304,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
 
       const contextToken = getContextToken(account.accountId, ctx.to);
       try {
+        assertMxcWeixinIngressReleased();
         const result = await sendMessageWeixin({ to: ctx.to, text, opts: {
           baseUrl: account.baseUrl,
           token: account.token,

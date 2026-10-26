@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertMxcReadyForChat,
@@ -173,11 +174,7 @@ describe("Microsoft MXC sandbox policy", () => {
     };
     ensureMxcSecurityConfig(config, "C:\\app\\mxc-plugin", {});
     expect(config.plugins.load.paths).toEqual(["C:\\app\\mxc-plugin"]);
-    expect(config.plugins.allow).toEqual([
-      MXC_PLUGIN_ID,
-      "github-copilot",
-      "openclaw-weixin",
-    ]);
+    expect(config.plugins.allow).toEqual([MXC_PLUGIN_ID, "github-copilot", "openclaw-weixin"]);
   });
 
   it("packages MXC native resources and no longer ships AppContainer interception", () => {
@@ -204,6 +201,65 @@ describe("Microsoft MXC sandbox policy", () => {
     expect(main).toContain("await validateDesiredMxcPolicies(config)");
     expect(plugin).toContain('process.env.MICROCLAW_MXC_READY !== "1"');
     expect(runtime).toContain("config.processContainer.leastPrivilege = true");
+  });
+
+  it.each([
+    { ready: false, owned: true, alive: true, allowed: false },
+    { ready: true, owned: false, alive: true, allowed: false },
+    { ready: true, owned: true, alive: false, allowed: false },
+    { ready: true, owned: true, alive: true, allowed: true },
+  ])("gates actual Main chat on worker and live owned Gateway proof: %j", (state) => {
+    const filename = path.resolve(__dirname, "main.ts");
+    const source = ts.createSourceFile(
+      filename,
+      fs.readFileSync(filename, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const guard = source.statements.find(
+      (node): node is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(node) && node.name?.text === "assertManagedMxcReady",
+    );
+    expect(guard).toBeDefined();
+    const body = ts.transpileModule(guard!.getText(source), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const check = new Function(
+      "mxcRuntime",
+      "assertMxcReadyForChat",
+      "gatewaySpawnedByUs",
+      "isManagedGatewayProcessAlive",
+      `${body}; return assertManagedMxcReady;`,
+    )(
+      { getStatus: () => ({ ...createInitialMxcStatus(), ready: state.ready }) },
+      assertMxcReadyForChat,
+      state.owned,
+      () => state.alive,
+    );
+    if (state.allowed) expect(check).not.toThrow();
+    else expect(check).toThrow();
+  });
+
+  it("rejects external ownership before startup mutations and cannot package a native fallback", () => {
+    const main = fs.readFileSync(path.resolve(__dirname, "main.ts"), "utf8");
+    const startup = main.slice(main.indexOf("async function startGatewayInner("));
+    const refusal = startup.indexOf("failForExternalGateway(configuredPort)");
+    expect(refusal).toBeGreaterThan(0);
+    expect(refusal).toBeLessThan(startup.indexOf("seedWorkspaceFiles(stateDir)"));
+    expect(refusal).toBeLessThan(startup.indexOf("ensureSelectedModelPlugin()"));
+    expect(refusal).toBeLessThan(startup.indexOf("reconcileConfiguredAgentOwnedSkills("));
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"),
+    );
+    expect(JSON.stringify(manifest.scripts)).not.toContain("prepare-windows-node-resources");
+    const resources = fs.readFileSync(
+      path.resolve(__dirname, "..", "scripts", "prepare-resources.mjs"),
+      "utf8",
+    );
+    expect(resources).not.toContain("prepare-windows-node-resources");
+    const preload = fs.readFileSync(path.resolve(__dirname, "preload.ts"), "utf8");
+    expect(preload).not.toContain('ipcRenderer.invoke("windows-node-mxc:');
+    expect(preload).not.toContain('ipcRenderer.invoke("plugin:weixin:remote-approval:');
   });
 });
 

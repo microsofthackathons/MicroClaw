@@ -51,7 +51,7 @@ skills/**/_meta.json
 # Studio backend test fixtures (if any get added later)
 desktop/studio-backend/data/
 
-# Mirrored third-party plugin source; runtime comes from the pinned release archive.
+# Mirrored third-party plugin source with targeted MicroClaw SDK compatibility patches.
 plugins/openclaw-weixin/
 
 # Top-level legal / generated text

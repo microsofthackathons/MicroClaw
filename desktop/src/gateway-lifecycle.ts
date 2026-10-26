@@ -1,6 +1,6 @@
 export type GatewayRestartDependencies = {
   stopClient: () => void;
-  stopProcess: () => void;
+  stopProcess: () => void | Promise<void>;
   isPortOccupied: () => Promise<boolean>;
   startGateway: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
@@ -18,6 +18,21 @@ export type AgentRosterReloadDependencies = {
 
 export type AgentRosterApplyResult = "hot-reloaded" | "restarted" | "timed-out";
 
+export function shouldRetryGatewayStartup(
+  exitCode: number | null,
+  stderr: string,
+  retriesRemaining: number,
+): boolean {
+  return (
+    retriesRemaining > 0 &&
+    exitCode === 1 &&
+    stderr.includes("OpenClaw plugin migration inputs changed during startup convergence;") &&
+    stderr.includes(
+      "Restart OpenClaw so state migrations run against the final config and plugin inventory.",
+    )
+  );
+}
+
 export function requiresExternalGatewayStop(
   alreadyRunning: boolean,
   rosterChanged: boolean,
@@ -25,6 +40,26 @@ export function requiresExternalGatewayStop(
   hasManagedProcess: boolean,
 ): boolean {
   return alreadyRunning && rosterChanged && !(spawnedByUs && hasManagedProcess);
+}
+
+export function isGatewayServiceReady(
+  clientConnected: boolean,
+  postSpawnRestartDone: boolean,
+): boolean {
+  return clientConnected && postSpawnRestartDone;
+}
+
+export function isApplicationServiceReadyState(
+  clientConnected: boolean,
+  postSpawnRestartDone: boolean,
+  securityTransitionInProgress: boolean,
+  protectedIngressReady: boolean,
+): boolean {
+  return (
+    isGatewayServiceReady(clientConnected, postSpawnRestartDone) &&
+    !securityTransitionInProgress &&
+    protectedIngressReady
+  );
 }
 
 export async function waitForAgentRosterReload(
@@ -60,7 +95,7 @@ export async function hardRestartGateway(dependencies: GatewayRestartDependencie
     throw new Error("gateway restart poll interval must be positive");
   }
   dependencies.stopClient();
-  dependencies.stopProcess();
+  await dependencies.stopProcess();
   const attempts = Math.max(1, Math.ceil(dependencies.timeoutMs / dependencies.pollMs));
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!(await dependencies.isPortOccupied())) {

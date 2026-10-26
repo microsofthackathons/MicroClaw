@@ -6,6 +6,23 @@ import {
 } from "./skill-config";
 
 describe("applyAgentSkillsToConfig", () => {
+  it("updates keyed entries and aliases without recreating legacy roster/default fields", () => {
+    const config = {
+      agents: {
+        ownership: "explicit",
+        entries: {
+          main: { skills: ["keep"] },
+          "creative-muse": { skills: ["old"] },
+          singer: { skills: ["old"] },
+        },
+      },
+    };
+    applyAgentSkillsToConfig(config, "singer", ["excel-xlsx"]);
+    expect(config.agents.entries["creative-muse"].skills).toEqual(["Excel / XLSX"]);
+    expect(config.agents.entries.singer.skills).toEqual(["Excel / XLSX"]);
+    expect(config.agents.entries.main.skills).toEqual(["keep"]);
+    expect(config.agents).not.toHaveProperty("list");
+  });
   it("writes OpenClaw match-names (not raw slugs) for the differing skills", () => {
     const config: MutableSkillsConfig = {
       agents: { list: [{ id: "main", skills: [] }] },
@@ -43,27 +60,42 @@ describe("applyAgentSkillsToConfig", () => {
       agents: {
         list: [
           { id: "main", skills: ["keep"] },
-          { id: "painter", skills: [] },
+          { id: "custom-agent", skills: [] },
         ],
       },
     };
-    applyAgentSkillsToConfig(config, "painter", ["excel-xlsx"]);
+    applyAgentSkillsToConfig(config, "custom-agent", ["excel-xlsx"]);
     const list = config.agents!.list as Array<{ id: string; skills: string[] }>;
     expect(list[0].skills).toEqual(["keep"]);
     expect(list[1].skills).toEqual(["Excel / XLSX"]);
   });
 
+  it("synchronizes a canonical agent's legacy session aliases", () => {
+    const config: MutableSkillsConfig = {
+      agents: {
+        list: [
+          { id: "main", skills: ["keep"] },
+          { id: "market-sentinel", skills: ["stale-canonical"] },
+          { id: "leopard", skills: ["stale-alias"] },
+        ],
+      },
+    };
+
+    applyAgentSkillsToConfig(config, "market-sentinel", ["healthcheck"]);
+
+    const list = config.agents!.list as Array<{ id: string; skills: string[] }>;
+    expect(list.find((entry) => entry.id === "market-sentinel")?.skills).toEqual(["healthcheck"]);
+    expect(list.find((entry) => entry.id === "leopard")?.skills).toEqual(["healthcheck"]);
+    expect(list.find((entry) => entry.id === "main")?.skills).toEqual(["keep"]);
+  });
+
   it("throws when the agent list is missing", () => {
-    expect(() => applyAgentSkillsToConfig({}, "main", [])).toThrow(
-      /No configured agents/,
-    );
+    expect(() => applyAgentSkillsToConfig({}, "main", [])).toThrow(/No configured agents/);
   });
 
   it("throws when the agent id is not present", () => {
     const config: MutableSkillsConfig = { agents: { list: [{ id: "main" }] } };
-    expect(() => applyAgentSkillsToConfig(config, "ghost", [])).toThrow(
-      /Unknown agent "ghost"/,
-    );
+    expect(() => applyAgentSkillsToConfig(config, "ghost", [])).toThrow(/Unknown agent "ghost"/);
   });
 });
 

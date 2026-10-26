@@ -40,7 +40,8 @@ Loaded via `NODE_OPTIONS="--require sandbox-preload.js"` into the Gateway proces
 
 | File | Purpose |
 |------|---------|
-| `sandbox-preload.js` | **Entry point** — external app whitelist (HMAC-verified), loads all modules, handles delayed activation |
+| `sandbox-preload.js` | **Entry point** — external app whitelist (HMAC-verified), loads all modules, activates tool enforcement immediately |
+| `sandbox-host-runtime.js` | Canonical-path- and SHA256-verified control-plane import bridge; exposes only read-only boot and process-creation identity probes |
 | `sandbox-state.js` | Shared state: RO/RW directory lists, safe path detection, `isBlockedPath`/`isReadBlockedPath` |
 | `sandbox-permission.js` | Permission request logic: `shouldBlockWrite`/`shouldBlockRead`, sync IPC dialogs, TTL caches, async pending tracking |
 | `sandbox-sensitive.js` | **Sensitive path detection** — standalone module, single source of truth for protected directories (`.ssh`, `.gnupg`, `.aws`, `.azure`, `.config/gcloud`). Hard-denies access without IPC or dialogs. Does not depend on `sandbox-permission.js` or `sandbox-state.js` |
@@ -52,8 +53,38 @@ Loaded via `NODE_OPTIONS="--require sandbox-preload.js"` into the Gateway proces
 
 ### Activation Modes
 
-- **Main gateway** (`OPENCLAW_SANDBOX_BYPASS=1`): Sandbox activates on the next tick after HTTP server starts listening. Pre-listen startup commands (netstat, etc.) run with bypass; once the server is ready, the sandbox activates before any incoming requests are processed.
-- **Forked workers** (bypass absent): Sandbox active immediately.
+- **Gateway and workers**: Tool sandbox enforcement is active immediately, including before HTTP readiness. There is no startup bypass window.
+- **Trusted control plane**: Verified OpenClaw control-plane bundles receive a restricted child-process adapter based on their canonical paths and loaded source hashes, not the package version. There is no runtime version whitelist. Their exact boot-identity query uses a fixed system PowerShell executable, arguments, environment, and timeout on the host. Process creation times use the read-only native Windows API, with a fixed PowerShell fallback accepting only a validated integer PID. Unknown modules and other commands still use the normal sandboxed child-process API. Agent/plugin imports never receive this adapter, even for the same query text.
+- **Internal SQLite workers**: Existing canonical-path, argument, and state-directory checks continue to constrain their host-runtime access. This bridge does not grant a general shell exemption or change database access scope.
+
+OpenClaw's internal SQLite snapshot integration recognizes both the 2026.9.x
+`openclaw-sqlite-readonly-<pid>-<uuid>` directory format and the 2026.10.2/10.3
+`openclaw-sqlite-readonly-v2-<uuid>` format under `%LOCALAPPDATA%\openclaw`.
+The internal worker exception still requires the exact Node executable, worker
+path, trusted runtime caller, supported mode, and a canonical database path
+inside the OpenClaw state directory. Redirected or malformed staging roots are
+rejected; this does not allow arbitrary Node commands outside the sandbox.
+Scoped SQLite sessions validate each IPC request before the runtime handles it;
+database requests must stay inside the canonical state directory. OpenClaw
+2026.10.5 reads may include mode-specific `auth` or `operation` metadata carrying
+the captured file identity, an optional artifact-preserving flag, and an encoded
+read-only operation command. Only these known fields and types are accepted;
+OpenClaw still verifies the physical file identity and admits the read operation.
+Snapshot, staging, and transfer messages retain their two-field envelope. This
+shared session path serves cloud providers and local models alike. The separate
+state-ownership reader is restricted to its exact worker, caller, and database
+argument. Worker-thread startup uses the package root captured from the desktop
+when Node has not initialized the worker's entry arguments yet.
+
+The installer grants read-only access to the actual OpenClaw npm installation
+prefix, which may differ from the Node.js directory. Ancestor grants use numeric
+SIDs and metadata/traverse rights only. Required grants allow up to five minutes
+for Windows ACL propagation. If a shared system directory cannot be changed,
+installation must still prove that sandboxed Node can read the installed runtime
+and create/remove a file in the sandbox workspace; it fails if that check fails.
+Direct Node script arguments retain quoting around paths with spaces. This
+prevents startup probes such as `npm root -g` from requesting access to a
+nonexistent `C:\Program` path while still inspecting the complete file path.
 
 ## How Permission Requests Work
 
@@ -104,7 +135,46 @@ dotnet publish -c Release -r win-x64 --self-contained
 
 Output: `bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe`
 
-The JS files don't need building — they're plain ES5 (no transpilation) for maximum compatibility with `--require`.
+The JS files don't need building — the bundled Node.js runtime loads them directly through `--require`, without transpilation.
+
+## Startup Preparation
+
+Startup still reads and verifies the current ACLs before launching Gateway. Grants
+and sensitive-directory shields write the DACL only when it actually changes;
+unchanged permissions do not need another inheritance propagation or invalidate
+OpenClaw's file inventory. Permission upgrades, downgrades, and removed shields
+are checked again rather than trusting a cached setup marker.
+
+The runtime's fixed Windows boot-identity query is handled as an internal read-only
+probe. A module-loader bridge verifies the pinned control-plane source before
+providing that capability, independently of call-stack depth and worker entry
+points. There is no global command-text or call-stack exemption in the tool hooks.
+It uses the absolute system PowerShell executable and a fixed system module path,
+not a caller-supplied executable, environment, or working directory. Modified
+scripts and ordinary agent shell commands retain the normal sandbox checks.
+
+Desktop-managed Gateways also set `OPENCLAW_NO_AUTO_UPDATE=1`: MicroClaw's own
+update checker remains responsible for the packaged application/runtime. The
+upstream Gateway must not separately probe global npm/pnpm installation owners
+or self-update a runtime owned by the installer.
+
+Verified internal SQLite workers inherit the compile-cache directory captured at
+Gateway startup, so repeated snapshots can reuse V8 bytecode. Caller-provided
+cache paths, `NODE_OPTIONS`, and `NODE_PATH` are not forwarded to these workers.
+
+Desktop logs include `sandbox-timing` for individual provisioning commands and
+`startup-timing` boundaries for configuration, provisioning, stale ACL cleanup,
+and state hardening. The boot probe reports its own elapsed milliseconds.
+
+Run the isolated Windows ACL regression with an installed SDK target:
+
+```powershell
+$env:MICROCLAW_DOTNET_TEST_TARGET = 'net10.0-windows'
+python -m unittest tests.test_appcontainer_acl
+```
+
+The test changes ACLs only in a temporary project build directory. It does not
+create an AppContainer profile or change the installed application's permissions.
 
 ## Environment Variables
 

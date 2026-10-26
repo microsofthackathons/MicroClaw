@@ -2,13 +2,18 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
   const noop = () => {};
   const noopAsync = async () => {};
   const noopSub = () => noop;
+  const rejectNativeSandboxBackend = async (): Promise<never> => {
+    throw new Error("Windows Node MXC is unavailable in the mandatory MXC worker backend");
+  };
   const emptyFiles = { attachments: [], rejections: [] };
   const emptySkills = { builtin: [], custom: [], managed: [] };
   const browserAgentRoster = [
     { id: "main", name: "Assistant" },
     { id: "master-archive", name: "Master Archive" },
-    { id: "painter", name: "Van Gogh" },
-    { id: "growth-hacker", name: "Growth Hacker" },
+    { id: "office-artisan", name: "Office Artisan" },
+    { id: "dr-pulse", name: "Dr. Pulse" },
+    { id: "intel-analyst", name: "Intel Analyst" },
+    { id: "market-sentinel", name: "Market Sentinel" },
   ];
   const browserAgentsSnapshot = () => ({
     agents: browserAgentRoster.map((agent) => ({ ...agent })),
@@ -41,9 +46,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
   ];
 
   return {
+    features: { githubCopilot: false },
     gateway: {
       getStatus: async () => "running",
       getPort: async () => 18789,
+      isServiceReady: async () => true,
       warmUpAgent: async () => ({ outcome: "skipped", transcriptDeleted: true }),
       restart: noopAsync,
       onStatus: noopSub,
@@ -53,6 +60,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       },
       onWsConnected: noopSub,
       onWsDisconnected: noopSub,
+      onServiceReady: noopSub,
     },
     config: {
       getStateDir: async () => "",
@@ -96,6 +104,57 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       removeFolder: async () => browserMxcStatus(),
       retry: async () => browserMxcStatus(),
       cleanup: async () => browserMxcStatus(),
+    },
+
+    windowsNodeMxc: {
+      getStatus: rejectNativeSandboxBackend,
+      preflight: rejectNativeSandboxBackend,
+      setEnabled: rejectNativeSandboxBackend,
+      validateFolderPolicy: rejectNativeSandboxBackend,
+      applyFolderPolicy: rejectNativeSandboxBackend,
+      listDurableApprovals: rejectNativeSandboxBackend,
+      revokeDurableApproval: rejectNativeSandboxBackend,
+      revokeAllDurableApprovals: rejectNativeSandboxBackend,
+      getPendingApproval: rejectNativeSandboxBackend,
+      respondApproval: rejectNativeSandboxBackend,
+      onApprovalRequest: noopSub,
+      onLifecycleState: noopSub,
+    },
+    sandbox: {
+      getStatus: async () => ({
+        available: true,
+        enabled: true,
+        launcherPath: null,
+        containerName: "browser-dev",
+        capabilities: [],
+        sandboxDirsRW: [],
+        sandboxDirsRO: [],
+        externalApps: [],
+      }),
+      setEnabled: async () => ({ ok: true }),
+      getExternalApps: async () => [],
+      setExternalApps: async (apps) => ({ ok: true, apps }),
+      applyExternalApps: async () => ({ ok: true, restarted: false }),
+      getCapabilities: async () => [],
+      setCapabilities: async (caps) => ({ ok: true, caps, needsRestart: false }),
+      provision: async () => true,
+      getUserDirs: async () => ({ rw: [], ro: [] }),
+      addUserDir: async () => ({ ok: false, reason: "browser-dev", dirs: { rw: [], ro: [] } }),
+      stageUserDir: async ({ draft }) => ({
+        ok: false,
+        reason: "browser-dev",
+        dirs: draft,
+      }),
+      removeUserDir: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
+      setUserDirAccess: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
+      onPermissionRequest: noopSub,
+      respondPermission: noopAsync,
+      onAclTimeout: noopSub,
+      onAclIneffective: noopSub,
+      onPermissionCompleted: noopSub,
+      verifyAcls: async () => ({ missing: [], stale: [], ok: [], errors: [] }),
+      repairAcl: async () => ({ ok: true }),
+      revokeStaleAcl: async () => ({ ok: true }),
     },
     settings: {
       get: async () => ({
@@ -143,9 +202,68 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onEvent: noopSub,
       onToolEvent: noopSub,
     },
-    cron: { list: async () => ({ jobs: [] }) },
+    cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },
     model: {
+      selectDefault: async () => {
+        throw new Error("Default model selection requires the desktop application");
+      },
+      session: {
+        get: async (sessionKey) => ({ sessionKey, modelRef: null, overridden: false }),
+        select: async () => {
+          throw new Error("Session model selection requires the desktop application");
+        },
+        getRecovery: async () => null,
+        recover: async () => {
+          throw new Error("Session model recovery requires the desktop application");
+        },
+        onRecoveryChanged: noopSub,
+      },
+      local: {
+        getSnapshot: async () => ({ ok: true, value: { models: [] } }),
+        getCapabilities: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        detect: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        inspectProvider: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        installProvider: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        prepare: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        activate: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        answer: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        cancel: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        getOperation: async () => ({ ok: true, value: null }),
+        resume: async () => ({
+          ok: false,
+          error: "Local models unavailable in browser development",
+        }),
+        onEvent: noopSub,
+      },
+      discoverModels: async () => ({ ok: false, error: "unavailable" }),
+      registerCatalogModel: async () => {
+        throw new Error("Model registration requires the desktop Gateway");
+      },
       testConnection: async () => ({ ok: true, message: "Connection successful" }),
       prepareGitHubCopilot: async () => ({ restartRequired: false }),
       startGitHubCopilotLogin: async () => ({ sessionId: "browser-dev" }),
@@ -159,6 +277,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       weixin: {
         getStatus: async () => ({
           enabled: false,
+          requestedEnabled: false,
+          effectiveEnabled: false,
+          pausedByMxc: false,
           installed: false,
           loggedIn: false,
           loginInProgress: false,
@@ -172,6 +293,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           message: "Unavailable in browser development",
         }),
         disconnect: async () => ({ ok: true }),
+        getRemoteApprovalStatus: rejectNativeSandboxBackend,
+        setRemoteApprovalEnabled: rejectNativeSandboxBackend,
+        revokeRemoteApproval: rejectNativeSandboxBackend,
         onLoginOutput: noopSub,
         onLoginDone: noopSub,
       },

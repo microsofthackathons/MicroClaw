@@ -11,6 +11,16 @@ win:
       arch:
         - x64
   icon: assets/microclaw.ico
+  signExts:
+    # These are unmodified third-party MXC binaries. MicroClaw-owned helpers,
+    # including microclaw-mxc-host-prep.exe, remain eligible for product signing.
+    - "!mxc-diagnostic-console.exe"
+    - "!winhttp-proxy-shim.exe"
+    - "!wxc-exec.exe"
+    - "!wxc-host-prep.exe"
+    - "!wxc-test-proxy.exe"
+    - "!wxc-windows-sandbox-daemon.exe"
+    - "!wxc-windows-sandbox-guest.exe"
 
 appx:
   artifactName: MicroClawDesktop-${version}-${arch}.msix
@@ -37,6 +47,18 @@ nsis:
 extraResources:
   - from: dist/github-copilot-auth-worker.js
     to: github-copilot-auth-worker.js
+  - from: src/openclaw-approval-replay-compat.mjs
+    to: openclaw-approval-replay-compat.mjs
+  - from: src/openclaw-fs-safe-compat.mjs
+    to: openclaw-fs-safe-compat.mjs
+  - from: src/openclaw-state-owner-compat.mjs
+    to: openclaw-state-owner-compat.mjs
+  - from: src/openclaw-local-model-compat.mjs
+    to: openclaw-local-model-compat.mjs
+  - from: src/local-model-sources.json
+    to: local-model-sources.json
+  - from: ../NOTICE
+    to: NOTICE
   - from: resources/node.exe
     to: node.exe
   - from: resources/openclaw/
@@ -51,6 +73,9 @@ extraResources:
     to: mxc-plugin/node_modules/node-pty/
   - from: node_modules/semver/
     to: mxc-plugin/node_modules/semver/
+
+  - from: ../skills/rednote-publisher/
+    to: agent-skills/rednote-publisher/
 
 asarUnpack:
   - node_modules/@microsoft/mxc-sdk/bin/**/*

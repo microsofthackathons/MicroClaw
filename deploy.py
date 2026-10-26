@@ -447,7 +447,9 @@ class DeployerApp(tk.Tk):
             page,
             text=(
                 "This will install the MicroClaw desktop app\n"
-                "and configure skills, sandbox, and plugins."
+                "and configure skills, sandbox, and plugins.\n"
+                "Includes official llama.cpp provider capabilities.\n"
+                "Models and runtime downloads require separate confirmation."
             ),
             font=self._font_subtitle,
             bg=CARD_BG,
@@ -921,6 +923,7 @@ class DeployerApp(tk.Tk):
             (25, "Installing Node.js...", lambda: self._ensure_node(ws)),
             (35, "Configuring npm registry...", ws.setup_npm_mirror),
             (50, "Installing MicroClaw background service...", lambda: self._ensure_openclaw(ws)),
+            (52, "Backing up MicroClaw settings...", ws.prepare_openclaw_upgrade),
             (55, "Updating PATH...", ws.add_to_path),
             # ── MicroClaw components ──
             (60, "Installing desktop client...", ws.install_desktop_client),
@@ -996,7 +999,7 @@ class DeployerApp(tk.Tk):
                     "MicroClaw/OpenClaw could not be closed automatically. "
                     "Exit it from the system tray and retry."
                 )
-        return ws.prepare_openclaw_upgrade()
+        return ws.prepare_openclaw_update()
 
     def _confirm_close_running_apps(self, active: ActiveInstallation) -> bool:
         completed = threading.Event()
@@ -1062,6 +1065,9 @@ class DeployerApp(tk.Tk):
         if src:
             try:
                 shutil.copy2(str(src), str(dest_dir / "setup-dependencies.ps1"))
+                shutil.copy2(
+                    str(src.with_name("node-runtime.ps1")), str(dest_dir / "node-runtime.ps1")
+                )
                 self.logger.info(f"Setup script copied to {dest_dir} (for reference)")
             except Exception as e:
                 self.logger.warn(f"Could not copy setup script: {e}")

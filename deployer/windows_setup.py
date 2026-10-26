@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.request
 import zipfile
@@ -32,6 +33,7 @@ from deployer.install_manifest import (
     write_install_manifest,
 )
 from deployer.logger import DeployerLogger
+from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
 from deployer.openclaw_upgrade import (
     RECOVERABLE_PHASES,
     OpenClawInstallation,
@@ -45,6 +47,8 @@ from deployer.openclaw_upgrade import (
     prune_previous_committed_backups,
 )
 from deployer.openclaw_version import (
+    NODE_DEFAULT_MAJOR,
+    NODE_ENGINE_RANGE,
     NODE_FALLBACK_VERSION,
     OPENCLAW_TARGET_VERSION,
     is_supported_node_version,
@@ -66,8 +70,20 @@ MIRROR_TENCENT = "tencent"
 MIRROR_HUAWEI = "huawei"
 MIRROR_FALLBACK = MIRROR_NPMMIRROR
 NPM_REGISTRY_HUAWEI = "https://repo.huaweicloud.com/repository/npm/"
+NPM_REGISTRY_HUAWEI_MIRRORS = "https://mirrors.huaweicloud.com/repository/npm/"
 _PARALLEL_PLUGIN_ID = "parallel"
 _PARALLEL_PLUGIN_PACKAGE = "@openclaw/parallel-plugin"
+_PARALLEL_PLUGIN_SPEC = f"{_PARALLEL_PLUGIN_PACKAGE}@{OPENCLAW_TARGET_VERSION}"
+_RETRYABLE_NPM_REGISTRY_ERROR = re.compile(
+    r"ERR_SSL|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ETARGET|"
+    r"\bE(?:401|403|404|408|429|5\d{2})\b|"
+    r"\b(?:401|403|404|408|429|5\d{2})\b",
+    re.IGNORECASE,
+)
+_LOCAL_MODEL_PLUGIN_ID = "llama-cpp"
+_LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider"
+_LOCAL_MODEL_PLUGIN_VERSION = OPENCLAW_TARGET_VERSION
+_LOCAL_MODEL_PLUGIN_SHA256 = "8c782ef30d528be1a7b57f80d9cfd30b18d52087452f98168894d2da387519e9"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
 _SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
 
@@ -399,7 +415,7 @@ class WindowsSetup:
     def __init__(self, config, logger: DeployerLogger):
         self.cfg = config
         self.log = logger
-        self.node_version = config.get("node.version", "22")
+        self.node_version = config.get("node.version", NODE_DEFAULT_MAJOR)
         # Re-read env var at construction time (UI may have set it)
         self.node_dir = Path(os.environ.get("OPENCLAW_NODE_DIR", str(DEFAULT_NODE_DIR)))
         self._node_bin: Path | None = None
@@ -567,6 +583,22 @@ class WindowsSetup:
             MIRRORS.get(mirror_name, MIRRORS[MIRROR_FALLBACK])["npm_registry"],
         )
         return self.cfg.get("npm.registry", default_registry) or default_registry
+
+    def _npm_registry_env(self, registry: str, env: dict[str, str] | None = None) -> dict[str, str]:
+        base_env = self._get_env() if env is None else env
+        settings = {
+            "npm_config_registry": registry,
+            "npm_config_replace_registry_host": "always",
+            "npm_config_fetch_retries": "1",
+            "npm_config_fetch_retry_mintimeout": "1000",
+            "npm_config_fetch_retry_maxtimeout": "3000",
+            "npm_config_fetch_timeout": "60000",
+        }
+        registry_env = {
+            key: value for key, value in base_env.items() if key.lower() not in settings
+        }
+        registry_env.update(settings)
+        return registry_env
 
     def _desktop_install_is_current(self) -> bool:
         return self._build_install_identity_matches() and all(
@@ -1023,7 +1055,7 @@ class WindowsSetup:
         return False
 
     def _resolve_latest_version(self, major: str) -> str:
-        """Resolve '22' to the latest specific version like '22.14.0'."""
+        """Resolve '26' to the latest supported specific version like '26.1.0'."""
         self.log.debug(f"Resolving latest Node.js {major}.x version…")
         import json
         import re
@@ -1041,8 +1073,8 @@ class WindowsSetup:
                 with resp:
                     data = json.loads(resp.read())
                 for entry in data:
-                    ver = entry.get("version", "").lstrip("v")
-                    if ver.startswith(f"{major}."):
+                    ver = entry.get("version", "").removeprefix("v")
+                    if ver.startswith(f"{major}.") and is_supported_node_version(ver):
                         self.log.debug(f"Resolved from {url}: {ver}")
                         return ver
             except Exception as e:
@@ -1056,7 +1088,7 @@ class WindowsSetup:
                 html = resp.read().decode("utf-8", errors="replace")
             arch = self._get_arch()
             pattern = rf"node-v({major}\.\d+\.\d+)-win-{arch}\.zip"
-            matches = re.findall(pattern, html)
+            matches = [v for v in re.findall(pattern, html) if is_supported_node_version(v)]
             if matches:
                 best = max(matches, key=lambda v: tuple(int(x) for x in v.split(".")))
                 self.log.debug(f"Resolved from npmmirror: {best}")
@@ -1072,9 +1104,8 @@ class WindowsSetup:
     def check_node_windows(self) -> bool:
         """Check if a suitable Node.js is available on Windows.
 
-        Only the managed install (inside node_dir) counts as a pass.
-        A system-level node is logged for diagnostics but never accepted,
-        because its version/PATH-priority is outside our control.
+        Accept a supported managed install or a system Node in a standard
+        installation directory, provided npm is also available.
         """
         # Check our managed install first — only this is authoritative
         managed_node = self.node_dir / "node.exe"
@@ -1094,7 +1125,7 @@ class WindowsSetup:
             elif ver:
                 self.log.info(
                     "Managed Node.js "
-                    f"{ver} is outdated (need >=22.22.3, <23 / >=24.15.0, <25 / >=25.9.0), "
+                    f"{ver} is unsupported (need {NODE_ENGINE_RANGE}; Node 26 recommended), "
                     "will reinstall"
                 )
 
@@ -1165,13 +1196,14 @@ class WindowsSetup:
         """Resolve the Node.js version to install, never downgrading.
 
         Starts from the configured target line (``self.node_version``, default
-        ``22``) but bumps up to the major of any already-installed Node when
+        ``26``) but bumps up to the major of any already-installed Node when
         that is higher, so the per-machine MSI performs an upgrade rather than
         a blocked downgrade.
         """
         target_line = str(self.node_version)
-        match = re.match(r"(\d+)", target_line)
-        target_major = int(match.group(1)) if match else 0
+        target_major = int(target_line) if re.fullmatch(r"[1-9][0-9]*", target_line) else 26
+        if target_major < 24 or target_major == 25:
+            target_major = 26
 
         installed_major = self._installed_node_major()
         if installed_major is not None and installed_major > target_major:
@@ -1180,9 +1212,22 @@ class WindowsSetup:
                 f"{installed_major}.x line instead of {target_major}.x — the MSI refuses "
                 "to install an older version over a newer one."
             )
-            target_line = str(installed_major)
+            target_major = installed_major
+        if target_major == 25:
+            target_major = 26
 
-        return self._resolve_latest_version(target_line)
+        version = self._resolve_latest_version(str(target_major))
+        if not is_supported_node_version(version):
+            raise NodeInstallBlocked(
+                f"Resolved Node.js {version!r} is unsupported by OpenClaw "
+                f"{OPENCLAW_TARGET_VERSION}; need {NODE_ENGINE_RANGE}."
+            )
+        if installed_major is not None and int(version.split(".")[0]) < installed_major:
+            raise NodeInstallBlocked(
+                f"Could not resolve a supported Node.js {installed_major}.x or newer release; "
+                f"refusing to downgrade to {version}. Retry when the version index is available."
+            )
+        return version
 
     def install_node_windows(self) -> bool:
         """Download and install Node.js on Windows via the official signed MSI.
@@ -1195,10 +1240,13 @@ class WindowsSetup:
         """
         self._select_download_mirror()
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
+        existing_node_directory = self.node_dir.exists()
 
         version = self._resolve_target_node_version()
-        if not _VERSION_RE.match(version):
-            self.log.error(f"Invalid resolved version: {version!r}")
+        if not _VERSION_RE.fullmatch(version) or not is_supported_node_version(version):
+            self.log.error(
+                f"Unsupported resolved Node.js version: {version!r}; need {NODE_ENGINE_RANGE}"
+            )
             return False
         self.log.info(f"Resolved version: v{version}")
 
@@ -1297,11 +1345,19 @@ class WindowsSetup:
             self._node_bin = self.node_dir
 
             ver = self._get_node_version(str(node_exe))
-            if not ver:
-                self.log.error("Node.js installed but verification failed")
+            if not ver or not is_supported_node_version(ver):
+                self.log.error(
+                    f"Node.js installed but verification failed: {ver!r} (need {NODE_ENGINE_RANGE})"
+                )
                 return False
 
             self.log.success(f"Node.js {ver} installed to {self.node_dir}")
+
+            # Removing an upgraded prerequisite would also delete the restored
+            # OpenClaw package when npm's prefix shares this directory.
+            if existing_node_directory:
+                self.log.info("Preserving the existing Node.js directory during upgrade rollback.")
+                return True
 
             # Record that MicroClaw owns this Node install so the uninstaller
             # knows it's safe to remove.  Without this marker, uninstall
@@ -1446,7 +1502,7 @@ class WindowsSetup:
             self.log.error("npm not found")
             return False
         try:
-            env = self._get_env()
+            env = self._npm_registry_env(registry)
 
             # Set prefix so `npm install -g` puts openclaw.cmd in our dir
             try:
@@ -1582,6 +1638,13 @@ class WindowsSetup:
 
     def check_openclaw_windows(self) -> bool:
         """Return whether the exact pinned OpenClaw package is installed."""
+        try:
+            if PackageManagerUpgrade.pending(DEFAULT_DESKTOP_DIR) is not None:
+                self.log.info("OpenClaw package replacement still needs repair/migration.")
+                return False
+        except (OSError, ValueError) as error:
+            self.log.error(f"Cannot inspect OpenClaw package upgrade recovery: {error}")
+            return False
         installation = self._detect_openclaw_installation()
         if installation is None:
             return False
@@ -1602,7 +1665,62 @@ class WindowsSetup:
         except OSError:
             return False
 
+    def _find_active_state_owner(self) -> dict | None:
+        state_dir = (Path.home() / ".openclaw").resolve()
+        lock_dir = (
+            Path.home() / "AppData" / "Local" / "OpenClaw" / "locks" / "openclaw-state-owners"
+        )
+        for lock_path in lock_dir.glob("state.*.lock"):
+            if not re.fullmatch(r"state\.[0-9a-f]{16}\.lock", lock_path.name):
+                continue
+            try:
+                payload = json.loads(lock_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("role") != "gateway":
+                    continue
+                if "stateOwnerKind" in payload:
+                    continue
+                owner_state_dir = payload.get("stateDir")
+                if (
+                    not isinstance(owner_state_dir, str)
+                    or Path(owner_state_dir).resolve() != state_dir
+                ):
+                    continue
+                namespace = payload.get("processNamespace")
+                if namespace is not None and (
+                    not isinstance(namespace, dict)
+                    or namespace.get("platform") != "win32"
+                    or not isinstance(namespace.get("host"), str)
+                    or namespace["host"].casefold() != platform.node().casefold()
+                ):
+                    continue
+                pid = payload.get("pid")
+                start_time = payload.get("startTime")
+                if (
+                    not isinstance(pid, int)
+                    or isinstance(pid, bool)
+                    or pid <= 0
+                    or not isinstance(start_time, (int, float))
+                    or isinstance(start_time, bool)
+                    or not process_is_alive(pid)
+                ):
+                    continue
+                recorded_start = datetime.fromtimestamp(start_time / 1000, UTC)
+                process_start = process_started_at(pid)
+                if process_start is None:
+                    continue
+                if process_start.tzinfo is None:
+                    process_start = process_start.replace(tzinfo=UTC)
+                if abs((recorded_start - process_start).total_seconds()) > 0.01:
+                    continue
+            except (OSError, ValueError, TypeError, OverflowError):
+                continue
+            return {**payload, "lockPath": None}
+        return None
+
     def _find_active_gateway_lock(self) -> dict | None:
+        state_owner = self._find_active_state_owner()
+        if state_owner is not None:
+            return state_owner
         local_appdata = Path(
             os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         )
@@ -1914,7 +2032,10 @@ class WindowsSetup:
             transaction.rollback()
             if transaction.manifest.phase == UpgradePhase.ROLLED_BACK:
                 return True
-            if original_phase == UpgradePhase.BACKING_UP:
+            if (
+                original_phase == UpgradePhase.BACKING_UP
+                or transaction.manifest.backup_mode == UpgradeBackupMode.MANAGED_STATE
+            ):
                 transaction.complete_rollback()
                 return True
             transaction.complete_rollback()
@@ -1943,8 +2064,7 @@ class WindowsSetup:
         return self._rollback_openclaw_transaction(transaction)
 
     def prepare_openclaw_upgrade(self) -> bool:
-        """Block active gateways and snapshot the current package and state."""
-        self._openclaw_upgrade_required = True
+        """Back up MicroClaw-managed files after the official core update finishes."""
         self._weixin_policy_snapshot = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
@@ -1956,10 +2076,11 @@ class WindowsSetup:
         installation = self._detect_openclaw_installation()
         if not self._gateway_is_stopped_for_upgrade():
             return False
-        same_version = installation is not None and installation.version == OPENCLAW_TARGET_VERSION
-        if same_version:
-            self.install_prefix = installation.prefix
-            self._openclaw_upgrade_required = False
+        if installation is None or installation.version != OPENCLAW_TARGET_VERSION:
+            self.log.error(
+                "OpenClaw must reach the target version before backing up MicroClaw files"
+            )
+            return False
         prefix = (
             installation.prefix if installation is not None else self._choose_npm_install_prefix()
         )
@@ -1974,17 +2095,11 @@ class WindowsSetup:
         )
         self.install_prefix = prefix
         try:
-            backup_mode = (
-                UpgradeBackupMode.FULL
-                if self._openclaw_upgrade_required
-                else UpgradeBackupMode.MANAGED_STATE
+            backup_mode = UpgradeBackupMode.MANAGED_STATE
+            self._uninstaller_current_for_upgrade = self._uninstaller_install_is_current()
+            selected_managed_paths = managed_state_paths(
+                include_uninstaller=not self._uninstaller_current_for_upgrade
             )
-            selected_managed_paths = None
-            if backup_mode == UpgradeBackupMode.MANAGED_STATE:
-                self._uninstaller_current_for_upgrade = self._uninstaller_install_is_current()
-                selected_managed_paths = managed_state_paths(
-                    include_uninstaller=not self._uninstaller_current_for_upgrade
-                )
             transaction = OpenClawUpgradeTransaction.create(
                 microclaw_root=DEFAULT_DESKTOP_DIR,
                 state_dir=Path.home() / ".openclaw",
@@ -1999,20 +2114,372 @@ class WindowsSetup:
                 transaction.close()
                 self._openclaw_transaction = None
                 return False
-            if backup_mode == UpgradeBackupMode.MANAGED_STATE:
-                self.log.info(
-                    f"OpenClaw {OPENCLAW_TARGET_VERSION} is already installed; "
-                    "creating a lightweight managed-state rollback point."
-                )
+            self.log.info(
+                "Backing up MicroClaw-managed files only; OpenClaw owns core updates and migrations."
+            )
             transaction.backup()
             self._invalidate_committed_install_manifest()
             return True
         except Exception as error:
+            self.log.debug(traceback.format_exc())
             self.log.error(f"Could not prepare OpenClaw upgrade backup: {error}")
             transaction = self._openclaw_transaction
             if transaction is not None and self._rollback_openclaw_transaction(transaction):
                 self._openclaw_transaction = None
             return False
+
+    def prepare_openclaw_update(self) -> bool:
+        """Stop before core changes and recover transactions from older installers."""
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        if not self.recover_interrupted_openclaw_upgrade():
+            return False
+        try:
+            pending = PackageManagerUpgrade.pending(DEFAULT_DESKTOP_DIR)
+        except (OSError, ValueError) as error:
+            self.log.error(f"Cannot inspect OpenClaw package upgrade recovery: {error}")
+            return False
+        if pending is not None and pending.data["targetVersion"] != OPENCLAW_TARGET_VERSION:
+            self.log.error(
+                f"Pending package upgrade requires the {pending.data['targetVersion']} installer; "
+                "its backup and recovery record are unchanged."
+            )
+            return False
+        installation = self._detect_openclaw_installation()
+        self._openclaw_upgrade_required = (
+            pending is not None
+            or installation is None
+            or installation.version != OPENCLAW_TARGET_VERSION
+        )
+        if installation is not None:
+            self.install_prefix = installation.prefix
+            if not self._allow_openclaw_update(installation):
+                return False
+        return True
+
+    def _allow_openclaw_update(self, installation: OpenClawInstallation) -> bool:
+        version_pattern = r"[0-9]{4}\.[0-9]+\.[0-9]+"
+        if re.fullmatch(version_pattern, installation.version) is None:
+            self.log.error(
+                f"Cannot safely compare installed OpenClaw version: {installation.version}"
+            )
+            return False
+        installed = tuple(map(int, installation.version.split(".")))
+        target = tuple(map(int, OPENCLAW_TARGET_VERSION.split(".")))
+        if installed > target:
+            self.log.error(
+                f"OpenClaw {installation.version} is newer than {OPENCLAW_TARGET_VERSION}; "
+                "refusing an automatic downgrade. Use the newer installer."
+            )
+            return False
+        return True
+
+    def update_openclaw_windows(self, installation: OpenClawInstallation) -> bool:
+        """Replace the pinned package after backup, then run the target Doctor once."""
+        if not self._allow_openclaw_update(installation):
+            return False
+        self.install_prefix = installation.prefix
+        if installation.version == OPENCLAW_TARGET_VERSION:
+            self.log.info("OpenClaw version unchanged; skipping core update and Doctor.")
+            return True
+        return self._upgrade_openclaw_with_package_manager(installation)
+
+    def _package_upgrade_is_idle(self) -> bool:
+        if not self._gateway_is_stopped_for_upgrade():
+            return False
+        processes = self._process_snapshot()
+        if os.getpid() not in processes:
+            self.log.error("Cannot verify that previous OpenClaw/npm processes have exited")
+            return False
+        for pid, process in processes.items():
+            if process.name.lower() not in {"node", "node.exe"}:
+                continue
+            command = process.command_line.lower()
+            if (
+                not command
+                or "openclaw" in command
+                or (
+                    "npm-cli.js" in command
+                    and re.search(r"\b(install|update|uninstall|ci)\b", command)
+                )
+            ):
+                self.log.error(
+                    f"OpenClaw/npm process {pid} is still active. Close it before retrying; "
+                    "its recovery artifacts will not be removed."
+                )
+                return False
+        return True
+
+    def _run_package_upgrade_phase(
+        self,
+        label: str,
+        command: list[str],
+        prefix: Path,
+        env: dict[str, str],
+        *,
+        json_output: bool = False,
+    ) -> dict:
+        self.log.step(label)
+        started = time.monotonic()
+        success = False
+        try:
+            result = self._run_official_update(
+                command,
+                cwd=str(prefix),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=900,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"{label}: {(result.stderr or result.stdout or '')[-3000:]}")
+            if result.stderr and result.stderr.strip():
+                self.log.info(result.stderr.strip())
+            if json_output:
+                outcome = json.loads(result.stdout)
+                if not isinstance(outcome, dict):
+                    raise ValueError(f"{label} did not return a JSON object")
+            else:
+                if result.stdout and result.stdout.strip():
+                    self.log.info(result.stdout.strip())
+                outcome = {}
+            success = True
+            return outcome
+        finally:
+            self.log.info(
+                f"Package upgrade timing: {label} [{'success' if success else 'failed'}] "
+                f"{time.monotonic() - started:.2f}s"
+            )
+
+    def _upgrade_openclaw_with_package_manager(
+        self,
+        installation: OpenClawInstallation | None,
+    ) -> bool:
+        upgrade = None
+        try:
+            with package_upgrade_lock(DEFAULT_DESKTOP_DIR):
+                upgrade = PackageManagerUpgrade.pending(DEFAULT_DESKTOP_DIR)
+                if upgrade and upgrade.data["targetVersion"] != OPENCLAW_TARGET_VERSION:
+                    raise ValueError(
+                        "This pending package upgrade requires the "
+                        f"{upgrade.data['targetVersion']} installer"
+                    )
+                if not self._package_upgrade_is_idle():
+                    return False
+                if installation is None and upgrade is None:
+                    raise ValueError("No OpenClaw installation or package recovery record")
+                prefix = upgrade.prefix if upgrade else installation.prefix
+                if installation:
+                    if not self._allow_openclaw_update(installation):
+                        return False
+                    if upgrade and (
+                        installation.prefix != prefix
+                        or installation.version
+                        not in {upgrade.data["sourceVersion"], OPENCLAW_TARGET_VERSION}
+                    ):
+                        raise ValueError(
+                            "Installed OpenClaw does not match the package recovery record"
+                        )
+                self.install_prefix = prefix
+                state_dir = Path.home() / ".openclaw"
+                env = self._get_env()
+                env.update(self._load_openclaw_state_env(state_dir))
+                for variable, expected in (
+                    ("OPENCLAW_STATE_DIR", state_dir),
+                    ("OPENCLAW_CONFIG_PATH", state_dir / "openclaw.json"),
+                    ("OPENCLAW_HOME", Path.home()),
+                ):
+                    values = [value for key, value in env.items() if key.upper() == variable]
+                    if any(
+                        value and Path(value).expanduser().resolve() != expected.resolve()
+                        for value in values
+                    ):
+                        raise ValueError(
+                            f"Custom {variable} requires a manual upgrade; no state was replaced"
+                        )
+                registries = self._npm_registry_attempts()
+                registry = registries[0]
+                env = self._npm_registry_env(registry, env)
+                env = {
+                    key: value
+                    for key, value in env.items()
+                    if key.upper()
+                    not in {
+                        "NPM_CONFIG_PREFIX",
+                        "OPENCLAW_STATE_DIR",
+                        "OPENCLAW_CONFIG_PATH",
+                        "OPENCLAW_HOME",
+                        "OPENCLAW_SERVICE_REPAIR_POLICY",
+                    }
+                }
+                env.update(
+                    npm_config_prefix=str(prefix),
+                    OPENCLAW_STATE_DIR=str(state_dir),
+                    OPENCLAW_CONFIG_PATH=str(state_dir / "openclaw.json"),
+                    OPENCLAW_HOME=str(Path.home()),
+                    OPENCLAW_SERVICE_REPAIR_POLICY="external",
+                    NODE_LLAMA_CPP_SKIP_DOWNLOAD="true",
+                )
+                node = str(self._resolve_validation_node())
+                npm = self._get_npm_path()
+                if not npm:
+                    raise FileNotFoundError("npm not found for the package-manager upgrade")
+                if not upgrade or not upgrade.data.get("archiveSha256"):
+                    if not installation or installation.version == OPENCLAW_TARGET_VERSION:
+                        raise ValueError(
+                            "No verified pre-upgrade state backup; refusing replacement"
+                        )
+                    metadata = json.loads(
+                        (installation.package_dir / "package.json").read_text(encoding="utf-8")
+                    )
+                    if (
+                        metadata.get("name") != "openclaw"
+                        or metadata.get("version") != installation.version
+                    ):
+                        raise ValueError("Unexpected source package identity")
+                    upgrade = PackageManagerUpgrade.create(
+                        DEFAULT_DESKTOP_DIR,
+                        prefix,
+                        source_version=installation.version,
+                        target_version=OPENCLAW_TARGET_VERSION,
+                    )
+                    self.log.info(
+                        f"Upgrading OpenClaw {installation.version} -> {OPENCLAW_TARGET_VERSION} "
+                        "with npm after a verified data backup; no old runtime snapshot is taken."
+                    )
+                    backup = self._run_package_upgrade_phase(
+                        "Backing up OpenClaw state and workspaces",
+                        [
+                            node,
+                            str(installation.entry_path),
+                            "backup",
+                            "create",
+                            "--output",
+                            str(upgrade.archive),
+                            "--verify",
+                            "--json",
+                        ],
+                        prefix,
+                        env,
+                        json_output=True,
+                    )
+                    if (
+                        backup.get("verified") is not True
+                        or backup.get("includeWorkspace") is not True
+                        or backup.get("onlyConfig") is not False
+                        or not isinstance(backup.get("archivePath"), str)
+                        or not isinstance(backup.get("assets"), list)
+                        or Path(backup.get("archivePath", "")).resolve()
+                        != upgrade.archive.resolve()
+                        or not any(
+                            asset.get("kind") == "state"
+                            and isinstance(asset.get("sourcePath"), str)
+                            and Path(asset.get("sourcePath", "")).resolve() == state_dir.resolve()
+                            for asset in backup.get("assets", [])
+                            if isinstance(asset, dict)
+                        )
+                    ):
+                        raise ValueError(
+                            "Official backup did not verify the full state/workspace plan"
+                        )
+                    upgrade.save("backed-up", archiveSha256=upgrade.archive_digest())
+                upgrade.verify_archive()
+                self.log.info(f"SHA-256 verified pre-upgrade data backup: {upgrade.archive}")
+                if not self._package_upgrade_is_idle():
+                    return False
+                if not upgrade.data["packageReady"] or not installation:
+                    upgrade.save("package-installing", packageReady=False)
+                    self._run_package_upgrade_phase(
+                        f"Replacing OpenClaw runtime with npm ({OPENCLAW_TARGET_VERSION})",
+                        [
+                            npm,
+                            "install",
+                            "-g",
+                            f"openclaw@{OPENCLAW_TARGET_VERSION}",
+                            "--allow-scripts=openclaw",
+                            "--prefix",
+                            str(prefix),
+                            "--registry",
+                            registry,
+                            "--replace-registry-host",
+                            "always",
+                            "--loglevel",
+                            "info",
+                            "--no-progress",
+                        ],
+                        prefix,
+                        env,
+                    )
+                    installation = self._openclaw_installation_at_prefix(prefix)
+                    if not installation or installation.version != OPENCLAW_TARGET_VERSION:
+                        raise ValueError(
+                            "npm did not install the exact OpenClaw target at its old prefix"
+                        )
+                    upgrade.save("package-installed", packageReady=True)
+                if installation.version != OPENCLAW_TARGET_VERSION:
+                    raise ValueError(
+                        f"The replacement runtime is not OpenClaw {OPENCLAW_TARGET_VERSION}"
+                    )
+                env = self._with_state_owner_compatibility(env, installation)
+                command = [node, str(installation.entry_path)]
+                if not self._package_upgrade_is_idle():
+                    return False
+                upgrade.save("migrating")
+                self._run_package_upgrade_phase(
+                    "Repairing OpenClaw configuration and data with Doctor",
+                    command + ["doctor", "--fix", "--non-interactive"],
+                    prefix,
+                    env,
+                )
+                if (
+                    not self._validate_installed_version()
+                    or not self._gateway_is_stopped_for_upgrade()
+                ):
+                    raise RuntimeError("OpenClaw verification failed after package-manager repair")
+                upgrade.save("complete")
+                self._successful_npm_registry = registry
+                self.log.success(
+                    f"OpenClaw {OPENCLAW_TARGET_VERSION} npm upgrade and Doctor completed"
+                )
+                return True
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            self.log.error(f"OpenClaw package-manager upgrade failed: {error}")
+            if upgrade is not None:
+                self.log.error(
+                    f"Keep backup/recovery artifacts at {upgrade.backup_dir}. "
+                    "Gateway will not start and older data will not be restored automatically. "
+                    "Retry this installer to resume repair."
+                )
+            return False
+
+    def _run_official_update(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+        timeout = kwargs.pop("timeout")
+        kwargs.pop("capture_output")
+        process = None
+        job = None
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=_CREATE_NO_WINDOW | _CREATE_SUSPENDED,
+                **kwargs,
+            )
+            job = self._create_process_lifetime_job(process)
+            job.resume(process)
+            stdout, stderr = process.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            if process is not None:
+                self._terminate_process_tree(process, job)
+                job = None
+            raise
+        finally:
+            if job is not None:
+                job.close()
 
     def ensure_execution_policy(self) -> bool:
         """Set PowerShell ExecutionPolicy to RemoteSigned for current user.
@@ -2055,6 +2522,16 @@ class WindowsSetup:
 
     def install_openclaw_windows(self) -> bool:
         """Install openclaw via npm on Windows."""
+        installation = self._detect_openclaw_installation()
+        try:
+            pending = PackageManagerUpgrade.pending(DEFAULT_DESKTOP_DIR)
+        except (OSError, ValueError) as error:
+            self.log.error(f"Cannot inspect OpenClaw package upgrade recovery: {error}")
+            return False
+        if pending is not None:
+            return self._upgrade_openclaw_with_package_manager(installation)
+        if installation is not None:
+            return self.update_openclaw_windows(installation)
         channel = self.cfg.get("openclaw.channel", "stable")
         tag = OPENCLAW_TARGET_VERSION if channel == "stable" else channel
         # Validate tag before passing to subprocess
@@ -2090,6 +2567,7 @@ class WindowsSetup:
             MIRRORS[MIRROR_OFFICIAL]["npm_registry"],
             MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
             NPM_REGISTRY_HUAWEI,
+            NPM_REGISTRY_HUAWEI_MIRRORS,
         ]
         registries: list[str] = []
         for registry in candidates:
@@ -2099,47 +2577,58 @@ class WindowsSetup:
                 registries.append(registry)
         return registries
 
-    def _reachable_npm_registries(self, candidates: list[str], timeout: float = 2.5) -> list[str]:
-        """Filter ``candidates`` down to registries that answer a quick probe.
+    def _npm_registry_attempts(self) -> list[str]:
+        candidates = self._npm_registry_candidates()
+        reachable = self._reachable_npm_registries(candidates)
+        if not reachable:
+            self.log.warn(
+                "Quick npm registry checks were inconclusive; trying the configured "
+                "registries with npm's own proxy/certificate settings and bounded retries."
+            )
+        return reachable + [registry for registry in candidates if registry not in reachable]
 
-        Each candidate's ``/-/ping`` endpoint is probed in parallel with a
-        short per-registry ``timeout``. A registry counts as reachable if the
-        host responds at all — even a 4xx/5xx is fine, since that still proves
-        the TCP+TLS handshake completed. Registries that time out or fail to
-        connect (DNS, SSL, or a corporate ``NPM URL Block`` network policy)
-        are dropped so we never hand them to ``npm install``, which would
-        otherwise hang for up to 15 minutes retrying a blocked host.
+    def _reachable_npm_registries(self, candidates: list[str], timeout: float = 5.0) -> list[str]:
+        """Return registries that answer a quick ping, ordered fastest-first.
 
-        Returns the reachable subset ordered fastest-first; unreachable
-        registries are omitted entirely.
+        A Python HTTPS probe is only a hint: npm may use different proxy or
+        certificate settings, and not every registry implements /-/ping.
+        Unconfirmed candidates must still be tried by npm itself.
         """
         import concurrent.futures as _cf
 
-        def _measure(registry: str) -> tuple[str, float]:
+        def _measure(registry: str) -> tuple[str, float, str]:
             url = registry.rstrip("/") + "/-/ping"
             req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
             start = time.monotonic()
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     resp.read(64)
-                return registry, time.monotonic() - start
-            except urllib.error.HTTPError:
-                # A 404/403 still means the host is reachable.
-                return registry, time.monotonic() - start
-            except Exception:
-                return registry, float("inf")
+                return registry, time.monotonic() - start, ""
+            except urllib.error.HTTPError as error:
+                return registry, time.monotonic() - start, f"HTTP {error.code}"
+            except Exception as error:
+                reason = type(error).__name__
+                if isinstance(error, urllib.error.URLError):
+                    reason += f"/{type(error.reason).__name__}"
+                return registry, float("inf"), reason
 
         if not candidates:
             return []
 
         results: list[tuple[str, float]] = []
+        pool = _cf.ThreadPoolExecutor(max_workers=len(candidates))
         try:
-            with _cf.ThreadPoolExecutor(max_workers=len(candidates)) as pool:
-                futures = [pool.submit(_measure, r) for r in candidates]
-                for f in _cf.as_completed(futures, timeout=timeout + 1.0):
-                    results.append(f.result())
-        except Exception as e:
-            self.log.debug(f"npm registry reachability probe failed: {e}")
+            futures = {pool.submit(_measure, registry): registry for registry in candidates}
+            completed, pending = _cf.wait(futures, timeout=timeout + 1.0)
+            for future in completed:
+                registry, latency, reason = future.result()
+                results.append((registry, latency))
+                if reason:
+                    self.log.debug(f"  npm registry probe {registry}: {reason}")
+            for future in pending:
+                self.log.debug(f"  npm registry probe {futures[future]}: deadline exceeded")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         reachable = sorted((r for r in results if r[1] != float("inf")), key=lambda x: x[1])
         for registry, latency in reachable:
@@ -2154,7 +2643,7 @@ class WindowsSetup:
             raise RuntimeError("npm not found — install Node.js first")
         channel = self.cfg.get("openclaw.channel", "stable")
         tag = OPENCLAW_TARGET_VERSION if channel == "stable" else channel
-        env = self._get_env()
+        env = self._npm_registry_env(registry)
         env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
         proc = subprocess.Popen(
             [
@@ -2197,25 +2686,9 @@ class WindowsSetup:
         )
 
     def _install_openclaw_with_registry_fallback(self, install_prefix: Path) -> bool:
-        retryable_registry_error = re.compile(
-            r"ERR_SSL|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|"
-            r"\bE(?:401|403|404|408|429|5\d{2})\b|"
-            r"\b(?:401|403|404|408|429|5\d{2})\b",
-            re.IGNORECASE,
-        )
         channel = self.cfg.get("openclaw.channel", "stable")
         expected_version = OPENCLAW_TARGET_VERSION if channel == "stable" else None
-        candidates = self._npm_registry_candidates()
-        registries = self._reachable_npm_registries(candidates)
-        if not registries:
-            self.log.error(
-                "Cannot reach any npm registry to install OpenClaw. Every candidate "
-                "registry failed a quick reachability probe, which usually means they "
-                "are blocked by your network or IT policy (e.g. a corporate "
-                "'NPM URL Block'). Tried: " + ", ".join(candidates) + ". "
-                "Configure an allowed npm registry via 'npm.registry' and retry."
-            )
-            return False
+        registries = self._npm_registry_attempts()
         for registry in registries:
             self.log.info(f"  npm registry attempt: {registry}")
             attempt = self._install_openclaw_from_registry(install_prefix, registry)
@@ -2231,8 +2704,9 @@ class WindowsSetup:
                         f"npm exited with code {attempt.returncode} but the exact "
                         "OpenClaw package and entry were verified"
                     )
+                self._successful_npm_registry = registry
                 return True
-            if not retryable_registry_error.search(attempt.output):
+            if not _RETRYABLE_NPM_REGISTRY_ERROR.search(attempt.output):
                 self.log.error(
                     f"npm install failed (exit {attempt.returncode}) via {registry}:\n"
                     f"{attempt.output[-1500:]}"
@@ -2241,6 +2715,71 @@ class WindowsSetup:
             self.log.warn(f"npm registry failure via {registry}; trying next registry")
         self.log.error("OpenClaw install failed through every configured npm registry")
         return False
+
+    def migrate_openclaw_state(self) -> bool:
+        """Apply the target runtime's supported config and state migrations."""
+        command = self._find_openclaw_cmd()
+        installation = self._detect_openclaw_installation()
+        if command is None or installation is None:
+            self.log.error("OpenClaw is unavailable for state migration")
+            return False
+        if not self._openclaw_upgrade_required:
+            if installation.version != OPENCLAW_TARGET_VERSION:
+                self.log.error("OpenClaw version changed during the desktop-only update")
+                return False
+            # Same-version transactions back up managed files, not the databases
+            # that doctor can migrate. Leave state migration to runtime upgrades.
+            self.log.info("OpenClaw version unchanged; skipping data migrations")
+            return True
+
+        state_dir = Path.home() / ".openclaw"
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env["OPENCLAW_STATE_DIR"] = str(state_dir)
+        self.log.step("Migrating OpenClaw configuration and state…")
+        try:
+            env = self._with_state_owner_compatibility(env, installation)
+            result = self._run(
+                command + ["doctor", "--fix"],
+                cwd=str(installation.package_dir),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.log.error(f"OpenClaw migration failed: {error}")
+            return False
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            self.log.error(f"OpenClaw migration failed: {detail[-1500:]}")
+            return False
+        self.log.success("OpenClaw configuration and state migrated")
+        return True
+
+    def _with_state_owner_compatibility(
+        self, env: dict[str, str], installation: OpenClawInstallation
+    ) -> dict[str, str]:
+        if installation.version != "2026.10.3":
+            return env
+        preload = DEFAULT_DESKTOP_DIR / "resources" / "openclaw-state-owner-compat.mjs"
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            preload = Path(sys._MEIPASS) / "deployer" / "assets" / "openclaw-state-owner-compat.mjs"
+        if not preload.is_file():
+            raise FileNotFoundError(
+                f"OpenClaw state owner compatibility preload is missing: {preload}"
+            )
+        return {
+            **env,
+            "MICROCLAW_WINDOWS_STATE_OWNER_COMPAT": "1",
+            "MICROCLAW_OPENCLAW_PACKAGE_DIR": str(installation.package_dir),
+            "NODE_OPTIONS": (
+                env.get("NODE_OPTIONS", "") + f' --import "{preload.as_uri()}"'
+            ).strip(),
+        }
 
     def _load_openclaw_state_env(self, state_dir: Path) -> dict[str, str]:
         values: dict[str, str] = {}
@@ -2256,6 +2795,84 @@ class WindowsSetup:
         except FileNotFoundError:
             pass
         return values
+
+    def _resolve_validation_node(self) -> Path:
+        candidates = []
+        if self._node_bin is not None:
+            candidates.append(Path(self._node_bin) / "node.exe")
+        candidates.append(self.node_dir / "node.exe")
+        path_node = shutil.which("node")
+        if path_node:
+            candidates.append(Path(path_node))
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError("node.exe not found for OpenClaw validation")
+
+    def _start_validation_gateway(
+        self, expected_version: str | None = OPENCLAW_TARGET_VERSION
+    ) -> subprocess.Popen:
+        installation = self._detect_openclaw_installation()
+        if installation is None or (
+            expected_version is not None and installation.version != expected_version
+        ):
+            raise RuntimeError(f"Expected OpenClaw package is not installed: {expected_version}")
+        node = self._resolve_validation_node()
+        state_dir = Path.home() / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env = self._get_env()
+        env.update(self._load_openclaw_state_env(state_dir))
+        env.update(
+            {
+                "OPENCLAW_STATE_DIR": str(state_dir),
+                "NODE_COMPILE_CACHE": str(cache_dir),
+                "NODE_ENV": "production",
+                "OPENCLAW_NO_RESPAWN": "1",
+            }
+        )
+        env = self._with_state_owner_compatibility(env, installation)
+        return subprocess.Popen(
+            [
+                str(node),
+                str(installation.entry_path),
+                "gateway",
+                "run",
+                "--port",
+                str(self.cfg.get("gateway.port", 18789)),
+                "--bind",
+                "loopback",
+                "--allow-unconfigured",
+            ],
+            cwd=str(installation.package_dir),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+
+    def _stop_validation_gateway(self, process: subprocess.Popen | None) -> None:
+        if process is None or process.poll() is not None:
+            return
+        if platform.system() == "Windows" and process.pid:
+            result = self._run(
+                ["taskkill", "/pid", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode not in (0, 128):
+                self.log.warn(
+                    f"Could not stop validation Gateway process tree: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+        else:
+            process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
     def _validate_installed_version(self) -> bool:
         installation = self._detect_openclaw_installation()
@@ -2329,13 +2946,6 @@ class WindowsSetup:
             return json.loads(stdout)
         except json.JSONDecodeError as error:
             raise RuntimeError(f"OpenClaw returned invalid JSON for {' '.join(args)}") from error
-
-    def _validate_gateway_status(self) -> bool:
-        payload = self._run_openclaw_json(["gateway", "status", "--require-rpc", "--json"])
-        return isinstance(payload, dict)
-
-    def _validate_gateway_rpc(self, method: str) -> bool:
-        return self._run_openclaw_json(["gateway", "call", method, "--json"]) is not None
 
     @staticmethod
     def _contains_enabled_weixin_plugin(value: object) -> bool:
@@ -2438,6 +3048,22 @@ class WindowsSetup:
         launcher = self._find_appcontainer_launcher()
         if launcher is None:
             return False
+        installation = self._detect_openclaw_installation()
+        if installation is None:
+            self.log.error("OpenClaw runtime is missing for the AppContainer execution check")
+            return False
+        try:
+            node = self._resolve_validation_node()
+        except FileNotFoundError as error:
+            self.log.error(str(error))
+            return False
+        script = (
+            'const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");'
+            "fs.readFileSync(process.argv[1]);"
+            'const p=path.join(process.argv[2],".ac-probe-"+crypto.randomUUID());'
+            'fs.writeFileSync(p,"ok",{flag:"wx"});fs.unlinkSync(p);'
+            'console.log("microclaw-sandbox-ok");'
+        )
         result = self._run(
             [
                 str(launcher),
@@ -2445,13 +3071,14 @@ class WindowsSetup:
                 "--name",
                 "MicroClaw",
                 "--exe",
-                os.environ.get("COMSPEC", "cmd.exe"),
+                str(node),
                 "--no-window",
                 "--quiet",
                 "--",
-                "/c",
-                "echo",
-                "microclaw-sandbox-ok",
+                "-e",
+                script,
+                str(installation.package_dir / "package.json"),
+                str(Path.home() / ".openclaw" / "sandbox"),
             ],
             capture_output=True,
             text=True,
@@ -2482,30 +3109,18 @@ class WindowsSetup:
 
     def validate_running_gateway(self) -> bool:
         transaction = self._openclaw_transaction
-
-        def record(name: str, passed: bool) -> None:
-            if transaction is not None:
-                transaction.record_validation(name, passed)
-
-        checks = [("health", self._validate_gateway_health)]
-        if self._openclaw_upgrade_required:
-            checks.extend(
-                [
-                    ("v4-handshake", self._validate_gateway_status),
-                    ("config.get", lambda: self._validate_gateway_rpc("config.get")),
-                    ("agents.list", lambda: self._validate_gateway_rpc("agents.list")),
-                    ("channels.status", lambda: self._validate_gateway_rpc("channels.status")),
-                    ("cron.list", lambda: self._validate_gateway_rpc("cron.list")),
-                ]
-            )
-        for name, check in checks:
-            passed = bool(check())
-            record(name, passed)
-            if not passed:
-                self.log.error(f"OpenClaw validation failed: {name}")
-                return False
-        if not self._openclaw_upgrade_required:
-            self.log.info("OpenClaw version unchanged; skipping deep RPC upgrade validation.")
+        started = time.monotonic()
+        passed = bool(self._validate_gateway_health())
+        self.log.info(
+            f"Gateway /health timing: [{'success' if passed else 'failed'}] "
+            f"{time.monotonic() - started:.2f}s"
+        )
+        if transaction is not None:
+            transaction.record_validation("health", passed)
+        if not passed:
+            self.log.error("OpenClaw validation failed: health")
+            return False
+        self.log.info("Gateway health check passed; skipping post-install RPC queries.")
         return True
 
     def verify_openclaw_upgrade(self) -> bool:
@@ -2905,12 +3520,8 @@ class WindowsSetup:
 
         # ── Model + provider: only write when api_key is configured ──
         if api_key and base_url:
-            existing["agents"] = {
-                "defaults": {
-                    "model": {
-                        "primary": provider_model,
-                    },
-                },
+            existing.setdefault("agents", {}).setdefault("defaults", {})["model"] = {
+                "primary": provider_model,
             }
 
             # apiKey uses ${ENV_VAR} syntax so secrets stay in .env
@@ -3024,16 +3635,16 @@ class WindowsSetup:
             # on the whitelist via entries.<name>.enabled=false in openclaw.json.
             # An empty allowManaged list with enable=true disables ALL managed/workspace skills.
             if allow_managed is not None:
+                from deployer.skill_catalog import MANAGED_SKILL_CATALOG
+
                 entries = skills_cfg.get("entries", {})
-                # Skills in the whitelist: ensure enabled=true.
-                for name in allow_managed:
+                # The installer owns only its managed catalog. Preserve entries
+                # created by the desktop app or by the user.
+                tracked_names = set(MANAGED_SKILL_CATALOG.keys()) | set(allow_managed)
+                for name in tracked_names:
                     entry = entries.get(name, {})
-                    entry["enabled"] = True
+                    entry["enabled"] = name in allow_managed
                     entries[name] = entry
-                # Skills already tracked in entries that are NOT in the whitelist: disable.
-                for name in list(entries.keys()):
-                    if name not in allow_managed:
-                        entries[name]["enabled"] = False
                 skills_cfg["entries"] = entries
 
             existing["skills"] = skills_cfg
@@ -3314,10 +3925,25 @@ class WindowsSetup:
             candidates.append(Path(sys.executable).parent / "plugins" / "openclaw-weixin")
         # Project root (development scenario)
         project_root = Path(__file__).resolve().parent.parent
-        candidates.append(project_root / "plugins" / "openclaw-weixin")
+        candidates.append(project_root / "dist" / "openclaw-weixin")
         for p in candidates:
             if p.is_dir() and (p / "package.json").exists():
-                return p
+                try:
+                    package = json.loads((p / "package.json").read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    self.log.warn(f"Could not read bundled Weixin metadata at {p}: {error}")
+                    continue
+                compatibility = package.get("microclaw") if isinstance(package, dict) else None
+                if (
+                    isinstance(compatibility, dict)
+                    and compatibility.get("sdkCompatibility") == OPENCLAW_TARGET_VERSION
+                    and (p / "dist" / "index.js").is_file()
+                ):
+                    return p
+                self.log.warn(
+                    f"Weixin bundle at {p} is not staged for OpenClaw {OPENCLAW_TARGET_VERSION}; "
+                    "rebuild the installer with build.ps1."
+                )
         return None
 
     @staticmethod
@@ -3507,9 +4133,7 @@ class WindowsSetup:
         if not projects_dir.is_dir():
             return False
         try:
-            packages = projects_dir.glob(
-                "*/node_modules/@openclaw/parallel-plugin/package.json"
-            )
+            packages = projects_dir.glob("*/node_modules/@openclaw/parallel-plugin/package.json")
             for package_path in packages:
                 plugin_dir = package_path.parent
                 manifest_path = plugin_dir / "openclaw.plugin.json"
@@ -3560,6 +4184,130 @@ class WindowsSetup:
             process.kill()
             process.wait(timeout=5)
 
+    def _local_model_provider_is_current(self, state_dir: Path) -> bool:
+        plugin = state_dir / "extensions" / _LOCAL_MODEL_PLUGIN_ID
+        if not plugin.exists():
+            return False
+        try:
+            package = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+            manifest = json.loads((plugin / "openclaw.plugin.json").read_text(encoding="utf-8"))
+            return (
+                package.get("name") == _LOCAL_MODEL_PLUGIN_PACKAGE
+                and package.get("version") == _LOCAL_MODEL_PLUGIN_VERSION
+                and manifest.get("id") == _LOCAL_MODEL_PLUGIN_ID
+                and _LOCAL_MODEL_PLUGIN_ID in manifest.get("providers", [])
+                and hashlib.sha256((plugin / "dist" / "index.js").read_bytes()).hexdigest()
+                == _LOCAL_MODEL_PLUGIN_SHA256
+            )
+        except (OSError, ValueError, TypeError) as error:
+            self.log.error(f"Could not verify the local model provider: {error}")
+            return False
+
+    def install_local_model_provider(self) -> bool:
+        """Prepare the reviewed official provider, never model weights or model selection."""
+        state_dir = Path.home() / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            plugins = config.get("plugins", {})
+            if (
+                plugins.get("enabled") is False
+                or _LOCAL_MODEL_PLUGIN_ID in plugins.get("deny", [])
+                or plugins.get("entries", {}).get(_LOCAL_MODEL_PLUGIN_ID, {}).get("enabled")
+                is False
+            ):
+                self.log.info("Preserving the user's disabled local provider policy")
+                return True
+            current = self._local_model_provider_is_current(state_dir)
+            enabled = (
+                plugins.get("entries", {}).get(_LOCAL_MODEL_PLUGIN_ID, {}).get("enabled") is True
+            )
+            allowed = not plugins.get("allow") or _LOCAL_MODEL_PLUGIN_ID in plugins["allow"]
+            if current and enabled and allowed:
+                self.log.info("The official local model provider is already ready")
+                return True
+            if not current and (state_dir / "extensions" / _LOCAL_MODEL_PLUGIN_ID).exists():
+                self.log.error(
+                    "The installed llama.cpp provider is not the pinned supported package. Review or remove that provider before updating."
+                )
+                return False
+            context = self._weixin_cli_context(state_dir)
+            installation = self._detect_openclaw_installation()
+            preload = DEFAULT_DESKTOP_DIR / "resources" / "openclaw-fs-safe-compat.mjs"
+            if context is None or installation is None or not preload.is_file():
+                self.log.error(
+                    "The OpenClaw runtime or filesystem compatibility preload is unavailable"
+                )
+                return False
+            command, env = context
+            env["MICROCLAW_FS_SAFE_COMPAT"] = "1"
+            env["MICROCLAW_OPENCLAW_PACKAGE_DIR"] = str(installation.package_dir)
+            env["NODE_OPTIONS"] = (
+                env.get("NODE_OPTIONS", "") + f' --import "{preload.as_uri()}"'
+            ).strip()
+            if not current:
+                result = self._run(
+                    command
+                    + [
+                        "plugins",
+                        "install",
+                        f"clawhub:{_LOCAL_MODEL_PLUGIN_PACKAGE}@{_LOCAL_MODEL_PLUGIN_VERSION}",
+                        "--accept-capabilities",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    env=env,
+                )
+                if result.returncode != 0:
+                    self.log.error(
+                        f"Local provider installation failed: {(result.stderr or result.stdout).strip()}"
+                    )
+                    return False
+                if not self._local_model_provider_is_current(state_dir):
+                    self.log.error(
+                        "The installed local provider does not match the supported official source"
+                    )
+                    return False
+            result = self._run(
+                command + ["plugins", "enable", _LOCAL_MODEL_PLUGIN_ID, "--accept-capabilities"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                env=env,
+            )
+            if result.returncode != 0:
+                self.log.error(
+                    f"Local provider enablement failed: {(result.stderr or result.stdout).strip()}"
+                )
+                return False
+            after = json.loads(config_path.read_text(encoding="utf-8"))
+            if after.get("agents") != config.get("agents") or after.get("models") != config.get(
+                "models"
+            ):
+                self.log.error(
+                    "Local provider preparation unexpectedly changed model selection; installation stopped"
+                )
+                return False
+            if (
+                after.get("plugins", {})
+                .get("entries", {})
+                .get(_LOCAL_MODEL_PLUGIN_ID, {})
+                .get("enabled")
+                is not True
+            ):
+                self.log.error("The official local provider was not enabled")
+                return False
+            self.log.success("Local provider ready; model weights remain opt-in")
+            return True
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
+            self.log.error(f"Local provider preparation failed: {error}")
+            return False
+
     def install_search_provider_plugin(self) -> bool:
         """Install the keyless Parallel provider selected by a fresh install."""
         state_dir = Path.home() / ".openclaw"
@@ -3600,25 +4348,39 @@ class WindowsSetup:
             pass
 
         self.log.step("Installing Parallel web search plugin…")
-        try:
-            result = self._run(
-                openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_PACKAGE],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=300,
-                env=env,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            self.log.error(f"Parallel web search plugin install failed: {error}")
-            return False
-        if result.returncode != 0:
+        registries = self._npm_registry_attempts()
+        successful_registry = getattr(self, "_successful_npm_registry", None)
+        registries.sort(key=lambda registry: registry != successful_registry)
+        for registry in registries:
+            self.log.info(f"  Parallel npm registry attempt: {registry}")
+            try:
+                result = self._run(
+                    openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_SPEC],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    env=self._npm_registry_env(registry, env),
+                )
+            except subprocess.TimeoutExpired as error:
+                self.log.warn(f"Parallel plugin download timed out via {registry}: {error}")
+                continue
+            except OSError as error:
+                self.log.error(f"Parallel web search plugin install failed: {error}")
+                return False
+            if result.returncode == 0:
+                self.log.success("Parallel-free web search is ready")
+                return True
             detail = result.stderr.strip() or result.stdout.strip()
-            self.log.error(f"Parallel web search plugin install failed: {detail}")
-            return False
-        self.log.success("Parallel-free web search is ready")
-        return True
+            if not _RETRYABLE_NPM_REGISTRY_ERROR.search(detail):
+                self.log.error(f"Parallel web search plugin install failed: {detail}")
+                return False
+            self.log.warn(f"Parallel npm registry failure via {registry}: {detail[-1500:]}")
+        self.log.error(
+            "Parallel web search plugin install failed through every configured npm registry"
+        )
+        return False
 
     def install_weixin_plugin(self) -> bool:
         """Reconcile the bundled openclaw-weixin plugin through OpenClaw."""
@@ -3626,7 +4388,9 @@ class WindowsSetup:
 
         plugin_dir = self._find_bundled_weixin_plugin()
         if not plugin_dir:
-            self.log.error("未找到插件安装包")
+            self.log.error(
+                "未找到插件安装包；从源码运行时请先运行 build.ps1 生成 dist/openclaw-weixin"
+            )
             return False
 
         state_dir = Path.home() / ".openclaw"
@@ -4163,6 +4927,9 @@ class WindowsSetup:
             (str(home / ".openclaw"), "rw"),
             (str(sandbox_dir), "rw"),  # Tool execution sandbox workspace
         ]
+        install_prefix = getattr(self, "install_prefix", None)
+        if install_prefix is not None:
+            dirs_to_grant.append((str(Path(install_prefix) / "node_modules" / "openclaw"), "r"))
         # Legacy zip-extract layout — still grant if present so upgrades
         # from older builds keep working.
         for legacy in LEGACY_NODE_DIRS:
@@ -4186,7 +4953,7 @@ class WindowsSetup:
                     self.log.info(f"  AppContainer ACL already configured: {dir_path}")
                     continue
                 try:
-                    subprocess.run(
+                    grant_result = subprocess.run(
                         [
                             str(launcher),
                             "grant",
@@ -4199,31 +4966,46 @@ class WindowsSetup:
                         ],
                         capture_output=True,
                         text=True,
-                        timeout=30,
+                        timeout=300,
                         creationflags=_CREATE_NO_WINDOW,
                     )
+                    if grant_result.returncode != 0:
+                        detail = grant_result.stderr.strip() or grant_result.stdout.strip()
+                        self.log.warn(f"ACL grant failed: {dir_path} — {detail}")
+                        grant_failures.append(dir_path)
                 except subprocess.TimeoutExpired:
-                    self.log.warn(f"ACL grant 超时 (30s): {dir_path} — 将在应用启动时重试")
+                    self.log.error(f"ACL grant 超时 (300s): {dir_path}")
                     grant_failures.append(dir_path)
                 except Exception as e:
                     self.log.warn(f"ACL grant 失败: {dir_path} — {e}")
                     grant_failures.append(dir_path)
 
-        # 3b. Grant minimal traverse (no inherit) on user home and C:\Users
-        # so Node.js realpathSync() can lstat ancestor directories.
-        # This does NOT give read access to other user profile contents.
-        for ancestor in [str(home), str(home.parent)]:
-            if Path(ancestor).exists():
-                try:
-                    subprocess.run(
-                        ["icacls", ancestor, "/grant", f"{sid}:(REA,RA,X)"],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        creationflags=_CREATE_NO_WINDOW,
-                    )
-                except Exception as e:
-                    self.log.warn(f"Traverse ACL 设置失败: {ancestor} — {e}")
+        # Recheck ancestors even when the sandbox itself already has an ACL.
+        # The native helper skips existing metadata-only grants rather than
+        # rewriting the home directory DACL on every installation.
+        try:
+            traverse_result = subprocess.run(
+                [
+                    str(launcher),
+                    "grant",
+                    "--name",
+                    container_name,
+                    "--dir",
+                    str(sandbox_dir),
+                    "--access",
+                    "rw",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            if traverse_result.returncode != 0:
+                self.log.warn(f"Traverse ACL 设置失败: {traverse_result.stderr.strip()}")
+                grant_failures.append(str(sandbox_dir))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.log.warn(f"Traverse ACL 设置失败: {error}")
+            grant_failures.append(str(sandbox_dir))
 
         # 3c. Grant traverse on all fixed drive roots + C:\Users (needs admin elevation)
         # This lets AppContainer processes reach paths on any drive (e.g. D:\Documents).
@@ -4271,8 +5053,12 @@ class WindowsSetup:
 
         if grant_failures:
             self.log.warn(
-                f"部分 ACL 设置未完成 ({len(grant_failures)} 个目录)，应用启动时将自动重试"
+                f"部分 ACL 设置未完成 ({len(grant_failures)} 个目录)，验证实际沙箱读写权限"
             )
+            if not self._validate_appcontainer_smoke():
+                self.log.error("AppContainer runtime read/write verification failed")
+                return False
+            self.log.info("Existing permissions passed the sandboxed Node runtime read/write check")
         self.log.success(f"AppContainer 沙箱 '{container_name}' 配置完成")
         return True
 
@@ -5065,9 +5851,7 @@ class WindowsSetup:
             local_appdata / "npm-cache",  # npm cache (heavy I/O during install)
             local_appdata / "Temp",  # %TEMP% (npm extracts packages here)
         ]
-        normalized = sorted(
-            os.path.normcase(os.path.normpath(str(path))) for path in dirs
-        )
+        normalized = sorted(os.path.normcase(os.path.normpath(str(path))) for path in dirs)
         marker = DEFAULT_DESKTOP_DIR / "install-state" / "defender-exclusions.json"
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
@@ -5120,9 +5904,7 @@ class WindowsSetup:
                 parsed = json.loads(result.stdout or "[]")
                 current = [parsed] if isinstance(parsed, str) else parsed
                 normalized = {
-                    os.path.normcase(os.path.normpath(str(path)))
-                    for path in current
-                    if path
+                    os.path.normcase(os.path.normpath(str(path))) for path in current if path
                 }
                 missing = [
                     path
@@ -5137,9 +5919,7 @@ class WindowsSetup:
             return True
 
         # Add-MpPreference always requires admin — elevate directly
-        safe_paths = ",".join(
-            f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing
-        )
+        safe_paths = ",".join(f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing)
         try:
             result = self._run(
                 [

@@ -3,12 +3,109 @@ import {
   extractMainSessionKey,
   buildSessionTitlePrompt,
   GatewayClient,
+  GatewayRequestError,
   isAgentWarmupEvent,
   normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
+  shouldHandleGatewayDisconnect,
   type GatewayEventFrame,
 } from "./gateway-client";
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
+
+describe("GatewayClient approval capability", () => {
+  it("retains the negotiated version and advertised methods", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, {
+      opts: {},
+      connectSent: false,
+      connectTimer: null,
+      connectNonce: "test",
+      deviceIdentity: {
+        deviceId: "test",
+        publicKey: "test",
+        privateKey: Buffer.alloc(32, 1).toString("base64url"),
+      },
+      ws: { readyState: 1 },
+    });
+    vi.spyOn(client, "request").mockResolvedValue({
+      server: { version: "2026.9.3" },
+      features: { methods: ["models.list", "wizard.next", 42] },
+    });
+    client["sendConnect"]();
+    await Promise.resolve();
+    expect(client.serverVersion).toBe("2026.9.3");
+    expect(client.methods).toEqual(["models.list", "wizard.next"]);
+    expect(client.connectionGeneration).toBe(1);
+    client["connectSent"] = false;
+    client["sendConnect"]();
+    await Promise.resolve();
+    expect(client.connectionGeneration).toBe(2);
+  });
+
+  it("retains setup replies without a transport deadline and preserves typed errors", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const request = client.request("openclaw.setup.prepare.start", {}, null);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client["pending"].size).toBe(1);
+      const frame = JSON.parse(send.mock.calls[0][0]);
+      const rejected = expect(request).rejects.toMatchObject({
+        name: "GatewayRequestError",
+        code: "INVALID_REQUEST",
+        details: { code: "WIZARD_NOT_FOUND" },
+      });
+      client["handleMessage"](
+        JSON.stringify({
+          type: "res",
+          id: frame.id,
+          ok: false,
+          error: {
+            message: "Not found",
+            code: "INVALID_REQUEST",
+            details: { code: "WIZARD_NOT_FOUND" },
+          },
+        }),
+      );
+      await rejected;
+      expect(new GatewayRequestError("error")).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([true, false])(
+    "passes the handler capability through the connect handshake: %s",
+    async (supportsExecApprovals) => {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      Object.assign(client, {
+        opts: { port: 18789, token: "test-token", supportsExecApprovals },
+        connectSent: false,
+        connectTimer: null,
+        connectNonce: "test-nonce",
+        deviceIdentity: {
+          deviceId: "test-device",
+          publicKey: "test-public-key",
+          privateKey: Buffer.alloc(32, 1).toString("base64url"),
+        },
+        ws: { readyState: 1 },
+      });
+      const request = vi.spyOn(client, "request").mockResolvedValue({});
+
+      client["sendConnect"]();
+      await Promise.resolve();
+
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "connect",
+        expect.objectContaining({
+          caps: supportsExecApprovals ? ["tool-events", "exec-approvals"] : ["tool-events"],
+        }),
+      );
+    },
+  );
+});
 
 describe("normalizeGatewayChannelsStatus", () => {
   it("preserves Gateway order and derives connection state from accounts", () => {
@@ -51,6 +148,29 @@ describe("normalizeGatewayChannelsStatus", () => {
       },
     ]);
   });
+
+  it("requests a local status snapshot with the startup caller's timeout", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const snapshot = {
+      channels: { "openclaw-weixin": { configured: true } },
+      channelAccounts: { "openclaw-weixin": [{ configured: true, running: true }] },
+    };
+    const request = vi.spyOn(client, "request").mockResolvedValue(snapshot);
+
+    expect(await client.getChannelsStatus(1_500)).toBe(snapshot);
+    expect(request).toHaveBeenCalledExactlyOnceWith("channels.status", { probe: false }, 1_500);
+    expect(await client.listChannels()).toEqual({
+      channels: [
+        {
+          id: "openclaw-weixin",
+          name: "openclaw-weixin",
+          icon: "",
+          type: "openclaw-weixin",
+          connected: true,
+        },
+      ],
+    });
+  });
 });
 describe("extractMainSessionKey", () => {
   it("reads the canonical main key from the Gateway hello snapshot", () => {
@@ -59,6 +179,13 @@ describe("extractMainSessionKey", () => {
         snapshot: { sessionDefaults: { mainSessionKey: "global" } },
       }),
     ).toBe("global");
+  });
+
+  describe("Gateway disconnect lifecycle", () => {
+    it("ignores a socket close callback after the client was intentionally stopped", () => {
+      expect(shouldHandleGatewayDisconnect(true)).toBe(false);
+      expect(shouldHandleGatewayDisconnect(false)).toBe(true);
+    });
   });
 
   it("returns null for a malformed Gateway hello snapshot", () => {
@@ -113,6 +240,7 @@ describe("isAgentWarmupEvent", () => {
 describe("GatewayClient.sendChat", () => {
   function createClient() {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { opts: { port: 18789, token: "" } });
     const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
     return { client, request };
   }
@@ -155,6 +283,21 @@ describe("GatewayClient.sendChat", () => {
         ],
       }),
     );
+  });
+
+  it("does not issue or queue chat.send when the ingress gate rejects", async () => {
+    const { client, request } = createClient();
+    const beforeChatSend = vi.fn().mockRejectedValue(new Error("MXC ingress is locked"));
+    Object.assign(client, { opts: { port: 18789, token: "", beforeChatSend } });
+
+    await expect(client.sendChat("session-123", "blocked")).rejects.toThrow(
+      "MXC ingress is locked",
+    );
+    expect(request).not.toHaveBeenCalled();
+
+    beforeChatSend.mockResolvedValue(undefined);
+    await Promise.resolve();
+    expect(request).not.toHaveBeenCalled();
   });
 });
 
@@ -211,11 +354,11 @@ describe("GatewayClient.deleteSession", () => {
       handleMessage(raw: string): void;
     };
 
-    function createClient() {
+    function createClient(beforeChatSend?: () => Promise<void>) {
       const onEvent = vi.fn();
       const client = Object.create(GatewayClient.prototype) as GatewayClient;
       Object.assign(client, {
-        opts: { port: 18789, token: "", onEvent },
+        opts: { port: 18789, token: "", onEvent, beforeChatSend },
         _mainSessionKey: "agent:main:main",
         agentWarmupPromise: null,
         agentWarmupWaiter: null,
@@ -299,6 +442,21 @@ describe("GatewayClient.deleteSession", () => {
       expect(request).toHaveBeenCalledWith("chat.abort", {
         sessionKey: AGENT_WARMUP_SESSION_KEY,
       });
+    });
+
+    it("does not issue or replay a warm-up turn while ingress is locked", async () => {
+      const beforeChatSend = vi.fn().mockRejectedValue(new Error("MXC ingress is locked"));
+      const { client, request } = createClient(beforeChatSend);
+
+      await expect(client.warmUpAgent(30_000)).resolves.toEqual({
+        outcome: "error",
+        transcriptDeleted: false,
+      });
+      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
+
+      beforeChatSend.mockResolvedValue(undefined);
+      await Promise.resolve();
+      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
     });
 
     it("fails open at the timeout and starts cleanup", async () => {

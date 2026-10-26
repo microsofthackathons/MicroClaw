@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as path from "node:path";
 import {
   buildGitHubCopilotAuthStatusArgs,
   buildGitHubCopilotLogoutArgs,
+  buildGitHubCopilotModelsArgs,
   getGitHubCopilotAuthStatus,
   GITHUB_COPILOT_AUTH_AGENT_ID,
   invalidateGitHubCopilotAuthStatusCache,
   parseGitHubCopilotAuthStatus,
+  parseGitHubCopilotCliModels,
   parseGitHubCopilotDisconnectResult,
   parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
@@ -14,6 +17,8 @@ import {
 import {
   buildGitHubCopilotLoginOptions,
   GITHUB_COPILOT_AUTH_AGENT_ID as WORKER_AUTH_AGENT_ID,
+  readGitHubCopilotRuntimeConfig,
+  resolveGitHubCopilotConfigRuntimePath,
 } from "./github-copilot-auth-worker";
 
 const missingRuntime = {
@@ -64,6 +69,88 @@ describe("GitHub Copilot auth scope", () => {
       method: "device",
       setDefault: false,
     });
+  });
+});
+
+describe("GitHub Copilot configuration runtime compatibility", () => {
+  it("uses the legacy SDK configuration entry when available", () => {
+    const runtimeDirectory = path.resolve("openclaw", "dist", "plugin-sdk");
+    const legacyPath = path.join(runtimeDirectory, "config-runtime.js");
+    expect(
+      resolveGitHubCopilotConfigRuntimePath(
+        runtimeDirectory,
+        (filename) => filename === legacyPath,
+      ),
+    ).toBe(legacyPath);
+  });
+
+  it("uses the OpenClaw 2026.10.5 runtime snapshot entry without the legacy SDK entry", () => {
+    const runtimeDirectory = path.resolve("openclaw", "dist", "plugin-sdk");
+    expect(resolveGitHubCopilotConfigRuntimePath(runtimeDirectory, () => false)).toBe(
+      path.join(runtimeDirectory, "runtime-config-snapshot.js"),
+    );
+  });
+
+  it.each(["loadConfig", "getRuntimeConfig"] as const)("loads configuration with %s", (method) => {
+    const config = { agents: { defaults: {} } };
+    const loader = vi.fn().mockReturnValue(config);
+    expect(readGitHubCopilotRuntimeConfig({ [method]: loader })).toBe(config);
+    expect(loader).toHaveBeenCalledExactlyOnceWith({ skipPluginValidation: true });
+  });
+
+  it("rejects an incompatible configuration runtime", () => {
+    expect(() => readGitHubCopilotRuntimeConfig({})).toThrow(
+      "OpenClaw configuration runtime is incompatible",
+    );
+  });
+});
+
+describe("GitHub Copilot CLI model catalog", () => {
+  it("uses the provider-scoped read-only CLI catalog and shared auth agent", () => {
+    expect(buildGitHubCopilotModelsArgs()).toEqual([
+      "models",
+      "list",
+      "--all",
+      "--provider",
+      "github-copilot",
+      "--agent",
+      "main",
+      "--json",
+    ]);
+  });
+
+  it("normalizes and deduplicates Copilot entries without exposing other providers", () => {
+    expect(
+      parseGitHubCopilotCliModels(
+        JSON.stringify({
+          models: [
+            { key: "openai/gpt-5", name: "Other provider" },
+            { key: "github-copilot/gpt-5", name: "GPT-5" },
+            { key: "github-copilot/gpt-5", name: "GPT-5" },
+            { key: "github-copilot/claude-sonnet" },
+            { key: "github-copilot/" },
+            null,
+          ],
+        }),
+      ),
+    ).toEqual([
+      { id: "github-copilot/claude-sonnet", name: "claude-sonnet" },
+      { id: "github-copilot/gpt-5", name: "GPT-5" },
+    ]);
+  });
+
+  it("accepts an empty catalog before sign-in", () => {
+    expect(parseGitHubCopilotCliModels('{"models":[]}')).toEqual([]);
+  });
+
+  it.each(["invalid", "null", "{}", '{"models":{}}'])("rejects malformed output: %s", (output) => {
+    expect(() => parseGitHubCopilotCliModels(output)).toThrow("Invalid GitHub Copilot model list");
+  });
+
+  it("bounds the model list before normalizing entries", () => {
+    expect(() =>
+      parseGitHubCopilotCliModels(JSON.stringify({ models: Array(5001).fill({}) })),
+    ).toThrow("Invalid GitHub Copilot model list");
   });
 });
 

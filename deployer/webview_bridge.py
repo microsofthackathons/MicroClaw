@@ -1,5 +1,4 @@
 import json
-import locale
 import os
 import re
 import shutil
@@ -28,6 +27,11 @@ INSTALLER_WINDOW_WIDTH = 710
 INSTALLER_WINDOW_HEIGHT = 680
 UNINSTALL_CONFIRM_WINDOW_WIDTH = 500
 UNINSTALL_CONFIRM_WINDOW_HEIGHT = 250
+PRIVACY_STATEMENT_URL = "https://www.microsoft.com/privacy/privacystatement"
+EULA_URLS = {
+    "zh": "https://microclaw.microsoft.com/eula.html",
+    "en": "https://microclaw.microsoft.com/eula.en.html",
+}
 
 # Per-step retry budgets for the install pipeline (number of *additional*
 # attempts after the first). Network/download-bound steps get more attempts to
@@ -167,7 +171,7 @@ def _center_native_window(hwnd, logger=None):
     except Exception:
         pass
 
-    user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004)
+    user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010)
 
 
 def _normalize_lang(lang):
@@ -195,31 +199,14 @@ def _read_saved_lang(settings_path):
 
 
 def _detect_lang(settings_path=None):
-    """Detect installer language from override, existing app setting, then OS locale."""
+    """Use explicit or saved language preferences, defaulting to Simplified Chinese."""
     override = _normalize_lang(os.environ.get("MICROCLAW_LANG"))
     if override:
         return override
     saved = _read_saved_lang(Path(settings_path or _app_settings_path()))
     if saved:
         return saved
-    # On Windows, query the user's UI language directly. locale.getlocale()
-    # returns (None, None) on Python 3.11+ without an explicit setlocale call.
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            lcid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
-            # Primary language ID (low 10 bits): 0x04 == LANG_CHINESE
-            if (lcid & 0x3FF) == 0x04:
-                return "zh"
-            return "en"
-        except Exception:
-            pass
-    try:
-        loc = locale.getlocale()[0] or locale.getdefaultlocale()[0] or ""
-    except Exception:
-        loc = ""
-    return "zh" if loc.lower().startswith("zh") else "en"
+    return "zh"
 
 
 def _assets_dir():
@@ -240,8 +227,9 @@ _STRINGS = {
     "zh": {
         "language": "语言",
         "welcomeTitle": "欢迎来到 MicroClaw",
-        "legalLine": "点击“快速安装”，即表示你同意 MicroClaw",
-        "serviceAgreement": "服务协议",
+        "legalLine": "点击“快速安装”即同意",
+        "serviceAgreement": "MicroClaw 最终用户许可协议",
+        "serviceAgreementLink": "用户协议",
         "and": "和",
         "privacyStatement": "隐私声明",
         "quickInstall": "快速安装",
@@ -271,6 +259,7 @@ _STRINGS = {
             "node": "正在安装 Node.js…",
             "npmRegistry": "正在配置软件下载源…",
             "openclaw": "正在安装 MicroClaw 后台服务…",
+            "migrateOpenClaw": "正在迁移 MicroClaw 配置与数据…",
             "path": "正在更新系统路径…",
             "desktop": "正在安装桌面客户端…",
             "assets": "正在复制内置资源…",
@@ -293,8 +282,9 @@ _STRINGS = {
     "en": {
         "language": "Language",
         "welcomeTitle": "Welcome to MicroClaw",
-        "legalLine": 'By clicking "Quick Install", you agree to the MicroClaw',
-        "serviceAgreement": "Service Agreement",
+        "legalLine": 'By clicking "Quick Install", you agree to the',
+        "serviceAgreement": "MicroClaw End User License Agreement",
+        "serviceAgreementLink": "User Agreement",
         "and": "and",
         "privacyStatement": "Privacy Statement",
         "quickInstall": "Quick Install",
@@ -324,6 +314,7 @@ _STRINGS = {
             "node": "Installing Node.js...",
             "npmRegistry": "Configuring npm registry...",
             "openclaw": "Installing MicroClaw background service...",
+            "migrateOpenClaw": "Migrating MicroClaw configuration and data...",
             "path": "Updating PATH...",
             "desktop": "Installing desktop client...",
             "assets": "Copying bundled assets...",
@@ -382,7 +373,7 @@ class WebInstallerBridge:
             "lawyer.png",
             "painter.png",
             "scientist.png",
-            "singer.png",
+            "creative-muse.png",
         ]
         with self._state_lock:
             install_dir = self._state["install_dir"]
@@ -390,6 +381,8 @@ class WebInstallerBridge:
         return {
             "lang": self._lang,
             "strings": _STRINGS[self._lang],
+            "privacy_statement_url": PRIVACY_STATEMENT_URL,
+            "eula_urls": EULA_URLS,
             "assets": {
                 "fold": "welcome-fold.png",
                 "expand": "welcome-expand.png",
@@ -424,9 +417,7 @@ class WebInstallerBridge:
 
         settings["language"] = "zh-CN" if self._lang == "zh" else "en-US"
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._settings_path.with_name(
-            f".{self._settings_path.name}.{os.getpid()}.tmp"
-        )
+        temp_path = self._settings_path.with_name(f".{self._settings_path.name}.{os.getpid()}.tmp")
         try:
             temp_path.write_text(
                 json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
@@ -492,6 +483,14 @@ class WebInstallerBridge:
             os.startfile(str(self._logger.log_file))
         except Exception:
             webbrowser.open(self._logger.log_file.as_uri())
+        return True
+
+    def open_privacy_statement(self):
+        webbrowser.open(PRIVACY_STATEMENT_URL)
+        return True
+
+    def open_eula(self):
+        webbrowser.open(EULA_URLS[self._lang])
         return True
 
     def close_window(self):
@@ -572,8 +571,9 @@ class WebInstallerBridge:
                 50,
                 steps["openclaw"],
                 lambda: self._ensure_openclaw(ws),
-                NETWORK_RETRIES,
+                0,
             ),
+            (52, steps["prepareUpgrade"], ws.prepare_openclaw_upgrade, 0),
             (55, steps["path"], ws.add_to_path, LOCAL_RETRIES),
             (60, steps["desktop"], ws.install_desktop_client, NETWORK_RETRIES),
             (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
@@ -721,7 +721,7 @@ class WebInstallerBridge:
                         return False
                     time.sleep(1)
 
-        self._finish_fail(f"{clean_label} failed after {attempts} attempt(s).")
+        self._finish_fail(f"{clean_label} failed after {attempts} attempt(s): {detail}")
         return False
 
     def _prepare_upgrade(self, ws):
@@ -731,7 +731,7 @@ class WebInstallerBridge:
                 raise InstallationCancelled
             if not ws.stop_active_installation_for_upgrade(active):
                 raise RuntimeError(_STRINGS[self._lang]["runningAppsCloseFailed"])
-        return ws.prepare_openclaw_upgrade()
+        return ws.prepare_openclaw_update()
 
     def _confirm_close_running_apps(self, active: ActiveInstallation) -> bool:
         if _ACTIVE_WINDOW is None:
@@ -771,6 +771,9 @@ class WebInstallerBridge:
         if src:
             try:
                 shutil.copy2(str(src), str(dest_dir / "setup-dependencies.ps1"))
+                shutil.copy2(
+                    str(src.with_name("node-runtime.ps1")), str(dest_dir / "node-runtime.ps1")
+                )
                 self._logger.info(f"Setup script copied to {dest_dir} (for reference)")
             except Exception as exc:
                 self._logger.warn(f"Could not copy setup script: {exc}")
@@ -1006,9 +1009,7 @@ def run_web_installer(mode="install"):
         raise ValueError(f"Unsupported web installer mode: {mode}")
     logger = DeployerLogger()
     logger.step(
-        "Starting web installer"
-        if mode == "install"
-        else "Starting uninstall confirmation"
+        "Starting web installer" if mode == "install" else "Starting uninstall confirmation"
     )
     logger.debug(
         f"frozen={getattr(sys, 'frozen', False)} executable={sys.executable} cwd={Path.cwd()}"
@@ -1100,9 +1101,7 @@ def run_web_installer(mode="install"):
     logger.debug(f"installer icon path: {icon_path}")
     try:
         width = (
-            UNINSTALL_CONFIRM_WINDOW_WIDTH
-            if is_uninstall_confirmation
-            else INSTALLER_WINDOW_WIDTH
+            UNINSTALL_CONFIRM_WINDOW_WIDTH if is_uninstall_confirmation else INSTALLER_WINDOW_WIDTH
         )
         height = (
             UNINSTALL_CONFIRM_WINDOW_HEIGHT
@@ -1110,8 +1109,9 @@ def run_web_installer(mode="install"):
             else INSTALLER_WINDOW_HEIGHT
         )
         x, y = _get_centered_window_position(width, height)
+        window_title = "MicroClaw Uninstall" if is_uninstall_confirmation else "MicroClaw Setup"
         window = webview.create_window(
-            "MicroClaw",
+            window_title,
             url=html_path.as_uri(),
             js_api=bridge,
             width=width,
@@ -1122,6 +1122,7 @@ def run_web_installer(mode="install"):
             text_select=False,
             frameless=True,
             transparent=True,
+            focus=os.environ.get("MICROCLAW_BACKGROUND") != "1",
         )
         bridge.attach_window(window)
 
@@ -1140,7 +1141,7 @@ def run_web_installer(mode="install"):
                     time.sleep(0.1)
 
                     # Retrieve the native window handle (HWND)
-                    hwnd = ctypes.windll.user32.FindWindowW(None, "MicroClaw")
+                    hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
                     if not hwnd:
                         return
 

@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import * as path from "node:path";
+import * as fs from "node:fs";
 
 const MESSAGE_PREFIX = "MICROCLAW_COPILOT_AUTH:";
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
@@ -18,18 +19,28 @@ interface ProviderCatalogRuntimeModule {
 }
 
 interface ConfigRuntimeModule {
-  loadConfig(options?: Record<string, unknown>): Record<string, unknown>;
+  loadConfig?: (options?: Record<string, unknown>) => Record<string, unknown>;
+  getRuntimeConfig?: (options?: Record<string, unknown>) => Record<string, unknown>;
 }
 
-interface ModelsProviderRuntimeModule {
-  buildModelsProviderData(
-    config: Record<string, unknown>,
-    agentId?: string,
-    options?: Record<string, unknown>,
-  ): Promise<{
-    byProvider: Map<string, Set<string>>;
-    modelNames: Map<string, string>;
-  }>;
+export function resolveGitHubCopilotConfigRuntimePath(
+  runtimeDirectory: string,
+  exists: (filename: string) => boolean = fs.existsSync,
+): string {
+  const legacyPath = path.join(runtimeDirectory, "config-runtime.js");
+  return exists(legacyPath)
+    ? legacyPath
+    : path.join(runtimeDirectory, "runtime-config-snapshot.js");
+}
+
+export function readGitHubCopilotRuntimeConfig(
+  runtime: ConfigRuntimeModule,
+): Record<string, unknown> {
+  const loadConfig = runtime.loadConfig ?? runtime.getRuntimeConfig;
+  if (typeof loadConfig !== "function") {
+    throw new Error("OpenClaw configuration runtime is incompatible");
+  }
+  return loadConfig({ skipPluginValidation: true });
 }
 
 function enableGitHubCopilotPlugin(config: Record<string, unknown>): Record<string, unknown> {
@@ -116,7 +127,7 @@ async function main(): Promise<void> {
   const runtimePath = process.argv[2];
   const operation = process.argv[3] ?? "login";
   if (!runtimePath) throw new Error("OpenClaw provider authentication runtime was not provided");
-  if (operation !== "login" && operation !== "list-models") {
+  if (operation !== "login") {
     throw new Error("Unsupported GitHub Copilot worker operation");
   }
 
@@ -124,34 +135,20 @@ async function main(): Promise<void> {
     specifier: string,
   ) => Promise<T>;
   const providerCatalogPath = path.join(path.dirname(runtimePath), "provider-catalog-runtime.js");
-  const configRuntimePath = path.join(path.dirname(runtimePath), "config-runtime.js");
-  const modelsProviderRuntimePath = path.join(
-    path.dirname(runtimePath),
-    "models-provider-runtime.js",
-  );
-  const [authRuntime, providerCatalogRuntime, configRuntime, modelsProviderRuntime] =
-    await Promise.all([
-      dynamicImport<AuthRuntimeModule>(pathToFileURL(runtimePath).href),
-      dynamicImport<ProviderCatalogRuntimeModule>(pathToFileURL(providerCatalogPath).href),
-      dynamicImport<ConfigRuntimeModule>(pathToFileURL(configRuntimePath).href),
-      dynamicImport<ModelsProviderRuntimeModule>(pathToFileURL(modelsProviderRuntimePath).href),
-    ]);
+  const configRuntimePath = resolveGitHubCopilotConfigRuntimePath(path.dirname(runtimePath));
+  const [authRuntime, providerCatalogRuntime, configRuntime] = await Promise.all([
+    dynamicImport<AuthRuntimeModule>(pathToFileURL(runtimePath).href),
+    dynamicImport<ProviderCatalogRuntimeModule>(pathToFileURL(providerCatalogPath).href),
+    dynamicImport<ConfigRuntimeModule>(pathToFileURL(configRuntimePath).href),
+  ]);
   if (typeof authRuntime.runModelsAuthLoginFlow !== "function") {
     throw new Error("OpenClaw provider authentication runtime is incompatible");
   }
   if (typeof providerCatalogRuntime.resolvePluginProviders !== "function") {
     throw new Error("OpenClaw provider catalog runtime is incompatible");
   }
-  if (typeof configRuntime.loadConfig !== "function") {
-    throw new Error("OpenClaw configuration runtime is incompatible");
-  }
-  if (typeof modelsProviderRuntime.buildModelsProviderData !== "function") {
-    throw new Error("OpenClaw models provider runtime is incompatible");
-  }
 
-  const config = enableGitHubCopilotPlugin(
-    configRuntime.loadConfig({ skipPluginValidation: true }),
-  );
+  const config = enableGitHubCopilotPlugin(readGitHubCopilotRuntimeConfig(configRuntime));
   const providers = providerCatalogRuntime.resolvePluginProviders({
     config,
     mode: "setup",
@@ -163,25 +160,6 @@ async function main(): Promise<void> {
   });
   if (!providers.some((provider) => provider.id === "github-copilot")) {
     throw new Error("The bundled GitHub Copilot provider is unavailable");
-  }
-
-  if (operation === "list-models") {
-    const catalog = await modelsProviderRuntime.buildModelsProviderData(
-      config,
-      GITHUB_COPILOT_AUTH_AGENT_ID,
-      {
-        view: "all",
-      },
-    );
-    const modelIds = [...(catalog.byProvider.get("github-copilot") ?? [])];
-    send({
-      type: "models",
-      models: modelIds.map((modelId) => {
-        const id = `github-copilot/${modelId}`;
-        return { id, name: catalog.modelNames.get(id) ?? modelId };
-      }),
-    });
-    return;
   }
 
   const unsupportedPrompt = async (): Promise<never> => {

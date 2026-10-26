@@ -2,7 +2,7 @@
 ; ---------------------------------------------------------------------------
 ; Wraps the PyInstaller *onedir* installer (dist\MicroClawInstaller\) into ONE
 ; downloadable, code-signable .exe. On launch it:
-;   1. clears any stale staging from a previous run,
+;   1. selects an isolated staging directory for this payload,
 ;   2. extracts the onedir payload to a REAL directory under %LOCALAPPDATA%
 ;      (deliberately NOT %TEMP% — this preserves the WDAC-safe posture that
 ;      the team chose onedir for; unsigned bundled DLLs never load from %TEMP%),
@@ -23,6 +23,7 @@
 ; ---------------------------------------------------------------------------
 
 Unicode true
+!include "FileFunc.nsh"
 LoadLanguageFile "${NSISDIR}\Contrib\Language files\English.nlf"
 LoadLanguageFile "${NSISDIR}\Contrib\Language files\SimpChinese.nlf"
 
@@ -50,8 +51,9 @@ OutFile "${OUT_FILE}"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
-InstallDir "$LOCALAPPDATA\MicroClaw\Setup"
+InstallDir "$LOCALAPPDATA\MicroClaw\Setup\${PAYLOAD_ID}"
 SilentInstall silent
+Var ExtractOnly
 
 ; Version resource — a proper version block improves the signed file's
 ; presentation in SmartScreen / UAC / file properties.
@@ -65,6 +67,19 @@ VIAddVersionKey "LegalCopyright" "Copyright (C) 2026 MicroClaw"
 
 LangString PreparingText ${LANG_ENGLISH} "Preparing MicroClaw..."
 LangString PreparingText ${LANG_SIMPCHINESE} "正在准备 MicroClaw..."
+LangString ExtractionFailedText ${LANG_ENGLISH} "Could not prepare the complete MicroClaw installer. Close other installer windows and try again."
+LangString ExtractionFailedText ${LANG_SIMPCHINESE} "未能完整准备 MicroClaw 安装器。请关闭其他安装窗口后重试。"
+
+Function .onInit
+  StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
+  StrCpy $ExtractOnly 0
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/EXTRACT_ONLY" $1
+  IfErrors init_done
+  StrCpy $ExtractOnly 1
+init_done:
+FunctionEnd
 
 Section "Install"
   ; Reuse staging only when the previous extraction completed with the exact
@@ -77,30 +92,50 @@ Section "Install"
   StrCmp $1 "${PAYLOAD_ID}" launch_installer extract_payload
 
 extract_payload:
+  StrCmp $ExtractOnly 1 reset_staging
   Banner::show /NOUNLOAD "$(PreparingText)"
 
-  ; Bound disk usage to a single copy: wipe any leftover staging first.
+  ; Reset only this build's incomplete staging, never another running build.
+reset_staging:
+  ClearErrors
   RMDir /r "$INSTDIR"
+  IfErrors extraction_failed
   SetOutPath "$INSTDIR"
   SetOverwrite on
 
   DetailPrint "Extracting MicroClaw installer..."
   File /r "${PAYLOAD_DIR}\*"
+  IfErrors extraction_failed
+  StrCmp $ExtractOnly 1 payload_check
   Banner::destroy
 
-  IfFileExists "$INSTDIR\MicroClawInstaller.exe" payload_complete 0
-    Banner::destroy
-    MessageBox MB_ICONSTOP "Setup payload is incomplete: MicroClawInstaller.exe was not found."
-    Abort "Missing MicroClawInstaller.exe"
+payload_check:
+  IfFileExists "$INSTDIR\MicroClawInstaller.exe" payload_complete extraction_failed
 
 payload_complete:
+  ClearErrors
   FileOpen $0 "$INSTDIR\.payload-complete" w
+  IfErrors extraction_failed
   FileWrite $0 "${PAYLOAD_ID}"
   FileClose $0
+  IfErrors extraction_failed
+  Goto launch_installer
+
+extraction_failed:
+  StrCmp $ExtractOnly 1 extraction_quit
   Banner::destroy
+  MessageBox MB_ICONSTOP "$(ExtractionFailedText)"
+extraction_quit:
+  SetErrorLevel 2
+  Quit
 
 launch_installer:
+  StrCmp $ExtractOnly 1 extraction_done
   ; Fire-and-forget: launch the real installer, then let this stub close.
   DetailPrint "Starting MicroClaw installer..."
+  ClearErrors
   Exec '"$INSTDIR\MicroClawInstaller.exe"'
+  IfErrors extraction_failed
+extraction_done:
+  SetErrorLevel 0
 SectionEnd

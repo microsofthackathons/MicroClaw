@@ -1,7 +1,11 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { t, locale } from "../i18n";
-import { AGENT_CATALOG, type AgentCatalogEntry } from "../../../src/agent-catalog";
+import {
+  AGENT_CATALOG,
+  LEGACY_AGENT_ID_ALIASES,
+  type AgentCatalogEntry,
+} from "../../../src/agent-catalog";
 
 export interface QuickTask {
   title: string;
@@ -64,6 +68,7 @@ function normalizeRuntimeAgents(value: unknown): RuntimeAgent[] {
       return [];
     }
     const id = (candidate as { id: string }).id;
+    if (Object.hasOwn(LEGACY_AGENT_ID_ALIASES, id)) return [];
     const nameValue = (candidate as { name?: unknown }).name;
     const descriptionValue = (candidate as { description?: unknown }).description;
     return [

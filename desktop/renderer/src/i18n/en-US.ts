@@ -51,7 +51,6 @@ export default {
   "sidebar.tagline": "Weave the future through conversation",
   "sidebar.usageSnapshotTitle": "Usage",
   "sidebar.usageSnapshotViewDetails": "Details",
-  "sidebar.usageSnapshotSpend": "Spend",
   "sidebar.usageSnapshotTokens": "Tokens",
   "sidebar.usageSnapshotRequests": "Requests",
   "sidebar.usageSnapshotHealth": "Health",
@@ -136,7 +135,7 @@ export default {
   "chat.editCancel": "Cancel",
   "chat.composeHint": "MicroClaw is secured with end-to-end encryption. Press Enter to send.",
   "chat.disclaimer":
-    "AI-generated content may be incorrect. AI is not a human and has no personality. Microsoft is not responsible for any AI-generated content.",
+    "AI-generated content may be incorrect. AI is not a human and has no personality. MicroClaw is not responsible for any AI-generated content.",
   "chat.executionSteps": "Execution Steps",
   "chat.thinking": "Thinking",
   "chat.plan.stepsUnit": " steps",
@@ -150,6 +149,9 @@ export default {
   "chat.error.openSettings": "Open Model Settings",
   "chat.error.dismiss": "Dismiss",
   "chat.error.showDetails": "Show error details",
+  "chat.error.agent_initializing.title": "Preparing conversation data",
+  "chat.error.agent_initializing.hint":
+    "OpenClaw is running background checks. We will retry automatically. You can keep editing; your draft will be kept, not sent automatically. No model settings changes are needed.",
   "chat.error.not_found.title": "Model endpoint returned 404 Not Found",
   "chat.error.not_found.hint":
     "The Base URL appears to be incorrect or the path is wrong. Check the Base URL in Model Settings (e.g. it should usually end with /v1 for OpenAI-compatible providers).",
@@ -162,6 +164,15 @@ export default {
   "chat.error.unauthorized.title": "Authentication failed",
   "chat.error.unauthorized.hint":
     "The API key was rejected by the model provider. Verify the API key in Model Settings and make sure it has not expired or been revoked.",
+  "chat.error.provider_access.title": "The provider rejected access to this model",
+  "chat.error.provider_access.hint":
+    "A model appearing in the catalog does not guarantee access. Check the API key's region, model permissions, and billing or quota in the provider console. This does not necessarily mean the key is invalid.",
+  "chat.error.unsupported_model.title": "This model requires a different API",
+  "chat.error.unsupported_model.hint":
+    "This conversation uses the chat-completions API. Choose a compatible chat model; realtime, embedding, speech and media-generation models require separate integrations.",
+  "chat.error.request_rejected.title": "The provider could not accept the request",
+  "chat.error.request_rejected.hint":
+    "Check whether the model supports the chat API, the requested input and tools, and the conversation length. A new conversation will not fix an incompatible API.",
   "chat.error.rate_limited.title": "Rate limited by the model provider",
   "chat.error.rate_limited.hint":
     "Too many requests — try again shortly, or check your quota / billing status with the provider.",
@@ -169,6 +180,9 @@ export default {
   "chat.error.model_not_found.hint":
     "The model name in your settings was not recognized by the endpoint. Double-check the Model Name in Model Settings.",
   "chat.error.network.title": "Cannot reach the model endpoint",
+  "chat.error.response_delayed.title": "The reply is taking longer",
+  "chat.error.response_delayed.hint":
+    "The model may still be processing, especially on a local first reply. You can keep waiting or stop generation.",
   "chat.error.network.hint":
     "A network error occurred before reaching the model. Check your internet connection and the Base URL in Model Settings.",
   "chat.error.server_error.title": "Model provider returned a server error",
@@ -207,6 +221,8 @@ export default {
   "plugins.weixinEnabled":
     "WeChat plugin enabled. Please restart the gateway for changes to take effect.",
   "plugins.weixinDisabled": "WeChat plugin disabled",
+  "plugins.weixinPausedByMxc":
+    "WeChat is requested but paused until the current MXC generation is active.",
   "plugins.operationFailed": "Operation failed: {error}",
   "plugins.loginFailed": "Login failed: {error}",
   "plugins.loginInProgress": "Login in progress, please scan the QR code with WeChat...\u200B\n",
@@ -314,6 +330,256 @@ export default {
     "OpenClaw host file/runtime tools, elevated mode, browser, canvas, and code execution are denied. MXC tools never fall back to the host. Legacy AppContainer ACLs are not changed.",
   "settings.yes": "Yes",
   "settings.no": "No",
+  "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
+  "settings.windowsNodeMxcExperimental":
+    "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
+  "settings.experimental": "Experimental",
+  "settings.weixinRemoteApproval": "WeChat remote approval (Experimental)",
+  "settings.weixinRemoteApprovalRisk":
+    "Trusts normalized account, sender, direct-chat, message, and cursor metadata from the allowlisted openclaw-weixin plugin and Gateway as authentic. A compromised phone, WeChat session, plugin, or Gateway could authorize local command execution.",
+  "settings.weixinRemoteApprovalOwner": "Bound owner",
+  "settings.weixinRemoteApprovalUnbound": "Not bound",
+  "settings.weixinRemoteApprovalRequiresMxc":
+    "Enable Windows Node + MXC before enabling remote approval.",
+  "settings.weixinRemoteApprovalRequiresOwner":
+    "Exactly one authenticated WeChat account whose owner is in the explicit sender allowlist is required.",
+  "settings.weixinRemoteApprovalOnceOnly":
+    "Remote prompts are limited to exact predefined read-only Windows queries with no opaque operands. Free-form, unknown, or secret-bearing requests stay local-only, and raw command fields are not sent to WeChat. Replies approve only the currently listed request(s) once and never create durable approvals, folder grants, or future approval.",
+  "settings.weixinRemoteApprovalEnable": "Enable and bind locally",
+  "settings.weixinRemoteApprovalDisable": "Disable",
+  "settings.weixinRemoteApprovalRevoke": "Revoke owner binding",
+  "settings.weixinRemoteApprovalFailed": "Could not update WeChat remote approval",
+  "settings.windowsNodeMxcModeFull": "Full containment",
+  "settings.windowsNodeMxcFullBadge": "Hard boundary",
+  "settings.windowsNodeMxcModeFullDesc":
+    "Uses the attested MXC filesystem boundary. Approved folders are the exclusive filesystem capability ceiling.",
+  "settings.windowsNodeMxcModeLimited": "Limited containment (DACL)",
+  "settings.windowsNodeMxcLimitedBadge": "Limited",
+  "settings.windowsNodeMxcModeLimitedDesc":
+    "Uses DACL-based filesystem containment when the full MXC boundary is unavailable.",
+  "settings.windowsNodeMxcLimitedFilesystemWarning":
+    "Additional folder grants are additive, not an exclusive allowlist. Read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
+  "settings.windowsNodeMxcModeOff": "Off",
+  "settings.windowsNodeMxcModeOffDesc":
+    "Turns off the bundled Windows node route and restores the remembered standard sandbox setting.",
+  "settings.windowsNodeMxcOffWarning":
+    "Non-MXC: protection falls back to the remembered standard sandbox setting and may be unsandboxed if that setting is off.",
+  "settings.windowsNodeMxcSelected": "Selected",
+  "settings.windowsNodeMxcUseFull": "Use Full containment",
+  "settings.windowsNodeMxcUseLimited": "Use Limited containment",
+  "settings.windowsNodeMxcUseOff": "Turn containment off",
+  "settings.windowsNodeMxcConsent.title": "Enable {mode}?",
+  "settings.windowsNodeMxcConsent.summary":
+    "Review the security impact of {mode} before enabling it.",
+  "settings.windowsNodeMxcConsent.group.disabled": "Unavailable",
+  "settings.windowsNodeMxcConsent.group.paused": "Paused",
+  "settings.windowsNodeMxcConsent.group.available-restricted": "Restricted",
+  "settings.windowsNodeMxcConsent.groupSummary.disabled":
+    "Gateway file tools, browser automation, MCP, screen/camera/location/speech, and Gateway memory.",
+  "settings.windowsNodeMxcConsent.groupSummary.paused":
+    "Scheduled jobs (no catch-up) and hooks/webhooks (webhooks return 503; events are dropped; no replay).",
+  "settings.windowsNodeMxcConsent.groupSummary.available-restricted":
+    "exec only through Windows Node + MXC + approval; Gateway web_search/web_fetch, allowlisted WeChat, and reviewed Canvas A2UI.",
+  "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
+    "Gateway-native filesystem tools are disabled: read, write, edit, and apply_patch.",
+  "settings.windowsNodeMxcConsent.item.browser-automation": "Browser automation is disabled.",
+  "settings.windowsNodeMxcConsent.item.mcp": "MCP is disabled.",
+  "settings.windowsNodeMxcConsent.item.screen": "Screen access is disabled.",
+  "settings.windowsNodeMxcConsent.item.camera": "Camera access is disabled.",
+  "settings.windowsNodeMxcConsent.item.location": "Location access is disabled.",
+  "settings.windowsNodeMxcConsent.item.tts": "Text-to-speech (TTS) is disabled.",
+  "settings.windowsNodeMxcConsent.item.stt": "Speech-to-text (STT) is disabled.",
+  "settings.windowsNodeMxcConsent.item.gateway-memory":
+    "The default Gateway memory plugin and memory slot are disabled.",
+  "settings.windowsNodeMxcConsent.item.cron":
+    "Cron and scheduled jobs are preserved but paused, with no catch-up for work missed during containment.",
+  "settings.windowsNodeMxcConsent.item.hooks-webhooks":
+    "Hooks and Webhooks are paused. Webhooks return 503, internal events are dropped, and neither is replayed later.",
+  "settings.windowsNodeMxcConsent.item.exec":
+    "exec remains available only through the app-owned Windows node, MXC policy, and command approval flow.",
+  "settings.windowsNodeMxcConsent.item.gateway-web":
+    "web_search and HTTP(S)-only web_fetch remain available through the Gateway.",
+  "settings.windowsNodeMxcConsent.item.wechat-message":
+    "Allowlisted WeChat/message remains available only after the local release gate and approval/media broker checks.",
+  "settings.windowsNodeMxcConsent.item.canvas-phase-1":
+    "Canvas Phase 1 remains available only for reviewed native A2UI operations. General navigation, eval, and external or local content remain unavailable.",
+  "settings.windowsNodeMxcConsent.fullNote":
+    "Full containment is an exclusive filesystem boundary, subject to backend preflight.",
+  "settings.windowsNodeMxcConsent.limitedNote":
+    "Limited containment adds DACL grants, is not an exclusive boundary, and requires separate acknowledgement.",
+  "settings.windowsNodeMxcConsent.repeatNote":
+    "You'll confirm each enable and every Full/Limited switch.",
+  "settings.windowsNodeMxcConsent.enable": "Enable MXC",
+  "settings.windowsNodeMxcRequestedMode": "Requested mode",
+  "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
+  "settings.windowsNodeMxcAttestedTier": "Attested effective tier",
+  "settings.windowsNodeMxcLimitedActive": "Limited containment active",
+  "settings.windowsNodeMxcStatusActive": "Active",
+  "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
+  "settings.windowsNodeMxcCompactOff": "Containment — Off",
+  "settings.windowsNodeMxcHooksPausedBoth":
+    "Webhooks and internal hooks stay paused in MXC Locked and Active states. Requests are rejected, internal events are dropped, and neither is replayed.",
+  "settings.windowsNodeMxcHooksPausedExternal":
+    "Webhooks stay paused in MXC Locked and Active states. Requests are rejected and are not replayed.",
+  "settings.windowsNodeMxcHooksPausedInternal":
+    "Internal hooks stay paused in MXC Locked and Active states. Events are dropped and are not replayed.",
+  "settings.windowsNodeMxcCanvasActive":
+    "Canvas Phase 1 — Active. Managed native A2UI only; navigation, eval, local files, and screen capture remain unavailable.",
+  "settings.windowsNodeMxcCanvasPaused":
+    "Canvas Phase 1 is requested but unavailable until MXC reaches Active.",
+  "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
+  "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
+  "settings.windowsNodeMxcEffective": "Effective state",
+  "settings.windowsNodeMxcGatewayPolicy": "Gateway agent policy",
+  "settings.windowsNodeMxcReady": "Ready",
+  "settings.windowsNodeMxcBlocked": "Blocked (fail closed)",
+  "settings.windowsNodeMxcProtected": "Protected",
+  "settings.windowsNodeMxcStarting": "Starting",
+  "settings.windowsNodeMxcActionRequired": "Action required",
+  "settings.windowsNodeMxcProtectionOff": "Off",
+  "settings.windowsNodeMxcTechnicalDetails": "Security diagnostics",
+  "settings.windowsNodeMxcUnavailable": "Unavailable",
+  "settings.windowsNodeMxcAvailable": "Available",
+  "settings.windowsNodeMxcMissing": "Missing",
+  "settings.windowsNodeMxcUnknown": "Unknown",
+  "settings.windowsNodeMxcCompiledIn": "Compiled in",
+  "settings.windowsNodeMxcCompiledOut": "Compiled out",
+  "settings.windowsNodeMxcVerified": "Verified",
+  "settings.windowsNodeMxcUnverified": "Unverified",
+  "settings.windowsNodeMxcDaclRequired": "DACL augmentation required",
+  "settings.windowsNodeMxcBundledHelper": "Bundled helper",
+  "settings.windowsNodeMxcRuntimeContract": "MXC runtime / CWD policy",
+  "settings.windowsNodeMxcSettingsFingerprint": "Settings fingerprint",
+  "settings.windowsNodeMxcCwdAttestation": "CWD policy attestation",
+  "settings.windowsNodeMxcEffectiveTools": "Effective Gateway tools",
+  "settings.windowsNodeMxcTier": "MXC isolation tier",
+  "settings.windowsNodeMxcBaseContainerApi": "Base Container API",
+  "settings.windowsNodeMxcBfsRuntime": "BFS runtime support",
+  "settings.windowsNodeMxcBfsHostTool": "BFS host tool",
+  "settings.windowsNodeMxcStrictFallback": "Strict host-fallback blocking",
+  "settings.windowsNodeMxcEnabled": "Enabled",
+  "settings.windowsNodeMxcDisabled": "Disabled",
+  "settings.windowsNodeMxcCommands": "Declared node commands",
+  "settings.windowsNodeMxcConnection": "Connection / pairing",
+  "settings.windowsNodeMxcFolders": "Global MXC approved folders",
+  "settings.windowsNodeMxcFullFolders": "Full hard-boundary approved folders",
+  "settings.windowsNodeMxcLimitedFolders": "Limited additional filesystem grants",
+  "settings.windowsNodeMxcConfiguredFolders": "Configured MXC folders",
+  "settings.windowsNodeMxcGrantReadWrite": "Read/write",
+  "settings.windowsNodeMxcGrantReadOnly": "Read-only",
+  "settings.windowsNodeMxcFoldersHint":
+    "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
+  "settings.windowsNodeMxcLimitedFoldersHint":
+    "These grants add access in Limited mode; they are not an exclusive allowlist. Read-only cannot reduce access already provided by ambient Windows ACLs.",
+  "settings.windowsNodeMxcConfiguredFoldersHint":
+    "These folders will be used when Full or Limited containment is selected.",
+  "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
+  "settings.windowsNodeMxcAmbientBeforeGrants": "Ambient access before selected-folder grants",
+  "settings.windowsNodeMxcAmbientAllDenied":
+    "No inherited filesystem access detected ({denied}/{total} denied)",
+  "settings.windowsNodeMxcAmbientExceptions":
+    "Inherited filesystem access detected: {details} ({denied}/{total} denied)",
+  "settings.windowsNodeMxcAmbientContract": "Attestation contract",
+  "settings.windowsNodeMxcAmbientHash": "Attestation hash",
+  "settings.windowsNodeMxcAmbientCheckedAt": "Assessed at",
+  "settings.windowsNodeMxcAmbientAccessHint":
+    "This assessment runs before MicroClaw adds the selected folder grants. Category-level attestation only; absolute paths are intentionally not displayed.",
+  "settings.windowsNodeMxcAmbientUnavailable": "Ambient access attestation is not available.",
+  "settings.windowsNodeMxcAmbientCategory.desktop": "Desktop",
+  "settings.windowsNodeMxcAmbientCategory.documents": "Documents",
+  "settings.windowsNodeMxcAmbientCategory.downloads": "Downloads",
+  "settings.windowsNodeMxcAmbientCategory.microclaw-state": "MicroClaw state",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-state": "OpenClaw state",
+  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state": "OpenClaw roaming state",
+  "settings.windowsNodeMxcAmbientCategory.ssh": "SSH",
+  "settings.windowsNodeMxcAmbientCategory.gnupg": "GnuPG",
+  "settings.windowsNodeMxcAmbientCategory.aws": "AWS credentials",
+  "settings.windowsNodeMxcAmbientCategory.azure": "Azure credentials",
+  "settings.windowsNodeMxcAmbientCategory.kube": "Kubernetes credentials",
+  "settings.windowsNodeMxcAmbientCategory.gcloud": "Google Cloud credentials",
+  "settings.windowsNodeMxcAmbientCategory.windows-credentials": "Windows credentials",
+  "settings.windowsNodeMxcAmbientCategory.powershell-history": "PowerShell history",
+  "settings.windowsNodeMxcAmbientCategory.browser-chrome": "Chrome data",
+  "settings.windowsNodeMxcAmbientCategory.browser-edge": "Edge data",
+  "settings.windowsNodeMxcAmbientCategory.browser-brave": "Brave data",
+  "settings.windowsNodeMxcAmbientCategory.browser-firefox": "Firefox data",
+  "settings.windowsNodeMxcAmbientStatus.denied": "Denied",
+  "settings.windowsNodeMxcAmbientStatus.read": "Read",
+  "settings.windowsNodeMxcAmbientStatus.read-write": "Read/write",
+  "settings.windowsNodeMxcFoldersLocked":
+    "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
+  "settings.windowsNodeMxcFoldersStaged":
+    "Changes are staged only. Applying them pauses protected chat, revokes current authorization, then restarts, re-attests, and runs exact internal contained probes in both generations.",
+  "settings.windowsNodeMxcApplyFolders": "Apply changes and reactivate",
+  "settings.windowsNodeMxcApplyFoldersWarning":
+    "Agent execution and chat will pause. Current command approvals may be invalidated. MicroClaw will stay locked if any policy, restart, attestation, smoke, or activation step is canceled or fails.",
+  "settings.windowsNodeMxcApplyFoldersComplete":
+    "The folder policy was applied and the verified MXC route was reactivated.",
+  "settings.windowsNodeMxcFolderRecovery": "The last apply remained safely locked",
+  "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
+  "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
+  "settings.windowsNodeMxcLifecyclePhase.idle": "Idle",
+  "settings.windowsNodeMxcLifecyclePhase.locking": "Locking execution",
+  "settings.windowsNodeMxcLifecyclePhase.validating": "Validating policy",
+  "settings.windowsNodeMxcLifecyclePhase.persisting": "Applying policy",
+  "settings.windowsNodeMxcLifecyclePhase.starting-locked": "Starting locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-locked":
+    "Running internal probes in locked generation",
+  "settings.windowsNodeMxcLifecyclePhase.starting-active": "Starting active generation",
+  "settings.windowsNodeMxcLifecyclePhase.smoking-active":
+    "Running internal probes in active generation",
+  "settings.windowsNodeMxcLifecyclePhase.promoting-active":
+    "Promoting verified policy in the current generation",
+  "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
+  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting standard security mode",
+  "settings.windowsNodeMxcLifecyclePhase.active": "Active",
+  "settings.windowsNodeMxcLifecyclePhase.locked": "Locked",
+  "settings.windowsNodeMxcLifecyclePhase.failed": "Transition failed",
+  "settings.windowsNodeMxcChangeToRo": "Change to read-only",
+  "settings.windowsNodeMxcChangeToRw": "Change to read/write",
+  "settings.windowsNodeMxcFolderDuplicate": "This folder is already configured with that access.",
+  "settings.windowsNodeMxcFolderNonlocal":
+    "Only existing local drive folders are allowed; UNC and device paths are denied.",
+  "settings.windowsNodeMxcFolderMissing": "The selected folder no longer exists.",
+  "settings.windowsNodeMxcFolderReparse":
+    "Folders containing junctions, symbolic links, or other reparse points are denied.",
+  "settings.windowsNodeMxcFolderSensitive":
+    "This folder overlaps a protected credentials, browser, SSH, cloud, or MicroClaw state root.",
+  "settings.windowsNodeMxcFolderAclFailed":
+    "Windows could not apply and verify the folder access policy.",
+  "settings.windowsNodeMxcFolderNotConfigured": "This folder is no longer configured.",
+  "settings.windowsNodeMxcFolderMutationFailed": "Could not update the approved folder policy.",
+  "settings.windowsNodeMxcDurableApprovals": "Remembered exact commands",
+  "settings.windowsNodeMxcDurableApprovalsHint":
+    "Allow always remembers only the exact executable content, arguments, CWD, declared folder use, policy, agent, and session. It never changes global folders.",
+  "settings.windowsNodeMxcLimitedCommandApprovals": "Per-command approval only",
+  "settings.windowsNodeMxcLimitedCommandApprovalsHint":
+    "Limited containment does not offer Allow always. Every command requires a visible per-command approval.",
+  "settings.windowsNodeMxcLimitedAcknowledgeTitle": "Enable Limited filesystem containment?",
+  "settings.windowsNodeMxcLimitedAcknowledgeBody":
+    "Limited containment relies on additive Windows DACL grants. It is not an exclusive filesystem allowlist, and a read-only grant cannot remove access already available through ambient ACLs.",
+  "settings.windowsNodeMxcLimitedAcknowledgeCheckbox":
+    "I understand these filesystem limitations and want to enable Limited containment.",
+  "settings.windowsNodeMxcEnableLimited": "Enable Limited containment",
+  "settings.windowsNodeMxcNoDurableApprovals": "No exact commands are remembered.",
+  "settings.windowsNodeMxcRevokeApproval": "Revoke",
+  "settings.windowsNodeMxcRevokeAllApprovals": "Revoke all",
+  "settings.windowsNodeMxcRevokeAllApprovalsWarning":
+    "Revoke every remembered exact MXC command? Future runs will require a new visible approval.",
+  "settings.windowsNodeMxcApprovalCwd": "CWD",
+  "settings.windowsNodeMxcApprovalAccess": "Declared folder use",
+  "settings.windowsNodeMxcApprovalScope": "Agent / session",
+  "settings.windowsNodeMxcApprovalCreated": "Created",
+  "settings.windowsNodeMxcApprovalLastUsed": "Last used",
+  "settings.windowsNodeMxcApprovalNever": "never",
+  "settings.windowsNodeMxcSmoke": "Contained child-process smoke",
+  "settings.windowsNodeMxcNotRun": "Not run",
+  "settings.windowsNodeMxcActivationLease": "Activation lease",
+  "settings.windowsNodeMxcGatewayGeneration": "Gateway generation",
+  "settings.windowsNodeMxcCompatibility":
+    "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. AppContainer and this mode are mutually exclusive.",
+  "settings.windowsNodeMxcDegraded":
+    "Warning: this machine uses degraded DACL-based MXC containment. Execution remains blocked unless every other proof passes.",
   "settings.sandboxEnabled": "Tool sandbox (AppContainer)",
   "settings.externalApps": "Apps allowed outside the sandbox",
   "settings.externalAppsHint":
@@ -356,6 +622,9 @@ export default {
   "settings.about": "About",
   "settings.version": "Version 1.0.0",
   "settings.copyright": "Copyright",
+  "settings.legal": "Legal",
+  "settings.eula": "MicroClaw End User License Agreement",
+  "settings.privacyStatement": "Privacy Statement",
   "settings.checkForUpdates": "Check for updates",
   "settings.updateChecking": "Checking...",
   "settings.updateAvailable": "Version {version} is available",
@@ -392,6 +661,7 @@ export default {
   "settings.searchNotConfigured": "Not configured",
   "settings.searchDefault": "Default",
   "settings.saveFailed": "Save failed: {error}",
+  "settings.openLinkFailed": "Could not open the link: {error}",
   "settings.clearHistoryConfirm":
     "Are you sure you want to clear all chat history? This action cannot be undone.",
   "settings.confirm": "Confirm",
@@ -459,8 +729,114 @@ export default {
   "settings.restartFailed": "Restart failed: {error}",
   "settings.connectionFailed": "Connection failed: {error}",
 
+  "modelManager.providers": "Model providers",
+  "modelManager.saving": "Saving...",
+  "modelManager.localEntryHint": "Use the llama.cpp card to manage official local models.",
+  "modelManager.structuredSecret":
+    "This provider uses a structured secret reference. Supply a replacement credential or edit the reference in OpenClaw.",
+  "modelManager.providersHint":
+    "Manage connections here. Choose a model for each conversation next to the message box.",
+  "modelManager.defaultModel": "Default model",
+  "modelManager.compatibleApi": "OpenAI-compatible API",
+  "modelManager.configure": "Manage",
+  "modelManager.add": "Configure",
+  "modelManager.edit": "Edit",
+  "modelManager.removeProviderTitle": "Remove model connection",
+  "modelManager.removeProviderConfirm":
+    "Remove the {provider} connection, its saved API key, and model configuration? Related default and agent model selections will also be cleared. Conversations will stay, and no other model will be selected automatically. External environment variables and authentication credentials will not be deleted.",
+  "modelManager.providerRemoved": "Model connection removed",
+  "modelManager.notConfigured": "Not configured",
+  "modelManager.localHint":
+    "Qwen3.5 4B, 9B, 35B-A3B and Qwen3.8 27B. Models download from ModelScope on demand.",
+  "fixedLocal.downloadConsent":
+    "Download this model and embeddings from ModelScope, and prepare missing runtime components? Your current model stays selected until preparation succeeds.",
+  "fixedLocal.modelDownload": "Model download",
+  "fixedLocal.embeddingDownload": "Embedding download",
+  "fixedLocal.runtimeSpace": "Runtime disk reserve",
+  "fixedLocal.execution": "Execution",
+  "fixedLocal.cpuWarning":
+    "Larger models need more memory and can be slow on CPU. 4B is the lightweight choice.",
+  "fixedLocal.downloadAndUse": "Download and select",
+  "fixedLocal.selecting": "Applying model selection...",
+  "fixedLocal.confirming": "Starting the confirmed download...",
+  "fixedLocal.confirmationExpired":
+    "This download confirmation is no longer active. Refresh the setup status before retrying.",
+  "fixedLocal.preparing": "Preparing the selected model...",
+  "fixedLocal.downloading": "Downloading / preparing",
+  "fixedLocal.cached": "Already available",
+  "fixedLocal.unsupportedModel":
+    "Choose a managed model from the list. Models download only from ModelScope.",
+  "fixedLocal.providerRequired":
+    "Enable the official local provider in model settings before preparing a model.",
+  "fixedLocal.agentRequired": "Select an agent conversation before preparing a local model.",
+  "fixedLocal.enableFirst": "Enable local provider first",
+  "fixedLocal.enable": "Enable",
+  "fixedLocal.notDownloaded": "Not downloaded",
+  "fixedLocal.lightweight": "Lightweight",
+  "fixedLocal.prepareModel": "Prepare",
+  "fixedLocal.connectedHint":
+    "The provider is connected. Select a model and confirm before downloading its weights from ModelScope.",
+  "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
+  "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
+  "modelManager.apiKeyHint": "Expand to get an API key and configure the connection.",
+  "modelManager.expandProvider": "Expand {provider}",
+  "modelManager.collapseProvider": "Collapse {provider}",
+  "modelSetup.catalogLoading": "Fetching the provider's model list…",
+  "modelSetup.catalogLoaded":
+    "Models returned by the provider. Individual access may depend on your account permissions.",
+  "modelSetup.catalogNeedsKey":
+    "Enter a complete API key to fetch models. The model list stays disabled until the request succeeds.",
+  "modelSetup.catalogRefresh": "Refresh model list",
+  "modelSetup.incompatible.realtime": "Requires realtime API",
+  "modelSetup.incompatible.embedding": "Embedding model, not chat",
+  "modelSetup.incompatible.rerank": "Reranking model, not chat",
+  "modelSetup.incompatible.speech": "Requires speech API",
+  "modelSetup.incompatible.image": "Requires image-generation API",
+  "modelSetup.incompatible.video": "Requires video-generation API",
+  "modelSetup.catalogChoose": "Fetch the model list and select a model before saving.",
+  "modelSetup.catalogError.credentials":
+    "Enter an API key, or check that its environment variable is defined.",
+  "modelSetup.catalogError.maskedKey":
+    "This looks like a masked key. Use the provider's copy button to obtain the complete API key.",
+  "modelSetup.catalogError.endpoint": "The provider endpoint is invalid.",
+  "modelSetup.catalogError.authentication":
+    "The provider rejected the API key. Check the complete key, endpoint region and account permissions.",
+  "modelSetup.catalogError.unavailable":
+    "The provider did not return a model catalog. Check endpoint availability and retry; no preset list was substituted.",
+  "modelSetup.catalogError.response": "The provider returned an invalid model catalog.",
+  "modelSetup.catalogError.empty": "The provider returned no models for this connection.",
+  "modelSetup.catalogError.network":
+    "Could not fetch models. Check the network or endpoint and retry.",
+  "modelManager.saveOnlyHint":
+    "Save connection settings without changing the default model or sending a test prompt.",
+  "modelManager.sessionModel": "Model for this conversation",
+  "modelManager.switching": "Switching...",
+  "modelManager.loading": "Loading models...",
+  "modelManager.recoveryRequired":
+    "A previous model change could not be confirmed. Recovery keeps the Gateway's saved selection; it does not retry or roll back that change.",
+  "modelManager.recoverWithRestart": "Restart Gateway and recover",
+  "modelManager.recoverCurrent": "Confirm saved state and recover",
+  "modelManager.recovering": "Recovering model state...",
+  "modelManager.recoveryConfirm":
+    "The previous request might still finish later. Recovery will stop and restart MicroClaw's local Gateway, then read the saved model state. This may take a few minutes. It will not resend the change, choose another model, or delete conversations. Continue?",
+  "modelManager.recoveryChanged":
+    "The pending model change has changed. Refresh its state before recovering.",
+  "modelManager.sessionHint":
+    "Only this conversation changes. Defaults and other conversations stay unchanged.",
+  "modelManager.search": "Search models and providers",
+  "modelManager.noMatches": "No matching models.",
+  "modelManager.clearSearch": "Clear search",
+  "modelManager.refresh": "Refresh",
+  "modelManager.offline": "Connect to the Gateway to change the conversation model.",
+  "modelManager.downloaded": "Downloaded",
+  "modelManager.external": "External server",
+  "modelManager.useInherited": "Use agent default",
+  "modelManager.manage": "Manage model providers",
+
   // ── GatewayLoading ──
   "gateway.retry": "Retry",
+  "gateway.disableMxc": "Turn off Windows Node + MXC",
+  "gateway.mxcFailed": "MXC readiness failed. Execution remains safely locked.",
   "gateway.ready": "Ready",
   "gateway.starting": "Starting services…",
   "gateway.connecting": "Connecting…",
@@ -496,17 +872,163 @@ export default {
   "setup.saveFailed": "Save failed: {error}",
 
   // ── ModelSetupDialog ──
+  "localModel.title": "Local model",
+  "localModel.subtitle": "Run a model on this computer.",
+  "localModel.trial": "Preview",
+  "localModel.details": "View details",
+  "localModel.advanced": "Advanced options and information",
+  "localModel.recommended": "Recommended for this computer",
+  "localModel.downloadSize": "Model download",
+  "localModel.downloadAmount": "About {size} GB",
+  "localModel.runMode": "Run using",
+  "localModel.cpuMode": "Standard",
+  "localModel.gpuMode": "GPU acceleration",
+  "localModel.cpuDownloadHint":
+    "CPU replies may be slower. Runtime components are an additional download.",
+  "localModel.gpuDownloadHint":
+    "Compatibility is checked before use. Runtime components are an additional download.",
+  "localModel.startDownload": "Start download",
+  "localModel.notNow": "Not now",
+  "localModel.prepareIntro": "Choose a model from the list and confirm its ModelScope download.",
+  "localModel.preparedHint":
+    "The model is prepared. Select it as the default without an AI connection test.",
+  "localModel.useModel": "Start using",
+  "localModel.finish": "Done",
+  "localModel.cancelSetup": "Cancel",
+  "localModel.setupPending": "Local model setup is unfinished",
+  "localModel.viewSetup": "View progress",
+  "localModel.switchCloudConfirm":
+    "Local model setup is unfinished. Cancel it before configuring a cloud model?",
+  "localModel.switchCloudContinue": "Cancel local setup and continue",
+  "localModel.keepLocalSetup": "Keep local setup",
+  "localModel.setupFinishing":
+    "Local setup is still finishing. No model was switched; try again when it finishes.",
+  "localModel.setupChanged": "Local setup changed. Please try again.",
+  "localModel.switchBeforeSave": "Local setup is unfinished. Saving will ask whether to cancel it.",
+  "localModel.noSelection": "Not selected",
+  "localModel.selectModel": "Select a model",
+  "localModel.configure": "Set up a local model",
+  "localModel.addCloud": "Add cloud connection",
+  "localModel.addLocal": "Add local model",
+  "localModel.defaultModel": "Default model",
+  "localModel.defaultAgentOverride":
+    "The default agent {agent} has its own model override ({model}). Changing the global default does not change this override; conversations using it may keep that model.",
+  "localModel.defaultNotice":
+    "Changes the default model only. Existing agent and session overrides remain unchanged. Other provider connections are kept.",
+  "localModel.experimental":
+    "Experimental compatibility: official llama.cpp setup still requires validation on your Windows installation. Plugin installation does not guarantee GPU acceleration or model readiness.",
+  "localModel.privacy":
+    "MicroClaw does not add automatic cloud fallback. Existing OpenClaw fallback settings may still route requests to other providers. Local inference does not make search, skills, or integrations offline.",
+  "localModel.streaming": "Wait for the current reply to finish before changing models.",
+  "localModel.operationBusy":
+    "A local-model operation is active or needs recovery. Open Local model to check or resume it before changing configuration.",
+  "localModel.checking": "Checking this computer…",
+  "localModel.readingConfig": "Reading saved configuration…",
+  "localModel.refreshingStatus": "Refreshing status in the background…",
+  "localModel.configuredHint":
+    "Save the model selection directly, without an AI connection or tool-use test.",
+  "localModel.reconfigure": "Reconfigure local model",
+  "localModel.discoverModels": "Run full model discovery",
+  "localModel.filesMissing": "Download needed",
+  "localModel.filesUnknown": "File status unknown",
+  "localModel.filesMissingHint":
+    "The configuration is saved, but the local model files are missing. Download them again before use.",
+  "localModel.downloadAgain": "Download model again",
+  "localModel.gatewayVersion": "Gateway version",
+  "localModel.unknown": "Unknown",
+  "localModel.unsupported":
+    "This Gateway does not support the required local-model setup capabilities.",
+  "localModel.readOnly":
+    "Configuration changes are locked. Check Gateway policy and Windows Node + MXC settings.",
+  "localModel.installUnavailable":
+    "Official provider installation is unavailable for this deployment.",
+  "localModel.providerRequired":
+    "The official llama.cpp provider must be installed and enabled before setup.",
+  "localModel.reviewProvider": "Review official provider",
+  "localModel.reviewAgain": "Review provider again",
+  "localModel.reviewAgainNotice":
+    "Review the provider again before retrying installation. Any newly staged capabilities or policy warnings need a fresh, explicit confirmation.",
+  "localModel.capabilitiesUnreviewed":
+    "No capability details were returned. This is a source/version review, not a full permissions review. Installation may require another review of the staged manifest.",
+  "localModel.installSourceConsent":
+    "I have reviewed the source and version and authorize attempting this official installation. Additional capabilities or warnings require a separate review.",
+  "localModel.providerReview": "Provider source and capabilities",
+  "localModel.provider": "Provider",
+  "localModel.version": "Version",
+  "localModel.source": "Source",
+  "localModel.installConsent":
+    "I have reviewed the source, version, and capabilities and authorize installation or enabling of this provider.",
+  "localModel.installProvider": "Install / enable provider",
+  "localModel.prepareTitle": "Prepare a connection",
+  "localModel.managed": "Prepare Qwen3.5 4B",
+  "localModel.existing": "Connect an existing llama.cpp server",
+  "localModel.ownership":
+    "OpenClaw manages automatic setup. An existing server remains user-managed. Switching modes replaces the llama.cpp connection, not your cloud connections.",
+  "localModel.loopback":
+    "For an existing server, use a loopback address such as http://127.0.0.1:8080. Remote and LAN endpoints are not supported by this flow.",
+  "localModel.activationTitle": "Get ready to use",
+  "localModel.preparedNotice":
+    "Preparation does not change your default. Select the exact model below; connection errors are reported when you chat.",
+  "localModel.exactModel": "Model",
+  "localModel.chooseCandidate": "Choose a model to use",
+  "localModel.noExactCandidate":
+    "No unique exact candidate is selected. Refresh detection or explicitly choose the intended candidate; nothing will be selected automatically from an ambiguous list.",
+  "localModel.verifyUse": "Use this model",
+  "localModel.cancel": "Request cancellation",
+  "localModel.cancelProtected":
+    "Cancellation is pending. The Gateway is finishing a protected step; it has not confirmed cancellation. No process will be killed.",
+  "localModel.resume": "Resume / check operation",
+  "localModel.refresh": "Refresh status",
+  "localModel.readyNotice":
+    "The default model has been updated without an AI test. Existing agent and session overrides remain unchanged.",
+  "localModel.notSwitched":
+    "Activation was rejected before promotion. The default model was not switched.",
+  "localModel.checkAfterError":
+    "The operation failed. Configuration may already have been applied; refresh state before retrying. No automatic rollback is assumed; existing fallback settings are unchanged.",
+  "localModel.phase.starting": "Starting official setup…",
+  "localModel.phase.step": "Continue setup",
+  "localModel.phase.prepared": "Prepared — not enabled",
+  "localModel.phase.activating": "Selecting the model…",
+  "localModel.phase.applying": "Applying configuration / waiting for runtime…",
+  "localModel.phase.ready": "Selected",
+  "localModel.phase.cancelled": "Cancellation confirmed",
+  "localModel.phase.error": "Operation failed",
+  "localModel.phase.interrupted": "Connection interrupted — check before continuing",
+  "localModel.gatewayStep": "Setup instructions",
+  "localModel.waiting":
+    "Waiting for the Gateway. Progress text below is provided by the official setup flow.",
+  "localModel.answer": "Your answer",
+  "localModel.chooseOption": "Choose an option",
+  "localModel.chooseOptions": "Choose options",
+  "localModel.confirm": "Confirm",
+  "localModel.decline": "Decline",
+  "localModel.continue": "Continue",
+  "localModel.refreshCatalog": "Refresh model catalog",
+  "localModel.currentDefault": "Current default",
+  "localModel.configured": "Configured connection",
+  "localModel.tools": "Tools",
+  "localModel.images": "Images",
+  "localModel.context": "Context limit",
+  "localModel.availability": "Catalog availability",
+  "localModel.yes": "Yes",
+  "localModel.no": "No",
+  "localModel.catalogNotice":
+    "Catalog availability is not a running-service or GPU-readiness indicator. Unknown capabilities are not inferred.",
+  "localModel.removeConnection": "Remove connection",
+  "localModel.selectBeforeRemove":
+    "Select and apply another default model explicitly before removing this connection.",
+  "localModel.removalNotice":
+    "Removing a connection does not delete model files, caches, or the runtime. Select another default before removing the active local model.",
   "modelSetup.title": "Set Up Model",
-  "modelSetup.selectDesc":
-    "Choose a guided provider, connect an account, or configure any compatible model endpoint.",
+  "modelSetup.selectDesc": "Choose Qwen, MiniMax, or a local model to get started.",
   "modelSetup.keyDesc": "Enter your model details and API key to start using MicroClaw.",
   "modelSetup.customDesc": "Configure any compatible model endpoint.",
   "modelSetup.copilotDesc":
     "Connect GitHub Copilot with GitHub's secure device login, then choose a model available to your account.",
   "modelSetup.githubCopilot": "GitHub Copilot",
-  "modelSetup.otherModel": "Other model",
-  "modelSetup.configureCustom": "Configure custom provider",
+  "modelSetup.customProvider": "Custom provider",
   "modelSetup.getApiKey": "Get API Key",
+  "modelSetup.openProviderFailed": "Could not open the provider website: {error}",
   "modelSetup.haveApiKey": "I already have an API Key",
   "modelSetup.providerId": "Provider ID",
   "modelSetup.providerIdPlaceholder": "e.g. openai, deepseek, or ollama",
@@ -562,7 +1084,7 @@ export default {
 
   // ── TasksView ──
   "tasks.title": "Scheduled Tasks",
-  "tasks.desc": "View and manage scheduled tasks configured in OpenClaw",
+  "tasks.desc": "View scheduled tasks configured in OpenClaw",
   "tasks.refresh": "Refresh",
   "tasks.loadFailed": "Failed to Load",
   "tasks.loading": "Loading…",
@@ -575,8 +1097,13 @@ export default {
   "tasks.colLastRun": "Last Run",
   "tasks.enabled": "Enabled",
   "tasks.disabled": "Disabled",
+  "tasks.pausedByMxc": "Paused by MXC",
+  "tasks.mxcPausedTitle": "Scheduled tasks paused by MXC",
+  "tasks.mxcPausedDesc":
+    "Saved jobs are preserved. Changes and run-now are unavailable; enabled jobs resume at their next future schedule after MXC is turned off, without catch-up.",
 
   // ── Common ──
+  "common.cancel": "Cancel",
   "common.close": "Close",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",
@@ -601,6 +1128,8 @@ export default {
   "perm.titleWrite": "File access permission",
   "perm.titleCommand": "Command approval required",
   "perm.titleApp": "External app approval required",
+  "perm.titleMxc": "MXC sandbox command approval",
+  "perm.titleMxcLimited": "Limited filesystem containment",
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
@@ -612,13 +1141,36 @@ export default {
   "perm.shellDescRO": "Allow read permission to {dir}",
   "perm.appDesc":
     "AI is trying to launch {app}. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
+  "perm.mxcDesc": "AI wants to run this command inside the MXC sandbox.",
+  "perm.mxcLimitedDesc": "AI wants to run this command with Limited filesystem containment.",
+  "perm.mxcAccessLabel": "Declared folder use",
+  "perm.mxcAdditionalAccessLabel": "Additional filesystem grants",
+  "perm.mxcAccessRo": "Read only",
+  "perm.mxcAccessRw": "Read and write",
+  "perm.mxcCwdLabel": "Canonical working directory",
+  "perm.mxcScope":
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. Conversation-scoped approval remembers only this exact executable, arguments, canonical working directory, declared access, agent, and conversation.",
+  "perm.mxcScopeOnce":
+    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access.",
+  "perm.mxcScopeNoAccess":
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown. Conversation-scoped approval remembers only this exact executable, arguments, canonical working directory, agent, and conversation.",
+  "perm.mxcScopeNoAccessOnce":
+    "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
+  "perm.mxcLimitedScope":
+    "Additional folder grants are additive, not an exclusive allowlist. Conversation-scoped approval remembers only this exact executable, arguments, working directory, declared access, agent, and conversation.",
+  "perm.mxcLimitedScopeOnce":
+    "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
   "perm.riskWrite": "Medium risk: the agent can create or modify files in this folder.",
   "perm.riskCommandRO": "Medium risk: review the command before allowing folder access.",
   "perm.riskCommandRW": "High risk: this command may change files or system state.",
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
+  "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
+  "perm.riskMxcLimited":
+    "Limited filesystem containment: review the command and additional requested grants before allowing.",
   "perm.commandLabel": "Command",
-  "perm.allowAlways": "Always allow",
+  "perm.allowAlways": "Allow always",
+  "perm.mxcAllowAlways": "Always allow in this conversation",
   "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
   "perm.aclTimeout":
@@ -648,6 +1200,12 @@ export default {
   "usage.tokenOutput": "Output",
   "usage.tokenCache": "Cache Read",
   "usage.tokenToday": "Today",
+  "usage.sourceSession": "Sessions (chat, heartbeat, etc.)",
+  "usage.sourceMemory": "Background memory processing",
+  "usage.sourceBackground": "Other independent background calls",
+  "usage.accountingHint":
+    "Session usage plus recorded independent background calls. Background history can only be recovered from retained logs; provider billing is authoritative.",
+  "usage.backgroundUnavailable": "Background usage is unavailable; totals may be incomplete.",
   "usage.requestsLabel": "requests",
   "usage.sessionsLabel": "sessions",
   "usage.toolCallsLabel": "tool calls",
@@ -809,68 +1367,84 @@ export default {
   "agent.codeGeek.task.3.desc":
     "Trace the first relevant error to its root cause, apply a fix, and verify the command.",
 
-  "agent.painter.name": "Van Gogh",
-  "agent.painter.desc": "Pixel-style illustration & scene creation",
-  "agent.painter.tag.1": "Illustration",
-  "agent.painter.tag.2": "Style Analysis",
-  "agent.painter.tag.3": "Scene Design",
-  "agent.painter.task.1.title": "Generate a cyberpunk cityscape",
-  "agent.painter.task.1.desc": "Create a futuristic cityscape illustration with neon lights.",
-  "agent.painter.task.2.title": "Design a game character portrait",
-  "agent.painter.task.2.desc": "Draw a stylized character concept based on your description.",
-  "agent.painter.task.3.title": "Create pixel emoji stickers",
-  "agent.painter.task.3.desc": "Generate cute retro pixel-style emoji stickers.",
+  "agent.officeArtisan.name": "Office Artisan",
+  "agent.officeArtisan.desc":
+    "Validated Word reports, Excel analysis & PowerPoint presentations from source material",
+  "agent.officeArtisan.tag.1": "Word Reports",
+  "agent.officeArtisan.tag.2": "Excel Analysis",
+  "agent.officeArtisan.tag.3": "Presentation Decks",
+  "agent.officeArtisan.task.1.title": "Turn these materials into a formal Word report",
+  "agent.officeArtisan.task.1.desc":
+    "Create a structured, sourced report in a new file and validate its layout and contents.",
+  "agent.officeArtisan.task.2.title": "Analyze this workbook and create a chart summary",
+  "agent.officeArtisan.task.2.desc":
+    "Preserve raw data, add reproducible calculations and charts, and verify formulas and ranges.",
+  "agent.officeArtisan.task.3.title": "Turn this report into a presentation deck",
+  "agent.officeArtisan.task.3.desc":
+    "Build a concise, source-faithful deck and validate slide order, readability, and overflow.",
 
-  "agent.master.name": "Life Master",
-  "agent.master.desc": "Life planning, meals & travel arrangements",
-  "agent.master.tag.1": "Life Planning",
-  "agent.master.tag.2": "Meal Suggestions",
-  "agent.master.tag.3": "Travel Plans",
-  "agent.master.task.1.title": "Plan my weekend trip",
-  "agent.master.task.1.desc": "Customize a two-day itinerary based on weather and preferences.",
-  "agent.master.task.2.title": "Recommend healthy recipes",
-  "agent.master.task.2.desc": "Suggest balanced meal plans matching your taste preferences.",
-  "agent.master.task.3.title": "Create a study plan",
-  "agent.master.task.3.desc": "Break down an efficient daily study schedule by goals and time.",
+  "agent.drPulse.name": "Dr. Pulse",
+  "agent.drPulse.desc": "Evidence-led Windows diagnostics, guided tuning & scenario preparation",
+  "agent.drPulse.tag.1": "System Health",
+  "agent.drPulse.tag.2": "Guided Tuning",
+  "agent.drPulse.tag.3": "Scenario Prep",
+  "agent.drPulse.task.1.title": "Diagnose my Windows PC before proposing repairs",
+  "agent.drPulse.task.1.desc":
+    "Run read-only health checks, show the evidence, and prepare a scoped, reversible repair plan.",
+  "agent.drPulse.task.2.title": "Tune this Windows setting or peripheral",
+  "agent.drPulse.task.2.desc":
+    "Translate the request into supported steps, explain impact and rollback, and wait for approval.",
+  "agent.drPulse.task.3.title": "Prepare my PC for deep work or a video call",
+  "agent.drPulse.task.3.desc":
+    "Inspect readiness, propose supported app and system adjustments, and apply only confirmed changes.",
 
-  "agent.growthHacker.name": "Growth Hacker",
-  "agent.growthHacker.desc": "Social media content operations & data analytics",
-  "agent.growthHacker.tag.1": "Content Planning",
-  "agent.growthHacker.tag.2": "Data Analytics",
-  "agent.growthHacker.tag.3": "Viral Copy",
-  "agent.growthHacker.task.1.title": "Generate viral headlines",
-  "agent.growthHacker.task.1.desc": "Batch-generate high-click-rate promotional headlines.",
-  "agent.growthHacker.task.2.title": "Write a summer outfit post",
-  "agent.growthHacker.task.2.desc": "Craft a social-media-style outfit post with emojis.",
-  "agent.growthHacker.task.3.title": "Follower growth report",
-  "agent.growthHacker.task.3.desc":
-    "Analyze recent data trends and provide growth optimization advice.",
+  "agent.intelAnalyst.name": "Intel Analyst",
+  "agent.intelAnalyst.desc":
+    "Personal intelligence briefs, trend monitoring & evidence-based research",
+  "agent.intelAnalyst.tag.1": "Morning Briefs",
+  "agent.intelAnalyst.tag.2": "Trend Monitoring",
+  "agent.intelAnalyst.tag.3": "Deep Research",
+  "agent.intelAnalyst.task.1.title": "Prepare my morning brief",
+  "agent.intelAnalyst.task.1.desc":
+    "Summarize today's schedule, urgent updates, weather, and requested news.",
+  "agent.intelAnalyst.task.2.title": "Track today's top stories",
+  "agent.intelAnalyst.task.2.desc":
+    "Review recent coverage from trusted news sources and explain the most important developments.",
+  "agent.intelAnalyst.task.3.title": "Track key competitor moves",
+  "agent.intelAnalyst.task.3.desc":
+    "Monitor pricing, product updates, and market activity to surface changes and recommended responses.",
 
-  "agent.leopard.name": "Money Leopard",
-  "agent.leopard.desc": "Stock market analysis & portfolio tracking",
-  "agent.leopard.tag.1": "Stock Analysis",
-  "agent.leopard.tag.2": "Market Review",
-  "agent.leopard.tag.3": "Portfolio Mgmt",
-  "agent.leopard.task.1.title": "Today's market analysis",
-  "agent.leopard.task.1.desc": "Quick overview of market trends and sector movements.",
-  "agent.leopard.task.2.title": "30-day K-line review",
-  "agent.leopard.task.2.desc": "Review recent technical indicators and key support levels.",
-  "agent.leopard.task.3.title": "Position adjustment advice",
-  "agent.leopard.task.3.desc":
-    "Provide risk diversification optimization based on current holdings.",
+  "agent.marketSentinel.name": "Market Sentinel",
+  "agent.marketSentinel.desc":
+    "Sourced A-share briefs, filing tracking & watchlist monitoring without investment advice",
+  "agent.marketSentinel.tag.1": "Market Briefs",
+  "agent.marketSentinel.tag.2": "Filing Tracker",
+  "agent.marketSentinel.tag.3": "Watchlist Signals",
+  "agent.marketSentinel.task.1.title": "Prepare today's A-share market brief",
+  "agent.marketSentinel.task.1.desc":
+    "Summarize sourced index, breadth, turnover, sector, and scheduled-event data with timestamps.",
+  "agent.marketSentinel.task.2.title": "Track earnings and company announcements",
+  "agent.marketSentinel.task.2.desc":
+    "Review official filings, preserve reporting periods and units, and highlight factual changes.",
+  "agent.marketSentinel.task.3.title": "Monitor my watchlist and indicator changes",
+  "agent.marketSentinel.task.3.desc":
+    "Describe price, volume, and formula-based indicator changes without trade or position advice.",
 
-  "agent.singer.name": "Singer-Songwriter",
-  "agent.singer.desc": "Lyrics, arrangement inspiration & music style analysis",
-  "agent.singer.tag.1": "Lyrics Writing",
-  "agent.singer.tag.2": "Arrangement Ideas",
-  "agent.singer.tag.3": "Style Analysis",
-  "agent.singer.task.1.title": "Write some lyrics for me",
-  "agent.singer.task.1.desc": "Create original lyrics based on theme and emotion.",
-  "agent.singer.task.2.title": "Analyze this song's style",
-  "agent.singer.task.2.desc": "Break down genre, arrangement techniques, and emotional expression.",
-  "agent.singer.task.3.title": "Recommend arrangement inspiration",
-  "agent.singer.task.3.desc":
-    "Suggest reference tracks and sound combinations by style preference.",
+  "agent.creativeMuse.name": "Creative Muse",
+  "agent.creativeMuse.desc":
+    "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+  "agent.creativeMuse.tag.1": "Topic Discovery",
+  "agent.creativeMuse.tag.2": "Material Kits",
+  "agent.creativeMuse.tag.3": "Visual Packages",
+  "agent.creativeMuse.task.1.title": "Find Rednote topic ideas",
+  "agent.creativeMuse.task.1.desc":
+    "Research recent discussions, list 5 specific themes, and recommend the strongest angle.",
+  "agent.creativeMuse.task.2.title": "Build a material kit for the selected idea",
+  "agent.creativeMuse.task.2.desc":
+    "Collect facts, sources, keywords, an outline, and cover and visual directions.",
+  "agent.creativeMuse.task.3.title": "Create a Rednote package from the material kit",
+  "agent.creativeMuse.task.3.desc":
+    "Generate complete copy, titles, hashtags, a cover, and carousel visual cards.",
 
   "agent.main.task.1.title": "Summarize this content",
   "agent.main.task.1.desc": "Quickly extract key points from articles or documents.",

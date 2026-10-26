@@ -1,7 +1,22 @@
 <template>
-  <div v-if="modelValue" class="model-setup-overlay">
-    <div class="model-setup-panel" role="dialog" aria-modal="true">
+  <div v-if="modelValue" class="model-setup-overlay" :class="{ 'model-setup-inline': inline }">
+    <LocalModelSetupDialog
+      v-if="localVisible"
+      :streaming="streaming"
+      :target-model-ref="localTarget"
+      :default-agent-override="defaultAgentOverride"
+      @close="close"
+      @configured="handleLocalConfigured"
+    />
+    <div
+      v-else
+      class="model-setup-panel"
+      :role="inline ? 'region' : 'dialog'"
+      :aria-modal="inline ? undefined : true"
+      :aria-label="inline ? getFamilyLabel(selectedFamily) : undefined"
+    >
       <button
+        v-if="!inline"
         class="model-setup-close"
         type="button"
         :disabled="configMutationInProgress"
@@ -23,9 +38,17 @@
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
+      <p v-if="defaultAgentOverride" role="status" data-testid="default-agent-override">
+        {{
+          t("localModel.defaultAgentOverride", {
+            agent: defaultAgentOverride.agentId,
+            model: defaultAgentOverride.modelRef,
+          })
+        }}
+      </p>
 
       <template v-if="!isKeyStep">
-        <h2>{{ t("modelSetup.title") }}</h2>
+        <h2>{{ inline ? getFamilyLabel(selectedFamily) : t("modelSetup.title") }}</h2>
         <p class="model-setup-desc">{{ t("modelSetup.selectDesc") }}</p>
 
         <div class="model-family-grid">
@@ -88,15 +111,15 @@
 
         <button class="primary-action" type="button" @click.stop="handlePrimaryAction">
           {{
-            isGitHubCopilot
-              ? t("modelSetup.copilotSignIn")
-              : isCustomProvider
-                ? t("modelSetup.configureCustom")
+            isLocalProvider
+              ? t("localModel.configure")
+              : isGitHubCopilot
+                ? t("modelSetup.copilotSignIn")
                 : t("modelSetup.getApiKey")
           }}
         </button>
         <button
-          v-if="!isCustomProvider && !isGitHubCopilot"
+          v-if="!isGitHubCopilot && !isLocalProvider"
           class="text-action"
           type="button"
           @click.stop="goToKeyForm()"
@@ -106,18 +129,22 @@
       </template>
 
       <template v-else>
-        <h2>{{ t("modelSetup.title") }}</h2>
-        <p class="model-setup-desc">
-          {{
-            t(
-              isGitHubCopilot
-                ? "modelSetup.copilotDesc"
-                : isCustomProvider
-                  ? "modelSetup.customDesc"
-                  : "modelSetup.keyDesc",
-            )
-          }}
-        </p>
+        <template v-if="!inline">
+          <h2>{{ t("modelSetup.title") }}</h2>
+          <p class="model-setup-desc">
+            {{
+              manageOnly
+                ? t("modelManager.saveOnlyHint")
+                : t(
+                    isGitHubCopilot
+                      ? "modelSetup.copilotDesc"
+                      : isCustomProvider
+                        ? "modelSetup.customDesc"
+                        : "modelSetup.keyDesc",
+                  )
+            }}
+          </p>
+        </template>
 
         <el-form label-position="top" class="model-key-form">
           <template v-if="isGitHubCopilot">
@@ -140,6 +167,9 @@
                   {{ t("modelSetup.copilotOpenGitHub") }}
                 </button>
               </template>
+              <p v-if="streaming || localBlocked" role="status">
+                {{ t(streaming ? "localModel.streaming" : "localModel.switchBeforeSave") }}
+              </p>
               <template
                 v-else-if="githubAuthState === 'checking' || githubAuthState === 'signing-in'"
               >
@@ -171,7 +201,7 @@
             </div>
 
             <el-form-item
-              v-if="githubAuthState === 'authenticated'"
+              v-if="githubAuthState === 'authenticated' && !manageOnly"
               :label="t('modelSetup.modelSelect')"
             >
               <el-select
@@ -194,6 +224,7 @@
             <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerId')">
               <el-input
                 v-model="providerKey"
+                :disabled="Boolean(inline && currentProvider)"
                 :placeholder="t('modelSetup.providerIdPlaceholder')"
                 @keydown.enter.prevent="saveAndStart"
               />
@@ -209,29 +240,14 @@
                 <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
               </el-select>
             </el-form-item>
-            <el-form-item :label="t('modelSetup.modelSelect')">
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.modelSelect')">
               <el-input
-                v-if="isCustomProvider"
                 v-model="selectedModelName"
                 :placeholder="t('modelSetup.modelPlaceholder')"
                 @keydown.enter.prevent="saveAndStart"
               />
-              <el-select
-                v-else
-                v-model="selectedModelName"
-                style="width: 100%"
-                filterable
-                :placeholder="t('modelSetup.modelPlaceholder')"
-              >
-                <el-option
-                  v-for="model in selectedManagedProvider?.models ?? []"
-                  :key="model.id"
-                  :label="model.name"
-                  :value="model.id"
-                />
-              </el-select>
             </el-form-item>
-            <el-form-item :label="t('modelSetup.baseUrl')">
+            <el-form-item :label="t('modelSetup.baseUrl')" data-testid="provider-base-field">
               <el-input
                 v-model="baseUrl"
                 :disabled="!isCustomProvider"
@@ -241,17 +257,98 @@
             </el-form-item>
             <el-form-item
               :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
+              data-testid="provider-key-field"
             >
-              <el-input
-                v-model="apiKey"
-                type="password"
-                show-password
-                :placeholder="selectedFamily.apiKeyPlaceholder"
-                @keydown.enter.prevent="saveAndStart"
-              />
+              <div class="model-field-row">
+                <el-input
+                  v-model="apiKey"
+                  class="model-field-input"
+                  :disabled="saving"
+                  type="password"
+                  show-password
+                  :placeholder="selectedFamily.apiKeyPlaceholder"
+                  @keydown.enter.prevent="saveAndStart"
+                />
+                <button
+                  v-if="selectedManagedProvider"
+                  class="model-field-action provider-api-key-link"
+                  type="button"
+                  :disabled="configMutationInProgress"
+                  @click.stop="openProviderSignup"
+                >
+                  {{ t("modelSetup.getApiKey") }}
+                </button>
+              </div>
               <div v-if="isCustomProvider" class="field-hint">
                 {{ t("modelSetup.credentialHint") }}
               </div>
+            </el-form-item>
+            <el-form-item
+              v-if="selectedManagedProvider"
+              :label="t('modelSetup.modelSelect')"
+              data-testid="provider-model-field"
+            >
+              <div class="model-field-row">
+                <el-select
+                  class="model-field-input"
+                  :model-value="catalogReady ? selectedModelName : ''"
+                  :disabled="!catalogReady || saving"
+                  :loading="catalogLoading"
+                  filterable
+                  :placeholder="t('modelSetup.modelPlaceholder')"
+                  @update:model-value="selectedModelName = $event"
+                >
+                  <el-option
+                    v-for="model in catalogModels"
+                    :key="model"
+                    :label="catalogModelLabel(model)"
+                    :title="catalogModelLabel(model)"
+                    :value="model"
+                    :disabled="Boolean(catalogModelRestriction(model))"
+                  />
+                </el-select>
+                <button
+                  class="model-field-action model-refresh-action"
+                  type="button"
+                  data-testid="refresh-provider-models"
+                  :aria-label="t('modelSetup.catalogRefresh')"
+                  :title="t('modelSetup.catalogRefresh')"
+                  :aria-busy="catalogLoading"
+                  :disabled="!apiKey.trim() || catalogLoading || saving"
+                  @click="loadProviderModels"
+                >
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                    :class="{ 'refresh-spinning': catalogLoading }"
+                  >
+                    <path d="M20 7v5h-5M4 17v-5h5" />
+                    <path d="M6.1 7A7 7 0 0 1 18 5l2 2M4 17l2 2a7 7 0 0 0 11.9-2" />
+                  </svg>
+                </button>
+              </div>
+              <p class="field-hint" role="status">
+                {{
+                  t(
+                    catalogLoading
+                      ? "modelSetup.catalogLoading"
+                      : catalogReady
+                        ? "modelSetup.catalogLoaded"
+                        : "modelSetup.catalogNeedsKey",
+                  )
+                }}
+              </p>
+              <p v-if="catalogError" class="error-msg" role="alert">{{ catalogError }}</p>
+              <p v-if="selectedModelRestriction" class="error-msg" role="alert">
+                {{ t(`modelSetup.incompatible.${selectedModelRestriction}`) }}
+              </p>
             </el-form-item>
           </template>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
@@ -259,10 +356,11 @@
 
         <div class="key-actions">
           <button
+            v-if="!inline"
             class="text-action text-action--back"
             type="button"
             :disabled="configMutationInProgress"
-            @mousedown.prevent.stop="goToSelectStep"
+            @click.prevent.stop="goToSelectStep"
           >
             {{ t("modelSetup.back") }}
           </button>
@@ -278,7 +376,9 @@
             class="primary-action"
             type="button"
             :disabled="formPrimaryDisabled"
-            @mousedown.prevent.stop="handleFormPrimaryAction"
+            @click.prevent.stop="handleFormPrimaryAction"
+            @keydown.enter.prevent.stop="handleFormPrimaryAction"
+            @keydown.space.prevent.stop="handleFormPrimaryAction"
           >
             {{ formPrimaryLabel }}
           </button>
@@ -289,16 +389,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { useProviderModelCatalog } from "@/composables/use-provider-model-catalog";
+import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import {
   mergeModelProviderConfig,
-  clearModelProviders,
+  matchesProviderConnection,
+  getDefaultAgentModelOverride,
   selectPrimaryModelConfig,
   validateModelProviderInput,
   type ModelApiFormat,
   type ModelProviderInput,
   type ModelProviderValidationError,
+  type ModelInputCapability,
+  type ModelReasoningEffort,
 } from "@/utils/model-provider";
 import {
   MANAGED_MODEL_PROVIDERS,
@@ -307,9 +412,13 @@ import {
   type ManagedModelPreset,
 } from "@/utils/managed-model-providers";
 import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
+import { isModelProviderEnabled } from "@/utils/model-features";
 import githubCopilotBlack from "@/assets/github-copilot-black.svg";
+import LocalModelSetupDialog from "./LocalModelSetupDialog.vue";
+import { useLocalModelOperation } from "@/composables/use-local-model-operation";
+import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
 
-type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom";
+type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom" | "local";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
@@ -334,6 +443,9 @@ interface ModelProviderPrefill {
   baseUrl: string;
   apiKey: string;
   apiFormat: ModelApiFormat;
+  displayName?: string;
+  reasoningEffort?: ModelReasoningEffort;
+  input?: ModelInputCapability[];
 }
 
 const props = defineProps<{
@@ -341,13 +453,17 @@ const props = defineProps<{
   singleProvider?: boolean;
   currentProvider?: ModelProviderPrefill | null;
   initialFamily?: ModelFamilyId;
+  streaming?: boolean;
+  inline?: boolean;
+  manageOnly?: boolean;
 }>();
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   configured: [];
+  busy: [value: boolean];
 }>();
 
-const modelFamilies: ModelFamilyPreset[] = [
+const allModelFamilies: ModelFamilyPreset[] = [
   ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
     ...provider,
     providerKey: provider.id,
@@ -364,43 +480,110 @@ const modelFamilies: ModelFamilyPreset[] = [
     logo: githubCopilotBlack,
   },
   {
-    id: "custom",
-    labelKey: "modelSetup.otherModel",
-    providerKey: "custom",
+    id: "local",
+    labelKey: "localModel.title",
+    providerKey: "llama-cpp",
     baseUrl: "",
     apiFormat: "openai-chat",
     models: [],
     defaultModel: "",
-    apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
+    apiKeyPlaceholder: "",
   },
 ];
+const modelFamilies = allModelFamilies.filter((family) => isModelProviderEnabled(family.id));
+
+const customModelFamily: ModelFamilyPreset = {
+  id: "custom",
+  labelKey: "modelSetup.customProvider",
+  providerKey: "custom",
+  baseUrl: "",
+  apiFormat: "openai-chat",
+  models: [],
+  defaultModel: "",
+  apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
+};
 
 function getDefaultModel(family: ModelFamilyPreset): string {
   return family.defaultModel;
 }
 
 function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
+  if (familyId === "custom") return customModelFamily;
   return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
 }
 
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
-const selectedModelName = ref(getDefaultModel(modelFamilies[0]));
+const selectedModelName = ref("");
 const baseUrl = ref(modelFamilies[0].baseUrl);
 const providerKey = ref(modelFamilies[0].providerKey);
 const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
+watch(saving, (value) => emit("busy", value), { flush: "sync" });
+onUnmounted(() => {
+  catalogGeneration++;
+  clearTimeout(catalogTimer);
+  cancelPendingSubmission();
+  emit("busy", false);
+});
 const configMutationInProgress = ref(false);
+const localVisible = ref(false);
+const localTarget = ref<string>();
+const defaultAgentOverride = ref<ReturnType<typeof getDefaultAgentModelOverride>>(null);
+const { blocked: localBlocked, refresh: refreshLocalOperation } = useLocalModelOperation();
 let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
-const selectedManagedProvider = computed(() =>
-  getManagedModelProvider(selectedFamilyId.value),
-);
+const selectedManagedProvider = computed(() => getManagedModelProvider(selectedFamilyId.value));
+const catalogModels = ref<string[]>([]);
+const catalogReady = ref(false);
+const catalogLoading = ref(false);
+const catalogError = ref("");
+const providerCatalog = useProviderModelCatalog();
+const selectedModelRestriction = computed(() => catalogModelRestriction(selectedModelName.value));
+function catalogModelRestriction(model: string) {
+  return getChatModelRestriction(`${providerKey.value}/${model}`);
+}
+function catalogModelLabel(model: string): string {
+  const restriction = catalogModelRestriction(model);
+  return restriction ? `${model} — ${t(`modelSetup.incompatible.${restriction}`)}` : model;
+}
+let catalogGeneration = 0;
+let catalogTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function loadProviderModels() {
+  if (!props.modelValue || !selectedManagedProvider.value || !apiKey.value.trim() || saving.value)
+    return;
+  clearTimeout(catalogTimer);
+  const generation = ++catalogGeneration;
+  catalogModels.value = [];
+  catalogReady.value = false;
+  catalogLoading.value = true;
+  catalogError.value = "";
+  try {
+    const result = await providerCatalog.load({
+      baseUrl: baseUrl.value,
+      apiKey: apiKey.value,
+    });
+    if (generation !== catalogGeneration) return;
+    if (!result.ok) {
+      catalogError.value = t(`modelSetup.catalogError.${result.error}`);
+      return;
+    }
+    catalogModels.value = result.models;
+    catalogReady.value = true;
+    if (!result.models.includes(selectedModelName.value)) selectedModelName.value = "";
+  } catch {
+    if (generation === catalogGeneration) catalogError.value = t("modelSetup.catalogError.network");
+  } finally {
+    if (generation === catalogGeneration) catalogLoading.value = false;
+  }
+}
 const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
 const isGitHubCopilot = computed(() => selectedFamilyId.value === "github-copilot");
+const isLocalProvider = computed(() => selectedFamilyId.value === "local");
 const {
   state: githubAuthState,
   models: githubModels,
@@ -425,13 +608,21 @@ const {
 const formPrimaryDisabled = computed(
   () =>
     saving.value ||
+    props.streaming ||
+    Boolean(selectedModelRestriction.value) ||
+    (Boolean(selectedManagedProvider.value) &&
+      (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))) ||
     (isGitHubCopilot.value &&
-      (      githubAuthState.value === "checking" ||
-      githubAuthState.value === "signing-in" ||
-      githubAuthState.value === "code" ||
-      (githubAuthState.value === "authenticated" && !selectedGitHubModel.value))),
+      (githubAuthState.value === "checking" ||
+        githubAuthState.value === "signing-in" ||
+        githubAuthState.value === "code" ||
+        (githubAuthState.value === "authenticated" &&
+          !props.manageOnly &&
+          !selectedGitHubModel.value))),
 );
 const formPrimaryLabel = computed(() => {
+  if (props.manageOnly && (!isGitHubCopilot.value || githubAuthState.value === "authenticated"))
+    return t(saving.value ? "modelManager.saving" : "settings.save");
   if (isGitHubCopilot.value) {
     if (saving.value) return t("modelSetup.starting");
     if (githubAuthState.value === "authenticated") return t("modelSetup.copilotUseModel");
@@ -453,21 +644,45 @@ watch(
     cancelPendingSubmission();
     void resetGitHubCopilotState();
     if (!visible) return;
+    localVisible.value = false;
+    localTarget.value = undefined;
+    defaultAgentOverride.value = null;
+    const generation = submissionGeneration;
+    void window.openclaw.config
+      .read()
+      .then((config) => {
+        if (props.modelValue && generation === submissionGeneration) {
+          defaultAgentOverride.value = getDefaultAgentModelOverride(config);
+        }
+      })
+      .catch(() => {});
+    void refreshLocalOperation();
     const prefill = props.currentProvider;
-    if (prefill) {
+    if (prefill?.providerKey === "llama-cpp" || props.initialFamily === "local") {
+      selectFamily("local");
+      if (prefill) localTarget.value = `llama-cpp/${prefill.modelName}`;
+      localVisible.value = true;
+      return;
+    }
+    if (
+      prefill &&
+      isModelProviderEnabled(prefill.familyId) &&
+      isModelProviderEnabled(prefill.providerKey)
+    ) {
       // Reopen on the configured provider, pre-filled and jumped to the key form so the user
       // can adjust the model, base URL or key without re-selecting the family.
       selectFamily(prefill.familyId as ModelFamilyId);
+      providerKey.value = prefill.providerKey;
       selectedModelName.value = prefill.modelName || getDefaultModel(selectedFamily.value);
       baseUrl.value = prefill.baseUrl || selectedFamily.value.baseUrl;
       selectedApiFormat.value = prefill.apiFormat;
       apiKey.value = prefill.apiKey;
-      isKeyStep.value = selectedFamilyId.value !== "github-copilot";
+      isKeyStep.value = props.inline || selectedFamilyId.value !== "github-copilot";
       if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
       errorMsg.value = "";
       return;
     }
-    if (props.initialFamily) {
+    if (props.initialFamily && isModelProviderEnabled(props.initialFamily)) {
       selectFamily(props.initialFamily);
       isKeyStep.value = true;
       apiKey.value = "";
@@ -481,6 +696,21 @@ watch(
     errorMsg.value = "";
   },
   { immediate: true },
+);
+
+watch(
+  [() => props.modelValue, isKeyStep, selectedFamilyId, baseUrl, apiKey],
+  () => {
+    ++catalogGeneration;
+    clearTimeout(catalogTimer);
+    catalogReady.value = false;
+    catalogLoading.value = false;
+    catalogModels.value = [];
+    catalogError.value = "";
+    if (props.modelValue && isKeyStep.value && selectedManagedProvider.value && apiKey.value.trim())
+      catalogTimer = setTimeout(() => void loadProviderModels(), 600);
+  },
+  { immediate: true, flush: "sync" },
 );
 
 function getFamilyLabel(family: ModelFamilyPreset): string {
@@ -506,8 +736,9 @@ function close() {
 
 function selectFamily(familyId: ModelFamilyId) {
   const family = getFamilyById(familyId);
+  if (family.id !== selectedFamilyId.value) apiKey.value = "";
   selectedFamilyId.value = family.id;
-  selectedModelName.value = getDefaultModel(family);
+  selectedModelName.value = getManagedModelProvider(familyId) ? "" : getDefaultModel(family);
   baseUrl.value = family.baseUrl;
   providerKey.value = family.providerKey;
   selectedApiFormat.value = family.apiFormat;
@@ -515,7 +746,9 @@ function selectFamily(familyId: ModelFamilyId) {
 }
 
 function goToKeyForm() {
-  selectedModelName.value = getDefaultModel(selectedFamily.value);
+  selectedModelName.value = selectedManagedProvider.value
+    ? ""
+    : getDefaultModel(selectedFamily.value);
   baseUrl.value = selectedFamily.value.baseUrl;
   providerKey.value = selectedFamily.value.providerKey;
   selectedApiFormat.value = selectedFamily.value.apiFormat;
@@ -525,7 +758,11 @@ function goToKeyForm() {
 }
 
 function handlePrimaryAction() {
-  if (isCustomProvider.value || isGitHubCopilot.value) {
+  if (isLocalProvider.value) {
+    localVisible.value = true;
+    return;
+  }
+  if (isGitHubCopilot.value) {
     goToKeyForm();
     return;
   }
@@ -533,29 +770,49 @@ function handlePrimaryAction() {
 }
 
 function handleGetApiKey() {
+  void openProviderSignup();
+  goToKeyForm();
+}
+
+async function openProviderSignup() {
   const signupUrl = selectedManagedProvider.value?.signupUrl;
   if (!signupUrl) return;
+  const family = selectedFamilyId.value;
+  const generation = submissionGeneration;
   try {
-    window.openclaw?.shell?.openExternal?.(signupUrl);
-  } catch {
-    window.open(signupUrl, "_blank", "noopener,noreferrer");
+    if (window.openclaw?.shell?.openExternal) {
+      await window.openclaw.shell.openExternal(signupUrl);
+    } else {
+      window.open(signupUrl, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    if (
+      props.modelValue &&
+      selectedFamilyId.value === family &&
+      submissionGeneration === generation
+    ) {
+      errorMsg.value = t("modelSetup.openProviderFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  goToKeyForm();
 }
 
 function goToSelectStep() {
   if (configMutationInProgress.value) return;
   cancelPendingSubmission();
+  if (isCustomProvider.value) selectFamily("qwen");
   void resetGitHubCopilotState();
   isKeyStep.value = false;
   errorMsg.value = "";
 }
 
 async function saveGitHubCopilotModel(): Promise<void> {
-  if (saving.value) return;
+  if (saving.value || props.streaming) return;
   if (
-    !selectedGitHubModel.value.startsWith("github-copilot/") ||
-    !githubModels.value.some((model) => model.id === selectedGitHubModel.value)
+    !props.manageOnly &&
+    (!selectedGitHubModel.value.startsWith("github-copilot/") ||
+      !githubModels.value.some((model) => model.id === selectedGitHubModel.value))
   ) {
     errorMsg.value = t("modelSetup.copilotSelectModel");
     return;
@@ -565,16 +822,25 @@ async function saveGitHubCopilotModel(): Promise<void> {
   saving.value = true;
   errorMsg.value = "";
   try {
+    if (!(await releaseLocalBeforeSave(generation))) return;
     await window.openclaw.model.prepareGitHubCopilot();
     if (generation !== submissionGeneration || !props.modelValue) return;
-    const existing = (await window.openclaw.config.read()) || {};
+    if (props.manageOnly) {
+      configMutationInProgress.value = true;
+      await restartGatewayAfterModelSetup();
+      configMutationInProgress.value = false;
+      emit("update:modelValue", false);
+      emit("configured");
+      return;
+    }
+    const existing = await window.openclaw.config.read();
     if (generation !== submissionGeneration || !props.modelValue) return;
-    const base = props.singleProvider ? clearModelProviders(existing) : existing;
-    const nextConfig = selectPrimaryModelConfig(base, selectedGitHubModel.value, {
+    if (props.streaming) return;
+    const nextConfig = selectPrimaryModelConfig(existing || {}, selectedGitHubModel.value, {
       ensureAllowed: true,
     });
     configMutationInProgress.value = true;
-    await window.openclaw.config.write(nextConfig);
+    await window.openclaw.config.write(nextConfig, existing);
     await restartGatewayAfterModelSetup();
     if (generation !== submissionGeneration || !props.modelValue) return;
     configMutationInProgress.value = false;
@@ -590,6 +856,22 @@ async function saveGitHubCopilotModel(): Promise<void> {
       configMutationInProgress.value = false;
     }
   }
+}
+
+async function releaseLocalBeforeSave(generation: number): Promise<boolean> {
+  const isCurrent = () => generation === submissionGeneration && props.modelValue;
+  const outcome = await releaseLocalModelSetup(
+    window.openclaw.model.local,
+    confirmLocalModelSwitch,
+    isCurrent,
+  );
+  if (!isCurrent()) return false;
+  await refreshLocalOperation();
+  if (outcome === "pending") {
+    errorMsg.value = t("localModel.setupFinishing");
+    return false;
+  }
+  return outcome === "ready" && isCurrent();
 }
 
 function handleFormPrimaryAction(): void {
@@ -618,7 +900,26 @@ function validationMessage(error: ModelProviderValidationError): string {
 }
 
 async function saveAndStart() {
-  if (saving.value) return;
+  if (saving.value || props.streaming) return;
+  if (selectedModelRestriction.value) {
+    errorMsg.value = t(`modelSetup.incompatible.${selectedModelRestriction.value}`);
+    return;
+  }
+  if (
+    selectedManagedProvider.value &&
+    (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))
+  ) {
+    errorMsg.value = catalogError.value || t("modelSetup.catalogChoose");
+    return;
+  }
+  if (providerKey.value.trim().toLowerCase() === "llama-cpp") {
+    if (props.inline) {
+      errorMsg.value = t("modelManager.localEntryHint");
+      return;
+    }
+    localVisible.value = true;
+    return;
+  }
 
   const managedModel = selectedManagedProvider.value?.models.find(
     (model) => model.id === selectedModelName.value,
@@ -629,7 +930,12 @@ async function saveAndStart() {
     apiKey: apiKey.value,
     apiFormat: selectedApiFormat.value,
     modelName: selectedModelName.value,
-    input: isCustomProvider.value ? ["text"] : managedModel?.input,
+    input:
+      props.currentProvider?.modelName === selectedModelName.value
+        ? props.currentProvider.input
+        : isCustomProvider.value
+          ? ["text"]
+          : managedModel?.input,
   };
   const validationError = validateModelProviderInput(input, {
     requireApiKey: !isCustomProvider.value,
@@ -643,29 +949,66 @@ async function saveAndStart() {
   saving.value = true;
   errorMsg.value = "";
   try {
-    const connection = await window.openclaw.model.testConnection({
-      baseUrl: input.baseUrl.trim(),
-      apiKey: input.apiKey.trim(),
-      apiFormat: input.apiFormat,
-      modelName: input.modelName.trim(),
-    });
+    const connection = props.manageOnly
+      ? null
+      : await window.openclaw.model.testConnection({
+          baseUrl: input.baseUrl.trim(),
+          apiKey: input.apiKey.trim(),
+          apiFormat: input.apiFormat,
+          modelName: input.modelName.trim(),
+        });
     if (generation !== submissionGeneration || !props.modelValue) return;
-    if (!connection.ok) {
+    if (connection && !connection.ok) {
       errorMsg.value = t("modelSetup.connectionFailed", { error: connection.message });
       return;
     }
+    if (!(await releaseLocalBeforeSave(generation))) return;
 
     const verifiedInput = {
       ...input,
-      baseUrl: connection.baseUrl ?? input.baseUrl,
+      baseUrl: connection?.baseUrl ?? input.baseUrl,
     };
-    const existing = (await window.openclaw.config.read()) || {};
+    const existing = await window.openclaw.config.read();
     if (generation !== submissionGeneration || !props.modelValue) return;
-    const base = props.singleProvider ? clearModelProviders(existing) : existing;
-    const nextConfig = mergeModelProviderConfig(base, verifiedInput);
+    if (props.streaming) return;
+    if (
+      props.manageOnly &&
+      !input.apiKey.trim() &&
+      typeof existing?.models?.providers?.[input.providerKey.trim()]?.apiKey === "object"
+    ) {
+      errorMsg.value = t("modelManager.structuredSecret");
+      return;
+    }
     configMutationInProgress.value = true;
-    await window.openclaw.config.write(nextConfig);
-    await restartGatewayAfterModelSetup();
+    if (
+      props.manageOnly &&
+      selectedManagedProvider.value &&
+      matchesProviderConnection(existing, verifiedInput)
+    ) {
+      await window.openclaw.model.registerCatalogModel({
+        modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
+        expectedConfig: existing,
+      });
+    } else {
+      const nextConfig = props.manageOnly
+        ? mergeModelProviderConfig(existing || {}, verifiedInput, {
+            select: false,
+            displayName:
+              props.currentProvider?.modelName === verifiedInput.modelName
+                ? (props.currentProvider.displayName ?? verifiedInput.modelName)
+                : verifiedInput.modelName,
+          })
+        : mergeModelProviderConfig(existing || {}, verifiedInput);
+      await window.openclaw.config.write(nextConfig, existing);
+      await restartGatewayAfterModelSetup();
+      if (generation !== submissionGeneration || !props.modelValue) return;
+      if (selectedManagedProvider.value) {
+        await window.openclaw.model.registerCatalogModel({
+          modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
+          expectedConfig: await window.openclaw.config.read(),
+        });
+      }
+    }
     if (generation !== submissionGeneration || !props.modelValue) return;
     configMutationInProgress.value = false;
     emit("update:modelValue", false);
@@ -680,9 +1023,34 @@ async function saveAndStart() {
     }
   }
 }
+
+function handleLocalConfigured() {
+  emit("configured");
+}
 </script>
 
 <style scoped>
+.model-setup-overlay.model-setup-inline {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  display: block;
+  background: transparent;
+}
+.model-setup-inline .model-setup-panel {
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+  padding: 24px;
+  box-shadow: none;
+  border-radius: 0;
+  text-align: left;
+  background: transparent;
+}
+.model-setup-inline .model-setup-panel h2 {
+  font-size: 18px;
+}
 .model-setup-overlay,
 .model-setup-panel,
 .model-setup-close,
@@ -965,6 +1333,83 @@ h2 {
 
 .model-key-form {
   text-align: left;
+}
+
+.model-field-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.model-field-input {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+}
+
+.model-field-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid var(--ux-border);
+  border-radius: 10px;
+  background: var(--ux-panel-bg);
+  color: var(--ux-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.model-field-action:hover:not(:disabled) {
+  background: var(--ux-surface-hover);
+  color: var(--ux-panel-text);
+}
+
+.model-field-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+.model-field-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-refresh-action {
+  width: 48px;
+  padding: 0;
+}
+
+.refresh-spinning {
+  animation: model-refresh-spin 1s linear infinite;
+}
+
+@keyframes model-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refresh-spinning {
+    animation: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .model-field-row {
+    gap: 8px;
+  }
+  .provider-api-key-link {
+    padding: 0 8px;
+    font-size: 12px;
+  }
 }
 
 .model-key-form :deep(.el-form-item__label) {

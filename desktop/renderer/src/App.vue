@@ -8,7 +8,7 @@
     :status="gateway.status"
     :connected="chatStore.wsConnected"
     :warming="gateway.warming"
-    :errorMessage="gateway.lastError"
+    :error-message="gateway.lastError"
     @retry="handleRetry"
   />
 
@@ -154,6 +154,7 @@ import { useSessionStore } from "@/stores/sessions";
 import { useTaskStore } from "@/stores/tasks";
 import { t, setLocale, locale } from "@/i18n";
 import { runStartupWarmup } from "@/startup-warmup";
+import { watchStartupServiceReadiness } from "@/startup-service-readiness";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -162,7 +163,6 @@ const taskStore = useTaskStore();
 const router = useRouter();
 const route = useRoute();
 const agentStore = useAgentStore();
-
 // ── Setup wizard gate ──
 const showSetup = ref(false);
 const setupActive = computed(() => showSetup.value || route.path === "/setup");
@@ -190,28 +190,31 @@ const headerTitle = computed(() => {
 });
 
 // Delay hiding the loading screen so the progress bar can animate to 100%
-function markConnected() {
+function markConnected(readinessEpoch = gateway.readinessEpoch) {
   if (gateway.ready) return;
   window.openclaw.window.expandToFull();
   setTimeout(() => {
-    gateway.markReady();
+    gateway.markReady(readinessEpoch);
   }, 600);
 }
 
 async function warmThenMarkConnected() {
+  const readinessEpoch = gateway.readinessEpoch;
   await runStartupWarmup({
     showSetup: setupActive.value,
     needsSetup: () => window.openclaw.config.needsSetup(),
     beginWarming: gateway.beginWarming,
     warmUpAgent: () => window.openclaw.gateway.warmUpAgent(),
     finishWarming: gateway.finishWarming,
-    markConnected,
+    markConnected: () => markConnected(readinessEpoch),
     onError: (error) => console.warn("[renderer] agent warm-up unavailable:", error),
   });
 }
 
-function handleRetry() {
-  window.openclaw.gateway.restart();
+async function handleRetry() {
+  gateway.resetReady();
+  chatStore.wsConnected = false;
+  await window.openclaw.gateway.restart();
 }
 
 // ── Integrity check state ──
@@ -286,6 +289,7 @@ let unsubStatus: (() => void) | null = null;
 let unsubLog: (() => void) | null = null;
 let unsubWsConnected: (() => void) | null = null;
 let unsubWsDisconnected: (() => void) | null = null;
+let unsubServiceReady: (() => void) | null = null;
 let unsubChatEvent: (() => void) | null = null;
 let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
@@ -385,6 +389,12 @@ onMounted(async () => {
   unsubWsDisconnected = window.openclaw.gateway.onWsDisconnected(() => {
     chatStore.wsConnected = false;
   });
+  unsubServiceReady = watchStartupServiceReadiness({
+    isServiceReady: window.openclaw.gateway.isServiceReady,
+    onServiceReady: window.openclaw.gateway.onServiceReady,
+    completeStartup: warmThenMarkConnected,
+    onError: (error) => console.warn("[renderer] service readiness unavailable:", error),
+  });
 
   // Chat events (delta, final, aborted, error)
   unsubChatEvent = window.openclaw.chat.onEvent((payload) => {
@@ -414,7 +424,6 @@ onMounted(async () => {
       agentStore.fetchAgents();
     }
   });
-
   // (Theme, accent, locale already applied above before setup check)
 
   // React to OS theme changes when in "system" mode
@@ -441,6 +450,7 @@ onUnmounted(() => {
   unsubLog?.();
   unsubWsConnected?.();
   unsubWsDisconnected?.();
+  unsubServiceReady?.();
   unsubChatEvent?.();
   unsubToolEvent?.();
   unsubIntegrityAlert?.();
