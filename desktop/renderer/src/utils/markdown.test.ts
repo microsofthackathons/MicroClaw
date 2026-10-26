@@ -37,6 +37,44 @@ describe("renderMarkdown", () => {
     expect(result).toContain("https://google.com");
   });
 
+  it("only autolinks explicit URLs, not fuzzy domains, emails, or IPs", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(
+      "dev@example.com example.com 192.168.1.1 https://example.com/path http://example.org",
+    );
+
+    expect(
+      Array.from(container.querySelectorAll("a"), (link) => link.getAttribute("href")),
+    ).toEqual(["https://example.com/path", "http://example.org"]);
+  });
+
+  it("preserves reference links and their titles", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown('[文档][guide]\n\n[guide]: https://example.com "Guide"');
+    const link = container.querySelector("a");
+
+    expect(link?.textContent).toBe("文档");
+    expect(link?.getAttribute("href")).toBe("https://example.com");
+    expect(link?.getAttribute("title")).toBe("Guide");
+  });
+
+  it("keeps incomplete reference titles visible as text", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown('[guide]: /path "unfinished\nMore text');
+
+    expect(container.textContent).toContain("[guide]: /path");
+    expect(container.textContent).toContain("unfinished");
+    expect(container.textContent).toContain("More text");
+  });
+
+  it("preserves typography while leaving inline code unchanged", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown('"Hello" -- world...\n\n`"literal" -- ...`');
+
+    expect(container.querySelector("p")?.textContent).toBe("“Hello” – world…");
+    expect(container.querySelector("code")?.textContent).toBe('"literal" -- ...');
+  });
+
   it("sanitizes script tags (XSS prevention)", () => {
     const result = renderMarkdown('<script>alert("xss")</script>');
     expect(result).not.toContain("<script");
