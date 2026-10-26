@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from deployer.openclaw_version import NODE_DEFAULT_MAJOR
+
 
 def _get_app_dir() -> Path:
     """Return the directory where the exe (or script) lives."""
@@ -57,7 +59,7 @@ _load_dotenv()
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "node": {
-        "version": "22",
+        "version": NODE_DEFAULT_MAJOR,
     },
     "openclaw": {
         "install_method": "npm",  # npm | source

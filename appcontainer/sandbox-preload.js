@@ -19,6 +19,7 @@
 "use strict";
 
 var path = require("path");
+var fs = require("fs");
 
 // ── External app whitelist (read from HMAC-signed file or env var) ──
 
@@ -113,9 +114,96 @@ function getExternalApps() {
 // ── Main initialization ──
 
 var LAUNCHER = process.env.COMSPEC;
-var isLauncherConfigured = LAUNCHER && /AppContainerLauncher/i.test(LAUNCHER);
+var INTERNAL_SQLITE_WORKER_MARKER = "MICROCLAW_OPENCLAW_INTERNAL_SQLITE_WORKER";
+var internalWorkerStateDir = process.env.OPENCLAW_STATE_DIR || "";
+var internalWorkerTarget =
+  (process.env[INTERNAL_SQLITE_WORKER_MARKER] === "ownership"
+    ? process.argv[2]
+    : process.argv[4]) || "";
+function canonicalExistingPath(value) {
+  try {
+    var resolver = fs.realpathSync.native || fs.realpathSync;
+    return path.resolve(resolver(String(value))).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+var canonicalInternalWorkerStateDir = canonicalExistingPath(internalWorkerStateDir);
+var canonicalInternalWorkerTarget = canonicalExistingPath(internalWorkerTarget);
+var internalWorkerRelative =
+  canonicalInternalWorkerStateDir && canonicalInternalWorkerTarget
+    ? path.relative(canonicalInternalWorkerStateDir, canonicalInternalWorkerTarget)
+    : "";
+var internalWorkerCacheRoot = process.env.LOCALAPPDATA
+  ? path.resolve(process.env.LOCALAPPDATA, "openclaw").toLowerCase()
+  : "";
+var isAuthorizedSqliteReclaim =
+  process.argv.length === 5 &&
+  process.argv[3] === "reclaim" &&
+  internalWorkerCacheRoot !== "" &&
+  path.resolve(internalWorkerTarget).toLowerCase() === internalWorkerCacheRoot &&
+  canonicalInternalWorkerTarget === internalWorkerCacheRoot;
+var isAuthorizedInternalSqliteWorker =
+  process.env[INTERNAL_SQLITE_WORKER_MARKER] === "1" &&
+  path.basename(process.argv[1] || "").toLowerCase() === "sqlite-readonly-location.worker.js" &&
+  path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "infra" &&
+  process.argv[2] === "--openclaw-sqlite-readonly-child" &&
+  (isAuthorizedSqliteReclaim ||
+    ((process.argv[3] === "async" || process.argv[3] === "sync") &&
+      path.extname(internalWorkerTarget).toLowerCase() === ".sqlite" &&
+      internalWorkerRelative !== "" &&
+      !internalWorkerRelative.startsWith("..") &&
+      !path.isAbsolute(internalWorkerRelative)));
+var isAuthorizedInternalSqliteSession =
+  process.env[INTERNAL_SQLITE_WORKER_MARKER] === "session" &&
+  path.basename(process.argv[1] || "").toLowerCase() === "sqlite-readonly-location.worker.js" &&
+  path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "infra" &&
+  process.argv.length === 4 &&
+  process.argv[2] === "--openclaw-sqlite-readonly-child" &&
+  process.argv[3] === "session" &&
+  typeof process.send === "function" &&
+  canonicalInternalWorkerStateDir !== "";
+var isAuthorizedInternalOwnershipWorker =
+  process.env[INTERNAL_SQLITE_WORKER_MARKER] === "ownership" &&
+  path.basename(process.argv[1] || "").toLowerCase() === "openclaw-state-ownership.worker.js" &&
+  path.basename(path.dirname(process.argv[1] || "")).toLowerCase() === "state" &&
+  process.argv.length === 3 &&
+  path.extname(internalWorkerTarget).toLowerCase() === ".sqlite" &&
+  internalWorkerRelative !== "" &&
+  !internalWorkerRelative.startsWith("..") &&
+  !path.isAbsolute(internalWorkerRelative);
+if (
+  process.env[INTERNAL_SQLITE_WORKER_MARKER] === "ownership" &&
+  !isAuthorizedInternalOwnershipWorker
+) {
+  throw new Error("Invalid OpenClaw state ownership worker launch");
+}
+if (
+  process.env[INTERNAL_SQLITE_WORKER_MARKER] === "session" &&
+  !isAuthorizedInternalSqliteSession
+) {
+  throw new Error("Invalid OpenClaw SQLite worker session launch");
+}
+if (isAuthorizedInternalSqliteSession) {
+  var sqliteSessionHooks = require(path.join(__dirname, "sandbox-cp-hooks.js"));
+  process.prependListener("message", function (message) {
+    if (!sqliteSessionHooks.isOpenClawInternalSqliteSessionMessage(message)) {
+      throw new Error("Unauthorized OpenClaw SQLite worker session request");
+    }
+  });
+}
+delete process.env[INTERNAL_SQLITE_WORKER_MARKER];
+var isLauncherConfigured =
+  LAUNCHER &&
+  /AppContainerLauncher/i.test(LAUNCHER) &&
+  !isAuthorizedInternalSqliteWorker &&
+  !isAuthorizedInternalSqliteSession &&
+  !isAuthorizedInternalOwnershipWorker;
 
 if (isLauncherConfigured) {
+  require(path.join(__dirname, "sandbox-host-runtime.js")).initialize(
+    process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR,
+  );
   var S = require(path.join(__dirname, "sandbox-state.js"));
   var fsMod = require("fs");
   var cp = require("child_process");
@@ -136,4 +224,8 @@ if (isLauncherConfigured) {
   require(path.join(__dirname, "sandbox-cp-hooks.js")).install(cp, getExternalApps);
 
   process.stderr.write("[sandbox-preload] Loaded - sandbox active immediately\n");
+} else if (isAuthorizedInternalSqliteWorker) {
+  process.stderr.write(
+    "[sandbox-preload] Trusted OpenClaw SQLite worker - host runtime retained\n",
+  );
 }

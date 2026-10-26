@@ -236,6 +236,94 @@ describe("useSessionStore", () => {
     expect(store.sessions[0].key).toBe("loaded");
   });
 
+  it("keeps historical Singer sessions visible under Creative Muse", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:singer:legacy",
+        title: "Legacy draft",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "lyrics",
+        agentId: "singer",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:singer:legacy",
+      agentId: "creative-muse",
+      title: "Legacy draft",
+    });
+  });
+
+  it("keeps historical Master sessions visible under Dr. Pulse", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:master:legacy",
+        title: "Legacy system check",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "diagnose",
+        agentId: "master",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:master:legacy",
+      agentId: "dr-pulse",
+      title: "Legacy system check",
+    });
+  });
+
+  it("keeps historical Leopard sessions visible under Market Sentinel", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:leopard:legacy",
+        title: "Legacy market review",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "market",
+        agentId: "leopard",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:leopard:legacy",
+      agentId: "market-sentinel",
+      title: "Legacy market review",
+    });
+  });
+
+  it("keeps historical Painter sessions visible under Office Artisan", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:painter:legacy",
+        title: "Legacy design session",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "slides",
+        agentId: "painter",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:painter:legacy",
+      agentId: "office-artisan",
+      title: "Legacy design session",
+    });
+  });
+
   it("removes a persisted reserved warm-up session on load", () => {
     storage["openclaw-sessions"] = JSON.stringify([
       {

@@ -307,21 +307,20 @@ export function loadConfigBotAgent(): string | undefined {
  */
 export async function triggerWeixinChannelReload(): Promise<void> {
   try {
-    const { loadConfig, writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
-    const cfg = loadConfig();
-    const channels = (cfg.channels ?? {}) as Record<string, unknown>;
-    const existing = (channels["openclaw-weixin"] as Record<string, unknown> | undefined) ?? {};
-    const updated: OpenClawConfig = {
-      ...cfg,
-      channels: {
-        ...channels,
-        "openclaw-weixin": {
-          ...existing,
-          channelConfigUpdatedAt: new Date().toISOString(),
-        },
+    const { mutateConfigFile } = await import("openclaw/plugin-sdk/config-mutation");
+    await mutateConfigFile({
+      mutate(cfg) {
+        const channels = (cfg.channels ?? {}) as Record<string, unknown>;
+        const existing = (channels["openclaw-weixin"] as Record<string, unknown> | undefined) ?? {};
+        cfg.channels = {
+          ...channels,
+          "openclaw-weixin": {
+            ...existing,
+            channelConfigUpdatedAt: new Date().toISOString(),
+          },
+        };
       },
-    };
-    await writeConfigFile(updated);
+    });
     logger.info("triggerWeixinChannelReload: wrote channel config to openclaw.json");
   } catch (err) {
     logger.warn(`triggerWeixinChannelReload: failed to update config: ${String(err)}`);

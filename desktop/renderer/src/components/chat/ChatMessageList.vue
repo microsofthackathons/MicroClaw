@@ -461,7 +461,12 @@
     </div>
 
     <!-- Error -->
-    <div v-if="chatStore.lastError" class="chat-error" role="alert">
+    <div
+      v-if="displayedError"
+      class="chat-error"
+      :class="{ 'chat-error--waiting': isWaiting }"
+      :role="isWaiting ? 'status' : 'alert'"
+    >
       <div class="chat-error__header">
         <svg
           class="chat-error__icon"
@@ -479,18 +484,22 @@
           <line x1="12" y1="16" x2="12.01" y2="16" />
         </svg>
         <span class="chat-error__title">{{
-          t("chat.error." + chatStore.lastError.code + ".title")
+          t("chat.error." + displayedError.code + ".title")
         }}</span>
       </div>
       <div class="chat-error__body">
-        {{ t("chat.error." + chatStore.lastError.code + ".hint") }}
+        {{ t("chat.error." + displayedError.code + ".hint") }}
       </div>
-      <details v-if="chatStore.lastError.raw" class="chat-error__details">
+      <details v-if="displayedError.raw" class="chat-error__details">
         <summary>{{ t("chat.error.showDetails") }}</summary>
-        <pre class="chat-error__raw">{{ chatStore.lastError.raw }}</pre>
+        <pre class="chat-error__raw">{{ displayedError.raw }}</pre>
       </details>
-      <div class="chat-error__actions">
-        <button class="chat-error__btn chat-error__btn--primary" @click="openModelSettings">
+      <div v-if="displayedError.code !== 'agent_initializing'" class="chat-error__actions">
+        <button
+          v-if="!isWaiting"
+          class="chat-error__btn chat-error__btn--primary"
+          @click="openModelSettings"
+        >
           {{ t("chat.error.openSettings") }}
         </button>
         <button class="chat-error__btn" @click="chatStore.lastError = null">
@@ -530,6 +539,13 @@ import defaultAvatar from "@/assets/main-avatar.png";
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
 const router = useRouter();
+
+const displayedError = computed(() => chatStore.agentPreparationError ?? chatStore.lastError);
+const isWaiting = computed(
+  () =>
+    displayedError.value?.code === "response_delayed" ||
+    displayedError.value?.code === "agent_initializing",
+);
 
 /** Avatar of the agent bound to the current session (falls back to the default). */
 const avatarImg = computed(() => {
@@ -1354,6 +1370,13 @@ function handleEditKeydown(e: KeyboardEvent) {
   gap: 8px;
   color: var(--danger);
   font-weight: 600;
+}
+.chat-error--waiting {
+  background: rgba(74, 144, 217, 0.06);
+  border-color: rgba(74, 144, 217, 0.2);
+}
+.chat-error--waiting .chat-error__header {
+  color: var(--text-secondary);
 }
 .chat-error__icon {
   flex-shrink: 0;

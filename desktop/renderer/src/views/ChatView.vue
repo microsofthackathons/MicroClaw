@@ -1,7 +1,15 @@
 <template>
   <div class="chat-view">
     <!-- Welcome (no messages yet) -->
-    <div v-if="!hasMessages && !chatStore.loading" class="chat-welcome-area">
+    <div
+      v-if="
+        !hasMessages &&
+        !chatStore.loading &&
+        !chatStore.agentPreparationError &&
+        !chatStore.lastError
+      "
+      class="chat-welcome-area"
+    >
       <ChatWelcome mode="hero" :agent="currentAgent" @select="handleCardSelect" />
     </div>
 
@@ -99,6 +107,7 @@
     <ModelSetupDialog
       v-model="modelSetupVisible"
       :initial-family="modelSetupInitialFamily"
+      :streaming="chatStore.streaming"
       @configured="handleModelConfigured"
     />
   </div>
@@ -205,11 +214,16 @@ watch(
 );
 
 const composePlaceholder = computed(() =>
-  chatStore.wsConnected ? t("chat.inputPlaceholder") : t("chat.waitingGateway"),
+  !chatStore.wsConnected
+    ? t("chat.waitingGateway")
+    : chatStore.agentPreparationError
+      ? t("chat.error.agent_initializing.title")
+      : t("chat.inputPlaceholder"),
 );
 const canSend = computed(
   () =>
     chatStore.wsConnected &&
+    !chatStore.agentPreparationError &&
     !submittingMessage.value &&
     !pickingFiles.value &&
     importingClipboardImages.value === 0 &&
@@ -327,6 +341,7 @@ async function handleSend() {
   if (
     (!text && pendingAttachments.value.length === 0) ||
     !chatStore.wsConnected ||
+    chatStore.agentPreparationError ||
     submittingMessage.value ||
     pickingFiles.value ||
     importingClipboardImages.value > 0
@@ -360,6 +375,8 @@ async function sendText(text: string, attachments: ChatAttachment[]): Promise<bo
 
 async function needsModelSetupBeforeSend(): Promise<boolean> {
   try {
+    const current = await window.openclaw.model.session.get(chatStore.sessionKey);
+    if (current.overridden && current.modelRef) return false;
     return await window.openclaw.config.needsSetup();
   } catch {
     return false;

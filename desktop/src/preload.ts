@@ -1,3 +1,11 @@
+function rejectExcludedNativeBackend(..._arguments: unknown[]): Promise<never> {
+  return Promise.reject(
+    new Error(
+      "This branch requires the mandatory Docker backend; native MXC and AppContainer controls are unavailable",
+    ),
+  );
+}
+
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ChatAttachment,
@@ -5,12 +13,18 @@ import type {
   PrepareChatAttachmentsResult,
 } from "./chat-attachments";
 import type { OpenAttachmentRequest } from "./attachment-open";
+import type { LocalModelAPI, LocalModelOperation } from "./local-model-types";
+import type { SessionModelAPI } from "./session-model-types";
 
 contextBridge.exposeInMainWorld("openclaw", {
+  features: {
+    githubCopilot: process.argv.includes("--microclaw-internal-github-copilot"),
+  },
   // --- Gateway lifecycle ---
   gateway: {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),
     getStatus: () => ipcRenderer.invoke("gateway:get-status"),
+    isServiceReady: () => ipcRenderer.invoke("gateway:is-service-ready"),
     restart: (options?: { hard?: boolean }) => ipcRenderer.invoke("gateway:restart", options),
     warmUpAgent: () => ipcRenderer.invoke("gateway:warm-up-agent"),
     onStatus: (callback: (status: string) => void) => {
@@ -33,6 +47,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.on("gateway:ws-disconnected", handler);
       return () => ipcRenderer.removeListener("gateway:ws-disconnected", handler);
     },
+    onServiceReady: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on("gateway:service-ready", handler);
+      return () => ipcRenderer.removeListener("gateway:service-ready", handler);
+    },
   },
 
   // --- Configuration ---
@@ -42,7 +61,8 @@ contextBridge.exposeInMainWorld("openclaw", {
     needsSetup: () => ipcRenderer.invoke("config:needs-setup"),
     read: () => ipcRenderer.invoke("config:read"),
     readEnv: () => ipcRenderer.invoke("config:read-env"),
-    write: (config: any) => ipcRenderer.invoke("config:write", config),
+    write: (config: any, expectedConfig?: unknown) =>
+      ipcRenderer.invoke("config:write", config, expectedConfig),
   },
 
   // --- Settings ---
@@ -202,6 +222,12 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.invoke("plugin:weixin:login-qr-wait", params),
       disconnect: (params?: { accountId?: string }) =>
         ipcRenderer.invoke("plugin:weixin:disconnect", params),
+      getRemoteApprovalStatus: () =>
+        rejectExcludedNativeBackend("plugin:weixin:remote-approval:get-status"),
+      setRemoteApprovalEnabled: (enabled: boolean) =>
+        rejectExcludedNativeBackend("plugin:weixin:remote-approval:set-enabled", enabled),
+      revokeRemoteApproval: () =>
+        rejectExcludedNativeBackend("plugin:weixin:remote-approval:revoke"),
       onLoginOutput: (callback: (text: string) => void) => {
         const handler = (_event: any, text: string) => callback(text);
         ipcRenderer.on("plugin:weixin:login-output", handler);
@@ -217,6 +243,45 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   // --- Model testing ---
   model: {
+    selectDefault: (params: import("./default-model-selection").DefaultModelSelection) =>
+      ipcRenderer.invoke("model:select-default", params),
+    session: {
+      get: (sessionKey) => ipcRenderer.invoke("model:session:get", sessionKey),
+      select: (params) => ipcRenderer.invoke("model:session:select", params),
+      getRecovery: () => ipcRenderer.invoke("model:session:get-recovery"),
+      recover: (params) => ipcRenderer.invoke("model:session:recover", params),
+      onRecoveryChanged: (callback) => {
+        const listener = () => callback();
+        ipcRenderer.on("model:session:recovery-changed", listener);
+        return () => ipcRenderer.removeListener("model:session:recovery-changed", listener);
+      },
+    } satisfies SessionModelAPI,
+    local: {
+      getSnapshot: () => ipcRenderer.invoke("model:local:get-snapshot"),
+      getCapabilities: () => ipcRenderer.invoke("model:local:get-capabilities"),
+      detect: (options) => ipcRenderer.invoke("model:local:detect", options),
+      inspectProvider: () => ipcRenderer.invoke("model:local:inspect-provider"),
+      installProvider: (params) => ipcRenderer.invoke("model:local:install-provider", params),
+      prepare: (params) => ipcRenderer.invoke("model:local:prepare", params),
+      activate: (params) => ipcRenderer.invoke("model:local:activate", params),
+      answer: (params) => ipcRenderer.invoke("model:local:answer", params),
+      cancel: (operationId) => ipcRenderer.invoke("model:local:cancel", operationId),
+      getOperation: () => ipcRenderer.invoke("model:local:get-operation"),
+      resume: () => ipcRenderer.invoke("model:local:resume"),
+      onEvent: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, operation: LocalModelOperation) =>
+          callback(operation);
+        ipcRenderer.on("model:local:event", listener);
+        return () => ipcRenderer.removeListener("model:local:event", listener);
+      },
+    } satisfies LocalModelAPI,
+    discoverModels: (params: import("./provider-model-catalog").ProviderCatalogInput) =>
+      ipcRenderer.invoke("model:discover-models", params) as Promise<
+        import("./provider-model-catalog").ProviderCatalogResult
+      >,
+    registerCatalogModel: (
+      params: import("./provider-model-registration").ProviderCatalogSelection,
+    ) => ipcRenderer.invoke("model:register-catalog-model", params) as Promise<void>,
     testConnection: (params: {
       baseUrl: string;
       apiKey: string;
@@ -315,6 +380,123 @@ contextBridge.exposeInMainWorld("openclaw", {
       const handler = (_event: Electron.IpcRendererEvent, line: string) => callback(line);
       ipcRenderer.on("docker-sandbox:build-progress", handler);
       return () => ipcRenderer.removeListener("docker-sandbox:build-progress", handler);
+    },
+  },
+  windowsNodeMxc: {
+    getStatus: () => rejectExcludedNativeBackend("windows-node-mxc:get-status"),
+    preflight: (params?: { requestedMode?: "off" | "full" | "limited-dacl" }) =>
+      rejectExcludedNativeBackend("windows-node-mxc:preflight", params),
+    setEnabled: (params: {
+      enabled?: boolean;
+      requestedMode?: "off" | "full" | "limited-dacl";
+      acknowledgeLimitedFilesystem?: boolean;
+      nodeId?: string;
+    }) => rejectExcludedNativeBackend("windows-node-mxc:set-enabled", params),
+    validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      rejectExcludedNativeBackend("windows-node-mxc:validate-folder-policy", draft),
+    applyFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      rejectExcludedNativeBackend("windows-node-mxc:apply-folder-policy", draft),
+    listDurableApprovals: () =>
+      rejectExcludedNativeBackend("windows-node-mxc:durable-approvals:list"),
+    revokeDurableApproval: (id: string) =>
+      rejectExcludedNativeBackend("windows-node-mxc:durable-approvals:revoke", id),
+    revokeAllDurableApprovals: () =>
+      rejectExcludedNativeBackend("windows-node-mxc:durable-approvals:revoke-all"),
+    getPendingApproval: () => rejectExcludedNativeBackend("windows-node-mxc:approval-current"),
+    respondApproval: (params: {
+      requestId: string;
+      decision: "deny" | "allow-once" | "allow-always";
+    }) => rejectExcludedNativeBackend("windows-node-mxc:approval-respond", params),
+    onApprovalRequest: (callback: (request: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: unknown) => callback(request);
+      ipcRenderer.on("windows-node-mxc:approval-request", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-request", handler);
+    },
+    onLifecycleState: (callback: (state: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state);
+      ipcRenderer.on("windows-node-mxc:lifecycle-state", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:lifecycle-state", handler);
+    },
+  },
+
+  // --- Tool Sandbox ---
+  sandbox: {
+    getStatus: () => rejectExcludedNativeBackend("sandbox:get-status"),
+    setEnabled: (enabled: boolean) => rejectExcludedNativeBackend("sandbox:set-enabled", enabled),
+    execShell: (params: { command: string; cwd?: string; timeout?: number }) =>
+      rejectExcludedNativeBackend("sandbox:exec-shell", params),
+    execNode: (params: { code: string; cwd?: string; timeout?: number }) =>
+      rejectExcludedNativeBackend("sandbox:exec-node", params),
+    provision: () => rejectExcludedNativeBackend("sandbox:provision"),
+    getExternalApps: () =>
+      rejectExcludedNativeBackend("sandbox:get-external-apps") as Promise<string[]>,
+    setExternalApps: (apps: string[]) =>
+      rejectExcludedNativeBackend("sandbox:set-external-apps", apps),
+    applyExternalApps: () =>
+      rejectExcludedNativeBackend("sandbox:apply-external-apps") as Promise<{
+        ok: boolean;
+        restarted: boolean;
+      }>,
+    getCapabilities: () =>
+      rejectExcludedNativeBackend("sandbox:get-capabilities") as Promise<string[]>,
+    setCapabilities: (caps: string[]) =>
+      rejectExcludedNativeBackend("sandbox:set-capabilities", caps) as Promise<{
+        ok: boolean;
+        caps: string[];
+        needsRestart: boolean;
+      }>,
+    getUserDirs: () =>
+      rejectExcludedNativeBackend("sandbox:get-user-dirs") as Promise<{
+        rw: string[];
+        ro: string[];
+      }>,
+    addUserDir: (params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }) =>
+      rejectExcludedNativeBackend("sandbox:add-user-dir", params) as Promise<{
+        ok: boolean;
+        reason?: string;
+        parentDir?: string;
+        parentAccess?: string;
+        removedChildren?: string[];
+        dirs: { rw: string[]; ro: string[] };
+      }>,
+    stageUserDir: (params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }) =>
+      rejectExcludedNativeBackend("sandbox:stage-user-dir", params) as Promise<{
+        ok: boolean;
+        canceled?: boolean;
+        reason?: string;
+        parentDir?: string;
+        parentAccess?: string;
+        removedChildren?: string[];
+        dirs: { rw: string[]; ro: string[] };
+      }>,
+    removeUserDir: (params: { dir: string; access: "rw" | "ro" }) =>
+      rejectExcludedNativeBackend("sandbox:remove-user-dir", params) as Promise<{
+        ok: boolean;
+        dirs: { rw: string[]; ro: string[] };
+      }>,
+    setUserDirAccess: (params: { dir: string; access: "rw" | "ro" }) =>
+      rejectExcludedNativeBackend("sandbox:set-user-dir-access", params) as Promise<{
+        ok: boolean;
+        reason?: string;
+        parentDir?: string;
+        parentAccess?: string;
+        removedChildren?: string[];
+        dirs: { rw: string[]; ro: string[] };
+      }>,
+    onPermissionRequest: (
+      callback: (data: {
+        requestId: string;
+        type: "file" | "shell" | "shell-async" | "app-approval";
+        targetPath: string;
+        dirPath: string;
+        command?: string;
+        callerStack?: string;
+        accessNeeded?: string;
+      }) => void,
+    ) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on("sandbox:permission-request", handler);
+      return () => ipcRenderer.removeListener("sandbox:permission-request", handler);
     },
   },
 });

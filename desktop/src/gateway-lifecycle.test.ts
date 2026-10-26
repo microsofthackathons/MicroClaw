@@ -1,14 +1,68 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import {
   applyAgentRosterReload,
   hardRestartGateway,
+  isApplicationServiceReadyState,
+  isGatewayServiceReady,
   requiresExternalGatewayStop,
+  shouldRetryGatewayStartup,
   waitForAgentRosterReload,
 } from "./gateway-lifecycle";
+
+describe("Gateway startup convergence", () => {
+  it("keeps runtime self-updating out of the Desktop-managed Gateway lifecycle", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    expect(main).toContain('OPENCLAW_NO_AUTO_UPDATE: "1"');
+    expect(main).toContain("return checkForUpdates({");
+  });
+  it("awaits mandatory Docker readiness before taking the Gateway plugin inventory", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    const startup = main.slice(main.indexOf("async function startGatewayInner("));
+    const prepare = startup.indexOf("await refreshDockerSandboxReadiness()");
+    const inventory = startup.indexOf("ensurePluginsAllow()");
+    const spawn = startup.indexOf("const child = spawn(nodePath, gwArgs");
+    expect(prepare).toBeGreaterThan(0);
+    expect(inventory).toBeGreaterThan(prepare);
+    expect(spawn).toBeGreaterThan(inventory);
+    expect(startup).not.toContain("await toolSandbox.provisionAsync()");
+  });
+  const refusal =
+    "OpenClaw plugin migration inputs changed during startup convergence; refusing to report the gateway ready. " +
+    "Restart OpenClaw so state migrations run against the final config and plugin inventory.";
+  it("allows a bounded fresh startup only for the runtime's explicit convergence restart request", () => {
+    expect(shouldRetryGatewayStartup(1, refusal, 1)).toBe(true);
+    expect(shouldRetryGatewayStartup(1, refusal, 0)).toBe(false);
+    expect(shouldRetryGatewayStartup(78, refusal, 1)).toBe(false);
+    expect(shouldRetryGatewayStartup(1, "Invalid config", 1)).toBe(false);
+    expect(shouldRetryGatewayStartup(null, refusal, 1)).toBe(false);
+  });
+});
 
 describe("requiresExternalGatewayStop", () => {
   it("protects an unowned listener when the roster must be reloaded", () => {
     expect(requiresExternalGatewayStop(true, true, false, false)).toBe(true);
+  });
+
+  describe("isGatewayServiceReady", () => {
+    it("reports general UI readiness independently from protected chat ingress", () => {
+      expect(isGatewayServiceReady(true, true)).toBe(true);
+      expect(isGatewayServiceReady(false, true)).toBe(false);
+      expect(isGatewayServiceReady(true, false)).toBe(false);
+    });
+
+    describe("isApplicationServiceReadyState", () => {
+      it("releases remembered OFF startup when the Gateway is connected", () => {
+        expect(isApplicationServiceReadyState(true, true, false, true)).toBe(true);
+      });
+
+      it("keeps remembered ON startup and toggles gated until protected ingress releases", () => {
+        expect(isApplicationServiceReadyState(true, true, true, false)).toBe(false);
+        expect(isApplicationServiceReadyState(true, true, false, false)).toBe(false);
+        expect(isApplicationServiceReadyState(true, true, false, true)).toBe(true);
+      });
+    });
   });
 
   it("allows a managed Gateway to restart for a roster change", () => {
@@ -21,13 +75,57 @@ describe("requiresExternalGatewayStop", () => {
 });
 
 describe("hardRestartGateway", () => {
+  it("notifies the renderer of a managed disconnect before stopping the client", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    const restart = main.slice(
+      main.indexOf("async function restartManagedGateway("),
+      main.indexOf("async function restartManagedGatewayAndRequireReady("),
+    );
+    const notification = restart.indexOf(
+      'sendToWindow(mainWindow, "gateway:ws-disconnected", reason)',
+    );
+    const stopClient = restart.indexOf("stopClient: () => gwClient?.stop()");
+
+    expect(notification).toBeGreaterThan(0);
+    expect(stopClient).toBeGreaterThan(notification);
+  });
+
+  it("waits for verified asynchronous shutdown and does not start after a shutdown failure", async () => {
+    let stopped!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      stopped = resolve;
+    });
+    const startGateway = vi.fn(async () => {});
+    const dependencies = {
+      stopClient: vi.fn(),
+      stopProcess: vi.fn(() => shutdown),
+      isPortOccupied: vi.fn(async () => false),
+      startGateway,
+      sleep: vi.fn(async () => {}),
+      timeoutMs: 1000,
+      pollMs: 100,
+    };
+    const restart = hardRestartGateway(dependencies);
+    await Promise.resolve();
+    expect(startGateway).not.toHaveBeenCalled();
+    stopped();
+    await restart;
+    expect(startGateway).toHaveBeenCalledOnce();
+    startGateway.mockClear();
+    dependencies.stopProcess.mockRejectedValueOnce(new Error("Old Gateway is still alive"));
+    await expect(hardRestartGateway(dependencies)).rejects.toThrow("still alive");
+    expect(startGateway).not.toHaveBeenCalled();
+  });
+
   it("stops the client and process, waits for the port, then starts", async () => {
     const order: string[] = [];
     const occupied = [true, true, false];
 
     await hardRestartGateway({
       stopClient: () => order.push("client"),
-      stopProcess: () => order.push("process"),
+      stopProcess: () => {
+        order.push("process");
+      },
       isPortOccupied: async () => occupied.shift() ?? false,
       startGateway: async () => {
         order.push("start");

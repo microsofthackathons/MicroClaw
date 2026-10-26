@@ -1,0 +1,1678 @@
+import * as path from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { readAgentRoster } from "./agent-roster";
+
+export const WINDOWS_NODE_MXC_MODE = "windows-node-mxc";
+export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
+  "system.run",
+  "system.run.readiness",
+  "system.run.prepare",
+  "system.which",
+] as const;
+export const WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND = "system.run.cwd-policy";
+export const WINDOWS_NODE_MXC_CANVAS_COMMANDS = [
+  "canvas.present",
+  "canvas.hide",
+  "canvas.snapshot",
+  "canvas.caps",
+  "canvas.a2ui.push",
+  "canvas.a2ui.pushJSONL",
+  "canvas.a2ui.reset",
+  "canvas.a2ui.dump",
+] as const;
+export const WINDOWS_NODE_MXC_CANVAS_ACTIONS = ["cancel", "click", "confirm", "submit"] as const;
+export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
+  ...WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
+  WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+  ...WINDOWS_NODE_MXC_CANVAS_COMMANDS,
+] as const;
+export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = [
+  "exec",
+  "web_search",
+  "web_fetch",
+  "message",
+  "canvas",
+] as const;
+export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
+  "__microclaw_windows_node_mxc_locked__",
+] as const;
+export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+] as const;
+export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs"] as const;
+export const WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS = ["memory-core"] as const;
+export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
+  "group:runtime",
+  "group:fs",
+  "group:plugins",
+  "browser",
+  "gateway",
+  "nodes",
+] as const;
+
+export type WindowsNodeMxcGatewayPolicyState = "active" | "locked" | "drift";
+
+export function selectWindowsNodeMxcGatewayStartPolicy(
+  override: "active" | "locked" | null,
+  activationInProgress: boolean,
+): "active" | "locked" {
+  return override ?? (activationInProgress ? "active" : "locked");
+}
+
+export function isWindowsNodeMxcIngressReleased(
+  desired: boolean,
+  gatewayGeneration: string,
+  releasedGeneration: string | null,
+  activationInProgress: boolean,
+): boolean {
+  return (
+    !desired ||
+    (!activationInProgress &&
+      gatewayGeneration.length > 0 &&
+      releasedGeneration === gatewayGeneration)
+  );
+}
+
+export type SandboxFolderAccess = "ro" | "rw";
+
+export interface WindowsNodeMxcFolder {
+  path: string;
+  access: SandboxFolderAccess;
+}
+
+export interface WindowsNodeMxcFolderLists {
+  rw: string[];
+  ro: string[];
+}
+
+export type WindowsNodeMxcFolderPolicyReason =
+  | "duplicate"
+  | "parent-covers"
+  | "parent-rw-covers"
+  | "path-nonlocal"
+  | "path-not-found"
+  | "path-reparse-point"
+  | "path-sensitive"
+  | "acl-failed"
+  | "folder-not-configured";
+
+export interface WindowsNodeMxcFolderPathResult {
+  ok: boolean;
+  canonicalPath: string | null;
+  reason?: WindowsNodeMxcFolderPolicyReason;
+}
+
+export interface WindowsNodeMxcFolderPlan {
+  ok: boolean;
+  reason?: WindowsNodeMxcFolderPolicyReason;
+  parentDir?: string;
+  parentAccess?: SandboxFolderAccess;
+  inheritsFromParent?: boolean;
+  removedChildren: string[];
+  dirs: WindowsNodeMxcFolderLists;
+}
+
+export type WindowsNodeMxcApprovalDecision = "deny" | "allow-once" | "allow-always";
+
+export interface WindowsNodeMxcGatewayApproval {
+  id: string;
+  command: string;
+  executable: string;
+  arguments: string[];
+  executablePath: string;
+  executableSha256: string;
+  canonicalCwd: string;
+  agent: string | null;
+  sessionKey: string;
+  declaredAccess: Array<{
+    access: SandboxFolderAccess;
+    path: string;
+  }>;
+  hasMutableFileOperand: boolean;
+  allowedDecisions: WindowsNodeMxcApprovalDecision[];
+}
+
+const DECLARED_ACCESS_TAG_PATTERN = /\[declare-access\]([\s\S]*?)\[\/declare-access\]/i;
+const LEADING_DECLARED_ACCESS_PATTERN =
+  /^[ \t]*(?:(?:#|::|REM\b)[ \t]*)?\[declare-access\]([\s\S]*?)\[\/declare-access\][ \t]*(?:\r\n|\n|\r|$)/i;
+const DECLARED_ACCESS_MARKER_PATTERN = /\[\/?declare-access\]/i;
+const ABSOLUTE_LOCAL_PATH_PATTERN = /^[a-z]:\\/i;
+
+function parseGatewayDeclaredAccess(
+  commandPreview: string,
+): WindowsNodeMxcGatewayApproval["declaredAccess"] | null {
+  if (!DECLARED_ACCESS_MARKER_PATTERN.test(commandPreview)) return [];
+
+  const declarations = new Map<string, WindowsNodeMxcGatewayApproval["declaredAccess"][number]>();
+  let remaining = commandPreview;
+  let matched = false;
+  while (true) {
+    const match = LEADING_DECLARED_ACCESS_PATTERN.exec(remaining);
+    if (!match) break;
+    matched = true;
+    const entries = match[1].split(";").map((entry) => entry.trim());
+    if (entries.length === 0 || entries.some((entry) => !entry)) return null;
+    for (const entry of entries) {
+      const separator = entry.indexOf(":");
+      if (separator <= 0 || separator === entry.length - 1) return null;
+      const access = entry.slice(0, separator).trim().toLowerCase();
+      const requestedPath = entry.slice(separator + 1).trim();
+      if (
+        (access !== "ro" && access !== "rw") ||
+        !ABSOLUTE_LOCAL_PATH_PATTERN.test(requestedPath)
+      ) {
+        return null;
+      }
+      const key = requestedPath.toLowerCase();
+      const existing = declarations.get(key);
+      if (!existing || (existing.access === "ro" && access === "rw")) {
+        declarations.set(key, { access, path: requestedPath });
+      }
+    }
+    remaining = remaining.slice(match[0].length);
+  }
+
+  if (
+    !matched ||
+    !remaining.trim() ||
+    DECLARED_ACCESS_TAG_PATTERN.test(remaining) ||
+    DECLARED_ACCESS_MARKER_PATTERN.test(remaining)
+  ) {
+    return null;
+  }
+  return [...declarations.values()].sort(compareDeclaredAccessPath);
+}
+
+function normalizeStructuredDeclaredAccess(
+  value: unknown,
+): WindowsNodeMxcGatewayApproval["declaredAccess"] | null {
+  if (!Array.isArray(value)) return null;
+  const entries = new Map<string, WindowsNodeMxcGatewayApproval["declaredAccess"][number]>();
+  for (const candidate of value) {
+    const entry = asRecord(candidate);
+    const access = typeof entry.access === "string" ? entry.access.toLowerCase() : "";
+    const requestedPath = typeof entry.path === "string" ? entry.path.trim() : "";
+    if ((access !== "ro" && access !== "rw") || !ABSOLUTE_LOCAL_PATH_PATTERN.test(requestedPath)) {
+      return null;
+    }
+    const key = requestedPath.toLowerCase();
+    const existing = entries.get(key);
+    if (existing && existing.access !== access) return null;
+    entries.set(key, { access, path: requestedPath });
+  }
+  return [...entries.values()].sort(compareDeclaredAccessPath);
+}
+
+function compareDeclaredAccessPath(
+  left: WindowsNodeMxcGatewayApproval["declaredAccess"][number],
+  right: WindowsNodeMxcGatewayApproval["declaredAccess"][number],
+): number {
+  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+}
+
+function declaredAccessMatches(
+  left: WindowsNodeMxcGatewayApproval["declaredAccess"],
+  right: WindowsNodeMxcGatewayApproval["declaredAccess"],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (entry, index) =>
+        entry.access === right[index]?.access &&
+        entry.path.toLowerCase() === right[index]?.path.toLowerCase(),
+    )
+  );
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => typeof entry === "string" && entry.length > 0)
+  );
+}
+
+export function normalizeWindowsNodeMxcGatewayApproval(
+  payload: unknown,
+  selectedNodeId: string,
+): WindowsNodeMxcGatewayApproval | null {
+  const envelope = asRecord(payload);
+  const request = asRecord(envelope.request);
+  const plan = asRecord(request.systemRunPlan);
+  const id = typeof envelope.id === "string" ? envelope.id.trim() : "";
+  const host = typeof request.host === "string" ? request.host : "";
+  const nodeId = typeof request.nodeId === "string" ? request.nodeId : "";
+  const argv = plan.argv;
+  const commandText = typeof plan.commandText === "string" ? plan.commandText.trim() : "";
+  const commandPreview = typeof plan.commandPreview === "string" ? plan.commandPreview.trim() : "";
+  const executablePath = typeof plan.executablePath === "string" ? plan.executablePath.trim() : "";
+  const executableSha256 =
+    typeof plan.executableSha256 === "string" ? plan.executableSha256.toLowerCase() : "";
+  const cwdBinding = typeof plan.cwdBinding === "string" ? plan.cwdBinding.trim() : "";
+  const previewDeclaredAccess = parseGatewayDeclaredAccess(commandPreview);
+  const declaredAccess = normalizeStructuredDeclaredAccess(plan.declaredAccess);
+  const hasMutableFileOperand =
+    Object.hasOwn(plan, "mutableFileOperand") &&
+    plan.mutableFileOperand !== null &&
+    plan.mutableFileOperand !== undefined;
+  const hasCanonicalCwd =
+    Object.hasOwn(plan, "cwd") &&
+    (plan.cwd === null || (typeof plan.cwd === "string" && plan.cwd.trim().length > 0));
+  const hasCanonicalAgent =
+    Object.hasOwn(plan, "agentId") &&
+    (plan.agentId === null || (typeof plan.agentId === "string" && plan.agentId.trim().length > 0));
+  const hasCanonicalSession =
+    Object.hasOwn(plan, "sessionKey") &&
+    typeof plan.sessionKey === "string" &&
+    plan.sessionKey.trim().length > 0;
+  const hasCanonicalPreview =
+    !Object.hasOwn(plan, "commandPreview") ||
+    plan.commandPreview === null ||
+    typeof plan.commandPreview === "string";
+  if (
+    !id ||
+    host !== "node" ||
+    nodeId.toLowerCase() !== selectedNodeId.trim().toLowerCase() ||
+    !isNonEmptyStringArray(argv) ||
+    !commandText ||
+    !/^[a-z]:\\/i.test(executablePath) ||
+    !/^[a-f0-9]{64}$/.test(executableSha256) ||
+    !cwdBinding ||
+    !hasCanonicalCwd ||
+    !hasCanonicalAgent ||
+    !hasCanonicalSession ||
+    !hasCanonicalPreview ||
+    declaredAccess === null ||
+    previewDeclaredAccess === null ||
+    !declaredAccessMatches(declaredAccess, previewDeclaredAccess)
+  ) {
+    return null;
+  }
+
+  const advertised = Array.isArray(envelope.allowedDecisions)
+    ? envelope.allowedDecisions
+    : Array.isArray(request.allowedDecisions)
+      ? request.allowedDecisions
+      : [];
+  const allowed = advertised.filter(
+    (decision): decision is WindowsNodeMxcApprovalDecision =>
+      decision === "deny" || decision === "allow-once" || decision === "allow-always",
+  );
+  if (!allowed.includes("deny")) allowed.push("deny");
+  if (!allowed.includes("allow-once")) allowed.unshift("allow-once");
+  if (!allowed.includes("allow-always")) allowed.push("allow-always");
+
+  return {
+    id,
+    command: commandText,
+    executable: argv[0],
+    arguments: argv.slice(1),
+    executablePath,
+    executableSha256,
+    canonicalCwd: cwdBinding,
+    agent: typeof plan.agentId === "string" && plan.agentId.trim() ? plan.agentId : null,
+    sessionKey: plan.sessionKey as string,
+    declaredAccess,
+    hasMutableFileOperand,
+    allowedDecisions: [...new Set(allowed)],
+  };
+}
+
+export interface WindowsNodeMxcSettings {
+  EnableNodeMode?: boolean;
+  NodeSystemRunEnabled?: boolean;
+  NodeCanvasEnabled?: boolean;
+  NodeScreenEnabled?: boolean;
+  NodeCameraEnabled?: boolean;
+  NodeLocationEnabled?: boolean;
+  NodeBrowserProxyEnabled?: boolean;
+  NodeSttEnabled?: boolean;
+  NodeTtsEnabled?: boolean;
+  EnableMcpServer?: boolean;
+  SystemRunSandboxEnabled?: boolean;
+  SystemRunBlockHostFallbackWhenMxcUnavailable?: boolean;
+  SystemRunAllowOutbound?: boolean;
+  SystemRunAllowWindowsUi?: boolean;
+  SandboxClipboard?: number;
+  SandboxDocumentsAccess?: number | null;
+  SandboxDownloadsAccess?: number | null;
+  SandboxDesktopAccess?: number | null;
+  SandboxCustomFolders?: Array<{ Path?: string; Access?: number }>;
+}
+
+export interface WindowsNodeRecord {
+  id: string;
+  displayName: string;
+  platform: string;
+  connected: boolean;
+  paired: boolean;
+  remoteIp: string | null;
+  commands: string[];
+}
+
+export interface WindowsNodeReadiness {
+  ready: boolean;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface MxcBackendProbeFacts {
+  baseContainerApiPresent: boolean | null;
+  bfscfgPresent: boolean | null;
+  bfsCompiledIn: boolean | null;
+}
+
+export interface MxcProbeResult {
+  outcome: "supported" | "unsupported" | "error";
+  tier: string | null;
+  needsDaclAugmentation: boolean;
+  degraded: boolean;
+  warnings: string[];
+  probes: MxcBackendProbeFacts;
+  reason: string | null;
+}
+
+export interface MxcExactBackendEligibility {
+  eligible: boolean;
+  summary: string | null;
+  blockers: string[];
+  remediation: string[];
+}
+
+const MXC_EXACT_FILESYSTEM_ISOLATION_TIERS = new Set(["base-container", "appcontainer-bfs"]);
+
+export interface MxcSmokeResult {
+  outcome:
+    | "passed"
+    | "sandbox-unavailable"
+    | "child-launch-failed"
+    | "approval-required"
+    | "timed-out"
+    | "failed";
+  reason: string;
+}
+
+export interface CanonicalCwdResult {
+  allowed: boolean;
+  canonicalPath: string | null;
+  access: SandboxFolderAccess | null;
+  reason: string | null;
+}
+
+export type AgentToolsBackup = Record<string, unknown | null>;
+const GATEWAY_NODES_BACKUP_KEY = "$microclaw.gateway.nodes";
+const INGRESS_BACKUP_KEYS = {
+  channels: "$microclaw.ingress.channels",
+  cron: "$microclaw.ingress.cron",
+  hooks: "$microclaw.ingress.hooks",
+  plugins: "$microclaw.ingress.plugins",
+} as const;
+export type WindowsNodeMxcIngressField = keyof typeof INGRESS_BACKUP_KEYS;
+
+export interface WindowsNodeMxcPolicyApplication {
+  config: Record<string, unknown>;
+  backups: AgentToolsBackup;
+  agentIds: string[];
+}
+
+export function getWindowsNodeMxcIngressBackup(
+  backups: AgentToolsBackup,
+  field: WindowsNodeMxcIngressField,
+): unknown {
+  const backupKey = INGRESS_BACKUP_KEYS[field];
+  if (!Object.hasOwn(backups, backupKey)) return undefined;
+  return structuredClone(backups[backupKey]);
+}
+
+export function migrateWindowsNodeMxcToolBackupAliases(
+  backups: AgentToolsBackup,
+  aliases: Readonly<Record<string, string>>,
+): AgentToolsBackup {
+  const migrated = structuredClone(backups);
+  for (const [legacyId, canonicalId] of Object.entries(aliases)) {
+    if (Object.hasOwn(migrated, legacyId) && !Object.hasOwn(migrated, canonicalId)) {
+      migrated[canonicalId] = structuredClone(migrated[legacyId]);
+    }
+  }
+  return migrated;
+}
+
+export function buildWindowsNodeMxcToolPolicy(nodeId: string): Record<string, unknown> {
+  const normalizedNodeId = nodeId.trim();
+  if (!normalizedNodeId) throw new Error("A stable Windows node ID is required");
+
+  return {
+    profile: "full",
+    allow: [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST],
+    deny: [...WINDOWS_NODE_MXC_TOOL_DENYLIST],
+    codeMode: false,
+    exec: {
+      host: "node",
+      node: normalizedNodeId,
+      security: "allowlist",
+      ask: "on-miss",
+      timeoutSeconds: 1800,
+      strictInlineEval: true,
+    },
+  };
+}
+
+export function buildWindowsNodeMxcLockedToolPolicy(nodeId: string): Record<string, unknown> {
+  return {
+    ...buildWindowsNodeMxcToolPolicy(nodeId),
+    // OpenClaw treats an empty allow list as unrestricted. This non-tool sentinel
+    // makes the allow policy restrictive while matching no runtime tool.
+    allow: [...WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST],
+    deny: [...WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST],
+  };
+}
+
+export function applyWindowsNodeMxcGatewayPolicy(
+  source: Record<string, unknown>,
+  nodeId: string,
+  existingBackups: AgentToolsBackup = {},
+  state: Exclude<WindowsNodeMxcGatewayPolicyState, "drift"> = "active",
+): WindowsNodeMxcPolicyApplication {
+  const config = structuredClone(source);
+  const agents =
+    config.agents && typeof config.agents === "object" && !Array.isArray(config.agents)
+      ? (config.agents as Record<string, unknown>)
+      : {};
+  const list = readAgentRoster(agents);
+  if (list.length === 0) {
+    throw new Error("Windows Node + MXC mode requires at least one configured agent");
+  }
+
+  const policy =
+    state === "active"
+      ? buildWindowsNodeMxcToolPolicy(nodeId)
+      : buildWindowsNodeMxcLockedToolPolicy(nodeId);
+  const backups = structuredClone(existingBackups);
+  const agentIds: string[] = [];
+  for (const { id: rawId, config: entry } of list) {
+    const id = rawId.trim();
+    if (!id) throw new Error("Every configured agent must have a stable ID");
+    if (!Object.hasOwn(backups, id)) {
+      backups[id] = Object.hasOwn(entry, "tools") ? structuredClone(entry.tools) : null;
+    }
+    entry.tools = structuredClone(policy);
+    agentIds.push(id);
+  }
+
+  config.agents = agents;
+  const gateway =
+    config.gateway && typeof config.gateway === "object" && !Array.isArray(config.gateway)
+      ? (config.gateway as Record<string, unknown>)
+      : {};
+  if (!Object.hasOwn(backups, GATEWAY_NODES_BACKUP_KEY)) {
+    backups[GATEWAY_NODES_BACKUP_KEY] = Object.hasOwn(gateway, "nodes")
+      ? structuredClone(gateway.nodes)
+      : null;
+  }
+  const nodes =
+    gateway.nodes && typeof gateway.nodes === "object" && !Array.isArray(gateway.nodes)
+      ? (gateway.nodes as Record<string, unknown>)
+      : {};
+  nodes.commands = { allow: [...WINDOWS_NODE_MXC_NODE_COMMANDS], deny: [] };
+  delete nodes.allowCommands;
+  delete nodes.denyCommands;
+  gateway.nodes = nodes;
+  config.gateway = gateway;
+  for (const [field, backupKey] of Object.entries(INGRESS_BACKUP_KEYS)) {
+    if (!Object.hasOwn(backups, backupKey)) {
+      backups[backupKey] = Object.hasOwn(config, field) ? structuredClone(config[field]) : null;
+    }
+  }
+  const channels = asRecord(config.channels);
+  config.channels = Object.fromEntries(
+    Object.entries(channels).map(([channelId, value]) => [
+      channelId,
+      {
+        ...asRecord(value),
+        enabled: channelId === "openclaw-weixin" && asRecord(value).enabled === true,
+      },
+    ]),
+  );
+  const hooks = asRecord(config.hooks);
+  config.hooks = {
+    ...hooks,
+    enabled: false,
+    internal: { ...asRecord(hooks.internal), enabled: false },
+  };
+  config.cron = { ...asRecord(config.cron), enabled: false };
+  const plugins = asRecord(config.plugins);
+  const pluginEntries = asRecord(plugins.entries);
+  const weixinRequested = asRecord(pluginEntries["openclaw-weixin"]).enabled === true;
+  const pluginAllow = ["canvas", ...(weixinRequested ? ["openclaw-weixin"] : [])];
+  config.plugins = {
+    ...plugins,
+    enabled: true,
+    allow: pluginAllow,
+    deny: Array.isArray(plugins.deny)
+      ? plugins.deny.filter((value) => value !== "canvas" && value !== "openclaw-weixin")
+      : [],
+    slots: {
+      ...asRecord(plugins.slots),
+      memory: "none",
+    },
+    entries: {
+      ...Object.fromEntries(
+        Object.entries(pluginEntries).map(([pluginId, value]) => [
+          pluginId,
+          {
+            ...asRecord(value),
+            enabled: pluginId === "canvas" || (pluginId === "openclaw-weixin" && weixinRequested),
+          },
+        ]),
+      ),
+      canvas: {
+        ...asRecord(pluginEntries.canvas),
+        enabled: true,
+      },
+    },
+  };
+  return { config, backups, agentIds };
+}
+
+export function restoreWindowsNodeMxcGatewayPolicy(
+  source: Record<string, unknown>,
+  backups: AgentToolsBackup,
+): Record<string, unknown> {
+  const config = structuredClone(source);
+  const agents =
+    config.agents && typeof config.agents === "object" && !Array.isArray(config.agents)
+      ? (config.agents as Record<string, unknown>)
+      : null;
+  const list = readAgentRoster(agents ?? undefined);
+  for (const { id: rawId, config: entry } of list) {
+    const id = rawId.trim();
+    if (!id || !Object.hasOwn(backups, id)) continue;
+    const previous = backups[id];
+    if (previous === null) delete entry.tools;
+    else entry.tools = structuredClone(previous);
+  }
+  if (Object.hasOwn(backups, GATEWAY_NODES_BACKUP_KEY)) {
+    const gateway =
+      config.gateway && typeof config.gateway === "object" && !Array.isArray(config.gateway)
+        ? (config.gateway as Record<string, unknown>)
+        : {};
+    const previous = backups[GATEWAY_NODES_BACKUP_KEY];
+    if (previous === null) {
+      delete gateway.nodes;
+      if (Object.keys(gateway).length === 0) delete config.gateway;
+      else config.gateway = gateway;
+    } else {
+      gateway.nodes = structuredClone(previous);
+      config.gateway = gateway;
+    }
+  }
+  for (const [field, backupKey] of Object.entries(INGRESS_BACKUP_KEYS)) {
+    if (!Object.hasOwn(backups, backupKey)) continue;
+    const previous = backups[backupKey];
+    if (previous === null) delete config[field];
+    else config[field] = structuredClone(previous);
+  }
+  return config;
+}
+
+export function validateWindowsNodeMxcGatewayPolicy(
+  config: unknown,
+  nodeId: string,
+  expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift"> | "either" = "active",
+): WindowsNodeReadiness {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (!nodeId.trim()) {
+    return { ready: false, blockers: ["A stable Windows node ID is required"], warnings };
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return { ready: false, blockers: ["OpenClaw configuration is unavailable"], warnings };
+  }
+
+  const root = config as Record<string, unknown>;
+  const agents =
+    root.agents && typeof root.agents === "object" && !Array.isArray(root.agents)
+      ? (root.agents as Record<string, unknown>)
+      : null;
+  let list: ReturnType<typeof readAgentRoster>;
+  try {
+    list = readAgentRoster(agents ?? undefined);
+  } catch (error) {
+    return { ready: false, blockers: [String(error)], warnings };
+  }
+  if (list.length === 0) blockers.push("No configured agents are protected by the MXC policy");
+
+  const active = buildWindowsNodeMxcToolPolicy(nodeId);
+  const locked = buildWindowsNodeMxcLockedToolPolicy(nodeId);
+  for (const { id, config: entry } of list) {
+    const matchesActive = isDeepStrictEqual(entry.tools, active);
+    const matchesLocked = isDeepStrictEqual(entry.tools, locked);
+    const matchesExpected =
+      expectedState === "either"
+        ? matchesActive || matchesLocked
+        : expectedState === "active"
+          ? matchesActive
+          : matchesLocked;
+    const tools = asRecord(entry.tools);
+    const allow = Array.isArray(tools?.allow) ? tools.allow : [];
+    const deny = Array.isArray(tools?.deny) ? tools.deny : [];
+    const forbiddenFilesystemTools = findGatewayNativeFilesystemTools(allow);
+    if (forbiddenFilesystemTools.length > 0) {
+      blockers.push(
+        `Agent "${id}" enables Gateway-native filesystem tools while MXC is enabled: ${forbiddenFilesystemTools.join(", ")}`,
+      );
+    }
+    if (!deny.includes("group:fs")) {
+      blockers.push(`Agent "${id}" does not deny the Gateway-native filesystem tool group`);
+    }
+    if (!matchesExpected) {
+      blockers.push(
+        `Agent "${id}" tool policy drifted from contained exec and Gateway web routing`,
+      );
+    }
+  }
+
+  const globalTools =
+    root.tools && typeof root.tools === "object" && !Array.isArray(root.tools)
+      ? (root.tools as Record<string, unknown>)
+      : null;
+  const globalDeny = globalTools && Array.isArray(globalTools.deny) ? globalTools.deny : [];
+  if (globalDeny.some((value) => value === "exec" || value === "group:runtime")) {
+    blockers.push("Global Gateway tool policy blocks node exec");
+  }
+  if (globalDeny.some((value) => value === "canvas" || value === "group:plugins")) {
+    blockers.push("Global Gateway tool policy blocks the reviewed Canvas tool");
+  }
+  const gateway =
+    root.gateway && typeof root.gateway === "object" && !Array.isArray(root.gateway)
+      ? (root.gateway as Record<string, unknown>)
+      : null;
+  const nodes =
+    gateway?.nodes && typeof gateway.nodes === "object" && !Array.isArray(gateway.nodes)
+      ? (gateway.nodes as Record<string, unknown>)
+      : null;
+  const commands = asRecord(nodes?.commands);
+  const allowCommands = Array.isArray(commands.allow) ? commands.allow : [];
+  const denyCommands = Array.isArray(commands.deny) ? commands.deny : [];
+  if (!isDeepStrictEqual(allowCommands, [...WINDOWS_NODE_MXC_NODE_COMMANDS])) {
+    blockers.push(
+      "Gateway node command allowlist drifted from the bundled system and Canvas surface",
+    );
+  }
+  if (!isDeepStrictEqual(denyCommands, [])) {
+    blockers.push(
+      "Gateway node command denylist conflicts with the bundled system and Canvas surface",
+    );
+  }
+  const cron = asRecord(root.cron);
+  if (cron.enabled !== false) blockers.push("Gateway cron ingress must remain disabled");
+  const hooks = asRecord(root.hooks);
+  if (hooks.enabled !== false) blockers.push("Gateway webhook ingress must remain disabled");
+  if (asRecord(hooks.internal).enabled !== false) {
+    blockers.push("Gateway internal-hook ingress must remain disabled");
+  }
+  const channels = asRecord(root.channels);
+  let weixinChannelEnabled = false;
+  for (const [channelId, value] of Object.entries(channels)) {
+    if (channelId === "openclaw-weixin") {
+      weixinChannelEnabled = asRecord(value).enabled === true;
+      continue;
+    }
+    if (asRecord(value).enabled !== false) {
+      blockers.push(`Gateway channel "${channelId}" must remain disabled`);
+    }
+  }
+  const plugins = asRecord(root.plugins);
+  const canvasPluginEnabled = asRecord(asRecord(plugins.entries).canvas).enabled === true;
+  const weixinPluginEnabled =
+    asRecord(asRecord(plugins.entries)["openclaw-weixin"]).enabled === true;
+  if (plugins.enabled !== true || !canvasPluginEnabled) {
+    blockers.push("Gateway Canvas plugin must remain enabled under MXC");
+  }
+  if (weixinChannelEnabled && !weixinPluginEnabled) {
+    blockers.push("Gateway WeChat channel cannot be enabled while its plugin is disabled");
+  }
+  const pluginAllow = Array.isArray(plugins.allow) ? plugins.allow : [];
+  const pluginDeny = Array.isArray(plugins.deny) ? plugins.deny : [];
+  const expectedPluginAllow = ["canvas", ...(weixinPluginEnabled ? ["openclaw-weixin"] : [])];
+  if (!isDeepStrictEqual(pluginAllow, expectedPluginAllow) || pluginDeny.includes("canvas")) {
+    blockers.push("Gateway plugin policy drifted from the reviewed Canvas/WeChat surface");
+  }
+  if (
+    weixinPluginEnabled &&
+    (!pluginAllow.includes("openclaw-weixin") || pluginDeny.includes("openclaw-weixin"))
+  ) {
+    blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
+  }
+  const memorySlot = asRecord(plugins.slots).memory;
+  if (memorySlot !== "none" && memorySlot !== null) {
+    blockers.push(
+      'Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"',
+    );
+  }
+  for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
+    if (
+      pluginId !== "canvas" &&
+      pluginId !== "openclaw-weixin" &&
+      !WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.includes(
+        pluginId as (typeof WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS)[number],
+      ) &&
+      asRecord(value).enabled !== false
+    ) {
+      blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
+    }
+  }
+
+  return { ready: blockers.length === 0, blockers, warnings };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function getWindowsNodeMxcGatewayPolicyState(
+  config: unknown,
+  nodeId: string,
+): WindowsNodeMxcGatewayPolicyState {
+  if (validateWindowsNodeMxcGatewayPolicy(config, nodeId, "active").ready) return "active";
+  if (validateWindowsNodeMxcGatewayPolicy(config, nodeId, "locked").ready) return "locked";
+  return "drift";
+}
+
+export function validateWindowsNodeMxcSettings(
+  settings: WindowsNodeMxcSettings | null,
+): WindowsNodeReadiness {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (!settings) {
+    return {
+      ready: false,
+      blockers: ["Windows Companion settings.json is missing or unreadable"],
+      warnings,
+    };
+  }
+
+  const requiredTrue: Array<[keyof WindowsNodeMxcSettings, string]> = [
+    ["EnableNodeMode", "Windows Companion node mode is disabled"],
+    ["NodeSystemRunEnabled", "Windows node system.run is disabled"],
+    ["NodeCanvasEnabled", "Reviewed Canvas Phase 1 capability is disabled"],
+    ["SystemRunSandboxEnabled", "Windows node MXC sandbox is disabled"],
+    [
+      "SystemRunBlockHostFallbackWhenMxcUnavailable",
+      "Strict MXC host-fallback blocking is disabled",
+    ],
+    [
+      "SystemRunAllowWindowsUi",
+      "Windows UI APIs must be allowed for PowerShell compatibility with MXC 0.7",
+    ],
+    ["SystemRunAllowOutbound", "Contained outbound network access must be enabled for this mode"],
+  ];
+  for (const [property, message] of requiredTrue) {
+    if (settings[property] !== true) blockers.push(message);
+  }
+
+  const requiredFalse: Array<[keyof WindowsNodeMxcSettings, string]> = [
+    ["EnableMcpServer", "Local MCP must remain disabled for this mode"],
+    ["NodeScreenEnabled", "Screen capability must be disabled"],
+    ["NodeCameraEnabled", "Camera capability must be disabled"],
+    ["NodeLocationEnabled", "Location capability must be disabled"],
+    ["NodeBrowserProxyEnabled", "Browser proxy capability must be disabled"],
+    ["NodeSttEnabled", "Speech-to-text capability must be disabled"],
+    ["NodeTtsEnabled", "Text-to-speech capability must be disabled"],
+  ];
+  for (const [property, message] of requiredFalse) {
+    if (settings[property] !== false) blockers.push(message);
+  }
+
+  if (settings.SandboxClipboard !== 0) blockers.push("Sandbox clipboard policy must be None");
+
+  warnings.push(
+    "allowWindowsUi is a PowerShell compatibility relaxation; it does not enable screen, input, camera, microphone, browser, location, or speech capabilities. Canvas is separately restricted to the reviewed native A2UI subset.",
+  );
+  return { ready: blockers.length === 0, blockers, warnings };
+}
+
+export function normalizeWindowsNodeRecord(value: unknown): WindowsNodeRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const idValue = record.id ?? record.nodeId ?? record.deviceId;
+  if (typeof idValue !== "string" || !idValue.trim()) return null;
+  const commands = Array.isArray(record.commands)
+    ? record.commands.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const connected =
+    record.connected === true ||
+    record.online === true ||
+    record.status === "connected" ||
+    record.status === "online";
+  return {
+    id: idValue.trim(),
+    displayName:
+      typeof record.displayName === "string"
+        ? record.displayName
+        : typeof record.name === "string"
+          ? record.name
+          : idValue.trim(),
+    platform: typeof record.platform === "string" ? record.platform.toLowerCase() : "",
+    connected,
+    paired: record.paired !== false,
+    remoteIp:
+      typeof record.remoteIp === "string"
+        ? record.remoteIp
+        : typeof record.ip === "string"
+          ? record.ip
+          : null,
+    commands,
+  };
+}
+
+export function validateSelectedWindowsNode(
+  node: WindowsNodeRecord | null,
+  trustedBundledNodeId = "",
+): WindowsNodeReadiness {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (!node) {
+    return { ready: false, blockers: ["The selected Windows node is not paired"], warnings };
+  }
+  if (!node.connected) blockers.push("The selected Windows node is disconnected");
+  if (!node.paired) blockers.push("The selected Windows node requires pairing or reapproval");
+  if (node.platform !== "win32" && node.platform !== "windows") {
+    blockers.push("The selected node is not a Windows node");
+  }
+  const appOwnedLocalIdentity =
+    trustedBundledNodeId.length > 0 && node.id.toLowerCase() === trustedBundledNodeId.toLowerCase();
+  if ((!node.remoteIp || !isLoopbackAddress(node.remoteIp)) && !appOwnedLocalIdentity) {
+    blockers.push("The selected node is not proven to be local to this MicroClaw Gateway");
+  }
+  for (const command of WINDOWS_NODE_MXC_REQUIRED_COMMANDS) {
+    if (!node.commands.includes(command))
+      blockers.push(`Selected node does not declare ${command}`);
+  }
+  if (!node.commands.includes(WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND)) {
+    blockers.push(
+      "Pinned Windows Node does not expose canonical approved-root cwd enforcement or cwd-bound durable approvals",
+    );
+  }
+  for (const command of WINDOWS_NODE_MXC_CANVAS_COMMANDS) {
+    if (!node.commands.includes(command))
+      blockers.push(`Selected node does not declare ${command}`);
+  }
+  const allowedCommands = new Set<string>(WINDOWS_NODE_MXC_NODE_COMMANDS);
+  const unexpectedCommands = node.commands.filter((command) => !allowedCommands.has(command));
+  if (unexpectedCommands.length > 0) {
+    blockers.push(`Selected node declares unexpected commands: ${unexpectedCommands.join(", ")}`);
+  }
+  return { ready: blockers.length === 0, blockers, warnings };
+}
+
+export function validateEffectiveToolNames(
+  toolNames: string[],
+  expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift"> = "active",
+): WindowsNodeReadiness {
+  const unique = [...new Set(toolNames)].sort();
+  const expected = expectedState === "active" ? [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST].sort() : [];
+  const filesystemCheck = validateNoGatewayNativeFilesystemTools(unique);
+  const blockers = [...filesystemCheck.blockers];
+  if (!isDeepStrictEqual(unique, expected)) {
+    blockers.push(
+      `Effective Gateway tools must be ${
+        expectedState === "active"
+          ? `exactly ${expected.map((tool) => `"${tool}"`).join(", ")}`
+          : "empty while readiness is locked"
+      }; observed: ${unique.join(", ") || "none"}`,
+    );
+  }
+  return { ready: blockers.length === 0, blockers, warnings: [] };
+}
+
+function findGatewayNativeFilesystemTools(toolNames: readonly unknown[]): string[] {
+  const forbidden = new Set<string>(WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS);
+  return [
+    ...new Set(
+      toolNames
+        .filter((toolName): toolName is string => typeof toolName === "string")
+        .map((toolName) => toolName.trim())
+        .filter((toolName) => forbidden.has(toolName)),
+    ),
+  ].sort();
+}
+
+export function validateNoGatewayNativeFilesystemTools(
+  toolNames: readonly string[],
+): WindowsNodeReadiness {
+  const forbidden = findGatewayNativeFilesystemTools(toolNames);
+  return {
+    ready: forbidden.length === 0,
+    blockers:
+      forbidden.length === 0
+        ? []
+        : [
+            `Gateway-native filesystem tools are forbidden while MXC is enabled: ${forbidden.join(", ")}`,
+          ],
+    warnings: [],
+  };
+}
+
+export function classifyMissingEffectiveToolSession(
+  agentId: string,
+  expectedState: Exclude<WindowsNodeMxcGatewayPolicyState, "drift">,
+): WindowsNodeReadiness {
+  if (expectedState === "locked") {
+    return {
+      ready: true,
+      blockers: [],
+      warnings: [
+        `Agent "${agentId}" has no persisted session; the locked config applies before its first session is created`,
+      ],
+    };
+  }
+  return {
+    ready: true,
+    blockers: [],
+    warnings: [
+      `Agent "${agentId}" has no persisted session; the exact active config applies before its first session is created`,
+    ],
+  };
+}
+
+export function extractEffectiveToolNames(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("tools.effective returned a non-object payload");
+  }
+  const groups = (payload as Record<string, unknown>).groups;
+  if (!Array.isArray(groups)) {
+    throw new Error("tools.effective did not return a groups inventory");
+  }
+
+  const names = new Set<string>();
+  for (const group of groups) {
+    if (!group || typeof group !== "object" || Array.isArray(group)) {
+      throw new Error("tools.effective returned a malformed group");
+    }
+    const tools = (group as Record<string, unknown>).tools;
+    if (!Array.isArray(tools)) {
+      throw new Error("tools.effective returned a group without a tools inventory");
+    }
+    for (const tool of tools) {
+      if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+        throw new Error("tools.effective returned a malformed tool entry");
+      }
+      const id = (tool as Record<string, unknown>).id;
+      if (typeof id !== "string" || !id.trim()) {
+        throw new Error("tools.effective returned a tool without a stable id");
+      }
+      names.add(id.trim());
+    }
+  }
+  return [...names];
+}
+
+export async function listAgentSessionKeys(
+  gateway: { request(method: string, params?: unknown): Promise<unknown> },
+  agentIds: string[],
+): Promise<Map<string, string>> {
+  const payload = await gateway.request("sessions.list", { limit: 500 });
+  const sessions =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>).sessions
+      : null;
+  if (!Array.isArray(sessions)) {
+    throw new Error("sessions.list did not return a sessions inventory");
+  }
+
+  const wanted = new Set(agentIds);
+  const result = new Map<string, string>();
+  let globalSessionKey = "";
+  for (const value of sessions) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const session = value as Record<string, unknown>;
+    const key =
+      typeof session.key === "string"
+        ? session.key.trim()
+        : typeof session.sessionKey === "string"
+          ? session.sessionKey.trim()
+          : "";
+    if (!key) continue;
+    if (key === "global") globalSessionKey = key;
+    const keyAgentId = /^agent:([^:]+):/i.exec(key)?.[1];
+    const agentId =
+      typeof session.agentId === "string" && session.agentId.trim()
+        ? session.agentId.trim()
+        : keyAgentId || (key === "global" ? "main" : "");
+    if (wanted.has(agentId) && !result.has(agentId)) result.set(agentId, key);
+  }
+  // Pinned OpenClaw explicitly permits an operator tools.effective request to override
+  // the agent on the trusted global session, so one persisted global session can attest
+  // configured agents that have not yet created their own transcript.
+  if (globalSessionKey) {
+    for (const agentId of agentIds) {
+      if (!result.has(agentId)) result.set(agentId, globalSessionKey);
+    }
+  }
+  return result;
+}
+
+export function classifyMxcProbe(
+  exitCode: number | null,
+  stdout: string,
+  stderr: string,
+  launchError?: string,
+): MxcProbeResult {
+  if (launchError) return probeError(`wxc-exec --probe could not be launched: ${launchError}`);
+  if (!stdout.trim()) {
+    return probeError(
+      `wxc-exec --probe ${exitCode === 0 ? "returned no output" : `exited ${exitCode}`}${
+        stderr.trim() ? `: ${stderr.trim()}` : ""
+      }`,
+    );
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stdout) as Record<string, unknown>;
+  } catch {
+    return probeError("wxc-exec --probe returned unparseable output");
+  }
+  const warnings = Array.isArray(parsed.warnings)
+    ? parsed.warnings.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const nestedProbes =
+    parsed.probes && typeof parsed.probes === "object" && !Array.isArray(parsed.probes)
+      ? (parsed.probes as Record<string, unknown>)
+      : {};
+  const probes: MxcBackendProbeFacts = {
+    baseContainerApiPresent: optionalBoolean(
+      nestedProbes.baseContainerApiPresent ?? parsed.baseContainerApiPresent,
+    ),
+    bfscfgPresent: optionalBoolean(nestedProbes.bfscfgPresent ?? parsed.bfscfgPresent),
+    bfsCompiledIn: optionalBoolean(nestedProbes.bfsCompiledIn ?? parsed.bfsCompiledIn),
+  };
+  if (typeof parsed.error === "string" || parsed.supported === false) {
+    return {
+      outcome: "unsupported",
+      tier: null,
+      needsDaclAugmentation: false,
+      degraded: false,
+      warnings,
+      probes,
+      reason:
+        typeof parsed.error === "string"
+          ? parsed.error
+          : "No usable MXC isolation tier is available",
+    };
+  }
+  if (exitCode !== 0) return probeError(`wxc-exec --probe exited ${exitCode}`);
+  const tier = typeof parsed.tier === "string" ? parsed.tier.trim() : "";
+  if (!tier) return probeError("wxc-exec --probe did not report an isolation tier");
+  const normalizedTier = tier.toLowerCase();
+  if (![...MXC_EXACT_FILESYSTEM_ISOLATION_TIERS, "appcontainer-dacl"].includes(normalizedTier)) {
+    return probeError(`wxc-exec --probe reported an unrecognized isolation tier: ${tier}`);
+  }
+  const needsDaclAugmentation = parsed.needsDaclAugmentation === true;
+  const degraded =
+    needsDaclAugmentation || !MXC_EXACT_FILESYSTEM_ISOLATION_TIERS.has(normalizedTier);
+  if (degraded) {
+    return {
+      outcome: "unsupported",
+      tier,
+      needsDaclAugmentation,
+      degraded: true,
+      warnings,
+      probes,
+      reason:
+        `MXC isolation tier ${tier} cannot enforce the configured filesystem roots as a hard ` +
+        "capability boundary; base-container or appcontainer-bfs is required",
+    };
+  }
+  if (normalizedTier === "base-container" && probes.baseContainerApiPresent === false) {
+    return probeError(
+      "wxc-exec --probe reported base-container while the Base Container API was unavailable",
+    );
+  }
+  if (
+    normalizedTier === "appcontainer-bfs" &&
+    (probes.bfsCompiledIn === false || probes.bfscfgPresent === false)
+  ) {
+    return probeError(
+      "wxc-exec --probe reported appcontainer-bfs without proving compiled BFS support and bfscfg.exe",
+    );
+  }
+  return {
+    outcome: "supported",
+    tier,
+    needsDaclAugmentation,
+    degraded: false,
+    warnings,
+    probes,
+    reason: null,
+  };
+}
+
+export function describeMxcExactBackendEligibility(
+  probe: MxcProbeResult,
+): MxcExactBackendEligibility {
+  if (probe.outcome === "supported") {
+    return {
+      eligible: true,
+      summary: null,
+      blockers: [],
+      remediation: [],
+    };
+  }
+
+  const blockers: string[] = [];
+  const remediation: string[] = [];
+
+  if (probe.outcome === "error") {
+    blockers.push(probe.reason ?? "The MXC exact-containment probe failed");
+    remediation.push(
+      "Repair the pinned, signed MXC runtime and retry. MicroClaw will not start the Windows node until the probe succeeds.",
+    );
+  } else {
+    if (probe.probes.baseContainerApiPresent === false) {
+      blockers.push(
+        "The Base Container API is unavailable on this Windows installation, so MXC cannot create a base-container sandbox.",
+      );
+      remediation.push(
+        "Use a supported Windows build that exposes processmodel.dll and Experimental_CreateProcessInSandbox. MicroClaw cannot safely install or emulate this operating-system API.",
+      );
+    }
+    if (probe.probes.bfsCompiledIn === false) {
+      blockers.push(
+        "The pinned official MXC 0.7.0 production runtime was built without the appcontainer-bfs backend.",
+      );
+      remediation.push(
+        "Do not copy bfscfg.exe onto the host: it cannot enable BFS in this runtime. Use only a future reviewed and signed MXC release that enables an exact backend on a documented supported Windows build.",
+      );
+    } else if (probe.probes.bfsCompiledIn === true && probe.probes.bfscfgPresent === false) {
+      blockers.push(
+        "The MXC runtime supports appcontainer-bfs, but the required bfscfg.exe host component is unavailable.",
+      );
+      remediation.push(
+        "Provision BFS only through a reviewed vendor installer on a documented supported Windows build; MicroClaw will not copy or execute an unverified host component.",
+      );
+    }
+    if (blockers.length === 0) {
+      blockers.push(
+        probe.reason ??
+          "MXC did not prove a base-container or appcontainer-bfs exact-containment backend",
+      );
+      remediation.push(
+        "Install a reviewed exact-containment backend supported by this Windows build, then retry. AppContainer + DACL remains intentionally unsupported.",
+      );
+    }
+  }
+
+  return {
+    eligible: false,
+    summary: blockers.join(" "),
+    blockers,
+    remediation,
+  };
+}
+
+export function getMxcTierWarning(probe: MxcProbeResult): string | null {
+  if (!probe.degraded) return null;
+  return `Rejected degraded MXC containment: ${probe.tier ?? "unknown tier"}${
+    probe.needsDaclAugmentation ? " requires host DACL augmentation" : ""
+  }. This mode cannot enforce the configured folder policy exactly.`;
+}
+
+export function classifyMxcSmoke(value: unknown, expectedMarker: string): MxcSmokeResult {
+  const record =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const payload =
+    record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+      ? (record.payload as Record<string, unknown>)
+      : record;
+  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
+  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
+  const error =
+    typeof record.error === "string"
+      ? record.error
+      : typeof payload.error === "string"
+        ? payload.error
+        : "";
+  const combined = `${stderr}\n${error}`.trim();
+  const exitCode = typeof payload.exitCode === "number" ? payload.exitCode : null;
+
+  if (payload.timedOut === true)
+    return { outcome: "timed-out", reason: "Contained smoke timed out" };
+  if (/approval|allowlist|user denied|exec-approvals/i.test(combined)) {
+    return { outcome: "approval-required", reason: combined || "Local approval is required" };
+  }
+  if (/sandbox.*unavailable|host fallback.*blocked|mxc.*unavailable/i.test(combined)) {
+    return { outcome: "sandbox-unavailable", reason: combined };
+  }
+  if (/0x?c0000142|dll initialization failed|access is denied|access denied/i.test(combined)) {
+    return { outcome: "child-launch-failed", reason: combined };
+  }
+  if (exitCode === 0 && stdout.includes(expectedMarker)) {
+    return { outcome: "passed", reason: "Contained external child process completed" };
+  }
+  return {
+    outcome: "failed",
+    reason: combined || `Contained smoke exited ${exitCode ?? "without a result"}`,
+  };
+}
+
+export function canonicalizeApprovedCwd(
+  cwd: string,
+  approvedFolders: WindowsNodeMxcFolder[],
+  realpath: (candidate: string) => string,
+  sensitiveRoots: string[] = [],
+): CanonicalCwdResult {
+  if (!path.win32.isAbsolute(cwd)) {
+    return {
+      allowed: false,
+      canonicalPath: null,
+      access: null,
+      reason: "cwd must be an absolute Windows path",
+    };
+  }
+
+  let canonicalCwd: string;
+  try {
+    canonicalCwd = normalizeWindowsPath(realpath(path.win32.normalize(cwd)));
+  } catch (error) {
+    return {
+      allowed: false,
+      canonicalPath: null,
+      access: null,
+      reason: `cwd cannot be resolved without following reparse points: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  for (const sensitiveRoot of sensitiveRoots) {
+    let canonicalSensitive: string;
+    try {
+      canonicalSensitive = normalizeWindowsPath(realpath(path.win32.normalize(sensitiveRoot)));
+    } catch {
+      canonicalSensitive = normalizeWindowsPath(sensitiveRoot);
+    }
+    if (isWithinWindowsRoot(canonicalCwd, canonicalSensitive)) {
+      return {
+        allowed: false,
+        canonicalPath: canonicalCwd,
+        access: null,
+        reason: "cwd resolves into a sensitive denied root",
+      };
+    }
+  }
+
+  const matches: Array<{ root: string; access: SandboxFolderAccess }> = [];
+  for (const folder of approvedFolders) {
+    try {
+      const root = normalizeWindowsPath(realpath(path.win32.normalize(folder.path)));
+      if (isWithinWindowsRoot(canonicalCwd, root)) matches.push({ root, access: folder.access });
+    } catch {
+      continue;
+    }
+  }
+  matches.sort((left, right) => right.root.length - left.root.length);
+  const match = matches[0];
+  if (!match) {
+    return {
+      allowed: false,
+      canonicalPath: canonicalCwd,
+      access: null,
+      reason: "cwd is outside every globally approved folder",
+    };
+  }
+  return {
+    allowed: true,
+    canonicalPath: canonicalCwd,
+    access: match.access,
+    reason: null,
+  };
+}
+
+export function assertWindowsNodeMxcFolderPolicyMutable(
+  desiredEnabled: boolean,
+  securityTransitionInProgress = false,
+  folderMutationInProgress = false,
+): void {
+  if (desiredEnabled) {
+    throw new Error("Disable Windows Node + MXC mode before changing its approved folder policy");
+  }
+  if (securityTransitionInProgress) {
+    throw new Error(
+      "Wait for the Windows Node + MXC security-mode transition before changing its approved folder policy",
+    );
+  }
+  if (folderMutationInProgress) {
+    throw new Error("Another approved folder policy change is already in progress");
+  }
+}
+
+export function validateWindowsNodeMxcFolderPath(
+  candidate: string,
+  realpath: (candidate: string) => string,
+  isReparsePoint: (candidate: string) => boolean,
+  sensitiveRoots: string[],
+): WindowsNodeMxcFolderPathResult {
+  const normalizedInput = normalizeWindowsPathPreservingCase(candidate);
+  if (
+    !/^[a-z]:\\/i.test(normalizedInput) ||
+    normalizedInput.startsWith("\\\\") ||
+    normalizedInput.startsWith("\\\\?\\") ||
+    normalizedInput.startsWith("\\??\\") ||
+    normalizedInput.toLowerCase().startsWith("\\device\\")
+  ) {
+    return { ok: false, canonicalPath: null, reason: "path-nonlocal" };
+  }
+
+  const parsed = path.win32.parse(normalizedInput);
+  let current = parsed.root;
+  try {
+    for (const component of normalizedInput.slice(parsed.root.length).split("\\").filter(Boolean)) {
+      current = path.win32.join(current, component);
+      if (isReparsePoint(current)) {
+        return { ok: false, canonicalPath: null, reason: "path-reparse-point" };
+      }
+    }
+  } catch {
+    return { ok: false, canonicalPath: null, reason: "path-not-found" };
+  }
+
+  let canonicalPath: string;
+  try {
+    canonicalPath = normalizeWindowsPathPreservingCase(realpath(normalizedInput));
+  } catch {
+    return { ok: false, canonicalPath: null, reason: "path-not-found" };
+  }
+  if (normalizeWindowsPath(canonicalPath) !== normalizeWindowsPath(normalizedInput)) {
+    return { ok: false, canonicalPath: null, reason: "path-reparse-point" };
+  }
+
+  const canonicalKey = normalizeWindowsPath(canonicalPath);
+  for (const sensitiveRoot of sensitiveRoots) {
+    let canonicalSensitive: string;
+    try {
+      canonicalSensitive = normalizeWindowsPath(realpath(path.win32.normalize(sensitiveRoot)));
+    } catch {
+      canonicalSensitive = normalizeWindowsPath(sensitiveRoot);
+    }
+    if (
+      isWithinWindowsRoot(canonicalKey, canonicalSensitive) ||
+      isWithinWindowsRoot(canonicalSensitive, canonicalKey)
+    ) {
+      return { ok: false, canonicalPath, reason: "path-sensitive" };
+    }
+  }
+
+  return { ok: true, canonicalPath };
+}
+
+export interface WindowsNodeMxcCompleteFolderPolicyResult {
+  ok: boolean;
+  reason?: WindowsNodeMxcFolderPolicyReason;
+  path?: string;
+  dirs: WindowsNodeMxcFolderLists;
+}
+
+export function normalizeWindowsNodeMxcFolderPolicy(
+  draft: WindowsNodeMxcFolderLists,
+  validate: (candidate: string) => WindowsNodeMxcFolderPathResult,
+): WindowsNodeMxcCompleteFolderPolicyResult {
+  const requested = [
+    ...draft.ro.map((folderPath) => ({ path: folderPath, access: "ro" as const })),
+    ...draft.rw.map((folderPath) => ({ path: folderPath, access: "rw" as const })),
+  ];
+  const unique = new Map<string, { path: string; access: SandboxFolderAccess }>();
+  for (const entry of requested) {
+    const validation = validate(entry.path);
+    if (!validation.ok || !validation.canonicalPath) {
+      return {
+        ok: false,
+        reason: validation.reason ?? "path-not-found",
+        path: entry.path,
+        dirs: { rw: [], ro: [] },
+      };
+    }
+    const key = normalizeWindowsPath(validation.canonicalPath);
+    const existing = unique.get(key);
+    if (existing && existing.access !== entry.access) {
+      return {
+        ok: false,
+        reason: "duplicate",
+        path: validation.canonicalPath,
+        dirs: { rw: [], ro: [] },
+      };
+    }
+    unique.set(key, { path: validation.canonicalPath, access: entry.access });
+  }
+
+  const ordered = [...unique.values()].sort(
+    (left, right) =>
+      left.path.length - right.path.length ||
+      compareWindowsPaths(left.path, right.path) ||
+      (left.access === right.access ? 0 : left.access === "rw" ? -1 : 1),
+  );
+  const accepted: Array<{ path: string; access: SandboxFolderAccess }> = [];
+  for (const entry of ordered) {
+    const parent = accepted
+      .filter((candidate) => {
+        const childKey = normalizeWindowsPath(entry.path);
+        const parentKey = normalizeWindowsPath(candidate.path);
+        return childKey !== parentKey && isWithinWindowsRoot(childKey, parentKey);
+      })
+      .sort((left, right) => right.path.length - left.path.length)[0];
+    if (parent?.access === "rw" || parent?.access === entry.access) continue;
+    accepted.push(entry);
+  }
+  return {
+    ok: true,
+    dirs: {
+      rw: accepted
+        .filter((entry) => entry.access === "rw")
+        .map((entry) => entry.path)
+        .sort(compareWindowsPaths),
+      ro: accepted
+        .filter((entry) => entry.access === "ro")
+        .map((entry) => entry.path)
+        .sort(compareWindowsPaths),
+    },
+  };
+}
+
+export function planWindowsNodeMxcFolderUpsert(
+  current: WindowsNodeMxcFolderLists,
+  canonicalPath: string,
+  access: SandboxFolderAccess,
+): WindowsNodeMxcFolderPlan {
+  const rw = dedupeWindowsPaths(current.rw);
+  const ro = dedupeWindowsPaths(current.ro);
+  const target = access === "rw" ? rw : ro;
+  const opposite = access === "rw" ? ro : rw;
+  const normalizedCandidate = normalizeWindowsPathPreservingCase(canonicalPath);
+  const candidateKey = normalizeWindowsPath(normalizedCandidate);
+  const equal = (value: string) => normalizeWindowsPath(value) === candidateKey;
+  const properParent = (value: string) => {
+    const key = normalizeWindowsPath(value);
+    return key !== candidateKey && isWithinWindowsRoot(candidateKey, key);
+  };
+
+  if (target.some(equal)) {
+    return {
+      ok: false,
+      reason: "duplicate",
+      removedChildren: [],
+      dirs: { rw, ro },
+    };
+  }
+
+  const sameAccessParent = target.find(properParent);
+  if (sameAccessParent) {
+    if (opposite.some(equal)) {
+      return {
+        ok: true,
+        inheritsFromParent: true,
+        removedChildren: [],
+        dirs:
+          access === "rw"
+            ? { rw, ro: ro.filter((value) => !equal(value)) }
+            : { rw: rw.filter((value) => !equal(value)), ro },
+      };
+    }
+
+    return {
+      ok: false,
+      reason: "parent-covers",
+      parentDir: sameAccessParent,
+      parentAccess: access,
+      removedChildren: [],
+      dirs: { rw, ro },
+    };
+  }
+
+  if (access === "ro") {
+    const rwParent = rw.find(properParent);
+    if (rwParent) {
+      return {
+        ok: false,
+        reason: "parent-rw-covers",
+        parentDir: rwParent,
+        parentAccess: "rw",
+        removedChildren: [],
+        dirs: { rw, ro },
+      };
+    }
+  }
+
+  const nextRw = rw.filter((value) => !equal(value));
+  const nextRo = ro.filter((value) => !equal(value));
+  const isChild = (value: string) => {
+    const key = normalizeWindowsPath(value);
+    return key !== candidateKey && isWithinWindowsRoot(key, candidateKey);
+  };
+  const removedChildren: string[] = [];
+
+  if (access === "rw") {
+    removedChildren.push(...nextRw.filter(isChild), ...nextRo.filter(isChild));
+    nextRw.splice(
+      0,
+      nextRw.length,
+      ...nextRw.filter((value) => !isChild(value)),
+      normalizedCandidate,
+    );
+    nextRo.splice(0, nextRo.length, ...nextRo.filter((value) => !isChild(value)));
+  } else {
+    removedChildren.push(...nextRo.filter(isChild));
+    nextRo.splice(
+      0,
+      nextRo.length,
+      ...nextRo.filter((value) => !isChild(value)),
+      normalizedCandidate,
+    );
+  }
+
+  return {
+    ok: true,
+    removedChildren,
+    dirs: {
+      rw: nextRw.sort(compareWindowsPaths),
+      ro: nextRo.sort(compareWindowsPaths),
+    },
+  };
+}
+
+export function isWindowsNodeMxcFolderConfigured(
+  current: WindowsNodeMxcFolderLists,
+  candidate: string,
+): boolean {
+  const key = normalizeWindowsPath(candidate);
+  return [...current.rw, ...current.ro].some((value) => normalizeWindowsPath(value) === key);
+}
+
+export function listConfiguredSandboxFolders(
+  settings: WindowsNodeMxcSettings,
+  userProfile: string,
+): WindowsNodeMxcFolder[] {
+  const folders: WindowsNodeMxcFolder[] = [];
+  const add = (folderPath: string, value: number | null | undefined) => {
+    if (value !== 0 && value !== 1) return;
+    folders.push({ path: folderPath, access: value === 1 ? "rw" : "ro" });
+  };
+  add(path.win32.join(userProfile, "Documents"), settings.SandboxDocumentsAccess);
+  add(path.win32.join(userProfile, "Downloads"), settings.SandboxDownloadsAccess);
+  add(path.win32.join(userProfile, "Desktop"), settings.SandboxDesktopAccess);
+  for (const custom of settings.SandboxCustomFolders ?? []) {
+    if (typeof custom.Path !== "string" || !custom.Path.trim()) continue;
+    add(custom.Path.trim(), custom.Access);
+  }
+  return folders;
+}
+
+function probeError(reason: string): MxcProbeResult {
+  return {
+    outcome: "error",
+    tier: null,
+    needsDaclAugmentation: false,
+    degraded: false,
+    warnings: [],
+    probes: {
+      baseContainerApiPresent: null,
+      bfscfgPresent: null,
+      bfsCompiledIn: null,
+    },
+    reason,
+  };
+}
+
+function optionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeWindowsPath(value: string): string {
+  return normalizeWindowsPathPreservingCase(value).toLowerCase();
+}
+
+function normalizeWindowsPathPreservingCase(value: string): string {
+  const normalized = path.win32.normalize(value);
+  const parsed = path.win32.parse(normalized);
+  const withoutTrailing =
+    normalized.length > parsed.root.length ? normalized.replace(/[\\]+$/, "") : normalized;
+  return withoutTrailing;
+}
+
+function isWithinWindowsRoot(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}\\`);
+}
+
+function dedupeWindowsPaths(values: string[]): string[] {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const key = normalizeWindowsPath(value);
+    if (!unique.has(key)) unique.set(key, normalizeWindowsPathPreservingCase(value));
+  }
+  return [...unique.values()].sort(compareWindowsPaths);
+}
+
+function compareWindowsPaths(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
+}
+
+function isLoopbackAddress(value: string): boolean {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  return (
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "::ffff:127.0.0.1" ||
+    normalized === "localhost" ||
+    normalized.startsWith("127.")
+  );
+}

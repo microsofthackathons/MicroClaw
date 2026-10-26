@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import {
   OPENCLAW_SANDBOX_IMAGE,
   REQUIRED_DOCKER_SANDBOX,
@@ -264,6 +268,230 @@ describe("Docker readiness", () => {
     expect(prependDockerExecutableToPath("docker.exe", "C:\\Windows\\System32")).toBe(
       "C:\\Windows\\System32",
     );
+  });
+
+  describe("mandatory Docker Main integration", () => {
+    const source = readFileSync(join(__dirname, "main.ts"), "utf8");
+    const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
+    function declaration(name: string): string {
+      const node = ast.statements.find(
+        (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+      );
+      if (!node) throw new Error(`Missing actual Main function: ${name}`);
+      return node.getText(ast);
+    }
+    const ready: DockerSandboxReadiness = {
+      checkedAt: "2026-10-26T00:00:00Z",
+      ready: true,
+      reasons: [],
+      windows: { status: "ready", reason: "ready" },
+      wslCommand: { status: "ready", reason: "ready" },
+      wsl2: { status: "ready", reason: "ready" },
+      dockerCli: { status: "ready", reason: "ready" },
+      dockerDaemon: { status: "ready", reason: "ready" },
+      linuxContainers: { status: "ready", reason: "ready" },
+      image: { status: "ready", reason: "ready" },
+    };
+    const guard = ts.transpileModule(declaration("assertManagedDockerGatewayReady"), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const preload = readFileSync(join(__dirname, "preload.ts"), "utf8");
+    const preloadAst = ts.createSourceFile("preload.ts", preload, ts.ScriptTarget.Latest, true);
+    function preloadProperty(name: string): string {
+      const matches: ts.PropertyAssignment[] = [];
+      function visit(node: ts.Node): void {
+        if (ts.isPropertyAssignment(node) && node.name.getText(preloadAst) === name)
+          matches.push(node);
+        ts.forEachChild(node, visit);
+      }
+      visit(preloadAst);
+      const [result] = matches;
+      if (!result) throw new Error(`Missing actual preload property: ${name}`);
+      return result.initializer.getText(preloadAst);
+    }
+
+    it("keeps the real Docker build-progress subscription under the Docker bridge", () => {
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const compiled = ts.transpileModule(
+        `const bridge = ${preloadProperty("dockerSandbox")}; bridge`,
+        {
+          compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        },
+      ).outputText;
+      const bridge: { onBuildProgress(callback: (line: string) => void): () => void } =
+        runInNewContext(compiled, { ipcRenderer: { on, removeListener } });
+      expect(Object.keys(bridge).sort()).toEqual([
+        "addBinding",
+        "buildImage",
+        "check",
+        "getBindings",
+        "getStatus",
+        "onBuildProgress",
+        "onStatus",
+        "removeBinding",
+        "retryBindings",
+      ]);
+      const callback = vi.fn();
+      const unsubscribe = bridge.onBuildProgress(callback);
+      const [channel, handler] = on.mock.calls[0];
+      expect(channel).toBe("docker-sandbox:build-progress");
+      handler(undefined, "building");
+      expect(callback).toHaveBeenCalledWith("building");
+      unsubscribe();
+      expect(removeListener).toHaveBeenCalledWith(channel, handler);
+    });
+
+    it("rejects the real native off API before IPC transport or side effects", async () => {
+      const helper = preloadAst.statements.find(
+        (node) =>
+          ts.isFunctionDeclaration(node) && node.name?.text === "rejectExcludedNativeBackend",
+      );
+      if (!helper) throw new Error("Missing actual native rejection helper");
+      const compiled = ts.transpileModule(
+        `${helper.getText(preloadAst)}\nconst bridge = ${preloadProperty("windowsNodeMxc")}; bridge`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+      ).outputText;
+      const invoke = vi.fn();
+      const bridge: { setEnabled(params: { requestedMode: "off" }): Promise<never> } =
+        runInNewContext(compiled, { ipcRenderer: { invoke } });
+      await expect(bridge.setEnabled({ requestedMode: "off" })).rejects.toThrow("mandatory Docker");
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { child: null, expected: false },
+      { child: { exitCode: 0, signalCode: null, killed: false }, expected: false },
+      { child: { exitCode: null, signalCode: "SIGTERM", killed: false }, expected: false },
+      { child: { exitCode: null, signalCode: null, killed: true }, expected: false },
+      { child: { exitCode: null, signalCode: null, killed: false }, expected: true },
+    ])("uses actual child liveness rather than a retained process reference %j", (state) => {
+      const compiled = ts.transpileModule(declaration("isManagedGatewayProcessAlive"), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText;
+      const invoke: () => boolean = runInNewContext(`${compiled}; isManagedGatewayProcessAlive`, {
+        gatewayProcess: state.child,
+      });
+      expect(invoke()).toBe(state.expected);
+    });
+
+    it.each([
+      { owned: false, live: true, ready: true, changed: false, pending: false, valid: true },
+      { owned: true, live: false, ready: true, changed: false, pending: false, valid: true },
+      { owned: true, live: true, ready: false, changed: false, pending: false, valid: true },
+      { owned: true, live: true, ready: true, changed: true, pending: false, valid: true },
+      { owned: true, live: true, ready: true, changed: false, pending: true, valid: true },
+      { owned: true, live: true, ready: true, changed: false, pending: false, valid: false },
+    ])("refuses unsafe Main send state %j", async (state) => {
+      const invoke: () => Promise<void> = runInNewContext(
+        `${guard}; assertManagedDockerGatewayReady`,
+        {
+          gatewaySpawnedByUs: state.owned,
+          isManagedGatewayProcessAlive: () => state.live,
+          refreshDockerSandboxReadiness: async () => ({ ...ready, ready: state.ready }),
+          readConfig: () => (state.valid ? applyRequiredDockerSandboxConfig({}).config : {}),
+          prepareRequiredDockerSandboxConfig: async () => ({ changed: state.changed }),
+          readPendingDockerBindings: () => (state.pending ? { main: {} } : {}),
+          canExecuteWithDockerSandbox,
+          dockerSandboxBlockedMessage: () => "Docker sandbox is not ready",
+        },
+      );
+      await expect(invoke()).rejects.toThrow();
+    });
+
+    it("allows the actual send guard only for a live owned ready Docker Gateway", async () => {
+      const refresh = vi.fn(async () => ready);
+      const invoke: () => Promise<void> = runInNewContext(
+        `${guard}; assertManagedDockerGatewayReady`,
+        {
+          gatewaySpawnedByUs: true,
+          isManagedGatewayProcessAlive: () => true,
+          refreshDockerSandboxReadiness: refresh,
+          readConfig: () => applyRequiredDockerSandboxConfig({}).config,
+          prepareRequiredDockerSandboxConfig: async () => ({ changed: false }),
+          readPendingDockerBindings: () => ({}),
+          canExecuteWithDockerSandbox,
+          dockerSandboxBlockedMessage: () => "Docker sandbox is not ready",
+        },
+      );
+      await expect(invoke()).resolves.toBeUndefined();
+      expect(refresh).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { owned: false, live: true, ready: true, pending: false, expected: false },
+      { owned: true, live: false, ready: true, pending: false, expected: false },
+      { owned: true, live: true, ready: false, pending: false, expected: false },
+      { owned: true, live: true, ready: true, pending: true, expected: false },
+      { owned: true, live: true, ready: true, pending: false, expected: true },
+    ])("binds actual application ingress to Docker ownership/readiness %j", (state) => {
+      const compiled = ts.transpileModule(declaration("isApplicationIngressReady"), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText;
+      const invoke: () => boolean = runInNewContext(`${compiled}; isApplicationIngressReady`, {
+        gatewaySpawnedByUs: state.owned,
+        isManagedGatewayProcessAlive: () => state.live,
+        dockerSandboxReadiness: { ...ready, ready: state.ready },
+        readPendingDockerBindings: () => (state.pending ? { main: {} } : {}),
+      });
+      expect(invoke()).toBe(state.expected);
+    });
+
+    it("explicitly refuses every native MXC and remote approval compatibility IPC", () => {
+      const registration = ast.statements.find(
+        (node): node is ts.FunctionDeclaration =>
+          ts.isFunctionDeclaration(node) && node.name?.text === "registerIpcHandlers",
+      );
+      const loop = registration?.body?.statements.find(
+        (node) =>
+          ts.isForOfStatement(node) &&
+          node.expression.getText(ast).includes('"windows-node-mxc:get-status"'),
+      );
+      if (!loop) throw new Error("Missing actual native compatibility refusal loop");
+      const handlers = new Map<string, () => never>();
+      const compiled = ts.transpileModule(loop.getText(ast), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText;
+      runInNewContext(compiled, {
+        ipcMain: {
+          handle: (channel: string, handler: () => never) => handlers.set(channel, handler),
+        },
+      });
+      expect(handlers.size).toBe(13);
+      for (const handler of handlers.values()) expect(handler).toThrow("mandatory Docker backend");
+    });
+
+    it("refuses external ownership before configuration, workspace, migration or skill mutation", () => {
+      const startup = declaration("startGatewayInner");
+      const refusal = startup.indexOf("failForExternalGateway(configuredPort)");
+      expect(refusal).toBeGreaterThan(startup.indexOf("await checkExistingGateway"));
+      for (const mutation of [
+        "persistRequiredDockerSandboxConfig(",
+        "recreateDockerSandboxes(",
+        "seedWorkspaceFiles(",
+        "ensurePluginsAllow(",
+        "reconcileConfiguredAgentOwnedSkills(",
+      ]) {
+        expect(startup.indexOf(mutation), mutation).toBeGreaterThan(refusal);
+      }
+    });
+
+    it("retains Docker CLI discovery and upstream generic preloads without native fallback", () => {
+      const startup = declaration("startGatewayInner");
+      expect(startup).toContain("resolveDockerExecutable()");
+      expect(startup).toContain("PATH: prependDockerExecutableToPath(");
+      for (const preload of ["stateOwnerCompatPath", "fsSafeCompatPath", "localModelCompatPath"]) {
+        expect(startup).toContain(`pathToFileURL(${preload}).href`);
+      }
+      expect(startup).not.toMatch(
+        /new (?:ToolSandbox|BundledWindowsNodeHost)|prepareWindowsNodeMxcContainment|approvalCompatPath/,
+      );
+      expect(source).toContain("const legacyAppContainerRuntimeEnabled = false");
+      expect(source).toMatch(
+        /supportsExecApprovals: false,\s*beforeChatSend: assertManagedDockerGatewayReady/,
+      );
+      expect(source).not.toMatch(/new BundledWindowsNodeHost|runAutomaticWindowsNodeMxcReadiness/);
+    });
   });
 
   it("requires an installed WSL2 distribution", () => {

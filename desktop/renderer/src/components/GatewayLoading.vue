@@ -92,10 +92,13 @@
           {{ statusText }}
           <span v-if="!isFailed" class="loading-pct">{{ Math.floor(displayProgress) }}%</span>
         </div>
+        <div v-if="props.mxcDesired" class="loading-mxc-strength">
+          {{ mxcStrengthText }}
+        </div>
 
         <!-- Error detail (shown when gateway reports an error) -->
-        <div v-if="isFailed && props.errorMessage" class="loading-error-detail">
-          {{ props.errorMessage }}
+        <div v-if="isFailed && displayError" class="loading-error-detail">
+          {{ displayError }}
         </div>
 
         <!-- Retry button (timeout / failed) -->
@@ -126,7 +129,7 @@ import imgGeologist from "@/assets/Geologist.png";
 import imgLawyer from "@/assets/Lawyer.png";
 import imgPainter from "@/assets/Painter.png";
 import imgScientist from "@/assets/Scientist.png";
-import imgSinger from "@/assets/Singer.png";
+import imgCreativeMuse from "@/assets/CreativeMuse.png";
 
 const IDENTITY_IMAGES = [
   imgArchaeologist,
@@ -137,7 +140,7 @@ const IDENTITY_IMAGES = [
   imgLawyer,
   imgPainter,
   imgScientist,
-  imgSinger,
+  imgCreativeMuse,
 ];
 
 const CAROUSEL_KEYS = [
@@ -151,10 +154,46 @@ const props = defineProps<{
   connected: boolean;
   warming: boolean;
   errorMessage?: string;
+  mxcDesired?: boolean;
+  mxcPhase?: string;
+  mxcDetail?: string | null;
+  mxcRequestedMode?: "off" | "full" | "limited-dacl";
+  mxcEffectiveStrength?: "off" | "full" | "limited-dacl";
+  mxcEffectiveTier?: string | null;
 }>();
 defineEmits<{ retry: []; "open-settings": [] }>();
 
-const isFailed = computed(() => props.status === "timeout" || props.status === "failed");
+const isMxcFailure = computed(
+  () =>
+    props.mxcDesired === true &&
+    ["locked", "failed"].includes(props.mxcPhase ?? "") &&
+    Boolean(props.mxcDetail),
+);
+const isMxcTransition = computed(
+  () =>
+    props.mxcDesired === true &&
+    Boolean(props.mxcPhase) &&
+    !["active", "idle", "locked", "failed"].includes(props.mxcPhase ?? ""),
+);
+const isFailed = computed(
+  () =>
+    isMxcFailure.value ||
+    (!isMxcTransition.value && (props.status === "timeout" || props.status === "failed")),
+);
+const displayError = computed(() => props.mxcDetail || props.errorMessage);
+const mxcStrengthText = computed(() => {
+  const mode =
+    props.mxcRequestedMode === "limited-dacl"
+      ? t("settings.windowsNodeMxcModeLimited")
+      : t("settings.windowsNodeMxcModeFull");
+  const state =
+    props.mxcPhase === "active"
+      ? t("settings.windowsNodeMxcStatusActive")
+      : isMxcFailure.value
+        ? t("settings.windowsNodeMxcActionRequired")
+        : t("settings.windowsNodeMxcStarting");
+  return t("settings.windowsNodeMxcCompactStatus", { mode, state });
+});
 
 // ── Window controls ──
 
@@ -176,6 +215,21 @@ function closeWindow() {
 // ── Progress (preserved from original) ──
 
 const targetProgress = computed(() => {
+  if (isMxcTransition.value) {
+    const progress: Record<string, number> = {
+      locking: 20,
+      validating: 35,
+      persisting: 50,
+      "starting-locked": 72,
+      "smoking-locked": 80,
+      "starting-active": 86,
+      "smoking-active": 92,
+      "promoting-active": 92,
+      "verifying-active": 97,
+      "starting-standard": 88,
+    };
+    return progress[props.mxcPhase ?? ""] ?? 65;
+  }
   if (props.warming) return 98;
   if (props.connected) return 100;
   if (isFailed.value) return displayProgress.value; // freeze
@@ -222,6 +276,10 @@ watch(
 );
 
 const statusText = computed(() => {
+  if (isMxcFailure.value) return t("gateway.mxcFailed");
+  if (isMxcTransition.value) {
+    return t(`settings.windowsNodeMxcLifecyclePhase.${props.mxcPhase}`);
+  }
   if (props.warming) return t("gateway.warming");
   if (props.connected) return t("gateway.ready");
   switch (props.status) {

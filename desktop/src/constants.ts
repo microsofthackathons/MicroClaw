@@ -49,8 +49,26 @@ export const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
  *  even though the gateway process is alive and making progress. */
 export const HEALTH_CHECK_BUSY_GRACE_MS = 240_000;
 
-/** Max time to wait for the gateway to become ready after spawn (ms). */
-export const GATEWAY_READY_TIMEOUT_MS = 120_000;
+/** Max time to wait for the gateway to become ready after spawn (ms).
+ *  The pinned compatibility preload can make a cold Windows start take more
+ *  than two minutes before the Gateway binds its health endpoint. */
+export const GATEWAY_READY_TIMEOUT_MS = 300_000;
+
+/** Total authenticated RPC readiness budget before the bundled Windows node may start. */
+export const MXC_GATEWAY_RPC_READY_TIMEOUT_MS = 180_000;
+
+/** Per-attempt budget for the representative authenticated config.get readiness RPC. */
+export const MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS = 120_000;
+
+/** Initial and maximum retry delays for authenticated Gateway readiness. */
+export const MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS = 500;
+export const MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS = 5_000;
+
+/** Max time to keep the locked policy while agent databases finish startup preparation. */
+export const MXC_AGENT_DATABASE_READY_TIMEOUT_MS = 180_000;
+
+/** Poll cadence for per-agent database admission readiness. */
+export const MXC_AGENT_DATABASE_READY_POLL_INTERVAL_MS = 250;
 
 /** Max time to wait for the gateway port to become free (ms). */
 export const PORT_WAIT_TIMEOUT_MS = 30_000;
@@ -58,8 +76,8 @@ export const PORT_WAIT_TIMEOUT_MS = 30_000;
 /** Max time to wait for a model provider connection test (ms). */
 export const MODEL_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
-/** Delay before the post-spawn restart that activates plugin channels (ms). */
-export const POST_SPAWN_RESTART_DELAY_MS = 5_000;
+/** Max wait for plugin channels before a compatibility restart (ms). */
+export const POST_SPAWN_CHANNEL_READY_TIMEOUT_MS = 5_000;
 
 /** Timeout for sandbox permission requests — file, shell, and app approval (ms).
  *  Shared by sandbox-preload.js (via env var) and main.ts (remote approval).
@@ -94,7 +112,7 @@ export const EXCHANGE_RATE_CACHE_TTL_MS = 12 * 60 * 60 * 1_000;
 export const USD_TO_CNY_FALLBACK_RATE = 7.2;
 
 /** Public manifest used by the P0 manual update checker. */
-export const UPDATE_MANIFEST_URL = "https://microclaw.microsoftol.com/releases/latest.json";
+export const UPDATE_MANIFEST_URL = "https://microclaw.microsoft.com/releases/latest.json";
 
 // ── WebSocket reconnect back-off ────────────────────────────────────────
 
@@ -109,6 +127,8 @@ export const WS_RECONNECT_MULTIPLIER = 1.7;
 
 /** Per-request timeout for gateway WS RPC calls (ms). */
 export const WS_REQUEST_TIMEOUT_MS = 30_000;
+
+export const MODEL_APPLY_SETTLE_TIMEOUT_MS = 30_000;
 
 /** Reserved throwaway session used to pre-warm the main agent. */
 export const AGENT_WARMUP_SESSION_KEY = "agent:main:__microclaw_warmup__";
