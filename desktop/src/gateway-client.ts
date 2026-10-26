@@ -587,7 +587,7 @@ export class GatewayClient {
     force?: boolean;
     timeoutMs?: number;
   }): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
-    return this.request("web.login.start", params);
+    return this.request("web.login.start", { ...params, channel: "openclaw-weixin" });
   }
 
   /** Wait for WeChat QR scan result (long-poll). */
@@ -601,7 +601,11 @@ export class GatewayClient {
     accountId?: string;
     activationReloadRequested?: boolean;
   }> {
-    return this.request("web.login.wait", params);
+    return this.request(
+      "web.login.wait",
+      { ...params, channel: "openclaw-weixin" },
+      (params.timeoutMs ?? WS_REQUEST_TIMEOUT_MS) + WS_REQUEST_TIMEOUT_MS,
+    );
   }
 
   // ── Internal ──

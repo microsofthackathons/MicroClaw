@@ -13,6 +13,101 @@ import {
 import { AGENT_WARMUP_SESSION_KEY } from "./constants";
 import { GatewaySessionObserver } from "./gateway-session-observer";
 
+describe("GatewayClient WeChat QR login", () => {
+  it.each([
+    undefined,
+    { accountId: "default", force: true, timeoutMs: 10_000 },
+    { accountId: "default", channel: "another-channel" },
+  ])("routes QR creation to WeChat instead of provider autodetection: %j", async (params) => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const result = { qrDataUrl: "test-qr", message: "Scan to log in", sessionKey: "qr-session" };
+    const request = vi.spyOn(client, "request").mockResolvedValue(result);
+
+    await expect(client.weixinLoginQrStart(params)).resolves.toEqual(result);
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("web.login.start", {
+      ...params,
+      channel: "openclaw-weixin",
+    });
+  });
+
+  it("routes QR completion to the same provider and preserves its session", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({ connected: true });
+
+    const params = {
+      accountId: "default",
+      sessionKey: "qr-session",
+      timeoutMs: 35_000,
+      channel: "another-channel",
+    };
+    await client.weixinLoginQrWait(params);
+
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "web.login.wait",
+      {
+        channel: "openclaw-weixin",
+        accountId: "default",
+        sessionKey: "qr-session",
+        timeoutMs: 35_000,
+      },
+      65_000,
+    );
+  });
+
+  it("does not expire the transport before the requested QR long poll finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const response = client.weixinLoginQrWait({ accountId: "default", timeoutMs: 35_000 });
+      const settled = vi.fn();
+      void response.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      const frame = JSON.parse(send.mock.calls[0][0]);
+      client["handleMessage"](
+        JSON.stringify({
+          type: "res",
+          id: frame.id,
+          ok: true,
+          payload: { connected: false, message: "Waiting for scan" },
+        }),
+      );
+      await expect(response).resolves.toEqual({
+        connected: false,
+        message: "Waiting for scan",
+      });
+      expect(send).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an unanswered QR long poll bounded without retrying it", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const response = client.weixinLoginQrWait({ accountId: "default", timeoutMs: 35_000 });
+      const rejected = expect(response).rejects.toThrow(
+        "request 'web.login.wait' timed out after 65000ms",
+      );
+
+      await vi.advanceTimersByTimeAsync(65_000);
+      await rejected;
+      expect(client["pending"].size).toBe(0);
+      expect(send).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("GatewayClient approval capability", () => {
   it("retains the negotiated version and advertised methods", async () => {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
