@@ -269,7 +269,6 @@ _STRINGS = {
             "config": "正在写入 MicroClaw 配置…",
             "compileCache": "正在预热启动缓存…",
             "searchProvider": "正在安装网络搜索插件…",
-            "sandbox": "正在配置 AppContainer 沙箱…",
             "verifyUpgrade": "正在验证 MicroClaw 更新…",
             "uninstaller": "正在安装卸载程序…",
             "shortcut": "正在创建桌面快捷方式…",
@@ -325,7 +324,6 @@ _STRINGS = {
             "config": "Writing MicroClaw configuration...",
             "compileCache": "Warming up V8 compile cache...",
             "searchProvider": "Installing web search provider...",
-            "sandbox": "Provisioning AppContainer sandbox...",
             "verifyUpgrade": "Validating MicroClaw update...",
             "uninstaller": "Installing uninstaller...",
             "shortcut": "Creating desktop shortcut...",
@@ -590,7 +588,6 @@ class WebInstallerBridge:
                 NETWORK_RETRIES,
             ),
             (84, steps["compileCache"], ws.warmup_compile_cache, LOCAL_RETRIES),
-            (85, steps["sandbox"], ws.provision_appcontainer, LOCAL_RETRIES),
             (95, steps["uninstaller"], ws.install_uninstaller_bundle, LOCAL_RETRIES),
             (97, steps["shortcut"], ws.create_desktop_shortcut, LOCAL_RETRIES),
         ]

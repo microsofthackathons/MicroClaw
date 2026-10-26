@@ -1,4 +1,4 @@
-﻿# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
+﻿# One-click build: desktop app + native MXC resources -> portable zip -> installer exe
 param(
     [ValidateSet('2026.9.3', '2026.10.3', '2026.10.5')]
     [string]$OpenClawVersion = '2026.10.5'
@@ -127,33 +127,6 @@ try {
 
 # -- Step 1: Build native security helpers --
 Write-Host "`n=== Step 1/7: Build security helpers ===" -ForegroundColor Cyan
-$acProject = "$root\appcontainer"
-if (-not (Test-Path "$acProject\AppContainerLauncher.csproj")) {
-    Write-Host "  ERROR: appcontainer project not found at $acProject" -ForegroundColor Red
-    exit 1
-}
-
-# Pipe to ForEach-Object loses the native exit code in $LASTEXITCODE detection
-# under StrictMode, so temporarily relax ErrorActionPreference (matches the
-# npm/pyinstaller invocation style below) and then check $LASTEXITCODE.
-$prev = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-dotnet publish $acProject -c Release -o "$acProject\bin\Release\net9.0-windows\win-x64" 2>&1 |
-    ForEach-Object { Write-Host "  $_" }
-$publishExit = $LASTEXITCODE
-$ErrorActionPreference = $prev
-if ($publishExit -ne 0) {
-    Write-Host "  ERROR: dotnet publish failed with exit code $publishExit" -ForegroundColor Red
-    exit 1
-}
-
-$acExe = "$acProject\bin\Release\net9.0-windows\win-x64\AppContainerLauncher.exe"
-if (-not (Test-Path $acExe)) {
-    Write-Host "  ERROR: AppContainerLauncher.exe not found after build at $acExe" -ForegroundColor Red
-    exit 1
-}
-Write-Host "  AppContainerLauncher.exe built" -ForegroundColor Green
-
 Push-Location "$root\desktop"
 try {
     npm run prepare-packaged-resources
@@ -163,18 +136,6 @@ try {
     }
 } finally {
     Pop-Location
-}
-
-# Copy sandbox-preload.js and its modules alongside launcher (used by electron-builder extraResources)
-$preloadSrc = "$acProject\sandbox-preload.js"
-if (Test-Path $preloadSrc) {
-    $releaseDir = "$acProject\bin\Release\net9.0-windows\win-x64"
-    Copy-Item $preloadSrc "$releaseDir\sandbox-preload.js" -Force
-    foreach ($mod in @('sandbox-state.js','sandbox-permission.js','sandbox-fs-hooks.js','sandbox-cp-hooks.js','sandbox-host-runtime.js','sandbox-sensitive.js','path-extraction.js')) {
-        $modSrc = "$acProject\$mod"
-        if (Test-Path $modSrc) { Copy-Item $modSrc "$releaseDir\$mod" -Force }
-    }
-    Write-Host "  sandbox-preload.js + modules copied" -ForegroundColor Green
 }
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
@@ -248,12 +209,12 @@ if ($versionSource -notmatch 'OPENCLAW_TARGET_VERSION\s*=\s*"([^"]+)"') {
     exit 1
 }
 $installManifest = [ordered]@{
-    schema = 1
+    schema = 2
     desktopArchiveSha256 = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     installerBundleId = Get-FileSetId -Files $installerIdentityFiles -BasePath $root
     managedSkillsId = Get-FileSetId -Files $skillsFiles -BasePath "$root\skills"
     openClawVersion = $OpenClawVersion
-    appContainerSchema = 1
+    mxcSchema = 1
 }
 $installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
 Write-Host "  Install manifest: $manifestPath" -ForegroundColor DarkGray

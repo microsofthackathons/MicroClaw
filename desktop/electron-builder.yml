@@ -72,29 +72,12 @@ extraResources:
     to: windows-node/
   - from: resources/openclaw-weixin/
     to: openclaw-weixin/
-  - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
-    to: AppContainerLauncher.exe
-  - from: ../appcontainer/sandbox-preload.js
-    to: sandbox-preload.js
-  - from: ../appcontainer/sandbox-host-runtime.js
-    to: sandbox-host-runtime.js
-  - from: ../appcontainer/sandbox-state.js
-    to: sandbox-state.js
-  - from: ../appcontainer/sandbox-permission.js
-    to: sandbox-permission.js
-  - from: ../appcontainer/sandbox-fs-hooks.js
-    to: sandbox-fs-hooks.js
-  - from: ../appcontainer/sandbox-cp-hooks.js
-    to: sandbox-cp-hooks.js
-  - from: ../appcontainer/sandbox-sensitive.js
-    to: sandbox-sensitive.js
-  - from: ../appcontainer/path-extraction.js
-    to: path-extraction.js
   - from: ../skills/rednote-publisher/
     to: agent-skills/rednote-publisher/
 
 files:
   - dist/**/*
+  - "!dist/{tool-sandbox,sensitive-shield,sensitive-shield.test,sandbox-logic.test,sandbox-fs-hooks.test,path-extraction.test,openclaw-boot-probe.test,openclaw-sqlite-sandbox.integration.test}.{js,js.map}"
   - renderer/dist/**/*
   - assets/**/*
   - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,README,readme}"

@@ -280,7 +280,6 @@ interface OpenClawAPI {
         };
       }) => void,
     ): () => void;
-    onExecCommand?(callback: (data: { shell: string; command: string }) => void): () => void;
   };
   cron: {
     list(): Promise<{
@@ -396,6 +395,20 @@ interface OpenClawAPI {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
   windowsNodeMxc: {
+    getFolders(): Promise<{ rw: string[]; ro: string[] }>;
+    setFolderPolicy(draft: { rw: string[]; ro: string[] }): Promise<{
+      rw: string[];
+      ro: string[];
+    }>;
+    stageFolder(params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }): Promise<{
+      ok: boolean;
+      canceled?: boolean;
+      reason?: string;
+      parentDir?: string;
+      parentAccess?: string;
+      removedChildren?: string[];
+      dirs: { rw: string[]; ro: string[] };
+    }>;
     getStatus(): Promise<{
       requestedMode: "off" | "full" | "limited-dacl";
       effectiveStrength: "off" | "full" | "limited-dacl";
@@ -594,92 +607,6 @@ interface OpenClawAPI {
       requestId: string;
       approvalLayer?: "gateway" | "node";
     } & import("../src/windows-node-mxc-approval-lifecycle").MxcApprovalTerminal) => void): () => void;
-  };
-  sandbox: {
-    getStatus(): Promise<{
-      available: boolean;
-      enabled: boolean;
-      launcherPath: string | null;
-      containerName: string;
-      capabilities: string[];
-      sandboxDirsRW: string[];
-      sandboxDirsRO: string[];
-      externalApps: string[];
-    }>;
-    setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
-    getExternalApps(): Promise<string[]>;
-    setExternalApps(apps: string[]): Promise<{ ok: boolean; apps: string[] }>;
-    applyExternalApps(): Promise<{ ok: boolean; restarted: boolean }>;
-    getCapabilities(): Promise<string[]>;
-    setCapabilities(
-      caps: string[],
-    ): Promise<{ ok: boolean; caps: string[]; needsRestart: boolean }>;
-    provision(): Promise<boolean>;
-    getUserDirs(): Promise<{ rw: string[]; ro: string[] }>;
-    addUserDir(params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }): Promise<{
-      ok: boolean;
-      reason?: string;
-      parentDir?: string;
-      parentAccess?: string;
-      removedChildren?: string[];
-      dirs: { rw: string[]; ro: string[] };
-    }>;
-    stageUserDir(params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }): Promise<{
-      ok: boolean;
-      canceled?: boolean;
-      reason?: string;
-      parentDir?: string;
-      parentAccess?: string;
-      removedChildren?: string[];
-      dirs: { rw: string[]; ro: string[] };
-    }>;
-    removeUserDir(params: {
-      dir: string;
-      access: "rw" | "ro";
-    }): Promise<{ ok: boolean; dirs: { rw: string[]; ro: string[] } }>;
-    setUserDirAccess(params: { dir: string; access: "rw" | "ro" }): Promise<{
-      ok: boolean;
-      reason?: string;
-      parentDir?: string;
-      parentAccess?: string;
-      removedChildren?: string[];
-      dirs: { rw: string[]; ro: string[] };
-    }>;
-    onPermissionRequest(
-      callback: (data: {
-        requestId: string;
-        type: "file" | "shell" | "shell-async";
-        targetPath: string;
-        dirPath: string;
-        command?: string;
-      }) => void,
-    ): () => void;
-    respondPermission(requestId: string, decision: string): Promise<void>;
-    onAclTimeout?(callback: (data: { dir: string; access: string }) => void): () => void;
-    onAclIneffective?(
-      callback: (data: {
-        dir: string;
-        deniedPath: string;
-        access: string;
-        command?: string;
-      }) => void,
-    ): () => void;
-    onPermissionCompleted?(
-      callback: (data: {
-        requestId: string;
-        result: "verified" | "verify-timeout" | "failed";
-        dir: string;
-        access: string;
-      }) => void,
-    ): () => void;
-    verifyAcls(): Promise<{
-      missing: Array<{ dir: string; access: string; reason: string }>;
-      stale: Array<{ dir: string; rights: string }>;
-      ok: Array<{ dir: string; access: string }>;
-      errors: Array<{ dir: string; error: string }>;
-    }>;
-    repairAcl(params: { dir: string; access: "rw" | "ro" }): Promise<{ ok: boolean }>;
-    revokeStaleAcl(dir: string): Promise<{ ok: boolean }>;
   };
   usage: {
     getStats(): Promise<any>;

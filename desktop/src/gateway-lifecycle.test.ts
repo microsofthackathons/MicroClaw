@@ -17,12 +17,12 @@ describe("Gateway startup convergence", () => {
     expect(main).toContain('OPENCLAW_NO_AUTO_UPDATE: "1"');
     expect(main).toContain("return checkForUpdates({");
   });
-  it("awaits AppContainer ACL work before taking the Gateway plugin inventory", () => {
+  it("never provisions the retired AppContainer backend during Gateway startup", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
-    const prepare = main.indexOf("await toolSandbox.provisionAsync()");
     const spawn = main.indexOf("const child = spawn(nodePath, gwArgs");
-    expect(prepare).toBeGreaterThan(0);
-    expect(spawn).toBeGreaterThan(prepare);
+    expect(main).not.toContain("toolSandbox");
+    expect(main).not.toContain("AppContainerLauncher");
+    expect(spawn).toBeGreaterThan(0);
   });
   const refusal =
     "OpenClaw plugin migration inputs changed during startup convergence; refusing to report the gateway ready. " +

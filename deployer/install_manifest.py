@@ -7,13 +7,13 @@ import os
 from pathlib import Path
 
 MANIFEST_NAME = "install-manifest.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _BUILD_KEYS = (
     "desktopArchiveSha256",
     "installerBundleId",
     "managedSkillsId",
     "openClawVersion",
-    "appContainerSchema",
+    "mxcSchema",
 )
 
 

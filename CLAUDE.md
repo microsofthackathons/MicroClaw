@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MicroClaw is a Windows desktop application that packages the OpenClaw open-source Agent framework. It includes an Electron chat UI, a local OpenClaw Gateway, 52+ built-in skills, 7 managed skills, an AppContainer-based tool sandbox, a WeChat plugin, and a Teams bot integration.
+MicroClaw is a Windows desktop application that packages the OpenClaw open-source Agent framework. It includes an Electron chat UI, a local OpenClaw Gateway, 52+ built-in skills, 7 managed skills, a native Windows Node + MXC tool sandbox, a WeChat plugin, and a Teams bot integration. MXC Full/Limited are the only sandbox modes; Off deliberately runs tools unsandboxed. The retired AppContainerLauncher backend, preload hooks, provisioning, and controls must not be reintroduced.
 
 ## Build & Development Commands
 

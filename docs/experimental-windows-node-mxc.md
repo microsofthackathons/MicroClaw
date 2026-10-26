@@ -46,7 +46,7 @@ MicroClaw exposes three explicit requested states:
 |---|---|---|
 | **Full containment** | `base-container` or `appcontainer-bfs` only | Selected RO/RW roots are a strict, exclusive capability ceiling |
 | **Limited containment (DACL)** | `appcontainer-dacl` only | Selected roots are additive ACL grants; ambient Windows ACL access can remain |
-| **Off** | No bundled MXC host | Restore the remembered standard sandbox route; it may be unsandboxed if that setting is off |
+| **Off** | No bundled MXC host | Tools run unsandboxed with the current Windows account's permissions; no legacy backend |
 
 Every explicit user transition from Off to Full or Limited, and every explicit switch between Full
 and Limited, first opens an in-app capability-disclosure consent dialog for the target mode. The
@@ -366,7 +366,6 @@ The bounded approval-surface inventory is:
 | Closed literal mutating PowerShell operations listed above | Existing explicit RW coverage and exact force/recurse/content/encoding/no-newline disclosures remain required. |
 | Closed literal `Test-Path` existence verification | The newly covered omission: positional / `-Path` / `-LiteralPath`, direct or one validated nested interpreter, with RO or RW coverage. No `-PathType`, `-IsValid`, wildcards, expressions, extra switches or additional operations. |
 | Bundled host `onApproval` / `approvalLayer=node` fallback | Desktop once/deny only. This layer has no authenticated canonical chat/run origin; no phone challenge or selected-chat activity is invented. Native proof, path/reparse and execution checks are unchanged. |
-| Legacy AppContainer `sandbox:permission-request`: `app-approval`, `file`, `shell` and `shell-async` application/folder/ACL decisions | Desktop only, separate from MXC Gateway decisions. The legacy callback lacks an authoritative canonical conversation/run binding, so its global popup does not create a selected-chat execution row. |
 | Native remote-approval owner/consent choices and exact durable records | Settings/native authority, not another phone command type. Existing eligible exact durable use can avoid a pending prompt; it does not synthesize a new run or execution-success event. |
 
 Arbitrary PowerShell, `Get-Content` / `Get-ChildItem` / other new operation families, encoded/file/
@@ -542,8 +541,8 @@ picker. Equal paths are deduplicated, redundant nested grants are collapsed, and
 under a broader RO root remains explicit. While MXC is enabled, edits remain a renderer draft and
 cannot mutate live ACLs or settings. **Apply changes and reactivate** performs one serialized
 fail-closed transaction: lock ingress, reject pending approvals, revoke proof/lease state, validate
-the complete draft, stop the exact generation, apply and atomically persist the same
-`sandboxUserDirsRO`/`sandboxUserDirsRW` policy, attest and smoke a locked generation, attest and
+the complete draft, stop the exact generation, atomically persist the native
+`windowsNodeMxcFolders` policy, attest and smoke a locked generation, attest and
 smoke a fresh active generation, mint its lease, verify the effective route, then release ingress.
 Full runs its outside-root denial check plus one deterministic contained execution smoke. Limited
 runs only the contained execution smoke because ambient-access assessment, not out-of-root denial,
@@ -551,18 +550,16 @@ is its filesystem safety gate. The fixed smokes use internal one-use readiness p
 enter the user approval queue.
 Cancellation or any failure leaves execution locked and retains the attempted draft and previous
 policy for explicit retry or revert; MicroClaw never silently restores old active execution. Folder
-preparation that requires elevation fails locked without opening an elevation prompt. UNC,
+preparation never calls the retired launcher or opens an elevation prompt. UNC,
 device-namespace, missing, reparse, final-target-changing, and protected credential/state/browser
 roots are rejected before persistence.
 
-Persistent AppContainer folder ACL ownership is scoped to the exact
-`(MicroClaw AppContainer principal, canonical folder, requested RO/RW access)` tuple. Policy
-replacement revokes only the MicroClaw principal on changed folders, applies the new tuples in
-deterministic parent-before-child order, verifies propagation, and rolls the complete tuple set back
-if mutation or persistence fails. The recoverable previous/draft policy retains access levels, while
-the grant-history reconciliation removes stale MicroClaw grants on startup. Revocation is
-principal-targeted and does not replace the folder DACL, so pre-existing Windows, administrator,
-user, or third-party ACEs remain untouched.
+The native host passes canonical read-only/read-write roots directly into each fresh MXC
+container's filesystem configuration. It does not provision the retired MicroClaw AppContainer
+profile or mutate persistent ACLs through the old launcher. MXC owns any mode-specific grants and
+container teardown. Failed folder transitions restore the previous stored policy only after the
+active generation is proven stopped, and recovery remains locked. While Off, folder edits validate
+and save policy for the next MXC activation; they do not restrict unsandboxed tools.
 
 The normal active route has one visible Gateway/MicroClaw prompt. It displays executable, exact argv,
 agent/session scope, canonical CWD, declared folder use, the attested containment strength, and in
@@ -732,7 +729,8 @@ and again immediately before MXC launch.
 MicroClaw stores a versioned requested mode separately from the attested effective strength. A
 legacy enabled boolean migrates conservatively to Full, never Limited; Limited survives migration
 only with explicit persisted evidence and an acknowledgment timestamp. When MXC is Off, startup
-follows the remembered standard Gateway/sandbox route without starting the bundled node. When Full
+starts the standard Gateway with unsandboxed tool execution and no bundled node. No legacy
+AppContainer backend is restored. When Full
 or Limited is requested, the loading screen remains visible while MicroClaw closes ingress, proves
 the mode-specific backend, then starts every Gateway generation locked and runs the secure
 readiness and activation sequence. Fixed readiness probes are internally authorized by the current

@@ -19,7 +19,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 即装即用
 
 - **熟悉的 Windows 安装流程**：带桌面快捷方式、开始菜单入口和一键卸载
-- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端、托管技能和 AppContainer 配置
+- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端、托管技能和原生 MXC 组件
 - **安装完成即可启动**：不需要先手动搭本地 OpenClaw 运行环境
 
 ### 真正可用，而不是只装了个壳
@@ -32,9 +32,9 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 内建信任
 
 - **动作透明、权限可控**：文件和工具访问需要明确向用户申请，而不是静默放行
-- **基于 Windows AppContainer 的沙箱隔离**：在支持的系统上，工具执行运行在操作系统强制边界内
-- **Hook 加沙箱，形成纵深防御**：Hook 负责更好的交互体验，真正的安全边界仍由 AppContainer ACL 强制执行
-- **敏感路径直接硬拦截**：例如 `.ssh`、云凭据目录等不会只是提醒，而是直接拒绝访问
+- **MXC 是唯一的工具执行沙箱**：明确选择 Full 或 Limited；不再提供旧 AppContainer 后端
+- **关闭即不使用沙箱**：MXC Off 时，工具直接使用当前 Windows 账号的权限执行
+- **原生模式边界**：Full 强制独占目录权限上限；Limited 采用附加授权，并在激活前评估环境访问权限
 
 ---
 
@@ -43,7 +43,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 | 组件 | 路径 | 技术栈 | 说明 |
 |---|---|---|---|
 | **桌面应用** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
-| **AppContainer 沙盒** | `appcontainer/` | .NET 9 + Node.js preload hooks | Windows AppContainer 启动器 + 权限钩子，隔离工具执行 |
+| **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及 Full/Limited 原生隔离 |
 | **安装器** | `deploy.py` + `deployer/` | Python 3 + Tkinter | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
 | **微信插件** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | 微信频道接入 |
@@ -60,7 +60,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 从源码构建安装器后运行：
 
-> **构建前置依赖**（仅运行 `build.ps1` 时需要）：**Node.js 26.1+（推荐）** 或 **24.x 系列的 24.16+**，以及 **Python 3.10+**。OpenClaw **2026.10.3** 要求 `>=24.16.0 <25 || >=26.1.0`，不再支持 Node 22 和 25。使用 `pip install -r requirements.txt` 安装 Python 构建依赖（其中包含用于打包安装器 exe 的 PyInstaller）。终端用户运行已打包的 `MicroClawInstaller.exe` **无需** 安装 Python。
+> **构建前置依赖**（仅运行 `build.ps1` 时需要）：**Node.js 26.1+（推荐）** 或 **24.x 系列的 24.16+**，以及 **Python 3.10+**。OpenClaw **2026.10.5** 要求 `>=24.16.0 <25 || >=26.1.0`，不再支持 Node 22 和 25。使用 `pip install -r requirements.txt` 安装 Python 构建依赖（其中包含用于打包安装器 exe 的 PyInstaller）。终端用户运行已打包的 `MicroClawInstaller.exe` **无需** 安装 Python。
 
 ```powershell
 .\build.ps1                                        # 生成 dist/MicroClawInstaller/MicroClawInstaller.exe
@@ -71,7 +71,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 - Git for Windows（PortableGit → `~/.openclaw-git`）
 - Node.js 26，通过官方签名 `.msi` 以 per-machine 方式安装到 `%ProgramFiles%\nodejs\`（UAC 提权；若该路径已存在受支持的系统 Node 则直接复用；支持范围为 `>=24.16.0 <25 || >=26.1.0`，下载回退版本为 `26.1.0`）
-- OpenClaw Gateway，默认 `stable` 通道固定为 **2026.10.3**（`npm install -g openclaw@2026.10.3`）
+- OpenClaw Gateway，默认 `stable` 通道固定为 **2026.10.5**（`npm install -g openclaw@2026.10.5`）
 - 配置 npm 镜像源与 V8 编译缓存
 - 安装 MicroClaw 桌面客户端、托管技能及 Windows 沙箱组件；微信插件不随安装包捆绑，也不会自动安装
 - 添加 Windows Defender 排除项，创建桌面快捷方式（含一键卸载）
@@ -261,7 +261,7 @@ npm run dev
 | **技能完整性校验** | SHA-256 哈希 + Ed25519 签名，启动时检测所有技能文件是否被篡改 |
 | **设备认证** | 每台设备生成 Ed25519 密钥对，Gateway 连接时签名认证 |
 | **技能白名单** | `allowBundled` / `allowManaged` 控制可用技能范围 |
-| **沙盒隔离** | Windows AppContainer 沙盒，限制 AI 工具执行环境 |
+| **沙盒隔离** | 原生 MXC Full/Limited；明确关闭后不使用执行沙箱 |
 | **本地 Gateway** | 仅绑定 loopback，不接受远程连接 |
 
 ---
@@ -284,7 +284,7 @@ npm run dev
 
 - Node.js 26.1+（推荐），或 24.x 系列的 24.16+
 - Python 3.10+ —— 通过 `pip install -r requirements.txt` 安装构建依赖（已包含 PyInstaller）
-- .NET 9 SDK（用于构建 AppContainer 启动器）
+- .NET SDK（原生 Windows Node + MXC 主机，版本以固定项目为准）
 - .NET 10 SDK（用于构建内置 Windows Node 主机）
 - npm 依赖已安装（`cd desktop && npm install`）
 
@@ -305,7 +305,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ├── desktop/                     # Electron 桌面应用
 │   ├── src/                     # 主进程（TypeScript）
 │   └── renderer/                # Vue 3 渲染进程
-├── appcontainer/                # Windows AppContainer 沙盒（.NET + preload hooks）
+├── windows-node-host/           # 原生 MXC 执行及精确命令审批
 ├── skills/                      # 托管技能定义
 ├── plugins/openclaw-weixin/     # 微信频道插件
 ├── scripts/
@@ -332,7 +332,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 
 普通用户在**桌面应用 设置**里完成所有配置即可：模型、Brave API Key、技能白名单等。运行时配置存于 `~/.openclaw/openclaw.json`，如有需要可手动编辑。
 
-全新安装会预装与默认 OpenClaw 运行时同版的官方 Parallel 联网搜索插件（固定为 **2026.10.3**），并默认选择无需 API 密钥的 `parallel-free`
+全新安装会预装与默认 OpenClaw 运行时同版的官方 Parallel 联网搜索插件（固定为 **2026.10.5**），并默认选择无需 API 密钥的 `parallel-free`
 提供商，因此安装后即可直接使用联网搜索。升级时会保留可用的联网搜索提供商；未配置 API 密钥
 的 Brave 或 Tavily 会自动回退到 Parallel。之后也可在**设置**中修改。
 

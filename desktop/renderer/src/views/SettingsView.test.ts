@@ -21,11 +21,8 @@ describe("SettingsView", () => {
   const openExternal = vi.fn();
   const getWindowsNodeMxcStatus = vi.fn();
   const setWindowsNodeMxcEnabled = vi.fn();
-  const addUserDir = vi.fn();
-  const stageUserDir = vi.fn();
-  const removeUserDir = vi.fn();
-  const setUserDirAccess = vi.fn();
-  const getUserDirs = vi.fn();
+  const stageFolder = vi.fn();
+  const setFolderPolicy = vi.fn();
   const validateFolderPolicy = vi.fn();
   const applyFolderPolicy = vi.fn();
 
@@ -185,15 +182,12 @@ describe("SettingsView", () => {
           desiredEnabled: requestedMode !== "off",
         }),
       );
-    addUserDir.mockReset().mockResolvedValue({ ok: false, dirs: { rw: [], ro: [] } });
-    stageUserDir.mockReset().mockResolvedValue({
+    stageFolder.mockReset().mockResolvedValue({
       ok: false,
       canceled: true,
       dirs: { rw: [], ro: [] },
     });
-    removeUserDir.mockReset().mockResolvedValue({ ok: true, dirs: { rw: [], ro: [] } });
-    setUserDirAccess.mockReset().mockResolvedValue({ ok: true, dirs: { rw: [], ro: [] } });
-    getUserDirs.mockReset().mockResolvedValue({ rw: [], ro: [] });
+    setFolderPolicy.mockReset().mockImplementation(async (draft) => draft);
     validateFolderPolicy.mockReset().mockImplementation(async (draft) => draft);
     applyFolderPolicy.mockReset();
     window.openclaw = {
@@ -222,27 +216,15 @@ describe("SettingsView", () => {
         setEnabled: setWindowsNodeMxcEnabled,
         validateFolderPolicy,
         applyFolderPolicy,
+        stageFolder,
+        setFolderPolicy,
+        getFolders: vi.fn().mockResolvedValue({ rw: [], ro: [] }),
         listDurableApprovals: vi.fn().mockResolvedValue([]),
         revokeDurableApproval: vi.fn().mockResolvedValue([]),
         revokeAllDurableApprovals: vi.fn().mockResolvedValue([]),
         respondApproval: vi.fn(),
         onApprovalRequest: vi.fn().mockReturnValue(() => undefined),
         onLifecycleState: vi.fn().mockReturnValue(() => undefined),
-      },
-      sandbox: {
-        getStatus: vi.fn().mockResolvedValue({
-          available: true,
-          enabled: false,
-          sandboxDirsRW: [],
-          sandboxDirsRO: [],
-        }),
-        getExternalApps: vi.fn().mockResolvedValue([]),
-        getCapabilities: vi.fn().mockResolvedValue([]),
-        getUserDirs,
-        addUserDir,
-        stageUserDir,
-        removeUserDir,
-        setUserDirAccess,
       },
     } as unknown as typeof window.openclaw;
     exportGatewayLogs.mockReset().mockResolvedValue({
@@ -504,7 +486,7 @@ describe("SettingsView", () => {
       "Limited containment (DACL)",
     );
     expect(wrapper.find('[data-testid="mxc-mode-off"]').text()).toContain(
-      "remembered standard sandbox setting",
+      "without an execution sandbox",
     );
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toBe(
       "Limited containment (DACL) — Active",
@@ -1031,16 +1013,16 @@ describe("SettingsView", () => {
       requestedMode: "off",
       desiredEnabled: false,
       folders:
-        addUserDir.mock.calls.length === 0
+        setFolderPolicy.mock.calls.length === 0
           ? []
-          : addUserDir.mock.calls.length === 1
+          : setFolderPolicy.mock.calls.length === 1
             ? [{ path: "C:\\Work", access: "rw" as const }]
             : [
                 { path: "C:\\Work", access: "rw" as const },
                 { path: "C:\\Docs", access: "ro" as const },
               ],
     }));
-    addUserDir
+    stageFolder
       .mockResolvedValueOnce({
         ok: true,
         removedChildren: [],
@@ -1061,44 +1043,41 @@ describe("SettingsView", () => {
     await wrapper.find('[data-testid="mxc-add-ro"]').trigger("click");
     await flushPromises();
 
-    expect(addUserDir).toHaveBeenNthCalledWith(1, {
+    expect(stageFolder).toHaveBeenNthCalledWith(1, {
       access: "rw",
-      policy: "windows-node-mxc",
+      draft: { rw: [], ro: [] },
     });
-    expect(addUserDir).toHaveBeenNthCalledWith(2, {
+    expect(stageFolder).toHaveBeenNthCalledWith(2, {
       access: "ro",
-      policy: "windows-node-mxc",
+      draft: { rw: ["C:\\Work"], ro: [] },
     });
+    expect(setFolderPolicy).toHaveBeenLastCalledWith({ rw: ["C:\\Work"], ro: ["C:\\Docs"] });
     expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Work");
     expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Docs");
   });
 
-  it("keeps the legacy AppContainer picker outside the MXC validation context", async () => {
+  it("does not expose the retired AppContainer controls when MXC is Off", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
     });
-    addUserDir.mockResolvedValue({
-      ok: true,
-      removedChildren: [],
-      dirs: { rw: ["C:\\Legacy"], ro: [] },
-    });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
     });
     await flushPromises();
 
-    await wrapper.find('[data-testid="sandbox-add-rw"]').trigger("click");
-    await flushPromises();
-
-    expect(addUserDir).toHaveBeenCalledWith({ access: "rw" });
+    expect(wrapper.find('[data-testid="sandbox-add-rw"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("AppContainer");
+    expect(wrapper.text()).toContain("without an execution sandbox");
+    expect(stageFolder).not.toHaveBeenCalled();
+    expect(setFolderPolicy).not.toHaveBeenCalled();
   });
 
   it("changes and removes roots through the shared folder settings API", async () => {
     routeState.section = "security";
-    getWindowsNodeMxcStatus.mockResolvedValue({
+    const initial = {
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
@@ -1106,19 +1085,18 @@ describe("SettingsView", () => {
         { path: "C:\\Work", access: "rw" },
         { path: "C:\\Docs", access: "ro" },
       ],
-    });
-    getUserDirs.mockResolvedValue({
-      rw: ["C:\\Work"],
-      ro: ["C:\\Docs"],
-    });
-    setUserDirAccess.mockResolvedValue({
-      ok: true,
-      removedChildren: [],
-      dirs: { rw: [], ro: ["C:\\Docs", "C:\\Work"] },
-    });
-    removeUserDir.mockResolvedValue({
-      ok: true,
-      dirs: { rw: [], ro: ["C:\\Work"] },
+    } satisfies WindowsNodeMxcStatus;
+    getWindowsNodeMxcStatus.mockImplementation(async () => {
+      const saved = setFolderPolicy.mock.lastCall?.[0];
+      return saved
+        ? {
+            ...initial,
+            folders: [
+              ...saved.rw.map((path: string) => ({ path, access: "rw" as const })),
+              ...saved.ro.map((path: string) => ({ path, access: "ro" as const })),
+            ],
+          }
+        : initial;
     });
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
@@ -1127,12 +1105,15 @@ describe("SettingsView", () => {
 
     await wrapper.find('[data-testid="mxc-change-ro"]').trigger("click");
     await flushPromises();
-    expect(setUserDirAccess).toHaveBeenCalledWith({ dir: "C:\\Work", access: "ro" });
+    expect(setFolderPolicy).toHaveBeenLastCalledWith({
+      rw: [],
+      ro: ["C:\\Docs", "C:\\Work"],
+    });
 
     const removeButtons = wrapper.findAll(".mxc-folder-policy .tag-remove");
     await removeButtons[0].trigger("click");
     await flushPromises();
-    expect(removeUserDir).toHaveBeenCalled();
+    expect(setFolderPolicy).toHaveBeenLastCalledWith({ rw: [], ro: ["C:\\Work"] });
   });
 
   it("stages folder edits without mutating the active MXC policy", async () => {
@@ -1144,7 +1125,7 @@ describe("SettingsView", () => {
         { path: "C:\\Docs", access: "ro" },
       ],
     });
-    stageUserDir.mockResolvedValue({
+    stageFolder.mockResolvedValue({
       ok: true,
       dirs: { rw: ["C:\\Work", "C:\\New"], ro: ["C:\\Docs"] },
     });
@@ -1158,15 +1139,13 @@ describe("SettingsView", () => {
     expect(policy.find('[data-testid="mxc-add-rw"]').attributes("disabled")).toBe("false");
     await policy.find('[data-testid="mxc-add-rw"]').trigger("click");
     await flushPromises();
-    expect(stageUserDir).toHaveBeenCalledWith({
+    expect(stageFolder).toHaveBeenCalledWith({
       access: "rw",
       draft: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
     });
     expect(policy.text()).toContain("C:\\New");
     expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(true);
-    expect(addUserDir).not.toHaveBeenCalled();
-    expect(setUserDirAccess).not.toHaveBeenCalled();
-    expect(removeUserDir).not.toHaveBeenCalled();
+    expect(setFolderPolicy).not.toHaveBeenCalled();
   });
 
   it("confirms and applies the complete staged policy through one lifecycle transaction", async () => {
@@ -1176,7 +1155,7 @@ describe("SettingsView", () => {
       folders: [{ path: "C:\\Work", access: "rw" as const }],
     };
     getWindowsNodeMxcStatus.mockResolvedValueOnce(initial);
-    stageUserDir.mockResolvedValue({
+    stageFolder.mockResolvedValue({
       ok: true,
       dirs: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
     });

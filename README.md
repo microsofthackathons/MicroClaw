@@ -19,7 +19,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Instant Availability
 
 - **Familiar Windows install flow**: packaged installer with desktop shortcut, Start menu entry, and one-click uninstall
-- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, managed skills, and AppContainer provisioning
+- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, managed skills, and native MXC components
 - **Ready after install**: launch the app immediately after setup instead of building a local OpenClaw environment by hand
 
 ### Ready-to-Use Experience
@@ -32,9 +32,9 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Built-In Trust
 
 - **Transparent, permission-controlled actions**: file and tool access requests are surfaced to the user instead of being silently granted
-- **Sandboxed with Windows AppContainer**: tool execution runs inside an OS-enforced AppContainer boundary on supported systems
-- **Hooks plus sandbox, defense in depth**: hook-based prechecks improve UX while AppContainer ACL enforcement remains the actual security boundary
-- **Hard blocks for sensitive paths**: credential-heavy locations such as `.ssh` and cloud config folders are denied rather than merely warned about
+- **MXC is the only execution sandbox**: explicitly select Full or Limited containment; there is no legacy AppContainer backend
+- **Honest Off mode**: tools run directly with your Windows account's permissions when MXC is Off; no execution sandbox is active
+- **Mode-bound native enforcement**: Full uses an exclusive folder ceiling; Limited uses additional grants and assesses ambient access before activation
 
 ---
 
@@ -88,7 +88,7 @@ graph TB
 | Gateway → LLM | HTTPS | Streaming API calls to Claude / OpenAI / Gemini |
 | Gateway → Skills | In-process | Agent loop invokes tool calls; results fed back to LLM |
 | WeChat Plugin → WeChat | HTTPS | Long-poll `getUpdates` + `sendMessage` |
-| Permission Manager → AppContainer | Win32 API | AppContainer security capabilities + Job Object resource limits |
+| Gateway → Windows Node → MXC | Authenticated native execution | Exact approvals, mode-bound containment and explicit folder grants |
 
 ---
 
@@ -97,7 +97,7 @@ graph TB
 | Component | Path | Stack | Description |
 |---|---|---|---|
 | **Desktop App** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
-| **AppContainer Sandbox** | `appcontainer/` | .NET 9 + Node.js preload hooks | Windows AppContainer launcher + permission hooks for tool isolation |
+| **Native MXC host** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | Native Windows tool execution with exact approvals and Full/Limited containment |
 | **Installer** | `deploy.py` + `deployer/` | Python 3 + Tkinter | Wizard-style graphical installer (can be packaged as a single exe) |
 | **Skill Packs** | `skills/` | Markdown + JSON + Python/Node | Office, search, browser automation managed skills |
 | **WeChat Plugin** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | WeChat channel integration |
@@ -281,13 +281,19 @@ npm run lint:sarif    # outputs eslint-results.sarif
 
 ## Sandbox Isolation
 
-`appcontainer/` provides a Windows AppContainer-based sandbox for isolating tool execution:
+**Settings → Security** offers MXC Full, MXC Limited (DACL), and Off. MXC is the only tool
+execution sandbox. Full requires an attested exclusive filesystem boundary; Limited requires
+explicit acknowledgement of additive grants and possible ambient Windows ACL access. Failed
+activation stays locked and never silently falls back to unsandboxed execution.
 
-- **.NET launcher** (`AppContainerLauncher.exe`) runs child processes inside an AppContainer with restricted ACLs
-- **Node.js preload hooks** (`sandbox-preload.js`, `sandbox-fs-hooks.js`, …) intercept `fs.*` / `child_process.*` calls and prompt the user for permission
-- **Sensitive-path shield** hard-denies access to `~/.ssh`, `~/.azure`, and other credential directories — no override
+**Off intentionally runs agent tools without an execution sandbox**, with the permissions of
+your Windows account. Fresh installs and retired AppContainer settings migrate to Off; explicit
+native MXC selections and folder policies are preserved. Switching Off restores the saved Gateway
+policy, revokes native execution authority, and keeps scheduled tasks fenced until explicit resume.
+The old launcher, preload hooks, provisioning and renderer controls are removed. MXC may itself
+use Windows AppContainer primitives; those are not a second selectable backend.
 
-See [appcontainer/README.md](appcontainer/README.md) for details.
+See [native Windows Node + MXC](docs/experimental-windows-node-mxc.md) for the containment model.
 
 ---
 
@@ -349,7 +355,7 @@ when their owning specialist agent is added:
 | **Skill Integrity Checks** | SHA-256 hashes + Ed25519 signatures — detects tampering of all skill files at startup |
 | **Device Authentication** | Each device generates an Ed25519 key pair; Gateway connections are signature-authenticated |
 | **Skill Allowlist** | `allowBundled` / `allowManaged` control the available skill scope |
-| **Sandbox Isolation** | OS-native AppContainer + Job Object isolation for file system, network, and resource limits |
+| **Sandbox Isolation** | Native MXC Full or Limited containment; explicit Off runs unsandboxed |
 | **Local Gateway** | Binds to loopback only — does not accept remote connections |
 
 ---
@@ -372,7 +378,7 @@ This script sequentially:
 
 The CI and release workflows also build `desktop/release/MicroClawDesktop-<version>-x64.msix`
 with Electron Builder. The package includes the Electron app, the pinned OpenClaw
-runtime, Node.js, and the AppContainer launcher resources. On first launch, the
+runtime, Node.js, native Windows Node + MXC, and WeChat resources. On first launch, the
 read-only bundled runtime archive is expanded under Electron's per-user
 `userData` directory; configuration and other writable state remain in per-user
 application data.
@@ -404,7 +410,7 @@ download-update path.
 
 - Node.js 26.1+ (recommended), or 24.16+ on the 24.x line
 - Python 3.10+ — install build deps with `pip install -r requirements.txt` (includes PyInstaller)
-- .NET 9 SDK (for the AppContainer launcher)
+- .NET SDK (for the native Windows Node + MXC host; follow the pinned project targets)
 - .NET 10 SDK (for the bundled Windows Node host)
 - npm dependencies installed (`cd desktop && npm install`)
 
@@ -425,7 +431,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── desktop/                     # Electron desktop app
 │   ├── src/                     # Main process (TypeScript)
 │   └── renderer/                # Vue 3 renderer process
-├── appcontainer/                # Windows AppContainer sandbox (.NET + preload hooks)
+├── windows-node-host/           # Native MXC execution and exact approval enforcement
 ├── skills/                      # Managed skill definitions
 ├── plugins/openclaw-weixin/     # WeChat channel plugin
 ├── scripts/

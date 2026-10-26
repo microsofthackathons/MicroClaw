@@ -439,7 +439,6 @@ class WindowsSetup:
         # Optional UI hook forwarded to upgrade transactions so long backup /
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
-        self.appcontainer_enabled = True  # AppContainer sandbox (built-in)
 
         # Respect an explicit registry immediately. Otherwise start with the
         # fallback and defer network probing until a download is required.
@@ -1147,7 +1146,7 @@ class WindowsSetup:
                 if is_standard and is_supported_node_version(ver):
                     self.log.info(f"Node.js (system) accepted: {ver} at {node_path}")
                     # Pin the discovered directory so all later logic
-                    # (AppContainer ACLs, PATH, npm prefix) targets the
+                    # (PATH and npm prefix) targets the
                     # actual install location rather than the configured
                     # default.
                     self.node_dir = parent
@@ -3056,51 +3055,6 @@ class WindowsSetup:
             or status == "disabled"
         )
 
-    def _validate_appcontainer_smoke(self) -> bool:
-        if not self.appcontainer_enabled:
-            return True
-        launcher = self._find_appcontainer_launcher()
-        if launcher is None:
-            return False
-        installation = self._detect_openclaw_installation()
-        if installation is None:
-            self.log.error("OpenClaw runtime is missing for the AppContainer execution check")
-            return False
-        try:
-            node = self._resolve_validation_node()
-        except FileNotFoundError as error:
-            self.log.error(str(error))
-            return False
-        script = (
-            'const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");'
-            "fs.readFileSync(process.argv[1]);"
-            'const p=path.join(process.argv[2],".ac-probe-"+crypto.randomUUID());'
-            'fs.writeFileSync(p,"ok",{flag:"wx"});fs.unlinkSync(p);'
-            'console.log("microclaw-sandbox-ok");'
-        )
-        result = self._run(
-            [
-                str(launcher),
-                "run",
-                "--name",
-                "MicroClaw",
-                "--exe",
-                str(node),
-                "--no-window",
-                "--quiet",
-                "--",
-                "-e",
-                script,
-                str(installation.package_dir / "package.json"),
-                str(Path.home() / ".openclaw" / "sandbox"),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-        return result.returncode == 0 and "microclaw-sandbox-ok" in result.stdout
 
     def get_openclaw_upgrade_transaction_id(self) -> str | None:
         transaction = self._openclaw_transaction
@@ -3113,7 +3067,6 @@ class WindowsSetup:
 
         checks = [
             ("version", self._validate_installed_version),
-            ("appcontainer", self._validate_appcontainer_smoke),
         ]
         for name, check in checks:
             passed = bool(check())
@@ -4972,327 +4925,10 @@ class WindowsSetup:
             self.log.warn(f"注册“已安装的应用”失败: {e}")
             return False
 
-    # ────────────────────── AppContainer ──────────────────────
 
-    def _appcontainer_access_is_sufficient(
-        self,
-        launcher: Path,
-        container_name: str,
-        directory: str,
-        access: str,
-    ) -> bool:
-        try:
-            result = self._run(
-                [
-                    str(launcher),
-                    "check-acl",
-                    "--name",
-                    container_name,
-                    "--dir",
-                    directory,
-                    "--access",
-                    access,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                return False
-            payload = json.loads(result.stdout)
-            return payload.get("sufficient") is True
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
-            return False
 
-    def provision_appcontainer(self) -> bool:
-        """Provision AppContainer sandbox for MicroClaw (Windows 10 2004+).
 
-        Creates the AppContainer profile, grants directory ACLs, and adds
-        loopback network exemption. Does NOT require admin unless the
-        optional C:\\ traverse ACL setup is wanted.
-        """
-        launcher = self._find_appcontainer_launcher()
-        if not launcher:
-            self.log.info("AppContainerLauncher 未找到，跳过 AppContainer 配置")
-            return False
 
-        self.log.step("配置 AppContainer 沙箱…")
-        container_name = "MicroClaw"
-
-        # 1. Check OS support
-        try:
-            result = subprocess.run(
-                [str(launcher), "check"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-        except Exception as e:
-            self.log.warn(f"AppContainer 检测失败: {e}")
-            return False
-        if result.returncode != 0:
-            # returncode 1 = OS not supported; other codes = launcher error
-            stderr = result.stderr.strip()
-            stdout = result.stdout.strip()
-            if result.returncode == 1 and '"supported":false' in (stdout or "").replace(" ", ""):
-                self.log.warn("此 Windows 版本不支持 AppContainer，跳过")
-            else:
-                detail = stderr or stdout or f"exit code {result.returncode}"
-                self.log.warn(f"AppContainer 检测失败 ({detail})，跳过")
-            return False
-
-        # 2. Create profile
-        result = subprocess.run(
-            [str(launcher), "sid", "--name", container_name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=_CREATE_NO_WINDOW,
-        )
-        sid = result.stdout.strip().split("\n")[-1]
-        self.log.info(f"AppContainer SID: {sid}")
-
-        # 3. Grant directory ACLs
-        home = Path.home()
-        # Ensure sandbox workspace directory exists
-        sandbox_dir = home / ".openclaw" / "sandbox"
-        sandbox_dir.mkdir(parents=True, exist_ok=True)
-
-        dirs_to_grant = [
-            (str(self.node_dir), "r"),
-            (str(self.node_dir / "node_modules"), "r"),
-            (str(home / ".openclaw"), "rw"),
-            (str(sandbox_dir), "rw"),  # Tool execution sandbox workspace
-        ]
-        install_prefix = getattr(self, "install_prefix", None)
-        if install_prefix is not None:
-            dirs_to_grant.append((str(Path(install_prefix) / "node_modules" / "openclaw"), "r"))
-        # Legacy zip-extract layout — still grant if present so upgrades
-        # from older builds keep working.
-        for legacy in LEGACY_NODE_DIRS:
-            if legacy.exists() and str(legacy) != str(self.node_dir):
-                dirs_to_grant.append((str(legacy), "r"))
-                dirs_to_grant.append((str(legacy / "node_modules"), "r"))
-        # Grant access to system Temp directory
-        temp_dir = os.environ.get("TEMP", os.environ.get("TMP", ""))
-        if temp_dir:
-            dirs_to_grant.append((temp_dir, "rw"))
-
-        grant_failures = []
-        for dir_path, access in dirs_to_grant:
-            if Path(dir_path).exists():
-                if self._appcontainer_access_is_sufficient(
-                    launcher,
-                    container_name,
-                    dir_path,
-                    access,
-                ):
-                    self.log.info(f"  AppContainer ACL already configured: {dir_path}")
-                    continue
-                try:
-                    grant_result = subprocess.run(
-                        [
-                            str(launcher),
-                            "grant",
-                            "--name",
-                            container_name,
-                            "--dir",
-                            dir_path,
-                            "--access",
-                            access,
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=300,
-                        creationflags=_CREATE_NO_WINDOW,
-                    )
-                    if grant_result.returncode != 0:
-                        detail = grant_result.stderr.strip() or grant_result.stdout.strip()
-                        self.log.warn(f"ACL grant failed: {dir_path} — {detail}")
-                        grant_failures.append(dir_path)
-                except subprocess.TimeoutExpired:
-                    self.log.error(f"ACL grant 超时 (300s): {dir_path}")
-                    grant_failures.append(dir_path)
-                except Exception as e:
-                    self.log.warn(f"ACL grant 失败: {dir_path} — {e}")
-                    grant_failures.append(dir_path)
-
-        # Recheck ancestors even when the sandbox itself already has an ACL.
-        # The native helper skips existing metadata-only grants rather than
-        # rewriting the home directory DACL on every installation.
-        try:
-            traverse_result = subprocess.run(
-                [
-                    str(launcher),
-                    "grant",
-                    "--name",
-                    container_name,
-                    "--dir",
-                    str(sandbox_dir),
-                    "--access",
-                    "rw",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=300,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-            if traverse_result.returncode != 0:
-                self.log.warn(f"Traverse ACL 设置失败: {traverse_result.stderr.strip()}")
-                grant_failures.append(str(sandbox_dir))
-        except (OSError, subprocess.TimeoutExpired) as error:
-            self.log.warn(f"Traverse ACL 设置失败: {error}")
-            grant_failures.append(str(sandbox_dir))
-
-        # 3c. Grant traverse on all fixed drive roots + C:\Users (needs admin elevation)
-        # This lets AppContainer processes reach paths on any drive (e.g. D:\Documents).
-        try:
-            setup_result = subprocess.run(
-                [str(launcher), "setup", "--name", container_name],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-        except Exception as e:
-            self.log.warn(f"AppContainer setup 失败: {e}")
-            setup_result = type("R", (), {"returncode": 1})()
-        if setup_result.returncode != 0:
-            self.log.info("AppContainer setup 需要管理员权限，正在请求提权...")
-            try:
-                launcher_escaped = str(launcher).replace("'", "''")
-                ps_cmd = (
-                    f"Start-Process -FilePath '{launcher_escaped}' "
-                    f"-ArgumentList @('setup','--name','{container_name}') "
-                    f"-Verb RunAs -Wait -WindowStyle Hidden"
-                )
-                subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    creationflags=_CREATE_NO_WINDOW,
-                )
-            except Exception as e:
-                self.log.warn(f"AppContainer setup 提权失败: {e}")
-
-        # 4. Add loopback exemption
-        try:
-            subprocess.run(
-                [str(launcher), "loopback", "--name", container_name],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-        except Exception as e:
-            self.log.warn(f"Loopback 豁免设置失败: {e}")
-
-        if grant_failures:
-            self.log.warn(
-                f"部分 ACL 设置未完成 ({len(grant_failures)} 个目录)，验证实际沙箱读写权限"
-            )
-            if not self._validate_appcontainer_smoke():
-                self.log.error("AppContainer runtime read/write verification failed")
-                return False
-            self.log.info("Existing permissions passed the sandboxed Node runtime read/write check")
-        self.log.success(f"AppContainer 沙箱 '{container_name}' 配置完成")
-        return True
-
-    def _find_appcontainer_launcher(self) -> Path | None:
-        """Find AppContainerLauncher.exe."""
-        candidates = [
-            # Bundled with installed desktop client
-            DEFAULT_DESKTOP_DIR / "resources" / "AppContainerLauncher.exe",
-            # Adjacent to deployer in the repo (dev only)
-            Path(__file__).parent.parent
-            / "appcontainer"
-            / "bin"
-            / "Release"
-            / "net9.0-windows"
-            / "win-x64"
-            / "AppContainerLauncher.exe",
-        ]
-        for c in candidates:
-            if c and c.exists():
-                return c
-        return None
-
-    def _uninstall_appcontainer(self) -> None:
-        """Remove AppContainer profile and revoke ACLs."""
-        launcher = self._find_appcontainer_launcher()
-        if not launcher:
-            return
-        container_name = "MicroClaw"
-        try:
-            # Collect all directories that need ACL revocation:
-            # 1. Default provisioned directories
-            home = Path.home()
-            dirs_to_revoke: list[str] = [
-                str(self.node_dir),
-                str(self.node_dir / "node_modules"),
-                str(home / ".openclaw"),
-                str(Path(os.environ.get("LOCALAPPDATA", "")) / "Temp"),
-            ]
-            for legacy in LEGACY_NODE_DIRS:
-                if str(legacy) != str(self.node_dir):
-                    dirs_to_revoke.append(str(legacy))
-                    dirs_to_revoke.append(str(legacy / "node_modules"))
-
-            # 2. User-added directories from electron-store settings
-            #    (sandboxGrantHistory tracks every directory we ever granted ACLs to)
-            appdata = os.environ.get("APPDATA", "")
-            if appdata:
-                settings_file = Path(appdata) / "microclaw" / "settings.json"
-                if settings_file.exists():
-                    try:
-                        import json
-
-                        settings = json.loads(settings_file.read_text(encoding="utf-8"))
-                        for key in (
-                            "sandboxGrantHistory",
-                            "sandboxUserDirsRW",
-                            "sandboxUserDirsRO",
-                        ):
-                            for d in settings.get(key, []):
-                                if d and d not in dirs_to_revoke:
-                                    dirs_to_revoke.append(d)
-                        self.log.info(
-                            f"  从 settings.json 读取到 {len(dirs_to_revoke)} 个 ACL 目录"
-                        )
-                    except Exception as e:
-                        self.log.warn(f"  读取 settings.json 失败: {e}")
-
-            # Revoke directory ACLs
-            for dir_path in dirs_to_revoke:
-                if Path(dir_path).exists():
-                    subprocess.run(
-                        [str(launcher), "revoke", "--name", container_name, "--dir", dir_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        creationflags=_CREATE_NO_WINDOW,
-                    )
-            # Remove loopback exemption
-            subprocess.run(
-                [str(launcher), "loopback", "--name", container_name, "--remove"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-            # Delete profile (also removes ancestor traverse ACLs since the SID is deleted)
-            subprocess.run(
-                [str(launcher), "delete", "--name", container_name],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-            self.log.info("AppContainer profile 已删除")
-        except Exception as e:
-            self.log.warn(f"AppContainer 清理失败: {e}")
 
     # ────────────────────── Uninstall ──────────────────────
 
@@ -5931,7 +5567,6 @@ class WindowsSetup:
         self._uninstall_kill_desktop()
         self._uninstall_plugins()
         self._uninstall_clean_official()
-        self._uninstall_appcontainer()
         self._uninstall_clean_desktop()
         self._uninstall_clean_config()
         self._uninstall_clean_shortcuts()

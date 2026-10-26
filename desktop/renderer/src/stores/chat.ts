@@ -1593,7 +1593,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * Attach the actual shell command (from sandbox-preload) to the most recent
+   * Attach the actual shell command to the most recent
    * in-progress "exec" tool call. The preload fires this IPC right before
    * executing, so there's always at most one pending exec at that moment.
    */

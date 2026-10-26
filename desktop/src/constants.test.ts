@@ -20,7 +20,6 @@ import {
   WS_RECONNECT_MAX_MS,
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
-  SANDBOX_PERMISSION_TIMEOUT_MS,
   AGENT_WARMUP_PROMPT,
   AGENT_WARMUP_SESSION_KEY,
   AGENT_WARMUP_TIMEOUT_MS,
@@ -137,16 +136,6 @@ describe("constants", () => {
         "timeout",
       ];
       expect(statuses).toHaveLength(7);
-    });
-  });
-
-  describe("sandbox permission timeout", () => {
-    it("SANDBOX_PERMISSION_TIMEOUT_MS is 60s", () => {
-      expect(SANDBOX_PERMISSION_TIMEOUT_MS).toBe(60_000);
-    });
-
-    it("SANDBOX_PERMISSION_TIMEOUT_MS > 0 (not infinite)", () => {
-      expect(SANDBOX_PERMISSION_TIMEOUT_MS).toBeGreaterThan(0);
     });
   });
 });

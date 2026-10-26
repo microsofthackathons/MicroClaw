@@ -335,9 +335,9 @@ export default {
     "Additional folder grants are additive, not an exclusive allowlist. Read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
   "settings.windowsNodeMxcModeOff": "Off",
   "settings.windowsNodeMxcModeOffDesc":
-    "Turns off the bundled Windows node route and restores the remembered standard sandbox setting.",
+    "Turns off MXC. Agent tools run directly on Windows without an execution sandbox.",
   "settings.windowsNodeMxcOffWarning":
-    "Non-MXC: protection falls back to the remembered standard sandbox setting and may be unsandboxed if that setting is off.",
+    "No execution sandbox: agent tools can access resources available to your Windows account.",
   "settings.windowsNodeMxcSelected": "Selected",
   "settings.windowsNodeMxcUseFull": "Use Full containment",
   "settings.windowsNodeMxcUseLimited": "Use Limited containment",
@@ -551,33 +551,19 @@ export default {
   "settings.windowsNodeMxcActivationLease": "Activation lease",
   "settings.windowsNodeMxcGatewayGeneration": "Gateway generation",
   "settings.windowsNodeMxcCompatibility":
-    "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. AppContainer and this mode are mutually exclusive.",
+    "Allow Windows UI APIs is required for PowerShell under MXC 0.7. It is a compatibility relaxation, not activation of UI capabilities. MXC is the only tool execution sandbox; Off runs without sandboxing.",
   "settings.windowsNodeMxcDegraded":
     "Warning: this machine uses degraded DACL-based MXC containment. Execution remains blocked unless every other proof passes.",
-  "settings.sandboxEnabled": "Tool sandbox (AppContainer)",
   "settings.externalApps": "Apps allowed outside the sandbox",
   "settings.externalAppsHint":
     "These apps run outside the sandbox when AI tools invoke them, because they need COM/RPC access. Only add apps you trust.",
   "settings.addApp": "App name",
-  "settings.sandboxDirs": "Folder access",
-  "settings.sandboxDirsHint":
-    "Grant the sandbox read-only or read-write access to additional directories. Changes take effect immediately. Adding a parent directory automatically removes redundant child entries. A child directory can be read-write under a read-only parent, but not the reverse. Note: changing permissions on a drive root (e.g. C:\\) requires administrator privileges and may be slow while files are enumerated.",
   "settings.sandboxDirsRW": "Read and write",
   "settings.sandboxDirsRO": "Read only",
   "settings.sandboxAddDir": "Add folder",
   "settings.sandboxNoDirs": "No custom directories",
-  "settings.sandboxParentCovers":
-    'The parent directory "{parentDir}" already has {access} access — this subdirectory is already covered.',
-  "settings.sandboxParentRWCovers":
-    'The parent directory "{parentDir}" already has read-write access — setting read-only on a subdirectory is ineffective because it inherits the higher permission.',
   "settings.sandboxChildrenRemoved":
     "Auto-removed {count} subdirectory(s) now covered by the parent directory.",
-  "settings.sandboxSystemDir": "System",
-  "settings.sandboxRestartHint": "Requires a gateway restart to take effect",
-  "settings.sandboxCaps": "Sandbox capabilities",
-  "settings.sandboxCapsHint":
-    "Let sandboxed tool processes access the network. Changing this restarts the gateway.",
-  "settings.sandboxCapsRestarting": "Restarting gateway…",
   "settings.cap.internetClient": "Allow outbound network access",
   "settings.cap.internetClientServer": "Inbound + outbound network (internetClientServer)",
   "settings.cap.privateNetworkClientServer": "Private network / LAN (privateNetworkClientServer)",

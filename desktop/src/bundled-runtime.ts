@@ -1,10 +1,32 @@
-import { extractAll } from "@electron/asar";
+import { extractAll, extractFile } from "@electron/asar";
 import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
 
 const RUNTIME_ENTRY = path.join("node_modules", "openclaw", "openclaw.mjs");
 const VERSION_MARKER = ".microclaw-version";
+
+export function runtimeArchiveCacheVersion(
+  archivePath: string,
+  desktopVersion: string,
+  readArchiveFile: (archive: string, filename: string) => Buffer = extractFile,
+): string {
+  const metadata: unknown = JSON.parse(
+    readArchiveFile(archivePath, "node_modules/openclaw/package.json").toString("utf8"),
+  );
+  if (
+    !metadata ||
+    typeof metadata !== "object" ||
+    !("name" in metadata) ||
+    metadata.name !== "openclaw" ||
+    !("version" in metadata) ||
+    typeof metadata.version !== "string" ||
+    !metadata.version.trim()
+  ) {
+    throw new Error("Bundled OpenClaw archive has invalid package metadata");
+  }
+  return `${desktopVersion}:openclaw@${metadata.version}`;
+}
 
 export function materializeRuntimeArchive(
   archivePath: string,
@@ -45,5 +67,9 @@ export function resolveBundledOpenClawDir(): string | null {
   const archivePath = path.join(process.resourcesPath, "openclaw.asar");
   if (!fs.existsSync(archivePath)) return null;
   const runtimeRoot = path.join(app.getPath("userData"), "runtime", "openclaw");
-  return materializeRuntimeArchive(archivePath, runtimeRoot, app.getVersion());
+  return materializeRuntimeArchive(
+    archivePath,
+    runtimeRoot,
+    runtimeArchiveCacheVersion(archivePath, app.getVersion()),
+  );
 }

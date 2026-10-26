@@ -74,6 +74,16 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onIntegrityAlert: noopSub,
     },
     windowsNodeMxc: {
+      getFolders: async () => ({ rw: [], ro: [] }),
+      setFolderPolicy: async () => {
+        throw new Error("Unavailable in browser development");
+      },
+      stageFolder: async ({ draft }) => ({
+        ok: false,
+        canceled: true,
+        reason: "browser-dev",
+        dirs: draft,
+      }),
       getStatus: async () => ({
         requestedMode: "off" as const,
         effectiveStrength: "off" as const,
@@ -173,42 +183,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onApprovalResolved: noopSub,
       onLifecycleState: noopSub,
     },
-    sandbox: {
-      getStatus: async () => ({
-        available: true,
-        enabled: true,
-        launcherPath: null,
-        containerName: "browser-dev",
-        capabilities: [],
-        sandboxDirsRW: [],
-        sandboxDirsRO: [],
-        externalApps: [],
-      }),
-      setEnabled: async () => ({ ok: true }),
-      getExternalApps: async () => [],
-      setExternalApps: async (apps) => ({ ok: true, apps }),
-      applyExternalApps: async () => ({ ok: true, restarted: false }),
-      getCapabilities: async () => [],
-      setCapabilities: async (caps) => ({ ok: true, caps, needsRestart: false }),
-      provision: async () => true,
-      getUserDirs: async () => ({ rw: [], ro: [] }),
-      addUserDir: async () => ({ ok: false, reason: "browser-dev", dirs: { rw: [], ro: [] } }),
-      stageUserDir: async ({ draft }) => ({
-        ok: false,
-        reason: "browser-dev",
-        dirs: draft,
-      }),
-      removeUserDir: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
-      setUserDirAccess: async () => ({ ok: true, dirs: { rw: [], ro: [] } }),
-      onPermissionRequest: noopSub,
-      respondPermission: noopAsync,
-      onAclTimeout: noopSub,
-      onAclIneffective: noopSub,
-      onPermissionCompleted: noopSub,
-      verifyAcls: async () => ({ missing: [], stale: [], ok: [], errors: [] }),
-      repairAcl: async () => ({ ok: true }),
-      revokeStaleAcl: async () => ({ ok: true }),
-    },
     settings: {
       get: async () => ({
         language: "en-US",
@@ -256,7 +230,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       clearHistory: async () => ({ cleared: 0 }),
       onEvent: noopSub,
       onToolEvent: noopSub,
-      onExecCommand: noopSub,
     },
     cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },

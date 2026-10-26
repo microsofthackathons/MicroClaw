@@ -266,7 +266,7 @@ test("prepared package resource is provenance-pinned and excludes a nested OpenC
   const manifest = prepareWeixinPluginResource({ source: sourceDir, destination });
   assert.equal(manifest.contract, WEIXIN_RUNTIME_MANIFEST_CONTRACT);
   assert.equal(manifest.packageVersion, "2.4.6");
-  assert.equal(manifest.sdkCompatibility, "2026.10.2");
+  assert.equal(manifest.sdkCompatibility, "2026.10.5");
   assert.ok(manifest.files.length > 0);
   assert.ok(manifest.requiredOpenClawExports.includes("./plugin-sdk/command-auth-native"));
   assert.ok(!manifest.requiredOpenClawExports.includes("./plugin-sdk/infra-runtime"));

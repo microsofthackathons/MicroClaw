@@ -30,11 +30,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(scriptDir, "..");
 const repositoryDir = path.resolve(desktopDir, "..");
 const sourceDir = path.join(repositoryDir, "plugins", "openclaw-weixin");
-const vendorArchive = path.join(
-  sourceDir,
-  "vendor",
-  "tencent-weixin-openclaw-weixin-2.4.6.tgz",
-);
+const vendorArchive = path.join(sourceDir, "vendor", "tencent-weixin-openclaw-weixin-2.4.6.tgz");
 const resourcesDir = path.join(desktopDir, "resources");
 const resourceDir = path.join(resourcesDir, "openclaw-weixin");
 
@@ -97,12 +93,7 @@ export function writeWeixinRuntimeManifest(root) {
     };
   });
   const treeSha256 = createHash("sha256")
-    .update(
-      files
-        .map((file) => `${file.path}|${file.size}|${file.sha256}`)
-        .join("\n"),
-      "utf8",
-    )
+    .update(files.map((file) => `${file.path}|${file.size}|${file.sha256}`).join("\n"), "utf8")
     .digest("hex");
   const manifest = {
     contract: WEIXIN_RUNTIME_MANIFEST_CONTRACT,
@@ -168,10 +159,10 @@ export function prepareWeixinPluginResource({
     }
     const manifest = writeWeixinRuntimeManifest(staging);
     if (
-      manifest.sdkCompatibility !== "2026.10.2" ||
+      manifest.sdkCompatibility !== "2026.10.5" ||
       !fs.existsSync(path.join(staging, "dist", "index.js"))
     ) {
-      throw new Error("The staged Weixin runtime is not compatible with OpenClaw 2026.10.2");
+      throw new Error("The staged Weixin runtime is not compatible with OpenClaw 2026.10.5");
     }
     fs.rmSync(destination, { recursive: true, force: true });
     fs.renameSync(staging, destination);

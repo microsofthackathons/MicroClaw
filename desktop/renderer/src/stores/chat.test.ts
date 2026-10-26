@@ -36,7 +36,6 @@ Object.defineProperty(globalThis, "window", {
         restart: vi.fn(),
       },
       settings: { get: mockGetSettings },
-      sandbox: { onPermissionRequest: vi.fn() },
       skills: { pendingIntegrityResult: vi.fn().mockResolvedValue(null) },
       cron: { list: vi.fn().mockResolvedValue({ jobs: [] }) },
     },

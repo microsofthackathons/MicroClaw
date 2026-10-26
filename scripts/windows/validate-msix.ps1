@@ -33,18 +33,21 @@ try {
         'MicroClawDesktop.exe',
         'resources\node.exe',
         'resources\openclaw.asar',
-        'resources\AppContainerLauncher.exe',
-        'resources\sandbox-preload.js',
-        'resources\sandbox-host-runtime.js',
-        'resources\sandbox-state.js',
-        'resources\sandbox-permission.js',
-        'resources\sandbox-fs-hooks.js',
-        'resources\sandbox-cp-hooks.js',
-        'resources\sandbox-sensitive.js',
-        'resources\path-extraction.js'
+        'resources\windows-node\RUNTIME.json',
+        'resources\windows-node\host\microclaw-windows-node-host.exe',
+        'resources\windows-node\canvas-host\microclaw-windows-node-canvas-host.exe',
+        'resources\windows-node\host-prep\microclaw-mxc-host-prep.exe',
+        'resources\windows-node\mxc\wxc-exec.exe',
+        'resources\windows-node\mxc\wxc-host-prep.exe',
+        'resources\openclaw-weixin\microclaw-runtime.json'
     )
     $packageFiles = $archive.Entries.FullName |
         ForEach-Object { [Uri]::UnescapeDataString($_).Replace('/', '\') }
+    foreach ($relativePath in $packageFiles) {
+        if ($relativePath -match '(?i)(^|\\)resources\\(AppContainerLauncher\.exe|sandbox-(preload|host-runtime|state|permission|fs-hooks|cp-hooks|sensitive)\.js|path-extraction\.js)$') {
+            throw "MSIX contains a retired AppContainer resource: $relativePath"
+        }
+    }
     foreach ($relativePath in $required) {
         $found = $packageFiles |
             Where-Object { $_.EndsWith($relativePath, [StringComparison]::OrdinalIgnoreCase) } |

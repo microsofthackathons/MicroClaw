@@ -2,7 +2,7 @@
 #
 # Runs the end-to-end packaging script (build.ps1) on every PR.
 # Verifies that the entire pipeline still produces:
-#   - AppContainerLauncher.exe (.NET 9)
+#   - Native Windows Node + MXC runtime and WeChat resources
 #   - bundled Windows Node host (.NET 10) + official MXC runtime
 #   - desktop\release\win-unpacked\ (electron-builder)
 #   - dist\microclaw-portable.zip

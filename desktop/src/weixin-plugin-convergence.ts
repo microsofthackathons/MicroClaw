@@ -7,7 +7,7 @@ const RUNTIME_MANIFEST_CONTRACT = "microclaw.weixin-runtime.v1";
 const WEIXIN_EXTENSION_DIRECTORY = "openclaw-weixin";
 const WEIXIN_PACKAGE_NAME = "@tencent-weixin/openclaw-weixin";
 const WEIXIN_PACKAGE_VERSION = "2.4.6";
-const OPENCLAW_SDK_VERSION = "2026.10.2";
+const OPENCLAW_SDK_VERSION = "2026.10.5";
 
 interface RuntimeManifestFile {
   path: string;
@@ -156,9 +156,7 @@ function validateRuntimeTree(
   }
   const treeSha256 = createHash("sha256")
     .update(
-      manifest.files
-        .map((file) => `${file.path}|${file.size}|${file.sha256}`)
-        .join("\n"),
+      manifest.files.map((file) => `${file.path}|${file.size}|${file.sha256}`).join("\n"),
       "utf8",
     )
     .digest("hex");
@@ -209,7 +207,9 @@ function validateHostOpenClaw(hostPackageDir: string, manifest: RuntimeManifest)
     (requiredExport) => !Object.prototype.hasOwnProperty.call(exports, requiredExport),
   );
   if (missing.length > 0) {
-    throw new Error(`The OpenClaw host is missing required Weixin SDK exports: ${missing.join(", ")}`);
+    throw new Error(
+      `The OpenClaw host is missing required Weixin SDK exports: ${missing.join(", ")}`,
+    );
   }
 }
 

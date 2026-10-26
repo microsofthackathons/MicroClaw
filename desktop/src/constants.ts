@@ -79,11 +79,6 @@ export const MODEL_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 /** Max wait for plugin channels before a compatibility restart (ms). */
 export const POST_SPAWN_CHANNEL_READY_TIMEOUT_MS = 5_000;
 
-/** Timeout for sandbox permission requests — file, shell, and app approval (ms).
- *  Shared by sandbox-preload.js (via env var) and main.ts (remote approval).
- *  After this timeout, pending prompts auto-deny to prevent consent fatigue. */
-export const SANDBOX_PERMISSION_TIMEOUT_MS = 60_000;
-
 /** Timeout for the WeChat login flow (ms). */
 export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
 

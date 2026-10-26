@@ -81,7 +81,12 @@ describe("Weixin login lifecycle", () => {
     expect(activation).toBeGreaterThanOrEqual(0);
     expect(revalidation).toBeGreaterThan(activation);
     expect(resolution).toBeGreaterThan(revalidation);
-    expect(handler).toContain("revalidatedConfiguration.owner.accountId !== inbound.accountId");
-    expect(handler).toContain("revalidatedConfiguration.owner.userId !== inbound.senderId");
+    expect(handler).toContain(
+      "weixinRemoteApprovalWireSourceRejection(\n    revalidatedConfiguration,\n    inbound,\n    readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),",
+    );
+    expect(handler).toContain("sourceRejection !== null");
+    expect(handler).toContain(
+      "!windowsNodeMxcWeixinRemoteApprovalBroker.isAuthenticatedSource(inbound)",
+    );
   });
 });

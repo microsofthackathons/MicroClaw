@@ -314,9 +314,10 @@ export default {
   "settings.windowsNodeMxcLimitedFilesystemWarning":
     "额外文件夹授权是叠加式授权，并非排他允许列表。只读授权无法降低 Windows 环境 ACL 已允许的访问。",
   "settings.windowsNodeMxcModeOff": "关闭",
-  "settings.windowsNodeMxcModeOffDesc": "关闭内置 Windows 节点路径，并恢复之前记住的标准沙箱设置。",
+  "settings.windowsNodeMxcModeOffDesc":
+    "关闭 MXC。智能体工具直接在 Windows 上执行，不使用执行沙箱。",
   "settings.windowsNodeMxcOffWarning":
-    "非 MXC：保护将回退到之前记住的标准沙箱设置；如果该设置已关闭，命令可能不受沙箱保护。",
+    "无执行沙箱：智能体工具可以访问当前 Windows 账号有权访问的资源。",
   "settings.windowsNodeMxcSelected": "已选择",
   "settings.windowsNodeMxcUseFull": "使用完整隔离",
   "settings.windowsNodeMxcUseLimited": "使用有限隔离",
@@ -517,31 +518,18 @@ export default {
   "settings.windowsNodeMxcActivationLease": "激活租约",
   "settings.windowsNodeMxcGatewayGeneration": "网关代次",
   "settings.windowsNodeMxcCompatibility":
-    "MXC 0.7 下 PowerShell 需要“允许 Windows UI API”。这是兼容性放宽，并不启用屏幕、输入或其他 UI 能力。AppContainer 与此模式互斥。",
+    "MXC 0.7 下 PowerShell 需要“允许 Windows UI API”。这是兼容性放宽，并不启用屏幕、输入或其他 UI 能力。MXC 是唯一的工具执行沙箱；关闭后不使用沙箱。",
   "settings.windowsNodeMxcDegraded":
     "警告：此计算机使用基于 DACL 的降级 MXC 隔离。除非其余所有证明均通过，否则执行仍会被阻止。",
-  "settings.sandboxEnabled": "工具沙箱（AppContainer）",
   "settings.externalApps": "允许在沙箱外运行的应用",
   "settings.externalAppsHint":
     "以下应用在被 AI 工具调用时将在沙箱外运行，因为它们需要 COM/RPC 等系统访问。仅添加你信任的应用。",
   "settings.addApp": "输入应用名",
-  "settings.sandboxDirs": "文件夹访问权限",
-  "settings.sandboxDirsHint":
-    "为沙箱授予对额外目录的只读或读写权限。更改立即生效。添加上级目录时，已被覆盖的子目录权限将自动移除。子目录可以在只读上级目录下设置为读写，但反之不行（上级目录读写时，子目录无法降级为只读）。注意：对磁盘根目录（如 C:\\）的权限修改需要管理员权限，且因需遍历大量文件可能较慢，请耐心等待。",
   "settings.sandboxDirsRW": "读写",
   "settings.sandboxDirsRO": "只读",
   "settings.sandboxAddDir": "添加文件夹",
   "settings.sandboxNoDirs": "暂无自定义目录",
-  "settings.sandboxParentCovers":
-    "上级目录「{parentDir}」已有{access}权限，该子目录已被覆盖，无需单独添加。",
-  "settings.sandboxParentRWCovers":
-    "上级目录「{parentDir}」已有读写权限，子目录设置只读无效（会继承上级目录的更高权限）。",
   "settings.sandboxChildrenRemoved": "已自动移除 {count} 个被上级目录覆盖的子目录。",
-  "settings.sandboxSystemDir": "系统",
-  "settings.sandboxRestartHint": "需要重启网关后才能生效",
-  "settings.sandboxCaps": "沙箱能力",
-  "settings.sandboxCapsHint": "允许沙箱内工具进程访问网络。更改后将自动重启网关。",
-  "settings.sandboxCapsRestarting": "正在重启网关…",
   "settings.cap.internetClient": "允许出站网络访问",
   "settings.cap.internetClientServer": "入站和出站网络（internetClientServer）",
   "settings.cap.privateNetworkClientServer": "私有网络或局域网（privateNetworkClientServer）",

@@ -26,7 +26,7 @@ function writeJson(filePath: string, value: unknown): void {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function createHost(root: string, version = "2026.10.2", includeExport = true): string {
+function createHost(root: string, version = "2026.10.5", includeExport = true): string {
   const host = path.join(root, "host");
   writeJson(path.join(host, "package.json"), {
     name: "openclaw",
@@ -42,7 +42,7 @@ function createBundle(root: string, options: { nestedCore?: boolean } = {}): str
     name: "@tencent-weixin/openclaw-weixin",
     version: "2.4.6",
     openclaw: { runtimeExtensions: ["./dist/index.js"] },
-    microclaw: { sdkCompatibility: "2026.10.2" },
+    microclaw: { sdkCompatibility: "2026.10.5" },
   });
   fs.mkdirSync(path.join(bundle, "dist"), { recursive: true });
   fs.writeFileSync(
@@ -77,7 +77,7 @@ function createBundle(root: string, options: { nestedCore?: boolean } = {}): str
     contract: "microclaw.weixin-runtime.v1",
     packageName: "@tencent-weixin/openclaw-weixin",
     packageVersion: "2.4.6",
-    sdkCompatibility: "2026.10.2",
+    sdkCompatibility: "2026.10.5",
     requiredOpenClawExports: ["./plugin-sdk/runtime"],
     treeSha256: createHash("sha256")
       .update(files.map((file) => `${file.path}|${file.size}|${file.sha256}`).join("\n"))
@@ -163,7 +163,8 @@ describe("Weixin plugin runtime convergence", () => {
   it("fails closed before mutation for an incompatible host version or missing SDK export", () => {
     for (const host of [
       createHost(createRoot(), "2026.7.1-1"),
-      createHost(createRoot(), "2026.10.2", false),
+      createHost(createRoot(), "2026.10.2"),
+      createHost(createRoot(), "2026.10.5", false),
     ]) {
       const root = createRoot();
       const stateDir = path.join(root, "state");
@@ -174,7 +175,7 @@ describe("Weixin plugin runtime convergence", () => {
           stateDir,
           hostPackageDir: host,
         }),
-      ).toThrow(/requires OpenClaw 2026\.10\.2|missing required Weixin SDK exports/);
+      ).toThrow(/requires OpenClaw 2026\.10\.5|missing required Weixin SDK exports/);
       expect(fs.existsSync(installedRoot(stateDir))).toBe(false);
     }
   });

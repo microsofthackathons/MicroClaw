@@ -140,7 +140,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.process_job = unittest.mock.Mock()
         self.ws._create_process_lifetime_job = unittest.mock.Mock(return_value=self.process_job)
         self.ws.progress_callback = None
-        self.ws.appcontainer_enabled = True
         self.ws.weixin_plugin_enabled = True
         self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
 
@@ -160,12 +159,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
     @staticmethod
     def _install_manifest(**overrides):
         return {
-            "schema": 1,
+            "schema": 2,
             "desktopArchiveSha256": "desktop",
             "installerBundleId": "installer",
             "managedSkillsId": "skills",
             "openClawVersion": OPENCLAW_TARGET_VERSION,
-            "appContainerSchema": 1,
+            "mxcSchema": 1,
             **overrides,
         }
 
@@ -283,79 +282,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws.check_openclaw_windows())
 
-    def test_appcontainer_provisions_actual_runtime_prefix_and_native_ancestor_grants(self):
-        prefix = self.appdata / "npm"
-        package = self._write_package(prefix, OPENCLAW_TARGET_VERSION)
-        self.ws.install_prefix = prefix
-        self.ws._find_appcontainer_launcher = unittest.mock.Mock(return_value=Path("launcher.exe"))
-        self.ws._appcontainer_access_is_sufficient = unittest.mock.Mock(return_value=False)
-        sid = "S-1-15-2-12345"
-        with unittest.mock.patch(
-            "deployer.windows_setup.subprocess.run",
-            return_value=subprocess.CompletedProcess([], 0, stdout=sid, stderr=""),
-        ) as run:
-            self.assertTrue(self.ws.provision_appcontainer())
-        grant = next(
-            call
-            for call in run.call_args_list
-            if "grant" in call.args[0] and str(package) in call.args[0]
-        )
-        self.assertEqual(grant.args[0][-2:], ["--access", "r"])
-        self.assertEqual(grant.kwargs["timeout"], 300)
-        self.assertFalse(any(call.args[0][0] == "icacls" for call in run.call_args_list))
-        sandbox = str(self.home / ".openclaw" / "sandbox")
-        sandbox_calls = [
-            call
-            for call in run.call_args_list
-            if "grant" in call.args[0] and sandbox in call.args[0]
-        ]
-        self.assertEqual(len(sandbox_calls), 2)
 
-    def test_appcontainer_does_not_report_success_when_required_grant_fails(self):
-        self.ws._find_appcontainer_launcher = unittest.mock.Mock(return_value=Path("launcher.exe"))
-        self.ws._appcontainer_access_is_sufficient = unittest.mock.Mock(return_value=False)
-        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=False)
 
-        def run(command, **_kwargs):
-            failed = "grant" in command
-            return subprocess.CompletedProcess(
-                command,
-                1 if failed else 0,
-                stdout="S-1-15-2-12345",
-                stderr="access denied" if failed else "",
-            )
-
-        with unittest.mock.patch("deployer.windows_setup.subprocess.run", side_effect=run):
-            self.assertFalse(self.ws.provision_appcontainer())
-        self.ws._validate_appcontainer_smoke.assert_called_once()
-        self.ws._validate_appcontainer_smoke.reset_mock(return_value=True)
-        self.ws._validate_appcontainer_smoke.return_value = True
-        with unittest.mock.patch("deployer.windows_setup.subprocess.run", side_effect=run):
-            self.assertTrue(self.ws.provision_appcontainer())
-        self.ws._validate_appcontainer_smoke.assert_called_once()
-
-    def test_appcontainer_smoke_checks_actual_node_runtime_and_sandbox_write(self):
-        prefix = self.appdata / "npm"
-        package = self._write_package(prefix, OPENCLAW_TARGET_VERSION)
-        self.ws.install_prefix = prefix
-        self.ws.appcontainer_enabled = True
-        self.ws._find_appcontainer_launcher = unittest.mock.Mock(return_value=Path("launcher.exe"))
-        node = self.program_files / "nodejs" / "node.exe"
-        self.ws._resolve_validation_node = unittest.mock.Mock(return_value=node)
-        self.ws._run = unittest.mock.Mock(
-            return_value=subprocess.CompletedProcess(
-                [], 0, stdout="microclaw-sandbox-ok", stderr=""
-            )
-        )
-        self.assertTrue(self.ws._validate_appcontainer_smoke())
-        command = self.ws._run.call_args.args[0]
-        self.assertEqual(command[command.index("--exe") + 1], str(node))
-        self.assertEqual(command[-2], str(package / "package.json"))
-        self.assertEqual(command[-1], str(self.home / ".openclaw" / "sandbox"))
-        self.assertIn("fs.readFileSync(process.argv[1])", command[command.index("-e") + 1])
-        self.assertIn("fs.writeFileSync", command[command.index("-e") + 1])
-        self.ws._run.return_value = subprocess.CompletedProcess([], 1, stdout="", stderr="denied")
-        self.assertFalse(self.ws._validate_appcontainer_smoke())
 
     def test_source_installer_requires_compatible_staged_weixin_runtime(self):
         project = self.root / "project"
@@ -1527,7 +1455,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             side_effect=AssertionError("Post-install validation must not launch CLI queries")
         )
         self.ws._validate_weixin_plugin = unittest.mock.Mock(return_value=True)
-        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=True)
 
         self.assertTrue(self.ws.verify_openclaw_upgrade())
 
@@ -1535,7 +1462,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("appcontainer", True),
                 ("health", True),
             ],
         )
@@ -1553,7 +1479,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
         self.ws._stop_validation_gateway = unittest.mock.Mock()
         self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
-        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=True)
         self.ws._run_openclaw_json = unittest.mock.Mock()
 
         self.assertTrue(self.ws.verify_openclaw_upgrade())
@@ -1561,7 +1486,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._validate_installed_version.assert_called_once()
         self.ws._start_validation_gateway.assert_called_once()
         self.ws._validate_gateway_health.assert_called_once()
-        self.ws._validate_appcontainer_smoke.assert_called_once()
         self.ws._run_openclaw_json.assert_not_called()
         self.ws._stop_validation_gateway.assert_called_once_with(process)
         transaction.mark_verifying.assert_called_once()
@@ -1569,7 +1493,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("appcontainer", True),
                 ("health", True),
             ],
         )
@@ -1614,7 +1537,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._stop_validation_gateway = unittest.mock.Mock()
         self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
         self.ws._validate_weixin_plugin = unittest.mock.Mock(return_value=True)
-        self.ws._validate_appcontainer_smoke = unittest.mock.Mock(return_value=True)
 
         self.assertTrue(self.ws.verify_openclaw_upgrade())
 
@@ -1622,7 +1544,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [call.args for call in transaction.record_validation.call_args_list],
             [
                 ("version", True),
-                ("appcontainer", True),
                 ("health", True),
             ],
         )
@@ -2751,23 +2672,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             "updated",
         )
 
-    def test_appcontainer_acl_preflight_recognizes_sufficient_access(self):
-        self.ws._run = unittest.mock.Mock(
-            return_value=SimpleNamespace(
-                returncode=0,
-                stdout='{"exists":true,"sufficient":true}',
-                stderr="",
-            )
-        )
-
-        self.assertTrue(
-            self.ws._appcontainer_access_is_sufficient(
-                Path("AppContainerLauncher.exe"),
-                "MicroClaw",
-                str(self.root),
-                "rw",
-            )
-        )
 
     def test_defender_exclusions_skip_elevation_when_already_configured(self):
         directories = [self.root / "one", self.root / "two"]

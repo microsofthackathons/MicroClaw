@@ -10,7 +10,8 @@ describe("createBrowserOpenClawMock", () => {
     await expect(api.settings.get()).resolves.toMatchObject({ minimizeToTray: false });
     await expect(api.plugin.weixin.getStatus()).resolves.toMatchObject({ loggedIn: false });
 
-    expect(api.sandbox.onPermissionRequest(vi.fn())).toBeTypeOf("function");
+    expect(api).not.toHaveProperty("sandbox");
+    expect(api.windowsNodeMxc.onApprovalRequest(vi.fn())).toBeTypeOf("function");
     expect(api.plugin.weixin.onLoginOutput(vi.fn())).toBeTypeOf("function");
     expect(api.plugin.weixin.onLoginDone(vi.fn())).toBeTypeOf("function");
     expect(api.window.onMaximizeChange(vi.fn())).toBeTypeOf("function");

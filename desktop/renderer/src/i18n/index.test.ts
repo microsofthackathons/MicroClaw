@@ -150,7 +150,7 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("Disable Windows Node + MXC");
     expect(t("settings.windowsNodeMxcModeFull")).toBe("Full containment");
     expect(t("settings.windowsNodeMxcModeLimited")).toBe("Limited containment (DACL)");
-    expect(t("settings.windowsNodeMxcOffWarning")).toContain("remembered standard sandbox setting");
+    expect(t("settings.windowsNodeMxcOffWarning")).toContain("No execution sandbox");
     expect(t("settings.windowsNodeMxcFullFolders")).toBe("Full hard-boundary approved folders");
     expect(t("settings.windowsNodeMxcLimitedFolders")).toBe("Limited additional filesystem grants");
     expect(t("settings.windowsNodeMxcLimitedFoldersHint")).toContain("not an exclusive allowlist");
@@ -181,7 +181,7 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("请先禁用 Windows Node + MXC");
     expect(t("settings.windowsNodeMxcModeFull")).toBe("完整隔离");
     expect(t("settings.windowsNodeMxcModeLimited")).toBe("有限隔离（DACL）");
-    expect(t("settings.windowsNodeMxcOffWarning")).toContain("之前记住的标准沙箱设置");
+    expect(t("settings.windowsNodeMxcOffWarning")).toContain("无执行沙箱");
     expect(t("settings.windowsNodeMxcFullFolders")).toBe("完整强边界批准文件夹");
     expect(t("settings.windowsNodeMxcLimitedFolders")).toBe("有限模式额外文件系统授权");
     expect(t("settings.windowsNodeMxcLimitedFoldersHint")).toContain("并非排他允许列表");

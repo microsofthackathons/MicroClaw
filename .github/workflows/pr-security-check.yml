@@ -6,7 +6,7 @@
 #
 # Covers all three language stacks:
 #   - JavaScript / TypeScript (Electron + Vue)
-#   - C# / .NET 9 (AppContainerLauncher)
+#   - C# / .NET (native Windows Node + MXC helpers)
 #   - Python (Deployer / Installer)
 #
 # Each job only runs when its relevant files are changed (path filtering).
@@ -52,7 +52,6 @@ jobs:
               - 'skills/**'
               - 'plugins/**'
             csharp:
-              - 'appcontainer/**'
               - 'windows-node-host/**'
               - 'windows-node-host.Tests/**'
               - 'mxc-host-prep.Tests/**'
@@ -139,7 +138,6 @@ jobs:
 
       - name: Restore NuGet packages
         run: |
-          dotnet restore appcontainer/AppContainerLauncher.csproj
           dotnet restore windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
           dotnet restore mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
@@ -147,12 +145,6 @@ jobs:
       - name: Check for vulnerable NuGet packages
         shell: pwsh
         run: |
-          $output = dotnet list appcontainer/AppContainerLauncher.csproj package --vulnerable --include-transitive 2>&1
-          Write-Host $output
-          if ($output -match "has the following vulnerable packages") {
-            Write-Host "::error::Vulnerable NuGet packages detected!"
-            exit 1
-          }
           $output = dotnet list windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj package --vulnerable --include-transitive --no-restore 2>&1
           Write-Host $output
           if ($output -match "has the following vulnerable packages") {
@@ -168,9 +160,6 @@ jobs:
           Write-Host "No vulnerable NuGet packages found."
 
       # Build
-      - name: Build AppContainerLauncher
-        run: dotnet build appcontainer/AppContainerLauncher.csproj -c Release --no-restore
-
       - name: Test bundled Windows Node host
         run: dotnet test windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -c Release --no-restore -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 

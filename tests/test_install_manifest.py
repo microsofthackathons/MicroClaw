@@ -14,12 +14,12 @@ from deployer.install_manifest import (
 
 def _manifest(**overrides):
     return {
-        "schema": 1,
+        "schema": 2,
         "desktopArchiveSha256": "desktop",
         "installerBundleId": "installer",
         "managedSkillsId": "skills",
         "openClawVersion": "2026.8.2",
-        "appContainerSchema": 1,
+        "mxcSchema": 1,
         **overrides,
     }
 
@@ -48,7 +48,7 @@ class InstallManifestTests(unittest.TestCase):
             "installerBundleId",
             "managedSkillsId",
             "openClawVersion",
-            "appContainerSchema",
+            "mxcSchema",
         ):
             with self.subTest(key=key):
                 self.assertFalse(build_identity_matches(bundled, _manifest(**{key: "changed"})))
@@ -104,7 +104,7 @@ class InstallManifestTests(unittest.TestCase):
             "installerBundleId",
             "managedSkillsId",
             "openClawVersion",
-            "appContainerSchema",
+            "mxcSchema",
         ):
             self.assertIn(field, build_script)
         self.assertIn("dist\\install-manifest.json", build_script)

@@ -1163,306 +1163,6 @@
         >
           {{ step }}
         </div>
-
-        <div
-          v-if="windowsNodeMxcStatus?.requestedMode === 'off'"
-          class="card-group"
-          style="margin-top: 12px"
-        >
-          <div class="card-row">
-            <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
-            <div style="display: flex; align-items: center; gap: 10px">
-              <span v-if="sandboxRestarting" class="restart-hint">{{
-                t("settings.sandboxCapsRestarting")
-              }}</span>
-              <el-switch
-                v-model="sandboxStatus.enabled"
-                :disabled="sandboxRestarting"
-                @change="toggleSandbox"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div
-          v-if="windowsNodeMxcStatus?.requestedMode === 'off'"
-          :class="{ 'sandbox-disabled': !sandboxStatus.enabled }"
-        >
-          <!-- Sandbox capabilities (network) -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
-              <div style="display: flex; align-items: center; gap: 10px">
-                <span v-if="capsRestarting" class="restart-hint">{{
-                  t("settings.sandboxCapsRestarting")
-                }}</span>
-                <el-switch
-                  :model-value="sandboxCapabilities.includes('internetClient')"
-                  :disabled="capsRestarting"
-                  @change="(v: boolean) => toggleCapability('internetClient', v)"
-                />
-              </div>
-            </div>
-          </div>
-          <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
-
-          <!-- External apps whitelist -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
-              </div>
-              <div class="external-apps-list">
-                <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
-                  <span>{{ app }}</span>
-                  <button class="tag-remove" @click="removeExternalApp(idx)">&times;</button>
-                </div>
-                <div class="app-tag app-tag-add">
-                  <input
-                    v-model="newAppName"
-                    class="app-add-input"
-                    :placeholder="t('settings.addApp')"
-                    @keyup.enter="addExternalApp"
-                  />
-                  <button class="tag-add-btn" @click="addExternalApp">+</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
-
-          <!-- Sandbox directory permissions -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span
-                  class="row-label"
-                  style="margin: 0; cursor: default; user-select: none"
-                  @click="onSandboxDirsLabelClick"
-                  >{{ t("settings.sandboxDirs") }}</span
-                >
-              </div>
-              <!-- Read-Write directories -->
-              <div class="dir-section">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <el-button
-                    data-testid="sandbox-add-rw"
-                    size="small"
-                    type="primary"
-                    plain
-                    @click="addSandboxDir('rw')"
-                  >
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.rw"
-                  :key="'srw-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.rw" :key="'rw-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'rw')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.rw.length === 0 && sandboxUserDirs.rw.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- Read-Only directories -->
-              <div class="dir-section" style="margin-top: 10px">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <el-button
-                    data-testid="sandbox-add-ro"
-                    size="small"
-                    type="primary"
-                    plain
-                    @click="addSandboxDir('ro')"
-                  >
-                    {{ t("settings.sandboxAddDir") }}
-                  </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.ro"
-                  :key="'sro-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.ro" :key="'ro-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'ro')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.ro.length === 0 && sandboxUserDirs.ro.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- ACL Verify Button (dev/testing tool, triple-click to show) -->
-              <div
-                v-if="showAclVerify"
-                class="dir-section"
-                style="
-                  margin-top: 14px;
-                  border-top: 1px solid var(--border-color);
-                  padding-top: 12px;
-                "
-              >
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 8px;
-                  "
-                >
-                  <span class="dir-section-label">🔍 ACL 验证</span>
-                  <button class="dir-add-btn" :disabled="aclVerifying" @click="verifyAcls">
-                    {{ aclVerifying ? "扫描中..." : "验证权限一致性" }}
-                  </button>
-                </div>
-                <div v-if="aclVerifyResult" class="acl-verify-results">
-                  <!-- OK -->
-                  <div v-if="aclVerifyResult.ok.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-ok">
-                      ✓ 正常 ({{ aclVerifyResult.ok.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.ok"
-                      :key="'ok-' + item.dir"
-                      class="dir-item dir-item-system"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span
-                        class="dir-badge"
-                        :class="item.access === 'rw' ? 'dir-badge-rw' : 'dir-badge-ro'"
-                        >{{ item.access.toUpperCase() }}</span
-                      >
-                    </div>
-                  </div>
-                  <!-- Missing -->
-                  <div v-if="aclVerifyResult.missing.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      ⚠ 缺少 ACL ({{ aclVerifyResult.missing.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.missing"
-                      :key="'miss-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-ro">{{ item.access.toUpperCase() }}</span>
-                      <span class="acl-reason">{{ item.reason }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="repairAcl(item)"
-                      >
-                        修复
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Stale -->
-                  <div v-if="aclVerifyResult.stale.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      🗑 残留 ACL ({{ aclVerifyResult.stale.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.stale"
-                      :key="'stale-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="revokeStaleAcl(item)"
-                      >
-                        清除
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Errors -->
-                  <div v-if="aclVerifyResult.errors.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-err">
-                      ✗ 错误 ({{ aclVerifyResult.errors.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.errors"
-                      :key="'err-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="acl-reason">{{ item.error }}</span>
-                    </div>
-                  </div>
-                  <!-- Summary -->
-                  <div
-                    v-if="
-                      aclVerifyResult.missing.length === 0 &&
-                      aclVerifyResult.stale.length === 0 &&
-                      aclVerifyResult.errors.length === 0
-                    "
-                    class="acl-summary-ok"
-                  >
-                    ✓ 所有权限均已正确设置
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
-        </div>
-        <!-- .sandbox-disabled wrapper -->
       </div>
 
       <!-- Data & Privacy -->
@@ -1815,22 +1515,8 @@ watch(
     }
   },
 );
-
-// -- Sandbox state --
-const sandboxStatus = reactive({ available: false, enabled: false });
-const externalApps = ref<string[]>([]);
-const newAppName = ref("");
-const sandboxNeedsRestart = ref(false);
-const sandboxApplying = ref(false);
-/** Snapshot of external apps at load time, used to detect changes */
-let externalAppsOriginal: string[] = [];
-const sandboxUserDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 const windowsNodeMxcFolderDraft = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 const windowsNodeMxcFolderBaseline = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
-const sandboxSystemDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
-const sandboxCapabilities = ref<string[]>([]);
-const capsRestarting = ref(false);
-const sandboxRestarting = ref(false);
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
 type WindowsNodeMxcAmbientEntry = NonNullable<
@@ -2118,7 +1804,6 @@ async function applyWindowsNodeMxcMode(
       ...(requestedMode === "limited-dacl" ? { acknowledgeLimitedFilesystem } : {}),
     });
     updateWindowsNodeMxcStatus(status);
-    await loadSandboxStatus();
     return true;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
@@ -2126,147 +1811,6 @@ async function applyWindowsNodeMxcMode(
     return false;
   } finally {
     windowsNodeMxcApplying.value = false;
-  }
-}
-
-async function loadSandboxStatus() {
-  try {
-    const status = await window.openclaw.sandbox.getStatus();
-    sandboxStatus.available = status.available;
-    sandboxStatus.enabled = status.enabled;
-    externalApps.value = await window.openclaw.sandbox.getExternalApps();
-    externalAppsOriginal = [...externalApps.value];
-    sandboxNeedsRestart.value = false;
-    sandboxCapabilities.value = await window.openclaw.sandbox.getCapabilities();
-    const dirs = await window.openclaw.sandbox.getUserDirs();
-    sandboxUserDirs.rw = dirs.rw;
-    sandboxUserDirs.ro = dirs.ro;
-    // System dirs = all dirs from sandbox status minus user-added dirs
-    const userRwSet = new Set(dirs.rw.map((d: string) => d.toLowerCase()));
-    const userRoSet = new Set(dirs.ro.map((d: string) => d.toLowerCase()));
-    sandboxSystemDirs.rw = (status.sandboxDirsRW || []).filter(
-      (d: string) => !userRwSet.has(d.toLowerCase()),
-    );
-    sandboxSystemDirs.ro = (status.sandboxDirsRO || []).filter(
-      (d: string) => !userRoSet.has(d.toLowerCase()),
-    );
-  } catch {}
-}
-
-async function toggleSandbox(enabled: boolean) {
-  sandboxRestarting.value = true;
-  await window.openclaw.sandbox.setEnabled(enabled);
-  // Wait for reconnection
-  const deadline = Date.now() + 15000;
-  const poll = setInterval(async () => {
-    try {
-      if ((await window.openclaw.chat.isConnected()) || Date.now() > deadline) {
-        clearInterval(poll);
-        sandboxRestarting.value = false;
-        await loadSandboxStatus();
-      }
-    } catch {
-      clearInterval(poll);
-      sandboxRestarting.value = false;
-    }
-  }, 500);
-}
-
-function checkDirty() {
-  const a = externalApps.value;
-  const b = externalAppsOriginal;
-  sandboxNeedsRestart.value = a.length !== b.length || a.some((v, i) => v !== b[i]);
-}
-
-async function addExternalApp() {
-  const name = newAppName.value
-    .trim()
-    .toLowerCase()
-    .replace(/\.exe$/i, "");
-  if (!name || !/^[a-z0-9_-]+$/.test(name)) return;
-  if (externalApps.value.includes(name)) {
-    newAppName.value = "";
-    return;
-  }
-  externalApps.value.push(name);
-  newAppName.value = "";
-  await window.openclaw.sandbox.setExternalApps([...externalApps.value]);
-  checkDirty();
-}
-
-async function removeExternalApp(idx: number) {
-  externalApps.value.splice(idx, 1);
-  await window.openclaw.sandbox.setExternalApps([...externalApps.value]);
-  checkDirty();
-}
-
-async function toggleCapability(cap: string, enabled: boolean) {
-  if (enabled) {
-    if (!sandboxCapabilities.value.includes(cap)) sandboxCapabilities.value.push(cap);
-  } else {
-    sandboxCapabilities.value = sandboxCapabilities.value.filter((c) => c !== cap);
-  }
-  await window.openclaw.sandbox.setCapabilities([...sandboxCapabilities.value]);
-  // Auto-restart gateway (capabilities require process restart)
-  capsRestarting.value = true;
-  try {
-    await window.openclaw.gateway.restart();
-  } catch {}
-  // Wait for reconnection, then clear the hint
-  const deadline = Date.now() + 15000;
-  const poll = setInterval(async () => {
-    try {
-      if ((await window.openclaw.chat.isConnected()) || Date.now() > deadline) {
-        clearInterval(poll);
-        capsRestarting.value = false;
-      }
-    } catch {
-      clearInterval(poll);
-      capsRestarting.value = false;
-    }
-  }, 500);
-}
-
-async function _applyExternalApps() {
-  sandboxApplying.value = true;
-  try {
-    await window.openclaw.sandbox.applyExternalApps();
-    externalAppsOriginal = [...externalApps.value];
-    sandboxNeedsRestart.value = false;
-  } finally {
-    sandboxApplying.value = false;
-  }
-}
-
-async function addSandboxDir(access: "rw" | "ro", policy?: "windows-node-mxc") {
-  const result = await window.openclaw.sandbox.addUserDir({
-    access,
-    ...(policy ? { policy } : {}),
-  });
-  if (result.reason === "parent-covers") {
-    const accessLabel =
-      result.parentAccess === "rw" ? t("settings.sandboxDirsRW") : t("settings.sandboxDirsRO");
-    ElMessage.warning(
-      t("settings.sandboxParentCovers", { parentDir: result.parentDir || "", access: accessLabel }),
-    );
-    return;
-  }
-  if (result.reason === "parent-rw-covers") {
-    ElMessage.warning(t("settings.sandboxParentRWCovers", { parentDir: result.parentDir || "" }));
-    return;
-  }
-  if (result.reason && policy === "windows-node-mxc") {
-    showWindowsNodeMxcFolderPolicyError(result.reason);
-    return;
-  }
-  if (result.ok) {
-    sandboxUserDirs.rw = result.dirs.rw;
-    sandboxUserDirs.ro = result.dirs.ro;
-    if (result.removedChildren && result.removedChildren.length > 0) {
-      ElMessage.info(
-        t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
-      );
-    }
   }
 }
 
@@ -2285,12 +1829,7 @@ function showWindowsNodeMxcFolderPolicyError(reason: string) {
 
 async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
   try {
-    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-      await addSandboxDir(access, "windows-node-mxc");
-      await loadWindowsNodeMxcStatus();
-      return;
-    }
-    const result = await window.openclaw.sandbox.stageUserDir({
+    const result = await window.openclaw.windowsNodeMxc.stageFolder({
       access,
       draft: {
         rw: [...windowsNodeMxcFolderDraft.rw],
@@ -2302,7 +1841,7 @@ async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
       showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
       return;
     }
-    replaceWindowsNodeMxcFolderDraft(result.dirs);
+    await saveWindowsNodeMxcFolderDraft(result.dirs);
     if (result.removedChildren?.length) {
       ElMessage.info(
         t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
@@ -2315,18 +1854,12 @@ async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
 
 async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro") {
   try {
-    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-      const result = await window.openclaw.sandbox.setUserDirAccess({ dir, access });
-      if (!result.ok) showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
-      await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
-      return;
-    }
     const next = {
       rw: windowsNodeMxcFolderDraft.rw.filter((entry) => entry !== dir),
       ro: windowsNodeMxcFolderDraft.ro.filter((entry) => entry !== dir),
     };
     next[access].push(dir);
-    replaceWindowsNodeMxcFolderDraft(
+    await saveWindowsNodeMxcFolderDraft(
       await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
     );
   } catch (error) {
@@ -2336,22 +1869,28 @@ async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro"
 
 async function removeWindowsNodeMxcFolder(dir: string, access: "rw" | "ro") {
   try {
-    if (windowsNodeMxcStatus.value?.requestedMode === "off") {
-      await removeSandboxDir(dir, access);
-      await loadWindowsNodeMxcStatus();
-      return;
-    }
     const next = {
       rw: [...windowsNodeMxcFolderDraft.rw],
       ro: [...windowsNodeMxcFolderDraft.ro],
     };
     next[access] = next[access].filter((entry) => entry !== dir);
-    replaceWindowsNodeMxcFolderDraft(
+    await saveWindowsNodeMxcFolderDraft(
       await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
     );
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   }
+}
+
+async function saveWindowsNodeMxcFolderDraft(policy: { rw: string[]; ro: string[] }) {
+  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
+    const saved = await window.openclaw.windowsNodeMxc.setFolderPolicy(policy);
+    replaceWindowsNodeMxcFolderDraft(saved);
+    replaceWindowsNodeMxcFolderBaseline(saved);
+    await loadWindowsNodeMxcStatus();
+    return;
+  }
+  replaceWindowsNodeMxcFolderDraft(policy);
 }
 
 async function applyWindowsNodeMxcFolderPolicy() {
@@ -2375,7 +1914,6 @@ async function applyWindowsNodeMxcFolderPolicy() {
       ro: [...windowsNodeMxcFolderDraft.ro],
     });
     updateWindowsNodeMxcStatus(status);
-    await loadSandboxStatus();
     ElMessage.success(t("settings.windowsNodeMxcApplyFoldersComplete"));
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
@@ -2415,70 +1953,6 @@ async function revokeAllWindowsNodeMxcDurableApprovals() {
   }
   await window.openclaw.windowsNodeMxc.revokeAllDurableApprovals();
   await loadWindowsNodeMxcStatus();
-}
-
-async function removeSandboxDir(dir: string, access: "rw" | "ro") {
-  // Optimistic UI — remove immediately so the user sees instant feedback
-  const listKey = access === "rw" ? "rw" : "ro";
-  const idx = sandboxUserDirs[listKey].indexOf(dir);
-  if (idx >= 0) sandboxUserDirs[listKey].splice(idx, 1);
-
-  const result = await window.openclaw.sandbox.removeUserDir({ dir, access });
-  // Sync with actual backend state (adds back if revoke failed)
-  sandboxUserDirs.rw.splice(0, sandboxUserDirs.rw.length, ...result.dirs.rw);
-  sandboxUserDirs.ro.splice(0, sandboxUserDirs.ro.length, ...result.dirs.ro);
-}
-
-// -- ACL Verification (dev tool, triple-click "Sandbox Dirs" label to reveal) --
-const showAclVerify = ref(false);
-const aclVerifying = ref(false);
-const aclVerifyResult = ref<{
-  missing: Array<{ dir: string; access: string; reason: string }>;
-  stale: Array<{ dir: string; rights: string }>;
-  ok: Array<{ dir: string; access: string }>;
-  errors: Array<{ dir: string; error: string }>;
-} | null>(null);
-let _aclTripleClickCount = 0;
-let _aclTripleClickTimer: ReturnType<typeof setTimeout> | null = null;
-
-function onSandboxDirsLabelClick() {
-  _aclTripleClickCount++;
-  if (_aclTripleClickTimer) clearTimeout(_aclTripleClickTimer);
-  _aclTripleClickTimer = setTimeout(() => {
-    _aclTripleClickCount = 0;
-  }, 500);
-  if (_aclTripleClickCount >= 3) {
-    showAclVerify.value = !showAclVerify.value;
-    _aclTripleClickCount = 0;
-  }
-}
-
-async function verifyAcls() {
-  aclVerifying.value = true;
-  aclVerifyResult.value = null;
-  try {
-    aclVerifyResult.value = await window.openclaw.sandbox.verifyAcls();
-  } catch (e: any) {
-    aclVerifyResult.value = {
-      missing: [],
-      stale: [],
-      ok: [],
-      errors: [{ dir: "(scan)", error: e.message }],
-    };
-  } finally {
-    aclVerifying.value = false;
-  }
-}
-
-async function repairAcl(item: { dir: string; access: string }) {
-  const access = item.access === "rw" ? "rw" : ("ro" as const);
-  const result = await window.openclaw.sandbox.repairAcl({ dir: item.dir, access });
-  if (result.ok) await verifyAcls();
-}
-
-async function revokeStaleAcl(item: { dir: string }) {
-  const result = await window.openclaw.sandbox.revokeStaleAcl(item.dir);
-  if (result.ok) await verifyAcls();
 }
 
 const settings = reactive({
@@ -2926,7 +2400,7 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    void Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
+    void loadWindowsNodeMxcStatus();
   }
 });
 
@@ -3064,7 +2538,7 @@ onMounted(async () => {
   // Load web search provider configuration
   loadSearchConfig(config);
   if (activeSection.value === "security") {
-    await Promise.all([loadSandboxStatus(), loadWindowsNodeMxcStatus()]);
+    await loadWindowsNodeMxcStatus();
   }
 });
 
