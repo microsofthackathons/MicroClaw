@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { createPackage } from "@electron/asar";
 import { afterEach, describe, expect, it } from "vitest";
 import { materializeRuntimeArchive, runtimeArchiveCacheVersion } from "./bundled-runtime";
 
@@ -50,7 +51,7 @@ describe("materializeRuntimeArchive", () => {
     };
     const cacheVersion = (version: string) =>
       runtimeArchiveCacheVersion("openclaw.asar", "1.0.0", (_archive, filename) => {
-        expect(filename).toBe("node_modules/openclaw/package.json");
+        expect(filename).toBe(path.join("node_modules", "openclaw", "package.json"));
         return Buffer.from(JSON.stringify({ name: "openclaw", version }));
       });
 
@@ -71,4 +72,24 @@ describe("materializeRuntimeArchive", () => {
       ).toThrow("invalid package metadata");
     },
   );
+  it("reads and materializes a real archive using platform-native entry paths", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-runtime-"));
+    roots.push(root);
+    const source = path.join(root, "source");
+    const packageRoot = path.join(source, "node_modules", "openclaw");
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "2026.10.5" }),
+    );
+    fs.writeFileSync(path.join(packageRoot, "openclaw.mjs"), "export {};");
+    const archive = path.join(root, "openclaw.asar");
+    await createPackage(source, archive);
+    const version = runtimeArchiveCacheVersion(archive, "1.0.0");
+    expect(version).toBe("1.0.0:openclaw@2026.10.5");
+    const runtime = materializeRuntimeArchive(archive, path.join(root, "runtime"), version);
+    expect(
+      fs.readFileSync(path.join(runtime, "node_modules", "openclaw", "openclaw.mjs"), "utf8"),
+    ).toBe("export {};");
+  });
 });

@@ -12,7 +12,9 @@ export function runtimeArchiveCacheVersion(
   readArchiveFile: (archive: string, filename: string) => Buffer = extractFile,
 ): string {
   const metadata: unknown = JSON.parse(
-    readArchiveFile(archivePath, "node_modules/openclaw/package.json").toString("utf8"),
+    readArchiveFile(archivePath, path.join("node_modules", "openclaw", "package.json")).toString(
+      "utf8",
+    ),
   );
   if (
     !metadata ||
