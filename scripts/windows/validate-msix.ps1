@@ -43,7 +43,8 @@ try {
         'resources\sandbox-sensitive.js',
         'resources\path-extraction.js'
     )
-    $packageFiles = $archive.Entries.FullName | ForEach-Object { $_.Replace('/', '\') }
+    $packageFiles = $archive.Entries.FullName |
+        ForEach-Object { [Uri]::UnescapeDataString($_).Replace('/', '\') }
     foreach ($relativePath in $required) {
         $found = $packageFiles |
             Where-Object { $_.EndsWith($relativePath, [StringComparison]::OrdinalIgnoreCase) } |

@@ -4,6 +4,13 @@ This branch implements the Windows execution-host experiment for
 [security framework issue #202](https://github.com/microsofthackathons/MicroClaw/issues/202).
 It remains independent of the Docker and direct-MXC experiments.
 
+The selected integration in PR #240 uses this native Windows Node architecture in
+place of the mandatory plugin-worker experiment merged in PR #205. The worker is
+not an additional active backend or fallback. Worker-only folder policies do not
+constitute native filesystem grants or WeChat approval consent; this integration
+does not automatically convert them. The native mode disclosures, exact grants,
+and Main-owned WeChat enrollment described below remain authoritative.
+
 ## Architecture and boundary
 
 ```text
