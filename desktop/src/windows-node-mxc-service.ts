@@ -346,9 +346,9 @@ export async function inspectWindowsNodeMxc(
   if (desiredEnabled && !options.managedGateway) {
     blockers.push("Windows Node + MXC mode requires a freshly started MicroClaw managed Gateway");
   }
-  if (!options.gateway?.connected) {
+  if (desiredEnabled && !options.gateway?.connected) {
     blockers.push("MicroClaw managed Gateway is not connected");
-  } else {
+  } else if (desiredEnabled && options.gateway?.connected) {
     try {
       const payload = await options.gateway.request<unknown>("node.list", {});
       nodes = extractNodeRecords(payload);

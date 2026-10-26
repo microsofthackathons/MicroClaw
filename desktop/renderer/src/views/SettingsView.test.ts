@@ -278,6 +278,78 @@ describe("SettingsView", () => {
     expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
   });
 
+  it("keeps all modes visible and loads Security independently of general settings", async () => {
+    routeState.section = "security";
+    vi.mocked(window.openclaw.settings.get).mockReturnValueOnce(new Promise(() => {}));
+    let resolveStatus!: (value: WindowsNodeMxcStatus) => void;
+    getWindowsNodeMxcStatus.mockReturnValueOnce(
+      new Promise<WindowsNodeMxcStatus>((resolve) => {
+        resolveStatus = resolve;
+      }),
+    );
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    expect(getWindowsNodeMxcStatus).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(true);
+    for (const mode of ["off", "limited", "full"]) {
+      expect(wrapper.find(`[data-testid="mxc-mode-${mode}"]`).exists()).toBe(true);
+      expect(wrapper.find(`[data-testid="mxc-select-${mode}"]`).attributes("disabled")).toBe(
+        "true",
+      );
+    }
+    expect(wrapper.find(".mxc-mode-card.selected").exists()).toBe(false);
+
+    resolveStatus({
+      ...status("node-local"),
+      requestedMode: "off",
+      desiredEnabled: false,
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
+    expect(wrapper.find('[data-testid="mxc-select-full"]').attributes("disabled")).toBe("false");
+    expect(wrapper.find('[data-testid="mxc-select-limited"]').attributes("disabled")).toBe("false");
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("shows a persistent status error and retries without hiding the mode controls", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus
+      .mockRejectedValueOnce(new Error("Native status inspection failed"))
+      .mockResolvedValueOnce({
+        ...status("node-local"),
+        requestedMode: "off",
+        desiredEnabled: false,
+      });
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mxc-status-error"]').text()).toContain(
+      "Native status inspection failed",
+    );
+    expect(errorMessage).toHaveBeenCalledWith("Native status inspection failed");
+    expect(wrapper.findAll(".mxc-mode-card")).toHaveLength(3);
+    expect(wrapper.find('[data-testid="mxc-select-full"]').attributes("disabled")).toBe("true");
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+
+    await wrapper.find('[data-testid="mxc-status-retry"]').trigger("click");
+    await flushPromises();
+
+    expect(getWindowsNodeMxcStatus).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="mxc-status-error"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("shows the deterministic app-owned node without a manual selector", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce(status("node-local"));

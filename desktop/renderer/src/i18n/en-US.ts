@@ -320,6 +320,7 @@ export default {
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "Security sandbox",
   "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
+  "settings.windowsNodeMxcStatusLoading": "Checking MXC availability...",
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
   "settings.experimental": "Experimental",

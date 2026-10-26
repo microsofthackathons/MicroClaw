@@ -493,10 +493,34 @@
             <span class="row-label">{{ t("settings.windowsNodeMxc") }}</span>
             <div class="mxc-subtitle">{{ t("settings.windowsNodeMxcExperimental") }}</div>
           </div>
-          <div v-if="windowsNodeMxcStatus" class="mxc-mode-grid">
+          <div
+            v-if="windowsNodeMxcStatusLoading"
+            class="mxc-alert"
+            role="status"
+            data-testid="mxc-status-loading"
+          >
+            {{ t("settings.windowsNodeMxcStatusLoading") }}
+          </div>
+          <div
+            v-if="windowsNodeMxcStatusError"
+            class="mxc-alert mxc-alert-error"
+            role="alert"
+            data-testid="mxc-status-error"
+          >
+            {{ windowsNodeMxcStatusError }}
+            <el-button
+              size="small"
+              data-testid="mxc-status-retry"
+              :disabled="windowsNodeMxcStatusLoading"
+              @click="loadWindowsNodeMxcStatus"
+            >
+              {{ t("settings.retry") }}
+            </el-button>
+          </div>
+          <div class="mxc-mode-grid">
             <section
               class="mxc-mode-card"
-              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'full' }"
+              :class="{ selected: windowsNodeMxcStatus?.requestedMode === 'full' }"
               data-testid="mxc-mode-full"
             >
               <div class="mxc-mode-card-heading">
@@ -505,27 +529,27 @@
               </div>
               <p>{{ t("settings.windowsNodeMxcModeFullDesc") }}</p>
               <p
-                v-if="windowsNodeMxcStatus.fullAvailability.summary"
+                v-if="windowsNodeMxcStatus?.fullAvailability.summary"
                 class="mxc-availability-summary"
               >
                 {{ windowsNodeMxcStatus.fullAvailability.summary }}
               </p>
               <ul
                 v-if="
-                  windowsNodeMxcStatus.fullAvailability.blockers.length ||
-                  windowsNodeMxcStatus.fullAvailability.remediation.length
+                  windowsNodeMxcStatus?.fullAvailability.blockers.length ||
+                  windowsNodeMxcStatus?.fullAvailability.remediation.length
                 "
                 class="mxc-availability-list"
               >
                 <li
-                  v-for="blocker in windowsNodeMxcStatus.fullAvailability.blockers"
+                  v-for="blocker in windowsNodeMxcStatus?.fullAvailability.blockers ?? []"
                   :key="`full-blocker-${blocker}`"
                   class="mxc-availability-blocker"
                 >
                   {{ blocker }}
                 </li>
                 <li
-                  v-for="step in windowsNodeMxcStatus.fullAvailability.remediation"
+                  v-for="step in windowsNodeMxcStatus?.fullAvailability.remediation ?? []"
                   :key="`full-remediation-${step}`"
                 >
                   {{ step }}
@@ -538,13 +562,15 @@
                 :loading="windowsNodeMxcApplying"
                 :disabled="
                   windowsNodeMxcApplying ||
-                  !windowsNodeMxcStatus.fullAvailability.available ||
-                  windowsNodeMxcStatus.requestedMode === 'full'
+                  windowsNodeMxcStatusLoading ||
+                  !!windowsNodeMxcStatusError ||
+                  !windowsNodeMxcStatus?.fullAvailability.available ||
+                  windowsNodeMxcStatus?.requestedMode === 'full'
                 "
                 @click="selectWindowsNodeMxcMode('full')"
               >
                 {{
-                  windowsNodeMxcStatus.requestedMode === "full"
+                  windowsNodeMxcStatus?.requestedMode === "full"
                     ? t("settings.windowsNodeMxcSelected")
                     : t("settings.windowsNodeMxcUseFull")
                 }}
@@ -552,7 +578,7 @@
             </section>
             <section
               class="mxc-mode-card mxc-mode-card-limited"
-              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'limited-dacl' }"
+              :class="{ selected: windowsNodeMxcStatus?.requestedMode === 'limited-dacl' }"
               data-testid="mxc-mode-limited"
             >
               <div class="mxc-mode-card-heading">
@@ -566,27 +592,27 @@
                 {{ t("settings.windowsNodeMxcLimitedFilesystemWarning") }}
               </p>
               <p
-                v-if="windowsNodeMxcStatus.limitedAvailability.summary"
+                v-if="windowsNodeMxcStatus?.limitedAvailability.summary"
                 class="mxc-availability-summary"
               >
                 {{ windowsNodeMxcStatus.limitedAvailability.summary }}
               </p>
               <ul
                 v-if="
-                  windowsNodeMxcStatus.limitedAvailability.blockers.length ||
-                  windowsNodeMxcStatus.limitedAvailability.remediation.length
+                  windowsNodeMxcStatus?.limitedAvailability.blockers.length ||
+                  windowsNodeMxcStatus?.limitedAvailability.remediation.length
                 "
                 class="mxc-availability-list"
               >
                 <li
-                  v-for="blocker in windowsNodeMxcStatus.limitedAvailability.blockers"
+                  v-for="blocker in windowsNodeMxcStatus?.limitedAvailability.blockers ?? []"
                   :key="`limited-blocker-${blocker}`"
                   class="mxc-availability-blocker"
                 >
                   {{ blocker }}
                 </li>
                 <li
-                  v-for="step in windowsNodeMxcStatus.limitedAvailability.remediation"
+                  v-for="step in windowsNodeMxcStatus?.limitedAvailability.remediation ?? []"
                   :key="`limited-remediation-${step}`"
                 >
                   {{ step }}
@@ -599,13 +625,15 @@
                 :loading="windowsNodeMxcApplying"
                 :disabled="
                   windowsNodeMxcApplying ||
-                  !windowsNodeMxcStatus.limitedAvailability.available ||
-                  windowsNodeMxcStatus.requestedMode === 'limited-dacl'
+                  windowsNodeMxcStatusLoading ||
+                  !!windowsNodeMxcStatusError ||
+                  !windowsNodeMxcStatus?.limitedAvailability.available ||
+                  windowsNodeMxcStatus?.requestedMode === 'limited-dacl'
                 "
                 @click="selectWindowsNodeMxcMode('limited-dacl')"
               >
                 {{
-                  windowsNodeMxcStatus.requestedMode === "limited-dacl"
+                  windowsNodeMxcStatus?.requestedMode === "limited-dacl"
                     ? t("settings.windowsNodeMxcSelected")
                     : t("settings.windowsNodeMxcUseLimited")
                 }}
@@ -613,7 +641,7 @@
             </section>
             <section
               class="mxc-mode-card mxc-mode-card-off"
-              :class="{ selected: windowsNodeMxcStatus.requestedMode === 'off' }"
+              :class="{ selected: windowsNodeMxcStatus?.requestedMode === 'off' }"
               data-testid="mxc-mode-off"
             >
               <div class="mxc-mode-card-heading">
@@ -625,11 +653,16 @@
                 plain
                 data-testid="mxc-select-off"
                 :loading="windowsNodeMxcApplying"
-                :disabled="windowsNodeMxcApplying || windowsNodeMxcStatus.requestedMode === 'off'"
+                :disabled="
+                  windowsNodeMxcApplying ||
+                  windowsNodeMxcStatusLoading ||
+                  !windowsNodeMxcStatus ||
+                  windowsNodeMxcStatus.requestedMode === 'off'
+                "
                 @click="selectWindowsNodeMxcMode('off')"
               >
                 {{
-                  windowsNodeMxcStatus.requestedMode === "off"
+                  windowsNodeMxcStatus?.requestedMode === "off"
                     ? t("settings.windowsNodeMxcSelected")
                     : t("settings.windowsNodeMxcUseOff")
                 }}
@@ -1523,6 +1556,8 @@ type WindowsNodeMxcAmbientEntry = NonNullable<
   WindowsNodeMxcStatus["ambientAccess"]
 >["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
+const windowsNodeMxcStatusLoading = ref(false);
+const windowsNodeMxcStatusError = ref("");
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
 const windowsNodeMxcTechnicalDetailsOpen = ref(false);
@@ -1725,6 +1760,7 @@ function replaceWindowsNodeMxcFolderBaseline(policy: { rw: string[]; ro: string[
 
 function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
   windowsNodeMxcStatus.value = status;
+  windowsNodeMxcStatusError.value = "";
   const effectiveFolders = {
     rw: status.folders.filter((entry) => entry.access === "rw").map((entry) => entry.path),
     ro: status.folders.filter((entry) => entry.access === "ro").map((entry) => entry.path),
@@ -1736,16 +1772,25 @@ function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
 }
 
 async function loadWindowsNodeMxcStatus() {
+  if (windowsNodeMxcStatusLoading.value) return;
+  windowsNodeMxcStatusLoading.value = true;
+  windowsNodeMxcStatusError.value = "";
   try {
     const status = await window.openclaw.windowsNodeMxc.getStatus();
     updateWindowsNodeMxcStatus(status);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
+    windowsNodeMxcStatusError.value = error instanceof Error ? error.message : String(error);
+    ElMessage.error(windowsNodeMxcStatusError.value);
+  } finally {
+    windowsNodeMxcStatusLoading.value = false;
   }
 }
 
 function selectWindowsNodeMxcMode(mode: WindowsNodeMxcMode) {
   if (
+    !windowsNodeMxcStatus.value ||
+    windowsNodeMxcStatusLoading.value ||
+    (mode !== "off" && windowsNodeMxcStatusError.value) ||
     windowsNodeMxcApplying.value ||
     windowsNodeMxcConsentVisible.value ||
     windowsNodeMxcLimitedAcknowledgementVisible.value ||
@@ -2511,6 +2556,9 @@ watch(showLocalSetup, (visible, wasVisible) => {
 
 onMounted(async () => {
   window.addEventListener("focus", handleSettingsWindowFocus);
+  if (activeSection.value === "security") {
+    void loadWindowsNodeMxcStatus();
+  }
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
@@ -2537,9 +2585,6 @@ onMounted(async () => {
 
   // Load web search provider configuration
   loadSearchConfig(config);
-  if (activeSection.value === "security") {
-    await loadWindowsNodeMxcStatus();
-  }
 });
 
 onUnmounted(() => {

@@ -301,6 +301,7 @@ export default {
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "安全沙箱",
   "settings.windowsNodeMxc": "实验性内置 Windows Node + MXC",
+  "settings.windowsNodeMxcStatusLoading": "正在检查 MXC 可用性…",
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
   "settings.experimental": "实验性",

@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WINDOWS_NODE_MXC_READINESS_AGENT_ID,
   WINDOWS_NODE_MXC_READINESS_COMMAND,
@@ -8,6 +11,7 @@ import {
 } from "./windows-node-mxc-readiness-proof";
 import { classifyMxcProbe } from "./windows-node-mxc";
 import {
+  inspectWindowsNodeMxc,
   preflightWindowsNodeMxcBackend,
   preflightWindowsNodeMxcExactBackend,
   runWindowsNodeMxcSmoke,
@@ -53,6 +57,73 @@ function authorization() {
     },
   };
 }
+
+describe("Windows Node MXC status inspection", () => {
+  let dataRoot: string;
+  beforeEach(() => {
+    dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-mxc-status-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  });
+
+  it("returns Off without waiting for Gateway agent or node readiness", async () => {
+    const request = vi.fn(() => new Promise<never>(() => {}));
+    const result = await inspectWindowsNodeMxc({
+      requestedMode: "off",
+      desiredEnabled: false,
+      selectedNodeId: nodeId,
+      config: {},
+      gateway: { connected: true, request },
+      managedGateway: true,
+      gatewayGeneration: generation,
+      environment: {},
+      appData: dataRoot,
+      localAppData: dataRoot,
+      userProfile: dataRoot,
+      runtimeIntegrityError: "Test runtime is unavailable",
+    });
+
+    expect(request).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      requestedMode: "off",
+      effectiveStrength: "off",
+      desiredEnabled: false,
+      effectiveEnabled: false,
+      effectiveToolsState: "unverified",
+      selectedNode: null,
+    });
+  });
+
+  it.each(["full", "limited-dacl"] as const)(
+    "still verifies Gateway readiness and fails closed for %s",
+    async (requestedMode) => {
+      const request = vi.fn(async () => {
+        throw new Error("Test Gateway is unavailable");
+      });
+      const result = await inspectWindowsNodeMxc({
+        requestedMode,
+        desiredEnabled: true,
+        selectedNodeId: nodeId,
+        config: {},
+        gateway: { connected: true, request },
+        managedGateway: true,
+        gatewayGeneration: generation,
+        environment: {},
+        appData: dataRoot,
+        localAppData: dataRoot,
+        userProfile: dataRoot,
+        runtimeIntegrityError: "Test runtime is unavailable",
+      });
+
+      expect(request).toHaveBeenCalledWith("node.list", {});
+      expect(result.effectiveEnabled).toBe(false);
+      expect(result.blockers).toContain(
+        "Could not list Gateway nodes: Test Gateway is unavailable",
+      );
+    },
+  );
+});
 
 describe("Windows Node MXC readiness smoke", () => {
   it("uses only proof-bound internal probe commands and never requests an attended approval", async () => {
@@ -266,11 +337,7 @@ describe("Windows Node MXC exact-backend preflight", () => {
       "",
     );
     await expect(
-      preflightWindowsNodeMxcBackend(
-        "C:\\MXC\\wxc-exec.exe",
-        "limited-dacl",
-        async () => probe,
-      ),
+      preflightWindowsNodeMxcBackend("C:\\MXC\\wxc-exec.exe", "limited-dacl", async () => probe),
     ).resolves.toBe(probe);
     await expect(
       preflightWindowsNodeMxcBackend("C:\\MXC\\wxc-exec.exe", "full", async () => probe),
