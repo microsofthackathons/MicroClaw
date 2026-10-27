@@ -738,6 +738,8 @@ export default {
   "modelManager.search": "搜索模型或提供商",
   "modelManager.noMatches": "没有匹配的模型。",
   "modelManager.clearSearch": "清除搜索",
+  "modelManager.qianwen": "千问",
+  "modelManager.moreModels": "更多模型",
   "modelManager.refresh": "刷新",
   "modelManager.offline": "连接网关后才能切换当前会话模型。",
   "modelManager.downloaded": "已下载",

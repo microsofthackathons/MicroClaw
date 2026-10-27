@@ -113,6 +113,8 @@ describe("SettingsView model integration", () => {
           DefaultModelPicker: realPicker ? false : DefaultPickerStub,
           LocalModelDownloadDialog: !realLocalFlow,
           ModelProviderGroups: false,
+          CascadingModelMenu: false,
+          ModelMenuChoices: false,
           "el-popover": PopoverStub,
         },
       },
@@ -271,23 +273,23 @@ describe("SettingsView model integration", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it("renders the real default selector with foldable groups and keeps default/session scope separate", async () => {
+  it("renders cascading provider menus and keeps default/session scope separate", async () => {
     const original = structuredClone(config);
     const { wrapper } = await open(true);
     const picker = wrapper.getComponent(DefaultModelPicker);
     await picker.get('[data-testid="default-model-picker"]').trigger("click");
     expect(picker.get('[data-testid="default-model-picker"]').text()).toContain("Saved local");
     expect(picker.get('[data-provider-group="llama-cpp"]').attributes("aria-expanded")).toBe(
-      "true",
+      "false",
     );
     expect(picker.get('[data-provider-group="github-copilot"]').attributes("aria-expanded")).toBe(
       "false",
     );
     await picker.get('[data-provider-group="llama-cpp"]').trigger("click");
-    expect(picker.get('[data-model-ref="llama-cpp/saved"]').isVisible()).toBe(false);
-    await picker.get(".model-search").setValue("cloud");
-    expect(picker.get('[data-provider-group="cloud"]').attributes("aria-expanded")).toBe("true");
-    await picker.get(".model-search").setValue("");
+    expect(picker.get('[data-model-ref="llama-cpp/saved"]').isVisible()).toBe(true);
+    await picker.get('[data-provider-group="llama-cpp"]').trigger("click");
+    expect(picker.get('[data-provider-group="cloud"]').attributes("aria-expanded")).toBe("false");
+    expect(picker.find(".model-search").exists()).toBe(false);
     expect(picker.get('[data-model-ref="llama-cpp/saved"]').isVisible()).toBe(false);
     expect(write).not.toHaveBeenCalled();
     await picker.get('[data-provider-group="cloud"]').trigger("click");

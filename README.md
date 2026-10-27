@@ -175,7 +175,7 @@ The last model saved in each managed provider form is remembered separately in d
 
 The model button beside the chat composer searches full live cloud catalogs, saved custom connections and the four managed local presets listed above. Selection changes **only the current conversation**, using OpenClaw session overrides. New conversations carry their selected agent's explicit session key, including the main agent, so a model can be selected before the first message in multi-agent configurations. **Use agent default** clears that override without changing agent/global defaults, fallbacks, or other conversations. First use shows the exact model download size, missing embeddings, runtime disk reserve and CPU/GPU mode. Downloads require confirmation; selection changes only after successful preparation. Cancel/failure keeps the previous selection. Already-prepared models switch directly with an inline **Switching...** indicator, without briefly opening a preparation dialog or running setup/inference tests again. Preparation, failures and interrupted-operation recovery still use a persistent dialog.
 
-Both the chat model picker and **Settings → Models → Default model** use the same collapsible provider groups. Only the currently selected model's provider opens by default; headings can be toggled with a click, Enter or Space. Search reveals matching groups, and clearing it restores the previous folds. Folding only changes the list display, never model configuration or downloads. The settings picker still changes the global default, while the chat picker changes only its conversation.
+The chat model picker uses collapsible provider groups. Only the currently selected model's provider opens by default; headings can be toggled with a click, Enter or Space. Search reveals matching groups, and clearing it restores the previous folds. Folding only changes the list display, never model configuration or downloads. **Settings → Models → Default model** uses cascading provider menus instead, as described in the Desktop App section below. The settings picker changes the global default, while the chat picker changes only its conversation.
 
 The chat picker shows **Loading models...** on its button for the first catalogue read, then opens the complete list. Later openings retain the previous list and file statuses while refreshing, replacing them together instead of repeatedly shrinking and repositioning the panel. Closing or leaving the button while the first read is pending prevents a late popup.
 
@@ -257,6 +257,32 @@ cd desktop
 npm install
 npm run dev
 ```
+
+For browser-only UI development, run `npm run dev:renderer` from `desktop` and open
+`http://127.0.0.1:5173/?preview=models#/settings/models` to preview **Settings > Models**
+with configured Qwen, MiniMax, OpenAI, and Anthropic models. This opt-in preview uses
+fake credentials and in-memory configuration; default-model changes and model edits
+last until the page reloads. No real model requests or desktop configuration changes
+are made. Omit `?preview=models` to use the empty browser preview.
+
+The Settings default-model picker uses cascading menus: hover over a provider to
+see up to five curated frequently used models, then hover over **More models** to
+see the remaining models. These lists are fixed recommendations, not usage tracking;
+providers without curated entries use a stable model-family order. The cascading
+picker has no search box or visible submenu titles; menus retain accessible labels.
+It shares the Usage sidebar's chevron icon, rotated right for submenu entries,
+and uses a matching rounded-stroke outline check for the selected model.
+The first-level popup sits 6px from its trigger, and all menu levels use 4px outer
+padding. Enabled rows use a theme-aware hover/focus highlight; provider and **More
+models** rows retain that highlight while their submenus are open. A selected
+model is marked only by its check, not a persistent background. Disabled rows do
+not receive the hover highlight.
+The first-level title and description align with provider text, and **More models**
+uses the same rounded highlight as other menu rows.
+Clicking a model closes the entire picker
+and uses the existing confirmed default-selection flow. Provider and **More models**
+rows also support clicking and Right Arrow to open, Left Arrow or Escape to return,
+and Up/Down/Home/End to navigate. Chat's model picker is unchanged.
 
 ### Usage snapshots
 

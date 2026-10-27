@@ -158,21 +158,13 @@
           "
           @click="toggleUsageCollapsed"
         >
-          <svg
+          <IconChevronDown
             class="sp-usage-toggle-icon"
             :class="{ collapsed: usageCollapsed }"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+            :size="12"
+            :stroke-width="2"
             aria-hidden="true"
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
+          />
         </button>
       </div>
 

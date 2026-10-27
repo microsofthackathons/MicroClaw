@@ -11,7 +11,9 @@ import { loadWebFontsAfterPageLoad } from "./web-fonts";
 // Browser dev mode: mock window.openclaw so the app bypasses gateway/IPC checks
 const isBrowserDev = import.meta.env.DEV && !window.openclaw;
 if (isBrowserDev) {
-  window.openclaw = createBrowserOpenClawMock();
+  window.openclaw = createBrowserOpenClawMock({
+    configuredModels: new URLSearchParams(window.location.search).get("preview") === "models",
+  });
 }
 
 const app = createApp(App);
