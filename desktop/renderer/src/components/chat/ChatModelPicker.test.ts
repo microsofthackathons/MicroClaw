@@ -499,7 +499,7 @@ describe("ChatModelPicker", () => {
     const wrapper = await open();
     expect(wrapper.findAll(".model-group-name").map((heading) => heading.text())).toEqual([
       "cloud",
-      "llama.cpp",
+      "Local model",
     ]);
     await wrapper.get("input").setValue("QWEN");
     expect(wrapper.findAll("[data-model-ref]")).toHaveLength(1);
@@ -553,7 +553,7 @@ describe("ChatModelPicker", () => {
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen"]').isVisible()).toBe(true);
     await wrapper.get('[data-provider-group="llama-cpp"]').trigger("click");
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen"]').isVisible()).toBe(false);
-    await wrapper.get("input").setValue("llama.cpp");
+    await wrapper.get("input").setValue("Local model");
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen"]').isVisible()).toBe(true);
     await wrapper.get("input").setValue("");
     expect(wrapper.findAll(".model-group-models").every((panel) => !panel.isVisible())).toBe(true);
@@ -624,7 +624,7 @@ describe("ChatModelPicker", () => {
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
   });
 
-  it("shows undownloaded presets under llama.cpp and opens exact first-use confirmation", async () => {
+  it("shows undownloaded presets under local models and opens exact first-use confirmation", async () => {
     window.openclaw.model.local.getSnapshot = vi.fn().mockResolvedValue({
       ok: true,
       value: {

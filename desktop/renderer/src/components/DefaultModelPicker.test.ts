@@ -41,6 +41,30 @@ async function open(realPopover = false) {
   return wrapper;
 }
 describe("DefaultModelPicker", () => {
+  it("localizes the local provider label in the trigger, groups, and search without changing model references", async () => {
+    const wrapper = await open();
+    await wrapper.setProps({ modelValue: "llama-cpp/qwen3.5-9b-q4_k_m" });
+    const trigger = wrapper.get('[data-testid="default-model-picker"]');
+    expect(trigger.text()).toContain("Local model · Qwen3.5 9B");
+    expect(wrapper.get('[data-provider-group="llama-cpp"] .model-group-name').text()).toBe(
+      "Local model",
+    );
+
+    setLocale("zh-CN");
+    await flushPromises();
+    expect(trigger.text()).toContain("本地模型 · Qwen3.5 9B");
+    expect(trigger.attributes("title")).toBe("本地模型 · Qwen3.5 9B");
+    expect(wrapper.get('[data-provider-group="llama-cpp"] .model-group-name').text()).toBe(
+      "本地模型",
+    );
+    await wrapper.get(".model-search").setValue("本地模型");
+    expect(wrapper.findAll("[data-provider-group]")).toHaveLength(1);
+    expect(wrapper.get('[data-model-ref="llama-cpp/qwen3.5-4b-q4_k_m"]').isVisible()).toBe(true);
+    expect(wrapper.emitted("change")).toBeUndefined();
+    await wrapper.get('[data-model-ref="llama-cpp/qwen3.5-4b-q4_k_m"]').trigger("click");
+    expect(wrapper.emitted("change")).toEqual([["llama-cpp/qwen3.5-4b-q4_k_m"]]);
+  });
+
   it("keeps expanded state and a named dialog with the real Element Plus popover", async () => {
     const wrapper = await open(true);
     const trigger = wrapper.get('[data-testid="default-model-picker"]');
