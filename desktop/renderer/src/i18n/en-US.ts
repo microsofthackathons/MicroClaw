@@ -790,6 +790,8 @@ export default {
   "modelManager.search": "Search models and providers",
   "modelManager.noMatches": "No matching models.",
   "modelManager.clearSearch": "Clear search",
+  "modelManager.qianwen": "Qianwen",
+  "modelManager.moreModels": "More models",
   "modelManager.refresh": "Refresh",
   "modelManager.offline": "Connect to the Gateway to change the conversation model.",
   "modelManager.downloaded": "Downloaded",

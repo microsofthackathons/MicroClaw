@@ -1,4 +1,57 @@
-export function createBrowserOpenClawMock(): OpenClawAPI {
+import { getModelRef, readConfiguredModels } from "./utils/configured-models";
+import { MANAGED_MODEL_PROVIDERS } from "./utils/managed-model-providers";
+import { selectPrimaryModelConfig } from "./utils/model-provider";
+
+export function createBrowserOpenClawMock(
+  options: { configuredModels?: boolean } = {},
+): OpenClawAPI {
+  let config: Record<string, unknown> = options.configuredModels
+    ? {
+        models: {
+          mode: "merge",
+          providers: {
+            ...Object.fromEntries(
+              MANAGED_MODEL_PROVIDERS.map((provider) => [
+                provider.id,
+                {
+                  baseUrl: provider.baseUrl,
+                  apiKey: "sk-browser-preview-not-a-real-key",
+                  api: "openai-completions",
+                  models: provider.models.map((model) => ({ ...model })),
+                },
+              ]),
+            ),
+            openai: {
+              baseUrl: "https://openai.example.invalid/v1",
+              apiKey: "sk-browser-preview-not-a-real-key",
+              api: "openai-responses",
+              models: [
+                { id: "gpt-5.4", name: "GPT-5.4", input: ["text", "image"], reasoning: true },
+                { id: "gpt-5-mini", name: "GPT-5 mini", input: ["text", "image"] },
+              ],
+            },
+            anthropic: {
+              baseUrl: "https://anthropic.example.invalid",
+              apiKey: "sk-browser-preview-not-a-real-key",
+              api: "anthropic-messages",
+              models: [
+                {
+                  id: "claude-sonnet-4-5",
+                  name: "Claude Sonnet 4.5",
+                  input: ["text", "image"],
+                },
+              ],
+            },
+          },
+        },
+        agents: {
+          defaults: {
+            model: { primary: "qwen/qwen3.7-plus" },
+            models: { "openai/gpt-5.4": { params: { thinking: "high" } } },
+          },
+        },
+      }
+    : {};
   const noop = () => {};
   const noopAsync = async () => {};
   const noopSub = () => noop;
@@ -39,9 +92,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     },
     config: {
       getStateDir: async () => "",
-      read: async () => ({}),
+      read: async () => structuredClone(config),
       readEnv: async () => ({}),
-      write: noopAsync,
+      write: async (nextConfig) => {
+        config = structuredClone(nextConfig);
+      },
       isConfigured: async () => true,
       needsSetup: async () => false,
     },
@@ -234,8 +289,13 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },
     model: {
-      selectDefault: async () => {
-        throw new Error("Default model selection requires the desktop application");
+      selectDefault: async ({ modelRef }) => {
+        if (!options.configuredModels)
+          throw new Error("Default model selection requires the desktop application");
+        if (!readConfiguredModels(config).models.some((model) => getModelRef(model) === modelRef))
+          throw new Error(`Unknown browser preview model: ${modelRef}`);
+        config = selectPrimaryModelConfig(config, modelRef);
+        return { modelRef };
       },
       session: {
         get: async (sessionKey) => ({ sessionKey, modelRef: null, overridden: false }),
@@ -254,10 +314,22 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           ok: false,
           error: "Hardware detection requires the desktop application",
         }),
-        getCapabilities: async () => ({
-          ok: false,
-          error: "Local models unavailable in browser development",
-        }),
+        getCapabilities: async () =>
+          options.configuredModels
+            ? {
+                ok: true,
+                value: {
+                  supported: false,
+                  mutable: false,
+                  gatewayVersion: null,
+                  blockers: ["Local models unavailable in browser development"],
+                  plugin: { installed: false, enabled: false, canInstall: false },
+                },
+              }
+            : {
+                ok: false,
+                error: "Local models unavailable in browser development",
+              },
         detect: async () => ({
           ok: false,
           error: "Local models unavailable in browser development",
@@ -293,7 +365,12 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         }),
         onEvent: noopSub,
       },
-      discoverModels: async () => ({ ok: false, error: "unavailable" }),
+      discoverModels: async ({ baseUrl }) => {
+        const provider = MANAGED_MODEL_PROVIDERS.find((item) => item.baseUrl === baseUrl);
+        return options.configuredModels && provider
+          ? { ok: true, models: provider.models.map((model) => model.id) }
+          : { ok: false, error: "unavailable" };
+      },
       registerCatalogModel: async () => {
         throw new Error("Model registration requires the desktop Gateway");
       },
