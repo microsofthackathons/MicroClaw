@@ -66,6 +66,8 @@ export const LOCAL_MODEL_DETECTION_TTL_MS = 60_000;
 
 class ModelApplicationPendingError extends Error {}
 
+export class LocalModelProviderReviewRequiredError extends Error {}
+
 interface DetectionContext {
   gateway: LocalModelGateway;
   key: string;
@@ -702,7 +704,7 @@ export class LocalModelService {
           ),
           reviewToken: details.reviewToken,
         };
-        throw new Error(
+        throw new LocalModelProviderReviewRequiredError(
           "Plugin capability review is required. Review the provider again before confirming installation.",
           { cause: error },
         );

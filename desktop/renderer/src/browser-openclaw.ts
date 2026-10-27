@@ -250,6 +250,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       },
       local: {
         getSnapshot: async () => ({ ok: true, value: { models: [] } }),
+        getHardware: async () => ({
+          ok: false,
+          error: "Hardware detection requires the desktop application",
+        }),
         getCapabilities: async () => ({
           ok: false,
           error: "Local models unavailable in browser development",

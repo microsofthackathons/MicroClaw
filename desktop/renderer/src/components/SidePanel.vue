@@ -177,19 +177,14 @@
       </div>
 
       <template v-if="!usageCollapsed">
-        <div v-if="usageLoading && !usageSnapshot" class="sp-usage-state">
-          {{ t("settings.usageLoading") }}
-        </div>
-        <div v-else-if="usageSnapshot" class="sp-usage-grid">
+        <div class="sp-usage-grid">
           <div class="sp-usage-card">
             <span class="sp-usage-label">{{ t("sidebar.usageSnapshotTokens") }}</span>
-            <span class="sp-usage-value">{{ formatCompact(usageSnapshot.totalTokens) }}</span>
+            <span class="sp-usage-value">{{
+              usageSnapshot ? formatCompact(usageSnapshot.totalTokens) : "—"
+            }}</span>
           </div>
         </div>
-        <div v-else-if="!gatewayOnline" class="sp-usage-state">
-          {{ t("sidebar.usageSnapshotOffline") }}
-        </div>
-        <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
 
         <div
           v-if="usageSnapshot?.backgroundUsageAvailable === false"
@@ -233,12 +228,30 @@ const agentStore = useAgentStore();
 
 interface UsageSnapshot {
   totalTokens: number;
+  updatedAt: number;
   backgroundUsageAvailable?: boolean;
 }
 
-const usageSnapshot = ref<UsageSnapshot | null>(null);
-const usageLoading = ref(false);
-const usageLastUpdated = ref<Date | null>(null);
+function readCachedUsage(): UsageSnapshot | null {
+  try {
+    const snapshot = JSON.parse(localStorage.getItem("microclaw:usageSnapshot") ?? "null");
+    if (
+      snapshot &&
+      typeof snapshot.totalTokens === "number" &&
+      Number.isFinite(snapshot.totalTokens) &&
+      snapshot.totalTokens >= 0 &&
+      typeof snapshot.updatedAt === "number" &&
+      Number.isFinite(snapshot.updatedAt) &&
+      snapshot.updatedAt > 0
+    ) {
+      return snapshot;
+    }
+  } catch {}
+  return null;
+}
+
+const usageSnapshot = ref<UsageSnapshot | null>(readCachedUsage());
+let usageRequestPending = false;
 const usageCollapsed = ref(false);
 let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let titleRequestGeneration = 0;
@@ -257,8 +270,11 @@ const flyoutStyle = computed(() => ({
 
 const gatewayOnline = computed(() => gateway.ready && gateway.status === "running");
 const lastUpdatedLabel = computed(() => {
-  if (!usageLastUpdated.value) return "";
-  return usageLastUpdated.value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (!usageSnapshot.value) return "";
+  return new Date(usageSnapshot.value.updatedAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 });
 
 const currentAgent = computed(() => {
@@ -295,42 +311,36 @@ onUnmounted(() => {
 });
 
 async function loadUsageSnapshot() {
-  if (usageLoading.value) return;
-  usageLoading.value = true;
+  if (usageRequestPending) return;
+  usageRequestPending = true;
   try {
     const usageApi = window.openclaw?.usage?.getStats;
-    if (!gatewayOnline.value || typeof usageApi !== "function") {
-      if (import.meta.env.DEV) {
-        applyMockSnapshot();
-      } else {
-        usageSnapshot.value = null;
-      }
-      return;
-    }
+    if (typeof usageApi !== "function") return;
 
     const stats = await usageApi();
+    const totalTokens = stats?.totalTokens;
+    if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens < 0) return;
+    const updatedAt =
+      typeof stats.updatedAt === "number" && Number.isFinite(stats.updatedAt) && stats.updatedAt > 0
+        ? stats.updatedAt
+        : Date.now();
     usageSnapshot.value = {
-      totalTokens: Number(stats?.totalTokens || 0),
+      totalTokens,
+      updatedAt,
       backgroundUsageAvailable: stats?.backgroundUsageAvailable,
     };
-    usageLastUpdated.value = new Date();
+    try {
+      localStorage.setItem("microclaw:usageSnapshot", JSON.stringify(usageSnapshot.value));
+    } catch {}
   } catch {
-    if (import.meta.env.DEV) {
-      applyMockSnapshot();
-    } else {
-      usageSnapshot.value = null;
-    }
   } finally {
-    usageLoading.value = false;
+    usageRequestPending = false;
   }
 }
 
-function applyMockSnapshot() {
-  usageSnapshot.value = {
-    totalTokens: 128400,
-  };
-  usageLastUpdated.value = new Date();
-}
+watch(gatewayOnline, (online) => {
+  if (online) void loadUsageSnapshot();
+});
 
 function toggleUsageCollapsed() {
   usageCollapsed.value = !usageCollapsed.value;

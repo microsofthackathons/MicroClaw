@@ -1,17 +1,19 @@
 <template>
-  <div class="local-model-overlay" :class="{ 'local-model-inline': inline }">
+  <div
+    class="local-model-overlay"
+    :class="{ 'local-model-inline': inline, 'download-active': fixedDialogVisible }"
+  >
     <section
+      v-show="!fixedDialogVisible"
       class="local-model-panel"
+      :class="{ 'catalog-panel': providerReady && snapshot?.catalog }"
       :role="inline ? 'region' : 'dialog'"
       :aria-modal="inline ? undefined : true"
       aria-labelledby="local-model-title"
       @keydown.esc.stop.prevent="close"
     >
       <div class="heading">
-        <div class="title-row">
-          <h2 id="local-model-title">{{ t("localModel.title") }}</h2>
-          <span class="trial-badge">{{ t("localModel.trial") }}</span>
-        </div>
+        <h2 id="local-model-title">{{ t("localModel.title") }}</h2>
         <button
           class="close-button"
           data-testid="local-close"
@@ -47,7 +49,7 @@
       <p v-else-if="refreshing" class="status-hint" role="status">
         {{ t("localModel.refreshingStatus") }}
       </p>
-      <p v-if="metadataPending" role="status">{{ t("localModel.checking") }}</p>
+      <p v-if="metadataPending && providerReady" role="status">{{ t("localModel.checking") }}</p>
       <p v-if="error || metadataError || snapshotError || statusError" class="error" role="alert">
         {{ error || metadataError || snapshotError || statusError }}
       </p>
@@ -83,14 +85,7 @@
         <button
           class="primary-action"
           data-testid="local-download-again"
-          :disabled="
-            blocked ||
-            metadataPending ||
-            !canMutate ||
-            !providerReady ||
-            !choices[0]?.allowed ||
-            streaming
-          "
+          :disabled="blocked || metadataPending || !canMutate || !providerReady || streaming"
           @click="prepare('llama-cpp')"
         >
           {{ t("localModel.downloadAgain") }}
@@ -101,117 +96,76 @@
         <ul v-if="capabilityReasons.length" class="notice" data-testid="local-blockers">
           <li v-for="reason in capabilityReasons" :key="reason">{{ reason }}</li>
         </ul>
-        <template v-if="!providerReady">
-          <p>{{ t("localModel.providerRequired") }}</p>
-          <p v-if="installNeedsReview" role="status">{{ t("localModel.reviewAgainNotice") }}</p>
-          <button
-            data-testid="provider-review"
-            :disabled="blocked || metadataPending || !canInstall || streaming"
-            @click="inspectProvider"
-          >
-            {{ t(installNeedsReview ? "localModel.reviewAgain" : "localModel.reviewProvider") }}
-          </button>
-          <section v-if="review" class="provider-review">
-            <h3>{{ t("localModel.providerReview") }}</h3>
-            <dl>
-              <dt>{{ t("localModel.provider") }}</dt>
-              <dd>{{ review.pluginId }}</dd>
-              <dt>{{ t("localModel.version") }}</dt>
-              <dd>{{ review.version || t("localModel.unknown") }}</dd>
-              <dt>{{ t("localModel.source") }}</dt>
-              <dd>{{ review.source || t("localModel.unknown") }}</dd>
-              <template v-for="(items, name) in review.capabilities" :key="name">
-                <dt>{{ name }}</dt>
-                <dd>
-                  <ul>
-                    <li v-for="item in items" :key="item">{{ item }}</li>
-                  </ul>
-                </dd>
-              </template>
-            </dl>
-            <p
-              v-if="!reviewHasCapabilities"
-              class="notice"
-              data-testid="provider-capabilities-unknown"
-            >
-              {{ t("localModel.capabilitiesUnreviewed") }}
-            </p>
-            <label>
-              <input
-                v-model="installConfirmed"
-                type="checkbox"
-                :disabled="metadataPending"
-                data-testid="provider-confirm"
-              />
-              {{
-                t(
-                  reviewHasCapabilities
-                    ? "localModel.installConsent"
-                    : "localModel.installSourceConsent",
-                )
-              }}
-            </label>
-            <button
-              data-testid="provider-install"
-              :disabled="
-                !installConfirmed || metadataPending || blocked || !canInstall || streaming
-              "
-              @click="installProvider"
-            >
-              {{ t("localModel.installProvider") }}
-            </button>
-          </section>
-        </template>
-      </template>
-
-      <section
-        v-if="providerReady && snapshot?.catalog"
-        class="fixed-models"
-        data-testid="fixed-local-models"
-      >
-        <p class="status-hint">{{ t("fixedLocal.connectedHint") }}</p>
-        <div v-for="model in snapshot.catalog" :key="model.modelRef" class="fixed-model-row">
-          <div>
-            <strong>{{ model.name }}</strong>
-            <p class="status-hint">
-              {{
-                t(
-                  model.fileStatus === "present"
-                    ? "modelManager.downloaded"
-                    : model.fileStatus === "unknown"
-                      ? "localModel.filesUnknown"
-                      : "fixedLocal.notDownloaded",
-                )
-              }}
-              · {{ (model.downloadBytes / 1e9).toFixed(1) }} GB
-              <span v-if="model.preferred"> · {{ t("fixedLocal.lightweight") }}</span>
-            </p>
+        <section v-if="!providerReady" class="provider-setup" data-testid="provider-setup">
+          <div class="provider-heading">
+            <span class="provider-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="3" y="4" width="18" height="13" rx="2" />
+                <path d="M8 21h8m-4-4v4m-4-9 2 2 4-4" />
+              </svg>
+            </span>
+            <div>
+              <h3>{{ t("localModel.runtimeTitle") }}</h3>
+              <p>{{ t("localModel.providerRequired") }}</p>
+            </div>
           </div>
+          <section v-if="review" class="provider-permissions" data-testid="provider-permissions">
+            <h4>{{ t("localModel.permissionTitle") }}</h4>
+            <p>{{ t("localModel.permissionHint") }}</p>
+            <template v-for="(items, name) in review.capabilities" :key="name">
+              <template v-if="items.length">
+                <strong>{{ name }}</strong>
+                <ul>
+                  <li v-for="item in items" :key="item">{{ item }}</li>
+                </ul>
+              </template>
+            </template>
+            <details class="provider-details" data-testid="provider-details">
+              <summary>{{ t("localModel.providerDetails") }}</summary>
+              <dl>
+                <dt>{{ t("localModel.provider") }}</dt>
+                <dd>{{ review.pluginId }}</dd>
+                <dt>{{ t("localModel.version") }}</dt>
+                <dd>{{ review.version || t("localModel.unknown") }}</dd>
+                <dt>{{ t("localModel.source") }}</dt>
+                <dd>{{ review.source || t("localModel.unknown") }}</dd>
+              </dl>
+            </details>
+          </section>
           <button
-            :data-model-ref="model.modelRef"
-            :aria-busy="fixedSelecting && fixedSelection === model.modelRef"
-            :disabled="
-              streaming ||
-              fixedSelecting ||
-              !canMutate ||
-              (Boolean(operation?.busy) && operation?.modelRef !== model.modelRef)
-            "
-            @click="fixedSelection = model.modelRef"
+            class="primary-action"
+            data-testid="provider-install"
+            :disabled="blocked || metadataPending || !canInstall || streaming"
+            :aria-busy="metadataPending"
+            @click="installProvider"
           >
             {{
               t(
-                fixedSelecting && fixedSelection === model.modelRef
-                  ? "modelManager.switching"
-                  : operation?.busy && operation.modelRef === model.modelRef
-                    ? "localModel.viewSetup"
-                    : model.fileStatus === "present"
-                      ? "localModel.useModel"
-                      : "fixedLocal.prepareModel",
+                metadataPending
+                  ? "localModel.installingProvider"
+                  : review
+                    ? "localModel.confirmProviderInstall"
+                    : capabilities.plugin.installed
+                      ? "localModel.enableProvider"
+                      : "localModel.installProvider",
               )
             }}
           </button>
-        </div>
-      </section>
+        </section>
+      </template>
+
+      <LocalModelCatalog
+        v-if="providerReady && snapshot?.catalog"
+        data-testid="fixed-local-models"
+        :catalog="snapshot.catalog"
+        :hardware="hardware"
+        :loading="hardwareLoading"
+        :disabled="streaming || fixedSelecting || !canMutate"
+        :busy-model-ref="operation?.busy ? operation.modelRef : undefined"
+        :selecting-model-ref="fixedSelecting ? fixedSelection : undefined"
+        :current-model-ref="snapshot.configuredModel"
+        @select="fixedSelection = $event"
+      />
       <section
         v-if="operation && !operationFilesMissing && !snapshot?.catalog"
         class="operation"
@@ -276,27 +230,20 @@
 
       <template v-if="(!operation || !operation.busy) && !snapshot?.catalog">
         <section
-          v-if="operation?.phase !== 'prepared' && !snapshot?.models.length"
+          v-if="providerReady && operation?.phase !== 'prepared' && !snapshot?.models.length"
           class="setup-choice"
         >
           <p>{{ t("localModel.prepareIntro") }}</p>
           <button
             class="primary-action"
             data-testid="prepare-llama-cpp"
-            :disabled="
-              blocked ||
-              metadataPending ||
-              !canMutate ||
-              !providerReady ||
-              !choices[0]?.allowed ||
-              streaming
-            "
+            :disabled="blocked || metadataPending || !canMutate || !providerReady || streaming"
             @click="prepare('llama-cpp')"
           >
             {{ t("localModel.managed") }}
           </button>
         </section>
-        <section v-if="showActivation">
+        <section v-if="showActivation && (!capabilities || providerReady)">
           <h3>{{ t("localModel.activationTitle") }}</h3>
           <p>
             {{
@@ -345,79 +292,6 @@
           {{ t("localModel.finish") }}
         </button>
       </template>
-      <details v-if="!downloadSummary" class="advanced-details" data-testid="local-details">
-        <summary>{{ t("localModel.advanced") }}</summary>
-        <div v-if="removableConnections?.length" class="connection-management">
-          <p>{{ t("localModel.removalNotice") }}</p>
-          <div v-for="connection in removableConnections" :key="connection.modelRef">
-            <span>{{ connection.name }}</span>
-            <button
-              :disabled="
-                blocked || metadataPending || !canMutate || streaming || connectionMutationBusy
-              "
-              @click="emit('remove-connection', connection.modelRef)"
-            >
-              {{ t("localModel.removeConnection") }}
-            </button>
-          </div>
-        </div>
-        <template v-if="!operation?.busy">
-          <button
-            v-if="
-              snapshot?.models.length &&
-              !snapshot.catalog &&
-              !missingModels.length &&
-              operation?.phase !== 'prepared'
-            "
-            data-testid="prepare-llama-cpp"
-            :disabled="
-              blocked ||
-              metadataPending ||
-              !canMutate ||
-              !providerReady ||
-              !choices[0]?.allowed ||
-              streaming
-            "
-            @click="prepare('llama-cpp')"
-          >
-            {{ t("localModel.reconfigure") }}
-          </button>
-          <button
-            data-testid="prepare-llama-cpp-existing-server"
-            :disabled="
-              blocked ||
-              metadataPending ||
-              !canMutate ||
-              !providerReady ||
-              !choices[1]?.allowed ||
-              streaming
-            "
-            @click="prepare('llama-cpp-existing-server')"
-          >
-            {{ t("localModel.existing") }}
-          </button>
-          <p>{{ t("localModel.ownership") }}</p>
-          <p>{{ t("localModel.loopback") }}</p>
-        </template>
-        <p v-for="note in technicalNotes" :key="note">{{ note }}</p>
-        <p v-if="candidate?.detail" class="upstream-text">{{ candidate.detail }}</p>
-        <button
-          v-if="!operation?.busy"
-          data-testid="local-refresh"
-          :disabled="busy || metadataPending || refreshing"
-          @click="refreshAll"
-        >
-          {{ t("localModel.refresh") }}
-        </button>
-        <button
-          v-if="!operation?.busy"
-          data-testid="local-discover"
-          :disabled="blocked || metadataPending || !providerReady || !canMutate"
-          @click="metadata(() => readDetection(true))"
-        >
-          {{ t("localModel.discoverModels") }}
-        </button>
-      </details>
     </section>
     <LocalModelDownloadDialog
       v-if="fixedSelection"
@@ -425,6 +299,7 @@
       :model-ref="fixedSelection"
       :streaming="streaming"
       @busy="fixedSelecting = $event"
+      @visible="fixedDialogVisible = $event"
       @close="fixedSelection = ''"
       @selected="handleFixedSelected"
     />
@@ -437,13 +312,14 @@ import { t } from "@/i18n";
 import { useLocalModelOperation } from "@/composables/use-local-model-operation";
 import LocalModelWizardStep from "./LocalModelWizardStep.vue";
 import LocalModelDownloadDialog from "./LocalModelDownloadDialog.vue";
+import LocalModelCatalog from "./LocalModelCatalog.vue";
 import { summarizeManagedDownload } from "@/utils/local-model-presentation";
 import type {
   LocalModelCandidate,
   LocalModelCapabilities,
   LocalModelChoice,
-  LocalModelDetection,
   LocalModelInstallReview,
+  LocalModelHardware,
   LocalModelSnapshot,
 } from "../../../src/local-model-types";
 
@@ -462,30 +338,25 @@ const {
   pending,
   loading,
   error,
-  busy: operationBusy,
   blocked: operationBlocked,
   run,
-  refresh,
 } = useLocalModelOperation();
 const capabilities = ref<LocalModelCapabilities | null>(null);
 const snapshot = ref<LocalModelSnapshot | null>(null);
+const hardware = ref<LocalModelHardware | null>(null);
+const hardwareLoading = ref(false);
+let hardwareRequested = false;
 const snapshotLoading = ref(true);
 const snapshotError = ref("");
 const refreshing = ref(false);
 const statusError = ref("");
-const detection = ref<LocalModelDetection | null>(null);
 const metadataPending = ref(false);
 const metadataError = ref("");
 const review = ref<LocalModelInstallReview | null>(null);
-const installConfirmed = ref(false);
-const installNeedsReview = ref(false);
-const reviewHasCapabilities = computed(() =>
-  Object.values(review.value?.capabilities ?? {}).some((items) => items.length > 0),
-);
 const selectedCandidate = ref("");
 const fixedSelection = ref("");
 const fixedSelecting = ref(false);
-const busy = computed(() => operationBusy.value || fixedSelecting.value);
+const fixedDialogVisible = ref(false);
 const blocked = computed(() => operationBlocked.value || fixedSelecting.value);
 function handleFixedSelected() {
   emit("configured");
@@ -533,14 +404,6 @@ const capabilityReasons = computed(() => {
     ...(!providerReady.value && !canInstall.value ? [t("localModel.installUnavailable")] : []),
   ];
 });
-const choices = computed(() =>
-  (["llama-cpp", "llama-cpp-existing-server"] as LocalModelChoice[]).map((id) => ({
-    id,
-    allowed: !detection.value || detection.value.choices.some((choice) => choice.id === id),
-    label: detection.value?.choices.find((choice) => choice.id === id)?.label,
-    hint: detection.value?.choices.find((choice) => choice.id === id)?.hint,
-  })),
-);
 const missingModels = computed(
   () => snapshot.value?.models.filter((model) => model.fileStatus === "missing") ?? [],
 );
@@ -557,9 +420,7 @@ const operationFilesMissing = computed(() => {
   );
 });
 const candidates = computed(() => {
-  const found = (detection.value?.candidates ?? []).filter(
-    (item) => item.modelRef.startsWith("llama-cpp/") && !missingModelRefs.value.has(item.modelRef),
-  );
+  const found: LocalModelCandidate[] = [];
   for (const configured of snapshot.value?.models ?? []) {
     if (
       !configured.modelRef.startsWith("llama-cpp/") ||
@@ -608,16 +469,6 @@ function selectExactCandidate(preferTarget = false) {
   selectedCandidate.value = matches.length === 1 ? candidateKey(matches[0]) : "";
 }
 
-async function readDetection(force = false) {
-  const revision = snapshotRevision;
-  const result = await api.detect(force ? { refresh: true } : undefined);
-  if (disposed) return;
-  if (!result.ok) throw new Error(result.error);
-  if (revision !== snapshotRevision) return;
-  detection.value = result.value;
-  selectExactCandidate();
-}
-
 async function metadata(action: () => Promise<void>) {
   if (metadataPending.value) return;
   metadataPending.value = true;
@@ -641,7 +492,7 @@ async function loadSnapshot() {
     if (disposed || revision !== snapshotRevision) return;
     if (!result.ok) throw new Error(result.error);
     snapshot.value = result.value;
-    detection.value = null;
+    if (snapshot.value.catalog) void loadHardware();
     selectExactCandidate();
   } catch (cause) {
     if (!disposed && revision === snapshotRevision) {
@@ -649,6 +500,19 @@ async function loadSnapshot() {
     }
   } finally {
     if (!disposed && revision === snapshotRevision) snapshotLoading.value = false;
+  }
+}
+async function loadHardware() {
+  if (hardwareRequested) return;
+  hardwareRequested = true;
+  hardwareLoading.value = true;
+  try {
+    const result = await api.getHardware();
+    if (!disposed && result.ok) hardware.value = result.value;
+  } catch {
+    if (!disposed) hardware.value = null;
+  } finally {
+    if (!disposed) hardwareLoading.value = false;
   }
 }
 async function loadCapabilities() {
@@ -669,44 +533,26 @@ async function loadCapabilities() {
     if (!disposed && revision === capabilitiesRevision) refreshing.value = false;
   }
 }
-async function refreshAll() {
-  await Promise.all([refresh(), loadSnapshot(), loadCapabilities()]);
-}
-async function inspectProvider() {
-  if (blocked.value || !canInstall.value || props.streaming) return;
-  installConfirmed.value = false;
-  review.value = null;
-  await metadata(async () => {
-    const result = await api.inspectProvider();
-    if (!result.ok) throw new Error(result.error);
-    if (!disposed) {
-      review.value = result.value;
-      installNeedsReview.value = false;
-    }
-  });
-}
 async function installProvider() {
-  if (
-    !installConfirmed.value ||
-    !review.value ||
-    !canInstall.value ||
-    blocked.value ||
-    props.streaming
-  )
-    return;
-  const reviewToken = review.value.reviewToken;
-  installConfirmed.value = false;
+  if (metadataPending.value || !canInstall.value || blocked.value || props.streaming) return;
+  const reviewToken = review.value?.reviewToken;
   review.value = null;
-  installNeedsReview.value = true;
   await metadata(async () => {
     const result = await api.installProvider({
       confirmed: true,
       ...(reviewToken ? { reviewToken } : {}),
     });
-    if (!result.ok) throw new Error(result.error);
     if (disposed) return;
+    if (!result.ok && result.code === "PLUGIN_CAPABILITY_CONSENT_REQUIRED") {
+      const inspected = await api.inspectProvider();
+      if (disposed) return;
+      if (!inspected.ok) throw new Error(inspected.error);
+      if (!inspected.value.reviewToken) throw new Error(result.error);
+      review.value = inspected.value;
+      return;
+    }
+    if (!result.ok) throw new Error(result.error);
     capabilities.value = result.value;
-    installNeedsReview.value = false;
     await Promise.all([loadSnapshot(), loadCapabilities()]);
   });
 }
@@ -719,7 +565,6 @@ function prepare(authChoice: LocalModelChoice) {
     props.streaming
   )
     return;
-  if (!choices.value.some((choice) => choice.id === authChoice && choice.allowed)) return;
   selectedCandidate.value = "";
   void run(() => api.prepare({ authChoice }));
 }
@@ -826,7 +671,11 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
 }
+.local-model-overlay.download-active {
+  background: transparent;
+}
 .local-model-panel {
+  box-sizing: border-box;
   width: min(520px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
@@ -835,27 +684,27 @@ onUnmounted(() => {
   background: var(--smtc-background-card-on-primary-default-rest, #fff);
   color: var(--smtc-foreground-ctrl-neutral-primary-rest, #242424);
 }
-.heading,
-.title-row {
+.local-model-overlay:not(.local-model-inline) .catalog-panel {
+  width: min(560px, calc(100vw - 32px));
+  padding: 24px;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.12);
+}
+.catalog-panel .heading h2 {
+  font-size: 20px;
+}
+.catalog-panel .subtitle {
+  margin: 6px 0 18px;
+  font-size: 13px;
+}
+.heading {
   display: flex;
   gap: 12px;
   justify-content: space-between;
   align-items: center;
 }
-.title-row {
-  justify-content: flex-start;
-  gap: 10px;
-}
 .heading h2 {
   margin: 0;
   font-size: 22px;
-}
-.trial-badge {
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 5px;
-  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #60646c);
-  background: var(--smtc-background-ctrl-subtle-hover, #f3f4f6);
 }
 .subtitle {
   margin: 8px 0 24px;
@@ -887,13 +736,6 @@ onUnmounted(() => {
 .saved-models {
   margin: 16px 0;
 }
-.fixed-model-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-}
 .saved-model-row {
   display: flex;
   align-items: center;
@@ -914,24 +756,78 @@ onUnmounted(() => {
 .setup-choice .primary-action {
   width: 100%;
 }
+.provider-setup {
+  margin: 20px 0;
+  padding: 20px;
+  border: 1px solid var(--smtc-stroke-divider-subtle, #e5e7eb);
+  border-radius: 12px;
+  background: var(--smtc-background-ctrl-subtle-hover, #f8f9fa);
+}
+.provider-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.provider-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.provider-heading p {
+  margin: 6px 0 0;
+  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #60646c);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.provider-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--smtc-background-card-on-primary-default-rest, #fff);
+}
+.provider-icon svg {
+  width: 24px;
+  height: 24px;
+}
+.provider-setup .primary-action {
+  width: 100%;
+  margin: 20px 0 0;
+}
+.provider-permissions {
+  margin-top: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.provider-permissions h4 {
+  margin: 0;
+  font-size: 14px;
+}
+.provider-permissions p {
+  margin: 6px 0 12px;
+}
+.provider-permissions ul {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+}
+.provider-details {
+  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #60646c);
+}
+.provider-details summary {
+  cursor: pointer;
+}
+.provider-details dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+}
+.provider-details dd {
+  margin: 0;
+}
 .model-reference {
   font-size: 13px;
   color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #60646c);
-}
-.advanced-details {
-  margin-top: 22px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #60646c);
-}
-.advanced-details summary {
-  cursor: pointer;
-}
-.connection-management > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 button,
 select {
@@ -958,9 +854,6 @@ button:disabled {
   background: #f2f2f2;
   color: #18181b;
 }
-:global(html.dark) .trial-badge {
-  background: rgba(255, 255, 255, 0.08);
-}
 .close-button {
   margin: 0;
   padding: 0;
@@ -983,9 +876,6 @@ small {
 p,
 dd {
   overflow-wrap: anywhere;
-}
-.upstream-text {
-  white-space: pre-wrap;
 }
 .error {
   color: var(--smtc-status-danger-foreground, #b42318);

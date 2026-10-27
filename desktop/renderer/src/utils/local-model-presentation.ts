@@ -1,5 +1,48 @@
 import type { LocalModelStep } from "../../../src/local-model-types";
 
+export interface ManagedDownloadProgress {
+  stage: "chat" | "embedding" | "runtime";
+  percent: number;
+  downloadedGB: string;
+  totalGB: string;
+  speedMBps: number;
+}
+
+const DOWNLOAD_PROGRESS =
+  /^Downloading (.{1,160}?)(?:…|\.{3})\s*(\d{1,3})% \((\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?) GB, (\d+(?:\.\d+)?) MB\/s\)$/u;
+
+export function parseManagedDownloadProgress(
+  message: string | undefined,
+  modelName: string | undefined,
+): ManagedDownloadProgress | null {
+  if (!message || message.length > 512) return null;
+  const match = DOWNLOAD_PROGRESS.exec(message);
+  if (!match) return null;
+  const [, label, percentText, downloadedGB, totalGB, speedText] = match;
+  const stage =
+    label === modelName
+      ? "chat"
+      : label === "EmbeddingGemma" || label === "configured embedding model"
+        ? "embedding"
+        : label === "llama.cpp runtime"
+          ? "runtime"
+          : null;
+  const percent = Number(percentText);
+  const speedMBps = Number(speedText);
+  const downloaded = Number(downloadedGB);
+  const total = Number(totalGB);
+  if (
+    !stage ||
+    ![percent, speedMBps, downloaded, total].every(Number.isFinite) ||
+    percent > 100 ||
+    total <= 0 ||
+    downloaded > total
+  ) {
+    return null;
+  }
+  return { stage, percent, downloadedGB, totalGB, speedMBps };
+}
+
 export interface ManagedDownloadSummary {
   modelName: string;
   downloadGB: number;

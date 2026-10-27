@@ -9,6 +9,7 @@ describe("createBrowserOpenClawMock", () => {
     await expect(api.chat.isConnected()).resolves.toBe(true);
     await expect(api.settings.get()).resolves.toMatchObject({ minimizeToTray: false });
     await expect(api.plugin.weixin.getStatus()).resolves.toMatchObject({ loggedIn: false });
+    await expect(api.model.local.getHardware()).resolves.toMatchObject({ ok: false });
 
     expect(api).not.toHaveProperty("sandbox");
     expect(api.windowsNodeMxc.onApprovalRequest(vi.fn())).toBeTypeOf("function");

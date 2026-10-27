@@ -30,6 +30,18 @@ export interface LocalModelDetection {
 
 export type LocalModelFileStatus = "present" | "missing" | "unknown" | "external";
 
+export interface LocalModelHardware {
+  cpu: string;
+  totalMemoryBytes: number;
+  availableMemoryBytes: number;
+  accelerator: "cpu" | "cuda" | "metal";
+  gpus: Array<{
+    name: string;
+    totalMemoryBytes: number;
+    availableMemoryBytes: number;
+  }>;
+}
+
 /** Saved configuration plus local file metadata; never an inference health check. */
 export interface LocalModelSnapshot {
   models: Array<{ modelRef: string; name: string; fileStatus?: LocalModelFileStatus }>;
@@ -106,10 +118,13 @@ export interface LocalModelInstallReview {
   reviewToken?: string;
 }
 
-export type LocalModelResult<T> = { ok: true; value: T } | { ok: false; error: string };
+export type LocalModelResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; code?: "PLUGIN_CAPABILITY_CONSENT_REQUIRED" };
 
 export interface LocalModelAPI {
   getSnapshot(): Promise<LocalModelResult<LocalModelSnapshot>>;
+  getHardware(): Promise<LocalModelResult<LocalModelHardware>>;
   getCapabilities(): Promise<LocalModelResult<LocalModelCapabilities>>;
   detect(options?: { refresh?: boolean }): Promise<LocalModelResult<LocalModelDetection>>;
   inspectProvider(): Promise<LocalModelResult<LocalModelInstallReview>>;

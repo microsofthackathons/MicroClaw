@@ -1,6 +1,10 @@
 import type { IpcMain } from "electron";
-import type { LocalModelService } from "./local-model-service";
+import {
+  LocalModelProviderReviewRequiredError,
+  type LocalModelService,
+} from "./local-model-service";
 import type { LocalModelResult } from "./local-model-types";
+import { readLocalModelHardware } from "./local-model-hardware";
 
 export function registerLocalModelHandlers(
   ipc: Pick<IpcMain, "handle">,
@@ -8,6 +12,7 @@ export function registerLocalModelHandlers(
 ): void {
   const handlers: Record<string, (input: unknown) => unknown | Promise<unknown>> = {
     "model:local:get-snapshot": () => service.getSnapshot(),
+    "model:local:get-hardware": () => readLocalModelHardware(),
     "model:local:get-capabilities": () => service.getCapabilities(),
     "model:local:detect": (input) => {
       if (
@@ -38,7 +43,13 @@ export function registerLocalModelHandlers(
       } catch (error) {
         const message = service.errorMessage(error);
         console.warn(`[${channel}] ${message}`);
-        return { ok: false, error: message };
+        return {
+          ok: false,
+          error: message,
+          ...(error instanceof LocalModelProviderReviewRequiredError
+            ? { code: "PLUGIN_CAPABILITY_CONSENT_REQUIRED" as const }
+            : {}),
+        };
       }
     });
   }

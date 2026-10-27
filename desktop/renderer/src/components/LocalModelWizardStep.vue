@@ -9,7 +9,7 @@
           </svg>
         </span>
         <div>
-          <span class="eyebrow">{{ t("localModel.recommended") }}</span>
+          <span class="eyebrow">{{ t("localModel.selectedModel") }}</span>
           <h3>{{ downloadSummary.modelName }}</h3>
         </div>
       </div>

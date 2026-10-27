@@ -44,6 +44,12 @@ interface UsageDay {
 }
 
 export interface SessionUsageResult {
+  updatedAt?: number;
+  cacheStatus?: {
+    status: "fresh" | "partial" | "stale" | "refreshing";
+    pendingFiles?: number;
+    staleFiles?: number;
+  };
   totals?: Partial<UsageTotals>;
   aggregates?: {
     daily?: UsageDay[];

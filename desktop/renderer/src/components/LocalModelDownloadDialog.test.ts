@@ -108,7 +108,8 @@ describe("fixed local model first-use dialog", () => {
         modelBytes: model.downloadBytes,
       };
       const wrapper = await open("agent:main:one", model.modelRef);
-      expect(wrapper.text()).toContain(model.name);
+      expect(wrapper.get("h2").text()).toBe(model.name.replace(/\s+(?:UD-)?Q4_K_M$/u, ""));
+      expect(wrapper.get("h2").attributes("title")).toBe(model.name);
       expect(wrapper.text()).toContain("ModelScope");
       expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
       expect(window.openclaw.model.session.select).not.toHaveBeenCalled();

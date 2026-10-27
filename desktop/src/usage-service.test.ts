@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { queryAccountedUsage } from "./usage-service";
+import { queryAccountedUsage, UsageStatsNotReadyError } from "./usage-service";
 import { parseBackgroundUsageLog } from "./usage-accounting";
 
 function storedEntry() {
@@ -22,6 +22,53 @@ function storedEntry() {
 const range = { startDate: "2026-10-01", endDate: "2026-10-26", limit: 1000 };
 
 describe("shared desktop usage query", () => {
+  it.each([undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects malformed totals instead of publishing zero: %s",
+    async (totalTokens) => {
+      const request = vi.fn().mockResolvedValue({ totals: { totalTokens } });
+      const ledger = { synchronize: vi.fn(), readSnapshot: vi.fn() };
+      await expect(queryAccountedUsage(request, ledger, range)).rejects.toThrow(
+        "Invalid Gateway usage totals",
+      );
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["partial", "stale", "refreshing"])(
+    "does not turn a %s session result into a background-only total",
+    async (status) => {
+      const request = vi.fn().mockResolvedValue({
+        totals: { totalTokens: 0 },
+        cacheStatus: { status, pendingFiles: 1 },
+      });
+      const ledger = {
+        synchronize: vi.fn().mockResolvedValue([storedEntry()]),
+        readSnapshot: vi.fn(),
+      };
+
+      await expect(queryAccountedUsage(request, ledger, range)).rejects.toBeInstanceOf(
+        UsageStatsNotReadyError,
+      );
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+      expect(ledger.readSnapshot).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([{ pendingFiles: 1 }, { staleFiles: 1 }])(
+    "does not publish fresh-labelled statistics that still have pending files: %j",
+    async (pending) => {
+      const request = vi.fn().mockResolvedValue({
+        totals: { totalTokens: 100 },
+        cacheStatus: { status: "fresh", ...pending },
+      });
+      const ledger = { synchronize: vi.fn(), readSnapshot: vi.fn() };
+      await expect(queryAccountedUsage(request, ledger, range)).rejects.toBeInstanceOf(
+        UsageStatsNotReadyError,
+      );
+    },
+  );
+
   it("queries all agents and uses the active Gateway log path for supplementation", async () => {
     const request = vi
       .fn()

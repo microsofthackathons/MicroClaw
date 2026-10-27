@@ -71,6 +71,7 @@ import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
 import { BackgroundUsageLedger } from "./background-usage-ledger";
 import { queryAccountedUsage } from "./usage-service";
+import { UsageSnapshotCache } from "./usage-snapshot-cache";
 import {
   prepareChatAttachments,
   prepareClipboardImageAttachments,
@@ -7036,21 +7037,27 @@ function registerIpcHandlers(): void {
   const backgroundUsageLedger = new BackgroundUsageLedger(
     path.join(app.getPath("userData"), "usage", "background-requests.json"),
   );
+  const usageSnapshots = new UsageSnapshotCache(
+    path.join(app.getPath("userData"), "usage", "snapshots.json"),
+    async (range) => {
+      if (!gwClient?.connected) throw new Error("Gateway 未连接");
+      return queryAccountedUsage(
+        (method, params) => gwClient!.request(method, params),
+        backgroundUsageLedger,
+        range,
+        () =>
+          console.warn("[usage] Background usage could not be refreshed; keeping cached totals"),
+      );
+    },
+  );
 
   ipcMain.handle("usage:get-stats", async () => {
-    if (!gwClient?.connected) throw new Error("Gateway 未连接");
     const endDate = new Date().toISOString().split("T")[0];
     const startDate = new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000)
       .toISOString()
       .split("T")[0];
 
-    const result: any = await queryAccountedUsage(
-      (method, params) => gwClient!.request(method, params),
-      backgroundUsageLedger,
-      { startDate, endDate, limit: 1000 },
-      () =>
-        console.warn("[usage] Background usage could not be refreshed; totals may be incomplete"),
-    );
+    const result: any = await usageSnapshots.get({ startDate, endDate, limit: 1000 }, "summary");
 
     const totals = result?.totals || {};
     const aggregates = result?.aggregates || {};
@@ -7091,6 +7098,7 @@ function registerIpcHandlers(): void {
     const fx = await getUsdToCnyRate();
 
     return {
+      updatedAt: result.updatedAt,
       totalSpend: totals.totalCost || 0,
       maxBudget: null,
       modelSpend,
@@ -7127,20 +7135,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "usage:get-detailed-stats",
     async (_event, params: { startDate?: string; endDate?: string; filter?: string }) => {
-      if (!gwClient?.connected) throw new Error("Gateway 未连接");
-
       const endDate = params.endDate || new Date().toISOString().split("T")[0];
       const startDate =
         params.startDate ||
         new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000).toISOString().split("T")[0];
 
-      const result: any = await queryAccountedUsage(
-        (method, input) => gwClient!.request(method, input),
-        backgroundUsageLedger,
-        { startDate, endDate, limit: 5000 },
-        () =>
-          console.warn("[usage] Background usage could not be refreshed; totals may be incomplete"),
-      );
+      const result: any = await usageSnapshots.get({ startDate, endDate, limit: 5000 });
 
       const totals = result?.totals || {};
       const aggregates = result?.aggregates || {};

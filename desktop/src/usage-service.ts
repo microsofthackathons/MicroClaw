@@ -5,10 +5,33 @@ import {
   type SessionUsageResult,
 } from "./usage-accounting";
 
+export interface UsageRange {
+  startDate: string;
+  endDate: string;
+  limit: number;
+}
+
+export class UsageStatsNotReadyError extends Error {
+  constructor() {
+    super("Usage statistics are not complete yet");
+    this.name = "UsageStatsNotReadyError";
+  }
+}
+
+export function hasCompleteSessionUsage(result: SessionUsageResult): boolean {
+  const status = result.cacheStatus;
+  return (
+    !status ||
+    (status.status === "fresh" &&
+      (status.pendingFiles ?? 0) === 0 &&
+      (status.staleFiles ?? 0) === 0)
+  );
+}
+
 export async function queryAccountedUsage(
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
   ledger: Pick<BackgroundUsageLedger, "synchronize" | "readSnapshot">,
-  range: { startDate: string; endDate: string; limit: number },
+  range: UsageRange,
   warn: () => void = () => {},
 ) {
   const result = await request("sessions.usage", {
@@ -18,6 +41,10 @@ export async function queryAccountedUsage(
   });
   if (!result || typeof result !== "object" || Array.isArray(result))
     throw new Error("Invalid Gateway usage response");
+  if (!hasCompleteSessionUsage(result as SessionUsageResult)) throw new UsageStatsNotReadyError();
+  const totalTokens = (result as SessionUsageResult).totals?.totalTokens;
+  if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens < 0)
+    throw new Error("Invalid Gateway usage totals");
   let entries: BackgroundUsageEntry[];
   let available = true;
   try {
@@ -38,3 +65,5 @@ export async function queryAccountedUsage(
     available,
   );
 }
+
+export type AccountedUsageResult = Awaited<ReturnType<typeof queryAccountedUsage>>;

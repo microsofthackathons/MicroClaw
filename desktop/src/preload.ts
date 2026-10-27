@@ -280,6 +280,7 @@ contextBridge.exposeInMainWorld("openclaw", {
     } satisfies SessionModelAPI,
     local: {
       getSnapshot: () => ipcRenderer.invoke("model:local:get-snapshot"),
+      getHardware: () => ipcRenderer.invoke("model:local:get-hardware"),
       getCapabilities: () => ipcRenderer.invoke("model:local:get-capabilities"),
       detect: (options) => ipcRenderer.invoke("model:local:detect", options),
       inspectProvider: () => ipcRenderer.invoke("model:local:inspect-provider"),

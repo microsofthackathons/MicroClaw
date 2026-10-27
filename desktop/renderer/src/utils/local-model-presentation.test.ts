@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LocalModelStep } from "../../../src/local-model-types";
-import { summarizeManagedDownload } from "./local-model-presentation";
+import { parseManagedDownloadProgress, summarizeManagedDownload } from "./local-model-presentation";
 
 const prompt = [
   "Runs on Gateway host desktop-host (win32/x64), using the CPU.",
@@ -16,6 +16,48 @@ const step: LocalModelStep = {
   executor: "client",
   message: prompt,
 };
+
+describe("managed download progress presentation", () => {
+  const modelName = "Qwen3.5 9B Q4_K_M";
+
+  it("keeps partial chat progress separate from the embedding download", () => {
+    expect(
+      parseManagedDownloadProgress(`Downloading ${modelName}… 5% (0.3/5.7 GB, 17 MB/s)`, modelName),
+    ).toEqual({
+      stage: "chat",
+      percent: 5,
+      downloadedGB: "0.3",
+      totalGB: "5.7",
+      speedMBps: 17,
+    });
+    expect(
+      parseManagedDownloadProgress(
+        "Downloading EmbeddingGemma… 100% (0.3/0.3 GB, 12 MB/s)",
+        modelName,
+      )?.stage,
+    ).toBe("embedding");
+  });
+
+  it("recognizes runtime progress and a zero-percent start", () => {
+    expect(
+      parseManagedDownloadProgress(
+        "Downloading llama.cpp runtime... 0% (0.0/0.2 GB, 0 MB/s)",
+        modelName,
+      )?.stage,
+    ).toBe("runtime");
+  });
+
+  it.each([
+    "Preparing runtime",
+    "Managed llama.cpp server prepared",
+    "Downloading other model… 5% (0.3/5.7 GB, 17 MB/s)",
+    `Downloading ${modelName}… 101% (5.7/5.7 GB, 17 MB/s)`,
+    `Downloading ${modelName}… 5% (6.0/5.7 GB, 17 MB/s)`,
+    `Downloading ${modelName}… 0% (0.0/0.0 GB, 0 MB/s)`,
+  ])("leaves unknown or invalid progress messages unchanged: %s", (message) => {
+    expect(parseManagedDownloadProgress(message, modelName)).toBeNull();
+  });
+});
 
 describe("managed download presentation", () => {
   it("summarizes model files separately from the additional runtime download", () => {

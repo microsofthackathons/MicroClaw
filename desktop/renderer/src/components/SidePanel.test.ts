@@ -43,6 +43,8 @@ const wrappers: Array<ReturnType<typeof mount>> = [];
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  mocks.gateway.ready = true;
+  mocks.gateway.status = "running";
   localStorage.clear();
   setLocale("en-US");
   mocks.getStats.mockResolvedValue({
@@ -102,7 +104,7 @@ describe("SidePanel token-only usage snapshot", () => {
     );
   });
 
-  it("shows loading only until the first usage snapshot arrives", async () => {
+  it("uses a neutral placeholder without loading text before the first snapshot", async () => {
     let resolveStats!: (stats: { totalTokens: number }) => void;
     mocks.getStats.mockReturnValueOnce(
       new Promise<{ totalTokens: number }>((resolve) => {
@@ -111,8 +113,9 @@ describe("SidePanel token-only usage snapshot", () => {
     );
     const wrapper = await mountPanel();
 
-    expect(wrapper.get(".sp-usage-state").text()).toBe(t("settings.usageLoading"));
-    expect(wrapper.find(".sp-usage-card").exists()).toBe(false);
+    expect(wrapper.find(".sp-usage-state").exists()).toBe(false);
+    expect(wrapper.get(".sp-usage-value").text()).toBe("—");
+    expect(wrapper.text()).not.toContain(t("settings.usageLoading"));
 
     resolveStats({ totalTokens: 4_400_000 });
     await flushPromises();
@@ -163,6 +166,54 @@ describe("SidePanel token-only usage snapshot", () => {
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(mocks.getStats).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the previous number and timestamp when a background refresh fails", async () => {
+    const wrapper = await mountPanel();
+    const footer = wrapper.get(".sp-usage-foot").text();
+    mocks.getStats.mockRejectedValue(new Error("Gateway disconnected"));
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(wrapper.get(".sp-usage-value").text()).toBe("4.4M");
+    expect(wrapper.get(".sp-usage-foot").text()).toBe(footer);
+    expect(wrapper.find(".sp-usage-state").exists()).toBe(false);
+  });
+
+  it("reads the cached number even when the Gateway is offline", async () => {
+    mocks.gateway.ready = false;
+    mocks.gateway.status = "stopped";
+    mocks.getStats.mockResolvedValue({ totalTokens: 53_532 });
+    const wrapper = await mountPanel();
+    expect(mocks.getStats).toHaveBeenCalledTimes(1);
+    expect(wrapper.get(".sp-usage-value").text()).toBe("53.5K");
+    expect(wrapper.find(".sp-usage-state").exists()).toBe(false);
+  });
+
+  it("restores the saved total immediately without a loading flash", async () => {
+    localStorage.setItem(
+      "microclaw:usageSnapshot",
+      JSON.stringify({ totalTokens: 53_532, updatedAt: Date.now() - 86_400_000 }),
+    );
+    mocks.getStats.mockRejectedValue(new Error("Gateway disconnected"));
+    const wrapper = await mountPanel();
+    expect(wrapper.get(".sp-usage-value").text()).toBe("53.5K");
+    expect(wrapper.find(".sp-usage-state").exists()).toBe(false);
+  });
+
+  it("does not replace real data with malformed values or development mocks", async () => {
+    const wrapper = await mountPanel();
+    for (const totalTokens of [undefined, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      mocks.getStats.mockResolvedValue({ totalTokens });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(wrapper.get(".sp-usage-value").text()).toBe("4.4M");
+    }
+  });
+
+  it("allows a complete refreshed total to decrease to zero", async () => {
+    const wrapper = await mountPanel();
+    mocks.getStats.mockResolvedValue({ totalTokens: 0 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(wrapper.get(".sp-usage-value").text()).toBe("0");
   });
 
   it("preserves the saved collapse preference and expands to tokens only", async () => {
