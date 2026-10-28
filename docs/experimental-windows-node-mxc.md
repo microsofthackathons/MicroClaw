@@ -61,14 +61,17 @@ When MXC is confirmed Off, Security settings show the switch, official project l
 unsandboxed-execution disclosure. Folder policies and applicable remembered-command controls
 reappear when containment is selected; hiding them does not clear saved settings.
 Selecting Off alone does not hide an incomplete transition, remaining MXC activity, or unresolved
-lifecycle/folder-policy recovery errors.
+lifecycle or folder-policy recovery state.
 
 Security settings do not display the internal attestation diagnostics or the verbose compatibility,
-probe, readiness-blocker, and remediation dump. Normal active-tier, active Canvas, all-denied ambient
-access, and per-command-only approval informational blocks are also omitted. Unavailable protection,
-transitions, lifecycle/folder-policy recovery errors, paused Canvas, and missing or exceptional ambient
-access remain visible. This presentation change does not disable any containment, policy, approval,
-or readiness checks; Limited still offers per-command approval only.
+probe, readiness-blocker, and remediation dump. Saved folder-Apply failure messages and phases are
+also omitted; recovery data and the action to stage the previous policy are retained alongside the
+folder controls. Normal active-tier, active Canvas, all-denied ambient access, and per-command-only
+approval informational blocks are also omitted. Unavailable protection, transitions, current lifecycle
+failures, paused Canvas, and missing or exceptional ambient access remain visible, and current
+operation failures still use the existing error notifications. This presentation change does not
+disable any containment, policy, approval, or readiness checks; Limited still offers per-command
+approval only.
 
 Each explicit sandbox toggle opens exactly one main-process native confirmation. It says that
 MicroClaw's **backend restarts while the window stays open**; Electron is not relaunched. For On,

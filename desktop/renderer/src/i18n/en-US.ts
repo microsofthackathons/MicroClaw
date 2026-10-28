@@ -513,7 +513,6 @@ export default {
     "Agent execution and chat will pause. Current command approvals may be invalidated. MicroClaw will stay locked if any policy, restart, attestation, smoke, or activation step is canceled or fails.",
   "settings.windowsNodeMxcApplyFoldersComplete":
     "The folder policy was applied and the verified MXC route was reactivated.",
-  "settings.windowsNodeMxcFolderRecovery": "The last apply remained safely locked",
   "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
   "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
   "settings.windowsNodeMxcLifecyclePhase.idle": "Idle",

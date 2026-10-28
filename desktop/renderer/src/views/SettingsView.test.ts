@@ -1188,9 +1188,9 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
     expect(wrapper.find(".mxc-folder-policy").exists()).toBe(true);
     if (remaining.folderPolicyRecovery) {
-      expect(wrapper.find(".mxc-folder-policy .mxc-alert-error").text()).toContain(
-        "Folder policy restoration failed.",
-      );
+      expect(wrapper.find(".mxc-folder-policy .mxc-alert-error").exists()).toBe(false);
+      expect(wrapper.text()).not.toContain(remaining.folderPolicyRecovery.lastError);
+      expect(wrapper.find('[data-testid="mxc-stage-previous-folder-policy"]').exists()).toBe(true);
     }
     wrapper.unmount();
   });
@@ -1634,29 +1634,131 @@ describe("SettingsView", () => {
     });
   });
 
-  it("shows the exact failed folder-policy phase and nested diagnostics", async () => {
-    routeState.section = "security";
-    getWindowsNodeMxcStatus.mockResolvedValueOnce({
-      ...status("node-local"),
-      folderPolicyRecovery: {
-        previous: { rw: ["C:\\Desktop"], ro: [] },
-        draft: { rw: ["C:\\Desktop", "C:\\Users\\sunt\\Documents"], ro: [] },
-        updatedAt: "2026-10-20T07:40:04.792Z",
-        failurePhase: "persisting",
+  it.each([
+    ["en-US", "active"],
+    ["zh-CN", "active"],
+    ["en-US", "locked"],
+    ["zh-CN", "locked"],
+    ["en-US", "off"],
+    ["zh-CN", "off"],
+  ] as const)(
+    "omits saved folder-policy diagnostics but retains recovery actions in %s while %s",
+    async (locale, phase) => {
+      routeState.section = "security";
+      setLocale(locale);
+      const initial = phase === "off" ? offStatus() : status("node-local");
+      if (phase === "active") {
+        initial.effectiveEnabled = true;
+        initial.effectiveStrength = "full";
+        initial.lifecycleState.phase = "active";
+      }
+      initial.folders = [{ path: "C:\\Current", access: "rw" }];
+      initial.folderPolicyRecovery = {
+        previous: { rw: ["C:\\Previous"], ro: [] },
+        draft: { rw: ["C:\\Draft"], ro: [] },
+        updatedAt: new Date(0).toISOString(),
+        failurePhase: "validating",
         lastError:
-          "MXC ACL grant failed: launcher(timedOut=true); verification(protectedChildrenSufficient=false)",
+          "WindowsNodeMxcDatabasePreparationError: master-archive: agent-database-inspection-failed",
+      };
+      const savedRecovery = structuredClone(initial.folderPolicyRecovery);
+      getWindowsNodeMxcStatus.mockResolvedValueOnce(initial);
+      const errorMessage = vi.spyOn(ElMessage, "error");
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+      await flushPromises();
+
+      expect(wrapper.find(".mxc-folder-policy .mxc-alert-error").exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("The last apply remained safely locked");
+      expect(wrapper.text()).not.toContain("上次应用失败后已安全锁定");
+      expect(wrapper.text()).not.toContain(savedRecovery.lastError);
+      expect(wrapper.text()).not.toContain(savedRecovery.failurePhase);
+      const policy = wrapper.get(".mxc-folder-policy");
+      expect(policy.findAll(".dir-path").map((entry) => entry.text())).toEqual(["C:\\Current"]);
+      expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(false);
+      const stagePrevious = policy.get('[data-testid="mxc-stage-previous-folder-policy"]');
+      expect(stagePrevious.text()).toBe(
+        locale === "en-US" ? "Stage previous policy" : "暂存以前的策略",
+      );
+      expect(stagePrevious.attributes("disabled")).toBe("false");
+      await stagePrevious.trigger("click");
+      await flushPromises();
+
+      expect(policy.findAll(".dir-path").map((entry) => entry.text())).toEqual(["C:\\Previous"]);
+      expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(true);
+      const cancel = policy.get('[data-testid="mxc-cancel-folder-policy"]');
+      expect(cancel.text()).toBe(locale === "en-US" ? "Cancel" : "取消");
+      await cancel.trigger("click");
+      await flushPromises();
+
+      expect(policy.findAll(".dir-path").map((entry) => entry.text())).toEqual(["C:\\Current"]);
+      expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(false);
+      expect(initial.folderPolicyRecovery).toEqual(savedRecovery);
+      expect(errorMessage).not.toHaveBeenCalled();
+      expect(setFolderPolicy).not.toHaveBeenCalled();
+      expect(applyFolderPolicy).not.toHaveBeenCalled();
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("reports live folder Apply failures without displaying saved diagnostics", async () => {
+    routeState.section = "security";
+    const initial: WindowsNodeMxcStatus = {
+      ...status("node-local"),
+      folders: [{ path: "C:\\Work", access: "rw" }],
+      folderPolicyRecovery: {
+        previous: { rw: ["C:\\Work"], ro: [] },
+        draft: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
+        updatedAt: new Date(0).toISOString(),
+        failurePhase: "persisting",
+        lastError: "Historical folder-policy error.",
+      },
+    };
+    getWindowsNodeMxcStatus.mockResolvedValueOnce(initial).mockResolvedValue({
+      ...initial,
+      lifecycleState: {
+        phase: "failed",
+        detail: "Protection remains locked. Retry folder policy apply.",
+        updatedAt: new Date(0).toISOString(),
       },
     });
-
+    stageFolder.mockResolvedValueOnce({
+      ok: true,
+      dirs: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
+    });
+    applyFolderPolicy.mockRejectedValueOnce(new Error("Current folder-policy Apply failed."));
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    const successMessage = vi.spyOn(ElMessage, "success");
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
     });
     await flushPromises();
 
-    const recovery = wrapper.find(".mxc-folder-policy .mxc-alert-error");
-    expect(recovery.text()).toContain("persisting:");
-    expect(recovery.text()).toContain("timedOut=true");
-    expect(recovery.text()).toContain("protectedChildrenSufficient=false");
+    await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="mxc-apply-folder-policy"]').trigger("click");
+    await flushPromises();
+
+    expect(applyFolderPolicy).toHaveBeenCalledExactlyOnceWith({
+      rw: ["C:\\Work"],
+      ro: ["C:\\Docs"],
+    });
+    expect(errorMessage).toHaveBeenCalledExactlyOnceWith("Current folder-policy Apply failed.");
+    expect(successMessage).not.toHaveBeenCalled();
+    expect(getWindowsNodeMxcStatus).toHaveBeenCalledTimes(2);
+    expect(wrapper.get('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
+    expect(wrapper.find(".mxc-primary-detail").text()).toContain(
+      "Protection remains locked. Retry folder policy apply.",
+    );
+    expect(wrapper.find(".mxc-folder-policy .mxc-alert-error").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Historical folder-policy error.");
+    expect(wrapper.text()).not.toContain("persisting");
+    expect(wrapper.find('[data-testid="mxc-stage-previous-folder-policy"]').exists()).toBe(true);
+    expect(setFolderPolicy).not.toHaveBeenCalled();
+    wrapper.unmount();
   });
 
   it("opens the English legal documents from About", async () => {

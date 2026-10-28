@@ -483,7 +483,6 @@ export default {
   "settings.windowsNodeMxcApplyFoldersWarning":
     "代理执行和聊天将暂停，当前命令批准可能失效。如果策略、重启、证明、冒烟测试或激活的任一步骤被取消或失败，MicroClaw 将保持锁定。",
   "settings.windowsNodeMxcApplyFoldersComplete": "文件夹策略已应用，已验证的 MXC 路由已重新激活。",
-  "settings.windowsNodeMxcFolderRecovery": "上次应用失败后已安全锁定",
   "settings.windowsNodeMxcStagePreviousFolders": "暂存以前的策略",
   "settings.windowsNodeMxcLifecycle": "策略生命周期",
   "settings.windowsNodeMxcLifecyclePhase.idle": "空闲",

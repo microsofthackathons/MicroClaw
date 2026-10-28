@@ -602,19 +602,6 @@
               >
                 {{ t("settings.windowsNodeMxcFoldersStaged") }}
               </div>
-              <div
-                v-if="windowsNodeMxcStatus.folderPolicyRecovery?.lastError"
-                class="mxc-alert mxc-alert-error"
-              >
-                {{ t("settings.windowsNodeMxcFolderRecovery") }}:
-                <strong v-if="windowsNodeMxcStatus.folderPolicyRecovery.failurePhase">
-                  {{ windowsNodeMxcStatus.folderPolicyRecovery.failurePhase }}:
-                </strong>
-                {{ windowsNodeMxcStatus.folderPolicyRecovery.lastError }}
-                <el-button text size="small" @click="stagePreviousWindowsNodeMxcFolderPolicy">
-                  {{ t("settings.windowsNodeMxcStagePreviousFolders") }}
-                </el-button>
-              </div>
               <div class="dir-section">
                 <div class="mxc-folder-policy-heading">
                   <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
@@ -703,20 +690,39 @@
                   {{ t("settings.sandboxNoDirs") }}
                 </div>
               </div>
-              <div v-if="windowsNodeMxcFolderDraftDirty" class="mxc-folder-policy-actions">
+              <div
+                v-if="
+                  windowsNodeMxcFolderDraftDirty ||
+                  windowsNodeMxcStatus.folderPolicyRecovery?.previous
+                "
+                class="mxc-folder-policy-actions"
+              >
+                <template v-if="windowsNodeMxcFolderDraftDirty">
+                  <el-button
+                    type="primary"
+                    :loading="windowsNodeMxcFolderApplying"
+                    data-testid="mxc-apply-folder-policy"
+                    @click="applyWindowsNodeMxcFolderPolicy"
+                  >
+                    {{ t("settings.windowsNodeMxcApplyFolders") }}
+                  </el-button>
+                  <el-button
+                    data-testid="mxc-cancel-folder-policy"
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="replaceWindowsNodeMxcFolderDraft(windowsNodeMxcFolderBaseline)"
+                  >
+                    {{ t("common.cancel") }}
+                  </el-button>
+                </template>
                 <el-button
-                  type="primary"
-                  :loading="windowsNodeMxcFolderApplying"
-                  data-testid="mxc-apply-folder-policy"
-                  @click="applyWindowsNodeMxcFolderPolicy"
-                >
-                  {{ t("settings.windowsNodeMxcApplyFolders") }}
-                </el-button>
-                <el-button
+                  v-if="windowsNodeMxcStatus.folderPolicyRecovery?.previous"
+                  data-testid="mxc-stage-previous-folder-policy"
+                  text
+                  size="small"
                   :disabled="windowsNodeMxcFolderApplying"
-                  @click="replaceWindowsNodeMxcFolderDraft(windowsNodeMxcFolderBaseline)"
+                  @click="stagePreviousWindowsNodeMxcFolderPolicy"
                 >
-                  {{ t("common.cancel") }}
+                  {{ t("settings.windowsNodeMxcStagePreviousFolders") }}
                 </el-button>
               </div>
             </div>
