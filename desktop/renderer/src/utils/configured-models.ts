@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { getManagedModelProvider } from "./managed-model-providers";
 import {
   normalizeModelInput,
@@ -30,7 +31,7 @@ export function getModelRef(model: Pick<ConfiguredModel, "providerKey" | "id">):
 
 export function providerName(key: string): string {
   if (key === "github-copilot") return "GitHub Copilot";
-  if (key === "llama-cpp") return "llama.cpp";
+  if (key === "llama-cpp") return t("localModel.title");
   return getManagedModelProvider(key)?.label ?? key;
 }
 

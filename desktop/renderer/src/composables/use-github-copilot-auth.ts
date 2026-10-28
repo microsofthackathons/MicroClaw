@@ -47,6 +47,11 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
   }
 
   async function loadModels(generation: number, preferredModel?: string): Promise<void> {
+    const preparation = await window.openclaw.model.prepareGitHubCopilot();
+    if (generation !== requestGeneration || !options.isActive()) return;
+    if (preparation.restartRequired)
+      await window.openclaw.gateway.restart({ reason: "copilot-plugin-activation" });
+    if (generation !== requestGeneration || !options.isActive()) return;
     const catalog = await window.openclaw.model.listGitHubCopilotModels();
     applyModels(generation, catalog, preferredModel);
   }

@@ -12,10 +12,12 @@ import * as fs from "fs";
 import * as http from "http";
 import * as net from "net";
 import * as os from "os";
+import { performance } from "perf_hooks";
 import { pathToFileURL } from "node:url";
 import { createHash, randomUUID } from "crypto";
-import { ChildProcess, execFileSync, spawn } from "child_process";
+import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
+import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
 import {
   hasLocalModelPrimary,
   LocalModelService,
@@ -30,6 +32,8 @@ import {
 } from "./internal-features";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
+import { applyModelConfig } from "./model-config-application";
+import { resolveGatewayRestartReason } from "./gateway-restart-reason";
 import { registerSessionModelHandlers } from "./session-model-ipc";
 import type { LocalModelReceipt } from "./local-model-types";
 import {
@@ -142,7 +146,6 @@ import {
   type GitHubCopilotAuthRuntime,
   invalidateGitHubCopilotAuthStatusCache,
   listGitHubCopilotModels,
-  parseGitHubCopilotGatewayModels,
 } from "./github-copilot-auth";
 import {
   ensureGitHubCopilotProviderPlugin,
@@ -222,6 +225,13 @@ import {
 import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
 import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
 import { requiresPostSpawnChannelCheck, waitForPostSpawnChannels } from "./post-spawn-restart";
+import {
+  isKnownWeixinQrStartRejection,
+  isWeixinLoginReady,
+  setWeixinPluginEnabled,
+  WeixinPluginActivationError,
+} from "./weixin-plugin-lifecycle";
+import { stopGatewayChildProcess } from "./gateway-process-stop";
 import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
@@ -273,6 +283,11 @@ import {
   type WindowsNodeMxcLifecycleOperationDescriptor,
 } from "./windows-node-mxc-lifecycle-operation";
 import { WeixinMutationCoordinator } from "./weixin-mutation-coordinator";
+import {
+  ensureDefaultWeixinPlugin,
+  getWeixinRuntimeConnection,
+  WeixinQrSession,
+} from "./weixin-connection";
 import {
   attestWindowsNodeMxcGatewaySnapshot,
   promoteWindowsNodeMxcPolicy,
@@ -454,7 +469,6 @@ const RENDERER_WRITABLE_SETTING_KEYS = new Set([
 let mainWindow: BrowserWindow | null = null;
 let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
-let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 const activeModelSessions = new Set<string>();
@@ -574,6 +588,22 @@ function assertCloudModelMutable(): void {
     throw new Error("Model selection requires MicroClaw's connected managed Gateway");
   if (activeModelSessions.size > 0)
     throw new Error("Wait for the active chat response before changing the model");
+}
+
+function applyModelConfiguration(input: unknown): Promise<void> {
+  return applyModelConfig(
+    {
+      gateway: () => gwClient,
+      readConfig,
+      assertMutable: assertCloudModelMutable,
+      log: (message) => {
+        console.info(message);
+        sendToWindow(mainWindow, "gateway:log", message);
+        electronLifecycleDiagnostics.log("model-config-application", { message });
+      },
+    },
+    input,
+  );
 }
 
 function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown): Promise<unknown> {
@@ -759,6 +789,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 electronLifecycleDiagnostics.log("main-process-start", { processId: process.pid });
+logStartupTiming("main-process-start");
 
 async function tryConsumeWindowsNodeMxcCronResumeAcknowledgement(): Promise<boolean> {
   const fence = parseWindowsNodeMxcCronResumeFence(
@@ -807,6 +838,72 @@ async function withWindowsNodeMxcDurableApprovalLock<T>(operation: () => Promise
 // outside this experimental mode's accepted boundary and must not share the app-owned Gateway.
 let gatewayStatus: GatewayStatus = "stopped";
 const weixinMutations = new WeixinMutationCoordinator();
+const weixinQrSession = new WeixinQrSession();
+let weixinRuntimeRead: {
+  gateway: GatewayClient;
+  generation: number;
+  expiresAt: number;
+  promise: ReturnType<GatewayClient["getChannelsStatus"]>;
+} | null = null;
+
+async function readWeixinRuntimeStatus() {
+  const gateway = gwClient;
+  if (!gateway?.connected) return null;
+  if (
+    !weixinRuntimeRead ||
+    weixinRuntimeRead.gateway !== gateway ||
+    weixinRuntimeRead.generation !== gateway.connectionGeneration ||
+    Date.now() >= weixinRuntimeRead.expiresAt
+  ) {
+    weixinRuntimeRead = {
+      gateway,
+      generation: gateway.connectionGeneration,
+      expiresAt: Date.now() + 2_000,
+      promise: gateway.getChannelsStatus(1_500),
+    };
+  }
+  const read = weixinRuntimeRead;
+  try {
+    const status = await read.promise;
+    return gwClient === gateway &&
+      gateway.connected &&
+      read.generation === gateway.connectionGeneration
+      ? status
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForWeixinConnection(params: {
+  sessionKey?: string;
+  accountId?: string;
+  timeoutMs?: number;
+}) {
+  return weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
+    const qrEpoch = weixinMutations.requireQr();
+    if (!gwClient?.connected) {
+      weixinMutations.qrUnconfirmed(qrEpoch);
+      return { connected: false, message: "Gateway not connected", restartRequired: true };
+    }
+    try {
+      const result = await gwClient.weixinLoginQrWait(params);
+      if (result.connected || !result.pending) weixinMutations.qrConnected(qrEpoch);
+      if (result.connected) {
+        weixinRuntimeRead = null;
+        reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-replaced");
+      }
+      return result;
+    } catch (error) {
+      weixinMutations.qrUnconfirmed(qrEpoch);
+      return {
+        connected: false,
+        message: error instanceof Error ? error.message : String(error),
+        restartRequired: true,
+      };
+    }
+  });
+}
 let weixinMutationLockRevision = 0;
 
 function getWeixinMutationLock() {
@@ -912,7 +1009,8 @@ function setWindowsNodeMxcLifecycleState(
     updatedAt: windowsNodeMxcLifecycleUpdatedAt,
   });
 }
-const appStartupStartedAt = Date.now();
+let gatewayStartupAttempt = 0;
+let currentGatewayStartupTiming: GatewayStartupTiming | null = null;
 
 function stopBundledWindowsNodeHost(requireTreeTermination = false): void {
   bundledWindowsNodeGeneration++;
@@ -920,8 +1018,21 @@ function stopBundledWindowsNodeHost(requireTreeTermination = false): void {
   bundledWindowsNodeHost.stop(requireTreeTermination);
 }
 
-function logStartupTiming(phase: string): void {
-  console.log(`[startup-timing] ${phase} +${Date.now() - appStartupStartedAt}ms`);
+function logStartupTiming(
+  phase: string,
+  owner: "microclaw" | "openclaw" | "integration" = "microclaw",
+): void {
+  console.log(
+    `[startup-timing] ${phase} +${Math.round(performance.now())}ms owner=${owner} generation=${gatewayGenerationId || "pending"}`,
+  );
+}
+
+function logGatewayStartupTiming(event: StartupTimingEvent): void {
+  const prefix = event.kind === "summary" ? "startup-summary" : "startup-breakdown";
+  console.info(`[${prefix}] ${JSON.stringify(event)}`);
+  if (event.kind === "summary") {
+    electronLifecycleDiagnostics.log("startup-summary", { ...event });
+  }
 }
 
 function beginWindowsNodeMxcStartupTiming(): void {
@@ -952,13 +1063,14 @@ let pendingIntegrityResult: IntegrityResult | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 let gatewayRestarting = false;
 let gatewayRestartPromise: Promise<void> | null = null;
+let gatewayStopPromise: Promise<void> | null = null;
+let applicationQuitReady = false;
+let applicationQuitPromise: Promise<void> | null = null;
 /** True when we spawned the gateway ourselves (vs. connecting to an existing one). */
 let gatewaySpawnedByUs = false;
 let agentRosterChangeInProgress = false;
-/** Tracks completion of the first-spawn channel check and optional recovery. */
-let postSpawnRestartDone = false;
-let postSpawnRestartRequired = false;
-let postSpawnRestartScheduled = false;
+let postSpawnChannelCheckRequired = false;
+let postSpawnChannelCheckCompletedFor: ChildProcess | null = null;
 let postSpawnChannelCheck: symbol | null = null;
 const postInstallTransactionIndex = process.argv.indexOf("--post-install-transaction");
 const postInstallTransactionId =
@@ -1883,7 +1995,7 @@ function isApplicationIngressReady(): boolean {
 function isApplicationServiceReady(): boolean {
   return isApplicationServiceReadyState(
     gwClient?.connected ?? false,
-    postSpawnRestartDone && !postSpawnRestartScheduled,
+    !explicitQuitRequested && !gatewayRestarting && gatewayStopPromise === null,
     windowsNodeMxcSecurityTransitionInProgress,
     isApplicationIngressReady(),
   );
@@ -1891,6 +2003,7 @@ function isApplicationServiceReady(): boolean {
 
 function notifyRendererApplicationReady(): void {
   if (!isApplicationServiceReady()) return;
+  currentGatewayStartupTiming?.serviceReady(gatewayGenerationId);
   sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
   sendToWindow(mainWindow, "gateway:service-ready");
   signalPostInstallReady();
@@ -2733,7 +2846,8 @@ async function waitForManagedGatewayConnection(timeoutMs = 120_000): Promise<voi
     if (
       gwClient?.connected &&
       isManagedGatewayProcessAlive() &&
-      !postSpawnRestartScheduled &&
+      !explicitQuitRequested &&
+      gatewayStopPromise === null &&
       !gatewayRestarting
     ) {
       return;
@@ -3838,7 +3952,14 @@ async function waitForGatewayReady(
 }
 
 /** Kill the managed gateway and any listener still holding gatewayPort. */
-function stopGatewayProcess(): void {
+function stopGatewayProcess(reason = "Emergency Gateway cleanup"): void {
+  const startedAt = Date.now();
+  electronLifecycleDiagnostics.log("gateway-stop-requested", {
+    reason,
+    mode: "forced",
+    gatewayPid: gatewayProcess?.pid ?? null,
+    gatewayGeneration: gatewayGenerationId || null,
+  });
   closeWindowsNodeMxcWeixinRemoteApproval("gateway-stopped");
   stopBundledWindowsNodeHost();
   gatewayHttpReadyGeneration = null;
@@ -3895,17 +4016,119 @@ function stopGatewayProcess(): void {
   }
   const stoppedGatewayConfirmed =
     allGatewayProcessesStopped && (pids.size > 0 || listenerScanSucceeded);
+  electronLifecycleDiagnostics.log("gateway-stop-complete", {
+    reason,
+    mode: "forced",
+    gatewayGeneration: gatewayGenerationId || null,
+    elapsedMs: Date.now() - startedAt,
+    stoppedGatewayConfirmed,
+  });
   if (stoppedGatewayConfirmed) {
-    try {
-      const result = cleanupStoppedGatewayWarmupSession(getOpenClawStateDir());
-      if (result.indexEntryRemoved) {
-        console.log(
-          `[gateway] removed deferred warm-up session and ${result.artifactsRemoved.length} artifact(s)`,
-        );
-      }
-    } catch (error) {
-      console.warn("[gateway] deferred warm-up session cleanup failed:", error);
+    cleanupStoppedGatewayArtifacts();
+  }
+}
+
+function cleanupStoppedGatewayArtifacts(): void {
+  try {
+    const result = cleanupStoppedGatewayWarmupSession(getOpenClawStateDir());
+    if (result.indexEntryRemoved) {
+      console.log(
+        `[gateway] removed deferred warm-up session and ${result.artifactsRemoved.length} artifact(s)`,
+      );
     }
+  } catch (error) {
+    console.warn("[gateway] deferred warm-up session cleanup failed:", error);
+  }
+}
+
+async function stopGatewayProcessGracefully(reason: string): Promise<void> {
+  if (gatewayStopPromise) return gatewayStopPromise;
+  const child = gatewayProcess;
+  if (!gatewaySpawnedByUs || !child?.pid) return;
+  const pid = child.pid;
+  const generation = gatewayGenerationId;
+  const startedAt = Date.now();
+  const stop = (async () => {
+    console.info(
+      `[gateway-stop] requested mode=graceful pid=${pid} generation=${generation} reason=${reason}`,
+    );
+    electronLifecycleDiagnostics.log("gateway-stop-requested", {
+      reason,
+      mode: "graceful",
+      gatewayPid: pid,
+      gatewayGeneration: generation,
+    });
+    closeWindowsNodeMxcWeixinRemoteApproval("gateway-stopped");
+    closeWindowsNodeMxcIngress();
+    stopBundledWindowsNodeHost();
+    postSpawnChannelCheck = null;
+    gatewayHttpReadyGeneration = null;
+    windowsNodeMxcApprovalProofContext = null;
+    const mode = await stopGatewayChildProcess({
+      child,
+      timeoutMs: 10_000,
+      forceTimeoutMs: 3_000,
+      forceStop: async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        if (process.platform === "win32") {
+          await new Promise<void>((resolve, reject) => {
+            execFile(
+              "taskkill",
+              ["/pid", String(pid), "/T", "/F"],
+              { windowsHide: true, timeout: 10_000 },
+              (error) => (error ? reject(error) : resolve()),
+            );
+          });
+        } else {
+          child.kill("SIGKILL");
+        }
+      },
+      onForceStop: (cause, error) => {
+        console.warn(
+          `[gateway-stop] mode=forced cause=${cause} pid=${pid} generation=${generation} elapsedMs=${Date.now() - startedAt} reason=${reason}`,
+        );
+        electronLifecycleDiagnostics.log("gateway-stop-force-fallback", {
+          reason,
+          cause,
+          gatewayPid: pid,
+          gatewayGeneration: generation,
+          elapsedMs: Date.now() - startedAt,
+          ...(error ? { error: summarizeLifecycleError(error) } : {}),
+        });
+      },
+    });
+    if (gatewayProcess === child) {
+      gatewayProcess = null;
+      gatewaySpawnedByUs = false;
+    }
+    cleanupStoppedGatewayArtifacts();
+    console.info(
+      `[gateway-stop] complete mode=${mode} pid=${pid} generation=${generation} elapsedMs=${Date.now() - startedAt} reason=${reason}`,
+    );
+    electronLifecycleDiagnostics.log("gateway-stop-complete", {
+      reason,
+      mode,
+      gatewayPid: pid,
+      gatewayGeneration: generation,
+      elapsedMs: Date.now() - startedAt,
+      exitCode: child.exitCode,
+      signal: child.signalCode,
+    });
+  })();
+  gatewayStopPromise = stop;
+  try {
+    await stop;
+  } catch (error) {
+    electronLifecycleDiagnostics.log("gateway-stop-failed", {
+      reason,
+      gatewayPid: pid,
+      gatewayGeneration: generation,
+      elapsedMs: Date.now() - startedAt,
+      error: summarizeLifecycleError(error),
+    });
+    throw error;
+  } finally {
+    if (gatewayStopPromise === stop) gatewayStopPromise = null;
   }
 }
 
@@ -3952,7 +4175,15 @@ function terminateGatewayProcessTree(pid: number): void {
   }
 }
 
-async function stopGatewayForSecurityTransition(port: number): Promise<void> {
+async function stopGatewayForSecurityTransition(
+  port: number,
+  reason = "Windows Node + MXC security transition",
+): Promise<void> {
+  const startedAt = Date.now();
+  electronLifecycleDiagnostics.log("gateway-security-stop-requested", {
+    reason,
+    mode: "forced",
+  });
   closeWindowsNodeMxcWeixinRemoteApproval("security-transition");
   for (const pending of allPendingWindowsNodeMxcGatewayApprovals()) {
     void pending.lifecycle.cancel("security-transition");
@@ -3997,6 +4228,12 @@ async function stopGatewayForSecurityTransition(port: number): Promise<void> {
       processAlive = false;
     }
     if (!processAlive && !(await isGatewayPortOccupied(port))) {
+      electronLifecycleDiagnostics.log("gateway-security-stop-complete", {
+        reason,
+        mode: "forced",
+        gatewayPid: managedPid,
+        elapsedMs: Date.now() - startedAt,
+      });
       setGatewayStatus("stopped");
       return;
     }
@@ -4039,7 +4276,7 @@ async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
       }
     } finally {
       try {
-        await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+        await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT, reason);
       } finally {
         setGatewayStatus("failed");
       }
@@ -4058,11 +4295,20 @@ async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
 async function restartManagedGateway(
   reason: string,
   allowDuringSecurityTransition = false,
-  stopProcess: () => void | Promise<void> = stopGatewayProcess,
+  stopProcess: () => void | Promise<void> = () => stopGatewayProcessGracefully(reason),
 ): Promise<void> {
+  if (explicitQuitRequested) throw new Error("Gateway restart is blocked while quitting");
   if (windowsNodeMxcSecurityTransitionInProgress && !allowDuringSecurityTransition) {
     throw new Error("Gateway restart is blocked during a Windows Node + MXC lifecycle operation");
   }
+  const startedAt = Date.now();
+  const previousGeneration = gatewayGenerationId;
+  electronLifecycleDiagnostics.log("gateway-restart-requested", {
+    reason,
+    previousGeneration,
+    coalesced: gatewayRestartPromise !== null,
+  });
+  console.info(`[restart] ${reason}`);
   if (gatewayRestartPromise) return gatewayRestartPromise;
   const restart = (async () => {
     gatewayRestarting = true;
@@ -4084,6 +4330,14 @@ async function restartManagedGateway(
       throw error;
     } finally {
       gatewayRestarting = false;
+      electronLifecycleDiagnostics.log("gateway-restart-complete", {
+        reason,
+        previousGeneration,
+        gatewayGeneration: gatewayGenerationId,
+        elapsedMs: Date.now() - startedAt,
+        status: gatewayStatus,
+      });
+      notifyRendererApplicationReady();
     }
   })();
   gatewayRestartPromise = restart;
@@ -4114,7 +4368,13 @@ function startHealthMonitor(): void {
   let unresponsiveSince: number | null = null;
   healthCheckInterval = setInterval(async () => {
     // Skip during startup / intentional restart
-    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) {
+    if (
+      explicitQuitRequested ||
+      gatewayStopPromise ||
+      gatewayStatus === "stopped" ||
+      gatewayStatus === "starting" ||
+      gatewayRestarting
+    ) {
       consecutiveFailures = 0;
       unresponsiveSince = null;
       return;
@@ -4160,6 +4420,7 @@ function startHealthMonitor(): void {
     }
 
     const alive = await checkExistingGateway(gatewayPort);
+    if (explicitQuitRequested || gatewayStopPromise) return;
     if (alive) {
       consecutiveFailures = 0;
       unresponsiveSince = null;
@@ -4216,6 +4477,8 @@ function startHealthMonitor(): void {
 /** Check gateway health & reconnect if needed (called on window-show / focus) */
 async function ensureGatewayConnected(): Promise<void> {
   if (
+    explicitQuitRequested ||
+    gatewayStopPromise ||
     windowsNodeMxcSecurityTransitionInProgress ||
     gatewayRestarting ||
     gatewayStatus === "starting"
@@ -4225,6 +4488,7 @@ async function ensureGatewayConnected(): Promise<void> {
   if (!gatewayPort) return;
 
   const alive = await checkExistingGateway(gatewayPort);
+  if (explicitQuitRequested || gatewayStopPromise) return;
   if (alive) {
     // Gateway is up — if WS is not connected, reconnect
     if (!gwClient?.connected) {
@@ -4362,10 +4626,13 @@ function normalizeSkillsStatus(
 async function startGateway(
   preparedContainment?: PreparedWindowsNodeMxcContainment,
 ): Promise<void> {
+  if (explicitQuitRequested) return;
   if (gatewayStartPromise) return gatewayStartPromise;
   const start = (async () => {
     gatewayStartInProgress = true;
     try {
+      if (gatewayStopPromise) await gatewayStopPromise;
+      if (explicitQuitRequested) return;
       await startGatewayInner(1, preparedContainment);
     } finally {
       gatewayStartInProgress = false;
@@ -4398,6 +4665,8 @@ async function startGatewayInner(
   startupRetriesRemaining = 1,
   preparedContainment?: PreparedWindowsNodeMxcContainment,
 ): Promise<void> {
+  if (explicitQuitRequested) return;
+  const startupTiming = new GatewayStartupTiming(++gatewayStartupAttempt, logGatewayStartupTiming);
   logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   let config = readConfig();
@@ -4458,12 +4727,8 @@ async function startGatewayInner(
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
-  postSpawnRestartRequired =
+  postSpawnChannelCheckRequired =
     !isWindowsNodeMxcDesired() && requiresPostSpawnChannelCheck(readConfig());
-  if (!postSpawnRestartRequired) {
-    postSpawnRestartDone = true;
-    postSpawnRestartScheduled = false;
-  }
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
   if (isWindowsNodeMxcDesired() && preparedPersonas) {
@@ -4504,10 +4769,13 @@ async function startGatewayInner(
 
   // Check ownership before any agent-owned skill filesystem mutation. An
   // externally managed Gateway may observe the shared state directory.
+  startupTiming.completeMicroclawPhase("configuration-and-personas");
   const alreadyRunning = await checkExistingGateway(configuredPort);
+  startupTiming.completeMicroclawPhase("existing-gateway-check");
   logStartupTiming("gateway-existing-check-complete");
   const externallyManagedGateway =
     alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
+  logStartupTiming("weixin-runtime-start");
   if (!alreadyRunning) {
     const bundledWeixinPluginRoot = resolveBundledWeixinPluginRoot(
       app.isPackaged,
@@ -4529,10 +4797,19 @@ async function startGatewayInner(
       console.info(
         `[weixin] Runtime ${convergence.changed ? "converged" : "verified"} at version ${convergence.packageVersion} (${convergence.treeSha256})`,
       );
+      if (!isWindowsNodeMxcDesired()) {
+        const config = preparedPersonas?.config ?? readConfig();
+        if (config && ensureDefaultWeixinPlugin(config)) {
+          if (preparedPersonas) preparedPersonas.changed = true;
+          else fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+        }
+        postSpawnChannelCheckRequired = requiresPostSpawnChannelCheck(config);
+      }
     }
   } else {
     console.info("[weixin] Deferred plugin convergence because a Gateway is already running");
   }
+  startupTiming.completeMicroclawPhase("weixin-runtime-verification");
   const ownedSkillPlan = preparedPersonas
     ? inspectConfiguredAgentOwnedSkills(
         preparedPersonas.config,
@@ -4649,13 +4926,18 @@ async function startGatewayInner(
     rollbackStartupAgentSkills();
     throw error;
   }
+  startupTiming.completeMicroclawPhase("agent-skills-and-workspaces");
   try {
+    if (explicitQuitRequested) {
+      rollbackStartupAgentSkills();
+      return;
+    }
     if (alreadyRunning && !agentConfigurationChanged) {
       commitStartupAgentSkills();
       console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
+      startupTiming.reused(gatewayGenerationId);
+      currentGatewayStartupTiming = startupTiming;
       gatewaySpawnedByUs = false;
-      postSpawnRestartDone = true;
-      postSpawnRestartScheduled = false;
       postSpawnChannelCheck = null;
       setGatewayStatus("running");
       connectGatewayWs();
@@ -4669,10 +4951,28 @@ async function startGatewayInner(
       gwClient?.stop();
     }
 
-    // Kill any old gateway on this port
-    stopGatewayProcess();
+    if (gatewaySpawnedByUs && gatewayProcess) {
+      await stopGatewayProcessGracefully("Replacing managed Gateway during startup");
+    } else if (await isGatewayPortOccupied(configuredPort)) {
+      stopGatewayProcess("Cleaning stale Gateway listener before startup");
+    }
+    const portReleaseDeadline = Date.now() + 8_000;
+    while (await isGatewayPortOccupied(configuredPort)) {
+      if (explicitQuitRequested) {
+        rollbackStartupAgentSkills();
+        return;
+      }
+      if (Date.now() >= portReleaseDeadline) {
+        throw new Error(`Gateway port ${configuredPort} remained occupied after process stop`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    startupTiming.completeMicroclawPhase("gateway-stop-and-port-release");
     logStartupTiming("gateway-stop-complete");
-    await new Promise((r) => setTimeout(r, 1000));
+    if (explicitQuitRequested) {
+      rollbackStartupAgentSkills();
+      return;
+    }
 
     // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
     try {
@@ -4846,6 +5146,7 @@ async function startGatewayInner(
       OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
       OPENCLAW_NO_RESPAWN: "1",
       OPENCLAW_NO_AUTO_UPDATE: "1",
+      OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin",
     };
     for (const reservedName of [
       "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED",
@@ -4940,19 +5241,28 @@ async function startGatewayInner(
       "--allow-unconfigured",
     ];
 
+    if (explicitQuitRequested) {
+      rollbackStartupAgentSkills();
+      return;
+    }
+    const spawnStartedAt = Date.now();
     logStartupTiming("gateway-spawn");
+    console.info(`[gateway-start] generation=${nextGatewayGenerationId} port=${configuredPort}`);
+    startupTiming.spawned(nextGatewayGenerationId);
     const child = spawn(nodePath, gwArgs, {
       cwd: path.dirname(entryPath),
       env: gwEnv,
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
       windowsHide: true,
       ...(process.platform === "win32" ? { creationFlags: CREATE_NO_WINDOW } : {}),
     });
 
     gatewayProcess = child;
     gatewayGenerationId = nextGatewayGenerationId;
+    currentGatewayStartupTiming = startupTiming;
     electronLifecycleDiagnostics.log("gateway-spawned", {
       gatewayPid: child.pid ?? null,
+      gatewayGeneration: nextGatewayGenerationId,
       policy: windowsNodeMxcGatewayStartPolicyOverride ?? "standard",
     });
     gatewayHttpReadyGeneration = null;
@@ -4961,9 +5271,15 @@ async function startGatewayInner(
     windowsNodeMxcWeixinContext = nextWeixinContext;
     closeWindowsNodeMxcIngress();
     gatewaySpawnedByUs = true;
-    // Only allow post-spawn restart on the very first gateway launch.
-    // Do NOT reset on subsequent restarts — it causes an infinite restart loop.
-    // postSpawnRestartDone keeps its value across gateway restarts.
+    postSpawnChannelCheckCompletedFor = null;
+    postSpawnChannelCheck = null;
+    child.stdin?.on("error", (error) => {
+      electronLifecycleDiagnostics.log("gateway-lifeline-error", {
+        gatewayPid: child.pid ?? null,
+        gatewayGeneration: nextGatewayGenerationId,
+        error: summarizeLifecycleError(error),
+      });
+    });
 
     const safeSendLog = (channel: string, payload: unknown) => {
       try {
@@ -5017,6 +5333,8 @@ async function startGatewayInner(
     child.on("exit", (code, signal) => {
       electronLifecycleDiagnostics.log("gateway-exit", {
         gatewayPid: child.pid ?? null,
+        gatewayGeneration: nextGatewayGenerationId,
+        elapsedMs: Date.now() - spawnStartedAt,
         exitCode: code,
         signal,
       });
@@ -5024,6 +5342,8 @@ async function startGatewayInner(
       safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
       if (gatewayProcess === child) {
         weixinMutations.gatewayStopped();
+        weixinQrSession.reset();
+        weixinRuntimeRead = null;
         // EX_CONFIG is terminal: waiting longer cannot repair rejected configuration.
         if (code === 78 && !postInstallReadySignaled) {
           signalPostInstallFailure(
@@ -5053,11 +5373,21 @@ async function startGatewayInner(
     const ready = await waitForGatewayReady(
       configuredPort,
       GATEWAY_READY_TIMEOUT_MS,
-      () => gatewayProcess === child && !child.killed,
+      () => !explicitQuitRequested && gatewayProcess === child && !child.killed,
     );
+    if (explicitQuitRequested) {
+      rollbackStartupAgentSkills();
+      return;
+    }
     if (ready) {
       try {
-        logStartupTiming("gateway-ready");
+        startupTiming.httpReady();
+        logStartupTiming("gateway-ready", "openclaw");
+        electronLifecycleDiagnostics.log("gateway-http-ready", {
+          gatewayPid: child.pid ?? null,
+          gatewayGeneration: nextGatewayGenerationId,
+          elapsedMs: Date.now() - spawnStartedAt,
+        });
         gatewayHttpReadyGeneration = nextGatewayGenerationId;
         if (windowsNodeMxcActivationInProgress) {
           markWindowsNodeMxcStartupTiming("http-ready");
@@ -5065,7 +5395,7 @@ async function startGatewayInner(
         commitStartupAgentSkills();
         setGatewayStatus("running");
       } catch (error) {
-        stopGatewayProcess();
+        stopGatewayProcess("Gateway startup commit failed");
         rollbackStartupAgentSkills();
         setGatewayStatus("failed");
         throw error;
@@ -5077,7 +5407,7 @@ async function startGatewayInner(
         startupRetriesRemaining,
       );
       if (retryConvergence) {
-        stopGatewayProcess();
+        stopGatewayProcess("Gateway requested plugin migration convergence retry");
         rollbackStartupAgentSkills();
         console.log("[gateway] Retrying once after plugin migration convergence requested restart");
         return startGatewayInner(startupRetriesRemaining - 1);
@@ -5090,7 +5420,7 @@ async function startGatewayInner(
         "gateway:log",
         `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
       );
-      stopGatewayProcess();
+      stopGatewayProcess("Gateway startup health check timed out");
       rollbackStartupAgentSkills();
       setGatewayStatus("timeout");
       signalPostInstallFailure(
@@ -5109,7 +5439,7 @@ async function startGatewayInner(
     startHealthMonitor();
   } catch (error) {
     if (agentSkillTransactionPending) {
-      stopGatewayProcess();
+      if (!explicitQuitRequested) stopGatewayProcess("Rolling back failed Gateway startup");
       rollbackStartupAgentSkills();
     }
     throw error;
@@ -5142,12 +5472,15 @@ async function completePostSpawnChannelStartup(
   child: ChildProcess,
 ): Promise<void> {
   const check = Symbol("post-spawn-channel-check");
+  const generation = gatewayGenerationId;
+  const startedAt = Date.now();
   postSpawnChannelCheck = check;
-  postSpawnRestartScheduled = true;
   const isCurrent = () =>
     postSpawnChannelCheck === check &&
     gwClient === client &&
     gatewayProcess === child &&
+    !explicitQuitRequested &&
+    gatewayStopPromise === null &&
     !isWindowsNodeMxcDesired() &&
     client.connected;
   try {
@@ -5157,31 +5490,32 @@ async function completePostSpawnChannelStartup(
       onError: (error) => console.warn("[gateway-ws] startup channel status unavailable:", error),
     });
     if (result === "cancelled" || !isCurrent()) return;
-    postSpawnRestartDone = true;
+    postSpawnChannelCheckCompletedFor = child;
+    electronLifecycleDiagnostics.log("gateway-channel-check-complete", {
+      channel: "openclaw-weixin",
+      result,
+      gatewayGeneration: generation,
+      elapsedMs: Date.now() - startedAt,
+    });
     if (result === "ready") {
-      logStartupTiming("channels-ready-without-restart");
+      logStartupTiming("channels-ready-without-restart", "integration");
       return;
     }
-    console.log("[gateway-ws] post-spawn: restarting Gateway for inactive plugin channels");
-    mainWindow?.webContents.send("gateway:log", "[startup] 正在重启网关以激活插件通道…");
-    await restartManagedGateway("Activating installed plugin channels", true);
+    console.warn(
+      `[gateway-ws] Weixin startup is still pending; keeping Gateway running (generation=${generation})`,
+    );
   } finally {
     if (postSpawnChannelCheck === check) {
       postSpawnChannelCheck = null;
-      postSpawnRestartScheduled = false;
-      notifyRendererApplicationReady();
     }
   }
 }
 
 function connectGatewayWs(): void {
+  if (explicitQuitRequested || gatewayStopPromise) return;
   stopBundledWindowsNodeHost();
   gwClient?.stop();
-  gatewayModelCatalogRequest = null;
-  if (!postSpawnRestartDone) {
-    postSpawnChannelCheck = null;
-    postSpawnRestartScheduled = false;
-  }
+  postSpawnChannelCheck = null;
 
   gwClient = new GatewayClient({
     port: gatewayPort,
@@ -5189,7 +5523,9 @@ function connectGatewayWs(): void {
     supportsExecApprovals: isWindowsNodeMxcDesired(),
     beforeChatSend: requireEffectiveWindowsNodeMxc,
     onConnected: () => {
+      if (explicitQuitRequested || gatewayStopPromise) return;
       console.log("[gateway-ws] connected");
+      currentGatewayStartupTiming?.connected(gatewayGenerationId);
       wsAuthRestartInProgress = false;
       if (!isWindowsNodeMxcDesired()) {
         void waitForWindowsNodeMxcCronResumeAcknowledgement().catch((error) => {
@@ -5372,18 +5708,19 @@ function connectGatewayWs(): void {
       if (gatewayStatus !== "running") {
         setGatewayStatus("running");
       }
-      // Keep chat gated until we know whether a compatibility restart is needed.
-      // Already-running channels must not pay for a second full Gateway startup.
-      if (gatewaySpawnedByUs && postSpawnRestartRequired && !postSpawnRestartDone) {
-        if (!postSpawnRestartScheduled && gwClient && gatewayProcess) {
-          void completePostSpawnChannelStartup(gwClient, gatewayProcess).catch((error) => {
-            console.error("[gateway-ws] post-spawn channel startup failed:", error);
-          });
-        }
-        return;
-      }
-
       notifyRendererApplicationReady();
+      if (
+        gatewaySpawnedByUs &&
+        postSpawnChannelCheckRequired &&
+        gatewayProcess &&
+        postSpawnChannelCheckCompletedFor !== gatewayProcess &&
+        !postSpawnChannelCheck &&
+        gwClient
+      ) {
+        void completePostSpawnChannelStartup(gwClient, gatewayProcess).catch((error) => {
+          console.warn("[gateway-ws] background channel check failed:", error);
+        });
+      }
     },
     onDisconnected: (reason) => {
       activeModelSessions.clear();
@@ -5395,13 +5732,20 @@ function connectGatewayWs(): void {
       closeWindowsNodeMxcIngress();
       stopBundledWindowsNodeHost();
       sendToWindow(mainWindow, "gateway:ws-disconnected", reason);
-      if (activeGeneration && !windowsNodeMxcActivationInProgress && !gatewayRestarting) {
+      if (
+        activeGeneration &&
+        !windowsNodeMxcActivationInProgress &&
+        !gatewayRestarting &&
+        !gatewayStopPromise &&
+        !explicitQuitRequested
+      ) {
         void failClosedWindowsNodeMxc(
           `Managed Gateway disconnected: ${reason || "unknown reason"}`,
         );
       }
     },
     onAuthError: (message) => {
+      if (explicitQuitRequested || gatewayStopPromise) return;
       // A stale gateway (from a previous install / scheduled task) is running
       // with a different token. Kill it and restart with our token.
       console.log(`[gateway-ws] auth error: ${message} — killing stale gateway`);
@@ -5515,24 +5859,6 @@ function connectGatewayWs(): void {
     },
   });
   gwClient.start();
-}
-
-function requestGatewayModelCatalog(): Promise<unknown> {
-  if (gatewayModelCatalogRequest) return gatewayModelCatalogRequest;
-  const client = gwClient;
-  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
-
-  const request = client.request("models.list", { view: "all", preparedOnly: true });
-  gatewayModelCatalogRequest = request;
-  void request.then(
-    () => {
-      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
-    },
-    () => {
-      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
-    },
-  );
-  return request;
 }
 
 async function refreshGatewayGitHubCopilotAuthStatus(): Promise<void> {
@@ -5706,10 +6032,11 @@ function registerIpcHandlers(): void {
   // flows through main-process IPC handlers (chat:send-message, etc.).
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
   ipcMain.handle("gateway:is-service-ready", () => isApplicationServiceReady());
-  ipcMain.handle("gateway:restart", async (_event, _options?: { hard?: boolean }) => {
+  ipcMain.handle("gateway:restart", async (_event, options?: unknown) => {
     assertWindowsNodeMxcConfigurationMutable();
+    const reason = resolveGatewayRestartReason(options);
     try {
-      await restartManagedGateway("Restart requested by user");
+      await restartManagedGateway(reason);
       mainWindow?.webContents.send("gateway:log", "[restart] 网关重启完成");
     } catch (err: any) {
       const msg = `[error] Gateway restart failed: ${err?.message || err}`;
@@ -5725,6 +6052,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle("config:needs-setup", () => needsSetup());
   ipcMain.handle("config:read", () => readConfig());
   ipcMain.handle("config:read-env", () => loadStateDirEnv());
+  ipcMain.handle("model:apply-config", (event, input: unknown) => {
+    assertTrustedRendererIpc(event);
+    return withModelConfigurationMutation(() => applyModelConfiguration(input));
+  });
   ipcMain.handle("config:write", async (_event, config: any, expectedConfig?: unknown) => {
     return withModelConfigurationMutation(async () => {
       const stateDir = getOpenClawStateDir();
@@ -6344,7 +6675,14 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("chat:load-history", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
-    return await gwClient.loadHistory(params.sessionKey);
+    const client = gwClient;
+    const timing = currentGatewayStartupTiming;
+    const generation = gatewayGenerationId;
+    const history = await client.loadHistory(params.sessionKey);
+    if (client === gwClient && timing === currentGatewayStartupTiming) {
+      timing?.historyReady(generation);
+    }
+    return history;
   });
 
   ipcMain.handle("chat:observe-session", async (_event, params: { sessionKey: string | null }) => {
@@ -6423,18 +6761,7 @@ function registerIpcHandlers(): void {
     return withInternalModelChat(() => client.warmUpAgent());
   });
 
-  // Report as "not connected" while the post-spawn restart is pending.
-  // Without this, the renderer's isConnected() poll on mount bypasses the
-  // ws-connected gate and lets the user send messages before the gateway's
-  // post-spawn process replacement completes (sandbox runtime not yet initialized).
-  ipcMain.handle(
-    "chat:is-connected",
-    () =>
-      (gwClient?.connected ?? false) &&
-      postSpawnRestartDone &&
-      !postSpawnRestartScheduled &&
-      isApplicationIngressReady(),
-  );
+  ipcMain.handle("chat:is-connected", () => isApplicationServiceReady());
 
   // --- Cron / Scheduled Tasks ---
   ipcMain.handle("cron:list", async () => {
@@ -6501,7 +6828,7 @@ function registerIpcHandlers(): void {
   });
 
   // --- WeChat Plugin ---
-  ipcMain.handle("plugin:weixin:get-status", () => {
+  ipcMain.handle("plugin:weixin:get-status", async () => {
     const config = readConfig();
     const requestedEnabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
     const pausedByMxc =
@@ -6509,6 +6836,11 @@ function registerIpcHandlers(): void {
     const effectiveEnabled = requestedEnabled && !pausedByMxc;
     const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
     const accountStatus = readWeixinAccountStatus(getOpenClawStateDir());
+    const runtime = await readWeixinRuntimeStatus();
+    const connection =
+      runtime && effectiveEnabled
+        ? getWeixinRuntimeConnection(runtime, accountStatus.currentAccount?.accountId)
+        : { connected: false, connecting: false };
     reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-status-changed");
     return {
       enabled: requestedEnabled,
@@ -6517,7 +6849,13 @@ function registerIpcHandlers(): void {
       pausedByMxc,
       installed,
       ...accountStatus,
-      loginInProgress: !!weixinLoginProcess,
+      ...connection,
+      runtimeKnown: runtime !== null,
+      ready: effectiveEnabled && runtime !== null && isWeixinLoginReady(runtime),
+      qrSession: weixinQrSession.status,
+      loginInProgress:
+        !!weixinLoginProcess || ["starting", "waiting"].includes(weixinQrSession.status.state),
+      loginRequiresRestart: weixinMutations.loginRequiresRestart,
       mutationLocked: getWeixinMutationLock().locked,
       mutationLockRevision: weixinMutationLockRevision,
     };
@@ -6526,28 +6864,31 @@ function registerIpcHandlers(): void {
   ipcMain.handle("plugin:weixin:set-enabled", async (_event, enabled: boolean) =>
     weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
       assertWindowsNodeMxcConfigurationMutable();
-      const config = readConfig() || {};
-      if (!config.plugins) config.plugins = {};
-      if (!config.plugins.entries) config.plugins.entries = {};
-      if (!config.plugins.entries["openclaw-weixin"])
-        config.plugins.entries["openclaw-weixin"] = {};
-      config.plugins.entries["openclaw-weixin"].enabled = enabled;
-      if (!enabled) {
-        settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
-          enabled: false,
-          owner: null,
-        });
-        closeWindowsNodeMxcWeixinRemoteApproval("weixin-disabled");
+      if (typeof enabled !== "boolean") throw new Error("Supply a boolean WeChat plugin state");
+      weixinMutations.beginPluginChange(!!weixinLoginProcess);
+      try {
+        if (!enabled) {
+          settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+            enabled: false,
+            owner: null,
+          });
+          closeWindowsNodeMxcWeixinRemoteApproval("weixin-disabled");
+        }
+        await setWeixinPluginEnabled(
+          { gateway: () => gwClient, assertMutable: assertWindowsNodeMxcConfigurationMutable },
+          enabled,
+        );
+        return { ok: true };
+      } catch (error) {
+        console.error("[weixin:set-enabled] failed:", error);
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          restartRequired: error instanceof WeixinPluginActivationError && error.restartRequired,
+        };
+      } finally {
+        weixinMutations.endPluginChange();
       }
-      // Ensure plugins.allow includes openclaw-weixin so the gateway loads it synchronously
-      if (!config.plugins.allow) config.plugins.allow = [];
-      if (enabled && !config.plugins.allow.includes("openclaw-weixin")) {
-        config.plugins.allow.push("openclaw-weixin");
-      }
-      const stateDir = getOpenClawStateDir();
-      fs.mkdirSync(stateDir, { recursive: true });
-      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
-      return { ok: true };
     }),
   );
 
@@ -6670,148 +7011,144 @@ function registerIpcHandlers(): void {
       weixinLoginProcess.kill();
       weixinLoginProcess = null;
     }
-    await weixinMutations.cancelQr();
+    const gateway = gwClient;
+    const connectionGeneration = gateway?.connectionGeneration;
+    const qrEpoch = weixinMutations.currentEpoch;
+    await weixinQrSession.cancel(async (sessionKey) => {
+      try {
+        if (sessionKey) {
+          if (
+            !gateway?.connected ||
+            gwClient !== gateway ||
+            gateway.connectionGeneration !== connectionGeneration
+          ) {
+            throw new Error("Gateway changed while cancelling WeChat login");
+          }
+          const result = await gateway.weixinLoginQrCancel(sessionKey);
+          if (!result.cancelled) throw new Error("WeChat login cancellation was not confirmed");
+        }
+        await weixinMutations.cancelQr();
+      } catch (error) {
+        if (sessionKey) weixinMutations.qrUnconfirmed(qrEpoch);
+        throw error;
+      }
+    });
   });
 
   // --- WeChat QR Login via Gateway RPC (fast path, no CLI spawn) ---
   ipcMain.handle(
     "plugin:weixin:login-qr-start",
-    async (
-      _event,
-      params?: {
-        accountId?: string;
-        force?: boolean;
-      },
-    ) =>
-      weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
-        assertWindowsNodeMxcConfigurationMutable();
-        if (!gwClient?.connected) {
-          return { ok: false, error: "Gateway not connected" };
-        }
-        const qrEpoch = weixinMutations.beginQr();
-        try {
-          const result = await gwClient.weixinLoginQrStart(params);
-          weixinMutations.settleKnownQrStart(Boolean(result.qrDataUrl), qrEpoch);
-          return { ok: true, ...result };
-        } catch (err: any) {
-          weixinMutations.qrUnconfirmed(qrEpoch);
-          console.error("[weixin:login-qr-start] failed:", err.message);
-          return { ok: false, error: err.message };
-        }
-      }),
+    async (_event, params?: { accountId?: string; force?: boolean }) => {
+      assertWindowsNodeMxcConfigurationMutable();
+      return weixinQrSession.start(
+        () =>
+          weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
+            if (!gwClient?.connected) {
+              return { ok: false, message: "Gateway not connected", canFallback: false };
+            }
+            const gateway = gwClient;
+            const connectionGeneration = gateway.connectionGeneration;
+            try {
+              const status = await gateway.getChannelsStatus();
+              assertWindowsNodeMxcConfigurationMutable();
+              if (
+                gwClient !== gateway ||
+                !gateway.connected ||
+                gateway.connectionGeneration !== connectionGeneration ||
+                !isWeixinLoginReady(status)
+              ) {
+                return {
+                  ok: false,
+                  message: "WeChat channel is not ready yet",
+                  canFallback: false,
+                };
+              }
+            } catch (error) {
+              return {
+                ok: false,
+                message: error instanceof Error ? error.message : String(error),
+                canFallback: false,
+              };
+            }
+            weixinMutations.prepareCliLogin();
+            if (weixinLoginProcess) throw new Error("Finish the current WeChat login first");
+            const qrEpoch = weixinMutations.beginQr();
+            try {
+              const result = await gateway.weixinLoginQrStart(params);
+              if (result.qrDataUrl && !result.sessionKey) {
+                weixinMutations.qrUnconfirmed(qrEpoch);
+                return {
+                  ok: false,
+                  message: "Gateway returned a QR without a session key",
+                  restartRequired: true,
+                };
+              }
+              weixinMutations.settleKnownQrStart(Boolean(result.qrDataUrl), qrEpoch);
+              return { ok: true, ...result, canFallback: !result.qrDataUrl };
+            } catch (error) {
+              const knownRejection = isKnownWeixinQrStartRejection(error);
+              if (knownRejection) weixinMutations.settleKnownQrStart(false, qrEpoch);
+              else weixinMutations.qrUnconfirmed(qrEpoch);
+              const message = error instanceof Error ? error.message : String(error);
+              console.error("[weixin:login-qr-start] failed:", message);
+              return {
+                ok: false,
+                message,
+                error: message,
+                canFallback: knownRejection,
+                restartRequired: !knownRejection,
+              };
+            }
+          }),
+        (sessionKey) => waitForWeixinConnection({ sessionKey, timeoutMs: 35_000 }),
+      );
+    },
   );
 
-  ipcMain.handle(
-    "plugin:weixin:login-qr-wait",
-    async (
-      _event,
-      params: {
-        sessionKey: string;
-        accountId?: string;
-        timeoutMs?: number;
-      },
-    ) =>
-      weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
-        assertWindowsNodeMxcConfigurationMutable();
-        const qrEpoch = weixinMutations.requireQr();
-        if (!gwClient?.connected) {
-          return { connected: false, message: "Gateway not connected" };
-        }
-        try {
-          const result = await gwClient.weixinLoginQrWait(params);
-          if (result.connected) {
-            weixinMutations.qrConnected(qrEpoch);
-            reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-replaced");
-          }
-          if (result.connected && result.activationReloadRequested === false) {
-            console.warn(
-              "[weixin:login-qr-wait] Channel hot reload was not requested; falling back to a managed Gateway restart",
-            );
-            mainWindow?.webContents.send(
-              "gateway:log",
-              "[weixin] Channel reload could not be requested; reconnecting the managed Gateway…",
-            );
-            setTimeout(() => {
-              void restartManagedGateway("Activating Weixin after channel reload failure").catch(
-                (error) =>
-                  console.error(
-                    "[weixin:login-qr-wait] managed restart failed:",
-                    error instanceof Error ? error.message : String(error),
-                  ),
-              );
-            }, 0);
-          }
-          return result;
-        } catch (err: any) {
-          weixinMutations.qrUnconfirmed(qrEpoch);
-          console.error("[weixin:login-qr-wait] failed:", err.message);
-          return { connected: false, message: err.message };
-        }
-      }),
-  );
+  ipcMain.handle("plugin:weixin:login-qr-wait", () => {
+    const session = weixinQrSession.status;
+    return {
+      connected: session.state === "connected",
+      pending: session.state === "waiting" || session.state === "starting",
+      expired: session.state === "expired",
+      qrDataUrl: session.qrDataUrl,
+      message: session.message,
+      restartRequired: weixinMutations.loginRequiresRestart,
+    };
+  });
 
   ipcMain.handle("plugin:weixin:disconnect", async (_event, params?: { accountId?: string }) =>
     weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
-      assertWindowsNodeMxcConfigurationMutable();
-      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
-        enabled: false,
-        owner: null,
-      });
+      weixinMutations.prepareCliLogin();
+      if (weixinLoginProcess) throw new Error("Finish the current WeChat login first");
+      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", { enabled: false, owner: null });
       closeWindowsNodeMxcWeixinRemoteApproval("weixin-logout");
-      // Remove all account files and restart gateway
+      const gateway = gwClient;
+      if (!gateway?.connected) return { ok: false, error: "Gateway not connected" };
+      const status = readWeixinAccountStatus(getOpenClawStateDir());
+      if (status.invariantState === "multiple" || status.invariantState === "invalid") {
+        return { ok: false, error: "Repair the invalid WeChat account index before disconnecting" };
+      }
+      const accountId = status.currentAccount?.accountId;
+      if (!accountId) return { ok: true };
+      if (params?.accountId && params.accountId !== accountId) {
+        return { ok: false, error: "The WeChat account changed; refresh its status first" };
+      }
       try {
-        const stateDir = getOpenClawStateDir();
-        const accountsIndexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
-        const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
-
-        let accountIds: string[] = [];
-        if (params?.accountId) {
-          accountIds = [params.accountId];
-        } else {
-          // Remove all accounts
-          try {
-            if (fs.existsSync(accountsIndexPath)) {
-              const parsed = JSON.parse(fs.readFileSync(accountsIndexPath, "utf-8"));
-              if (Array.isArray(parsed)) accountIds = parsed;
-            }
-          } catch {}
+        const result = await gateway.request<{ cleared?: boolean; loggedOut?: boolean }>(
+          "channels.logout",
+          { channel: "openclaw-weixin", accountId },
+          10_000,
+        );
+        weixinRuntimeRead = null;
+        if (!result.cleared || result.loggedOut === false) {
+          return { ok: false, error: "WeChat logout was not confirmed" };
         }
-
-        // Delete account data files
-        for (const id of accountIds) {
-          const tokenFile = path.join(accountsDir, `${id}.json`);
-          try {
-            fs.unlinkSync(tokenFile);
-          } catch {}
-        }
-
-        // Update or clear the index
-        if (params?.accountId) {
-          // Remove just this account from index
-          try {
-            const remaining =
-              accountIds.length > 0
-                ? JSON.parse(fs.readFileSync(accountsIndexPath, "utf-8")).filter(
-                    (id: string) => id !== params.accountId,
-                  )
-                : [];
-            fs.writeFileSync(accountsIndexPath, JSON.stringify(remaining, null, 2), "utf-8");
-          } catch {}
-        } else {
-          // Clear entire index
-          try {
-            fs.writeFileSync(accountsIndexPath, "[]", "utf-8");
-          } catch {}
-        }
-
-        // Restart gateway so the channel stops
-        console.log("[weixin:disconnect] Credentials removed, restarting gateway...");
-        mainWindow?.webContents.send("gateway:log", "[weixin] 微信账号已断开，正在重启网关…");
-        await restartManagedGateway("Applying Weixin account disconnection");
-
+        weixinQrSession.reset();
         return { ok: true };
-      } catch (err: any) {
-        return { ok: false, error: err.message };
+      } catch (error) {
+        if (!isKnownWeixinQrStartRejection(error)) weixinMutations.qrUnconfirmed();
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
     }),
   );
@@ -6954,12 +7291,18 @@ function registerIpcHandlers(): void {
       if (!config || typeof config !== "object" || Array.isArray(config)) {
         throw new Error("OpenClaw configuration is unavailable");
       }
-      const restartRequired = ensureGitHubCopilotProviderPlugin(config);
-      if (restartRequired) {
-        await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      const nextConfig = structuredClone(config);
+      const changed = ensureGitHubCopilotProviderPlugin(nextConfig);
+      await applyModelConfiguration({
+        config: nextConfig,
+        expectedConfig: config,
+        action: "copilot-prepare",
+        providerKey: "github-copilot",
+      });
+      if (changed) {
         invalidateGitHubCopilotAuthStatusCache();
       }
-      return { restartRequired };
+      return { restartRequired: false };
     });
   });
 
@@ -7022,16 +7365,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
     if (!internalFeatures.githubCopilot) return [];
-    if (gwClient?.connected) {
-      try {
-        const result = await requestGatewayModelCatalog();
-        const models = parseGitHubCopilotGatewayModels(result);
-        if (models.length > 0) return models;
-      } catch (error) {
-        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
-      }
-    }
-    return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
+    const client = gwClient;
+    const queryGateway = client?.connected
+      ? (params: Record<string, unknown>, timeoutMs: number) =>
+          client.request("models.list", params, timeoutMs)
+      : undefined;
+    return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
   const backgroundUsageLedger = new BackgroundUsageLedger(
@@ -7536,7 +7875,7 @@ function registerIpcHandlers(): void {
           windowsNodeMxcCurrentAmbientAccess = null;
           windowsNodeMxcCurrentEffectiveTier = null;
           setWindowsNodeMxcLifecycleState("starting-standard");
-          postSpawnRestartDone = false;
+          postSpawnChannelCheck = null;
           mainWindow?.webContents.send(
             "gateway:log",
             "[start] MXC Off: starting without a tool execution sandbox",
@@ -7587,7 +7926,7 @@ function registerIpcHandlers(): void {
           if (cronSuspendedBeforePreflight && !automaticReadinessStarted) {
             try {
               setWindowsNodeMxcLifecycleState("starting-standard");
-              postSpawnRestartDone = false;
+              postSpawnChannelCheck = null;
               mainWindow?.webContents.send(
                 "gateway:log",
                 "[start] Restoring standard Gateway after MXC preflight failure",
@@ -8212,6 +8551,7 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  if (explicitQuitRequested) return;
   logStartupTiming("app-ready");
   if (!settingsStore.has("language")) {
     settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
@@ -8255,6 +8595,7 @@ app.whenReady().then(async () => {
 
   const initialWindow = createMainWindow();
   mainWindow = initialWindow;
+  logStartupTiming("window-created");
 
   const trayCallbacks = {
     onShowWindow: () => {
@@ -8309,7 +8650,7 @@ app.whenReady().then(async () => {
   }
 
   // Watch skill directories for mid-session changes
-  startSkillFileWatcher();
+  if (!explicitQuitRequested) startSkillFileWatcher();
 });
 
 app.on("window-all-closed", () => {
@@ -8323,8 +8664,12 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (applicationQuitReady) return;
+  event.preventDefault();
   if (!explicitQuitRequested) explicitQuitRequested = true;
+  if (applicationQuitPromise) return;
+  const startedAt = Date.now();
   electronLifecycleDiagnostics.log("before-quit");
   closeWindowsNodeMxcIngress();
   bundledWindowsNodeHost.revokeActivationLease();
@@ -8343,7 +8688,26 @@ app.on("before-quit", () => {
   destroyTray();
   githubCopilotAuthManager.stop();
   gwClient?.stop();
-  stopGatewayProcess();
+  stopBundledWindowsNodeHost();
+  const gatewayShutdown = windowsNodeMxcSecurityTransitionInProgress
+    ? stopGatewayForSecurityTransition(
+        gatewayPort || DEFAULT_PORT,
+        "Application quit during security transition",
+      )
+    : stopGatewayProcessGracefully("Application quit");
+  applicationQuitPromise = gatewayShutdown
+    .catch((error) => {
+      electronLifecycleDiagnostics.log("application-gateway-stop-failed", {
+        error: summarizeLifecycleError(error),
+      });
+    })
+    .finally(() => {
+      electronLifecycleDiagnostics.log("application-stop-complete", {
+        elapsedMs: Date.now() - startedAt,
+      });
+      applicationQuitReady = true;
+      app.quit();
+    });
 });
 
 app.on("will-quit", () => {

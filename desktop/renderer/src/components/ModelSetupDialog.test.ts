@@ -19,12 +19,14 @@ const InputStub = defineComponent({
 });
 
 const SelectStub = defineComponent({
+  inheritAttrs: false,
   props: {
     modelValue: { type: String, default: "" },
+    filterMethod: Function,
   },
-  emits: ["update:modelValue", "change"],
+  emits: ["update:modelValue", "change", "visible-change"],
   template:
-    "<select :value=\"modelValue\" @change=\"$emit('update:modelValue', $event.target.value); $emit('change', $event.target.value)\"><slot /></select>",
+    '<div><select v-bind="$attrs" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value); $emit(\'change\', $event.target.value)"><slot /></select><slot name="footer" /></div>',
 });
 
 const componentStubs = {
@@ -96,9 +98,12 @@ describe("ModelSetupDialog", () => {
     githubCopilotLoginListener = undefined;
     window.openclaw = {
       features: { githubCopilot: true },
-      config: { read, write },
+      config: { read, write: vi.fn() },
       gateway: { restart },
       model: {
+        applyConfig: vi.fn((input: Parameters<OpenClawAPI["model"]["applyConfig"]>[0]) =>
+          write(input.config, input.expectedConfig),
+        ),
         discoverModels,
         registerCatalogModel,
         testConnection,
@@ -245,9 +250,21 @@ describe("ModelSetupDialog", () => {
     wrapper.unmount();
   });
 
-  it("keeps realtime models in the full catalog but disables their use for chat", async () => {
+  it("filters the Qwen catalog to chat models and groups their versions", async () => {
     const realtime = "qwen3.8-omni-flash-realtime";
-    discoverModels.mockResolvedValue({ ok: true, models: ["qwen3.7-plus", realtime] });
+    discoverModels.mockResolvedValue({
+      ok: true,
+      models: [
+        "qwen3.8-plus",
+        "qwen3.8-max",
+        "kimi/kimi-k3.1-pro",
+        realtime,
+        "qwen3.5-plus",
+        "qwen-image-2.1-pro",
+        "cmaas-qwen3.8-flash",
+        "qwen3.7-plus",
+      ],
+    });
     const wrapper = mountDialog({
       inline: true,
       manageOnly: true,
@@ -262,13 +279,40 @@ describe("ModelSetupDialog", () => {
     });
     await vi.advanceTimersByTimeAsync(600);
     await flushPromises();
-    expect(wrapper.findAll("option")).toHaveLength(2);
-    expect(wrapper.get(`option[value="${realtime}"]`).attributes("disabled")).toBeDefined();
-    expect(wrapper.get(`option[value="${realtime}"]`).text()).toContain("Requires realtime API");
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.8-max",
+      "cmaas-qwen3.8-flash",
+      "qwen3.7-plus",
+      "qwen3.5-plus",
+    ]);
+    expect(wrapper.find(`option[value="${realtime}"]`).exists()).toBe(false);
     expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
     await wrapper.get(".primary-action").trigger("click");
     expect(write).not.toHaveBeenCalled();
     expect(registerCatalogModel).not.toHaveBeenCalled();
+    const more = wrapper.get('[data-testid="more-provider-models"]');
+    expect(more.attributes("aria-expanded")).toBe("false");
+    await more.trigger("click");
+    expect(more.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.8-max",
+      "cmaas-qwen3.8-flash",
+      "qwen3.7-plus",
+      "qwen3.5-plus",
+      "qwen3.8-plus",
+    ]);
+    const select = wrapper.findComponent(SelectStub);
+    select.props("filterMethod")?.("qwen3.8-plus");
+    await flushPromises();
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.8-plus",
+    ]);
+    expect(wrapper.find('[data-testid="more-provider-models"]').exists()).toBe(false);
+    select.vm.$emit("visible-change", false);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="more-provider-models"]').attributes("aria-expanded")).toBe(
+      "false",
+    );
     await wrapper.get("select").setValue("qwen3.7-plus");
     expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
     wrapper.unmount();
@@ -471,6 +515,8 @@ describe("ModelSetupDialog", () => {
       await wrapper.get('input[placeholder="sk-..."]').setValue("sk-test-fixture");
       await vi.advanceTimersByTimeAsync(600);
       await flushPromises();
+      if (provider.id === "qwen")
+        await wrapper.get('[data-testid="more-provider-models"]').trigger("click");
       await wrapper.get("select").setValue(model.id);
       await wrapper.get(".provider-api-key-link").trigger("click");
       await flushPromises();
@@ -490,7 +536,8 @@ describe("ModelSetupDialog", () => {
       expect(saved.models.providers.cloud).toEqual(before.models.providers.cloud);
       expect(saved.agents.defaults.model).toEqual(before.agents.defaults.model);
       expect(testConnection).not.toHaveBeenCalled();
-      expect(restart).toHaveBeenCalledOnce();
+      expect(restart).not.toHaveBeenCalled();
+      expect(window.openclaw.config.write).not.toHaveBeenCalled();
       wrapper.unmount();
     },
   );
@@ -507,7 +554,7 @@ describe("ModelSetupDialog", () => {
   });
 
   it("disables model selection until a key fetch returns live IDs", async () => {
-    discoverModels.mockResolvedValue({ ok: true, models: ["account-model-2026"] });
+    discoverModels.mockResolvedValue({ ok: true, models: ["qwen3.8-max"] });
     const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
     await flushPromises();
     expect(wrapper.get("select").attributes("disabled")).toBeDefined();
@@ -521,11 +568,9 @@ describe("ModelSetupDialog", () => {
       apiKey: "fixture-key",
     });
     expect(wrapper.get("select").attributes("disabled")).toBeUndefined();
-    expect(wrapper.findAll("option").map((o) => o.attributes("value"))).toEqual([
-      "account-model-2026",
-    ]);
+    expect(wrapper.findAll("option").map((o) => o.attributes("value"))).toEqual(["qwen3.8-max"]);
     expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
-    await wrapper.get("select").setValue("account-model-2026");
+    await wrapper.get("select").setValue("qwen3.8-max");
     expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
     expect(testConnection).not.toHaveBeenCalled();
     wrapper.unmount();
@@ -685,7 +730,7 @@ describe("ModelSetupDialog", () => {
       ],
     });
     expect(write.mock.calls[0][0].agents.defaults.model.primary).toBe("qwen/qwen3.7-plus");
-    expect(restart).toHaveBeenCalledOnce();
+    expect(restart).not.toHaveBeenCalled();
   });
 
   it("keeps cloud, official local-service fields, and Copilot authentication when adding a connection", async () => {
@@ -859,6 +904,8 @@ describe("ModelSetupDialog", () => {
   });
 
   it("signs into GitHub Copilot with a device code and saves a full model reference", async () => {
+    const activation = deferred<void>();
+    restart.mockReturnValueOnce(activation.promise);
     listGitHubCopilotModels.mockResolvedValueOnce([
       { id: "github-copilot/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
       { id: "github-copilot/gpt-5.4", name: "GPT-5.4" },
@@ -889,6 +936,12 @@ describe("ModelSetupDialog", () => {
       defaultModel: "github-copilot/gpt-5.4",
     });
     await flushPromises();
+    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
+    expect(restart).toHaveBeenCalledOnce();
+    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    activation.resolve(undefined);
+    await flushPromises();
     expect(listGitHubCopilotModels).toHaveBeenCalledOnce();
     expect(wrapper.text()).toContain("GitHub Copilot connected");
     expect(wrapper.find("select").element.value).toBe("github-copilot/gpt-5.4");
@@ -906,8 +959,29 @@ describe("ModelSetupDialog", () => {
       },
     });
     expect(write.mock.calls[0][0].models).toBeUndefined();
-    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
+    expect(prepareGitHubCopilot).toHaveBeenCalledTimes(2);
     expect(restart).toHaveBeenCalledOnce();
+    expect(restart).toHaveBeenCalledWith({ reason: "copilot-plugin-activation" });
+  });
+
+  it("does not restart or load models when closed during Copilot activation", async () => {
+    const preparation = deferred<{ restartRequired: boolean }>();
+    prepareGitHubCopilot.mockReturnValueOnce(preparation.promise);
+    const wrapper = mountDialog();
+    await openGitHubCopilotForm(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    githubCopilotLoginListener?.({ sessionId: "copilot-session", status: "success" });
+    await flushPromises();
+    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
+
+    await wrapper.find(".model-setup-close").trigger("click");
+    preparation.resolve({ restartRequired: true });
+    await flushPromises();
+
+    expect(restart).not.toHaveBeenCalled();
+    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
   });
 
   it("cancels an in-progress GitHub device login when the dialog closes", async () => {
@@ -958,7 +1032,7 @@ describe("ModelSetupDialog", () => {
         },
       },
     });
-    expect(restart).toHaveBeenCalledOnce();
+    expect(restart).not.toHaveBeenCalled();
     expect(wrapper.emitted("configured")).toHaveLength(1);
   });
 
@@ -990,9 +1064,9 @@ describe("ModelSetupDialog", () => {
     expect(restart).not.toHaveBeenCalled();
   });
 
-  it("cannot close after configuration is written until the Gateway restart finishes", async () => {
-    const restartPending = deferred<void>();
-    restart.mockReturnValueOnce(restartPending.promise);
+  it("cannot close until the Gateway confirms hot application of the configuration", async () => {
+    const applyPending = deferred<void>();
+    write.mockReturnValueOnce(applyPending.promise);
     const wrapper = mountDialog();
     await openCustomForm(wrapper);
     const inputs = wrapper.findAll("input");
@@ -1004,12 +1078,12 @@ describe("ModelSetupDialog", () => {
     await flushPromises();
 
     expect(write).toHaveBeenCalledOnce();
-    expect(restart).toHaveBeenCalledOnce();
+    expect(restart).not.toHaveBeenCalled();
     expect(wrapper.find(".model-setup-close").attributes("disabled")).toBeDefined();
     await wrapper.find(".model-setup-close").trigger("click");
     expect(wrapper.emitted("update:modelValue")).toBeUndefined();
 
-    restartPending.resolve();
+    applyPending.resolve();
     await flushPromises();
     await vi.runAllTimersAsync();
     await flushPromises();

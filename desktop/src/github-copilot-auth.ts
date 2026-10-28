@@ -9,6 +9,7 @@ const MESSAGE_PREFIX = "MICROCLAW_COPILOT_AUTH:";
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
 const AUTH_TIMEOUT_MS = 20 * 60_000;
 const CLI_TIMEOUT_MS = 30_000;
+export const GITHUB_COPILOT_CATALOG_TIMEOUT_MS = 210_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
 const MAX_GATEWAY_MODELS = 5_000;
@@ -19,6 +20,7 @@ let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | 
 let authStatusInFlight: Promise<{ authenticated: boolean }> | null = null;
 let modelCatalogCache: GitHubCopilotModel[] | null = null;
 let modelCatalogInFlight: Promise<GitHubCopilotModel[]> | null = null;
+let modelCatalogGeneration = 0;
 
 export interface GitHubCopilotAuthRuntime {
   nodePath: string;
@@ -294,12 +296,15 @@ export function parseGitHubCopilotGatewayModels(payload: unknown): GitHubCopilot
 export function invalidateGitHubCopilotAuthStatusCache(): void {
   authStatusCache = null;
   modelCatalogCache = null;
+  modelCatalogInFlight = null;
+  modelCatalogGeneration += 1;
 }
 
 export function buildGitHubCopilotModelsArgs(): string[] {
   return [
     "models",
     "list",
+    "--refresh",
     "--all",
     "--provider",
     "github-copilot",
@@ -349,7 +354,11 @@ export function buildGitHubCopilotLogoutArgs(): string[] {
   ];
 }
 
-async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]): Promise<string> {
+async function runOpenClawJson(
+  runtime: GitHubCopilotAuthRuntime,
+  args: string[],
+  timeoutMs = CLI_TIMEOUT_MS,
+): Promise<string> {
   if (!isSafeNodePath(runtime.nodePath) || !fs.existsSync(runtime.entryPath)) {
     throw new Error("OpenClaw CLI was not found");
   }
@@ -369,7 +378,7 @@ async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]
     const timeout = setTimeout(() => {
       child.kill();
       finish(new Error("OpenClaw model query timed out"));
-    }, CLI_TIMEOUT_MS);
+    }, timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -433,22 +442,49 @@ export async function disconnectGitHubCopilot(
 
 export async function listGitHubCopilotModels(
   runtime: GitHubCopilotAuthRuntime,
+  queryGateway?: (params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>,
 ): Promise<GitHubCopilotModel[]> {
   if (modelCatalogCache) return modelCatalogCache;
   if (modelCatalogInFlight) return modelCatalogInFlight;
 
-  const request = runOpenClawJson(runtime, buildGitHubCopilotModelsArgs()).then(
-    parseGitHubCopilotCliModels,
-  );
-  modelCatalogInFlight = request
+  const generation = modelCatalogGeneration;
+  const request = (async () => {
+    if (queryGateway) {
+      try {
+        const params = {
+          agentId: GITHUB_COPILOT_AUTH_AGENT_ID,
+          provider: "github-copilot",
+          view: "all",
+        };
+        const prepared = parseGitHubCopilotGatewayModels(
+          await queryGateway({ ...params, preparedOnly: true }, CLI_TIMEOUT_MS),
+        );
+        if (prepared.length > 0) return prepared;
+        const refreshed = parseGitHubCopilotGatewayModels(
+          await queryGateway({ ...params, refresh: true }, GITHUB_COPILOT_CATALOG_TIMEOUT_MS),
+        );
+        if (refreshed.length > 0) return refreshed;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
+      }
+    }
+    const output = await runOpenClawJson(
+      runtime,
+      buildGitHubCopilotModelsArgs(),
+      GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
+    );
+    return parseGitHubCopilotCliModels(output);
+  })();
+  const inFlight = request
     .then((models) => {
-      modelCatalogCache = models;
+      if (models.length > 0 && generation === modelCatalogGeneration) modelCatalogCache = models;
       return models;
     })
     .finally(() => {
-      modelCatalogInFlight = null;
+      if (modelCatalogInFlight === inFlight) modelCatalogInFlight = null;
     });
-  return modelCatalogInFlight;
+  modelCatalogInFlight = inFlight;
+  return inFlight;
 }
 
 export class GitHubCopilotAuthManager {

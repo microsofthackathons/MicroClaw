@@ -299,6 +299,7 @@ export async function apiGetFetch(params: {
   baseUrl: string;
   endpoint: string;
   timeoutMs?: number;
+  abortSignal?: AbortSignal;
   label: string;
 }): Promise<string> {
   const base = ensureTrailingSlash(params.baseUrl);
@@ -313,11 +314,15 @@ export async function apiGetFetch(params: {
     controller != null && timeoutMs != null
       ? setTimeout(() => controller.abort(), timeoutMs)
       : undefined;
+  const { signal, cleanup } = combineAbortSignals({
+    internal: controller,
+    external: params.abortSignal,
+  });
   try {
     const res = await fetch(url.toString(), {
       method: "GET",
       headers: hdrs,
-      ...(controller ? { signal: controller.signal } : {}),
+      ...(signal ? { signal } : {}),
     });
     if (t !== undefined) clearTimeout(t);
     const rawText = await res.text();
@@ -328,11 +333,14 @@ export async function apiGetFetch(params: {
     return rawText;
   } catch (err) {
     if (t !== undefined) clearTimeout(t);
+    if (params.abortSignal?.aborted) throw err;
     const classified = classifyFetchError(err);
     logger.error(
       `${params.label}: GET fetch failed url=${redactUrl(url.toString())} timeoutMs=${timeoutMs ?? "none"} type=${classified.type} description=${classified.description}${classified.code ? ` code=${classified.code}` : ""} error=${String(err)}`,
     );
     throw err;
+  } finally {
+    cleanup();
   }
 }
 
@@ -457,6 +465,7 @@ export async function getUpdates(
      * this aborts the in-flight long-poll immediately so hot reload can restart.
      */
     abortSignal?: AbortSignal;
+    onPollTimeout?: () => void;
   },
 ): Promise<GetUpdatesResp> {
   const timeout = params.timeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS;
@@ -483,6 +492,7 @@ export async function getUpdates(
         logger.debug(`getUpdates: aborted by external signal`);
       } else {
         logger.debug(`getUpdates: client-side timeout after ${timeout}ms, returning empty response`);
+        params.onPollTimeout?.();
       }
       return { ret: 0, msgs: [], get_updates_buf: params.get_updates_buf };
     }

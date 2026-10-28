@@ -42,21 +42,18 @@ export function requiresExternalGatewayStop(
   return alreadyRunning && rosterChanged && !(spawnedByUs && hasManagedProcess);
 }
 
-export function isGatewayServiceReady(
-  clientConnected: boolean,
-  postSpawnRestartDone: boolean,
-): boolean {
-  return clientConnected && postSpawnRestartDone;
+export function isGatewayServiceReady(clientConnected: boolean, lifecycleReady: boolean): boolean {
+  return clientConnected && lifecycleReady;
 }
 
 export function isApplicationServiceReadyState(
   clientConnected: boolean,
-  postSpawnRestartDone: boolean,
+  lifecycleReady: boolean,
   securityTransitionInProgress: boolean,
   protectedIngressReady: boolean,
 ): boolean {
   return (
-    isGatewayServiceReady(clientConnected, postSpawnRestartDone) &&
+    isGatewayServiceReady(clientConnected, lifecycleReady) &&
     !securityTransitionInProgress &&
     protectedIngressReady
   );

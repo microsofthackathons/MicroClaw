@@ -7,22 +7,39 @@ function readRepositoryFile(...parts: string[]): string {
 }
 
 describe("Weixin login lifecycle", () => {
+  it("hot-applies plugin toggles and guards QR readiness before admitting a login", () => {
+    const source = readRepositoryFile("desktop", "src", "main.ts");
+    const toggle = source.slice(
+      source.indexOf('ipcMain.handle("plugin:weixin:set-enabled"'),
+      source.indexOf('ipcMain.handle("plugin:weixin:login"'),
+    );
+    expect(toggle).toContain("await setWeixinPluginEnabled");
+    expect(toggle).toContain("beginPluginChange");
+    expect(toggle).toContain("endPluginChange");
+    expect(toggle).not.toContain("writeFileSync");
+    expect(toggle).not.toContain("restartManagedGateway");
+    const qr = source.slice(
+      source.indexOf('"plugin:weixin:login-qr-start"'),
+      source.indexOf('"plugin:weixin:login-qr-wait"'),
+    );
+    expect(qr.indexOf("getChannelsStatus")).toBeLessThan(qr.indexOf("beginQr"));
+    expect(qr).toContain("isWeixinLoginReady");
+    expect(qr).toContain("isKnownWeixinQrStartRejection");
+    expect(qr).toContain("canFallback: knownRejection");
+    expect(qr).toContain("restartRequired: !knownRejection");
+  });
+
   it.each(["ChannelsView.vue", "PluginsView.vue"])(
-    "keeps successful QR login on the plugin's in-process channel reload in %s",
+    "shares the lightweight connection card in %s",
     (viewName) => {
       const source = readRepositoryFile("desktop", "renderer", "src", "views", viewName);
-      const poll = source.slice(
-        source.indexOf("async function pollForLogin()"),
-        source.indexOf("async function cancelLogin()"),
-      );
-
-      expect(poll).toContain("result.connected");
-      expect(poll).not.toContain("gateway.restart");
-      expect(poll).not.toContain("restartGatewayAfterLogin");
+      expect(source).toContain("WeixinConnectionCard");
+      expect(source).not.toContain("gateway.restart");
+      expect(source).not.toContain("el-switch");
     },
   );
 
-  it("persists credentials and requests a channel config reload before reporting QR success", () => {
+  it("persists credentials before reporting success without reloading plugin configuration", () => {
     const source = readRepositoryFile("plugins", "openclaw-weixin", "src", "channel.ts");
     const waitHandler = source.slice(
       source.indexOf("loginWithQrWait: async"),
@@ -30,23 +47,24 @@ describe("Weixin login lifecycle", () => {
     );
 
     expect(waitHandler).toContain("replaceWeixinAccount");
-    expect(waitHandler).toContain("await triggerWeixinChannelReload");
-    expect(waitHandler.indexOf("await triggerWeixinChannelReload")).toBeLessThan(
-      waitHandler.indexOf("return {"),
+    expect(waitHandler).not.toContain("triggerWeixinChannelReload");
+    expect(waitHandler.indexOf("replaceWeixinAccount")).toBeLessThan(
+      waitHandler.lastIndexOf("return {"),
     );
   });
 
-  it("uses a managed restart only when the plugin cannot request its hot reload", () => {
+  it("keeps QR polling in the main process and disconnects using native channel logout", () => {
     const source = readRepositoryFile("desktop", "src", "main.ts");
     const handler = source.slice(
       source.indexOf('"plugin:weixin:login-qr-wait"'),
-      source.indexOf('ipcMain.handle("plugin:weixin:disconnect"'),
+      source.indexOf("registerLocalModelHandlers", source.indexOf('"plugin:weixin:login-qr-wait"')),
     );
 
-    expect(handler).toContain("result.activationReloadRequested === false");
-    expect(handler).toContain(
-      'restartManagedGateway("Activating Weixin after channel reload failure")',
-    );
+    expect(handler).not.toContain("restartManagedGateway");
+    expect(handler).not.toContain("writeFileSync");
+    expect(handler).toContain('"channels.logout"');
+    expect(source).toContain("weixinQrSession.start(");
+    expect(source).toContain("sessionKey, timeoutMs: 35_000");
   });
 
   it("does not replace the Gateway after an attested successful CLI login", () => {

@@ -253,7 +253,7 @@ async function handleRetry() {
     }
     return;
   }
-  await window.openclaw.gateway.restart();
+  await window.openclaw.gateway.restart({ reason: "startup-retry" });
 }
 
 async function disableWindowsNodeMxc() {

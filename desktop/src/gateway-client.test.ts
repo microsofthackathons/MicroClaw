@@ -87,6 +87,15 @@ describe("GatewayClient WeChat QR login", () => {
     }
   });
 
+  it("cancels only the named QR session through the plugin without restarting Gateway", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({ cancelled: true });
+    await expect(client.weixinLoginQrCancel("qr-session")).resolves.toEqual({ cancelled: true });
+    expect(request).toHaveBeenCalledExactlyOnceWith("weixin.login.cancel", {
+      sessionKey: "qr-session",
+    });
+  });
+
   it("keeps an unanswered QR long poll bounded without retrying it", async () => {
     vi.useFakeTimers();
     try {

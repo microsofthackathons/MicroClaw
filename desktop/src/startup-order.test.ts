@@ -156,7 +156,10 @@ describe("desktop startup order", () => {
     expect(appLifecycle).toContain('electronLifecycleDiagnostics.log("before-quit")');
     expect(appLifecycle).toContain("closeWindowsNodeMxcIngress()");
     expect(appLifecycle).toContain("bundledWindowsNodeHost.revokeActivationLease()");
-    expect(appLifecycle).toContain("stopGatewayProcess()");
+    expect(appLifecycle).toContain('stopGatewayProcessGracefully("Application quit")');
+    expect(appLifecycle).toContain("event.preventDefault()");
+    expect(appLifecycle).toContain("if (applicationQuitReady) return");
+    expect(appLifecycle).not.toContain("stopGatewayProcess()");
     expect(applyHandler).toContain("windowsNodeMxcLifecycleOperations.acquire");
     expect(applyHandler).toContain("lifecycleOperation.succeed(status)");
   });

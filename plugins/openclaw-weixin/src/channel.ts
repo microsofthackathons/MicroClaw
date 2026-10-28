@@ -7,8 +7,10 @@ import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import {
   loadWeixinAccount,
   listWeixinAccountIds,
+  listIndexedWeixinAccountIds,
   isActiveWeixinAccount,
   replaceWeixinAccount,
+  disconnectWeixinAccount,
   resolveWeixinAccount,
   triggerWeixinChannelReload,
   DEFAULT_BASE_URL,
@@ -507,6 +509,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       ctx.setStatus?.({
         accountId: account.accountId,
         running: true,
+        connected: false,
         lastStartAt: Date.now(),
         lastEventAt: Date.now(),
       });
@@ -526,9 +529,13 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         const resp = await notifyStart({
           baseUrl: account.baseUrl,
           token: account.token,
+          timeoutMs: 2_000,
         });
         if (resp.ret !== undefined && resp.ret !== 0) {
           aLog.warn(`notifyStart: ret=${resp.ret} errmsg=${resp.errmsg ?? ""}`);
+        }
+        if (resp.ret === 0 && !ctx.abortSignal?.aborted) {
+          ctx.setStatus?.({ accountId: account.accountId, connected: true, lastError: null });
         }
       } catch (err) {
         aLog.warn(`notifyStart failed during startup (ignored): ${String(err)}`);
@@ -572,6 +579,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         const resp = await notifyStop({
           baseUrl: account.baseUrl,
           token: account.token,
+          timeoutMs: 2_000,
         });
         if (resp.ret !== undefined && resp.ret !== 0) {
           aLog.warn(`notifyStop: ret=${resp.ret} errmsg=${resp.errmsg ?? ""}`);
@@ -580,6 +588,8 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         aLog.warn(`notifyStop failed during shutdown (ignored): ${String(err)}`);
       }
     },
+    logoutAccount: async ({ accountId }) =>
+      disconnectWeixinAccount(accountId, clearContextTokensForAccount),
     loginWithQrStart: async ({ accountId, force, verbose }) => {
       // For re-login: use saved baseUrl from account data; fall back to default for new accounts.
       const savedBaseUrl = accountId ? loadWeixinAccount(accountId)?.baseUrl?.trim() : "";
@@ -607,8 +617,14 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         sessionKey,
         apiBaseUrl: savedBaseUrl || DEFAULT_BASE_URL,
         timeoutMs: params.timeoutMs,
+        polling: true,
       });
-      let activationReloadRequested: boolean | undefined = result.connected ? false : undefined;
+      if (result.alreadyConnected) {
+        const accountIds = listIndexedWeixinAccountIds();
+        if (accountIds.length === 1 && isActiveWeixinAccount(accountIds[0])) {
+          return { connected: true, accountId: accountIds[0], message: result.message };
+        }
+      }
 
       if (result.connected && result.botToken && result.accountId) {
         try {
@@ -621,7 +637,6 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
             },
             clearContextTokensForAccount,
           );
-          activationReloadRequested = await triggerWeixinChannelReload();
           logger.info(
             `loginWithQrWait: committed single account=${replacement.accountId} replaced=${replacement.replacedAccounts.length}`,
           );
@@ -635,11 +650,17 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         connected: result.connected,
         message: result.message,
         accountId: result.accountId,
-        activationReloadRequested,
+        pending: result.pending === true,
+        expired: result.expired === true,
+        cancelled: result.cancelled === true,
+        qrDataUrl: result.qrDataUrl,
       } as {
         connected: boolean;
         message: string;
-        activationReloadRequested?: boolean;
+        pending?: boolean;
+        expired?: boolean;
+        cancelled?: boolean;
+        qrDataUrl?: string;
       };
     },
   },

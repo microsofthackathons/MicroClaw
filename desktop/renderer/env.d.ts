@@ -198,7 +198,7 @@ interface OpenClawAPI {
     getPort(): Promise<number>;
     getStatus(): Promise<string>;
     isServiceReady(): Promise<boolean>;
-    restart(): Promise<void>;
+    restart(options?: import("../src/gateway-restart-reason").GatewayRestartOptions): Promise<void>;
     warmUpAgent(): Promise<{
       outcome: "skipped" | "delta" | "terminal" | "timeout" | "error" | "disconnected";
       transcriptDeleted: boolean;
@@ -318,10 +318,20 @@ interface OpenClawAPI {
           userId?: string;
         } | null;
         loginInProgress: boolean;
+        loginRequiresRestart?: boolean;
+        connected?: boolean;
+        connecting?: boolean;
+        runtimeKnown?: boolean;
+        ready?: boolean;
+        qrSession?: import("../src/weixin-connection").WeixinQrSnapshot;
         mutationLocked: boolean;
         mutationLockRevision: number;
       }>;
-      setEnabled(enabled: boolean): Promise<{ ok: boolean }>;
+      setEnabled(enabled: boolean): Promise<{
+        ok: boolean;
+        error?: string;
+        restartRequired?: boolean;
+      }>;
       login(): Promise<{ ok: boolean; error?: string }>;
       cancelLogin(): Promise<void>;
       loginQrStart(params?: { accountId?: string; force?: boolean }): Promise<{
@@ -330,12 +340,23 @@ interface OpenClawAPI {
         message: string;
         sessionKey?: string;
         error?: string;
+        canFallback?: boolean;
+        restartRequired?: boolean;
       }>;
       loginQrWait(params: {
         sessionKey?: string;
         accountId?: string;
         timeoutMs?: number;
-      }): Promise<{ connected: boolean; message: string; accountId?: string }>;
+      }): Promise<{
+        connected: boolean;
+        pending?: boolean;
+        expired?: boolean;
+        cancelled?: boolean;
+        qrDataUrl?: string;
+        message: string;
+        accountId?: string;
+        restartRequired?: boolean;
+      }>;
       disconnect(params?: { accountId?: string }): Promise<{ ok: boolean; error?: string }>;
       onLoginOutput(callback: (text: string) => void): () => void;
       onLoginDone(callback: (result: { code: number | null }) => void): () => void;
@@ -343,6 +364,7 @@ interface OpenClawAPI {
     };
   };
   model: {
+    applyConfig(params: import("../src/model-config-application").ModelConfigUpdate): Promise<void>;
     selectDefault(
       params: import("../src/default-model-selection").DefaultModelSelection,
     ): Promise<{ modelRef: string }>;

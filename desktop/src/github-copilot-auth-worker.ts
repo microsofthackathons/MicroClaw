@@ -82,12 +82,12 @@ function send(payload: Record<string, unknown>): void {
   process.stdout.write(`${MESSAGE_PREFIX}${JSON.stringify(payload)}\n`);
 }
 
-function extractDevicePrompt(message: string): {
+export function extractDevicePrompt(message: string): {
   verificationUrl: string;
   userCode: string;
   expiresInMs: number;
 } | null {
-  const url = message.match(/URL:\s*(https:\/\/github\.com\/login\/device)\b/i)?.[1];
+  const url = message.match(/URL:\s*<?(https:\/\/github\.com\/login\/device)>?(?=\s|$)/i)?.[1];
   const code = message.match(/Code:\s*([A-Z0-9-]{4,20})\b/i)?.[1];
   const expiresInMinutes = Number(message.match(/expires in\s+(\d+)\s+minutes?/i)?.[1] ?? 0);
   if (!url || !code || !Number.isFinite(expiresInMinutes) || expiresInMinutes <= 0) return null;

@@ -144,7 +144,7 @@ describe("ChatModelPicker", () => {
     expect(model.attributes("disabled")).toBeUndefined();
   });
 
-  it("does not select a realtime entry from the complete provider catalog", async () => {
+  it("hides realtime Qwen entries from the provider catalog", async () => {
     vi.mocked(window.openclaw.config.read).mockResolvedValue({
       models: {
         providers: {
@@ -161,12 +161,11 @@ describe("ChatModelPicker", () => {
       models: ["qwen3.7-plus", "qwen3.8-omni-flash-realtime"],
     });
     const wrapper = await open();
-    const choice = wrapper.get('[data-model-ref="qwen/qwen3.8-omni-flash-realtime"]');
-    expect(choice.attributes("disabled")).toBeDefined();
-    expect(choice.text()).toContain("Requires realtime API");
-    await choice.trigger("click");
+    expect(wrapper.find('[data-model-ref="qwen/qwen3.8-omni-flash-realtime"]').exists()).toBe(
+      false,
+    );
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
-    expect(wrapper.findAll('[data-model-ref^="qwen/"]')).toHaveLength(2);
+    expect(wrapper.findAll('[data-model-ref^="qwen/"]')).toHaveLength(1);
   });
 
   it("shows and selects the full cloud catalog rather than only saved definitions without restarting", async () => {
@@ -176,26 +175,27 @@ describe("ChatModelPicker", () => {
           qwen: {
             baseUrl: "https://provider.example/v1",
             apiKey: "fixture",
-            models: [{ id: "saved", name: "Saved" }],
+            models: [{ id: "qwen-saved", name: "Saved" }],
           },
         },
       },
     });
     window.openclaw.model.discoverModels = vi.fn().mockResolvedValue({
       ok: true,
-      models: ["saved", "live-one", "live-two"],
+      models: ["qwen-saved", "qwen-live-one", "qwen-live-two"],
     });
     const wrapper = await open();
+    await wrapper.get('[data-more-models="qwen"]').trigger("click");
     expect(
       wrapper
         .findAll('[data-model-ref^="qwen/"]')
         .map((model) => model.attributes("data-model-ref")),
-    ).toEqual(["qwen/live-one", "qwen/live-two", "qwen/saved"]);
-    await wrapper.get('[data-model-ref="qwen/live-two"]').trigger("click");
+    ).toEqual(["qwen/qwen-saved", "qwen/qwen-live-two", "qwen/qwen-live-one"]);
+    await wrapper.get('[data-model-ref="qwen/qwen-live-two"]').trigger("click");
     await flushPromises();
     expect(window.openclaw.model.session.select).toHaveBeenCalledWith({
       sessionKey: "agent:main:one",
-      modelRef: "qwen/live-two",
+      modelRef: "qwen/qwen-live-two",
     });
     expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
     expect(window.openclaw.config.write).not.toHaveBeenCalled();
@@ -499,7 +499,7 @@ describe("ChatModelPicker", () => {
     const wrapper = await open();
     expect(wrapper.findAll(".model-group-name").map((heading) => heading.text())).toEqual([
       "cloud",
-      "llama.cpp",
+      "Local model",
     ]);
     await wrapper.get("input").setValue("QWEN");
     expect(wrapper.findAll("[data-model-ref]")).toHaveLength(1);
@@ -553,7 +553,7 @@ describe("ChatModelPicker", () => {
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen"]').isVisible()).toBe(true);
     await wrapper.get('[data-provider-group="llama-cpp"]').trigger("click");
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen"]').isVisible()).toBe(false);
-    await wrapper.get("input").setValue("llama.cpp");
+    await wrapper.get("input").setValue("Local model");
     expect(wrapper.get('[data-model-ref="llama-cpp/qwen"]').isVisible()).toBe(true);
     await wrapper.get("input").setValue("");
     expect(wrapper.findAll(".model-group-models").every((panel) => !panel.isVisible())).toBe(true);
@@ -624,7 +624,7 @@ describe("ChatModelPicker", () => {
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
   });
 
-  it("shows undownloaded presets under llama.cpp and opens exact first-use confirmation", async () => {
+  it("shows undownloaded presets under local models and opens exact first-use confirmation", async () => {
     window.openclaw.model.local.getSnapshot = vi.fn().mockResolvedValue({
       ok: true,
       value: {

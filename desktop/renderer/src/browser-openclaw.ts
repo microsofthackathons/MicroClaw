@@ -234,6 +234,9 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     cron: { list: async () => ({ jobs: [], pausedByMxc: false, requestedMode: "off" as const }) },
     channels: { list: async () => ({ channels: [] }) },
     model: {
+      applyConfig: async () => {
+        throw new Error("Model configuration requires the desktop application");
+      },
       selectDefault: async () => {
         throw new Error("Default model selection requires the desktop application");
       },
@@ -319,13 +322,22 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           invariantState: "none",
           currentAccount: null,
           loginInProgress: false,
+          connected: false,
+          connecting: false,
+          runtimeKnown: false,
+          ready: false,
+          qrSession: { state: "idle", message: "" },
           mutationLocked: false,
           mutationLockRevision: 0,
         }),
         setEnabled: async () => ({ ok: true }),
         login: async () => ({ ok: false, error: "Unavailable in browser development" }),
         cancelLogin: noopAsync,
-        loginQrStart: async () => ({ ok: false, message: "Unavailable in browser development" }),
+        loginQrStart: async () => ({
+          ok: false,
+          message: "Unavailable in browser development",
+          canFallback: false,
+        }),
         loginQrWait: async () => ({
           connected: false,
           message: "Unavailable in browser development",

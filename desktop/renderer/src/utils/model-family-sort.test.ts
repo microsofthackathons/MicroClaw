@@ -60,4 +60,26 @@ describe("sortModelsByFamily", () => {
     expect(sortModelsByFamily([...models].reverse())).toEqual(sorted);
     expect(sortModelsByFamily([])).toEqual([]);
   });
+
+  it("supports descending natural versions while keeping families and aliases together", () => {
+    const models = Object.freeze([
+      model("qwen3.8-27b"),
+      model("Qwen/Qwen3.10-plus"),
+      model("qwen3.5-plus"),
+      model("cmaas-qwen3.8-flash"),
+      model("qwen3.9-plus"),
+      model("kimi/kimi-k3.1-pro"),
+    ]);
+    const original = [...models];
+
+    expect(sortModelsByFamily(models, "desc").map((entry) => entry.id)).toEqual([
+      "kimi/kimi-k3.1-pro",
+      "Qwen/Qwen3.10-plus",
+      "qwen3.9-plus",
+      "cmaas-qwen3.8-flash",
+      "qwen3.8-27b",
+      "qwen3.5-plus",
+    ]);
+    expect(models).toEqual(original);
+  });
 });

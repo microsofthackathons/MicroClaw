@@ -2354,15 +2354,6 @@ async function handleLocalModelSelected(): Promise<void> {
   ElMessage.success(t("settings.modelSwitched", { model }));
 }
 
-async function restartGatewayAfterModelConfig(
-  options: { waitForRendererReconnect?: boolean } = {},
-): Promise<void> {
-  await window.openclaw.gateway.restart();
-  if (options.waitForRendererReconnect !== false) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-
 async function selectModel(modelRef: string) {
   if (modelActionBusy.value || chatStore.streaming || sessionRecovery.value) return;
   if (!modelOptions.value.some((model) => getModelRef(model) === modelRef)) {
@@ -2427,21 +2418,17 @@ async function removeProviderConnection(providerKey: string): Promise<void> {
     ) {
       throw new Error(t("localModel.operationBusy"));
     }
-    await window.openclaw.config.write(nextConfig, existing);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "provider-remove",
+      providerKey,
+    });
     showProviderSetup.value = false;
     editingProviderKey.value = "";
     editingModelRef.value = "";
     applyModelsConfig(nextConfig);
     ElMessage.success(t("modelManager.providerRemoved"));
-    try {
-      await restartGatewayAfterModelConfig({ waitForRendererReconnect: false });
-    } catch (error) {
-      ElMessage.warning(
-        t("settings.restartFailed", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    }
   } catch (error) {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(
@@ -2487,20 +2474,16 @@ async function removeCustomModel(idx: number) {
       removed.id,
       fallback ? getModelRef(fallback) : undefined,
     );
-    await window.openclaw.config.write(nextConfig, existing);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "model-remove",
+      providerKey: removed.providerKey,
+    });
     applyModelsConfig(nextConfig);
     ElMessage.success(t("settings.customModelDeleted"));
   } catch (err: any) {
     ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
-    await refreshModelsConfig();
-    removingModelRef.value = "";
-    return;
-  }
-
-  try {
-    await restartGatewayAfterModelConfig({ waitForRendererReconnect: false });
-  } catch (err: any) {
-    ElMessage.warning(t("settings.restartFailed", { error: err.message || err }));
   } finally {
     await refreshModelsConfig();
     removingModelRef.value = "";
@@ -2542,21 +2525,15 @@ async function disconnectGitHubCopilot() {
       throw new Error(t("settings.copilotConfigUnavailable"));
     }
     const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
-    await window.openclaw.config.write(nextConfig, existingConfig);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existingConfig,
+      action: "copilot-disconnect",
+      providerKey: "github-copilot",
+    });
 
     await window.openclaw.model.disconnectGitHubCopilot();
 
-    try {
-      await restartGatewayAfterModelConfig();
-    } catch (error) {
-      await refreshModelsConfig();
-      ElMessage.warning(
-        t("settings.copilotDisconnectedRestartFailed", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      return;
-    }
     await refreshModelsConfig();
     ElMessage.success(t("settings.copilotDisconnected"));
   } catch (error) {
@@ -2676,7 +2653,7 @@ function openUpdateDownload() {
 
 async function restartGateway() {
   try {
-    await window.openclaw.gateway.restart();
+    await window.openclaw.gateway.restart({ reason: "settings-manual" });
     ElMessage.success(t("settings.gatewayRestarting"));
   } catch (err: any) {
     ElMessage.error(t("settings.restartFailed", { error: err.message }));

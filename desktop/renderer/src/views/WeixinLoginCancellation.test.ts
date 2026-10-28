@@ -1,5 +1,5 @@
 import { createPinia } from "pinia";
-import { flushPromises, shallowMount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 import QRCode from "qrcode";
@@ -40,7 +40,12 @@ describe.each([
         enabled: true,
         requestedEnabled: true,
         effectiveEnabled: true,
+        ready: true,
+        runtimeKnown: true,
+        loggedIn: true,
         accountCount: 1,
+        invariantState: "single",
+        currentAccount: { accountId: "current-im-bot" },
         mutationLocked: false,
         mutationLockRevision: 1,
       });
@@ -64,12 +69,16 @@ describe.each([
         .spyOn(api.plugin.weixin, "loginQrWait")
         .mockImplementation(() => new Promise(() => {}));
       window.openclaw = api;
-      const wrapper = shallowMount(component, {
+      const wrapper = mount(component, {
         global: {
           plugins: [createPinia()],
           stubs: {
             ElSwitch: true,
             ElAlert: true,
+            ElDialog: {
+              props: ["modelValue", "title"],
+              template: '<div v-if="modelValue" role="dialog"><slot/><slot name="footer"/></div>',
+            },
             ElButton: {
               props: ["disabled", "loading"],
               emits: ["click"],
@@ -81,18 +90,18 @@ describe.each([
       });
       try {
         await flushPromises();
-        const replace = wrapper.findAll("button").find((button) => {
-          return button.text() === t("plugins.replaceWeixin");
+        const connect = wrapper.findAll("button").find((button) => {
+          return button.text() === t("plugins.connectWeixin");
         });
-        if (!replace) throw new Error("Replace WeChat button not found");
-        await replace.trigger("click");
+        if (!connect) throw new Error("Connect button not found");
+        await connect.trigger("click");
         await flushPromises();
         expect(start).toHaveBeenCalledOnce();
 
         const cancelButton = wrapper.findAll("button").find((button) => {
-          return button.text() === t("plugins.cancel");
+          return button.text() === t("plugins.closeQr");
         });
-        if (!cancelButton) throw new Error("Cancel login button not found");
+        if (!cancelButton) throw new Error("Close QR button not found");
         await cancelButton.trigger("click");
         expect(cancel).toHaveBeenCalledOnce();
         finishQr({
@@ -109,11 +118,11 @@ describe.each([
         expect(poll).not.toHaveBeenCalled();
         expect(QRCode.toCanvas).not.toHaveBeenCalled();
         const retry = wrapper.findAll("button").find((button) => {
-          return button.text() === t("plugins.replaceWeixin");
+          return button.text() === t("plugins.connectWeixin");
         });
-        if (!retry) throw new Error("Replace WeChat button was not restored");
+        if (!retry) throw new Error("Connect button was not restored");
         expect(retry.attributes("disabled")).toBeUndefined();
-        expect(wrapper.find(".login-qr-area").exists()).toBe(false);
+        expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
       } finally {
         wrapper.unmount();
       }

@@ -33,11 +33,11 @@ export async function waitForPostSpawnChannels(options: {
   readStatus: (timeoutMs: number) => Promise<GatewayChannelsStatusPayload>;
   isCurrent: () => boolean;
   onError: (error: unknown) => void;
-}): Promise<"ready" | "restart" | "cancelled"> {
+}): Promise<"ready" | "pending" | "cancelled"> {
   const deadline = Date.now() + POST_SPAWN_CHANNEL_READY_TIMEOUT_MS;
   while (options.isCurrent()) {
     const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) return "restart";
+    if (remainingMs <= 0) return "pending";
     try {
       const status = await options.readStatus(remainingMs);
       if (!options.isCurrent()) return "cancelled";

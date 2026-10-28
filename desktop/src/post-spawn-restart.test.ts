@@ -90,7 +90,7 @@ describe("isWeixinStartupComplete", () => {
     { channels: {} },
     { channels: { "openclaw-weixin": {} } },
   ];
-  it.each(incompleteStatuses)("requires recovery when startup is not attested: %j", (status) => {
+  it.each(incompleteStatuses)("keeps startup pending when it is not attested: %j", (status) => {
     expect(isWeixinStartupComplete(status)).toBe(false);
   });
 });
@@ -131,7 +131,7 @@ describe("waitForPostSpawnChannels", () => {
     expect(readStatus).toHaveBeenNthCalledWith(2, 4_500);
   });
 
-  it("retains the bounded compatibility restart for a provider that never starts", async () => {
+  it("reports a pending channel without requesting a compatibility restart", async () => {
     vi.useFakeTimers();
     const startedAt = Date.now();
     const readStatus = vi.fn().mockResolvedValue(stoppedStatus);
@@ -142,13 +142,13 @@ describe("waitForPostSpawnChannels", () => {
     });
 
     await vi.advanceTimersByTimeAsync(POST_SPAWN_CHANNEL_READY_TIMEOUT_MS);
-    expect(await result).toBe("restart");
+    expect(await result).toBe("pending");
     expect(Date.now() - startedAt).toBe(POST_SPAWN_CHANNEL_READY_TIMEOUT_MS);
     expect(readStatus).toHaveBeenCalledTimes(10);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("logs a status timeout and does not add another delay before recovery", async () => {
+  it("logs a status timeout and leaves the channel pending without another delay", async () => {
     vi.useFakeTimers();
     const error = new Error("channels.status timed out");
     const onError = vi.fn();
@@ -161,7 +161,7 @@ describe("waitForPostSpawnChannels", () => {
     const result = waitForPostSpawnChannels({ readStatus, isCurrent: () => true, onError });
 
     await vi.advanceTimersByTimeAsync(POST_SPAWN_CHANNEL_READY_TIMEOUT_MS);
-    expect(await result).toBe("restart");
+    expect(await result).toBe("pending");
     expect(onError).toHaveBeenCalledExactlyOnceWith(error);
     expect(readStatus).toHaveBeenCalledOnce();
   });

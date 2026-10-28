@@ -32,7 +32,7 @@
         :id="`${groupId}-${group.key}`"
         class="model-group-models"
       >
-        <div v-for="model in group.models" :key="getModelRef(model)" class="model-choice">
+        <div v-for="model in group.visibleModels" :key="getModelRef(model)" class="model-choice">
           <button
             type="button"
             class="model-choice-button"
@@ -44,6 +44,9 @@
             @click="select(model)"
           >
             <span class="model-choice-name">{{ model.name }}</span>
+            <span v-if="isRecommendedProviderModel(group.key, model.id)" class="model-recommended">
+              {{ t("modelManager.recommended") }}
+            </span>
             <span v-if="restrictionLabel(model) || modelStatus" class="model-choice-state">
               {{ restrictionLabel(model) || modelStatus?.(model) }}
             </span>
@@ -51,6 +54,24 @@
           </button>
           <slot name="model-action" :model="model" />
         </div>
+        <button
+          v-if="group.moreCount"
+          type="button"
+          class="more-models-toggle"
+          :data-more-models="group.key"
+          :aria-expanded="Boolean(expandedMoreGroups.get(group.key))"
+          @click="toggleMore(group.key)"
+        >
+          {{
+            t(
+              expandedMoreGroups.get(group.key)
+                ? "modelManager.fewerModels"
+                : "modelManager.moreModels",
+              { count: group.moreCount },
+            )
+          }}
+          <span aria-hidden="true">{{ expandedMoreGroups.get(group.key) ? "−" : "+" }}</span>
+        </button>
       </div>
     </section>
     <p v-if="!groups.length" class="empty-models" role="status">
@@ -67,6 +88,11 @@ import { computed, ref, useId, watch } from "vue";
 import { t } from "@/i18n";
 import { getModelRef, providerName, type ConfiguredModel } from "@/utils/configured-models";
 import { sortModelsByFamily } from "@/utils/model-family-sort";
+import {
+  getProviderModelSections,
+  isProviderModelVisible,
+  isRecommendedProviderModel,
+} from "@/utils/provider-model-options";
 import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
 
 const props = defineProps<{
@@ -82,11 +108,13 @@ const emit = defineEmits<{ select: [modelRef: string]; "clear-search": [] }>();
 const groupId = useId();
 const expandedGroups = ref(new Map<string, boolean>());
 const searchExpandedGroups = ref(new Map<string, boolean>());
+const expandedMoreGroups = ref(new Map<string, boolean>());
 const search = computed(() => props.query.trim().toLocaleLowerCase());
 const currentProvider = computed(() => props.selectedModel?.split("/", 1)[0]);
 const groups = computed(() => {
   const result = new Map<string, ConfiguredModel[]>();
   for (const model of props.models) {
+    if (!isProviderModelVisible(model.providerKey, model.id)) continue;
     if (
       search.value &&
       !`${model.name} ${getModelRef(model)} ${providerName(model.providerKey)}`
@@ -98,9 +126,27 @@ const groups = computed(() => {
     group.push(model);
     result.set(model.providerKey, group);
   }
-  return [...result].map(([key, models]) => ({ key, models: sortModelsByFamily(models) }));
+  return [...result].map(([key, models]) => {
+    const sorted = sortModelsByFamily(models, key === "qwen" ? "desc" : "asc");
+    const selected = sorted.find((model) => getModelRef(model) === props.selectedModel);
+    const sections = search.value
+      ? { primary: sorted, more: [] }
+      : getProviderModelSections(key, sorted, selected?.id);
+    return {
+      key,
+      models: sorted,
+      visibleModels: [
+        ...sections.primary,
+        ...(expandedMoreGroups.value.get(key) ? sections.more : []),
+      ],
+      moreCount: sections.more.length,
+    };
+  });
 });
 
+function toggleMore(provider: string): void {
+  expandedMoreGroups.value.set(provider, !expandedMoreGroups.value.get(provider));
+}
 function isExpanded(provider: string): boolean {
   if (search.value) return searchExpandedGroups.value.get(provider) ?? true;
   return expandedGroups.value.get(provider) ?? provider === currentProvider.value;
@@ -123,6 +169,7 @@ watch(
   () => {
     expandedGroups.value.clear();
     searchExpandedGroups.value.clear();
+    expandedMoreGroups.value.clear();
   },
 );
 </script>
@@ -157,11 +204,13 @@ watch(
   cursor: pointer;
 }
 .model-group-toggle:hover,
+.more-models-toggle:hover,
 .model-choice-button:hover,
 .model-choice-button.selected {
   background: var(--el-fill-color-light);
 }
 .model-group-toggle:focus-visible,
+.more-models-toggle:focus-visible,
 .model-choice-button:focus-visible {
   outline: 2px solid var(--el-color-primary);
   outline-offset: -2px;
@@ -218,6 +267,30 @@ watch(
 .model-choice-state {
   font-size: 11px;
   color: var(--el-text-color-secondary);
+}
+.model-recommended {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+.more-models-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
 }
 .empty-models {
   font-size: 12px;

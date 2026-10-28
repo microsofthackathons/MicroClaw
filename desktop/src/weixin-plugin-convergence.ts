@@ -268,7 +268,6 @@ export function convergeWeixinPluginRuntime({
     "utf8",
   );
   validatePackageIdentity(bundledPluginRoot, manifest);
-  validateRuntimeTree(bundledPluginRoot, manifest, expectedManifestText);
   validateHostOpenClaw(hostPackageDir, manifest);
 
   if (fs.existsSync(installedRoot)) {
@@ -285,6 +284,7 @@ export function convergeWeixinPluginRuntime({
     }
   }
 
+  validateRuntimeTree(bundledPluginRoot, manifest, expectedManifestText);
   fs.mkdirSync(extensionsRoot, { recursive: true });
   const transactionId = randomUUID();
   const stagingRoot = path.join(extensionsRoot, `.openclaw-weixin-stage-${transactionId}`);

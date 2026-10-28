@@ -295,17 +295,55 @@
                   :disabled="!catalogReady || saving"
                   :loading="catalogLoading"
                   filterable
+                  :filter-method="filterCatalogModels"
                   :placeholder="t('modelSetup.modelPlaceholder')"
                   @update:model-value="selectedModelName = $event"
+                  @visible-change="resetCatalogPicker"
                 >
                   <el-option
-                    v-for="model in catalogModels"
+                    v-for="model in visibleCatalogModels"
                     :key="model"
                     :label="catalogModelLabel(model)"
                     :title="catalogModelLabel(model)"
                     :value="model"
                     :disabled="Boolean(catalogModelRestriction(model))"
-                  />
+                  >
+                    <span class="catalog-option-name">{{ catalogModelLabel(model) }}</span>
+                    <span
+                      v-if="isRecommendedProviderModel(providerKey, model)"
+                      class="catalog-recommended"
+                    >
+                      {{ t("modelManager.recommended") }}
+                    </span>
+                  </el-option>
+                  <template
+                    v-if="
+                      !visibleCatalogModels.length && catalogSections.more.length && !catalogQuery
+                    "
+                    #empty
+                  >
+                    <p class="catalog-empty-hint">{{ t("modelManager.noFeaturedModels") }}</p>
+                  </template>
+                  <template v-if="!catalogQuery && catalogSections.more.length" #footer>
+                    <button
+                      class="catalog-more-toggle"
+                      type="button"
+                      data-testid="more-provider-models"
+                      :aria-expanded="catalogMoreExpanded"
+                      @mousedown.prevent
+                      @click.stop="catalogMoreExpanded = !catalogMoreExpanded"
+                    >
+                      {{
+                        t(
+                          catalogMoreExpanded
+                            ? "modelManager.fewerModels"
+                            : "modelManager.moreModels",
+                          { count: catalogSections.more.length },
+                        )
+                      }}
+                      <span aria-hidden="true">{{ catalogMoreExpanded ? "−" : "+" }}</span>
+                    </button>
+                  </template>
                 </el-select>
                 <button
                   class="model-field-action model-refresh-action"
@@ -391,6 +429,11 @@
 <script setup lang="ts">
 import { useProviderModelCatalog } from "@/composables/use-provider-model-catalog";
 import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
+import {
+  getProviderCatalogOptions,
+  getProviderModelSections,
+  isRecommendedProviderModel,
+} from "@/utils/provider-model-options";
 import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import {
@@ -538,6 +581,25 @@ let submissionGeneration = 0;
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
 const selectedManagedProvider = computed(() => getManagedModelProvider(selectedFamilyId.value));
 const catalogModels = ref<string[]>([]);
+const catalogQuery = ref("");
+const catalogMoreExpanded = ref(false);
+const catalogSections = computed(() =>
+  getProviderModelSections(
+    providerKey.value,
+    catalogModels.value.map((id) => ({ id })),
+    selectedModelName.value,
+  ),
+);
+const visibleCatalogModels = computed(() => {
+  if (catalogQuery.value)
+    return catalogModels.value.filter((id) =>
+      catalogModelLabel(id).toLocaleLowerCase().includes(catalogQuery.value),
+    );
+  return [
+    ...catalogSections.value.primary,
+    ...(catalogMoreExpanded.value ? catalogSections.value.more : []),
+  ].map(({ id }) => id);
+});
 const catalogReady = ref(false);
 const catalogLoading = ref(false);
 const catalogError = ref("");
@@ -549,6 +611,13 @@ function catalogModelRestriction(model: string) {
 function catalogModelLabel(model: string): string {
   const restriction = catalogModelRestriction(model);
   return restriction ? `${model} — ${t(`modelSetup.incompatible.${restriction}`)}` : model;
+}
+function filterCatalogModels(query: string): void {
+  catalogQuery.value = query.trim().toLocaleLowerCase();
+}
+function resetCatalogPicker(): void {
+  catalogQuery.value = "";
+  catalogMoreExpanded.value = false;
 }
 let catalogGeneration = 0;
 let catalogTimer: ReturnType<typeof setTimeout> | undefined;
@@ -572,9 +641,9 @@ async function loadProviderModels() {
       catalogError.value = t(`modelSetup.catalogError.${result.error}`);
       return;
     }
-    catalogModels.value = result.models;
+    catalogModels.value = getProviderCatalogOptions(providerKey.value, result.models);
     catalogReady.value = true;
-    if (!result.models.includes(selectedModelName.value)) selectedModelName.value = "";
+    if (!catalogModels.value.includes(selectedModelName.value)) selectedModelName.value = "";
   } catch {
     if (generation === catalogGeneration) catalogError.value = t("modelSetup.catalogError.network");
   } finally {
@@ -707,6 +776,7 @@ watch(
     catalogLoading.value = false;
     catalogModels.value = [];
     catalogError.value = "";
+    resetCatalogPicker();
     if (props.modelValue && isKeyStep.value && selectedManagedProvider.value && apiKey.value.trim())
       catalogTimer = setTimeout(() => void loadProviderModels(), 600);
   },
@@ -715,11 +785,6 @@ watch(
 
 function getFamilyLabel(family: ModelFamilyPreset): string {
   return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
-}
-
-async function restartGatewayAfterModelSetup(): Promise<void> {
-  await window.openclaw.gateway.restart();
-  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
 function cancelPendingSubmission() {
@@ -823,11 +888,14 @@ async function saveGitHubCopilotModel(): Promise<void> {
   errorMsg.value = "";
   try {
     if (!(await releaseLocalBeforeSave(generation))) return;
-    await window.openclaw.model.prepareGitHubCopilot();
+    configMutationInProgress.value = true;
+    const preparation = await window.openclaw.model.prepareGitHubCopilot();
     if (generation !== submissionGeneration || !props.modelValue) return;
+    if (preparation.restartRequired) {
+      await window.openclaw.gateway.restart({ reason: "copilot-plugin-activation" });
+      if (generation !== submissionGeneration || !props.modelValue) return;
+    }
     if (props.manageOnly) {
-      configMutationInProgress.value = true;
-      await restartGatewayAfterModelSetup();
       configMutationInProgress.value = false;
       emit("update:modelValue", false);
       emit("configured");
@@ -840,8 +908,12 @@ async function saveGitHubCopilotModel(): Promise<void> {
       ensureAllowed: true,
     });
     configMutationInProgress.value = true;
-    await window.openclaw.config.write(nextConfig, existing);
-    await restartGatewayAfterModelSetup();
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "copilot-save",
+      providerKey: "github-copilot",
+    });
     if (generation !== submissionGeneration || !props.modelValue) return;
     configMutationInProgress.value = false;
     emit("update:modelValue", false);
@@ -999,8 +1071,12 @@ async function saveAndStart() {
                 : verifiedInput.modelName,
           })
         : mergeModelProviderConfig(existing || {}, verifiedInput);
-      await window.openclaw.config.write(nextConfig, existing);
-      await restartGatewayAfterModelSetup();
+      await window.openclaw.model.applyConfig({
+        config: nextConfig,
+        expectedConfig: existing,
+        action: "provider-save",
+        providerKey: verifiedInput.providerKey.trim(),
+      });
       if (generation !== submissionGeneration || !props.modelValue) return;
       if (selectedManagedProvider.value) {
         await window.openclaw.model.registerCatalogModel({
@@ -1347,6 +1423,51 @@ h2 {
   flex: 1 1 0;
   min-width: 0;
   width: auto;
+}
+
+.catalog-empty-hint {
+  margin: 0;
+  padding: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.catalog-option-name {
+  margin-right: 12px;
+}
+
+.catalog-recommended {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.catalog-more-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.catalog-more-toggle:hover {
+  color: var(--el-text-color-primary);
+}
+
+.catalog-more-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
 }
 
 .model-field-action {

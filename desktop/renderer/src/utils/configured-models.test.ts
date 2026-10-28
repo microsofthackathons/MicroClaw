@@ -1,5 +1,24 @@
-import { describe, expect, it } from "vitest";
-import { getModelRef, readConfiguredModels } from "./configured-models";
+import { afterEach, describe, expect, it } from "vitest";
+import { setLocale } from "@/i18n";
+import { getModelRef, providerName, readConfiguredModels } from "./configured-models";
+
+describe("providerName", () => {
+  afterEach(() => setLocale("en-US"));
+
+  it.each([
+    { locale: "zh-CN" as const, label: "本地模型" },
+    { locale: "en-US" as const, label: "Local model" },
+  ])("uses the localized local model label for $locale", ({ locale, label }) => {
+    setLocale(locale);
+    expect(providerName("llama-cpp")).toBe(label);
+  });
+
+  it("preserves cloud provider names and custom provider keys", () => {
+    expect(providerName("github-copilot")).toBe("GitHub Copilot");
+    expect(providerName("qwen")).toBe("千问");
+    expect(providerName("private")).toBe("private");
+  });
+});
 
 describe("readConfiguredModels", () => {
   it("shares exact configured model references and preserves editable custom metadata", () => {

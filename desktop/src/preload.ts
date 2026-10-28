@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { GatewayRestartOptions } from "./gateway-restart-reason";
+import type { ModelConfigUpdate } from "./model-config-application";
 // Sandboxed preloads cannot require local modules; keep runtime IPC adapters self-contained.
 import type {
   ChatAttachment,
@@ -18,7 +20,7 @@ contextBridge.exposeInMainWorld("openclaw", {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),
     getStatus: () => ipcRenderer.invoke("gateway:get-status"),
     isServiceReady: () => ipcRenderer.invoke("gateway:is-service-ready"),
-    restart: (options?: { hard?: boolean }) => ipcRenderer.invoke("gateway:restart", options),
+    restart: (options?: GatewayRestartOptions) => ipcRenderer.invoke("gateway:restart", options),
     warmUpAgent: () => ipcRenderer.invoke("gateway:warm-up-agent"),
     onStatus: (callback: (status: string) => void) => {
       const handler = (_event: any, status: string) => callback(status);
@@ -230,6 +232,12 @@ contextBridge.exposeInMainWorld("openclaw", {
             userId?: string;
           } | null;
           loginInProgress: boolean;
+          loginRequiresRestart?: boolean;
+          connected?: boolean;
+          connecting?: boolean;
+          runtimeKnown?: boolean;
+          ready?: boolean;
+          qrSession?: import("./weixin-connection").WeixinQrSnapshot;
           mutationLocked: boolean;
           mutationLockRevision: number;
         }>,
@@ -312,6 +320,7 @@ contextBridge.exposeInMainWorld("openclaw", {
       modelName: string;
       reasoningEffort?: string;
     }) => ipcRenderer.invoke("model:test-connection", params),
+    applyConfig: (input: ModelConfigUpdate) => ipcRenderer.invoke("model:apply-config", input),
     prepareGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:prepare"),
     startGitHubCopilotLogin: () => ipcRenderer.invoke("model:github-copilot:start-login"),
     cancelGitHubCopilotLogin: (sessionId?: string) =>

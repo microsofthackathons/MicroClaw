@@ -4,6 +4,74 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 describe("WeChat account mutation versus MXC activation", () => {
+  it("excludes logins and MXC activation throughout a plugin hot update", async () => {
+    const coordinator = new WeixinMutationCoordinator();
+    let finish!: () => void;
+    const change = coordinator.run(
+      () => {},
+      async () => {
+        coordinator.beginPluginChange(false);
+        try {
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+        } finally {
+          coordinator.endPluginChange();
+        }
+      },
+    );
+    await expect(
+      coordinator.run(
+        () => {},
+        async () => coordinator.beginQr(),
+      ),
+    ).rejects.toThrow("plugin update");
+    expect(() => coordinator.assertActivationAvailable(false)).toThrow();
+    finish();
+    await change;
+    expect(() => coordinator.assertActivationAvailable(false)).not.toThrow();
+    await expect(
+      coordinator.run(
+        () => {},
+        async () => {},
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("never uses plugin activation to discard an uncertain QR writer", () => {
+    const coordinator = new WeixinMutationCoordinator();
+    coordinator.beginQr();
+    coordinator.qrUnconfirmed();
+    expect(coordinator.loginRequiresRestart).toBe(true);
+    expect(() => coordinator.beginPluginChange(false)).toThrow("may still be committing");
+    coordinator.endPluginChange();
+    expect(coordinator.loginRequiresRestart).toBe(true);
+    coordinator.gatewayStopped();
+    expect(coordinator.loginRequiresRestart).toBe(false);
+  });
+
+  it("rejects plugin changes during a CLI login", () => {
+    const coordinator = new WeixinMutationCoordinator();
+    expect(() => coordinator.beginPluginChange(true)).toThrow("current WeChat login");
+  });
+
+  it("does not carry a late cancellation failure into a replacement Gateway", () => {
+    const coordinator = new WeixinMutationCoordinator();
+    coordinator.beginQr();
+    const epoch = coordinator.currentEpoch;
+    coordinator.gatewayStopped();
+    coordinator.qrUnconfirmed(epoch);
+    expect(coordinator.loginRequiresRestart).toBe(false);
+    expect(() => coordinator.assertActivationAvailable(false)).not.toThrow();
+  });
+
+  it("retains QR ownership when a plugin toggle is rejected", () => {
+    const coordinator = new WeixinMutationCoordinator();
+    coordinator.beginQr();
+    expect(() => coordinator.beginPluginChange(false)).toThrow("may still be committing");
+    expect(() => coordinator.requireQr()).not.toThrow();
+  });
+
   it("wires the actual main active/transition guard before every account mutation and activation", () => {
     const source = readFileSync(path.join(process.cwd(), "src", "main.ts"), "utf8");
     expect(source).toContain(

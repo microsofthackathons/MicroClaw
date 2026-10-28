@@ -76,7 +76,7 @@ export const PORT_WAIT_TIMEOUT_MS = 30_000;
 /** Max time to wait for a model provider connection test (ms). */
 export const MODEL_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
-/** Max wait for plugin channels before a compatibility restart (ms). */
+/** Time budget for the non-blocking startup channel diagnostic (ms). */
 export const POST_SPAWN_CHANNEL_READY_TIMEOUT_MS = 5_000;
 
 /** Timeout for the WeChat login flow (ms). */

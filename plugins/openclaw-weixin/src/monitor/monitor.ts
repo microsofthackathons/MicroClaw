@@ -129,13 +129,14 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         replayRequired = false;
       }
       if (!isMxcWeixinIngressReleased()) {
-        setStatus?.({ accountId, running: true, lastError: "Paused until MXC ingress release" });
+        setStatus?.({ accountId, running: true, connected: false, lastError: "Paused until MXC ingress release" });
         await waitForMxcWeixinIngressRelease(abortSignal);
         setStatus?.({ accountId, running: true, lastError: null });
       }
       aLog.debug(
         `getUpdates: get_updates_buf=${getUpdatesBuf.substring(0, 50)}..., timeoutMs=${nextTimeoutMs}`,
       );
+      let pollTimedOut = false;
       const resp = await getUpdates({
         baseUrl,
         token,
@@ -144,7 +145,9 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // Stop/hot-reload should cancel the in-flight long-poll immediately
         // instead of waiting for the server-side long-poll timeout.
         abortSignal,
+        onPollTimeout: () => { pollTimedOut = true; },
       });
+      if (abortSignal?.aborted) break;
       if (!isMxcWeixinIngressReleased()) {
         aLog.info("getUpdates response ignored because MXC ingress was relocked");
         continue;
@@ -161,6 +164,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         (resp.ret !== undefined && resp.ret !== 0) ||
         (resp.errcode !== undefined && resp.errcode !== 0);
       if (isApiError) {
+        setStatus?.({ accountId, connected: false, lastError: resp.errmsg || "WeChat API error" });
         const isStaleToken =
           resp.errcode === STALE_TOKEN_ERRCODE || resp.ret === STALE_TOKEN_ERRCODE;
 
@@ -197,7 +201,12 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         continue;
       }
       consecutiveFailures = 0;
-      setStatus?.({ accountId, lastEventAt: Date.now() });
+      setStatus?.({
+        accountId,
+        connected: !pollTimedOut,
+        lastError: pollTimedOut ? "WeChat updates request timed out" : null,
+        ...(!pollTimedOut ? { lastEventAt: Date.now() } : {}),
+      });
       const responseUpdatesBuf =
         resp.get_updates_buf != null && resp.get_updates_buf !== "" ? resp.get_updates_buf : null;
       if (responseUpdatesBuf) getUpdatesBuf = responseUpdatesBuf;
@@ -288,6 +297,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           });
       }
     } catch (err) {
+      setStatus?.({ accountId, connected: false });
       if (abortSignal?.aborted) {
         await dispatchTail;
         aLog.info(`Monitor stopped (aborted)`);
@@ -313,6 +323,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       }
     }
   }
+  setStatus?.({ accountId, connected: false, running: false });
   await dispatchTail;
   aLog.info(`Monitor ended`);
 }

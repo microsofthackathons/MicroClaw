@@ -209,6 +209,15 @@ export default {
   "plugins.title": "Plugin Manager",
   "plugins.desc": "Manage installed OpenClaw plugins",
   "plugins.weixinName": "WeChat",
+  "plugins.connectWeixin": "Connect",
+  "plugins.qrExpired": "QR code expired",
+  "plugins.refreshQr": "Click to refresh",
+  "plugins.checkingWeixinConnection": "Checking connection…",
+  "plugins.connectingWeixin": "Connecting…",
+  "plugins.weixinPreparing": "Waiting for the WeChat channel. Other app features remain available.",
+  "plugins.weixinPreparingQr": "Getting QR code…",
+  "plugins.closeQr": "Close QR code",
+  "plugins.disconnectFailed": "Could not disconnect. Please try again.",
   "plugins.weixinDesc":
     "Connect to WeChat messaging channel, enabling AI assistant to process WeChat messages",
   "plugins.channelLogin": "Channel Login",
@@ -217,7 +226,7 @@ export default {
   "plugins.loginWeixin": "Log in to WeChat",
   "plugins.replaceWeixin": "Replace WeChat account",
   "plugins.replaceWeixinConfirm":
-    "A successful login will replace the current WeChat account and remove its local sync and authorization state. Canceling or a failed login keeps the current account.",
+    "Successful authorization replaces the current WeChat account and its local sync and authorization state. Closing the QR dialog only hides it; the login continues in the background.",
   "plugins.loginStatus": "Status",
   "plugins.loggedIn": "Logged in",
   "plugins.notLoggedIn": "Not logged in",
@@ -234,9 +243,17 @@ export default {
     "Use only for troubleshooting. Successful WeChat login activates without replacing the Gateway.",
   "plugins.restartGateway": "Restart Gateway",
   "plugins.gatewayRestarted": "✓ Gateway restarted",
-  "plugins.weixinEnabled":
-    "WeChat plugin enabled. Please restart the gateway for changes to take effect.",
+  "plugins.weixinEnabled": "WeChat plugin enabled and ready. No Gateway restart needed.",
   "plugins.weixinDisabled": "WeChat plugin disabled",
+  "plugins.activationFailed": "WeChat plugin hot reload is incomplete: {error}",
+  "plugins.retryActivation": "Retry hot reload",
+  "plugins.loginRecoveryRequired":
+    "The previous WeChat login outcome is unconfirmed. New logins are paused to avoid account conflicts. Restart the Gateway to recover.",
+  "plugins.pluginRestartRequired":
+    "The Gateway reported that this plugin change requires a restart instead of a hot reload.",
+  "plugins.recoverLogin": "Restart Gateway to recover",
+  "plugins.recoverLoginConfirm":
+    "Use only when safe hot recovery is unavailable. Restarting interrupts current Gateway tasks. Continue?",
   "plugins.weixinPausedByMxc":
     "WeChat is requested but paused until the current MXC generation is active.",
   "plugins.operationFailed": "Operation failed: {error}",
@@ -790,6 +807,10 @@ export default {
   "modelManager.search": "Search models and providers",
   "modelManager.noMatches": "No matching models.",
   "modelManager.clearSearch": "Clear search",
+  "modelManager.moreModels": "More models · {count}",
+  "modelManager.fewerModels": "Fewer models",
+  "modelManager.recommended": "Recommended",
+  "modelManager.noFeaturedModels": "No featured models available for this account.",
   "modelManager.refresh": "Refresh",
   "modelManager.offline": "Connect to the Gateway to change the conversation model.",
   "modelManager.downloaded": "Downloaded",

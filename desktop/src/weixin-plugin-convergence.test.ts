@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   convergeWeixinPluginRuntime,
@@ -92,6 +92,7 @@ function installedRoot(stateDir: string): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -158,6 +159,65 @@ describe("Weixin plugin runtime convergence", () => {
         hostPackageDir: host,
       }).changed,
     ).toBe(false);
+  });
+
+  it("does not hash the bundled runtime again when the installed runtime is valid", () => {
+    const root = createRoot();
+    const options = {
+      bundledPluginRoot: createBundle(root),
+      stateDir: path.join(root, "state"),
+      hostPackageDir: createHost(root),
+    };
+    convergeWeixinPluginRuntime(options);
+    const readFile = vi.spyOn(fs, "readFileSync");
+
+    expect(convergeWeixinPluginRuntime(options).changed).toBe(false);
+
+    const bundledEntry = path.join(options.bundledPluginRoot, "dist", "index.js");
+    const installedEntry = path.join(installedRoot(options.stateDir), "dist", "index.js");
+    expect(readFile.mock.calls.some(([filePath]) => String(filePath) === bundledEntry)).toBe(false);
+    expect(readFile.mock.calls.some(([filePath]) => String(filePath) === installedEntry)).toBe(
+      true,
+    );
+  });
+
+  it("still hashes installed files and repairs same-size content changes on every convergence", () => {
+    const root = createRoot();
+    const options = {
+      bundledPluginRoot: createBundle(root),
+      stateDir: path.join(root, "state"),
+      hostPackageDir: createHost(root),
+    };
+    convergeWeixinPluginRuntime(options);
+    const entry = path.join(installedRoot(options.stateDir), "dist", "index.js");
+    const original = fs.readFileSync(entry, "utf8");
+    const modified = original.replace("ready = true", "ready = null");
+    expect(modified).not.toBe(original);
+    expect(Buffer.byteLength(modified)).toBe(Buffer.byteLength(original));
+    fs.writeFileSync(entry, modified, "utf8");
+
+    expect(convergeWeixinPluginRuntime(options).changed).toBe(true);
+    expect(fs.readFileSync(entry, "utf8")).toBe(original);
+  });
+
+  it("validates the bundled tree before replacing an invalid installation", () => {
+    const root = createRoot();
+    const options = {
+      bundledPluginRoot: createBundle(root),
+      stateDir: path.join(root, "state"),
+      hostPackageDir: createHost(root),
+    };
+    convergeWeixinPluginRuntime(options);
+    const entry = path.join(installedRoot(options.stateDir), "dist", "index.js");
+    fs.writeFileSync(entry, "invalid-installed-runtime", "utf8");
+    fs.writeFileSync(
+      path.join(options.bundledPluginRoot, "dist", "index.js"),
+      "invalid-bundled-runtime",
+      "utf8",
+    );
+
+    expect(() => convergeWeixinPluginRuntime(options)).toThrow(/provenance validation/);
+    expect(fs.readFileSync(entry, "utf8")).toBe("invalid-installed-runtime");
   });
 
   it("fails closed before mutation for an incompatible host version or missing SDK export", () => {

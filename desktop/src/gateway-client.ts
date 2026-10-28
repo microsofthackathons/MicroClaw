@@ -143,6 +143,7 @@ export type ListedGatewayChannel = {
 };
 
 type GatewayChannelState = {
+  accountId?: string;
   enabled?: boolean;
   configured?: boolean;
   connected?: boolean;
@@ -600,12 +601,20 @@ export class GatewayClient {
     message: string;
     accountId?: string;
     activationReloadRequested?: boolean;
+    pending?: boolean;
+    expired?: boolean;
+    cancelled?: boolean;
+    qrDataUrl?: string;
   }> {
     return this.request(
       "web.login.wait",
       { ...params, channel: "openclaw-weixin" },
       (params.timeoutMs ?? WS_REQUEST_TIMEOUT_MS) + WS_REQUEST_TIMEOUT_MS,
     );
+  }
+
+  weixinLoginQrCancel(sessionKey: string): Promise<{ cancelled: boolean }> {
+    return this.request("weixin.login.cancel", { sessionKey });
   }
 
   // ── Internal ──

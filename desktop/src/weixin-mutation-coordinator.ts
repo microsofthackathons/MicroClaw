@@ -5,11 +5,13 @@ export class WeixinMutationCoordinator {
   private qrClearWhenIdle = false;
   private gatewayEpoch = 0;
   private cancelling = false;
+  private pluginChanging = false;
   private readonly idleWaiters = new Set<() => void>();
 
   async run<T>(assertMutable: () => void, operation: () => Promise<T>): Promise<T> {
     assertMutable();
     if (this.cancelling) throw new Error("WeChat login cancellation is still in progress");
+    if (this.pluginChanging) throw new Error("WeChat plugin update is still in progress");
     this.inFlight++;
     try {
       return await operation();
@@ -53,6 +55,24 @@ export class WeixinMutationCoordinator {
     if (!this.qrPending || this.qrClearWhenIdle)
       throw new Error("No current WeChat QR login is pending");
     return this.gatewayEpoch;
+  }
+
+  get loginRequiresRestart(): boolean {
+    return this.qrOutcomeUnknown;
+  }
+
+  get currentEpoch(): number {
+    return this.gatewayEpoch;
+  }
+
+  beginPluginChange(cliLoginRunning: boolean): void {
+    this.prepareCliLogin();
+    if (cliLoginRunning) throw new Error("Finish or cancel the current WeChat login first");
+    this.pluginChanging = true;
+  }
+
+  endPluginChange(): void {
+    this.pluginChanging = false;
   }
 
   qrConnected(epoch = this.gatewayEpoch): void {

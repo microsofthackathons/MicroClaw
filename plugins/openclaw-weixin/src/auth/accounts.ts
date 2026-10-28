@@ -428,6 +428,49 @@ export function clearWeixinAccount(accountId: string, options: { strict?: boolea
   }
 }
 
+export function disconnectWeixinAccount(
+  accountId: string,
+  onClearContextTokens?: (accountId: string) => void,
+): { cleared: boolean; loggedOut: boolean } {
+  const normalizedId = normalizeAccountId(accountId);
+  if (!/^[A-Za-z0-9._@-]{1,160}$/.test(normalizedId) || normalizedId.includes("..")) {
+    throw new Error("A safe WeChat account ID is required");
+  }
+  const indexedIds = readStrictAccountIndex();
+  const removedIds = [...new Set([normalizedId, ...indexedIds.filter(
+    (id) => normalizeAccountId(id) === normalizedId,
+  )])];
+  const indexPath = resolveAccountIndexPath();
+  const snapshots = [
+    snapshotFile(indexPath),
+    ...removedIds.flatMap((id) => accountArtifactPaths(id).map(snapshotFile)),
+  ];
+  try {
+    for (const removedId of removedIds) clearWeixinAccount(removedId, { strict: true });
+    atomicWriteFile(indexPath, JSON.stringify(
+      indexedIds.filter((id) => normalizeAccountId(id) !== normalizedId), null, 2,
+    ));
+  } catch (error) {
+    restoreSnapshots(snapshots);
+    throw error;
+  }
+  for (const removedId of removedIds) {
+    try {
+      onClearContextTokens?.(removedId);
+    } catch (error) {
+      logger.warn(`disconnectWeixinAccount: context cleanup failed: ${String(error)}`);
+    }
+  }
+  for (const listener of [...accountChangeListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      logger.warn(`disconnectWeixinAccount: account-change listener failed: ${String(error)}`);
+    }
+  }
+  return { cleared: true, loggedOut: true };
+}
+
 /**
  * Resolve the openclaw.json config file path.
  * Checks OPENCLAW_CONFIG env var, then state dir.

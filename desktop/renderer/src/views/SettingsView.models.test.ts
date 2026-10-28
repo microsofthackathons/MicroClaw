@@ -80,7 +80,10 @@ describe("SettingsView model integration", () => {
     write = vi.fn(async (next) => {
       config = structuredClone(next);
     });
-    api.config.write = write;
+    api.config.write = vi.fn();
+    api.model.applyConfig = vi.fn((input: Parameters<OpenClawAPI["model"]["applyConfig"]>[0]) =>
+      write(input.config, input.expectedConfig),
+    );
     api.gateway.restart = vi.fn().mockResolvedValue(undefined);
     api.model.selectDefault = vi.fn(async ({ modelRef }) => {
       config = selectPrimaryModelConfig(config, modelRef);
@@ -689,7 +692,8 @@ describe("SettingsView model integration", () => {
       expect(config.agents.defaults.models).toBeUndefined();
       expect(wrapper.get(`[data-provider="${provider}"]`).text()).toContain("Not configured");
       expect(wrapper.findComponent({ name: "ModelSetupDialog" }).exists()).toBe(false);
-      expect(window.openclaw.gateway.restart).toHaveBeenCalledOnce();
+      expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+      expect(window.openclaw.config.write).not.toHaveBeenCalled();
       expect(window.openclaw.model.selectDefault).not.toHaveBeenCalled();
       expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
     },

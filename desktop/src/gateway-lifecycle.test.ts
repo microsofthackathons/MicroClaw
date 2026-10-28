@@ -12,6 +12,41 @@ import {
 } from "./gateway-lifecycle";
 
 describe("Gateway startup convergence", () => {
+  it("uses the native host lifeline for owned Gateway processes", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    expect(main).toContain('OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin"');
+    expect(main).toContain('stdio: ["pipe", "pipe", "pipe", "ipc"]');
+    const restart = main.slice(
+      main.indexOf("async function restartManagedGateway("),
+      main.indexOf("async function restartManagedGatewayAndRequireReady("),
+    );
+    expect(restart).toContain("() => stopGatewayProcessGracefully(reason)");
+    const securityStop = main.slice(
+      main.indexOf("async function stopGatewayForSecurityTransition("),
+      main.indexOf("async function failClosedWindowsNodeMxc("),
+    );
+    expect(securityStop).toContain("terminateGatewayProcessTree(managedPid)");
+    expect(securityStop).not.toContain("stopGatewayProcessGracefully");
+  });
+
+  it("does not restart or gate chat for a pending optional channel", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    const channelCheck = main.slice(
+      main.indexOf("async function completePostSpawnChannelStartup("),
+      main.indexOf("function connectGatewayWs("),
+    );
+    expect(channelCheck).not.toContain("restartManagedGateway");
+    expect(main).not.toContain("postSpawnRestartDone");
+    expect(main).not.toContain("postSpawnRestartScheduled");
+    const connection = main.slice(
+      main.indexOf("function connectGatewayWs("),
+      main.indexOf("onDisconnected: (reason) =>", main.indexOf("function connectGatewayWs(")),
+    );
+    expect(connection.indexOf("notifyRendererApplicationReady()")).toBeLessThan(
+      connection.indexOf("void completePostSpawnChannelStartup("),
+    );
+  });
+
   it("keeps runtime self-updating out of the Desktop-managed Gateway lifecycle", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     expect(main).toContain('OPENCLAW_NO_AUTO_UPDATE: "1"');
