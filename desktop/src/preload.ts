@@ -411,12 +411,8 @@ contextBridge.exposeInMainWorld("openclaw", {
         removedChildren?: string[];
         dirs: { rw: string[]; ro: string[] };
       }>,
-    setEnabled: (params: {
-      enabled?: boolean;
-      requestedMode?: "off" | "full" | "limited-dacl";
-      acknowledgeLimitedFilesystem?: boolean;
-      nodeId?: string;
-    }) => ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
+    setEnabled: (params: { enabled: boolean }) =>
+      ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
     validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
       ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),
     applyFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>

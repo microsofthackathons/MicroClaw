@@ -1,12 +1,11 @@
 import { createPinia } from "pinia";
 import { isProxy } from "vue";
-import { flushPromises, shallowMount } from "@vue/test-utils";
+import { config as testUtilsConfig, flushPromises, shallowMount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox, ElSwitch } from "element-plus";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
-import MxcCapabilityConsentDialog from "@/components/MxcCapabilityConsentDialog.vue";
 import SettingsView from "./SettingsView.vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 
@@ -25,6 +24,11 @@ describe("SettingsView", () => {
   const setFolderPolicy = vi.fn();
   const validateFolderPolicy = vi.fn();
   const applyFolderPolicy = vi.fn();
+
+  function toggleSandbox(wrapper: ReturnType<typeof shallowMount>) {
+    const toggle = wrapper.findComponent(ElSwitch);
+    return (toggle.props("beforeChange") as () => Promise<boolean>)();
+  }
 
   const localNode = {
     id: "node-local",
@@ -82,6 +86,7 @@ describe("SettingsView", () => {
   });
 
   afterEach(() => {
+    delete testUtilsConfig.global.components.ElSwitch;
     vi.restoreAllMocks();
   });
 
@@ -188,18 +193,17 @@ describe("SettingsView", () => {
   });
 
   beforeEach(() => {
+    testUtilsConfig.global.components.ElSwitch = ElSwitch;
     routeState.section = "skills";
     setLocale("en-US");
     getWindowsNodeMxcStatus.mockReset().mockResolvedValue(status("diagnostic-unpaired-local-node"));
     setWindowsNodeMxcEnabled
       .mockReset()
-      .mockImplementation(
-        async ({ requestedMode }: { requestedMode: WindowsNodeMxcStatus["requestedMode"] }) => ({
-          ...status("node-local"),
-          requestedMode,
-          desiredEnabled: requestedMode !== "off",
-        }),
-      );
+      .mockImplementation(async ({ enabled }: { enabled: boolean }) => ({
+        ...status("node-local"),
+        requestedMode: enabled ? "full" : "off",
+        desiredEnabled: enabled,
+      }));
     stageFolder.mockReset().mockResolvedValue({
       ok: false,
       canceled: true,
@@ -296,7 +300,7 @@ describe("SettingsView", () => {
     expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
   });
 
-  it("keeps all modes visible and loads Security independently of general settings", async () => {
+  it("loads the sandbox switch independently of general settings without optimistic state", async () => {
     routeState.section = "security";
     vi.mocked(window.openclaw.settings.get).mockReturnValueOnce(new Promise(() => {}));
     let resolveStatus!: (value: WindowsNodeMxcStatus) => void;
@@ -312,13 +316,9 @@ describe("SettingsView", () => {
 
     expect(getWindowsNodeMxcStatus).toHaveBeenCalledTimes(1);
     expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(true);
-    for (const mode of ["off", "limited", "full"]) {
-      expect(wrapper.find(`[data-testid="mxc-mode-${mode}"]`).exists()).toBe(true);
-      expect(wrapper.find(`[data-testid="mxc-select-${mode}"]`).attributes("disabled")).toBe(
-        "true",
-      );
-    }
-    expect(wrapper.find(".mxc-mode-card.selected").exists()).toBe(false);
+    const toggle = wrapper.findComponent(ElSwitch);
+    expect(toggle.props("disabled")).toBe(true);
+    expect(toggle.props("modelValue")).toBe(false);
     expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(false);
 
     resolveStatus({
@@ -329,9 +329,8 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
-    expect(wrapper.find('[data-testid="mxc-select-full"]').attributes("disabled")).toBe("false");
-    expect(wrapper.find('[data-testid="mxc-select-limited"]').attributes("disabled")).toBe("false");
+    expect(toggle.props("modelValue")).toBe(false);
+    expect(toggle.props("disabled")).toBe(false);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.unmount();
   });
@@ -355,8 +354,7 @@ describe("SettingsView", () => {
       "Native status inspection failed",
     );
     expect(errorMessage).toHaveBeenCalledWith("Native status inspection failed");
-    expect(wrapper.findAll(".mxc-mode-card")).toHaveLength(3);
-    expect(wrapper.find('[data-testid="mxc-select-full"]').attributes("disabled")).toBe("true");
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
 
     await wrapper.find('[data-testid="mxc-status-retry"]').trigger("click");
@@ -364,7 +362,7 @@ describe("SettingsView", () => {
 
     expect(getWindowsNodeMxcStatus).toHaveBeenCalledTimes(2);
     expect(wrapper.find('[data-testid="mxc-status-error"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(false);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.unmount();
   });
@@ -394,7 +392,7 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="weixin-remote-approval"]').exists()).toBe(false);
   });
 
-  it("keeps Full protection status and controls without internal diagnostics", async () => {
+  it("keeps Full protection controls without redundant active status or internal diagnostics", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce({
       ...status("node-local"),
@@ -418,9 +416,8 @@ describe("SettingsView", () => {
 
     expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toBe(
-      "Full containment — Active",
-    );
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(true);
     expect(wrapper.find('[data-testid="mxc-add-rw"]').exists()).toBe(true);
     expect(wrapper.find(".mxc-card").text()).toContain("Remembered exact commands");
     expect(wrapper.find(".mxc-card").text()).not.toContain("Gateway generation");
@@ -509,7 +506,7 @@ describe("SettingsView", () => {
       expect(section.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
       expect(section.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
       expect(section.find(".section-footer").exists()).toBe(false);
-      expect(section.findAll(".mxc-mode-card")).toHaveLength(3);
+      expect(section.findAll('[data-testid="mxc-sandbox-toggle"]')).toHaveLength(1);
       for (const message of [compatibility, degraded, ...blockers, ...warnings, ...remediation]) {
         expect(section.text()).not.toContain(message);
       }
@@ -569,53 +566,69 @@ describe("SettingsView", () => {
     expect(text).not.toContain("Activate verified route");
   });
 
-  it("shows compact Limited protection and Canvas status without raw attestation", async () => {
-    routeState.section = "security";
-    getWindowsNodeMxcStatus.mockResolvedValueOnce({
-      ...status("node-local"),
-      requestedMode: "limited-dacl",
-      effectiveStrength: "limited-dacl",
-      effectiveTier: "appcontainer-dacl",
-      effectiveEnabled: true,
-      canvas: {
-        state: "active",
-        commandCount: 8,
-        nativeA2uiOnly: true,
-        localFilesAllowed: false,
-      },
-      ambientAccess: ambientAccess(),
-      lifecycleState: {
-        phase: "active",
-        detail: null,
-        updatedAt: new Date(0).toISOString(),
-      },
-    });
-    const wrapper = shallowMount(SettingsView, {
-      global: { plugins: [createPinia()] },
-    });
+  it.each(["en-US", "zh-CN"] as const)(
+    "omits normal Limited protection, Canvas, ambient-success and approval information in %s",
+    async (locale) => {
+      routeState.section = "security";
+      setLocale(locale);
+      getWindowsNodeMxcStatus.mockResolvedValueOnce({
+        ...status("node-local"),
+        requestedMode: "limited-dacl",
+        effectiveStrength: "limited-dacl",
+        effectiveTier: "appcontainer-dacl",
+        effectiveEnabled: true,
+        canvas: {
+          state: "active",
+          commandCount: 8,
+          nativeA2uiOnly: true,
+          localFilesAllowed: false,
+        },
+        ambientAccess: ambientAccess(),
+        lifecycleState: {
+          phase: "active",
+          detail: null,
+          updatedAt: new Date(0).toISOString(),
+        },
+      });
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
 
-    await flushPromises();
+      await flushPromises();
 
-    expect(wrapper.find('[data-testid="mxc-mode-full"]').text()).toContain("Full containment");
-    expect(wrapper.find('[data-testid="mxc-mode-limited"]').text()).toContain(
-      "Limited containment (DACL)",
-    );
-    expect(wrapper.find('[data-testid="mxc-mode-off"]').text()).toContain(
-      "without an execution sandbox",
-    );
-    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toBe(
-      "Limited containment (DACL) — Active",
-    );
-    expect(wrapper.find('[data-testid="mxc-canvas-status"]').text()).toContain(
-      "Canvas Phase 1 — Active",
-    );
-    expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
-    expect(wrapper.find(".mxc-card").text()).not.toContain(
-      "Requested modeLimited containment (DACL)",
-    );
+      expect(wrapper.find('[data-testid="mxc-sandbox-details"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-canvas-status"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-limited-approvals"]').exists()).toBe(false);
+      expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(true);
+      expect(wrapper.find(".mxc-card").text()).not.toContain(
+        locale === "en-US" ? "Per-command approval only" : "仅逐命令批准",
+      );
+      expect(wrapper.find(".mxc-card").text()).not.toContain(
+        locale === "en-US"
+          ? "Every command requires a visible per-command approval"
+          : "每条命令都需要可见的逐命令批准",
+      );
+      expect(wrapper.find(".mxc-card").text()).not.toContain(
+        locale === "en-US"
+          ? "No inherited filesystem access detected"
+          : "未检测到继承的文件系统访问",
+      );
+      expect(wrapper.find(".mxc-card").text()).not.toContain(
+        locale === "en-US" ? "Canvas Phase 1 — Active" : "Canvas 第一阶段 — 已激活",
+      );
+      expect(wrapper.find('[data-testid="mxc-technical-details"]').exists()).toBe(false);
+      expect(wrapper.find(".mxc-card").text()).not.toContain(
+        "Requested modeLimited containment (DACL)",
+      );
 
-    expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
-  });
+      expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
+      expect(window.openclaw.windowsNodeMxc.respondApproval).not.toHaveBeenCalled();
+      expect(window.openclaw.windowsNodeMxc.revokeAllDurableApprovals).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
 
   it("shows Canvas as paused while requested MXC remains locked", async () => {
     routeState.section = "security";
@@ -630,7 +643,7 @@ describe("SettingsView", () => {
     );
   });
 
-  it("shows Full active status and a concise confirmed-Off disclosure", async () => {
+  it("omits Full active status and keeps a concise confirmed-Off disclosure", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus
       .mockResolvedValueOnce({
@@ -649,9 +662,8 @@ describe("SettingsView", () => {
       global: { plugins: [createPinia()] },
     });
     await flushPromises();
-    expect(full.find('[data-testid="mxc-status-summary"]').text()).toBe(
-      "Full containment — Active",
-    );
+    expect(full.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+    expect(full.findComponent(ElSwitch).props("modelValue")).toBe(true);
 
     full.unmount();
     const off = shallowMount(SettingsView, {
@@ -679,12 +691,12 @@ describe("SettingsView", () => {
     gateway.markReady();
     chat.wsConnected = true;
 
-    await wrapper.find('[data-testid="mxc-select-off"]').trigger("click");
+    await toggleSandbox(wrapper);
     await flushPromises();
 
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "off" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: false });
   });
 
   it("keeps the standard route ready and settles when main-process validation rejects enablement", async () => {
@@ -708,9 +720,7 @@ describe("SettingsView", () => {
     gateway.markReady();
     chat.wsConnected = true;
 
-    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
-    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await toggleSandbox(wrapper);
     await flushPromises();
 
     expect(gateway.ready).toBe(true);
@@ -718,16 +728,16 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
     expect(errorMessage).toHaveBeenCalledWith("exact backend unavailable");
 
-    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(true);
+    await toggleSandbox(wrapper);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(2);
   });
 
-  it("requires explicit acknowledgement before enabling Limited containment", async () => {
+  it("leaves tier selection and Limited acknowledgement to the main-process confirmation", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
-      requestedMode: "full",
-      desiredEnabled: true,
+      requestedMode: "off",
+      desiredEnabled: false,
     });
     const wrapper = shallowMount(SettingsView, {
       global: {
@@ -742,27 +752,17 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    await wrapper.find('[data-testid="mxc-select-limited"]').trigger("click");
-    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("targetMode")).toBe(
-      "limited-dacl",
-    );
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
-    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
-    await wrapper.vm.$nextTick();
-
-    const confirm = wrapper.find('[data-testid="mxc-confirm-limited"]');
-    expect(confirm.attributes("disabled")).toBe("true");
-    await wrapper.find('[data-testid="mxc-limited-ack-checkbox"]').setValue(true);
-    await confirm.trigger("click");
+    await toggleSandbox(wrapper);
     await flushPromises();
 
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
-      requestedMode: "limited-dacl",
-      acknowledgeLimitedFilesystem: true,
+      enabled: true,
     });
+    expect(wrapper.find('[data-testid="mxc-confirm-limited"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-capability-consent"]').exists()).toBe(false);
   });
 
-  it("cancels capability disclosure without changing mode, UI selection, or lifecycle state", async () => {
+  it("keeps the switch and route unchanged when the native confirmation is cancelled", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
@@ -779,24 +779,19 @@ describe("SettingsView", () => {
     gateway.markReady();
     chat.wsConnected = true;
 
-    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
-    expect(consent.props("modelValue")).toBe(true);
-    expect(consent.props("targetMode")).toBe("full");
-    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    setWindowsNodeMxcEnabled.mockResolvedValueOnce(offStatus());
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    expect(await toggleSandbox(wrapper)).toBe(false);
+    await flushPromises();
 
-    consent.vm.$emit("cancel");
-    await wrapper.vm.$nextTick();
-
-    expect(consent.props("modelValue")).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-mode-off"]').classes()).toContain("selected");
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(false);
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
-    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: true });
+    expect(errorMessage).not.toHaveBeenCalled();
   });
 
-  it("sends only a clone-safe mode request and leaves WeChat consent to main", async () => {
+  it("sends only a clone-safe boolean and leaves tier/WeChat authority to main", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
@@ -805,7 +800,7 @@ describe("SettingsView", () => {
     });
     setWindowsNodeMxcEnabled.mockImplementation(async (params) => {
       expect(isProxy(params)).toBe(false);
-      expect(structuredClone(params)).toEqual({ requestedMode: "full" });
+      expect(structuredClone(params)).toEqual({ enabled: true });
       return status("node-local");
     });
     const wrapper = shallowMount(SettingsView, {
@@ -813,16 +808,15 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
+    await toggleSandbox(wrapper);
     await flushPromises();
 
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ requestedMode: "full" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: true });
     expect(wrapper.text()).not.toContain("Remote command approval");
     wrapper.unmount();
   });
 
-  it("sends only mode and explicit Limited acknowledgement, never a WeChat owner", async () => {
+  it("displays the actual Limited result returned by main without requesting a tier", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
@@ -842,30 +836,35 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    await wrapper.find('[data-testid="mxc-select-limited"]').trigger("click");
-    wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
-    await wrapper.vm.$nextTick();
-    await wrapper.find('[data-testid="mxc-limited-ack-checkbox"]').setValue(true);
-    await wrapper.find('[data-testid="mxc-confirm-limited"]').trigger("click");
+    setWindowsNodeMxcEnabled.mockResolvedValueOnce({
+      ...status("node-local"),
+      requestedMode: "limited-dacl",
+      desiredEnabled: true,
+      effectiveEnabled: true,
+      effectiveStrength: "limited-dacl",
+      lifecycleState: { phase: "active", detail: null, updatedAt: new Date(0).toISOString() },
+    });
+    await toggleSandbox(wrapper);
     await flushPromises();
 
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
-      requestedMode: "limited-dacl",
-      acknowledgeLimitedFilesystem: true,
+      enabled: true,
     });
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(true);
     wrapper.unmount();
   });
 
-  it("deduplicates disclosure requests and double-submit before applying Full once", async () => {
+  it("deduplicates toggle requests and stays busy until main returns its actual state", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
       requestedMode: "off",
       desiredEnabled: false,
     });
-    let releaseSetEnabled!: () => void;
+    let releaseSetEnabled!: (value: WindowsNodeMxcStatus) => void;
     setWindowsNodeMxcEnabled.mockReturnValueOnce(
-      new Promise<void>((resolve) => {
+      new Promise<WindowsNodeMxcStatus>((resolve) => {
         releaseSetEnabled = resolve;
       }),
     );
@@ -874,26 +873,70 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    const full = wrapper.find('[data-testid="mxc-select-full"]');
-    await full.trigger("click");
-    await full.trigger("click");
-    const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
-    expect(consent.props("targetMode")).toBe("full");
-
-    consent.vm.$emit("accept");
-    consent.vm.$emit("accept");
-    await Promise.resolve();
+    const pending = toggleSandbox(wrapper);
+    await wrapper.vm.$nextTick();
+    const toggle = wrapper.findComponent(ElSwitch);
+    expect(toggle.props("modelValue")).toBe(false);
+    expect(toggle.props("loading")).toBe(true);
+    expect(toggle.props("disabled")).toBe(true);
+    await toggleSandbox(wrapper);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
 
-    releaseSetEnabled();
+    releaseSetEnabled(status("node-local"));
+    await pending;
     await flushPromises();
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({
-      requestedMode: "full",
+      enabled: true,
     });
   });
 
-  it("prompts and applies an explicit Limited to Full switch", async () => {
+  it("keeps the real switch Off during native confirmation and cancellation, then reflects the returned On state", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue(offStatus());
+    let decide!: (value: WindowsNodeMxcStatus) => void;
+    setWindowsNodeMxcEnabled.mockReturnValueOnce(
+      new Promise<WindowsNodeMxcStatus>((resolve) => {
+        decide = resolve;
+      }),
+    );
+    const wrapper = shallowMount(SettingsView, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          ElSwitch: false,
+          ElRadio: true,
+          ElRadioGroup: true,
+          ElButton: true,
+          ElOption: true,
+          ElSelect: true,
+          ElInput: true,
+        },
+      },
+    });
+    await flushPromises();
+    const control = wrapper.get(".el-switch");
+    const input = wrapper.get<HTMLInputElement>(".el-switch__input");
+    await control.trigger("click");
+    await flushPromises();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: true });
+    expect(input.element.checked).toBe(false);
+    expect(control.classes()).toContain("is-disabled");
+    expect(wrapper.findComponent(ElSwitch).props("loading")).toBe(true);
+    decide(offStatus());
+    await flushPromises();
+    expect(input.element.checked).toBe(false);
+    expect(wrapper.findComponent(ElSwitch).props("loading")).toBe(false);
+
+    setWindowsNodeMxcEnabled.mockResolvedValueOnce(status("node-local"));
+    await control.trigger("click");
+    await flushPromises();
+    expect(input.element.checked).toBe(true);
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
+    wrapper.unmount();
+  });
+
+  it("turns Limited off using the same single switch instead of a tier selector", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
@@ -906,13 +949,11 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    await wrapper.find('[data-testid="mxc-select-full"]').trigger("click");
-    const consent = wrapper.findComponent(MxcCapabilityConsentDialog);
-    expect(consent.props("targetMode")).toBe("full");
-    consent.vm.$emit("accept");
+    await toggleSandbox(wrapper);
     await flushPromises();
 
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ requestedMode: "full" });
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: false });
+    expect(wrapper.find('[data-testid="mxc-select-full"]').exists()).toBe(false);
   });
 
   it("does not prompt during status refresh or internal recovery updates", async () => {
@@ -935,12 +976,12 @@ describe("SettingsView", () => {
     window.dispatchEvent(new Event("focus"));
     await flushPromises();
 
-    expect(wrapper.findComponent(MxcCapabilityConsentDialog).props("modelValue")).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-capability-consent"]').exists()).toBe(false);
     expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Full containment");
   });
 
-  it("disables unavailable Full containment and shows exact availability guidance", async () => {
+  it("keeps On available when Full is unavailable but Limited is positively supported", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce({
       ...status("node-local"),
@@ -958,39 +999,122 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    const full = wrapper.find('[data-testid="mxc-mode-full"]');
-    expect(full.text()).toContain("Base Container isolation is unavailable.");
-    expect(full.text()).toContain("BFS support is not compiled in.");
-    expect(full.text()).toContain("Install a full MXC runtime build.");
-    expect(full.find('[data-testid="mxc-select-full"]').attributes("disabled")).toBe("true");
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-official-link"]').attributes("href")).toBe(
+      "https://github.com/microsoft/mxc",
+    );
+    await toggleSandbox(wrapper);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: true });
   });
 
+  it.each(["no-tier", "probe-error"] as const)(
+    "disables On with an explicit explanation for %s",
+    async (reason) => {
+      routeState.section = "security";
+      const current = offStatus();
+      current.fullAvailability.available = false;
+      current.limitedAvailability.available = reason === "probe-error";
+      current.probe.outcome = reason === "probe-error" ? "error" : "unsupported";
+      getWindowsNodeMxcStatus.mockResolvedValue(current);
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+      await flushPromises();
+      const toggle = wrapper.findComponent(ElSwitch);
+      expect(toggle.props("disabled")).toBe(true);
+      expect(wrapper.find('[data-testid="mxc-unavailable"]').text()).toContain(
+        "could not be verified",
+      );
+      await toggleSandbox(wrapper);
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it.each([true, false])(
+    "retains the actual state and releases busy after a failed toggle from On=%s",
+    async (enabled) => {
+      routeState.section = "security";
+      const current = enabled ? status("node-local") : offStatus();
+      getWindowsNodeMxcStatus.mockResolvedValue(current);
+      setWindowsNodeMxcEnabled.mockRejectedValueOnce(new Error("Backend transition failed"));
+      const errorMessage = vi.spyOn(ElMessage, "error");
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+      await flushPromises();
+      expect(await toggleSandbox(wrapper)).toBe(false);
+      await flushPromises();
+      const toggle = wrapper.findComponent(ElSwitch);
+      expect(toggle.props("modelValue")).toBe(enabled);
+      expect(toggle.props("loading")).toBe(false);
+      expect(toggle.props("disabled")).toBe(false);
+      expect(errorMessage).toHaveBeenCalledWith("Backend transition failed");
+      expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: !enabled });
+      wrapper.unmount();
+    },
+  );
+
   it.each([
-    ["en-US", "MXC is off. Tools run without MXC isolation."],
-    ["zh-CN", "MXC 已关闭。工具运行时不受 MXC 隔离保护。"],
-  ] as const)("shows only mode cards and the Off disclosure in %s", async (locale, disclosure) => {
+    ["en-US", "MXC is off. Tools run without MXC isolation.", "Learn more about MXC"],
+    ["zh-CN", "MXC 已关闭。工具运行时不受 MXC 隔离保护。", "了解更多 MXC 信息"],
+  ] as const)(
+    "shows one switch, the official external link and the Off disclosure in %s",
+    async (locale, disclosure, linkLabel) => {
+      routeState.section = "security";
+      setLocale(locale);
+      getWindowsNodeMxcStatus.mockResolvedValueOnce(offStatus());
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+
+      await flushPromises();
+
+      expect(wrapper.findAll(".mxc-mode-card")).toHaveLength(0);
+      expect(wrapper.findAll('[data-testid="mxc-sandbox-toggle"]')).toHaveLength(1);
+      expect(wrapper.find('[data-testid="mxc-sandbox-details"]').exists()).toBe(false);
+      expect(wrapper.find(".mxc-card details").exists()).toBe(false);
+      const link = wrapper.get('[data-testid="mxc-official-link"]');
+      expect(wrapper.findAll(".mxc-card a")).toHaveLength(1);
+      expect(link.text()).toBe(linkLabel);
+      expect(link.attributes("href")).toBe("https://github.com/microsoft/mxc");
+      await link.trigger("click");
+      await flushPromises();
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith("https://github.com/microsoft/mxc");
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="mxc-off-disclosure"]').text()).toBe(disclosure);
+      expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
+      expect(wrapper.find(".mxc-durable-approval").exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-limited-approvals"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-canvas-status"]').exists()).toBe(false);
+      expect(wrapper.find(".section-footer").exists()).toBe(false);
+      expect(wrapper.find(".section > .mxc-alert").exists()).toBe(false);
+      expect(stageFolder).not.toHaveBeenCalled();
+      expect(setFolderPolicy).not.toHaveBeenCalled();
+      expect(applyFolderPolicy).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("surfaces official-link opening failures through the existing notification handler", async () => {
     routeState.section = "security";
-    setLocale(locale);
-    getWindowsNodeMxcStatus.mockResolvedValueOnce(offStatus());
+    openExternal.mockRejectedValueOnce(new Error("System browser unavailable"));
+    const errorMessage = vi.spyOn(ElMessage, "error");
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
     });
-
     await flushPromises();
 
-    expect(wrapper.findAll(".mxc-mode-card")).toHaveLength(3);
-    expect(wrapper.find('[data-testid="mxc-off-disclosure"]').text()).toBe(disclosure);
-    expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
-    expect(wrapper.find(".mxc-durable-approval").exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-limited-approvals"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-canvas-status"]').exists()).toBe(false);
-    expect(wrapper.find(".section-footer").exists()).toBe(false);
-    expect(wrapper.find(".section > .mxc-alert").exists()).toBe(false);
-    expect(stageFolder).not.toHaveBeenCalled();
-    expect(setFolderPolicy).not.toHaveBeenCalled();
-    expect(applyFolderPolicy).not.toHaveBeenCalled();
+    await wrapper.get('[data-testid="mxc-official-link"]').trigger("click");
+    await flushPromises();
+
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith("https://github.com/microsoft/mxc");
+    expect(errorMessage).toHaveBeenCalledWith(
+      expect.stringContaining("System browser unavailable"),
+    );
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 
@@ -1109,14 +1233,8 @@ describe("SettingsView", () => {
     expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Work");
     expect(wrapper.find(".mxc-durable-approval").text()).toContain("hostname.exe");
 
-    for (const [mode, hidden] of [
-      ["off", true],
-      ["full", false],
-    ] as const) {
-      await wrapper.find(`[data-testid="mxc-select-${mode}"]`).trigger("click");
-      if (mode === "full") {
-        wrapper.findComponent(MxcCapabilityConsentDialog).vm.$emit("accept");
-      }
+    for (const hidden of [true, false]) {
+      await toggleSandbox(wrapper);
       await flushPromises();
       expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(hidden);
       expect(wrapper.find(".mxc-folder-policy").exists()).toBe(!hidden);
@@ -1173,7 +1291,7 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
   });
 
-  it("summarizes all-denied ambient access separately from selected folder grants", async () => {
+  it("omits ambient-success information while retaining selected folder grants", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValueOnce({
       ...status("node-local"),
@@ -1194,12 +1312,7 @@ describe("SettingsView", () => {
     });
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').text()).toBe(
-      "No inherited filesystem access detected (18/18 denied)",
-    );
-    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').classes()).toContain(
-      "mxc-summary-ok",
-    );
+    expect(wrapper.find('[data-testid="mxc-ambient-compact"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mxc-ambient-diagnostics"]').exists()).toBe(false);
 
     const policy = wrapper.find(".mxc-folder-policy");
@@ -1259,9 +1372,7 @@ describe("SettingsView", () => {
     expect(policy.text()).toContain("add access");
     expect(policy.text()).toContain("not an exclusive allowlist");
     expect(policy.text()).toContain("Read-only cannot reduce access");
-    expect(wrapper.find('[data-testid="mxc-limited-approvals"]').text()).toContain(
-      "Per-command approval only",
-    );
+    expect(wrapper.find('[data-testid="mxc-limited-approvals"]').exists()).toBe(false);
     expect(wrapper.find(".mxc-card").text()).not.toContain("hostname.exe");
 
     const ambientSummary = wrapper.find('[data-testid="mxc-ambient-compact"]');
@@ -1275,6 +1386,93 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
     expect(wrapper.find(".mxc-card").text()).not.toContain("OpenClaw roaming state");
     expect(wrapper.find(".mxc-card").text()).not.toContain("ambient-hash-1");
+  });
+
+  it.each([null, { ...ambientAccess(), entries: [] }])(
+    "retains a warning when Limited ambient-access assessment is missing: %j",
+    async (assessment) => {
+      routeState.section = "security";
+      getWindowsNodeMxcStatus.mockResolvedValueOnce({
+        ...status("node-local"),
+        requestedMode: "limited-dacl",
+        effectiveStrength: "limited-dacl",
+        effectiveEnabled: true,
+        ambientAccess: assessment,
+        lifecycleState: { phase: "active", detail: null, updatedAt: new Date(0).toISOString() },
+      });
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+      await flushPromises();
+
+      expect(wrapper.get('[data-testid="mxc-ambient-compact"]').text()).toBe(
+        "Ambient access attestation is not available.",
+      );
+      expect(wrapper.get('[data-testid="mxc-ambient-compact"]').classes()).toContain(
+        "mxc-summary-warning",
+      );
+      expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
+
+  it.each(["validating", "starting-active"] as const)(
+    "retains visible feedback and a disabled switch during %s",
+    async (phase) => {
+      routeState.section = "security";
+      getWindowsNodeMxcStatus.mockResolvedValueOnce({
+        ...status("node-local"),
+        lifecycleState: {
+          phase,
+          detail: "Updating sandbox protection.",
+          updatedAt: new Date(0).toISOString(),
+        },
+      });
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+      await flushPromises();
+
+      expect(wrapper.get('[data-testid="mxc-status-summary"]').text()).toContain("Starting");
+      expect(wrapper.find(".mxc-card").text()).toContain("Updating sandbox protection.");
+      expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("keeps action-required feedback after an active snapshot can no longer be inspected", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus
+      .mockResolvedValueOnce({
+        ...status("node-local"),
+        effectiveStrength: "full",
+        effectiveEnabled: true,
+        lifecycleState: { phase: "active", detail: null, updatedAt: new Date(0).toISOString() },
+      })
+      .mockRejectedValueOnce(new Error("Protection status unavailable"));
+    vi.spyOn(ElMessage, "error");
+    const wrapper = shallowMount(SettingsView, {
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+
+    await wrapper
+      .findAll(".settings-menu-item")
+      .find((item) => item.text() === "General")!
+      .trigger("click");
+    await wrapper
+      .findAll(".settings-menu-item")
+      .find((item) => item.text() === "Security")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="mxc-status-error"]').text()).toContain(
+      "Protection status unavailable",
+    );
+    expect(wrapper.get('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
+    wrapper.unmount();
   });
 
   it("stages RO and RW roots through the shared trusted picker API", async () => {
@@ -1317,11 +1515,7 @@ describe("SettingsView", () => {
 
   it("does not expose the retired AppContainer controls when MXC is Off", async () => {
     routeState.section = "security";
-    getWindowsNodeMxcStatus.mockResolvedValue({
-      ...status("node-local"),
-      requestedMode: "off",
-      desiredEnabled: false,
-    });
+    getWindowsNodeMxcStatus.mockResolvedValue(offStatus());
     const wrapper = shallowMount(SettingsView, {
       global: { plugins: [createPinia()] },
     });
@@ -1329,7 +1523,9 @@ describe("SettingsView", () => {
 
     expect(wrapper.find('[data-testid="sandbox-add-rw"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("AppContainer");
-    expect(wrapper.text()).toContain("without an execution sandbox");
+    expect(wrapper.get('[data-testid="mxc-off-disclosure"]').text()).toBe(
+      "MXC is off. Tools run without MXC isolation.",
+    );
     expect(stageFolder).not.toHaveBeenCalled();
     expect(setFolderPolicy).not.toHaveBeenCalled();
   });

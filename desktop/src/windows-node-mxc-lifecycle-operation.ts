@@ -4,7 +4,7 @@ export type WindowsNodeMxcLifecycleOperationDescriptor =
   | { kind: "startup" }
   | {
       kind: "set-enabled";
-      requestedMode: WindowsNodeMxcRequestedMode;
+      requestedMode: WindowsNodeMxcRequestedMode | "auto";
     }
   | { kind: "apply-folder-policy" };
 

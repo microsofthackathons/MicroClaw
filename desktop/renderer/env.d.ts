@@ -587,10 +587,7 @@ interface OpenClawAPI {
       remediation: string[];
     }>;
     setEnabled(params: {
-      enabled?: boolean;
-      requestedMode?: "off" | "full" | "limited-dacl";
-      acknowledgeLimitedFilesystem?: boolean;
-      nodeId?: string;
+      enabled: boolean;
     }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
     validateFolderPolicy(draft: {
       rw: string[];

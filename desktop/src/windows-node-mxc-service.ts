@@ -28,6 +28,7 @@ import {
 } from "./windows-node-mxc";
 import {
   describeWindowsNodeMxcLimitedAvailability,
+  selectWindowsNodeMxcAutomaticMode,
   summarizeWindowsNodeMxcAmbientAccess,
   type WindowsNodeMxcAmbientAccessAssessment,
   type WindowsNodeMxcEffectiveStrength,
@@ -1001,6 +1002,13 @@ export async function preflightWindowsNodeMxcExactBackend(
     );
   }
   return probe;
+}
+
+export async function probeWindowsNodeMxcAutomaticMode(
+  wxcExecPath: string,
+  probeRunner: (path: string) => Promise<MxcProbeResult> = runMxcProbe,
+): Promise<Exclude<WindowsNodeMxcRequestedMode, "off">> {
+  return selectWindowsNodeMxcAutomaticMode(await probeRunner(wxcExecPath));
 }
 
 export async function preflightWindowsNodeMxcBackend(

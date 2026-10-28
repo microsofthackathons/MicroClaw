@@ -28,7 +28,7 @@ describe("desktop startup order", () => {
   it("stops the standard Gateway before Off-to-MXC preflight so paused ingress cannot race", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const handler = source.slice(
-      source.indexOf('ipcMain.handle(\n    "windows-node-mxc:set-enabled"'),
+      source.search(/ipcMain\.handle\(\s*"windows-node-mxc:set-enabled"/u),
       source.indexOf('"windows-node-mxc:approval-respond"'),
     );
     const suspensionBranch = handler.indexOf("if (suspendCronBeforePreflight)");
@@ -53,7 +53,7 @@ describe("desktop startup order", () => {
   it("performs one tracked containment validation before mutation and reuses it for readiness", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const handler = source.slice(
-      source.indexOf('ipcMain.handle(\n    "windows-node-mxc:set-enabled"'),
+      source.search(/ipcMain\.handle\(\s*"windows-node-mxc:set-enabled"/u),
       source.indexOf('"windows-node-mxc:approval-respond"'),
     );
     const confirmation = handler.indexOf("await planWeixinRemoteApprovalNativeTransition(");

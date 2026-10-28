@@ -306,6 +306,7 @@ import {
   inspectWindowsNodeMxc,
   isCurrentBundledWindowsNodeApprovalCallback,
   preflightWindowsNodeMxcBackend,
+  probeWindowsNodeMxcAutomaticMode,
   runWindowsNodeMxcSmoke,
   isWindowsNodeMxcSmokePassed,
   shouldStopManagedGatewayForWindowsNodeMxc,
@@ -353,6 +354,7 @@ import {
 import {
   planWeixinRemoteApprovalTransition,
   readWeixinRemoteApprovalActivationOptions,
+  revalidateAutomaticWeixinRemoteApprovalSelection,
   type WeixinRemoteApprovalActivationOptions,
   type WeixinRemoteApprovalActivationSelection,
   type WeixinRemoteApprovalTransitionPlan,
@@ -7661,28 +7663,18 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "windows-node-mxc:set-enabled",
-    async (
-      event,
-      params: {
-        enabled?: boolean;
-        requestedMode?: WindowsNodeMxcRequestedMode;
-        acknowledgeLimitedFilesystem?: boolean;
-        nodeId?: string;
-      },
-    ) => {
+    async (event: Electron.IpcMainInvokeEvent, params: { enabled: boolean }) => {
       assertTrustedRendererIpc(event);
       assertNativeWeixinRemoteApprovalAuthority(params);
-      const requestedMode =
-        params?.requestedMode ??
-        (params?.enabled === true ? "full" : params?.enabled === false ? "off" : null);
-      if (requestedMode !== "off" && requestedMode !== "full" && requestedMode !== "limited-dacl") {
-        throw new Error("A valid MXC containment mode is required");
+      if (typeof params?.enabled !== "boolean") {
+        throw new Error("A boolean sandboxing choice is required");
       }
+      let requestedMode: WindowsNodeMxcRequestedMode = params.enabled ? "full" : "off";
       const lifecycleOperation =
         windowsNodeMxcLifecycleOperations.acquire<WindowsNodeMxcRuntimeStatus>(
           {
             kind: "set-enabled",
-            requestedMode,
+            requestedMode: params.enabled ? "auto" : "off",
           },
           windowsNodeMxcLifecycleOperationHooks(requestedMode),
         );
@@ -7711,13 +7703,6 @@ function registerIpcHandlers(): void {
         const enabled = requestedMode !== "off";
         const currentSelection = getWindowsNodeMxcSelection();
         transitionInitialSelection = currentSelection;
-        const nextSelection = createWindowsNodeMxcSelection(
-          requestedMode,
-          params?.acknowledgeLimitedFilesystem === true ||
-            (requestedMode === "limited-dacl" &&
-              currentSelection.requestedMode === "limited-dacl" &&
-              currentSelection.limitedFilesystemAcknowledgedAt !== null),
-        );
         if (gwClient?.connected && (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())) {
           throw new Error(
             "Windows Node + MXC mode requires MicroClaw's managed Gateway; stop the external Gateway first",
@@ -7726,6 +7711,14 @@ function registerIpcHandlers(): void {
         const config = readConfig();
         if (!config || typeof config !== "object" || Array.isArray(config)) {
           throw new Error("OpenClaw configuration is unavailable");
+        }
+        if (enabled) {
+          requestedMode =
+            currentSelection.requestedMode !== "off"
+              ? currentSelection.requestedMode
+              : await probeWindowsNodeMxcAutomaticMode(
+                  bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
+                );
         }
         const nativeConsent = await planWeixinRemoteApprovalNativeTransition({
           request: params,
@@ -7742,8 +7735,23 @@ function registerIpcHandlers(): void {
             return dialog.showMessageBox(window, options);
           },
         });
+        if (nativeConsent.cancelled) {
+          const status = await getWindowsNodeMxcStatus();
+          lifecycleOperation.succeed(status);
+          return status;
+        }
+        const nextSelection = createWindowsNodeMxcSelection(
+          requestedMode,
+          nativeConsent.limitedFilesystemAcknowledged,
+        );
         remoteApprovalPlan = nativeConsent.plan;
         remoteApprovalSelection = nativeConsent.selection;
+        if (nativeConsent.enrollmentDisabledReason) {
+          electronLifecycleDiagnostics.log("mxc-weixin-enrollment-disabled", {
+            stage: "confirmation",
+            reason: nativeConsent.enrollmentDisabledReason,
+          });
+        }
 
         const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
         const suspendCronBeforePreflight = shouldSuspendWindowsNodeMxcCronBeforePreflight(
@@ -7761,7 +7769,7 @@ function registerIpcHandlers(): void {
           await stopGatewayForSecurityTransition(configuredPort);
           cronSuspendedBeforePreflight = true;
         }
-        if (enabled) {
+        if (requestedMode !== "off") {
           const validationDetail = mainT(
             resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
             requestedMode === "limited-dacl"
@@ -7816,11 +7824,23 @@ function registerIpcHandlers(): void {
           if (!cronSuspendedBeforePreflight) {
             await stopGatewayForSecurityTransition(configuredPort);
           }
+          const remoteApprovalOptions = getWeixinRemoteApprovalActivationOptions(readConfig());
+          const revalidatedRemoteApproval = revalidateAutomaticWeixinRemoteApprovalSelection(
+            remoteApprovalSelection,
+            remoteApprovalOptions,
+          );
+          remoteApprovalSelection = revalidatedRemoteApproval.selection;
+          if (revalidatedRemoteApproval.enrollmentDisabledReason) {
+            electronLifecycleDiagnostics.log("mxc-weixin-enrollment-disabled", {
+              stage: "locked",
+              reason: revalidatedRemoteApproval.enrollmentDisabledReason,
+            });
+          }
           remoteApprovalPlan = planWeixinRemoteApprovalTransition({
             currentMode: currentSelection.requestedMode,
             requestedMode,
             currentConfiguration: previousRemoteApprovalConfiguration,
-            options: getWeixinRemoteApprovalActivationOptions(readConfig()),
+            options: remoteApprovalOptions,
             selection: remoteApprovalSelection,
           });
           persistWindowsNodeMxcWeixinRemoteApprovalPlan(remoteApprovalPlan, "activation-disabled");

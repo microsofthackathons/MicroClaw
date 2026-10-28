@@ -177,6 +177,38 @@ export function readWeixinRemoteApprovalActivationOptions(params: {
   };
 }
 
+export function revalidateAutomaticWeixinRemoteApprovalSelection(
+  selection: WeixinRemoteApprovalActivationSelection | undefined,
+  options: WeixinRemoteApprovalActivationOptions,
+): {
+  selection: WeixinRemoteApprovalActivationSelection | undefined;
+  enrollmentDisabledReason: string | null;
+} {
+  if (!selection?.enabled) return { selection, enrollmentDisabledReason: null };
+  if (
+    !selection.owner ||
+    !normalizeOwner(selection.owner.accountId, selection.owner.userId) ||
+    selection.consentScope !== undefined
+  ) {
+    throw new Error("Invalid automatic WeChat approval enrollment authority");
+  }
+  if (
+    options.weixinEnabled &&
+    options.invariantState === "single" &&
+    options.enableAvailable &&
+    options.account?.accountId === selection.owner.accountId &&
+    options.account.userId === selection.owner.userId
+  ) {
+    return { selection, enrollmentDisabledReason: null };
+  }
+  return {
+    selection: { enabled: false },
+    enrollmentDisabledReason: !options.weixinEnabled
+      ? "channel-disabled"
+      : (options.unavailableReason ?? "owner-no-longer-eligible"),
+  };
+}
+
 export function planWeixinRemoteApprovalTransition(params: {
   currentMode: WindowsNodeMxcRequestedMode;
   requestedMode: WindowsNodeMxcRequestedMode;

@@ -337,6 +337,13 @@ export default {
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "Security sandbox",
   "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
+  "settings.windowsNodeMxcSandboxing": "Sandboxing",
+  "settings.windowsNodeMxcOn": "On",
+  "settings.windowsNodeMxcAutomatic":
+    "MicroClaw automatically uses the supported protection on this PC.",
+  "settings.windowsNodeMxcLearnMore": "Learn more about MXC",
+  "settings.windowsNodeMxcToggleUnavailable":
+    "Sandboxing is unavailable or could not be verified. Repair the bundled runtime and retry.",
   "settings.windowsNodeMxcStatusLoading": "Checking MXC availability...",
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
@@ -398,9 +405,9 @@ export default {
   "settings.windowsNodeMxcConsent.fullNote":
     "Full containment is an exclusive filesystem boundary, subject to backend preflight.",
   "settings.windowsNodeMxcConsent.limitedNote":
-    "Limited containment adds DACL grants, is not an exclusive boundary, and requires separate acknowledgement.",
+    "Limited containment adds DACL grants, is not an exclusive boundary, and is acknowledged in the native restart confirmation.",
   "settings.windowsNodeMxcConsent.repeatNote":
-    "You'll confirm each enable and every Full/Limited switch.",
+    "Each sandbox toggle requires one native backend-restart confirmation.",
   "settings.windowsNodeMxcConsent.enable": "Enable MXC",
   "settings.windowsNodeMxcRequestedMode": "Requested mode",
   "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
@@ -468,8 +475,6 @@ export default {
     "These folders will be used when Full or Limited containment is selected.",
   "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
   "settings.windowsNodeMxcAmbientBeforeGrants": "Ambient access before selected-folder grants",
-  "settings.windowsNodeMxcAmbientAllDenied":
-    "No inherited filesystem access detected ({denied}/{total} denied)",
   "settings.windowsNodeMxcAmbientExceptions":
     "Inherited filesystem access detected: {details} ({denied}/{total} denied)",
   "settings.windowsNodeMxcAmbientContract": "Attestation contract",
@@ -545,9 +550,6 @@ export default {
   "settings.windowsNodeMxcDurableApprovals": "Remembered exact commands",
   "settings.windowsNodeMxcDurableApprovalsHint":
     "Allow always remembers only the exact executable content, arguments, CWD, declared folder use, policy, agent, and session. It never changes global folders.",
-  "settings.windowsNodeMxcLimitedCommandApprovals": "Per-command approval only",
-  "settings.windowsNodeMxcLimitedCommandApprovalsHint":
-    "Limited containment does not offer Allow always. Every command requires a visible per-command approval.",
   "settings.windowsNodeMxcLimitedAcknowledgeTitle": "Enable Limited filesystem containment?",
   "settings.windowsNodeMxcLimitedAcknowledgeBody":
     "Limited containment relies on additive Windows DACL grants. It is not an exclusive filesystem allowlist, and a read-only grant cannot remove access already available through ambient ACLs.",

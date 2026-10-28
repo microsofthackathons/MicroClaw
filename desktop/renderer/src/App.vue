@@ -241,27 +241,25 @@ async function warmThenMarkConnected() {
 }
 
 async function handleRetry() {
-  gateway.resetReady();
-  chatStore.wsConnected = false;
   if (windowsNodeMxcStatus.value?.desiredEnabled) {
     try {
       windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-        requestedMode: windowsNodeMxcStatus.value.requestedMode,
+        enabled: true,
       });
     } catch (error) {
       gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
     }
     return;
   }
+  gateway.resetReady();
+  chatStore.wsConnected = false;
   await window.openclaw.gateway.restart({ reason: "startup-retry" });
 }
 
 async function disableWindowsNodeMxc() {
-  gateway.resetReady();
-  chatStore.wsConnected = false;
   try {
     windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-      requestedMode: "off",
+      enabled: false,
     });
   } catch (error) {
     gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);

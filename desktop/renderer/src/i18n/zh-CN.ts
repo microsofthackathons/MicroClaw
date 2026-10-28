@@ -317,6 +317,11 @@ export default {
   "settings.sensitiveFilePatterns": ".env, *_key*, *.pem, *.p12, *.pfx, id_rsa, credentials",
   "settings.security": "安全沙箱",
   "settings.windowsNodeMxc": "实验性内置 Windows Node + MXC",
+  "settings.windowsNodeMxcSandboxing": "沙箱保护",
+  "settings.windowsNodeMxcOn": "开启",
+  "settings.windowsNodeMxcAutomatic": "MicroClaw 会自动使用此电脑支持的保护方式。",
+  "settings.windowsNodeMxcLearnMore": "了解更多 MXC 信息",
+  "settings.windowsNodeMxcToggleUnavailable": "沙箱保护不可用或无法验证。请修复内置运行时后重试。",
   "settings.windowsNodeMxcStatusLoading": "正在检查 MXC 可用性…",
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
@@ -374,8 +379,8 @@ export default {
     "画布第一阶段仅保留已审查的原生 A2UI 操作。通用导航、脚本求值以及外部或本地内容仍不可用。",
   "settings.windowsNodeMxcConsent.fullNote": "完整隔离提供排他文件系统边界，但仍需通过后端预检。",
   "settings.windowsNodeMxcConsent.limitedNote":
-    "有限隔离叠加 DACL 授权，并非排他边界，且仍需单独确认。",
-  "settings.windowsNodeMxcConsent.repeatNote": "每次启用或切换完整/有限隔离时都需确认。",
+    "有限隔离叠加 DACL 授权，并非排他边界，需在原生后端重启确认中明确接受。",
+  "settings.windowsNodeMxcConsent.repeatNote": "每次切换沙箱保护只需一次原生后端重启确认。",
   "settings.windowsNodeMxcConsent.enable": "启用 MXC",
   "settings.windowsNodeMxcRequestedMode": "请求的模式",
   "settings.windowsNodeMxcAttestedStrength": "经证明的实际强度",
@@ -441,8 +446,6 @@ export default {
   "settings.windowsNodeMxcConfiguredFoldersHint": "选择完整或有限隔离时将使用这些文件夹。",
   "settings.windowsNodeMxcAmbientAccess": "环境文件系统访问",
   "settings.windowsNodeMxcAmbientBeforeGrants": "所选文件夹授权前的环境访问",
-  "settings.windowsNodeMxcAmbientAllDenied":
-    "未检测到继承的文件系统访问（{denied}/{total} 均被拒绝）",
   "settings.windowsNodeMxcAmbientExceptions":
     "检测到继承的文件系统访问：{details}（{denied}/{total} 被拒绝）",
   "settings.windowsNodeMxcAmbientContract": "证明契约",
@@ -511,9 +514,6 @@ export default {
   "settings.windowsNodeMxcDurableApprovals": "记住的精确命令",
   "settings.windowsNodeMxcDurableApprovalsHint":
     "“始终允许”仅记住精确的可执行文件内容、参数、工作目录、声明的文件夹用途、策略、代理和会话，绝不会更改全局文件夹。",
-  "settings.windowsNodeMxcLimitedCommandApprovals": "仅逐命令批准",
-  "settings.windowsNodeMxcLimitedCommandApprovalsHint":
-    "有限隔离不提供“始终允许”。每条命令都需要可见的逐命令批准。",
   "settings.windowsNodeMxcLimitedAcknowledgeTitle": "启用有限文件系统隔离？",
   "settings.windowsNodeMxcLimitedAcknowledgeBody":
     "有限隔离依赖叠加式 Windows DACL 授权。它不是排他的文件系统允许列表，而且只读授权无法移除环境 ACL 已允许的访问。",

@@ -21,6 +21,20 @@ export default {
   "weixinRemoteApproval.disable": "禁用",
   "weixinRemoteApproval.enable": "启用",
   "weixinRemoteApproval.cancelActivation": "取消 MXC 激活",
+  "weixinRemoteApproval.activationDefault":
+    "实验性微信命令审批将使用已登录的账户。每条命令仍需审批；这不会授予永久审批权限或披露完整命令详情的许可。",
+  "mxc.toggleTitle": "更改沙箱保护？",
+  "mxc.toggleRestart": "MicroClaw 后端将重启，此窗口将保持打开。",
+  "mxc.toggleCancel": "取消",
+  "mxc.toggle.full": "此电脑支持完整隔离。已批准的文件夹构成排他的文件系统边界。",
+  "mxc.toggle.limited-dacl":
+    "此电脑支持有限隔离（DACL），不支持完整隔离。启用即表示您确认：文件夹授权只增加访问权限，并非排他的文件系统白名单。只读授权无法收紧 Windows ACL 已允许的访问。激活前必须通过敏感路径环境访问验证。",
+  "mxc.toggle.off": "沙箱保护将关闭。工具将使用您的 Windows 账户权限运行，不受 MXC 隔离保护。",
+  "mxc.toggleCapabilities":
+    "沙箱会禁用网关文件工具、浏览器自动化、MCP、屏幕/摄像头/位置/语音及网关内存。定时任务和钩子/Webhook 会暂停，且不会补跑或重放。已审批的沙箱命令、网页搜索/获取、白名单微信及已审核的 Canvas 仍可使用。",
+  "mxc.toggleConfirm.full": "启用沙箱保护",
+  "mxc.toggleConfirm.limited-dacl": "接受有限保护并启用",
+  "mxc.toggleConfirm.off": "关闭沙箱保护",
   "mxc.assessingLimitedAmbientAccess": "正在评估 Limited 模式的环境文件系统访问权限",
   "mxc.verifyingFullBackend": "正在验证 Full AppContainer 后端",
 } as Record<string, string>;

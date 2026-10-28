@@ -3,6 +3,7 @@ import {
   createWindowsNodeMxcSelection,
   describeWindowsNodeMxcLimitedAvailability,
   migrateWindowsNodeMxcSelection,
+  selectWindowsNodeMxcAutomaticMode,
   summarizeWindowsNodeMxcAmbientAccess,
   validateWindowsNodeMxcAmbientAccessAssessment,
 } from "./windows-node-mxc-modes";
@@ -51,6 +52,30 @@ describe("Windows Node MXC containment modes", () => {
     expect(describeWindowsNodeMxcLimitedAvailability(full).available).toBe(false);
   });
 
+  it.each(["base-container", "appcontainer-bfs", "appcontainer-dacl"])(
+    "selects only the positively attested %s tier on a new activation",
+    (tier) => {
+      const probe = classifyMxcProbe(0, JSON.stringify({ tier }), "");
+      expect(selectWindowsNodeMxcAutomaticMode(probe)).toBe(
+        tier === "appcontainer-dacl" ? "limited-dacl" : "full",
+      );
+    },
+  );
+
+  it.each([
+    classifyMxcProbe(null, "", "", "probe failed"),
+    classifyMxcProbe(0, "not json", ""),
+    classifyMxcProbe(1, JSON.stringify({ tier: "appcontainer-dacl" }), ""),
+    classifyMxcProbe(0, JSON.stringify({ supported: false }), ""),
+    classifyMxcProbe(0, JSON.stringify({ tier: "unknown" }), ""),
+    classifyMxcProbe(
+      0,
+      JSON.stringify({ tier: "base-container", baseContainerApiPresent: false }),
+      "",
+    ),
+  ])("rejects unusable/error probes without falling back to Limited or Off: %j", (probe) => {
+    expect(() => selectWindowsNodeMxcAutomaticMode(probe)).toThrow("No supported MXC sandbox");
+  });
   it("separates sensitive activation blockers from ordinary ambient warnings", () => {
     const summary = summarizeWindowsNodeMxcAmbientAccess({
       contract: "microclaw.windows-node-mxc-ambient-access.v1",
@@ -62,9 +87,7 @@ describe("Windows Node MXC containment modes", () => {
         { category: "browser-edge", status: "denied" },
       ],
     });
-    expect(summary.ordinaryAccessible).toEqual([
-      { category: "downloads", status: "read-write" },
-    ]);
+    expect(summary.ordinaryAccessible).toEqual([{ category: "downloads", status: "read-write" }]);
     expect(summary.sensitiveAccessible).toEqual([{ category: "ssh", status: "read" }]);
   });
 

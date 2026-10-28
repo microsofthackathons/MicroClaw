@@ -1,4 +1,4 @@
-import type { MxcProbeResult } from "./windows-node-mxc";
+import { describeMxcExactBackendEligibility, type MxcProbeResult } from "./windows-node-mxc";
 
 export const WINDOWS_NODE_MXC_SELECTION_VERSION = 1 as const;
 
@@ -94,11 +94,7 @@ export function migrateWindowsNodeMxcSelection(
 ): WindowsNodeMxcSelection {
   if (isRecord(value) && value.version === WINDOWS_NODE_MXC_SELECTION_VERSION) {
     const requestedMode = value.requestedMode;
-    if (
-      requestedMode === "off" ||
-      requestedMode === "full" ||
-      requestedMode === "limited-dacl"
-    ) {
+    if (requestedMode === "off" || requestedMode === "full" || requestedMode === "limited-dacl") {
       const acknowledgedAt =
         typeof value.limitedFilesystemAcknowledgedAt === "string" &&
         !Number.isNaN(Date.parse(value.limitedFilesystemAcknowledgedAt))
@@ -107,8 +103,7 @@ export function migrateWindowsNodeMxcSelection(
       return {
         version: WINDOWS_NODE_MXC_SELECTION_VERSION,
         requestedMode,
-        limitedFilesystemAcknowledgedAt:
-          requestedMode === "limited-dacl" ? acknowledgedAt : null,
+        limitedFilesystemAcknowledgedAt: requestedMode === "limited-dacl" ? acknowledgedAt : null,
       };
     }
   }
@@ -133,18 +128,14 @@ export function createWindowsNodeMxcSelection(
   return {
     version: WINDOWS_NODE_MXC_SELECTION_VERSION,
     requestedMode,
-    limitedFilesystemAcknowledgedAt:
-      requestedMode === "limited-dacl" ? now.toISOString() : null,
+    limitedFilesystemAcknowledgedAt: requestedMode === "limited-dacl" ? now.toISOString() : null,
   };
 }
 
 export function describeWindowsNodeMxcLimitedAvailability(
   probe: MxcProbeResult,
 ): WindowsNodeMxcModeAvailability {
-  if (
-    probe.tier?.trim().toLowerCase() === "appcontainer-dacl" &&
-    probe.outcome !== "error"
-  ) {
+  if (probe.tier?.trim().toLowerCase() === "appcontainer-dacl" && probe.outcome !== "error") {
     return {
       available: true,
       summary:
@@ -161,9 +152,19 @@ export function describeWindowsNodeMxcLimitedAvailability(
     summary: reason,
     blockers: [reason],
     remediation: [
-      "Repair the pinned, signed MXC runtime or use Full containment when an exact backend is available. MicroClaw never downgrades between containment tiers automatically.",
+      "Repair the pinned, signed MXC runtime. MicroClaw selects a supported tier when sandboxing is turned on and never downgrades an existing activation.",
     ],
   };
+}
+
+export function selectWindowsNodeMxcAutomaticMode(
+  probe: MxcProbeResult,
+): Exclude<WindowsNodeMxcRequestedMode, "off"> {
+  if (describeMxcExactBackendEligibility(probe).eligible) return "full";
+  if (describeWindowsNodeMxcLimitedAvailability(probe).available) return "limited-dacl";
+  throw new Error(
+    `No supported MXC sandbox is available. ${probe.reason ?? "The runtime did not attest a usable containment tier."}`,
+  );
 }
 
 export function summarizeWindowsNodeMxcAmbientAccess(
@@ -175,12 +176,10 @@ export function summarizeWindowsNodeMxcAmbientAccess(
   const entries = assessment?.entries ?? [];
   return {
     sensitiveAccessible: entries.filter(
-      (entry) =>
-        entry.status !== "denied" && SENSITIVE_AMBIENT_CATEGORIES.has(entry.category),
+      (entry) => entry.status !== "denied" && SENSITIVE_AMBIENT_CATEGORIES.has(entry.category),
     ),
     ordinaryAccessible: entries.filter(
-      (entry) =>
-        entry.status !== "denied" && !SENSITIVE_AMBIENT_CATEGORIES.has(entry.category),
+      (entry) => entry.status !== "denied" && !SENSITIVE_AMBIENT_CATEGORIES.has(entry.category),
     ),
   };
 }

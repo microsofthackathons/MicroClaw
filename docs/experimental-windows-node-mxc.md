@@ -48,27 +48,41 @@ MicroClaw exposes three explicit requested states:
 | **Limited containment (DACL)** | `appcontainer-dacl` only | Selected roots are additive ACL grants; ambient Windows ACL access can remain |
 | **Off** | No bundled MXC host | Tools run unsandboxed with the current Windows account's permissions; no legacy backend |
 
-When MXC is confirmed Off, Security settings show only the three mode cards and a concise
-unsandboxed-execution disclosure. Folder policies, remembered commands, and the concise
-ambient-access summary reappear when containment is selected; hiding them does not clear saved settings.
+Security settings use a single sandboxing On/Off switch. On selects Full when the signed runtime
+positively attests an exact backend; otherwise it selects Limited only when the runtime positively
+attests `appcontainer-dacl`. Probe errors or no usable tier block activation, rather than choosing
+Limited or silently turning protection off. The main process makes this choice from a fresh probe,
+not the renderer's cached status. A localized "Learn more about MXC" link opens the
+[official Microsoft Execution Containers project](https://github.com/microsoft/mxc) in the system
+browser through the existing HTTP(S)-only external-link handler; settings do not include an expanded
+technical explanation or ask the user to select a tier.
+
+When MXC is confirmed Off, Security settings show the switch, official project link, and a concise
+unsandboxed-execution disclosure. Folder policies and applicable remembered-command controls
+reappear when containment is selected; hiding them does not clear saved settings.
 Selecting Off alone does not hide an incomplete transition, remaining MXC activity, or unresolved
 lifecycle/folder-policy recovery errors.
 
 Security settings do not display the internal attestation diagnostics or the verbose compatibility,
-probe, readiness-blocker, and remediation dump. Mode availability, concise protection status, and
-lifecycle/folder-policy recovery errors remain visible. This presentation change does not disable
-any containment, policy, approval, or readiness checks.
+probe, readiness-blocker, and remediation dump. Normal active-tier, active Canvas, all-denied ambient
+access, and per-command-only approval informational blocks are also omitted. Unavailable protection,
+transitions, lifecycle/folder-policy recovery errors, paused Canvas, and missing or exceptional ambient
+access remain visible. This presentation change does not disable any containment, policy, approval,
+or readiness checks; Limited still offers per-command approval only.
 
-Every explicit user transition from Off to Full or Limited, and every explicit switch between Full
-and Limited, first opens an in-app capability-disclosure consent dialog for the target mode. The
-dialog appears before backend preflight, requested-mode persistence, Gateway or Node shutdown,
-configuration rewriting, or any other lifecycle side effect. Canceling with the button, close
-control, Escape, or backdrop leaves the requested and effective mode, persisted configuration,
-Gateway readiness, and visible mode selection unchanged. Accepting continues the existing
-transition once; Limited still requires its separate additive-DACL warning acknowledgement.
-MicroClaw does not offer a "don't ask again" option and repeats the disclosure for every explicit
-enable or Full/Limited switch. Internal refresh, relock, startup recovery, and fail-closed repair do
-not prompt because they do not represent a new user-selected capability boundary.
+Each explicit sandbox toggle opens exactly one main-process native confirmation. It says that
+MicroClaw's **backend restarts while the window stays open**; Electron is not relaunched. For On,
+it discloses the automatically selected tier and capability restrictions. Limited's confirmation
+button explicitly accepts the additive-DACL limitation; acceptance records acknowledgement for
+that activation, rather than trusting a renderer flag or inventing blanket consent. An eligible
+signed-in WeChat account is automatically used for experimental command approvals, disclosed in
+this same dialog without a separate choice or checkbox. This does not grant command approvals,
+new durable consent, or permission to expose full command details.
+The initial read-only capability probe precedes the dialog. Cancel/close/Escape leaves saved mode,
+grants, approvals, configuration, Gateway/Node processes and readiness unchanged. After acceptance,
+the existing locked lifecycle revalidates the confirmed tier before activation. A changed or failed
+probe aborts; it never substitutes a weaker tier under the same consent. Internal refresh, relock,
+startup recovery, and fail-closed repair preserve the saved tier and do not prompt.
 
 Full containment is the security contract established by
 [#224](https://github.com/microsofthackathons/MicroClaw/pull/224). It rejects DACL augmentation,
@@ -82,7 +96,8 @@ denial, input-injection denial, pinned-node execution, and strict no-host-fallba
 However, Windows ACLs
 may already allow the contained identity to access user folders outside the selected grants.
 Selected RO/RW folders therefore **add access** and are not an exclusive allowlist; a read-only
-selection cannot reduce a broader pre-existing ACL. MicroClaw never automatically changes Full to
+selection cannot reduce a broader pre-existing ACL. Automatic tier choice applies only to a new
+Off-to-On activation with native consent. MicroClaw never changes an existing Full activation to
 Limited after an OS update, probe change, startup failure, or settings migration.
 
 Gateway-native file/process tools remain removed from the agent surface in both Full and Limited
@@ -197,28 +212,33 @@ access.
 
 ## WeChat remote approval (Experimental)
 
-WeChat remote approval is a default-off choice in the local MXC activation flow, not a standalone
-Settings toggle. When MXC is currently Off and WeChat has exactly one authenticated account,
-one main-process-owned native prompt offers Disabled, Enabled, and Cancel, defaulting to Disabled.
-There is no duplicate renderer WeChat prompt, account selector, or opaque identity block. Cancelling
+WeChat remote approval is automatically enabled for an eligible account during sandbox activation,
+not a standalone Settings toggle. When MXC is currently Off and WeChat has exactly one authenticated account,
+the single main-process-owned backend-restart confirmation discloses automatic experimental
+approval enrollment for the eligible authenticated single account. There is no separate WeChat
+prompt, checkbox, account selector, or opaque identity block. Cancelling
 or closing the native prompt aborts activation before the Gateway or containment state is mutated,
-without resetting ordinary runtime readiness. Unrelated MXC capability and Limited-filesystem
-disclosures remain. The renderer sends only primitive mode/acknowledgement fields; the main process
-derives the exact owner and native consent is the sole enrollment authority. Renderer-supplied
+without resetting ordinary runtime readiness. Capability and Limited-filesystem disclosures are
+combined into that confirmation. The renderer sends only a boolean sandboxing choice; only the main process
+derives and revalidates the exact owner. Renderer-supplied
 remote approval choices are rejected.
 
 The main process re-reads channel state and account credentials immediately after native consent
-and again at the locked transition boundary. An identity change while consent is pending aborts
-activation rather than binding a replacement. It accepts only an exact authenticated
-QR-login account ID plus its saved WeChat `userId`; a display name is never an identity. The approved
+and again at the locked transition boundary. If the original owner disappears, changes, or becomes
+ineligible, independently validated sandbox activation proceeds with remote approvals disabled and
+the reason recorded in lifecycle diagnostics; a replacement owner is never enrolled. Account-read
+and containment failures still fail activation. It accepts only an exact authenticated
+QR-login account ID plus its saved WeChat `userId`; a display name is never an identity. The bound
 sole identity is atomically added to the account's sender allowlist when necessary, preserving other
 explicit ordinary-message senders without granting them remote approval authority. If WeChat is
-disabled, unavailable, unauthenticated, or in a legacy multiple-account state, MXC skips the popup
-and proceeds with remote approval disabled. Turning MXC Off or replacing the exact identity clears
-the owner binding, so a later activation asks again.
+disabled, unavailable, unauthenticated, or in a legacy multiple-account state, sandboxing still
+shows its one restart confirmation and proceeds with remote approval disabled. Turning MXC Off
+or replacing the exact identity clears the owner binding. Default enrollment never issues native
+durable-consent scope; existing command eligibility, exact leases, and privacy gates remain
+independent. Active consent is not upgraded.
 
 The selected configuration is persisted while the Gateway is locked and before the attested active
-generation, lease, or ingress release is issued. Active Full/Limited mode switches cannot rebind
+generation, lease, or ingress release is issued. Retries of active Full/Limited selections cannot rebind
 remote approval in place. Phase 1 accepts only the selected owner in a one-to-one chat. Group,
 forwarded, quoted, ambiguous-account, stale-cursor, and out-of-order forms cannot approve.
 
@@ -437,8 +457,8 @@ session identity. Phone-created records additionally bind a hash of the exact na
 epoch and versioned durable capability, so MXC Off/reconsent or account replacement cannot transfer
 that authority. Existing native one-use consent remains enabled for once/deny but is never silently
 upgraded: `2` stays unavailable and prompts/reminders do not encourage consent renewal. Only the
-existing main-owned native choice can issue the current durable capability;
-renderer-supplied scope markers are rejected. It never grants
+historical main-owned explicit native opt-in could issue the durable capability; the simplified
+activation flow does not mint it. Renderer-supplied scope markers are rejected. It never grants
 all writes/deletes or broadens folders. A failed durable save is explicitly reported as accepted
 once, not as a successfully saved Always grant.
 
