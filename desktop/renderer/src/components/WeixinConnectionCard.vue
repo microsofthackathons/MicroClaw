@@ -1,10 +1,10 @@
 <template>
-  <section class="weixin-card">
+  <section class="weixin-card" :class="{ 'weixin-inline': inline }">
     <header class="weixin-header">
       <img :src="weixinIcon" :alt="t('plugins.weixinName')" />
       <div class="weixin-info">
-        <h3>{{ t("plugins.weixinName") }}</h3>
-        <p :title="t('plugins.weixinDesc')">{{ t("plugins.weixinDesc") }}</p>
+        <h3 :id="headingId">{{ t("plugins.weixinName") }}</h3>
+        <p v-if="!inline" :title="t('plugins.weixinDesc')">{{ t("plugins.weixinDesc") }}</p>
       </div>
       <span
         v-if="connectionLabel"
@@ -14,13 +14,22 @@
       >
         {{ connectionLabel }}
       </span>
-      <div class="connection-actions">
+      <button
+        v-if="inline"
+        type="button"
+        class="connection-close"
+        :aria-label="t('plugins.closeQr')"
+        @click="$emit('close')"
+      >
+        <IconClose :size="16" />
+      </button>
+      <div v-if="!inline || connected || !dialogOpen || error" class="connection-actions">
         <el-button
           v-if="!connected"
           type="primary"
           :disabled="connectDisabled"
           :loading="starting"
-          @click="openConnection"
+          @click="dialogOpen ? startQr() : openConnection()"
         >
           {{ t("plugins.connectWeixin") }}
         </el-button>
@@ -79,33 +88,36 @@
         {{ t("plugins.weixinPreparing") }}
       </p>
     </div>
+    <WeixinQrCode
+      v-if="inline && dialogOpen"
+      :data="qrData"
+      :message="qrMessage"
+      :expired="qrExpired"
+      :disabled="starting || connectDisabled"
+      :loading="starting"
+      :error="error"
+      @refresh="startQr"
+      @render-error="error = t('plugins.qrRenderFailed')"
+    />
     <el-dialog
+      v-if="!inline"
       v-model="dialogOpen"
       :title="t('plugins.connectWeixin')"
       width="380px"
       align-center
       destroy-on-close
-      @opened="renderQr"
     >
-      <div class="qr-content">
-        <p v-if="qrMessage && !error && !qrExpired">{{ qrMessage }}</p>
-        <div v-if="qrData" class="qr-frame" :class="{ expired: qrExpired }">
-          <canvas ref="qrCanvas" :aria-label="t('plugins.connectWeixin')"></canvas>
-          <button
-            v-if="qrExpired"
-            type="button"
-            class="qr-expired"
-            data-testid="weixin-qr-refresh"
-            :disabled="starting || connectDisabled"
-            @click="startQr"
-          >
-            <strong>{{ t("plugins.qrExpired") }}</strong>
-            <span>{{ t("plugins.refreshQr") }}</span>
-          </button>
-        </div>
-        <p v-else-if="starting">{{ t("plugins.weixinPreparingQr") }}</p>
-        <p v-if="error" class="connection-error" role="alert">{{ error }}</p>
-      </div>
+      <WeixinQrCode
+        v-if="dialogOpen"
+        :data="qrData"
+        :message="qrMessage"
+        :expired="qrExpired"
+        :disabled="starting || connectDisabled"
+        :loading="starting"
+        :error="error"
+        @refresh="startQr"
+        @render-error="error = t('plugins.qrRenderFailed')"
+      />
       <template #footer>
         <el-button @click="dialogOpen = false">{{ t("plugins.closeQr") }}</el-button>
       </template>
@@ -114,15 +126,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { t } from "@/i18n";
 import { useChatStore } from "@/stores/chat";
 import { useWeixinMutationLock } from "@/composables/useWeixinMutationLock";
+import IconClose from "@/components/icons/IconClose.vue";
+import WeixinQrCode from "@/components/WeixinQrCode.vue";
 import weixinIcon from "@/assets/wechat.png";
 
-defineProps<{ showMessages?: boolean }>();
+const props = defineProps<{
+  showMessages?: boolean;
+  inline?: boolean;
+  active?: boolean;
+  headingId?: string;
+}>();
+const emit = defineEmits<{ close: [] }>();
 type WeixinStatus = Awaited<ReturnType<typeof window.openclaw.plugin.weixin.getStatus>>;
 const router = useRouter();
 const chatStore = useChatStore();
@@ -140,14 +160,13 @@ const error = ref("");
 const qrData = ref("");
 const qrMessage = ref("");
 const qrExpired = ref(false);
-const qrCanvas = ref<HTMLCanvasElement | null>(null);
+let inlineAttempted = false;
 let alive = true;
 let ownsQr = false;
 let loginRevision = 0;
 let cancelling: Promise<void> | null = null;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let refreshing: Promise<void> | null = null;
-let renderRevision = 0;
 let pollRevision = 0;
 
 const hasStoredAccount = computed(
@@ -227,32 +246,36 @@ async function pollStatus(): Promise<void> {
   const revision = ++pollRevision;
   clearTimeout(timer);
   await refreshStatus();
-  if (alive && revision === pollRevision) {
+  if (alive && revision === pollRevision && (!props.inline || props.active)) {
     timer = setTimeout(pollStatus, dialogOpen.value ? 800 : 5_000);
   }
 }
 
-async function renderQr(): Promise<void> {
-  const revision = ++renderRevision;
-  await nextTick();
-  if (!dialogOpen.value || !qrData.value || !qrCanvas.value) return;
-  try {
-    const QRCode = await import("qrcode");
-    if (revision !== renderRevision || !dialogOpen.value || !qrCanvas.value) return;
-    await QRCode.default.toCanvas(qrCanvas.value, qrData.value, { width: 256, margin: 2 });
-  } catch {
-    if (alive && revision === renderRevision) error.value = t("plugins.qrRenderFailed");
-  }
-}
-
-watch([dialogOpen, qrData], renderQr, { flush: "post" });
+watch(status, () => {
+  if (!props.inline || !props.active || inlineAttempted || connectDisabled.value) return;
+  inlineAttempted = true;
+  if (!connected.value) void openConnection();
+});
+watch(
+  () => props.active,
+  (active) => {
+    if (!props.inline) return;
+    inlineAttempted = false;
+    if (active) void pollStatus();
+    else {
+      dialogOpen.value = false;
+      clearTimeout(timer);
+      pollRevision++;
+    }
+  },
+);
 watch(dialogOpen, (open) => {
   if (!open) stopConnection();
   void pollStatus();
 });
 
 async function openConnection(): Promise<void> {
-  if (dialogOpen.value || !canMutate() || connectDisabled.value) return;
+  if (dialogOpen.value || connected.value || !canMutate() || connectDisabled.value) return;
   if (hasStoredAccount.value || invalidAccounts.value) {
     try {
       await ElMessageBox.confirm(t("plugins.replaceWeixinConfirm"), t("plugins.confirm"), {
@@ -262,7 +285,7 @@ async function openConnection(): Promise<void> {
       return;
     }
   }
-  if (!alive || !canMutate() || connectDisabled.value) return;
+  if (!alive || (props.inline && !props.active) || !canMutate() || connectDisabled.value) return;
   dialogOpen.value = true;
   await startQr();
 }
@@ -339,7 +362,10 @@ async function disconnectWeixin(): Promise<void> {
     const result = await window.openclaw.plugin.weixin.disconnect({ accountId });
     if (!alive) return;
     if (!result.ok) error.value = result.error ?? t("plugins.disconnectFailed");
-    else ElMessage.success(t("plugins.disconnected"));
+    else {
+      ElMessage.success(t("plugins.disconnected"));
+      if (props.inline) emit("close");
+    }
     await refreshStatus(true);
   } catch (reason) {
     if (alive) error.value = reason instanceof Error ? reason.message : String(reason);
@@ -349,6 +375,7 @@ async function disconnectWeixin(): Promise<void> {
 }
 
 function viewMessages(): void {
+  if (props.inline) emit("close");
   chatStore.switchToMainSession();
   void router.push("/chat");
 }
@@ -360,7 +387,6 @@ onUnmounted(() => {
   stopConnection();
   alive = false;
   clearTimeout(timer);
-  renderRevision++;
 });
 </script>
 
@@ -436,46 +462,41 @@ onUnmounted(() => {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.qr-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  min-height: 160px;
-}
-.qr-content canvas {
-  max-width: 100%;
-  display: block;
-}
-.qr-frame {
-  position: relative;
-  width: 256px;
-  max-width: 100%;
-}
-.qr-frame.expired canvas {
-  filter: blur(3px);
-  opacity: 0.3;
-}
-.qr-expired {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+.weixin-inline {
   border: 0;
-  border-radius: 8px;
-  background: var(--el-mask-color, rgba(255, 255, 255, 0.75));
-  color: var(--text-primary);
-  font: inherit;
+  border-radius: 0;
+  background: transparent;
+}
+.weixin-inline .weixin-header {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+.weixin-inline .weixin-header img {
+  width: 24px;
+  height: 24px;
+}
+.weixin-inline .connection-actions {
+  flex: 1 0 100%;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.weixin-inline .weixin-body {
+  padding: 0 0 12px;
+}
+.connection-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
 }
-.qr-expired span {
-  color: var(--el-color-primary);
-  font-size: 13px;
-}
-.qr-expired:disabled {
-  cursor: not-allowed;
+.connection-close:hover {
+  background: var(--bg-tertiary);
 }
 </style>

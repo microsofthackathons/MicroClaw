@@ -145,63 +145,9 @@
       </button>
     </nav>
 
-    <section class="sp-usage-snapshot" aria-live="polite">
-      <div class="sp-usage-head">
-        <span class="sp-usage-title">{{ t("sidebar.usageSnapshotTitle") }}</span>
-        <button
-          class="sp-usage-toggle"
-          :title="
-            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
-          "
-          :aria-label="
-            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
-          "
-          @click="toggleUsageCollapsed"
-        >
-          <svg
-            class="sp-usage-toggle-icon"
-            :class="{ collapsed: usageCollapsed }"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
-      </div>
-
-      <template v-if="!usageCollapsed">
-        <div class="sp-usage-grid">
-          <div class="sp-usage-card">
-            <span class="sp-usage-label">{{ t("sidebar.usageSnapshotTokens") }}</span>
-            <span class="sp-usage-value">{{
-              usageSnapshot ? formatCompact(usageSnapshot.totalTokens) : "—"
-            }}</span>
-          </div>
-        </div>
-
-        <div
-          v-if="usageSnapshot?.backgroundUsageAvailable === false"
-          class="sp-usage-state"
-          role="status"
-        >
-          {{ t("usage.backgroundUnavailable") }}
-        </div>
-
-        <div class="sp-usage-foot">
-          <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
-          <span v-if="lastUpdatedLabel">{{
-            t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel })
-          }}</span>
-        </div>
-      </template>
-    </section>
+    <footer class="sp-footer">
+      <WeixinConnectionShortcut />
+    </footer>
   </aside>
 </template>
 
@@ -218,6 +164,7 @@ import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
 import IconPin from "@/components/icons/IconPin.vue";
+import WeixinConnectionShortcut from "@/components/WeixinConnectionShortcut.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -226,34 +173,6 @@ const chatStore = useChatStore();
 const sessionStore = useSessionStore();
 const agentStore = useAgentStore();
 
-interface UsageSnapshot {
-  totalTokens: number;
-  updatedAt: number;
-  backgroundUsageAvailable?: boolean;
-}
-
-function readCachedUsage(): UsageSnapshot | null {
-  try {
-    const snapshot = JSON.parse(localStorage.getItem("microclaw:usageSnapshot") ?? "null");
-    if (
-      snapshot &&
-      typeof snapshot.totalTokens === "number" &&
-      Number.isFinite(snapshot.totalTokens) &&
-      snapshot.totalTokens >= 0 &&
-      typeof snapshot.updatedAt === "number" &&
-      Number.isFinite(snapshot.updatedAt) &&
-      snapshot.updatedAt > 0
-    ) {
-      return snapshot;
-    }
-  } catch {}
-  return null;
-}
-
-const usageSnapshot = ref<UsageSnapshot | null>(readCachedUsage());
-let usageRequestPending = false;
-const usageCollapsed = ref(false);
-let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let titleRequestGeneration = 0;
 
 const chatExpanded = ref(true);
@@ -269,13 +188,6 @@ const flyoutStyle = computed(() => ({
 }));
 
 const gatewayOnline = computed(() => gateway.ready && gateway.status === "running");
-const lastUpdatedLabel = computed(() => {
-  if (!usageSnapshot.value) return "";
-  return new Date(usageSnapshot.value.updatedAt).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-});
 
 const currentAgent = computed(() => {
   return (
@@ -285,18 +197,10 @@ const currentAgent = computed(() => {
 });
 
 onMounted(() => {
-  gateway.refreshWeixinStatus();
-  try {
-    usageCollapsed.value = localStorage.getItem("microclaw:usageSnapshotCollapsed") === "1";
-  } catch {}
   document.addEventListener("mousedown", handleDocumentPointerDown);
   document.addEventListener("keydown", handleDocumentKeyDown);
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("scroll", handleWindowScroll, true);
-  void loadUsageSnapshot();
-  usageRefreshTimer = setInterval(() => {
-    void loadUsageSnapshot();
-  }, 60_000);
 });
 
 onUnmounted(() => {
@@ -304,57 +208,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleDocumentKeyDown);
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("scroll", handleWindowScroll, true);
-  if (usageRefreshTimer) {
-    clearInterval(usageRefreshTimer);
-    usageRefreshTimer = null;
-  }
 });
-
-async function loadUsageSnapshot() {
-  if (usageRequestPending) return;
-  usageRequestPending = true;
-  try {
-    const usageApi = window.openclaw?.usage?.getStats;
-    if (typeof usageApi !== "function") return;
-
-    const stats = await usageApi();
-    const totalTokens = stats?.totalTokens;
-    if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens < 0) return;
-    const updatedAt =
-      typeof stats.updatedAt === "number" && Number.isFinite(stats.updatedAt) && stats.updatedAt > 0
-        ? stats.updatedAt
-        : Date.now();
-    usageSnapshot.value = {
-      totalTokens,
-      updatedAt,
-      backgroundUsageAvailable: stats?.backgroundUsageAvailable,
-    };
-    try {
-      localStorage.setItem("microclaw:usageSnapshot", JSON.stringify(usageSnapshot.value));
-    } catch {}
-  } catch {
-  } finally {
-    usageRequestPending = false;
-  }
-}
-
-watch(gatewayOnline, (online) => {
-  if (online) void loadUsageSnapshot();
-});
-
-function toggleUsageCollapsed() {
-  usageCollapsed.value = !usageCollapsed.value;
-  try {
-    localStorage.setItem("microclaw:usageSnapshotCollapsed", usageCollapsed.value ? "1" : "0");
-  } catch {}
-}
-
-function formatCompact(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value || 0);
-}
 
 /**
  * Ensure the active chat is a fresh session bound to the currently-selected agent.
@@ -754,106 +608,10 @@ html.dark .sp-create-btn:hover {
   min-height: 0;
 }
 
-.sp-usage-snapshot {
-  padding: 10px clamp(8px, 1.5vw, 16px) 12px;
-  background: #fbfbf9;
-}
-
-html.dark .sp-usage-snapshot {
-  background: var(--bg-secondary);
-}
-
-.sp-usage-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.sp-usage-title {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-.sp-usage-toggle {
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  line-height: 1;
-  display: grid;
-  place-items: center;
-  border-radius: 4px;
-  font-size: 11px;
-}
-
-.sp-usage-toggle-icon {
-  transition: transform 0.2s ease;
-}
-
-.sp-usage-toggle-icon.collapsed {
-  transform: rotate(-90deg);
-}
-
-.sp-usage-toggle:hover {
-  background: #f0ece7;
-  color: var(--text-primary);
-}
-
-html.dark .sp-usage-toggle:hover {
-  background: var(--bg-tertiary);
-}
-
-.sp-usage-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.sp-usage-card {
-  border: 1px solid #ece7e2;
-  border-radius: 8px;
-  padding: 6px;
-  background: #fff;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-html.dark .sp-usage-card {
-  border-color: var(--border);
-  background: var(--bg-primary);
-}
-
-.sp-usage-label {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.sp-usage-value {
-  font-size: 12px;
-  color: var(--text-primary);
-  font-weight: 600;
-  line-height: 1.2;
-}
-
-.sp-usage-state {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 4px 0;
-}
-
-.sp-usage-foot {
-  margin-top: 8px;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 10px;
-  color: var(--text-muted);
+.sp-footer {
+  flex-shrink: 0;
+  padding: 8px clamp(8px, 1.5vw, 16px) 12px;
+  border-top: 1px solid var(--border);
 }
 
 /* ── Chat section ── */
