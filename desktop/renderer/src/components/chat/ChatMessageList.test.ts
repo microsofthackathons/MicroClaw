@@ -119,4 +119,44 @@ describe("chat waiting feedback", () => {
     expect(wrapper.find(".chat-error").exists()).toBe(false);
     wrapper.unmount();
   });
+
+  it("keeps activity until the greeting run ends and removes the extra waiting group afterward", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    const key = "agent:main:main";
+    store.setMainSessionKey(key);
+    store.wsConnected = true;
+    vi.spyOn(window.openclaw.chat, "loadHistory").mockResolvedValue({
+      sessionKey: key,
+      messages: [
+        { role: "user", content: "你好" },
+        { role: "assistant", content: "你好！有什么需要我帮忙的吗？" },
+      ],
+      sessionInfo: { key, hasActiveRun: true, activeRunIds: ["greeting"] },
+    });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "greeting",
+      state: "status",
+      lifecyclePhase: "start",
+    });
+    await store.loadHistory({ passive: true });
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+    expect(wrapper.text()).toContain("你好！有什么需要我帮忙的吗？");
+    expect(wrapper.find('[data-testid="chat-activity"]').exists()).toBe(true);
+
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "greeting",
+      state: "status",
+      lifecyclePhase: "end",
+    });
+    await store.loadHistory({ passive: true });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain("你好！有什么需要我帮忙的吗？");
+    expect(wrapper.find('[data-testid="chat-activity"]').exists()).toBe(false);
+    expect(wrapper.find(".chat-waiting-gif").exists()).toBe(false);
+    wrapper.unmount();
+  });
 });

@@ -71,3 +71,22 @@ This avoids hashing two complete copies on every unchanged startup. It does
 not use an mtime-only cache, skip installed-file verification, or alter Weixin
 account state. Next manual launch measurements, rather than the earlier
 read-only sample, determine the actual speedup.
+
+## Windows Gateway stdin lifeline
+
+The desktop keeps the managed Gateway's stdin open and sets
+`OPENCLAW_GATEWAY_HOST_LIFELINE=stdin`. Closing that pipe still requests graceful
+shutdown; App termination closes its end of the pipe as the lifetime signal.
+
+On Windows, the Gateway is spawned with `overlapped` stdin rather than `pipe`.
+Node's `overlapped` option retains the same parent/child pipe interface but opens
+the child handle with `FILE_FLAG_OVERLAPPED`. This avoids the reproduced stall
+when a Gateway actively reading its lifeline starts Git or another Node process
+that inherits stdin. With ordinary `pipe` stdin, the local Git baseline check
+was observed to time out and delay chat initialization.
+
+Only the desktop's Gateway spawn configuration changes. OpenClaw's installed
+files and command execution policy are unchanged, as are stdout, stderr, IPC,
+the Gateway PID, and the MXC host launch configuration. Other platforms keep
+ordinary `pipe` stdin. Regression tests exercise inherited command input while
+the lifeline stays open, then verify EOF shutdown and stdout/stderr/IPC delivery.

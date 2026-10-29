@@ -18,6 +18,12 @@ export type AgentRosterReloadDependencies = {
 
 export type AgentRosterApplyResult = "hot-reloaded" | "restarted" | "timed-out";
 
+export function getGatewayProcessStdio(
+  platform: NodeJS.Platform = process.platform,
+): ["overlapped" | "pipe", "pipe", "pipe", "ipc"] {
+  return [platform === "win32" ? "overlapped" : "pipe", "pipe", "pipe", "ipc"];
+}
+
 export function shouldRetryGatewayStartup(
   exitCode: number | null,
   stderr: string,

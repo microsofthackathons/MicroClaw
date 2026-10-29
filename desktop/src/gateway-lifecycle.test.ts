@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   applyAgentRosterReload,
+  getGatewayProcessStdio,
   hardRestartGateway,
   isApplicationServiceReadyState,
   isGatewayServiceReady,
@@ -12,10 +13,22 @@ import {
 } from "./gateway-lifecycle";
 
 describe("Gateway startup convergence", () => {
+  it.each<NodeJS.Platform>(["win32", "linux", "darwin"])(
+    "preserves the stdin lifeline with platform-compatible handles on %s",
+    (platform) => {
+      expect(getGatewayProcessStdio(platform)).toEqual([
+        platform === "win32" ? "overlapped" : "pipe",
+        "pipe",
+        "pipe",
+        "ipc",
+      ]);
+    },
+  );
+
   it("uses the native host lifeline for owned Gateway processes", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     expect(main).toContain('OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin"');
-    expect(main).toContain('stdio: ["pipe", "pipe", "pipe", "ipc"]');
+    expect(main).toContain("stdio: getGatewayProcessStdio()");
     const restart = main.slice(
       main.indexOf("async function restartManagedGateway("),
       main.indexOf("async function restartManagedGatewayAndRequireReady("),

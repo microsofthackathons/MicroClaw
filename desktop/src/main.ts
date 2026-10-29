@@ -38,6 +38,7 @@ import { registerSessionModelHandlers } from "./session-model-ipc";
 import type { LocalModelReceipt } from "./local-model-types";
 import {
   applyAgentRosterReload,
+  getGatewayProcessStdio,
   hardRestartGateway,
   isApplicationServiceReadyState,
   shouldRetryGatewayStartup,
@@ -5254,7 +5255,7 @@ async function startGatewayInner(
     const child = spawn(nodePath, gwArgs, {
       cwd: path.dirname(entryPath),
       env: gwEnv,
-      stdio: ["pipe", "pipe", "pipe", "ipc"],
+      stdio: getGatewayProcessStdio(),
       windowsHide: true,
       ...(process.platform === "win32" ? { creationFlags: CREATE_NO_WINDOW } : {}),
     });

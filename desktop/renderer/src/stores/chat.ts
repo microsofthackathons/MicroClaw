@@ -802,10 +802,17 @@ export const useChatStore = defineStore("chat", () => {
     );
   }
 
-  function preserveOptimisticAttachmentMetadata(
+  function preserveOptimisticMessages(
     currentMessages: ChatMessage[],
     historyMessages: ChatMessage[],
   ): ChatMessage[] {
+    const pendingTextMessages = currentMessages
+      .filter((message) => message.role.toLowerCase() === "user")
+      .map((message, userOrdinal) => ({ message, userOrdinal }))
+      .filter(
+        ({ message }) =>
+          typeof message.originalText === "string" && getMessageAttachments(message).length === 0,
+      );
     const currentAttachmentMessages = currentMessages.filter(
       (message) =>
         message.role.toLowerCase() === "user" && getMessageAttachments(message).length > 0,
@@ -820,7 +827,7 @@ export const useChatStore = defineStore("chat", () => {
           attachmentOrdinal: number;
         } => typeof item.message.originalText === "string" && !!item.message.attachments?.length,
       );
-    if (optimisticMessages.length === 0) return historyMessages;
+    if (optimisticMessages.length === 0 && pendingTextMessages.length === 0) return historyMessages;
 
     const reconciled = [...historyMessages];
     const historyAttachmentIndexes = reconciled
@@ -842,6 +849,25 @@ export const useChatStore = defineStore("chat", () => {
         };
       } else {
         unmatchedOptimistic.push(optimisticMessage);
+      }
+    }
+    const historyUserMessages = historyMessages.filter(
+      (message) => message.role.toLowerCase() === "user",
+    );
+    for (const { message, userOrdinal } of pendingTextMessages) {
+      const echoed = historyUserMessages.some((candidate, historyOrdinal) => {
+        const sameTurn =
+          typeof message.timestamp === "number" && typeof candidate.timestamp === "number"
+            ? candidate.timestamp >= message.timestamp
+            : historyOrdinal === userOrdinal;
+        return (
+          sameTurn &&
+          getMessageAttachments(candidate).length === 0 &&
+          extractText(candidate) === message.originalText
+        );
+      });
+      if (!echoed) {
+        unmatchedOptimistic.push(message);
       }
     }
     reconciled.push(...unmatchedOptimistic);
@@ -962,6 +988,7 @@ export const useChatStore = defineStore("chat", () => {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
       if (a[i].role !== b[i].role) return false;
+      if (a[i].originalText !== b[i].originalText) return false;
       const ta = extractText(a[i]);
       const tb = extractText(b[i]);
       if (ta !== tb) return false;
@@ -1115,7 +1142,7 @@ export const useChatStore = defineStore("chat", () => {
       const filtered = raw
         .map((m) => stripSystemLines(m))
         .filter((m): m is ChatMessage => m != null && !isGatewaySystemMessage(m));
-      const reconciled = preserveOptimisticAttachmentMetadata(messages.value, filtered);
+      const reconciled = preserveOptimisticMessages(messages.value, filtered);
       if (isInferredWaitError(lastError.value) && hasCompletedReply(reconciled)) {
         lastError.value = null;
       }
@@ -1188,6 +1215,7 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       // Optimistic: add user message locally
+      invalidateHistoryObservation();
       optimisticTimestamp = Date.now();
       const optimisticMessage: ChatMessage = {
         role: "user",

@@ -75,6 +75,128 @@ import {
 import { useSessionStore } from "./sessions";
 // ChatEventPayload is declared globally in env.d.ts
 
+describe("optimistic text history reconciliation", () => {
+  const key = "agent:main:main";
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+    mockGetSettings.mockReset().mockResolvedValue({});
+  });
+
+  it("keeps a new send visible and running when an older idle read completes", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    let resolveHistory!: (history: unknown) => void;
+    mockLoadHistory.mockReturnValueOnce(new Promise((resolve) => (resolveHistory = resolve)));
+    const loading = store.loadHistory({ passive: true });
+
+    await store.sendMessage("你好");
+    resolveHistory({
+      sessionKey: key,
+      messages: [],
+      sessionInfo: { key, hasActiveRun: false, activeRunIds: [] },
+    });
+    await loading;
+
+    expect(store.messages.map(store.extractText)).toEqual(["你好"]);
+    expect(store.streaming).toBe(true);
+  });
+
+  it("keeps the optimistic greeting through lifecycle-start reads and empty polls", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    await store.sendMessage("你好");
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "greeting",
+      state: "status",
+      lifecyclePhase: "start",
+    });
+    await store.loadHistory({ passive: true });
+    await store.loadHistory({ passive: true });
+
+    expect(store.messages.map(store.extractText)).toEqual(["你好"]);
+    expect(store.streaming).toBe(true);
+  });
+
+  it("does not mistake an older identical greeting for the new user turn", async () => {
+    const store = useChatStore();
+    const previous = [
+      { role: "user", content: "你好" },
+      { role: "assistant", content: "你好！" },
+    ];
+    mockLoadHistory.mockResolvedValue({ messages: previous });
+    await store.loadHistory();
+    await store.sendMessage("你好");
+    await store.loadHistory({ passive: true });
+
+    expect(store.messages.map(store.extractText)).toEqual(["你好", "你好！", "你好"]);
+    mockLoadHistory.mockResolvedValue({
+      messages: [...previous, { role: "user", content: "你好" }],
+    });
+    await store.loadHistory({ passive: true });
+    expect(store.messages.map(store.extractText)).toEqual(["你好", "你好！", "你好"]);
+    expect(store.messages.at(-1)?.originalText).toBeUndefined();
+  });
+
+  it("retires an echoed optimistic message instead of resurrecting it on a later history edit", async () => {
+    const store = useChatStore();
+    await store.sendMessage("你好");
+    mockLoadHistory.mockResolvedValueOnce({ messages: [{ role: "user", content: "你好" }] });
+    await store.loadHistory();
+
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0].originalText).toBeUndefined();
+    await store.loadHistory();
+    expect(store.messages).toEqual([]);
+  });
+
+  it("recognizes the timestamped echo when a long history drops its oldest turn", async () => {
+    const store = useChatStore();
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [
+        { role: "user", content: "你好", timestamp: 1 },
+        { role: "assistant", content: "你好！", timestamp: 2 },
+      ],
+    });
+    await store.loadHistory();
+    await store.sendMessage("你好");
+    const timestamp = store.messages.at(-1)!.timestamp!;
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [{ role: "user", content: "你好", timestamp: timestamp + 1 }],
+    });
+    await store.loadHistory();
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0].originalText).toBeUndefined();
+    expect(store.messages[0].timestamp).toBe(timestamp + 1);
+  });
+
+  it("preserves a pending greeting across session switches without leaking it to another session", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    await store.sendMessage("你好");
+    await store.switchSession("agent:other:main");
+    expect(store.messages).toEqual([]);
+    await store.switchSession(key);
+    expect(store.messages.map(store.extractText)).toEqual(["你好"]);
+  });
+
+  it("removes a rejected send even after a history poll", async () => {
+    const store = useChatStore();
+    let rejectSend!: (error: Error) => void;
+    mockSendMessage.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectSend = reject)));
+    const sending = store.sendMessage("你好");
+    await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    await store.loadHistory({ passive: true });
+    expect(store.messages.map(store.extractText)).toEqual(["你好"]);
+    rejectSend(new Error("Gateway not connected"));
+    expect(await sending).toBe(false);
+    expect(store.messages).toEqual([]);
+    expect(store.streaming).toBe(false);
+  });
+});
+
 describe("fenced selected-session activity reconciliation", () => {
   const key = "agent:main:main";
   type History = Awaited<ReturnType<OpenClawAPI["chat"]["loadHistory"]>>;
