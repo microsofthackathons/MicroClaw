@@ -2,6 +2,10 @@ import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { readAgentRoster } from "./agent-roster";
 import {
+  ensureSelectedModelProviderPlugins,
+  getSelectedModelProviderPluginIds,
+} from "./model-provider-plugins";
+import {
   POWERSHELL_FILESYSTEM_SCOPE_MARKER,
   validatePowerShellFilesystemInitialization,
   type PowerShellFilesystemInitialization,
@@ -49,6 +53,7 @@ export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
 ] as const;
 export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs"] as const;
 export const WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS = ["memory-core"] as const;
+export const WINDOWS_NODE_MXC_MODEL_PROVIDER_PLUGIN_IDS = ["github-copilot"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
   "group:runtime",
   "group:fs",
@@ -695,16 +700,24 @@ export function applyWindowsNodeMxcGatewayPolicy(
     internal: { ...asRecord(hooks.internal), enabled: false },
   };
   config.cron = { ...asRecord(config.cron), enabled: false };
+  ensureSelectedModelProviderPlugins(config);
   const plugins = asRecord(config.plugins);
   const pluginEntries = asRecord(plugins.entries);
   const weixinRequested = asRecord(pluginEntries["openclaw-weixin"]).enabled === true;
-  const pluginAllow = ["canvas", ...(weixinRequested ? ["openclaw-weixin"] : [])];
+  const modelProviderPluginIds = WINDOWS_NODE_MXC_MODEL_PROVIDER_PLUGIN_IDS.filter(
+    (pluginId) => asRecord(pluginEntries[pluginId]).enabled === true,
+  );
+  const pluginAllow = [
+    "canvas",
+    ...(weixinRequested ? ["openclaw-weixin"] : []),
+    ...modelProviderPluginIds,
+  ];
   config.plugins = {
     ...plugins,
     enabled: true,
     allow: pluginAllow,
     deny: Array.isArray(plugins.deny)
-      ? plugins.deny.filter((value) => value !== "canvas" && value !== "openclaw-weixin")
+      ? plugins.deny.filter((value) => !pluginAllow.includes(value))
       : [],
     slots: {
       ...asRecord(plugins.slots),
@@ -716,7 +729,7 @@ export function applyWindowsNodeMxcGatewayPolicy(
           pluginId,
           {
             ...asRecord(value),
-            enabled: pluginId === "canvas" || (pluginId === "openclaw-weixin" && weixinRequested),
+            enabled: pluginAllow.includes(pluginId),
           },
         ]),
       ),
@@ -889,9 +902,26 @@ export function validateWindowsNodeMxcGatewayPolicy(
   }
   const pluginAllow = Array.isArray(plugins.allow) ? plugins.allow : [];
   const pluginDeny = Array.isArray(plugins.deny) ? plugins.deny : [];
-  const expectedPluginAllow = ["canvas", ...(weixinPluginEnabled ? ["openclaw-weixin"] : [])];
-  if (!isDeepStrictEqual(pluginAllow, expectedPluginAllow) || pluginDeny.includes("canvas")) {
-    blockers.push("Gateway plugin policy drifted from the reviewed Canvas/WeChat surface");
+  const modelProviderPluginIds = WINDOWS_NODE_MXC_MODEL_PROVIDER_PLUGIN_IDS.filter(
+    (pluginId) => asRecord(asRecord(plugins.entries)[pluginId]).enabled === true,
+  );
+  const expectedPluginAllow = [
+    "canvas",
+    ...(weixinPluginEnabled ? ["openclaw-weixin"] : []),
+    ...modelProviderPluginIds,
+  ];
+  if (
+    !isDeepStrictEqual(pluginAllow, expectedPluginAllow) ||
+    expectedPluginAllow.some((pluginId) => pluginDeny.includes(pluginId))
+  ) {
+    blockers.push(
+      "Gateway plugin policy drifted from the reviewed Canvas/WeChat/model-provider surface",
+    );
+  }
+  for (const pluginId of getSelectedModelProviderPluginIds(root)) {
+    if (!expectedPluginAllow.includes(pluginId)) {
+      blockers.push(`Gateway model provider plugin "${pluginId}" must remain enabled`);
+    }
   }
   if (
     weixinPluginEnabled &&
@@ -909,6 +939,7 @@ export function validateWindowsNodeMxcGatewayPolicy(
     if (
       pluginId !== "canvas" &&
       pluginId !== "openclaw-weixin" &&
+      !WINDOWS_NODE_MXC_MODEL_PROVIDER_PLUGIN_IDS.some((reviewedId) => reviewedId === pluginId) &&
       !WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.includes(
         pluginId as (typeof WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS)[number],
       ) &&

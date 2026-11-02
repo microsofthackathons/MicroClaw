@@ -5,6 +5,32 @@ import {
 } from "./model-provider-plugins";
 
 describe("ensureSelectedModelProviderPlugins", () => {
+  it.each([
+    { defaults: { model: "github-copilot/gpt-6.1-sol" } },
+    { defaults: { model: { primary: "github-copilot/gpt-6.1-sol" } } },
+    {
+      defaults: {
+        model: { primary: "qwen/qwen3.7-plus", fallbacks: ["github-copilot/gpt-6.1-sol"] },
+      },
+    },
+    { list: [{ id: "main", model: "github-copilot/gpt-6.1-sol" }] },
+    { entries: { main: { model: { primary: "github-copilot/gpt-6.1-sol" } } } },
+  ])(
+    "prepares Copilot for configured default, fallback, and agent model references: %j",
+    (agents) => {
+      const config = { agents };
+
+      expect(ensureSelectedModelProviderPlugins(config)).toBe(true);
+      expect(config).toMatchObject({
+        plugins: {
+          allow: ["github-copilot"],
+          entries: { "github-copilot": { enabled: true } },
+        },
+      });
+      expect(ensureSelectedModelProviderPlugins(config)).toBe(false);
+    },
+  );
+
   it("enables the bundled GitHub Copilot plugin for a selected Copilot model", () => {
     const config = {
       agents: { defaults: { model: { primary: "github-copilot/gpt-5.4" } } },

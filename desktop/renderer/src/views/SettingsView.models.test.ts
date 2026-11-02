@@ -125,19 +125,44 @@ describe("SettingsView model integration", () => {
     return { wrapper, chat: useChatStore(pinia) };
   }
 
-  it("hides disabled Copilot cards and saved models without reading authentication or deleting configuration", async () => {
+  it("retains the configured Copilot default and catalog while keeping setup hidden without the flag", async () => {
     Object.assign(window.openclaw.features, { githubCopilot: false });
-    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
-    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    config.agents.defaults.model.primary = "github-copilot/gpt-5.4";
+    window.openclaw.model.getGitHubCopilotStatus = vi
+      .fn()
+      .mockResolvedValue({ authenticated: true });
+    window.openclaw.model.listGitHubCopilotModels = vi
+      .fn()
+      .mockResolvedValue([{ id: "github-copilot/another", name: "Another model" }]);
+    window.openclaw.model.prepareGitHubCopilot = vi.fn();
+    window.openclaw.model.startGitHubCopilotLogin = vi.fn();
     const original = structuredClone(config);
     const { wrapper } = await open(true);
     expect(wrapper.find('[data-provider="github-copilot"]').exists()).toBe(false);
-    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("GitHub Copilot");
-    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
-    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    const picker = wrapper.getComponent(DefaultModelPicker);
+    expect(picker.props("modelValue")).toBe("github-copilot/gpt-5.4");
+    expect(picker.find('[data-provider-group="github-copilot"]').exists()).toBe(true);
+    expect(picker.find('[data-model-ref="github-copilot/another"]').exists()).toBe(true);
+    expect(window.openclaw.model.getGitHubCopilotStatus).toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).toHaveBeenCalled();
+    expect(window.openclaw.model.prepareGitHubCopilot).not.toHaveBeenCalled();
+    expect(window.openclaw.model.startGitHubCopilotLogin).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     expect(config).toEqual(original);
+  });
+
+  it("does not discover Copilot models or start setup when no Copilot login exists", async () => {
+    Object.assign(window.openclaw.features, { githubCopilot: false });
+    window.openclaw.model.getGitHubCopilotStatus = vi
+      .fn()
+      .mockResolvedValue({ authenticated: false });
+    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    window.openclaw.model.prepareGitHubCopilot = vi.fn();
+    window.openclaw.model.startGitHubCopilotLogin = vi.fn();
+    await open();
+    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(window.openclaw.model.prepareGitHubCopilot).not.toHaveBeenCalled();
+    expect(window.openclaw.model.startGitHubCopilotLogin).not.toHaveBeenCalled();
   });
 
   it("exposes the shared recovery entry and blocks default changes until saved state is confirmed", async () => {

@@ -3,6 +3,34 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("desktop startup order", () => {
+  it("keeps configured model use and catalog reads independent of the Copilot setup flag", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const chatValidation = source.slice(
+      source.indexOf("async function assertChatModelEnabled("),
+      source.indexOf("async function withInternalModelChat<"),
+    );
+    expect(chatValidation).toContain("assertChatModelSupported(modelRef)");
+    expect(chatValidation).not.toContain("internalFeatures");
+    expect(chatValidation).not.toContain("assertModelProviderEnabled");
+    expect(source).toContain("hasConfiguredModel(config)");
+    for (const channel of [
+      "gateway:warm-up-agent",
+      "model:github-copilot:status",
+      "model:github-copilot:list-models",
+    ]) {
+      const start = source.indexOf(`ipcMain.handle("${channel}"`);
+      expect(start).toBeGreaterThan(-1);
+      const handler = source.slice(start, source.indexOf("\n  });", start));
+      expect(handler).not.toContain("internalFeatures.githubCopilot");
+    }
+    for (const channel of ["model:github-copilot:prepare", "model:github-copilot:start-login"]) {
+      const start = source.indexOf(`ipcMain.handle("${channel}"`);
+      expect(start).toBeGreaterThan(-1);
+      const handler = source.slice(start, source.indexOf("\n  });", start));
+      expect(handler).toContain("assertGitHubCopilotEnabled(internalFeatures.githubCopilot)");
+    }
+  });
+
   it("starts application services after integrity verification without blocking renderer loading", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const lifecycle = source.slice(

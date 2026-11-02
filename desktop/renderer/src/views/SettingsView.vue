@@ -1004,7 +1004,7 @@ import {
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
 import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
-import { isGitHubCopilotEnabled, isModelProviderEnabled } from "@/utils/model-features";
+import { isModelProviderEnabled } from "@/utils/model-features";
 import {
   useProviderModelCatalog,
   readConfiguredCatalogs,
@@ -1960,10 +1960,8 @@ watch(activeSection, (v) => {
 function applyModelsConfig(config: any): void {
   defaultAgentOverride.value = getDefaultAgentModelOverride(config);
   const parsed = readConfiguredModels(config);
-  customModels.value = parsed.models.filter((model) => isModelProviderEnabled(model.providerKey));
-  selectedModel.value = isModelProviderEnabled(parsed.primary.split("/", 1)[0])
-    ? parsed.primary
-    : "";
+  customModels.value = parsed.models;
+  selectedModel.value = parsed.primary;
   providerCatalogInputs.value = readConfiguredCatalogs(config);
   const revision = ++providerCatalogRevision;
   providerCatalogLoading.value = true;
@@ -2001,11 +1999,8 @@ async function loadLocalFileStatus(): Promise<void> {
 }
 
 async function loadSettingsGitHubCopilotModels(): Promise<void> {
-  if (!isGitHubCopilotEnabled()) return;
   const generation = ++copilotModelsGeneration;
   copilotModelsLoading.value = true;
-  const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
-  void modelsPromise.catch(() => {});
 
   try {
     const status = await window.openclaw.model.getGitHubCopilotStatus();
@@ -2015,7 +2010,7 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
       return;
     }
 
-    const models = await modelsPromise;
+    const models = await window.openclaw.model.listGitHubCopilotModels();
     if (generation !== copilotModelsGeneration) return;
     customModels.value = mergeGitHubCopilotModelEntries(customModels.value, models);
   } catch (error) {

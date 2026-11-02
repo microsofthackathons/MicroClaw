@@ -85,19 +85,33 @@ describe("ChatModelPicker", () => {
     return wrapper;
   }
 
-  it("hides saved Copilot models and skips authentication when the internal feature is disabled", async () => {
+  it("allows configured Copilot models without starting setup when the internal flag is off", async () => {
     Object.assign(window.openclaw.features, { githubCopilot: false });
     window.openclaw.config.read = vi.fn().mockResolvedValue({
       models: { providers: { cloud: { models: [{ id: "remote", name: "Cloud model" }] } } },
       agents: { defaults: { models: { "github-copilot/gpt-5": { alias: "Copilot" } } } },
     });
-    window.openclaw.model.getGitHubCopilotStatus = vi.fn();
-    window.openclaw.model.listGitHubCopilotModels = vi.fn();
+    window.openclaw.model.getGitHubCopilotStatus = vi
+      .fn()
+      .mockResolvedValue({ authenticated: true });
+    window.openclaw.model.listGitHubCopilotModels = vi.fn().mockResolvedValue([
+      { id: "github-copilot/gpt-5", name: "Copilot" },
+      { id: "github-copilot/another", name: "Another model" },
+    ]);
+    window.openclaw.model.prepareGitHubCopilot = vi.fn();
+    window.openclaw.model.startGitHubCopilotLogin = vi.fn();
     const wrapper = await open();
-    expect(wrapper.find('[data-provider-group="github-copilot"]').exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Copilot");
-    expect(window.openclaw.model.getGitHubCopilotStatus).not.toHaveBeenCalled();
-    expect(window.openclaw.model.listGitHubCopilotModels).not.toHaveBeenCalled();
+    await wrapper.get('[data-provider-group="github-copilot"]').trigger("click");
+    await wrapper.get('[data-model-ref="github-copilot/another"]').trigger("click");
+    await flushPromises();
+    expect(window.openclaw.model.session.select).toHaveBeenCalledWith({
+      sessionKey: "agent:main:one",
+      modelRef: "github-copilot/another",
+    });
+    expect(window.openclaw.model.getGitHubCopilotStatus).toHaveBeenCalled();
+    expect(window.openclaw.model.listGitHubCopilotModels).toHaveBeenCalled();
+    expect(window.openclaw.model.prepareGitHubCopilot).not.toHaveBeenCalled();
+    expect(window.openclaw.model.startGitHubCopilotLogin).not.toHaveBeenCalled();
     expect(window.openclaw.config.write).not.toHaveBeenCalled();
   });
 

@@ -3,7 +3,7 @@ import { selectDefaultModel } from "./default-model-selection";
 import { GatewayRequestError } from "./gateway-client";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 
-function fixture(target = "cloud/b", githubCopilotEnabled = true) {
+function fixture(target = "cloud/b") {
   const config = {
     agents: {
       defaults: {
@@ -60,7 +60,6 @@ function fixture(target = "cloud/b", githubCopilotEnabled = true) {
     request,
   };
   const deps = {
-    githubCopilotEnabled,
     gateway: () => gateway,
     readConfig: () => config,
     assertMutable: vi.fn(),
@@ -123,11 +122,11 @@ describe("default model hot selection", () => {
     expect(f.config.agents.defaults.modelPolicy).toEqual(f.before.agents.defaults.modelPolicy);
   });
 
-  it("rejects disabled Copilot selection before accessing the Gateway or changing configuration", async () => {
-    const f = fixture("github-copilot/gpt-6-sol", false);
-    await expect(f.select()).rejects.toThrow("GitHub Copilot is disabled");
-    expect(f.request).not.toHaveBeenCalled();
-    expect(f.config).toEqual(f.before);
+  it("selects externally authenticated Copilot without the internal setup flag", async () => {
+    const setup = fixture("github-copilot/gpt-6-sol");
+    await expect(setup.select()).resolves.toEqual({ modelRef: "github-copilot/gpt-6-sol" });
+    expect(setup.request).toHaveBeenCalledWith("models.authStatus", {}, undefined);
+    expect(setup.config.auth).toEqual(setup.before.auth);
   });
 
   it.each([

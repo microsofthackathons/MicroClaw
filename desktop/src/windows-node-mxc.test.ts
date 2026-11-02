@@ -690,6 +690,108 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
   });
 
+  it.each(["locked", "active"] as const)(
+    "keeps the configured Copilot provider loaded without relaxing the %s tool policy",
+    (state) => {
+      const source = {
+        agents: {
+          defaults: { model: { primary: "github-copilot/gpt-6.1-sol" } },
+          list: [{ id: "main" }],
+        },
+        plugins: {
+          allow: ["unsafe-provider"],
+          deny: ["github-copilot", "unsafe-provider"],
+          entries: {
+            "github-copilot": { enabled: false },
+            "unsafe-provider": { enabled: true },
+            "memory-core": { enabled: true },
+          },
+        },
+      };
+      const original = structuredClone(source);
+      const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, state);
+
+      expect(applied.config).toMatchObject({
+        plugins: {
+          allow: ["canvas", "github-copilot"],
+          deny: ["unsafe-provider"],
+          slots: { memory: "none" },
+          entries: {
+            canvas: { enabled: true },
+            "github-copilot": { enabled: true },
+            "unsafe-provider": { enabled: false },
+            "memory-core": { enabled: false },
+          },
+        },
+      });
+      const agents = applied.config.agents as { list: Array<{ tools: unknown }> };
+      expect(agents.list[0].tools).toEqual(
+        state === "locked"
+          ? buildWindowsNodeMxcLockedToolPolicy("node-123")
+          : buildWindowsNodeMxcToolPolicy("node-123"),
+      );
+      expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123", state).ready).toBe(
+        true,
+      );
+      expect(source).toEqual(original);
+      expect(restoreWindowsNodeMxcGatewayPolicy(applied.config, applied.backups)).toEqual(source);
+      expect(
+        applyWindowsNodeMxcGatewayPolicy(applied.config, "node-123", applied.backups, state),
+      ).toEqual(applied);
+    },
+  );
+
+  it("preserves an explicitly enabled Copilot provider for session overrides", () => {
+    const source = {
+      agents: { defaults: { model: "qwen/qwen3.7-plus" }, list: [{ id: "main" }] },
+      plugins: { entries: { "github-copilot": { enabled: true } } },
+    };
+    const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "active");
+
+    expect(applied.config).toMatchObject({
+      plugins: {
+        allow: ["canvas", "github-copilot"],
+        entries: { "github-copilot": { enabled: true } },
+      },
+    });
+    expect(validateWindowsNodeMxcGatewayPolicy(applied.config, "node-123").ready).toBe(true);
+  });
+
+  it("rejects a suppressed configured provider, a denied provider, and unreviewed plugins", () => {
+    const source = {
+      agents: {
+        defaults: { model: "github-copilot/gpt-6.1-sol" },
+        list: [{ id: "main" }],
+      },
+    };
+    const baseline = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "active").config;
+    const suppressed = structuredClone(baseline);
+    suppressed.plugins = {
+      ...(baseline.plugins as Record<string, unknown>),
+      allow: ["canvas"],
+      entries: { canvas: { enabled: true }, "github-copilot": { enabled: false } },
+    };
+    const denied = structuredClone(baseline);
+    denied.plugins = {
+      ...(baseline.plugins as Record<string, unknown>),
+      deny: ["github-copilot"],
+    };
+    const unreviewed = structuredClone(baseline);
+    unreviewed.plugins = {
+      ...(baseline.plugins as Record<string, unknown>),
+      allow: ["canvas", "github-copilot", "unsafe-provider"],
+      entries: {
+        canvas: { enabled: true },
+        "github-copilot": { enabled: true },
+        "unsafe-provider": { enabled: true },
+      },
+    };
+
+    for (const drift of [suppressed, denied, unreviewed]) {
+      expect(validateWindowsNodeMxcGatewayPolicy(drift, "node-123").ready).toBe(false);
+    }
+  });
+
   it("fails closed when channels, hooks, cron, or plugins are re-enabled", () => {
     const source = { agents: { list: [{ id: "main" }] } };
     const baseline = applyWindowsNodeMxcGatewayPolicy(source, "node-123", {}, "active").config;
