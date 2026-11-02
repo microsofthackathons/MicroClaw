@@ -8,6 +8,7 @@ import { isMainSessionKey } from "../../../src/main-session-key";
 const mocks = vi.hoisted(() => ({
   getStats: vi.fn(),
   push: vi.fn(),
+  route: { name: "chat", path: "/chat/main" },
   gateway: { ready: true, status: "running", refreshWeixinStatus: vi.fn() },
   chat: {
     wsConnected: true,
@@ -35,7 +36,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: mocks.push }),
-  useRoute: () => ({ name: "chat", path: "/chat/main" }),
+  useRoute: () => mocks.route,
 }));
 vi.mock("@/stores/gateway", () => ({ useGatewayStore: () => mocks.gateway }));
 vi.mock("@/stores/chat", () => ({ useChatStore: () => mocks.chat }));
@@ -48,6 +49,8 @@ const storage = new Map<string, string>();
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  mocks.route.name = "chat";
+  mocks.route.path = "/chat/main";
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
@@ -86,7 +89,7 @@ async function mountPanel() {
       stubs: {
         WeixinConnectionShortcut: {
           name: "WeixinConnectionShortcut",
-          template: "<button>WeChat</button>",
+          template: '<button data-testid="weixin-shortcut" />',
         },
       },
     },
@@ -96,15 +99,25 @@ async function mountPanel() {
   return wrapper;
 }
 
-describe("SidePanel WeChat footer", () => {
+describe("SidePanel footer actions", () => {
   it.each(["en-US", "zh-CN"] as const)(
-    "replaces usage with a WeChat shortcut in %s",
+    "shows icon-only settings and phone shortcuts in the footer in %s",
     async (locale) => {
       setLocale(locale);
       const wrapper = await mountPanel();
       expect(
         wrapper.get(".sp-footer").findComponent({ name: "WeixinConnectionShortcut" }).exists(),
       ).toBe(true);
+      const settings = wrapper.get('.sp-footer [data-testid="settings-shortcut"]');
+      expect(settings.attributes("title")).toBe(t("sidebar.settings"));
+      expect(settings.attributes("aria-label")).toBe(t("sidebar.settings"));
+      expect(settings.attributes("aria-current")).toBeUndefined();
+      expect(settings.text()).toBe("");
+      expect(settings.get("svg").attributes("aria-hidden")).toBe("true");
+      expect(settings.get("svg").attributes("width")).toBe("16");
+      expect(settings.get("svg").attributes("height")).toBe("16");
+      expect(wrapper.find('.sp-nav [data-testid="settings-shortcut"]').exists()).toBe(false);
+      expect(wrapper.get(".sp-footer").text()).toBe("");
       expect(wrapper.find(".sp-usage-snapshot").exists()).toBe(false);
       expect(wrapper.text()).not.toContain(t("sidebar.usageSnapshotTitle"));
       expect(wrapper.text()).not.toContain("Tokens");
@@ -127,9 +140,20 @@ describe("SidePanel WeChat footer", () => {
     const wrapper = await mountPanel();
     await wrapper.get(".sp-create-btn").trigger("click");
     expect(mocks.push).toHaveBeenLastCalledWith("/chat/main");
-    await wrapper.get(".sp-menu-item").trigger("click");
+    await wrapper.get('[data-testid="settings-shortcut"]').trigger("click");
     expect(mocks.push).toHaveBeenLastCalledWith("/settings");
   });
+
+  it.each(["/settings", "/settings/security"])(
+    "marks the settings icon as current on %s",
+    async (path) => {
+      mocks.route.path = path;
+      const wrapper = await mountPanel();
+      const settings = wrapper.get('[data-testid="settings-shortcut"]');
+      expect(settings.classes()).toContain("active");
+      expect(settings.attributes("aria-current")).toBe("page");
+    },
+  );
 });
 
 describe("SidePanel session actions", () => {
