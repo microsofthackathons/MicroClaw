@@ -146,6 +146,23 @@ describe("WeChat sidebar shortcut", () => {
     return wrapper!.findAll("button").find((candidate) => candidate.text() === t(key))!;
   }
 
+  it.each(["en-US", "zh-CN"] as const)(
+    "shows only a device icon with an accessible phone label in %s",
+    (locale) => {
+      setLocale(locale);
+      mountShortcut();
+      const shortcut = wrapper!.get('[data-testid="weixin-shortcut"]');
+      expect(shortcut.text()).toBe("");
+      expect(shortcut.find("img").exists()).toBe(false);
+      expect(shortcut.get("svg").attributes("aria-hidden")).toBe("true");
+      expect(shortcut.get("svg").attributes("width")).toBe("16");
+      expect(shortcut.get("svg").attributes("height")).toBe("16");
+      expect(shortcut.attributes("title")).toBe(t("sidebar.phone"));
+      expect(shortcut.attributes("aria-label")).toBe(t("sidebar.phone"));
+      expect(shortcut.attributes("aria-haspopup")).toBe("dialog");
+    },
+  );
+
   it("does not load the connection surface or start login on mount or hover", async () => {
     mountShortcut();
     await wrapper!.get('[data-testid="weixin-shortcut"]').trigger("mouseenter");

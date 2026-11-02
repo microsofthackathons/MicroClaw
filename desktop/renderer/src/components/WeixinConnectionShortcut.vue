@@ -17,13 +17,28 @@
         class="weixin-shortcut"
         :class="{ active: open }"
         data-testid="weixin-shortcut"
-        :aria-label="t('plugins.weixinName')"
+        :title="t('sidebar.phone')"
+        :aria-label="t('sidebar.phone')"
         aria-haspopup="dialog"
         :aria-expanded="open"
         @click="open = !open"
       >
-        <img :src="weixinIcon" alt="" />
-        <span>{{ t("plugins.weixinName") }}</span>
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M10 16H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3M6 20h4M8 16v4" />
+          <rect x="13" y="8" width="9" height="14" rx="2" />
+          <path d="M17 18h1" />
+        </svg>
       </button>
     </template>
     <div ref="content">
@@ -46,7 +61,6 @@ import { defineAsyncComponent, onMounted, onUnmounted, ref, useId, watch } from 
 import { useRoute } from "vue-router";
 import { ElPopover } from "element-plus";
 import { t } from "@/i18n";
-import weixinIcon from "@/assets/wechat.png";
 
 const WeixinConnectionCard = defineAsyncComponent(() => import("./WeixinConnectionCard.vue"));
 const route = useRoute();
@@ -93,21 +107,20 @@ onUnmounted(() => {
 .weixin-shortcut {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 12px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
-  font-size: 13px;
   cursor: pointer;
-}
-.weixin-shortcut img {
-  width: 22px;
-  height: 22px;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 .weixin-shortcut:hover,
 .weixin-shortcut.active {

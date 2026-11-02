@@ -124,11 +124,17 @@
           </div>
         </div>
       </div>
+    </nav>
 
-      <!-- Settings -->
+    <footer class="sp-footer">
       <button
-        class="sp-menu-item"
+        type="button"
+        class="sp-footer-action"
         :class="{ active: route.path.startsWith('/settings') }"
+        data-testid="settings-shortcut"
+        :title="t('sidebar.settings')"
+        :aria-label="t('sidebar.settings')"
+        :aria-current="route.path.startsWith('/settings') ? 'page' : undefined"
         @click="router.push('/settings')"
       >
         <svg
@@ -140,17 +146,15 @@
           stroke-width="1.8"
           stroke-linecap="round"
           stroke-linejoin="round"
+          aria-hidden="true"
+          focusable="false"
         >
           <circle cx="12" cy="12" r="3" />
           <path
             d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
           />
         </svg>
-        <span>{{ t("sidebar.settings") }}</span>
       </button>
-    </nav>
-
-    <footer class="sp-footer">
       <WeixinConnectionShortcut />
     </footer>
   </aside>
@@ -619,6 +623,9 @@ html.dark .sp-create-btn:hover {
 }
 
 .sp-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
   padding: 8px clamp(8px, 1.5vw, 16px) 12px;
   border-top: 1px solid var(--border);
@@ -764,47 +771,33 @@ html.dark .sp-chat-item.selected {
 }
 
 /* ── Menu items ── */
-.sp-menu-item {
-  width: 100%;
-  min-height: 36px;
+.sp-footer-action {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  justify-content: center;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   border-radius: 8px;
-  font-size: 14px;
-  line-height: 20px;
   cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s;
-  margin-bottom: 2px;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 
-.sp-menu-item > span {
-  flex: 1;
-  text-align: left;
-}
-
-.sp-menu-item:hover {
-  background: #f9f5f2;
-  color: var(--text-primary);
-}
-
-.sp-menu-item.active {
-  background: #f0ece7;
-  color: var(--text-primary);
-}
-
-html.dark .sp-menu-item:hover {
-  background: var(--bg-tertiary);
-}
-
-html.dark .sp-menu-item.active {
+.sp-footer-action:hover,
+.sp-footer-action.active {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.sp-footer-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
 }
 
 /* ── Agent section ── */
