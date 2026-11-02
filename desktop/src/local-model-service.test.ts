@@ -469,6 +469,19 @@ describe("local model protocol guards", () => {
   it.each(["2026.9.3", "2026.9.4"])("accepts the supported host %s", (version) => {
     expect(supportsLocalModelVersion(version)).toBe(true);
   });
+  it("restarts after a first install even when the Gateway does not request it", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, enabled: false });
+    const request = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = await request(method, params, timeout);
+      return method === "plugins.install" ? { ok: true, restartRequired: false } : result;
+    });
+    const result = await context.service.installProvider({ confirmed: true });
+    expect(result.plugin.installed).toBe(true);
+    expect(context.restartGateway).toHaveBeenCalledOnce();
+  });
+
   it.each([
     "2026.9.3",
     "2026.9.4",

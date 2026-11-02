@@ -74,6 +74,12 @@ describe("Gateway startup convergence", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     expect(main).toContain('OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin"');
     expect(main).toContain("stdio: getGatewayProcessStdio()");
+    const gracefulStop = main.slice(
+      main.indexOf("async function stopGatewayProcessGracefully("),
+      main.indexOf("function getGatewayListenerPids("),
+    );
+    expect(gracefulStop).toContain("timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS");
+    expect(gracefulStop).not.toContain("timeoutMs: 10_000,\n      forceTimeoutMs:");
     const restart = main.slice(
       main.indexOf("async function restartManagedGateway("),
       main.indexOf("async function restartManagedGatewayAndRequireReady("),

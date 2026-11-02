@@ -5,7 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "node:test";
 import { parseOptions, ROOT } from "./cli.mjs";
-import { aggregate, compare, emptyMetrics, SCENARIOS, summarize } from "./results.mjs";
+import {
+  aggregate,
+  builtInScenarioIds,
+  compare,
+  emptyMetrics,
+  SCENARIOS,
+  summarize,
+} from "./results.mjs";
 import { createFixture, sanitizeError } from "./fixtures.mjs";
 import { collectArtifact, inspectFile } from "./provenance.mjs";
 import { FIXED_TEXT, startModelService } from "./model-service.mjs";
@@ -36,6 +43,43 @@ test("CLI validates scope and keeps compare explicit", () => {
   assert.throws(() => parseOptions(["--samples", "1.5"]), /positive/);
   assert.throws(() => parseOptions(["--scenario", "unknown"]), /Unknown scenario/);
   assert.throws(() => parseOptions(["report", "--baseline", "baseline.json"]), /compare/);
+});
+
+test("CLI defaults to every built-in case and accepts the all selector", () => {
+  const defaults = parseOptions([]);
+  assert.deepEqual(defaults.scenarios, ["app.restart", "chat.new-session"]);
+  assert.equal(defaults.samples, 3);
+  assert.equal(defaults.profile, "fixed-response");
+  assert.deepEqual(parseOptions(["--scenario", "all"]).scenarios, defaults.scenarios);
+  assert.deepEqual(parseOptions(["--scenario", "all,app.restart"]).scenarios, defaults.scenarios);
+});
+
+test("the built-in suite discovers new registered cases without a separate allowlist", () => {
+  const registry = {
+    ...SCENARIOS,
+    "future.case": { version: 1, endpoints: { totalMs: "start -> end" } },
+  };
+  assert.deepEqual(builtInScenarioIds(registry), [...builtInScenarioIds(), "future.case"]);
+});
+
+test("cold fixture preparation has a separate timeout from measured desktop actions", () => {
+  const defaults = parseOptions([]);
+  assert.equal(defaults.timeoutMs, 120000);
+  assert.equal(defaults.setupTimeoutMs, 600000);
+  const options = parseOptions(["--timeout-ms", "2000", "--setup-timeout-ms", "900000"]);
+  assert.equal(options.timeoutMs, 2000);
+  assert.equal(options.setupTimeoutMs, 900000);
+  assert.equal(parseOptions(["--timeout-ms", "2000"]).setupTimeoutMs, 600000);
+  assert.throws(() => parseOptions(["--setup-timeout-ms", "0"]), /positive/);
+  assert.throws(() => parseOptions(["--setup-timeout-ms", "1.5"]), /positive/);
+});
+
+test("external-fixture cases remain available through explicit selection", () => {
+  assert.deepEqual(parseOptions(["--scenario", "install.clean"]).scenarios, ["install.clean"]);
+  assert.deepEqual(parseOptions(["--scenario", "all,install.clean"]).scenarios, [
+    ...builtInScenarioIds(),
+    "install.clean",
+  ]);
 });
 
 test("real-model is opt-in with explicit sample and total request budgets", () => {
@@ -263,7 +307,7 @@ test("missing prerequisites still produce a complete unavailable report without 
   const options = { ...parseOptions(["report", "--samples", "2"]), root, output: root };
   const { output, result } = await runPerformance(options);
   assert.equal(result.summary.coverage, "unavailable");
-  assert.equal(result.samples.length, 6);
+  assert.equal(result.samples.length, options.samples * options.scenarios.length);
   assert.ok(
     result.samples.every(
       (sample) => sample.outcome === "unavailable" && sample.metrics.totalMs === null,
@@ -274,7 +318,10 @@ test("missing prerequisites still produce a complete unavailable report without 
     JSON.parse(await readFile(path.join(output, "results.json"), "utf8")).runId,
     result.runId,
   );
-  assert.ok(!(await readFile(path.join(output, "report.md"), "utf8")).includes("## Comparison"));
+  const report = await readFile(path.join(output, "report.md"), "utf8");
+  assert.match(report, /# MicroClaw 性能测试报告/);
+  assert.match(report, /覆盖状态：不可用（unavailable）/);
+  assert.doesNotMatch(report, /## 基线对比/);
 });
 
 test("missing comparison baseline does not suppress the candidate report", async () => {

@@ -31,20 +31,81 @@ describe("desktop startup order", () => {
     }
   });
 
-  it("starts application services after integrity verification without blocking renderer loading", () => {
+  it("forwards the chat send acknowledgment instead of discarding the request run ID", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const handler = source.slice(
+      source.indexOf('"chat:send-message"'),
+      source.indexOf('"chat:load-history"'),
+    );
+    expect(handler).toContain("return await gwClient.sendChat(");
+  });
+  it("uses archive-backed loading only for the packaged bundled runtime before compatibility hooks", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const setup = source.slice(
+      source.indexOf("const archiveLoaderPath ="),
+      source.indexOf("const approvalCompatPath ="),
+    );
+    expect(setup).toContain("app.isPackaged &&");
+    expect(setup).toContain(
+      'entryPath === path.join(bundledRuntimeRoot, "node_modules", "openclaw", "openclaw.mjs")',
+    );
+    expect(setup).toContain("fs.existsSync(runtimeArchivePath)");
+    expect(setup).toContain("delete gwEnv.MICROCLAW_OPENCLAW_ARCHIVE");
+    expect(setup).toContain("delete gwEnv.MICROCLAW_OPENCLAW_RUNTIME_ROOT");
+    expect(setup).toContain(
+      "gwEnv.NODE_OPTIONS += ` --import=${pathToFileURL(archiveLoaderPath).href}`",
+    );
+    const packaging = readFileSync(resolve(process.cwd(), "electron-builder.yml"), "utf8");
+    expect(packaging).toContain("from: src/openclaw-archive-loader.mjs");
+  });
+
+  it("defers second-instance recovery until initial preparation and navigation finish", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const handler = source.slice(
+      source.indexOf('app.on("second-instance"'),
+      source.indexOf("const applicationStartup = app.whenReady()"),
+    );
+    const waitIndex = handler.indexOf("applicationStartup");
+    const callbackIndex = handler.indexOf(".then(async () =>");
+    const recoveryIndex = handler.indexOf('showOrRecoverMainWindow("second-instance")');
+    expect(waitIndex).toBeGreaterThan(-1);
+    expect(callbackIndex).toBeGreaterThan(waitIndex);
+    expect(recoveryIndex).toBeGreaterThan(callbackIndex);
+    expect(handler.indexOf("await ensureGatewayConnected()")).toBeGreaterThan(recoveryIndex);
+    expect(handler.slice(callbackIndex, recoveryIndex)).toContain(
+      "if (explicitQuitRequested) return;",
+    );
+  });
+
+  it("prepares integrity before creating a window and loads the renderer before service preflight", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const lifecycle = source.slice(
       source.indexOf("app.whenReady().then"),
       source.indexOf('app.on("window-all-closed"'),
     );
 
+    const preparationIndex = lifecycle.indexOf("await prepareBundledOpenClawDir()");
     const integrityIndex = lifecycle.indexOf("verifySkillIntegrity()");
+    const snapshotIndex = lifecycle.indexOf("generateAndSignSnapshot()");
+    const windowIndex = lifecycle.indexOf("const initialWindow = createMainWindow()");
     const servicesIndex = lifecycle.indexOf("startApplicationServices().catch");
     const rendererIndex = lifecycle.indexOf("await loadMainWindowRenderer(initialWindow)");
 
-    expect(integrityIndex).toBeGreaterThan(-1);
-    expect(servicesIndex).toBeGreaterThan(integrityIndex);
-    expect(rendererIndex).toBeGreaterThan(servicesIndex);
+    expect(preparationIndex).toBeGreaterThan(-1);
+    expect(integrityIndex).toBeGreaterThan(preparationIndex);
+    expect(lifecycle.slice(preparationIndex, integrityIndex)).toContain(
+      'requestExplicitQuit("runtime-preparation-failed")',
+    );
+    expect(snapshotIndex).toBeGreaterThan(integrityIndex);
+    expect(windowIndex).toBeGreaterThan(snapshotIndex);
+    expect(rendererIndex).toBeGreaterThan(windowIndex);
+    expect(servicesIndex).toBeGreaterThan(rendererIndex);
+    expect(servicesIndex).toBeGreaterThan(
+      lifecycle.indexOf('scheduleMainWindowRecovery("initial-renderer-load-failed"'),
+    );
+    expect(lifecycle.slice(rendererIndex, servicesIndex)).toContain(
+      "if (explicitQuitRequested) return;",
+    );
     expect(lifecycle).not.toMatch(/await\s+startApplicationServices\(/);
 
     const serviceStart = source.indexOf("async function startApplicationServices()");

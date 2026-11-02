@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
@@ -486,8 +486,18 @@ export function createLocalModelCompatibilityLoadHook(
   };
 }
 
-export function initializeLocalModelCompatibility(pluginDir) {
-  return registerHooks({ load: createLocalModelCompatibilityLoadHook(pluginDir) });
+export function initializeLocalModelCompatibility(pluginDir, register = registerHooks) {
+  const load = createLocalModelCompatibilityLoadHook(pluginDir);
+  let directory;
+  try {
+    directory = lstatSync(pluginDir);
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  if (!directory.isDirectory())
+    throw new Error("The local provider must be an unredirected directory");
+  return register({ load });
 }
 
 if (process.env.MICROCLAW_EXACT_LOCAL_MODELS === "1") {

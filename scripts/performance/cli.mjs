@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { SCENARIOS } from "./results.mjs";
+import { builtInScenarioIds, SCENARIOS } from "./results.mjs";
 import { runPerformance } from "./runner.mjs";
 
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -21,6 +21,7 @@ export function parseOptions(args, environment = process.env) {
       output: { type: "string" },
       "install-fixture": { type: "string" },
       "timeout-ms": { type: "string" },
+      "setup-timeout-ms": { type: "string" },
       "install-timeout-ms": { type: "string" },
       model: { type: "string" },
       endpoint: { type: "string" },
@@ -33,9 +34,15 @@ export function parseOptions(args, environment = process.env) {
   if (positionals.length > 1 || !["report", "compare"].includes(mode))
     throw new Error("Command must be report or compare");
   if (mode === "report" && values.baseline) throw new Error("--baseline requires compare mode");
-  const scenarios = [...new Set((values.scenario ?? Object.keys(SCENARIOS).join(",")).split(","))];
+  const scenarios = [
+    ...new Set(
+      (values.scenario ?? "all")
+        .split(",")
+        .flatMap((id) => (id === "all" ? builtInScenarioIds() : [id])),
+    ),
+  ];
   if (scenarios.some((id) => !SCENARIOS[id]))
-    throw new Error("Unknown scenario; use install.clean,app.restart,chat.new-session");
+    throw new Error(`Unknown scenario; use all or ${Object.keys(SCENARIOS).join(",")}`);
   if (!["fixed-response", "real-model"].includes(values.profile))
     throw new Error("Unknown execution profile");
   const positive = (text, fallback, name) => {
@@ -101,20 +108,24 @@ export function parseOptions(args, environment = process.env) {
       "max-model-requests",
     ),
     timeoutMs: positive(values["timeout-ms"], 120000, "timeout-ms"),
+    setupTimeoutMs: positive(values["setup-timeout-ms"], 600000, "setup-timeout-ms"),
     installTimeoutMs: positive(values["install-timeout-ms"], 1800000, "install-timeout-ms"),
   };
 }
 
 const HELP = `MicroClaw scenario performance runner
 
-  npm run perf -- report --app "<packaged MicroClaw.exe>" --scenario app.restart,chat.new-session --samples 3
-  npm run perf -- compare --app "<packaged MicroClaw.exe>" --baseline "<results.json>"
+  npm run perf -- report --app "<packaged MicroClawDesktop.exe>" --scenario all --samples 3
+  npm run perf -- compare --app "<packaged MicroClawDesktop.exe>" --baseline "<results.json>"
 
-Scenarios: install.clean, app.restart, chat.new-session (default: all three).
+Scenarios: all (default), ${Object.keys(SCENARIOS).join(", ")}.
+Built-in suite: ${builtInScenarioIds().join(", ")}; newly registered built-in cases are included automatically.
+External-fixture scenarios require explicit selection; install.clean requires a disposable VM adapter.
 Profiles: fixed-response (default); real-model requires --model, --endpoint (OpenAI chat-completions base URL),
   --api-key-env, explicit --samples and --max-model-requests, including normal startup/title requests.
 Clean install requires --installer and --install-fixture pointing at an explicitly disposable VM adapter.
-Options: --output <directory>, --timeout-ms <milliseconds>, --install-timeout-ms <milliseconds>.
+Options: --output <directory>, --timeout-ms <milliseconds> (default 120000),
+  --setup-timeout-ms <milliseconds> (unmeasured initial launch; default 600000), --install-timeout-ms <milliseconds>.
 Paths resolve relative to the repository, not the current shell directory. Nothing is built, fetched or installed automatically.
 Missing prerequisites produce an unavailable report. Exit codes: 0 fully measured, 1 incomplete/failure, 2 invalid command, 130 interrupted.
 `;

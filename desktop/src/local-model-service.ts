@@ -678,7 +678,8 @@ export class LocalModelService {
       );
       if (result.ok !== true)
         throw new Error("The official plugin could not be installed or enabled");
-      if (result.restartRequired === true) await this.deps.restartGateway();
+      if (!capabilities.plugin.installed || result.restartRequired === true)
+        await this.deps.restartGateway();
       this.reviewedToken = undefined;
       this.pendingReview = undefined;
       return await this.getCapabilities();

@@ -1,5 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 
+export const GATEWAY_GRACEFUL_STOP_TIMEOUT_MS = 330_000;
+
 export type GatewayProcessStopMode = "already-exited" | "graceful" | "forced";
 
 export async function stopGatewayChildProcess(options: {

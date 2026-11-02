@@ -258,7 +258,7 @@ interface OpenClawAPI {
     observeSession(sessionKey: string | null): Promise<void>;
     onSessionUpdate(callback: (payload: { sessionKey: string }) => void): () => void;
     isConnected(): Promise<boolean>;
-    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
+    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<unknown>;
     loadHistory(sessionKey: string): Promise<{ sessionKey?: string; messages?: unknown[]; thinkingLevel?: string; sessionInfo?: import("../src/chat-run-lifecycle").ChatSessionRuntime }>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
@@ -647,4 +647,5 @@ interface OpenClawAPI {
 
 interface Window {
   openclaw: OpenClawAPI;
+  __microclawPerf?: import("./src/performance-probe").PerformanceProbe;
 }
