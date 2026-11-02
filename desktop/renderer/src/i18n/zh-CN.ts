@@ -762,6 +762,7 @@ export default {
   "modelManager.noMatches": "没有匹配的模型。",
   "modelManager.clearSearch": "清除搜索",
   "modelManager.moreModels": "更多模型 · {count}",
+  "modelManager.moreModelsMenu": "更多模型",
   "modelManager.fewerModels": "收起更多模型",
   "modelManager.recommended": "推荐",
   "modelManager.noFeaturedModels": "当前账号暂无精选模型",
