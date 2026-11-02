@@ -525,6 +525,31 @@ describe("pinned OpenClaw node approval proof backport", () => {
     );
   });
 
+  it("forwards the full approved command text instead of the shell preview with the native proof", () => {
+    const patched = patchPinnedOpenClawNodeGateway(source);
+    const attachSource = patched.slice(
+      patched.indexOf("function attachMicroclawNodeApprovalProof"),
+      patched.indexOf("async function sanitizeSystemRunParamsForForwarding"),
+    );
+    const proof = { issuedAtUnixMs: 1000 };
+    const mint = vi.fn().mockReturnValue(proof);
+    const attach = new Function(
+      "mintMicroclawNodeApprovalProof",
+      "console",
+      `${attachSource}\nreturn attachMicroclawNodeApprovalProof;`,
+    )(mint, { error: vi.fn() });
+    const commandText =
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command "Write-Output ok"';
+    const request = { plan: { commandText, commandPreview: "Write-Output ok" } };
+    const params = { rawCommand: "Write-Output ok" };
+    attach(params, null);
+    expect(params.rawCommand).toBe("Write-Output ok");
+    expect(mint).not.toHaveBeenCalled();
+    attach(params, request);
+    expect(mint).toHaveBeenCalledExactlyOnceWith(request);
+    expect(params).toEqual({ rawCommand: commandText, microclawApprovalProof: proof });
+  });
+
   it("attaches the proof to the final plugin params before registry serialization", () => {
     const patchedPlugin = patchPinnedOpenClawNodeInvokePluginPolicy(
       [PINNED_NODE_INVOKE_PLUGIN_REQUEST_SOURCE, PINNED_NODE_INVOKE_PLUGIN_DISPATCH_SOURCE].join(
@@ -930,6 +955,7 @@ describe("pinned OpenClaw node approval proof backport", () => {
           expect(patched).toContain('name !== "executableSha256"');
           expect(patched).toContain('name !== "cwdBinding"');
           expect(patched).toContain('name !== "declaredAccess"');
+          expect(patched).toContain('name !== "policyFingerprint"');
           expect(patched).toContain("const p = params");
           expect(patched).toContain(`${rejectHelper}\n\t\t\tconst p = params;`);
           expect(patched).toContain(
@@ -937,6 +963,40 @@ describe("pinned OpenClaw node approval proof backport", () => {
           );
         },
       );
+
+      it("projects live policy identity out of the upstream schema without dropping the original binding", () => {
+        const patched = patchPinnedOpenClawExecApproval(
+          `${PINNED_EXEC_APPROVAL_VALIDATION_SOURCE}\n\t\t\tif (requestRunId && context.chatRunState.hasAbortMarker(requestRunId)) {`,
+        );
+        const project = new Function(
+          "params",
+          `${patched.slice(
+            patched.indexOf("\t\t\tconst rawPlan"),
+            patched.indexOf("\t\t\tif (!assertValidParams"),
+          )}
+          return validationParams;`,
+        );
+        const upstreamPlan = {
+          argv: ["C:\\Windows\\System32\\hostname.exe"],
+          cwd: null,
+          commandText: "hostname",
+          agentId: "main",
+          sessionKey: "agent:main:main",
+        };
+        const params = {
+          id: "live-policy-approval",
+          systemRunPlan: {
+            ...upstreamPlan,
+            executablePath: upstreamPlan.argv[0],
+            executableSha256: "a".repeat(64),
+            cwdBinding: "isolated-scratch:v1",
+            declaredAccess: [],
+            policyFingerprint: "b".repeat(64),
+          },
+        };
+        expect(project(params)).toEqual({ id: params.id, systemRunPlan: upstreamPlan });
+        expect(params.systemRunPlan.policyFingerprint).toBe("b".repeat(64));
+      });
 
       it("fails closed when the pinned approval handler drifts or appears twice", () => {
         expect(() => patchPinnedOpenClawExecApproval("unrecognized source")).toThrow(

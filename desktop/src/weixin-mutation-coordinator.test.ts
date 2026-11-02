@@ -77,17 +77,34 @@ describe("WeChat account mutation versus MXC activation", () => {
     expect(source).toContain(
       "isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress",
     );
-    for (const action of [
-      "set-enabled",
-      "login",
-      "login-qr-start",
-      "login-qr-wait",
-      "disconnect",
-    ]) {
+    for (const action of ["set-enabled", "login"]) {
       const start = source.indexOf(`"plugin:weixin:${action}"`);
       const block = source.slice(start, start + 800);
       expect(block).toContain("weixinMutations.run(assertWindowsNodeMxcConfigurationMutable");
     }
+    const qr = source.slice(
+      source.indexOf('"plugin:weixin:login-qr-start"'),
+      source.indexOf('"plugin:weixin:login-qr-wait"'),
+    );
+    expect(qr).toContain("assertTrustedRendererIpc(event)");
+    expect(qr).toContain('await beginWindowsNodeMxcWeixinAccountChange("login")');
+    expect(qr).toContain("weixinMutations.run(assertWeixinQrLoginMutable");
+    const disconnect = source.slice(
+      source.indexOf('"plugin:weixin:disconnect"'),
+      source.indexOf("registerLocalModelHandlers", source.indexOf('"plugin:weixin:disconnect"')),
+    );
+    expect(disconnect).toContain("assertTrustedRendererIpc(event)");
+    expect(disconnect).toContain('await beginWindowsNodeMxcWeixinAccountChange("disconnect")');
+    expect(disconnect).toContain("guard ? () => guard.assertWaiting()");
+    expect(disconnect.indexOf("weixinMutations.run(")).toBeLessThan(
+      disconnect.indexOf('"channels.logout"'),
+    );
+    const wait = source.slice(
+      source.indexOf("async function waitForWeixinConnection"),
+      source.indexOf("function getWeixinMutationLock"),
+    );
+    expect(wait).toMatch(/weixinMutations\s*\.run\(assertWeixinQrLoginMutable/);
+    expect(wait).toContain("login.finish(");
     const begin = source.slice(
       source.indexOf("function beginWindowsNodeMxcLifecycleOperation"),
       source.indexOf("function endWindowsNodeMxcLifecycleOperation"),

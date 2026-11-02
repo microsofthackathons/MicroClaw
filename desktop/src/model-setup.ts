@@ -3,6 +3,13 @@ import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 
 type JsonObject = Record<string, unknown>;
 
+export class ModelConfigRestartRequiredError extends Error {
+  constructor(readonly savedHash: string) {
+    super("The saved model configuration explicitly requires a Gateway restart");
+    this.name = "ModelConfigRestartRequiredError";
+  }
+}
+
 export function assertModelConfigUnchanged(expected: unknown, current: unknown): void {
   if (!isDeepStrictEqual(expected ?? {}, current ?? {})) {
     throw new Error("Model configuration changed while editing; reload it and try again");

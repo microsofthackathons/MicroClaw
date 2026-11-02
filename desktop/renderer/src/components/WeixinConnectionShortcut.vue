@@ -1,6 +1,6 @@
 <template>
   <ElPopover
-    v-model:visible="open"
+    :visible="open"
     placement="top-start"
     :width="320"
     trigger="click"
@@ -12,6 +12,7 @@
   >
     <template #reference>
       <button
+        ref="trigger"
         type="button"
         class="weixin-shortcut"
         :class="{ active: open }"
@@ -20,6 +21,7 @@
         :aria-label="t('sidebar.phone')"
         aria-haspopup="dialog"
         :aria-expanded="open"
+        @click="open = !open"
       >
         <svg
           width="16"
@@ -39,15 +41,18 @@
         </svg>
       </button>
     </template>
-    <WeixinConnectionCard
-      v-if="activated"
-      inline
-      show-messages
-      :active="open"
-      :heading-id="titleId"
-      @close="open = false"
-    />
-    <p v-else>{{ t("plugins.weixinPreparingQr") }}</p>
+    <div ref="content">
+      <WeixinConnectionCard
+        v-if="activated"
+        inline
+        show-messages
+        :active="open"
+        :heading-id="titleId"
+        @close="open = false"
+        @confirmation-change="confirming = $event"
+      />
+      <p v-else>{{ t("plugins.weixinPreparingQr") }}</p>
+    </div>
   </ElPopover>
 </template>
 
@@ -62,6 +67,9 @@ const route = useRoute();
 const titleId = useId();
 const open = ref(false);
 const activated = ref(false);
+const confirming = ref(false);
+const trigger = ref<HTMLElement | null>(null);
+const content = ref<HTMLElement | null>(null);
 
 watch(open, (value) => {
   if (value) activated.value = true;
@@ -72,10 +80,27 @@ watch(
 );
 
 function closeOnEscape(event: KeyboardEvent): void {
-  if (event.key === "Escape") open.value = false;
+  if (event.key === "Escape" && !confirming.value) open.value = false;
 }
-onMounted(() => document.addEventListener("keydown", closeOnEscape));
-onUnmounted(() => document.removeEventListener("keydown", closeOnEscape));
+function closeOnOutside(event: PointerEvent): void {
+  if (
+    !open.value ||
+    confirming.value ||
+    !(event.target instanceof Node) ||
+    trigger.value?.contains(event.target) ||
+    content.value?.contains(event.target)
+  )
+    return;
+  open.value = false;
+}
+onMounted(() => {
+  document.addEventListener("keydown", closeOnEscape);
+  document.addEventListener("pointerdown", closeOnOutside, true);
+});
+onUnmounted(() => {
+  document.removeEventListener("keydown", closeOnEscape);
+  document.removeEventListener("pointerdown", closeOnOutside, true);
+});
 </script>
 
 <style scoped>

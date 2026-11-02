@@ -19,6 +19,7 @@ interface PermissionRequest {
   accessNeeded?: string;
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  folderChanges?: Array<{ access: "ro" | "rw"; path: string }>;
   providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
   containmentStrength?: "full" | "limited-dacl";
   ambientAccess?: Array<{
@@ -33,6 +34,7 @@ interface PermissionRequest {
 
 const props = defineProps<{
   request: PermissionRequest | null;
+  responding?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -61,7 +63,7 @@ watch(
       countdown.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       countdownTimer = setInterval(() => {
         countdown.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-        if (countdown.value <= 0) {
+        if (countdown.value <= 0 && !props.responding) {
           clearTimer();
           emit("respond", "deny", "timeout");
         }
@@ -123,13 +125,17 @@ const isAttendedApproval = computed(
   () => props.request?.type === "app-approval" || isMxcApproval.value,
 );
 const declaredAccess = computed(() => props.request?.declaredAccess ?? []);
+const folderChanges = computed(() => props.request?.folderChanges ?? []);
 const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
 );
 const allowsAlways = computed(
-  () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always"),
+  () =>
+    folderChanges.value.length === 0 &&
+    (!props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always")),
 );
 const mxcScopeText = computed(() => {
+  if (folderChanges.value.length > 0) return t("perm.mxcFolderGrantScope");
   if (isLimitedMxcApproval.value) {
     return allowsAlways.value ? t("perm.mxcLimitedScope") : t("perm.mxcLimitedScopeOnce");
   }
@@ -185,6 +191,7 @@ const grantLabel = computed(() =>
 );
 
 function respond(decision: string) {
+  if (props.responding) return;
   emit("respond", decision);
 }
 </script>
@@ -196,7 +203,11 @@ function respond(decision: string) {
       class="perm-overlay"
       :class="[`perm-overlay--${riskLevel}`, { 'perm-overlay--modal': isModal }]"
     >
-      <div class="perm-card" :class="[`perm-card--${riskLevel}`, { 'perm-card--modal': isModal }]">
+      <div
+        class="perm-card"
+        :class="[`perm-card--${riskLevel}`, { 'perm-card--modal': isModal }]"
+        :aria-busy="responding"
+      >
         <div class="perm-header">
           <div class="perm-heading">
             <span class="perm-icon">{{ dialogIcon }}</span>
@@ -205,7 +216,7 @@ function respond(decision: string) {
               <div class="perm-subtitle">{{ riskHint }}</div>
             </div>
           </div>
-          <button class="perm-close" @click="respond('deny')">
+          <button class="perm-close" :disabled="responding" @click="respond('deny')">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path
                 d="M4 4L12 12M12 4L4 12"
@@ -251,6 +262,23 @@ function respond(decision: string) {
           <code v-if="isMxcApproval" class="perm-command-code">{{ request.command }}</code>
           <code v-else class="perm-command-code" v-html="commandHtml"></code>
         </div>
+        <div
+          v-if="isMxcApproval && folderChanges.length > 0"
+          class="perm-mxc-detail"
+          data-testid="mxc-folder-grants"
+        >
+          <div class="perm-command-label">{{ t("perm.mxcFolderGrantLabel") }}</div>
+          <div
+            v-for="grant in folderChanges"
+            :key="`${grant.access}:${grant.path}`"
+            class="perm-mxc-access"
+          >
+            <span
+              >{{ grant.access === "ro" ? t("perm.mxcAccessRo") : t("perm.mxcAccessRw") }} —</span
+            >
+            <code>{{ grant.path }}</code>
+          </div>
+        </div>
         <div v-if="isMxcApproval && request.dirPath" class="perm-mxc-detail">
           <div class="perm-command-label">{{ t("perm.mxcCwdLabel") }}</div>
           <code class="perm-mxc-value">{{ request.dirPath }}</code>
@@ -272,7 +300,9 @@ function respond(decision: string) {
         </div>
         <div class="perm-countdown-wrap">
           <div class="perm-countdown-row">
-            <span>{{ t("perm.autoDeny", { seconds: countdown }) }}</span>
+            <span role="status">{{
+              responding ? t("perm.responding") : t("perm.autoDeny", { seconds: countdown })
+            }}</span>
             <span class="perm-risk-label">{{ riskLevel.toUpperCase() }}</span>
           </div>
           <div class="perm-countdown-bar" aria-hidden="true">
@@ -280,27 +310,33 @@ function respond(decision: string) {
           </div>
         </div>
         <div class="perm-actions">
-          <button class="perm-btn perm-btn-outline" @click="respond('deny')">
+          <button class="perm-btn perm-btn-outline" :disabled="responding" @click="respond('deny')">
             {{ t("perm.deny") }}
           </button>
           <template v-if="isAttendedApproval">
             <button
               v-if="allowsOnce"
               class="perm-btn perm-btn-filled"
+              :disabled="responding"
               @click="respond('allow-once')"
             >
-              {{ t("perm.allowOnce") }}
+              {{ folderChanges.length > 0 ? t("perm.mxcAllowFolders") : t("perm.allowOnce") }}
             </button>
             <button
               v-if="allowsAlways"
               class="perm-btn perm-btn-filled"
+              :disabled="responding"
               @click="respond('allow-always')"
             >
               {{ isMxcApproval ? t("perm.mxcAllowAlways") : t("perm.allowAlways") }}
             </button>
           </template>
           <template v-else>
-            <button class="perm-btn perm-btn-filled" @click="respond(grantDecision)">
+            <button
+              class="perm-btn perm-btn-filled"
+              :disabled="responding"
+              @click="respond(grantDecision)"
+            >
               {{ grantLabel }}
             </button>
           </template>
@@ -311,6 +347,11 @@ function respond(decision: string) {
 </template>
 
 <style scoped>
+.perm-card button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .perm-overlay {
   position: fixed;
   bottom: 0;

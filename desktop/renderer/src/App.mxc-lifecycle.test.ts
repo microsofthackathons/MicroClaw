@@ -1,10 +1,10 @@
 import { createPinia } from "pinia";
 import { config as testUtilsConfig, flushPromises, shallowMount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
-import { isProxy } from "vue";
+import { defineComponent, h, inject, isProxy } from "vue";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ElMessage, ElSwitch } from "element-plus";
+import { ElMessage, ElMessageBox, ElSwitch } from "element-plus";
 import App from "./App.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import GatewayLoading from "@/components/GatewayLoading.vue";
@@ -26,13 +26,17 @@ import { runPinnedSessionFixture } from "../../integration/pinned-session-fixtur
 // @ts-expect-error The pinned runtime fixture executes the actual SDK constructors in isolated Node.
 import { runPinnedChatRuntimeFixture } from "../../integration/pinned-chat-runtime-fixture.mjs";
 import { planWeixinRemoteApprovalNativeTransition } from "../../src/windows-node-mxc-weixin-remote-approval-consent";
-import {
-  planWeixinRemoteApprovalTransition,
-  type WeixinRemoteApprovalActivationOptions,
-} from "../../src/windows-node-mxc-weixin-remote-approval-activation";
+import type { WeixinRemoteApprovalActivationOptions } from "../../src/windows-node-mxc-weixin-remote-approval-activation";
+import { windowsNodeMxcLifecycleStateKey } from "@/windows-node-mxc-lifecycle";
 
 type MxcStatus = Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>;
 type LifecycleState = MxcStatus["lifecycleState"];
+const LifecycleConsumer = defineComponent({
+  setup() {
+    const state = inject(windowsNodeMxcLifecycleStateKey);
+    return () => h("span", { "data-testid": "lifecycle-consumer" }, state?.value?.phase ?? "");
+  },
+});
 
 describe("App MXC loading gate with the real Gateway store", () => {
   let lifecycle: (state: LifecycleState) => void;
@@ -43,7 +47,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   let nativeOptions: WeixinRemoteApprovalActivationOptions;
   let approvalRequest: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalRequest"]>[0];
   let approvalResolved: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalResolved"]>[0];
-  const nativeDialog = vi.fn();
+  let approvalProcessing: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalProcessing"]>[0];
   const persist = vi.fn();
   let chatEvent: Parameters<OpenClawAPI["chat"]["onEvent"]>[0];
   let toolEvent: Parameters<OpenClawAPI["chat"]["onToolEvent"]>[0];
@@ -59,6 +63,12 @@ describe("App MXC loading gate with the real Gateway store", () => {
       removeEventListener: vi.fn(),
     });
     window.openclaw = createBrowserOpenClawMock();
+    vi.spyOn(window.openclaw.windowsNodeMxc, "onApprovalProcessing").mockImplementation(
+      (callback) => {
+        approvalProcessing = callback;
+        return vi.fn();
+      },
+    );
     vi.spyOn(window.openclaw.chat, "onEvent").mockImplementation((callback) => {
       chatEvent = callback;
       return vi.fn();
@@ -116,7 +126,6 @@ describe("App MXC loading gate with the real Gateway store", () => {
       enableAvailable: true,
       unavailableReason: null,
     };
-    nativeDialog.mockReset().mockResolvedValue({ response: 1 });
     persist.mockReset();
   });
 
@@ -139,6 +148,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       global: {
         plugins: [pinia, router],
         stubs: {
+          SidePanel: LifecycleConsumer,
           PermissionDialog: !realPermissionDialog,
           RouterView: false,
           SettingsView: false,
@@ -182,6 +192,45 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await flushPromises();
     expect(settings.text()).not.toContain("Remote command approval");
   }
+
+  it.each([
+    "updating-folders",
+    "updating-model",
+    "connecting-weixin",
+    "disconnecting-weixin",
+  ] as const)("keeps the connected app visible during %s", async (phase) => {
+    const { gateway, chat } = await mountReadyApp();
+    const epoch = gateway.readinessEpoch;
+    status.lifecycleState = {
+      phase,
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    };
+    lifecycle(status.lifecycleState);
+    await flushPromises();
+    expect(gateway.readinessEpoch).toBe(epoch);
+    expect(chat.wsConnected).toBe(true);
+    expect(wrapper.find(".app-layout").exists()).toBe(true);
+  });
+
+  it("provides lifecycle events to descendants without accepting stale status snapshots", async () => {
+    await mountReadyApp();
+    lifecycle({
+      phase: "connecting-weixin",
+      detail: null,
+      updatedAt: new Date(1_000).toISOString(),
+    });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="lifecycle-consumer"]').text()).toBe("connecting-weixin");
+
+    lifecycle({
+      phase: "active",
+      detail: null,
+      updatedAt: new Date(2_000).toISOString(),
+    });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="lifecycle-consumer"]').text()).toBe("active");
+  });
 
   it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
     "shows actual pinned session events through GatewayClient and main notifications before the terminal reply",
@@ -364,31 +413,21 @@ describe("App MXC loading gate with the real Gateway store", () => {
     expect(gateway.ready).toBe(true);
   });
 
-  function useNativeMainBridge() {
+  function useNativeMainBridge(readOptions = () => nativeOptions) {
     return vi
       .spyOn(window.openclaw.windowsNodeMxc, "setEnabled")
       .mockImplementation(async (params) => {
         expect(isProxy(params)).toBe(false);
         const request = structuredClone(params);
         const requestedMode = request.enabled ? "full" : "off";
-        const consent = await planWeixinRemoteApprovalNativeTransition({
+        const transition = await planWeixinRemoteApprovalNativeTransition({
           request,
           currentMode: status.requestedMode,
           requestedMode,
           currentConfiguration: { enabled: false, owner: null },
-          readOptions: () => nativeOptions,
-          showDialog: nativeDialog,
-          locale: "en-US",
+          readOptions,
         });
-        if (consent.cancelled) return status;
-        persist(
-          planWeixinRemoteApprovalTransition({
-            currentMode: status.requestedMode,
-            requestedMode,
-            selection: consent.selection,
-            options: nativeOptions,
-          }),
-        );
+        persist(transition.plan);
         return status;
       });
   }
@@ -402,7 +441,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   }
 
   it.each(["retry", "disable-mxc"] as const)(
-    "keeps readiness unchanged when the loading-screen %s confirmation is cancelled",
+    "does not optimistically change readiness after a loading-screen %s request",
     async (action) => {
       const { gateway, chat } = await mountReadyApp();
       status = { ...status, requestedMode: "full", desiredEnabled: true };
@@ -429,7 +468,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
     "Wait for the managed Gateway startup or restart to finish",
     "Another Windows Node + MXC lifecycle operation is already in progress",
   ])(
-    "keeps the live ordinary route ready on pending native consent then early rejection: %s",
+    "keeps the live ordinary route ready before mutation and on early rejection: %s",
     async (reason) => {
       let reject!: (error: Error) => void;
       const setEnabled = vi
@@ -460,18 +499,13 @@ describe("App MXC loading gate with the real Gateway store", () => {
     },
   );
 
-  it("uses one native restart confirmation and auto-enrolls the eligible owner without durable consent", async () => {
+  it("toggles directly and auto-enrolls the eligible owner without durable consent", async () => {
+    const confirmation = vi.spyOn(ElMessageBox, "confirm");
     const bridge = useNativeMainBridge();
     await mountReadyApp();
     await requestFullActivation();
     expect(bridge).toHaveBeenCalledExactlyOnceWith({ enabled: true });
-    expect(nativeDialog).toHaveBeenCalledOnce();
-    expect(nativeDialog.mock.calls[0][0]).toMatchObject({
-      buttons: ["Cancel", "Enable sandboxing"],
-      defaultId: 0,
-      cancelId: 0,
-    });
-    expect(nativeDialog.mock.calls[0][0].checkboxLabel).toBeUndefined();
+    expect(confirmation).not.toHaveBeenCalled();
     expect(persist).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         action: "persist",
@@ -488,7 +522,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   });
 
   it.each(["none", "multiple", "invalid", "disabled"] as const)(
-    "keeps one native restart confirmation and persists disabled for %s canonical state",
+    "toggles directly and persists remote approvals disabled for %s canonical state",
     async (state) => {
       nativeOptions = {
         ...nativeOptions,
@@ -500,7 +534,6 @@ describe("App MXC loading gate with the real Gateway store", () => {
       useNativeMainBridge();
       await mountReadyApp();
       await requestFullActivation();
-      expect(nativeDialog).toHaveBeenCalledOnce();
       expect(persist).toHaveBeenCalledExactlyOnceWith({
         action: "persist",
         configuration: { enabled: false, owner: null },
@@ -508,48 +541,31 @@ describe("App MXC loading gate with the real Gateway store", () => {
     },
   );
 
-  it.each(["cancel", "identity-replaced"] as const)(
-    "keeps the ordinary ready route on pending native consent and %s",
-    async (outcome) => {
-      let decide!: (value: { response: number }) => void;
-      nativeDialog.mockImplementation(
-        () =>
-          new Promise<{ response: number }>((resolve) => {
-            decide = resolve;
-          }),
-      );
-      useNativeMainBridge();
-      const errorMessage = vi.spyOn(ElMessage, "error");
-      const { gateway, chat } = await mountReadyApp();
-      const epoch = gateway.readinessEpoch;
-      await requestFullActivation();
-      expect(nativeDialog).toHaveBeenCalledOnce();
-      expect(persist).not.toHaveBeenCalled();
-      expect(gateway.ready).toBe(true);
-      expect(chat.wsConnected).toBe(true);
-      expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
-      if (outcome === "identity-replaced") {
-        nativeOptions = {
+  it("does not enroll a replacement identity or reset readiness before lifecycle mutation", async () => {
+    useNativeMainBridge(
+      vi
+        .fn()
+        .mockReturnValueOnce(nativeOptions)
+        .mockReturnValue({
           ...nativeOptions,
           account: { accountId: "replacement-bot", userId: "replacement-user" },
-        };
-      }
-      decide({ response: outcome === "cancel" ? 0 : 1 });
-      await flushPromises();
-      expect(errorMessage).not.toHaveBeenCalled();
-      if (outcome === "cancel") expect(persist).not.toHaveBeenCalled();
-      else
-        expect(persist).toHaveBeenCalledExactlyOnceWith({
-          action: "persist",
-          configuration: { enabled: false, owner: null },
-        });
-      expect(gateway.readinessEpoch).toBe(epoch);
-      expect(gateway.ready).toBe(true);
-      expect(chat.wsConnected).toBe(true);
-      expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
-      expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
-    },
-  );
+        }),
+    );
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    const { gateway, chat } = await mountReadyApp();
+    const epoch = gateway.readinessEpoch;
+    await requestFullActivation();
+    expect(errorMessage).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledExactlyOnceWith({
+      action: "persist",
+      configuration: { enabled: false, owner: null },
+    });
+    expect(gateway.readinessEpoch).toBe(epoch);
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
+  });
 
   it("rejects a spoofed renderer owner instead of skipping native authority", async () => {
     useNativeMainBridge();
@@ -560,7 +576,6 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await expect(window.openclaw.windowsNodeMxc.setEnabled(request)).rejects.toThrow(
       "Renderer-supplied",
     );
-    expect(nativeDialog).not.toHaveBeenCalled();
     expect(persist).not.toHaveBeenCalled();
   });
 
@@ -605,6 +620,34 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await flushPromises();
     expect(errorMessage).toHaveBeenCalledWith("ambient assessment timed out after 180000ms");
     expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+  });
+
+  it("shows turning Off rather than Full containment starting before the mode snapshot refreshes", async () => {
+    const { gateway, chat } = await mountReadyApp();
+    status = { ...status, requestedMode: "full", desiredEnabled: true };
+    emitPhase("active");
+    await flushPromises();
+    emitPhase("disabling");
+    await flushPromises();
+    expect(gateway.ready).toBe(false);
+    expect(chat.wsConnected).toBe(false);
+    const loading = wrapper.findComponent(GatewayLoading);
+    expect(loading.props("mxcDesired")).toBe(true);
+    expect(loading.find(".loading-status").text()).toContain("Turning off MXC");
+    expect(loading.find(".loading-mxc-strength").exists()).toBe(false);
+    emitPhase("starting-standard");
+    await flushPromises();
+    expect(loading.find(".loading-status").text()).toContain("Starting normal mode (MXC Off)");
+    expect(loading.find(".loading-mxc-strength").exists()).toBe(false);
+    status = { ...status, requestedMode: "off", desiredEnabled: false };
+    emitPhase("idle");
+    await flushPromises();
+    expect(gateway.ready).toBe(false);
+    serviceReady();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(650);
+    await flushPromises();
+    expect(gateway.ready).toBe(true);
   });
 
   function permission(
@@ -1111,6 +1154,128 @@ describe("App MXC loading gate with the real Gateway store", () => {
     expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe("second");
     expect(gateway.ready).toBe(true);
     expect(gateway.readinessEpoch).toBe(epoch);
+  });
+
+  it("hides an acknowledged decision until its terminal result without submitting the next prompt", async () => {
+    await mountReadyApp(true);
+    await approvalRequest(permission("applying-first"));
+    await approvalRequest(permission("queued-next"));
+    let finish!: () => void;
+    const respond = vi
+      .mocked(window.openclaw.windowsNodeMxc.respondApproval)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+    const dialog = wrapper.findComponent(PermissionDialog);
+    dialog.vm.$emit("respond", "allow-once");
+    await flushPromises();
+    expect(dialog.props("request")?.requestId).toBe("applying-first");
+    approvalProcessing({
+      requestId: "applying-first",
+      approvalLayer: "gateway",
+      applyingFolders: true,
+    });
+    await flushPromises();
+    expect(dialog.props("request")).toBeNull();
+    expect(respond).toHaveBeenCalledOnce();
+    approvalResolved({
+      requestId: "applying-first",
+      status: "accepted",
+      decision: "allow-once",
+      origin: "desktop",
+    });
+    finish();
+    await flushPromises();
+    expect(dialog.props("request")?.requestId).toBe("queued-next");
+    expect(respond).toHaveBeenCalledOnce();
+  });
+
+  it("does not reopen or replay a processing approval whose IPC completion fails", async () => {
+    await mountReadyApp(true);
+    await approvalRequest(permission("unconfirmed"));
+    await approvalRequest(permission("next-independent"));
+    let fail!: (error: Error) => void;
+    const respond = vi
+      .mocked(window.openclaw.windowsNodeMxc.respondApproval)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          }),
+      );
+    const dialog = wrapper.findComponent(PermissionDialog);
+    dialog.vm.$emit("respond", "allow-once");
+    await flushPromises();
+    approvalProcessing({
+      requestId: "unconfirmed",
+      approvalLayer: "gateway",
+      applyingFolders: true,
+    });
+    await flushPromises();
+    expect(dialog.props("request")).toBeNull();
+    fail(new Error("Native policy acknowledgement failed"));
+    await flushPromises();
+    expect(dialog.props("request")?.requestId).toBe("next-independent");
+    await approvalRequest(permission("unconfirmed"));
+    expect(dialog.props("request")?.requestId).toBe("next-independent");
+    expect(respond).toHaveBeenCalledOnce();
+  });
+
+  it("submits a pending decision only once and keeps the next request independent", async () => {
+    await mountReadyApp(true);
+    await approvalRequest(permission("busy-first"));
+    await approvalRequest(permission("busy-second"));
+    let finish!: () => void;
+    const respond = vi
+      .mocked(window.openclaw.windowsNodeMxc.respondApproval)
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+    const dialog = wrapper.findComponent(PermissionDialog);
+    dialog.vm.$emit("respond", "allow-once");
+    dialog.vm.$emit("respond", "deny");
+    await flushPromises();
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(dialog.props("responding")).toBe(true);
+    expect(
+      dialog.findAll("button").every((button) => button.attributes("disabled") !== undefined),
+    ).toBe(true);
+    approvalResolved({
+      requestId: "busy-first",
+      status: "accepted",
+      decision: "allow-once",
+      origin: "desktop",
+    });
+    await flushPromises();
+    expect(dialog.props("request")?.requestId).toBe("busy-second");
+    expect(dialog.props("responding")).toBe(false);
+    finish();
+    await flushPromises();
+    expect(dialog.props("request")?.requestId).toBe("busy-second");
+  });
+
+  it("disables pending command decisions during a live folder update without dismissing the prompt", async () => {
+    await mountReadyApp();
+    await approvalRequest(permission("live-update"));
+    status.lifecycleState = {
+      phase: "updating-folders",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    };
+    lifecycle(status.lifecycleState);
+    await flushPromises();
+    const dialog = wrapper.findComponent(PermissionDialog);
+    expect(dialog.props("responding")).toBe(true);
+    dialog.vm.$emit("respond", "deny");
+    await flushPromises();
+    expect(window.openclaw.windowsNodeMxc.respondApproval).not.toHaveBeenCalled();
+    expect(dialog.props("request")?.requestId).toBe("live-update");
   });
 
   it("does not pop the next permission or show a stale IPC error when main resolution wins the Desktop response race", async () => {

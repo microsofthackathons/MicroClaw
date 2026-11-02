@@ -231,7 +231,9 @@ export async function inspectWindowsNodeMxc(
     );
   }
 
-  const settingsFingerprint = settings ? fingerprintSecuritySettings(settings) : null;
+  const settingsFingerprint = settings
+    ? fingerprintSecuritySettings(settings, Boolean(bundled))
+    : null;
   const folders = bundled
     ? (options.bundledFolders ?? [])
     : settings
@@ -834,10 +836,12 @@ function classifyDeniedCwdSmokeResponse(value: unknown, nodeId: string): MxcSmok
     payload.executionState !== "rejectedBeforeExecution" ||
     payload.exitCode != null ||
     payload.timedOut !== false ||
+    (payload.stdout !== undefined && payload.stdout !== "") ||
     typeof payload.error !== "string" ||
     !payload.error.trim() ||
     (payload.errorCode !== "cwd-sensitive-root" &&
-      payload.errorCode !== "cwd-outside-approved-roots")
+      payload.errorCode !== "cwd-outside-approved-roots") ||
+    !payload.error.startsWith(`${payload.errorCode}:`)
   ) {
     return failed;
   }
@@ -990,7 +994,10 @@ async function readWindowsNodeSettings(
   return null;
 }
 
-function fingerprintSecuritySettings(settings: WindowsNodeMxcSettings): string {
+export function fingerprintSecuritySettings(
+  settings: WindowsNodeMxcSettings,
+  liveFolderPolicy = false,
+): string {
   const relevant = {
     EnableNodeMode: settings.EnableNodeMode,
     NodeSystemRunEnabled: settings.NodeSystemRunEnabled,
@@ -1011,7 +1018,11 @@ function fingerprintSecuritySettings(settings: WindowsNodeMxcSettings): string {
     SandboxDocumentsAccess: settings.SandboxDocumentsAccess,
     SandboxDownloadsAccess: settings.SandboxDownloadsAccess,
     SandboxDesktopAccess: settings.SandboxDesktopAccess,
-    SandboxCustomFolders: settings.SandboxCustomFolders,
+    // Signed folder revisions are acknowledged separately; activation probes bind the runtime.
+    SandboxCustomFolders: liveFolderPolicy ? undefined : settings.SandboxCustomFolders,
+    liveFolderPolicyContract: liveFolderPolicy
+      ? "microclaw.windows-node-live-policy.v1"
+      : undefined,
   };
   return createHash("sha256").update(JSON.stringify(relevant)).digest("hex");
 }

@@ -147,31 +147,34 @@ describe("native folder policy IPC", () => {
     return { context, persist, begin, end, validate, previous };
   }
 
-  it("refuses an untrusted renderer before acquiring or mutating policy", () => {
+  it("refuses an untrusted renderer before acquiring or mutating policy", async () => {
     const { context, persist, begin, end } = loadPolicyWriter();
-    expect(() => runInContext("exports.handler('untrusted', {rw:[],ro:[]})", context)).toThrow(
-      "Untrusted renderer",
-    );
+    await expect(
+      runInContext("exports.handler('untrusted', {rw:[],ro:[]})", context),
+    ).rejects.toThrow("Untrusted renderer");
     expect(begin).not.toHaveBeenCalled();
     expect(end).not.toHaveBeenCalled();
     expect(persist).not.toHaveBeenCalled();
   });
 
-  it("refuses direct writes during native activation and releases its mutation guard", () => {
+  it("refuses direct writes during native activation and releases its mutation guard", async () => {
     const { context, persist, validate, begin, end } = loadPolicyWriter(true);
-    expect(() => runInContext("exports.handler('trusted', {rw:[],ro:[]})", context)).toThrow(
-      "Apply and reactivate",
-    );
+    await expect(
+      runInContext("exports.handler('trusted', {rw:[],ro:[]})", context),
+    ).rejects.toThrow("Apply folder changes");
     expect(begin).toHaveBeenCalledOnce();
     expect(end).toHaveBeenCalledOnce();
     expect(validate).not.toHaveBeenCalled();
     expect(persist).not.toHaveBeenCalled();
   });
 
-  it("validates and persists the complete Off-mode policy without provisioning ACLs", () => {
+  it("validates and persists the complete Off-mode policy without provisioning ACLs", async () => {
     const { context, persist, end, previous } = loadPolicyWriter();
     expect(
-      runInContext("exports.handler('trusted', {rw:['C:\\\\Work'],ro:['C:\\\\Docs']})", context),
+      await runInContext(
+        "exports.handler('trusted', {rw:['C:\\\\Work'],ro:['C:\\\\Docs']})",
+        context,
+      ),
     ).toEqual({ rw: ["C:\\Work"], ro: ["C:\\Docs"] });
     expect(persist).toHaveBeenCalledExactlyOnceWith(
       { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
@@ -181,23 +184,23 @@ describe("native folder policy IPC", () => {
     expect(end).toHaveBeenCalledOnce();
   });
 
-  it("does not persist invalid inputs and always releases its mutation guard", () => {
+  it("does not persist invalid inputs and always releases its mutation guard", async () => {
     const { context, persist, end } = loadPolicyWriter();
-    expect(() => runInContext("exports.handler('trusted', null)", context)).toThrow(
+    await expect(runInContext("exports.handler('trusted', null)", context)).rejects.toThrow(
       "Invalid folder policy",
     );
     expect(persist).not.toHaveBeenCalled();
     expect(end).toHaveBeenCalledOnce();
   });
 
-  it("surfaces storage failures rather than reporting a successful draft", () => {
+  it("surfaces storage failures rather than reporting a successful draft", async () => {
     const { context, persist, end } = loadPolicyWriter();
     persist.mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
-    expect(() => runInContext("exports.handler('trusted', {rw:[],ro:[]})", context)).toThrow(
-      "Storage unavailable",
-    );
+    await expect(
+      runInContext("exports.handler('trusted', {rw:[],ro:[]})", context),
+    ).rejects.toThrow("Storage unavailable");
     expect(end).toHaveBeenCalledOnce();
   });
 });

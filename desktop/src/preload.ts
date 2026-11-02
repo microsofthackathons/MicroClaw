@@ -242,6 +242,7 @@ contextBridge.exposeInMainWorld("openclaw", {
           ready?: boolean;
           qrSession?: import("./weixin-connection").WeixinQrSnapshot;
           mutationLocked: boolean;
+          loginLocked?: boolean;
           mutationLockRevision: number;
         }>,
       setEnabled: (enabled: boolean) => ipcRenderer.invoke("plugin:weixin:set-enabled", enabled),
@@ -263,10 +264,12 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.on("plugin:weixin:login-done", handler);
         return () => ipcRenderer.removeListener("plugin:weixin:login-done", handler);
       },
-      onMutationLock: (callback: (status: { locked: boolean; revision: number }) => void) => {
+      onMutationLock: (
+        callback: (status: { locked: boolean; loginLocked?: boolean; revision: number }) => void,
+      ) => {
         const handler = (
           _event: Electron.IpcRendererEvent,
-          status: { locked: boolean; revision: number },
+          status: { locked: boolean; loginLocked?: boolean; revision: number },
         ) => callback(status);
         ipcRenderer.on("plugin:weixin:mutation-lock", handler);
         return () => ipcRenderer.removeListener("plugin:weixin:mutation-lock", handler);
@@ -397,6 +400,24 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
+    getDisplayStatus: () => ipcRenderer.invoke("windows-node-mxc:display-status"),
+    onDisplayStatus: (callback: (snapshot: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: unknown) => callback(snapshot);
+      ipcRenderer.on("windows-node-mxc:display-status", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:display-status", handler);
+    },
+    onApprovalProcessing: (
+      callback: (result: {
+        requestId: string;
+        approvalLayer: "gateway";
+        applyingFolders: boolean;
+      }) => void,
+    ) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: Parameters<typeof callback>[0]) =>
+        callback(result);
+      ipcRenderer.on("windows-node-mxc:approval-processing", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-processing", handler);
+    },
     getFolders: () =>
       ipcRenderer.invoke("windows-node-mxc:get-folders") as Promise<{ rw: string[]; ro: string[] }>,
     setFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>

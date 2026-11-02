@@ -56,7 +56,7 @@ describe.each([
 ] as const)("%s WeChat connection", (_name, component) => {
   let currentStatus: WeixinStatus;
   let wrapper: VueWrapper | undefined;
-  let mutationLock: (status: { locked: boolean; revision: number }) => void;
+  let mutationLock: (status: { locked: boolean; loginLocked?: boolean; revision: number }) => void;
   const getStatus = vi.fn();
   const loginQrStart = vi.fn();
   const cancelLogin = vi.fn();
@@ -179,6 +179,15 @@ describe.each([
     );
     expect(button("plugins.disconnect")).toBeDefined();
     expect(button("plugins.connectWeixin")).toBeUndefined();
+  });
+
+  it("shows no MXC explanation for an active connected account", async () => {
+    currentStatus = { ...loggedInStatus(), mutationLocked: true, loginLocked: false };
+    mountView();
+    await flushPromises();
+    expect(wrapper!.find(".weixin-body").exists()).toBe(false);
+    expect(button("plugins.disconnect").attributes("disabled")).toBeUndefined();
+    expect(loginQrStart).not.toHaveBeenCalled();
   });
 
   it("waits for runtime readiness instead of triggering a plugin reload", async () => {
@@ -355,6 +364,43 @@ describe.each([
     await flushPromises();
     expect(button("plugins.connectWeixin").attributes("disabled")).toBeDefined();
     expect(loginQrStart).not.toHaveBeenCalled();
+  });
+
+  it("allows guarded account changes under active MXC but locks them during QR sign-in", async () => {
+    currentStatus = {
+      ...loggedInStatus(),
+      connected: false,
+      mutationLocked: true,
+      loginLocked: false,
+      mutationLockRevision: 3,
+    };
+    mountView();
+    await flushPromises();
+    expect(wrapper!.find(".weixin-body").exists()).toBe(false);
+    expect(button("plugins.connectWeixin").attributes("disabled")).toBeUndefined();
+    expect(button("plugins.disconnect").attributes("disabled")).toBeUndefined();
+    await button("plugins.connectWeixin").trigger("click");
+    await flushPromises();
+    expect(loginQrStart).toHaveBeenCalledExactlyOnceWith({ force: true });
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled();
+    expect(wrapper!.find('[role="dialog"]').exists()).toBe(true);
+    currentStatus = {
+      ...currentStatus,
+      pausedByMxc: true,
+      ready: false,
+      loginLocked: true,
+      mutationLockRevision: 4,
+    };
+    mutationLock({ locked: true, loginLocked: true, revision: 4 });
+    mutationLock({ locked: true, loginLocked: false, revision: 3 });
+    await vi.advanceTimersByTimeAsync(800);
+    await flushPromises();
+    expect(wrapper!.find('[role="dialog"]').exists()).toBe(true);
+    expect(wrapper!.find(".weixin-body").exists()).toBe(false);
+    expect(button("plugins.connectWeixin").attributes("disabled")).toBeDefined();
+    expect(button("plugins.disconnect").attributes("disabled")).toBeDefined();
+    expect(setEnabled).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
   });
 
   it("rechecks the mutation lock after a disconnect confirmation", async () => {

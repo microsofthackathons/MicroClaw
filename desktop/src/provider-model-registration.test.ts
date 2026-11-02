@@ -25,24 +25,27 @@ function fixture() {
   };
   let applied = true;
   const before = structuredClone(config);
-  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-    if (method === "config.get")
-      return {
-        valid: true,
-        hash: "base",
-        config: structuredClone(config),
-        configRevisionHash: "current",
-        appliedConfigHash: applied ? "current" : "previous",
-      };
-    if (method === "config.patch") {
-      expect(params?.baseHash).toBe("base");
-      const patch = JSON.parse(String(params?.raw));
-      if (patch.models) config.models.providers.qwen.models = patch.models.providers.qwen.models;
-      if (patch.agents) config.agents.defaults.model.primary = patch.agents.defaults.model.primary;
-      return { ok: true, config: structuredClone(config) };
-    }
-    throw new Error(`Unexpected method ${method}`);
-  });
+  const request = vi.fn(
+    async (method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      if (method === "config.get")
+        return {
+          valid: true,
+          hash: "base",
+          config: structuredClone(config),
+          configRevisionHash: "current",
+          appliedConfigHash: applied ? "current" : "previous",
+        };
+      if (method === "config.patch") {
+        expect(params?.baseHash).toBe("base");
+        const patch = JSON.parse(String(params?.raw));
+        if (patch.models) config.models.providers.qwen.models = patch.models.providers.qwen.models;
+        if (patch.agents)
+          config.agents.defaults.model.primary = patch.agents.defaults.model.primary;
+        return { ok: true, config: structuredClone(config) };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  );
   const gateway = {
     connected: true,
     serverVersion: "2026.10.2",
@@ -76,6 +79,25 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("live provider model registration", () => {
+  it("preserves an explicit revision-bound restart requirement without replaying registration", async () => {
+    const f = fixture();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params) => {
+      const result = await original(method, params);
+      return method === "config.patch"
+        ? {
+            ...result,
+            hash: "saved-catalog-revision",
+            sentinel: { payload: { stats: { requiresRestart: true } } },
+          }
+        : result;
+    });
+    await expect(f.register()).rejects.toMatchObject({
+      cause: { name: "ModelConfigRestartRequiredError", savedHash: "saved-catalog-revision" },
+    });
+    expect(f.request.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(1);
+  });
+
   it("rejects incompatible models even when previously registered", async () => {
     const f = fixture();
     const id = "qwen3.8-omni-flash-realtime";

@@ -63,6 +63,14 @@ reappear when containment is selected; hiding them does not clear saved settings
 Selecting Off alone does not hide an incomplete transition, remaining MXC activity, or unresolved
 lifecycle or folder-policy recovery state.
 
+Status refreshes reuse the identity initialized by activation/pairing; reading a host snapshot
+does not launch the native identity helper or hash the Canvas runtime. Fresh runtime checks use
+asynchronous, streamed hashing so opening Security settings or focusing the window does not block
+Electron's main thread. Off validates only the pinned probe runtime before checking availability;
+enabled status, health, and ingress checks still validate the complete bundled artifact set and
+Canvas tree on every inspection. Snapshots are not activation authority: explicit activation,
+host launch, live Gateway attestation, policy-drift checks, and fail-closed handling remain required.
+
 Security settings do not display the internal attestation diagnostics or the verbose compatibility,
 probe, readiness-blocker, and remediation dump. Saved folder-Apply failure messages and phases are
 also omitted; recovery data and the action to stage the previous policy are retained alongside the
@@ -73,26 +81,30 @@ operation failures still use the existing error notifications. This presentation
 disable any containment, policy, approval, or readiness checks; Limited still offers per-command
 approval only.
 
-Each explicit sandbox toggle opens exactly one main-process native confirmation. It says that
-MicroClaw's **backend restarts while the window stays open**; Electron is not relaunched. For On,
-it discloses the automatically selected tier and capability restrictions. Limited's confirmation
-button explicitly accepts the additive-DACL limitation; acceptance records acknowledgement for
-that activation, rather than trusting a renderer flag or inventing blanket consent. An eligible
-signed-in WeChat account is automatically used for experimental command approvals, disclosed in
-this same dialog without a separate choice or checkbox. This does not grant command approvals,
-new durable consent, or permission to expose full command details.
-The initial read-only capability probe precedes the dialog. Cancel/close/Escape leaves saved mode,
-grants, approvals, configuration, Gateway/Node processes and readiness unchanged. After acceptance,
-the existing locked lifecycle revalidates the confirmed tier before activation. A changed or failed
-probe aborts; it never substitutes a weaker tier under the same consent. Internal refresh, relock,
-startup recovery, and fail-closed repair preserve the saved tier and do not prompt.
+Explicit sandbox On/Off switches apply directly, without a warning or confirmation popup.
+MicroClaw's **backend restarts while the window stays open**; Electron is not relaunched.
+On probes and records the automatically selected tier, including the Limited-mode selection
+when that is the supported backend, without accepting renderer-supplied tier or consent flags.
+The existing locked lifecycle revalidates that exact tier before activation. A changed or failed
+probe aborts; it never substitutes a weaker tier under the same request. Saved folders and
+remembered commands survive Off. In-progress status and actual failures remain visible.
+During Off, startup shows "Turning off MXC", then "Starting normal mode (MXC Off)";
+it never labels the previous Full/Limited selection as starting containment.
+An eligible signed-in WeChat account is automatically used for experimental command approvals,
+without granting any command approval, new durable consent, or full-command disclosure authority.
+Internal refresh, relock, startup recovery, and fail-closed repair preserve the saved tier.
+
+Internal locked-to-active policy promotion and rollback omit the `config.patch` note and
+delivery target. OpenClaw consumes these targetless acknowledgements without waking an agent
+or posting restart/Doctor instructions in chat. The hot-apply acknowledgement, exact config
+read-back and generation checks remain mandatory; failures still surface through MXC readiness.
 
 Full containment is the security contract established by
 [#224](https://github.com/microsofthackathons/MicroClaw/pull/224). It rejects DACL augmentation,
 sets `fallback.allowDaclMutation=false`, and preserves the exact RO/RW ceiling, denied-root
 precedence, and out-of-root denial invariants.
 
-Limited containment is a separate, explicitly acknowledged threat model. It accepts only a
+Limited containment is a separate, explicitly recorded threat model. It accepts only a
 probe-attested `appcontainer-dacl` tier and sets `fallback.allowDaclMutation=true` for the reviewed
 MXC DACL path. AppContainer process isolation, contained public outbound networking, clipboard
 denial, input-injection denial, pinned-node execution, and strict no-host-fallback remain enforced.
@@ -225,16 +237,13 @@ access.
 
 WeChat remote approval is automatically enabled for an eligible account during sandbox activation,
 not a standalone Settings toggle. When MXC is currently Off and WeChat has exactly one authenticated account,
-the single main-process-owned backend-restart confirmation discloses automatic experimental
-approval enrollment for the eligible authenticated single account. There is no separate WeChat
-prompt, checkbox, account selector, or opaque identity block. Cancelling
-or closing the native prompt aborts activation before the Gateway or containment state is mutated,
-without resetting ordinary runtime readiness. Capability and Limited-filesystem disclosures are
-combined into that confirmation. The renderer sends only a boolean sandboxing choice; only the main process
+the main process plans automatic experimental approval enrollment for that account.
+There is no activation prompt, checkbox, account selector, or opaque identity block.
+The renderer sends only a boolean sandboxing choice; only the main process
 derives and revalidates the exact owner. Renderer-supplied
 remote approval choices are rejected.
 
-The main process re-reads channel state and account credentials immediately after native consent
+The main process re-reads channel state and account credentials during transition planning
 and again at the locked transition boundary. If the original owner disappears, changes, or becomes
 ineligible, independently validated sandbox activation proceeds with remote approvals disabled and
 the reason recorded in lifecycle diagnostics; a replacement owner is never enrolled. Account-read
@@ -243,7 +252,7 @@ QR-login account ID plus its saved WeChat `userId`; a display name is never an i
 sole identity is atomically added to the account's sender allowlist when necessary, preserving other
 explicit ordinary-message senders without granting them remote approval authority. If WeChat is
 disabled, unavailable, unauthenticated, or in a legacy multiple-account state, sandboxing still
-shows its one restart confirmation and proceeds with remote approval disabled. Turning MXC Off
+proceeds directly with remote approval disabled. Turning MXC Off
 or replacing the exact identity clears the owner binding. Default enrollment never issues native
 durable-consent scope; existing command eligibility, exact leases, and privacy gates remain
 independent. Active consent is not upgraded.
@@ -267,7 +276,7 @@ direct-chat identity, upstream message ID and cursor/order, exact content, and q
 metadata. This trust assumption applies to every WeChat command, not only MXC remote approval.
 MicroClaw does not require an independent WeChat server signature or immutable upstream lookup.
 Compromise of the authenticated WeChat session, the allowlisted plugin, or the Gateway therefore
-remains an explicit product risk and is disclosed in the local MXC activation dialog.
+remains an explicit product risk; removing the toggle dialog does not change this trust assumption.
 
 Provider message IDs and cursors use canonical nonnegative decimal strings internally. Numeric
 JSON literals are preserved from their original source lexemes before floating-point rounding;
@@ -405,7 +414,7 @@ The bounded approval-surface inventory is:
 | --- | --- |
 | Gateway `exec.approval.requested` for the selected bundled node, normalized from the pinned SDK's prepared `systemRunPlan` and admitted caller origin | Eligible only with the exact current authenticated owner/account/canonical run route, source registration, active generation/security and a representable command. The pinned shell producer wraps `-NoLogo -NoProfile -NonInteractive -Command`; a model-supplied literal nested interpreter is validated separately. |
 | Generic executable plus already-safe bounded argv (for example `whoami.exe /all`) | Existing exact-command presentation remains supported; it is not general script parsing or an executable trust attestation. |
-| Closed literal mutating PowerShell operations listed above | Existing explicit RW coverage and exact force/recurse/content/encoding/no-newline disclosures remain required. |
+| Closed literal mutating PowerShell operations listed above | Explicit RW declarations and exact force/recurse/content/encoding/no-newline disclosures remain required. Missing grants use the combined folder prompt below. |
 | Closed literal `Test-Path` existence verification | The newly covered omission: positional / `-Path` / `-LiteralPath`, direct or one validated nested interpreter, with RO or RW coverage. No `-PathType`, `-IsValid`, wildcards, expressions, extra switches or additional operations. |
 | Bundled host `onApproval` / `approvalLayer=node` fallback | Desktop once/deny only. This layer has no authenticated canonical chat/run origin; no phone challenge or selected-chat activity is invented. Native proof, path/reparse and execution checks are unchanged. |
 | Native remote-approval owner/consent choices and exact durable records | Settings/native authority, not another phone command type. Existing eligible exact durable use can avoid a pending prompt; it does not synthesize a new run or execution-success event. |
@@ -418,7 +427,7 @@ replies are authorization/delivery states, **not** additional permission types t
 permission family or general script support was added. The directly coupled safe `Test-Path` forms
 above are covered; this is not a claim that all Desktop approvals are phone-eligible.
 
-In Limited-DACL only, the Windows host prepares a versioned public PowerShell filesystem scope
+In verified Full (`base-container` / `appcontainer-bfs`) and Limited-DACL containment, the Windows host prepares a versioned public PowerShell filesystem scope
 for the closed literal directory-creation and removal forms above (direct Windows PowerShell or
 one literal nested Windows PowerShell). Windows PowerShell otherwise normalizes absolute paths
 against its default drive and can fail on ungranted ancestors even when the target has the approved
@@ -542,10 +551,27 @@ connection notices remain visible; watchdog reconciliation is bounded and never 
 These source regressions explain/fix the predicates and lifecycle contracts, not a claim that a
 particular historical Desktop packet or DOM state was observed.
 
-WeChat toggle/login/replace/disconnect controls are locked in both channel/plugin views while
-MXC is active or transitioning. Main enforces the same guard before writes/spawns/RPC, and
-activation cannot cross an in-flight account mutation or unconfirmed login writer. Cancellation
-waits for known writers to drain; an unknown writer requires an explicit Gateway stop.
+WeChat QR sign-in and account replacement are available from the shared connection card while
+MXC is active. It uses the same on-demand QR popover, refresh and connected presentation as
+MXC Off, with no extra MXC explanatory text or native warning dialog. Real login errors and
+unavailable sign-in states remain visible. A connected account can be disconnected in either
+mode, using the same confirmation, before opening a fresh QR.
+Main owns one exclusive lifecycle operation across QR creation, polling, cancellation, and disconnect:
+chat/media ingress closes, the activation lease is revoked, and old approval challenges and
+account authority are invalidated before authentication. The QR stays visible during this pause.
+After a confirmed result, expiry or cancellation, the same Gateway and native host remain running:
+the activation lease is renewed and current-generation containment is reattested before ingress
+resumes. Cancellation/expiry resumes the previously stored channel without restarting the Gateway.
+The inactive remote-approval transport is provisioned at MXC startup even without an account;
+transport availability alone grants no approval authority. Success enrolls only the exact authenticated single account with a new
+binding; durable command consent is never transferred. Cancellation preserves a previous binding
+only when its authenticated owner is unchanged. A confirmed disconnect leaves remote approval
+disabled and keeps its inactive transport available for a later sign-in. Unknown outcomes, config/policy/runtime drift,
+or failed readiness leave execution locked and require recovery; credentials are not rolled back.
+The plugin reports the canonical ID actually committed to its account index, not the provider's
+raw ID (for example `bot@im.bot` becomes `bot-im-bot`). Comparing these different representations
+previously rejected a successful login. Containment mode and folder policy stay unchanged throughout. Plugin toggling and CLI login
+remain blocked under MXC, and no other security transition can cross an account-change writer.
 
 Acknowledgements are system messages and never enter agent history.
 An acknowledgement delivery failure does not re-dispatch the consumed approval reply. The plugin
@@ -581,11 +607,20 @@ these lists define the hard capability ceiling. In Limited, they are labeled as 
 and do not claim to override ambient ACLs. Folder selection uses Electron's trusted native directory
 picker. Equal paths are deduplicated, redundant nested grants are collapsed, and a narrower RW root
 under a broader RO root remains explicit. While MXC is enabled, edits remain a renderer draft and
-cannot mutate live ACLs or settings. **Apply changes and reactivate** performs one serialized
-fail-closed transaction: lock ingress, reject pending approvals, revoke proof/lease state, validate
-the complete draft, stop the exact generation, atomically persist the native
-`windowsNodeMxcFolders` policy, attest and smoke a locked generation, attest and
-smoke a fresh active generation, mint its lease, verify the effective route, then release ingress.
+cannot mutate live ACLs or settings until **Apply folder changes**. Apply validates the complete
+draft asynchronously, locks new ingress, rejects stale approvals, revokes the old activation lease,
+persists the folder lists, and publishes an Electron-signed, monotonically versioned policy.
+The native node verifies the signature, Gateway generation, policy digest, and unchanged non-folder
+runtime configuration. It cancels old invocations, closes Canvas, and verifies that its Windows job
+contains no remaining child processes before acknowledging the exact revision. It then uses the new
+immutable policy for subsequent containers. MicroClaw renews the policy-bound lease, verifies the
+effective route, and releases ingress. **Neither the Gateway nor the native node restarts**, and the
+connected app does not return to the startup screen. Running commands are canceled even for additions;
+this avoids allowing old containers or Canvas sessions to retain revoked grants.
+
+Activation still runs the fixed readiness checks; folder-only updates do not repeat them.
+Activation evidence binds the runtime settings, Gateway generation, node identity and containment
+tier, while folder revisions have their own signed acknowledgement and policy-bound lease.
 Full runs its outside-root denial check plus one deterministic contained execution smoke. The
 denial check accepts the bundled node's structured `system.run` result only when it explicitly
 reports `rejectedBeforeExecution` with `cwd-sensitive-root` or `cwd-outside-approved-roots` for
@@ -613,9 +648,40 @@ requesting a missing CWD is still rejected, and active-generation grants are not
 The native host passes canonical read-only/read-write roots directly into each fresh MXC
 container's filesystem configuration. It does not provision the retired MicroClaw AppContainer
 profile or mutate persistent ACLs through the old launcher. MXC owns any mode-specific grants and
-container teardown. Failed folder transitions restore the previous stored policy only after the
-active generation is proven stopped, and recovery remains locked. While Off, folder edits validate
+container teardown. A failed live update stops the native process tree and keeps ingress locked,
+then restores the previous saved folder lists. The attempted draft remains available for explicit
+recovery. It never silently
+reactivates an old policy. While Off, folder edits validate
 and save policy for the next MXC activation; they do not restrict unsandboxed tools.
+
+For commands already covered by folder grants, the command approval rules are unchanged.
+Cloud provider credentials, model definitions, default-model selection and catalog registration can
+also be applied while MXC is enabled. The desktop permits only model-related configuration changes,
+serializes them with containment transitions, closes ingress and revokes execution authorization
+during application, then verifies the applied configuration revision and effective MXC tool policy
+before restoring access. Normal model updates do not restart the Gateway. Only an explicit,
+revision-bound restart requirement permits a controlled restart through full containment readiness;
+an uncertain response is not retried. Failures leave execution locked and may leave the model
+configuration saved, so reload settings before retrying. General configuration writes, local-model
+installation, and provider-plugin/sign-in setup retain their existing restrictions.
+Background health checks and ingress attestations are bound to an idle lifecycle revision:
+observations started before a model, folder or containment transition cannot relock the new state
+or renew its lease, even if the transition has already finished when the observation returns.
+Settings displays the last verified status immediately and refreshes it non-blockingly. Concurrent
+inspections share only in-flight work bound to the exact configuration, lifecycle, generation and
+lease authority; a cached display snapshot never authorizes execution. Context changes or refresh
+failures invalidate the snapshot. Combined folder approvals share the folder transaction's preflight
+instead of performing it twice. Per-stage folder-update timings are logged for both manual and
+approval-driven changes. Once the main process accepts a decision for processing, the prompt is hidden
+and its chat activity shows progress; final failure or expiry remains visible and is never retried
+automatically.
+
+The exact prepared PowerShell filesystem-provider initialization applies to Full as well as Limited
+containment. Supported literal operations use a drive rooted at the contained CWD, without granting
+access to drive roots or modifying host ACLs. This avoids `Remove-Item` failing solely because the
+default PowerShell filesystem drive cannot initialize. Original and initialized command bytes remain
+bound to the approval proof; read-only, ungranted, reparse-point and unsupported-command restrictions
+are unchanged.
 
 The normal active route has one visible Gateway/MicroClaw prompt. It displays executable, exact argv,
 agent/session scope, canonical CWD, declared folder use, the attested containment strength, and in
@@ -626,7 +692,9 @@ never delegates durable authority to the Gateway or node. The Gateway then mints
 one-use HMAC proof bound
 to the exact generation, node, policy fingerprint, prepared plan, executable path/content hash, CWD,
 declarations, agent, and session. The node silently accepts only that proof after recapturing the
-held executable identity. Direct `node.invoke`, malformed, stale, replayed, or concurrent reuse is
+held executable identity. At dispatch, the Gateway preserves the approved full command text as
+`rawCommand`; the shell display preview cannot replace that native proof binding.
+Direct `node.invoke`, malformed, stale, replayed, or concurrent reuse is
 denied. Fixed readiness commands use a separate HMAC contract bound to the transition ID, Gateway
 generation, node, policy, probe kind, exact prepared executable path/content hash, argv, isolated
 scratch CWD, empty declarations, short expiry, and one-use consumption. Readiness preparation
@@ -638,12 +706,14 @@ argv after startup, still requires the normal visible approval. Each contained c
 `TEMP`/`TMP`/`TMPDIR` pointing at its own writable scratch grant.
 
 Optional `[declare-access]ro:<path>;rw:<path>[/declare-access]` metadata is accepted only on leading
-metadata lines (with an optional `#`, `REM`, or `::` comment prefix). It can describe only canonical
-paths already covered by the global folder policy and cannot upgrade RO to RW. The helper removes
+metadata lines (with an optional `#`, `REM`, or `::` comment prefix). Preparation can describe
+canonical missing grants or an RO-to-RW upgrade, but does not grant access or execute the command.
+An unlisted CWD requests RO access unless the command explicitly declares RW for that folder.
+The helper removes
 the metadata line from the executable shell payload, binds approval to the cleaned argv, and carries
 a canonical declaration only in the approved plan's display preview. Every configured approved root
 is passed into every MXC invocation as a global RO/RW grant; declaration metadata validates and
-communicates intended use but never grants or changes access. MicroClaw renders it as separate
+communicates intended use but never grants or changes access by itself. MicroClaw renders it as separate
 localized declared folder use and clean command text, and explains that approval authorizes the
 command itself inside MXC. `Allow always` stores a versioned MicroClaw-owned exact record under the
 protected Windows-node state directory: canonical executable path and SHA-256, exact argv and
@@ -653,10 +723,35 @@ unbound, policy-stale, hash-stale, path-stale, or scope-mismatched records autho
 Security settings shows creation/last-use details and supports individual or complete revocation. A
 valid exact match suppresses the visible prompt in Full mode but still receives a fresh one-use
 Gateway proof and full node launch-time revalidation. It never changes configured folder grants.
-An unlisted declaration, or an RW declaration covered only by RO policy, is rejected before the
-command-approval prompt with localized remediation to change Settings > Security and retry. Omitting
+An unlisted CWD/declaration, or an RW declaration covered only by RO policy, instead receives one
+combined prompt: **Deny** or **Allow**, with the exact folders and RO/RW changes displayed.
+Allow saves those folder permissions and authorizes that exact command once; it does not save a
+durable command approval or show a second permission prompt. Protected roots, reparse paths and
+other invalid paths remain non-overridable. The signed update binds the approval ID, original
+prepared-plan digest and expiry, allowing only that approved plan to cross the policy revision.
+Other old prepared plans cannot inherit the expanded grants. Eligible authenticated WeChat prompts
+use **1: Allow / 3: Deny**, explicitly explaining that the displayed RO/RW grants persist until
+removed in Settings while the command is approved once. Option 2 is never available for folder
+grants. The challenge binds the full folder list, access modes, original plan digest and policy
+fingerprint; unsafe or incomplete presentations still require Desktop approval.
+Before revoking ingress for a phone-approved folder update, MicroClaw waits for provider-confirmed
+delivery of an "Allow received; applying folder permissions" notice. Unconfirmed delivery leaves
+the policy unchanged. This notice is not execution success; a separate final receipt reports the
+result and whether folder grants were saved. Only the already-consumed exact approval and its
+current source context survive their own live policy update. All other challenges are invalidated;
+owner, generation and path checks still run before persistence and release.
+The desktop hides its prompt after the main process accepts the decision for processing and shows
+chat progress; its countdown does not submit a competing denial during that operation.
+WeChat media grants also read the authenticated live snapshot, so revoked folders do not remain in
+the Gateway's original environment policy. Omitting
 declaration metadata never expands the MXC policy: only the configured global roots are emitted, and
 an operation outside them receives the container's normal access-denied result.
+Unexpected access attempted after a command starts does not trigger a retry or a resumable prompt.
+
+The Full outside-root check accepts only an explicit pre-execution CWD denial. A successful
+`node.invoke` RPC carrying `success: false`, `executionState: "rejectedBeforeExecution"` and the
+expected CWD error code is a successful denial check, not successful command execution. Completed,
+malformed, contradictory or unrelated error responses do not pass it.
 
 ## Packaging and provenance
 
@@ -759,7 +854,7 @@ status or hash, missing result, tier change, restart, or policy change closes in
 lease, and requires a fresh explicit transition. The assessment is enforcement evidence, not a
 one-time warning dialog.
 
-An explicit activation performs one main-process containment validation after native consent and
+An explicit activation performs one main-process containment validation after transition planning and
 before security configuration or remote-approval persistence. Its result is scoped to that lifecycle
 transition and handed to the initial locked Gateway startup; it is not a cross-transition cache.
 Host startup and per-command revalidation remain independent fresh checks. All 18 assessment

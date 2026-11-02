@@ -267,6 +267,15 @@ internal sealed class ApprovalProofVerifier
             fields.AddRange(initialization.FinalArgv.Select(argument =>
                 EncodeField("providerInitialization.finalArg", argument)));
         }
+        if (plan.TryGetProperty("policyFingerprint", out var fingerprintElement))
+        {
+            var fingerprint = fingerprintElement.GetString();
+            if (fingerprint is null || fingerprint.Length != 64
+                || fingerprint.Any(character => !char.IsAsciiHexDigit(character))
+                || fingerprint != fingerprint.ToLowerInvariant())
+                throw new HostPolicyException("approval-plan-policy-invalid", "The prepared policy fingerprint is invalid.");
+            fields.Add(EncodeField("policyFingerprint", fingerprint));
+        }
         return Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', fields)))).ToLowerInvariant();
     }

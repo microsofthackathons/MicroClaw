@@ -62,7 +62,8 @@ before(() => {
   fs.mkdirSync(sdkDir, { recursive: true });
   const modules = {
     "channel-config-schema": "export const buildChannelConfigSchema = (schema) => schema;",
-    "account-id": "export const normalizeAccountId = (id) => id.trim();",
+    "account-id":
+      "export const normalizeAccountId = (id) => id.trim().replace(/@im[.]bot$/i, '-im-bot').toLowerCase();",
     "temp-path": `export const resolvePreferredOpenClawTmpDir = () => ${JSON.stringify(path.join(tempDir, "logs"))};`,
     "file-lock": "export const withFileLock = async (_path, _options, fn) => await fn();",
     "command-auth-native": `
@@ -568,7 +569,7 @@ test("prepared package resource is provenance-pinned and excludes a nested OpenC
   );
 });
 
-test("the packaged plugin registers an admin-only cancellation RPC without starting login", async (context) => {
+test("the packaged plugin registers admin-only login lifecycle RPCs without starting login", async (context) => {
   const destination = path.join(tempDir, "rpc-resource");
   prepareWeixinPluginResource({ source: sourceDir, destination });
   fs.cpSync(
@@ -601,9 +602,9 @@ test("the packaged plugin registers an admin-only cancellation RPC without start
       plugin = registration.plugin;
     },
     registerGatewayMethod: (method, handler, options) => {
-      assert.equal(method, "weixin.login.cancel");
+      assert.ok(["weixin.login.cancel", "weixin.login.resume"].includes(method));
       assert.equal(options.scope, "operator.admin");
-      cancel = handler;
+      if (method === "weixin.login.cancel") cancel = handler;
     },
   });
   assert.equal(fetches, 0);
@@ -620,4 +621,163 @@ test("the packaged plugin registers an admin-only cancellation RPC without start
   assert.equal(result.connected, false);
   assert.equal(result.cancelled, true);
   assert.equal(fetches, 2);
+});
+
+test("packaged QR completion reports the committed canonical account and resumes without config reload", async (context) => {
+  const destination = path.join(tempDir, "canonical-login-resource");
+  prepareWeixinPluginResource({ source: sourceDir, destination });
+  fs.cpSync(
+    path.join(stageDir, "node_modules/openclaw"),
+    path.join(destination, "node_modules/openclaw"),
+    { recursive: true },
+  );
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (url) =>
+      new Response(
+        JSON.stringify(
+          String(url).includes("get_bot_qrcode")
+            ? { qrcode: "canonical-code", qrcode_img_content: "https://example.test/qr" }
+            : {
+                status: "confirmed",
+                bot_token: "fixture-token",
+                ilink_bot_id: "CanonicalBot@im.bot",
+                ilink_user_id: "fixture-owner@im.wechat",
+              },
+        ),
+      ),
+  );
+  const entry = await import(pathToFileURL(path.join(destination, "dist/index.js")).href);
+  const accounts = await import(
+    pathToFileURL(path.join(destination, "dist/src/auth/accounts.js")).href
+  );
+  const config = await import(
+    pathToFileURL(path.join(destination, "node_modules/openclaw/config-mutation.js")).href
+  );
+  config.reset({ unchanged: true }, new Error("Login must not reload configuration"));
+  let plugin;
+  let resume;
+  entry.default.register({
+    runtime: { version: "2026.10.5" },
+    registerChannel: (registration) => {
+      plugin = registration.plugin;
+    },
+    registerGatewayMethod: (method, handler, options) => {
+      assert.equal(options.scope, "operator.admin");
+      if (method === "weixin.login.resume") resume = handler;
+    },
+  });
+  const start = await plugin.gateway.loginWithQrStart({});
+  const result = await plugin.gateway.loginWithQrWait({ sessionKey: start.sessionKey });
+  assert.equal(result.connected, true);
+  assert.equal(result.accountId, "canonicalbot-im-bot");
+  assert.deepEqual(accounts.listIndexedWeixinAccountIds(), [result.accountId]);
+  assert.deepEqual(config.config, { unchanged: true });
+  assert.equal("botToken" in result, false);
+
+  const calls = [];
+  const replies = [];
+  const gatewayContext = {
+    startChannel: async (channel, accountId) => {
+      calls.push({ channel, accountId });
+      return new Map([[accountId, { status: "handed-off" }]]);
+    },
+    getRuntimeSnapshot: () => ({ channelAccounts: {} }),
+  };
+  await resume({ context: gatewayContext, respond: (...args) => replies.push(args) });
+  assert.deepEqual(calls, [{ channel: "openclaw-weixin", accountId: result.accountId }]);
+  assert.deepEqual(replies, [[true, { resumed: true }]]);
+
+  replies.length = 0;
+  gatewayContext.startChannel = async () =>
+    new Map([[result.accountId, { status: "skipped", reason: "disabled" }]]);
+  await resume({ context: gatewayContext, respond: (...args) => replies.push(args) });
+  assert.equal(replies[0][0], false);
+  assert.equal(replies[0][2].code, "UNAVAILABLE");
+
+  replies.length = 0;
+  gatewayContext.startChannel = async () =>
+    new Map([[result.accountId, { status: "retry", reason: "task-owned" }]]);
+  gatewayContext.getRuntimeSnapshot = () => ({
+    channelAccounts: {
+      "openclaw-weixin": { [result.accountId]: { accountId: result.accountId, running: true } },
+    },
+  });
+  await resume({ context: gatewayContext, respond: (...args) => replies.push(args) });
+  assert.deepEqual(replies, [[true, { resumed: true }]]);
+  accounts.disconnectWeixinAccount(result.accountId);
+
+  replies.length = 0;
+  await resume({
+    context: {
+      startChannel: () => {
+        throw new Error("No account to start");
+      },
+    },
+    respond: (...args) => replies.push(args),
+  });
+  assert.deepEqual(replies, [[true, { resumed: true }]]);
+});
+
+test("the packaged channel can disconnect and create a fresh QR without a config reload", async (context) => {
+  const destination = path.join(tempDir, "disconnect-login-resource");
+  prepareWeixinPluginResource({ source: sourceDir, destination });
+  fs.cpSync(
+    path.join(stageDir, "node_modules/openclaw"),
+    path.join(destination, "node_modules/openclaw"),
+    { recursive: true },
+  );
+  context.mock.method(
+    globalThis,
+    "fetch",
+    async (url) =>
+      new Response(
+        JSON.stringify(
+          String(url).includes("get_bot_qrcode")
+            ? { qrcode: "fresh-code", qrcode_img_content: "https://example.test/fresh-qr" }
+            : {
+                status: "confirmed",
+                bot_token: "fixture-new-token",
+                ilink_bot_id: "NewBot@im.bot",
+                ilink_user_id: "new-owner@im.wechat",
+              },
+        ),
+      ),
+  );
+  const entry = await import(pathToFileURL(path.join(destination, "dist/index.js")).href);
+  const accounts = await import(
+    pathToFileURL(path.join(destination, "dist/src/auth/accounts.js")).href
+  );
+  const config = await import(
+    pathToFileURL(path.join(destination, "node_modules/openclaw/config-mutation.js")).href
+  );
+  config.reset({ unchanged: true }, new Error("Account changes must not reload configuration"));
+  let plugin;
+  entry.default.register({
+    runtime: { version: "2026.10.5" },
+    registerChannel: (registration) => {
+      plugin = registration.plugin;
+    },
+    registerGatewayMethod: () => undefined,
+  });
+  accounts.replaceWeixinAccount({
+    accountId: "old-bot",
+    token: "fixture-old-token",
+    userId: "old-owner@im.wechat",
+  });
+  assert.deepEqual(await plugin.gateway.logoutAccount({ accountId: "old-bot" }), {
+    cleared: true,
+    loggedOut: true,
+  });
+  assert.deepEqual(accounts.listIndexedWeixinAccountIds(), []);
+
+  const start = await plugin.gateway.loginWithQrStart({ force: false });
+  assert.equal(start.qrDataUrl, "https://example.test/fresh-qr");
+  assert.ok(start.sessionKey);
+  const result = await plugin.gateway.loginWithQrWait({ sessionKey: start.sessionKey });
+  assert.equal(result.connected, true);
+  assert.equal(result.accountId, "newbot-im-bot");
+  assert.deepEqual(accounts.listIndexedWeixinAccountIds(), [result.accountId]);
+  assert.deepEqual(config.config, { unchanged: true });
 });

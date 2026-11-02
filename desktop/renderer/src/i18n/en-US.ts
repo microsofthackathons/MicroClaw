@@ -227,8 +227,6 @@ export default {
     "Scan the QR code to log in to WeChat. Once logged in, the AI assistant can receive and process WeChat messages.",
   "plugins.loginWeixin": "Log in to WeChat",
   "plugins.replaceWeixin": "Replace WeChat account",
-  "plugins.replaceWeixinConfirm":
-    "Successful authorization replaces the current WeChat account and its local sync and authorization state. Closing the QR dialog only hides it; the login continues in the background.",
   "plugins.loginStatus": "Status",
   "plugins.loggedIn": "Logged in",
   "plugins.notLoggedIn": "Not logged in",
@@ -347,6 +345,10 @@ export default {
   "settings.windowsNodeMxcToggleUnavailable":
     "Sandboxing is unavailable or could not be verified. Repair the bundled runtime and retry.",
   "settings.windowsNodeMxcStatusLoading": "Checking MXC availability...",
+  "settings.windowsNodeMxcStatusRefreshing": "Refreshing MXC status in the background...",
+  "settings.windowsNodeMxcStatusVerified": "Last verified: {time}",
+  "perm.applyingFolders": "Applying folder access...",
+  "perm.applyingDecision": "Applying permission decision...",
   "settings.windowsNodeMxcExperimental":
     "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
   "settings.experimental": "Experimental",
@@ -509,14 +511,15 @@ export default {
   "settings.windowsNodeMxcFoldersLocked":
     "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
   "settings.windowsNodeMxcFoldersStaged":
-    "Changes are staged only. Applying them pauses protected chat, revokes current authorization, then restarts, re-attests, and runs exact internal contained probes in both generations.",
-  "settings.windowsNodeMxcApplyFolders": "Apply changes and reactivate",
+    "Changes are staged only. Applying them updates permissions while the Gateway stays running. Pending approvals and running contained commands are canceled.",
+  "settings.windowsNodeMxcApplyFolders": "Apply folder changes",
   "settings.windowsNodeMxcApplyFoldersWarning":
-    "Agent execution and chat will pause. Current command approvals may be invalidated. MicroClaw will stay locked if any policy, restart, attestation, smoke, or activation step is canceled or fails.",
+    "New execution launches will pause briefly. Pending approvals and running contained commands will be canceled, and Canvas will close. The Gateway will not restart. Execution remains locked if the update fails.",
   "settings.windowsNodeMxcApplyFoldersComplete":
-    "The folder policy was applied and the verified MXC route was reactivated.",
+    "Folder permissions were updated without restarting the Gateway.",
   "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
   "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
+  "settings.windowsNodeMxcLifecyclePhase.updating-folders": "Updating folder permissions",
   "settings.windowsNodeMxcLifecyclePhase.idle": "Idle",
   "settings.windowsNodeMxcLifecyclePhase.locking": "Locking execution",
   "settings.windowsNodeMxcLifecyclePhase.validating": "Validating policy",
@@ -530,7 +533,10 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.promoting-active":
     "Promoting verified policy in the current generation",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "Verifying active route",
-  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting standard security mode",
+  "settings.windowsNodeMxcLifecyclePhase.connecting-weixin": "Connecting WeChat",
+  "settings.windowsNodeMxcLifecyclePhase.disconnecting-weixin": "Disconnecting WeChat",
+  "settings.windowsNodeMxcLifecyclePhase.disabling": "Turning off MXC",
+  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "Starting normal mode (MXC Off)",
   "settings.windowsNodeMxcLifecyclePhase.active": "Active",
   "settings.windowsNodeMxcLifecyclePhase.locked": "Locked",
   "settings.windowsNodeMxcLifecyclePhase.failed": "Transition failed",
@@ -1145,6 +1151,12 @@ export default {
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
+  "perm.mxcAllowFolders": "Allow",
+  "perm.mxcFolderGrantLabel": "Folders to add or upgrade",
+  "perm.mxcFolderGrantLocalOnly":
+    "New folder permissions must be approved here in the desktop app.",
+  "perm.mxcFolderGrantScope":
+    "Allow runs this exact command once and permanently adds the listed folder permissions. It does not remember the command. No second command prompt will appear. Other pending approvals and running contained commands will be canceled.",
   "perm.grantRO": "Grant read-only",
   "perm.grantRW": "Grant read-write",
   "perm.fileDesc": "Allow write permission to {dir}",
@@ -1157,7 +1169,10 @@ export default {
   "perm.phoneSending": "Sending this approval to WeChat; the original timeout still applies.",
   "perm.phoneSent":
     "WeChat notified: reply 1 to allow once or 3 to deny. 2 is available only if the phone prompt offers it. Replies affect the current delivered prompt; a delayed reply can affect a newer prompt.",
-  "plugins.weixinMutationLocked": "Turn off MXC first to change the WeChat channel or account.",
+  "plugins.weixinMutationLocked":
+    "Changing the WeChat channel requires MXC to be off. Account changes require active containment.",
+  "plugins.weixinLoginLocked":
+    "Wait for containment or the current WeChat account change to finish.",
   "plugins.weixinMutationUnknown":
     "WeChat configuration is locked until its main-process MXC status can be verified.",
   "perm.phoneCodeRequired":
@@ -1202,6 +1217,7 @@ export default {
   "perm.mxcAllowAlways": "Always allow in this conversation",
   "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
+  "perm.responding": "Applying your decision…",
   "perm.aclTimeout":
     "Permission for {dir} was granted but ACL verification timed out. If access still fails, try re-granting in Settings > Security.",
   "perm.aclIneffective":

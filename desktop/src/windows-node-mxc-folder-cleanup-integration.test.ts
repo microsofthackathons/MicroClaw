@@ -8,21 +8,18 @@ import { normalizeWindowsNodeMxcFolderPolicy } from "./windows-node-mxc";
 import type { WindowsNodeMxcFolderPolicy } from "./windows-node-mxc-folder-transaction";
 
 const mainSource = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+const mainAst = ts.createSourceFile("main.ts", mainSource, ts.ScriptTarget.Latest, true);
+
+function mainFunction(name: string): string {
+  const declaration = mainAst.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === name,
+  );
+  if (!declaration) throw new Error(`Native function ${name} is missing`);
+  return declaration.getText(mainAst);
+}
 
 function loadDraftNormalizer() {
-  const source = ts.createSourceFile("main.ts", mainSource, ts.ScriptTarget.Latest, true);
-  let normalizer: string | undefined;
-  function visit(node: ts.Node) {
-    if (
-      ts.isVariableDeclaration(node) &&
-      node.name.getText(source) === "normalizeCompleteWindowsNodeMxcFolderPolicy"
-    ) {
-      normalizer = node.initializer?.getText(source);
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(source);
-  if (!normalizer) throw new Error("Native folder policy normalizer is missing");
+  const normalizer = mainFunction("normalizeCompleteWindowsNodeMxcFolderPolicy");
   const validate = vi.fn((candidate: string) => ({ ok: true, canonicalPath: candidate }));
   const context = createContext({
     exports: {},
@@ -44,7 +41,7 @@ function loadDraftNormalizer() {
     validate,
     normalize: context.exports.normalize as (
       policy: WindowsNodeMxcFolderPolicy,
-    ) => WindowsNodeMxcFolderPolicy,
+    ) => Promise<WindowsNodeMxcFolderPolicy>,
   };
 }
 
@@ -74,19 +71,16 @@ describe("MXC folder cleanup integration", () => {
   });
 
   it("does not mutate an active generation's saved grants through a read-only getter", () => {
-    const getter = mainSource.slice(
-      mainSource.indexOf("function getWindowsNodeMxcFolderPolicy()"),
-      mainSource.indexOf("async function requireEffectiveWindowsNodeMxc("),
-    );
+    const getter = mainFunction("getWindowsNodeMxcFolderPolicy");
     expect(getter).toContain('settingsStore.get("windowsNodeMxcFolders")');
     expect(getter).not.toContain("reconcileWindowsNodeMxcFolders");
     expect(getter).not.toContain("pruneMissingWindowsNodeMxcFolders");
     expect(getter).not.toContain("settingsStore.set");
   });
 
-  it("silently drops a stale draft grant before the normal validator runs", () => {
+  it("silently drops a stale draft grant before the normal validator runs", async () => {
     const { normalize, validate } = loadDraftNormalizer();
-    expect(normalize({ ro: ["C:\\Gone"], rw: ["C:\\Work"] })).toEqual({
+    expect(await normalize({ ro: ["C:\\Gone"], rw: ["C:\\Work"] })).toEqual({
       ro: [],
       rw: ["C:\\Work"],
     });

@@ -259,7 +259,7 @@ interface OpenClawAPI {
     onSessionUpdate(callback: (payload: { sessionKey: string }) => void): () => void;
     isConnected(): Promise<boolean>;
     sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<unknown>;
-    loadHistory(sessionKey: string): Promise<{ sessionKey?: string; messages?: unknown[]; thinkingLevel?: string; sessionInfo?: import("../src/chat-run-lifecycle").ChatSessionRuntime }>;
+    loadHistory(sessionKey: string): Promise<import("../src/chat-run-lifecycle").ChatHistoryResult>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
     abort(sessionKey: string): Promise<void>;
@@ -327,6 +327,7 @@ interface OpenClawAPI {
         ready?: boolean;
         qrSession?: import("../src/weixin-connection").WeixinQrSnapshot;
         mutationLocked: boolean;
+        loginLocked?: boolean;
         mutationLockRevision: number;
       }>;
       setEnabled(enabled: boolean): Promise<{
@@ -362,7 +363,7 @@ interface OpenClawAPI {
       disconnect(params?: { accountId?: string }): Promise<{ ok: boolean; error?: string }>;
       onLoginOutput(callback: (text: string) => void): () => void;
       onLoginDone(callback: (result: { code: number | null }) => void): () => void;
-      onMutationLock(callback: (status: { locked: boolean; revision: number }) => void): () => void;
+      onMutationLock(callback: (status: { locked: boolean; loginLocked?: boolean; revision: number }) => void): () => void;
     };
   };
   model: {
@@ -456,7 +457,12 @@ interface OpenClawAPI {
         phase:
           | "idle"
           | "locking"
+          | "disabling"
           | "validating"
+          | "updating-folders"
+          | "updating-model"
+          | "connecting-weixin"
+          | "disconnecting-weixin"
           | "persisting"
           | "starting-locked"
           | "smoking-locked"
@@ -608,6 +614,9 @@ interface OpenClawAPI {
       Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>["durableApprovals"]["records"]
     >;
     revokeAllDurableApprovals(): Promise<[]>;
+    getDisplayStatus(): Promise<import("../src/windows-node-mxc-status-cache").MxcStatusSnapshot<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>>;
+    onDisplayStatus(callback: (snapshot: Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getDisplayStatus"]>>) => void): () => void;
+    onApprovalProcessing(callback: (result: { requestId: string; approvalLayer: "gateway"; applyingFolders: boolean }) => void): () => void;
     getPendingApproval(): Promise<import("../src/windows-node-mxc").WindowsNodeMxcRendererApproval | null>;
     respondApproval(params: {
       requestId: string;

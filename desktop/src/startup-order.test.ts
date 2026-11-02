@@ -145,7 +145,7 @@ describe("desktop startup order", () => {
       source.search(/ipcMain\.handle\(\s*"windows-node-mxc:set-enabled"/u),
       source.indexOf('"windows-node-mxc:approval-respond"'),
     );
-    const confirmation = handler.indexOf("await planWeixinRemoteApprovalNativeTransition(");
+    const planning = handler.indexOf("await planWeixinRemoteApprovalNativeTransition(");
     const validating = handler.indexOf(
       'setWindowsNodeMxcLifecycleState("validating", validationDetail)',
     );
@@ -162,8 +162,8 @@ describe("desktop startup order", () => {
       "await runAutomaticWindowsNodeMxcReadiness(preparedContainment)",
     );
 
-    expect(confirmation).toBeGreaterThan(-1);
-    expect(handler.indexOf("assertTrustedRendererIpc(event)")).toBeLessThan(confirmation);
+    expect(planning).toBeGreaterThan(-1);
+    expect(handler.indexOf("assertTrustedRendererIpc(event)")).toBeLessThan(planning);
     expect(handler.indexOf("assertNativeWeixinRemoteApprovalAuthority(params)")).toBeLessThan(
       handler.indexOf("windowsNodeMxcLifecycleOperations.acquire<"),
     );
@@ -172,7 +172,7 @@ describe("desktop startup order", () => {
     );
     expect(handler).toContain("selection: remoteApprovalSelection");
     expect(handler).not.toContain("params?.remoteApproval");
-    expect(validating).toBeGreaterThan(confirmation);
+    expect(validating).toBeGreaterThan(planning);
     expect(preparations).toHaveLength(1);
     expect(preparation).toBeGreaterThan(validating);
     expect(policyMutation).toBeGreaterThan(preparation);
@@ -233,7 +233,14 @@ describe("desktop startup order", () => {
     );
     const applyHandler = source.slice(
       source.indexOf('"windows-node-mxc:apply-folder-policy"'),
-      source.indexOf("// --- Sandbox capabilities ---"),
+      source.indexOf("// App lifecycle"),
+    );
+    const applyFolders = source.slice(
+      source.indexOf("async function applyRunningWindowsNodeMxcFolders("),
+      source.indexOf(
+        "async function ",
+        source.indexOf("async function applyRunningWindowsNodeMxcFolders(") + 1,
+      ),
     );
     const appLifecycle = source.slice(source.indexOf('app.on("window-all-closed"'));
 
@@ -249,7 +256,9 @@ describe("desktop startup order", () => {
     expect(appLifecycle).toContain("event.preventDefault()");
     expect(appLifecycle).toContain("if (applicationQuitReady) return");
     expect(appLifecycle).not.toContain("stopGatewayProcess()");
-    expect(applyHandler).toContain("windowsNodeMxcLifecycleOperations.acquire");
-    expect(applyHandler).toContain("lifecycleOperation.succeed(status)");
+    expect(applyHandler).toContain("assertTrustedRendererIpc(event)");
+    expect(applyHandler).toContain("return applyRunningWindowsNodeMxcFolders(draft)");
+    expect(applyFolders).toContain("return windowsNodeMxcLifecycleOperations.run(");
+    expect(applyFolders).toContain('{ kind: "apply-folder-policy" }');
   });
 });

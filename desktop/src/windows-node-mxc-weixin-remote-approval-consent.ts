@@ -1,5 +1,3 @@
-import type { MessageBoxOptions } from "electron";
-import { t, type SupportedLocale } from "./i18n";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 import type { WeixinRemoteApprovalConfiguration } from "./windows-node-mxc-weixin-remote-approval";
 import {
@@ -21,46 +19,18 @@ export function assertNativeWeixinRemoteApprovalAuthority(request: unknown): voi
   }
 }
 
-export function createWindowsNodeMxcToggleConsentDialog(
-  locale: SupportedLocale,
-  requestedMode: WindowsNodeMxcRequestedMode,
-  enrollWeixin: boolean,
-): MessageBoxOptions {
-  const enabling = requestedMode !== "off";
-  return {
-    type: "warning",
-    title: t(locale, "mxc.toggleTitle"),
-    message: t(locale, "mxc.toggleRestart"),
-    detail: [
-      t(locale, `mxc.toggle.${requestedMode}`),
-      ...(enabling ? [t(locale, "mxc.toggleCapabilities")] : []),
-      ...(enrollWeixin ? [t(locale, "weixinRemoteApproval.activationDefault")] : []),
-    ].join("\n\n"),
-    buttons: [t(locale, "mxc.toggleCancel"), t(locale, `mxc.toggleConfirm.${requestedMode}`)],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  };
-}
-
 export async function planWeixinRemoteApprovalNativeTransition(params: {
   request: unknown;
   currentMode: WindowsNodeMxcRequestedMode;
   requestedMode: WindowsNodeMxcRequestedMode;
   currentConfiguration: WeixinRemoteApprovalConfiguration;
   readOptions: () => WeixinRemoteApprovalActivationOptions;
-  showDialog: (options: MessageBoxOptions) => Promise<{ response: number }>;
-  locale: SupportedLocale;
-}): Promise<
-  | { cancelled: true }
-  | {
-      cancelled: false;
-      limitedFilesystemAcknowledged: boolean;
-      enrollmentDisabledReason: string | null;
-      selection: WeixinRemoteApprovalActivationSelection | undefined;
-      plan: WeixinRemoteApprovalTransitionPlan;
-    }
-> {
+}): Promise<{
+  limitedFilesystemAcknowledged: boolean;
+  enrollmentDisabledReason: string | null;
+  selection: WeixinRemoteApprovalActivationSelection | undefined;
+  plan: WeixinRemoteApprovalTransitionPlan;
+}> {
   assertNativeWeixinRemoteApprovalAuthority(params.request);
   let options = params.requestedMode !== "off" ? params.readOptions() : undefined;
   const enrollWeixin =
@@ -74,11 +44,6 @@ export async function planWeixinRemoteApprovalNativeTransition(params: {
     enrollWeixin && options?.account
       ? { accountId: options.account.accountId, userId: options.account.userId }
       : null;
-  const { response } = await params.showDialog(
-    createWindowsNodeMxcToggleConsentDialog(params.locale, params.requestedMode, enrollWeixin),
-  );
-  if (response === 0) return { cancelled: true };
-  if (response !== 1) throw new Error("Invalid native sandbox confirmation response");
   let selection: WeixinRemoteApprovalActivationSelection | undefined;
   let enrollmentDisabledReason: string | null = null;
   if (params.currentMode === "off" && params.requestedMode !== "off") {
@@ -94,7 +59,6 @@ export async function planWeixinRemoteApprovalNativeTransition(params: {
     }
   }
   return {
-    cancelled: false,
     limitedFilesystemAcknowledged: params.requestedMode === "limited-dacl",
     enrollmentDisabledReason,
     selection,

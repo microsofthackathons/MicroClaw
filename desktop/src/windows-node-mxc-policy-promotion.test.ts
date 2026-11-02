@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import { applyWindowsNodeMxcGatewayPolicy } from "./windows-node-mxc";
 import {
@@ -11,6 +14,72 @@ const readinessOptions = {
   agentReadinessTimeoutMs: 5_000,
   agentReadinessPollIntervalMs: 250,
 };
+
+const publishedPackage = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
+describe.skipIf(!publishedPackage)("OpenClaw policy acknowledgement delivery contract", () => {
+  it.each([true, false])(
+    "consumes a targetless acknowledgement without routing a chat (revision current=%s)",
+    async (current) => {
+      const { run, clear, route, log } = await startupNotice(null, current);
+      await expect(run()).resolves.toEqual({ status: "ran" });
+      expect(clear).toHaveBeenCalledExactlyOnceWith("test-revision", {});
+      expect(route).not.toHaveBeenCalled();
+      expect(log.info).toHaveBeenCalledTimes(current ? 0 : 1);
+    },
+  );
+
+  it("still routes explicit notices instead of silently consuming them", async () => {
+    const { run, clear, route } = await startupNotice("An explicit operator notice", true);
+    await expect(run()).rejects.toThrow("explicit notice route");
+    expect(route).toHaveBeenCalledOnce();
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  async function startupNotice(message: string | null, current: boolean) {
+    const dist = join(publishedPackage!, "dist");
+    const files = readdirSync(dist).filter((file) =>
+      /^server-restart-sentinel-.*\.mjs$/.test(file),
+    );
+    expect(files).toHaveLength(1);
+    const source = readFileSync(join(dist, files[0]), "utf8");
+    const start = source.indexOf("async function loadRestartSentinelStartupTask(params) {");
+    const end = source.indexOf("\nasync function scheduleRestartSentinelWake(params) {", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const clear = vi.fn().mockResolvedValue(current);
+    const route = vi.fn(() => {
+      throw new Error("explicit notice route");
+    });
+    const log = { info: vi.fn() };
+    // Execute the installed handler with isolated state/delivery dependencies, never the user's DB.
+    const load = runInNewContext(`(${source.slice(start, end)})`, {
+      readRestartSentinelStartupSnapshot: async () => ({
+        sentinel: {
+          revision: "test-revision",
+          payload: {
+            kind: "config-patch",
+            status: "ok",
+            message,
+            stats: { requiresRestart: false },
+          },
+        },
+      }),
+      formatRestartSentinelMessage: () => "config-patch acknowledgement",
+      summarizeRestartSentinel: () => "config-patch",
+      mergeDeliveryContext: () => undefined,
+      isPendingControlPlaneUpdateRestartSentinel: () => false,
+      clearRestartSentinelIfRevision: clear,
+      getRuntimeConfig: () => ({}),
+      resolveSystemMainSessionTarget: route,
+      log,
+    }) as (params: unknown) => Promise<{ run: () => Promise<{ status: string }> }>;
+    const task = await load({
+      signal: { aborted: false },
+      context: { workerContext: { environment: {} } },
+    });
+    return { run: task.run, clear, route, log };
+  }
+});
 
 function config(state: "locked" | "active") {
   const baseline = {
@@ -51,9 +120,8 @@ function legacyConfig(state: "locked" | "active") {
       list: [
         {
           id: "main",
-          tools: (
-            (base.agents as { entries: Record<string, { tools: unknown }> }).entries.main
-          ).tools,
+          tools: (base.agents as { entries: Record<string, { tools: unknown }> }).entries.main
+            .tools,
         },
       ],
     },
@@ -77,10 +145,7 @@ describe("MXC in-process policy promotion", () => {
       calls.push([method, params]);
       if (method === "config.get") return snapshot("locked", "locked-hash") as T;
       const agentId = (params as { agentId?: string } | undefined)?.agentId;
-      if (
-        agentId === "main" &&
-        calls.filter(([name]) => name === "sessions.list").length < 3
-      ) {
+      if (agentId === "main" && calls.filter(([name]) => name === "sessions.list").length < 3) {
         throw Object.assign(new Error("agent database inspection pending"), {
           code: "UNAVAILABLE",
           details: { code: "agent-database-inspection-pending", agentId: "main" },
@@ -183,10 +248,7 @@ describe("MXC in-process policy promotion", () => {
     const locked = snapshot("locked", "locked-hash");
     const agents = (locked.config.agents as Record<string, unknown>) ?? {};
     agents.list = [{ id: "decoy", tools: { allow: [], deny: [] } }];
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(locked)
-      .mockResolvedValueOnce({ sessions: [] });
+    const request = vi.fn().mockResolvedValueOnce(locked).mockResolvedValueOnce({ sessions: [] });
 
     await waitForWindowsNodeMxcAgentReadiness({
       gateway: { request },
@@ -294,6 +356,11 @@ describe("MXC in-process policy promotion", () => {
       "agents.entries.main.tools.allow",
       "agents.entries.main.tools.deny",
     ]);
+    expect(Object.keys(request.mock.calls[3][1]).sort()).toEqual([
+      "baseHash",
+      "raw",
+      "replacePaths",
+    ]);
   });
 
   it("uses an explicit whole-array replacement for a legacy agent roster", async () => {
@@ -394,9 +461,7 @@ describe("MXC in-process policy promotion", () => {
     }
 
     expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toBe(
-      "Gateway MXC policy patch request failed: UNAVAILABLE",
-    );
+    expect((failure as Error).message).toBe("Gateway MXC policy patch request failed: UNAVAILABLE");
     expect((failure as Error & { cause?: unknown }).cause).toBeUndefined();
     expect(String(failure)).not.toContain("sensitive");
   });
@@ -432,6 +497,11 @@ describe("MXC in-process policy promotion", () => {
     expect(JSON.parse(request.mock.calls[6][1].raw)).toEqual({
       agents: config("locked").agents,
     });
+    expect(Object.keys(request.mock.calls[6][1]).sort()).toEqual([
+      "baseHash",
+      "raw",
+      "replacePaths",
+    ]);
   });
 
   it("fails closed when rollback cannot be proven", async () => {

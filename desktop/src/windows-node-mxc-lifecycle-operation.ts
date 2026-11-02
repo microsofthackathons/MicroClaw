@@ -6,7 +6,10 @@ export type WindowsNodeMxcLifecycleOperationDescriptor =
       kind: "set-enabled";
       requestedMode: WindowsNodeMxcRequestedMode | "auto";
     }
-  | { kind: "apply-folder-policy" };
+  | { kind: "apply-folder-policy" }
+  | { kind: "login-weixin" }
+  | { kind: "disconnect-weixin" }
+  | { kind: "update-model" };
 
 interface TrackedWindowsNodeMxcLifecycleOperation {
   descriptor: WindowsNodeMxcLifecycleOperationDescriptor;
@@ -41,6 +44,17 @@ function canJoinWindowsNodeMxcLifecycleOperation(
 
 export class WindowsNodeMxcLifecycleOperationCoordinator {
   private current: TrackedWindowsNodeMxcLifecycleOperation | null = null;
+  private revision = 0;
+  get generation(): number {
+    return this.revision;
+  }
+
+  captureIdleCheckpoint(): () => boolean {
+    const revision = this.revision;
+    const idle = this.current === null;
+    // A transition that has already finished still invalidates an older observation.
+    return () => idle && this.current === null && this.revision === revision;
+  }
 
   acquire<T>(
     descriptor: WindowsNodeMxcLifecycleOperationDescriptor,
@@ -54,6 +68,7 @@ export class WindowsNodeMxcLifecycleOperationCoordinator {
     }
 
     hooks.beforeStart();
+    this.revision++;
     let settle!: (outcome: { ok: true; value: T } | { ok: false; error: unknown }) => void;
     const completion = new Promise<{ ok: true; value: T } | { ok: false; error: unknown }>(
       (resolve) => {

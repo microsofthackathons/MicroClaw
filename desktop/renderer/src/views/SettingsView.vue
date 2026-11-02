@@ -499,7 +499,24 @@
             role="status"
             data-testid="mxc-status-loading"
           >
-            {{ t("settings.windowsNodeMxcStatusLoading") }}
+            {{
+              t(
+                windowsNodeMxcStatus
+                  ? "settings.windowsNodeMxcStatusRefreshing"
+                  : "settings.windowsNodeMxcStatusLoading",
+              )
+            }}
+          </div>
+          <div
+            v-if="windowsNodeMxcVerifiedAt"
+            class="mxc-subtitle"
+            data-testid="mxc-status-verified"
+          >
+            {{
+              t("settings.windowsNodeMxcStatusVerified", {
+                time: new Date(windowsNodeMxcVerifiedAt).toLocaleTimeString(),
+              })
+            }}
           </div>
           <div
             v-if="windowsNodeMxcStatusError"
@@ -1111,11 +1128,19 @@ type WindowsNodeMxcAmbientEntry = NonNullable<
 >["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcStatusLoading = ref(false);
+const windowsNodeMxcVerifiedAt = ref<number | null>(null);
+let unsubscribeMxcDisplay: (() => void) | undefined;
+let mxcDisplayRevision = 0;
 const windowsNodeMxcStatusError = ref("");
 const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
 const windowsNodeMxcTransitionPhases = new Set([
+  "updating-folders",
+  "updating-model",
+  "connecting-weixin",
+  "disconnecting-weixin",
   "locking",
+  "disabling",
   "validating",
   "persisting",
   "starting-locked",
@@ -1140,7 +1165,6 @@ const windowsNodeMxcUnavailable = computed(() => {
 const windowsNodeMxcToggleDisabled = computed(
   () =>
     !windowsNodeMxcStatus.value ||
-    windowsNodeMxcStatusLoading.value ||
     windowsNodeMxcApplying.value ||
     windowsNodeMxcFolderApplying.value ||
     windowsNodeMxcTransitionPhases.has(windowsNodeMxcStatus.value.lifecycleState.phase) ||
@@ -1343,14 +1367,34 @@ async function loadWindowsNodeMxcStatus() {
   windowsNodeMxcStatusLoading.value = true;
   windowsNodeMxcStatusError.value = "";
   try {
+    if (typeof window.openclaw.windowsNodeMxc.getDisplayStatus === "function") {
+      const revision = mxcDisplayRevision;
+      const snapshot = await window.openclaw.windowsNodeMxc.getDisplayStatus();
+      if (revision === mxcDisplayRevision) applyWindowsNodeMxcDisplayStatus(snapshot);
+      return;
+    }
     const status = await window.openclaw.windowsNodeMxc.getStatus();
     updateWindowsNodeMxcStatus(status);
   } catch (error) {
     windowsNodeMxcStatusError.value = error instanceof Error ? error.message : String(error);
     ElMessage.error(windowsNodeMxcStatusError.value);
   } finally {
-    windowsNodeMxcStatusLoading.value = false;
+    if (
+      typeof window.openclaw.windowsNodeMxc.getDisplayStatus !== "function" ||
+      windowsNodeMxcStatusError.value
+    )
+      windowsNodeMxcStatusLoading.value = false;
   }
+}
+
+function applyWindowsNodeMxcDisplayStatus(
+  snapshot: Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getDisplayStatus>>,
+) {
+  if (snapshot.status) updateWindowsNodeMxcStatus(snapshot.status);
+  else windowsNodeMxcStatus.value = null;
+  windowsNodeMxcVerifiedAt.value = snapshot.verifiedAt;
+  windowsNodeMxcStatusLoading.value = snapshot.refreshing;
+  windowsNodeMxcStatusError.value = snapshot.error ?? "";
 }
 
 async function toggleWindowsNodeMxc(): Promise<boolean> {
@@ -2058,6 +2102,10 @@ watch(showLocalSetup, (visible, wasVisible) => {
 });
 
 onMounted(async () => {
+  unsubscribeMxcDisplay = window.openclaw.windowsNodeMxc.onDisplayStatus?.((snapshot) => {
+    mxcDisplayRevision++;
+    applyWindowsNodeMxcDisplayStatus(snapshot);
+  });
   window.addEventListener("focus", handleSettingsWindowFocus);
   if (activeSection.value === "security") {
     void loadWindowsNodeMxcStatus();
@@ -2091,6 +2139,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  unsubscribeMxcDisplay?.();
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
   localSnapshotRevision += 1;

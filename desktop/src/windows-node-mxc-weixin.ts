@@ -200,7 +200,7 @@ export function prepareWindowsNodeMxcWeixinContext(
   gatewayGeneration: string,
   policyFingerprint: string,
   folders: BundledWindowsNodeFolder[],
-  remoteApprovalEnabled = false,
+  provisionRemoteApprovalTransport = false,
 ): WindowsNodeMxcWeixinContext {
   if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
   if (!/^[a-f0-9]{64}$/i.test(policyFingerprint)) {
@@ -244,10 +244,12 @@ export function prepareWindowsNodeMxcWeixinContext(
     inboundRoot,
     outboundTempRoot,
     mediaPolicyBase64,
-    remoteApprovalPipe: remoteApprovalEnabled
+    remoteApprovalPipe: provisionRemoteApprovalTransport
       ? `\\\\.\\pipe\\microclaw-weixin-remote-approval-${process.pid}-${randomBytes(12).toString("hex")}`
       : null,
-    remoteApprovalToken: remoteApprovalEnabled ? randomBytes(32).toString("base64url") : null,
+    remoteApprovalToken: provisionRemoteApprovalTransport
+      ? randomBytes(32).toString("base64url")
+      : null,
   };
 }
 

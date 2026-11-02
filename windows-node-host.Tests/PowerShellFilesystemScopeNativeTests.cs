@@ -12,6 +12,67 @@ public sealed class PowerShellFilesystemScopeNativeTests
     public static bool NativeAvailable => CwdPolicyTests.NativeMxcAvailable;
 
     [Fact(SkipUnless = nameof(NativeAvailable), Skip = "Requires a verified native SDK and isolated test scratch.")]
+    public async Task FullContainmentCreatesUpdatesAndDeletesAcrossContainersWithoutBroadeningGrants()
+    {
+        var runtime = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!;
+        var root = Directory.CreateDirectory(Path.Combine(
+            Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_SCRATCH")!,
+            "full-provider-" + Guid.NewGuid().ToString("N"))).FullName;
+        var rw = Directory.CreateDirectory(Path.Combine(root, "rw")).FullName;
+        var ro = Directory.CreateDirectory(Path.Combine(root, "ro")).FullName;
+        var sibling = Directory.CreateDirectory(Path.Combine(root, "outside")).FullName;
+        var file = Path.Combine(rw, "owned.txt");
+        var protectedFile = Path.Combine(ro, "protected.txt");
+        await File.WriteAllTextAsync(protectedFile, "preserve", TestContext.Current.CancellationToken);
+        var executable = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [new(rw, FolderAccess.ReadWrite), new(ro, FolderAccess.ReadOnly)],
+            DeniedRoots = [], WxcExecPath = runtime,
+            Canvas = new CanvasHostPolicy(executable, new string('0', 64), new string('1', 64),
+                CanvasPhase1Policy.Commands, CanvasPhase1Policy.Actions),
+            RequestedStrength = "full", EffectiveTier = "base-container", NetworkAllowed = false,
+        };
+        async Task Run(string script, bool prepare = false)
+        {
+            var request = new BundledSystemCapability.RunRequest(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                rw, 20_000, "main", "test", script, null, [new("rw", rw)]);
+            if (prepare)
+            {
+                request = PowerShellFilesystemScope.Prepare(request, policy);
+                Assert.NotNull(request.ProviderInitialization);
+            }
+            var config = BundledSystemCapability.BuildMxcConfig(policy, executable,
+                request.Argv.Skip(1).ToArray(), rw, rw, 20_000);
+            var configPath = Path.Combine(root, "config.json");
+            await File.WriteAllTextAsync(configPath,
+                BundledSystemCapability.SerializeMxcConfig(config, allowDaclMutation: false),
+                TestContext.Current.CancellationToken);
+            var result = await new MxcExecutor(runtime).RunWithConfigFileAsync(
+                configPath, TestContext.Current.CancellationToken, workingDirectory: rw);
+            Assert.True(result.Success, $"Contained command failed: {result.ExitCode}; {result.Error}; {result.Output}");
+            Assert.Equal(0, result.ExitCode);
+        }
+        try
+        {
+            await Run($"[IO.File]::WriteAllText('{file}', 'first')");
+            Assert.Equal("first", await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken));
+            await Run($"[IO.File]::WriteAllText('{file}', 'updated')");
+            Assert.Equal("updated", await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken));
+            await Run($"Remove-Item -Path '{file}' -Force", prepare: true);
+            Assert.False(File.Exists(file));
+            const string denied = "catch { if ($_.Exception.InnerException -isnot [UnauthorizedAccessException]) { throw } };";
+            await Run($"try {{ [IO.File]::Delete('{protectedFile}'); exit 90 }} " + denied +
+                $"try {{ [IO.File]::WriteAllText('{protectedFile}', 'no'); exit 91 }} " + denied +
+                $"try {{ [IO.File]::WriteAllText('{sibling}\\forbidden.txt', 'no'); exit 92 }} " + denied + "exit 0");
+            Assert.Equal("preserve", await File.ReadAllTextAsync(protectedFile, TestContext.Current.CancellationToken));
+            Assert.False(File.Exists(Path.Combine(sibling, "forbidden.txt")));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact(SkipUnless = nameof(NativeAvailable), Skip = "Requires a verified native SDK and isolated test scratch.")]
     public async Task ScopedProviderPreservesReadOnlyAndUngrantSiblingDenials()
     {
         var runtime = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!;

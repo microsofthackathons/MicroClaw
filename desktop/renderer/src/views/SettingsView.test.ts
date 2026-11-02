@@ -300,6 +300,55 @@ describe("SettingsView", () => {
     expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
   });
 
+  it("shows a verified snapshot without waiting for a background refresh", async () => {
+    routeState.section = "security";
+    let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+    window.openclaw.windowsNodeMxc.getDisplayStatus = vi.fn().mockResolvedValue({
+      status: status("node-local"),
+      verifiedAt: Date.now(),
+      refreshing: true,
+      error: null,
+    });
+    window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+      update = callback;
+      return vi.fn();
+    };
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    expect(getWindowsNodeMxcStatus).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="mxc-status-verified"]').exists()).toBe(true);
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(false);
+    update({ status: null, verifiedAt: null, refreshing: false, error: "Inspection failed" });
+    await flushPromises();
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
+    expect(wrapper.text()).toContain("Inspection failed");
+    wrapper.unmount();
+  });
+
+  it("does not overwrite a newer pushed failure with an older display response", async () => {
+    routeState.section = "security";
+    let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+    let finish!: (
+      value: Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getDisplayStatus"]>>,
+    ) => void;
+    window.openclaw.windowsNodeMxc.getDisplayStatus = () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      });
+    window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+      update = callback;
+      return vi.fn();
+    };
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    update({ status: null, verifiedAt: null, refreshing: false, error: "Current failure" });
+    finish({ status: status("node-local"), verifiedAt: 100, refreshing: false, error: null });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Current failure");
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
+    wrapper.unmount();
+  });
+
   it("loads the sandbox switch independently of general settings without optimistic state", async () => {
     routeState.section = "security";
     vi.mocked(window.openclaw.settings.get).mockReturnValueOnce(new Promise(() => {}));

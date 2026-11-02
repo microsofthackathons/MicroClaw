@@ -29,7 +29,7 @@ import {
 import { buildGatewayConnectParams, GATEWAY_OPERATOR_SCOPES } from "./gateway-protocol";
 import type { ChatAttachment } from "./chat-attachments";
 import { GatewaySessionObserver } from "./gateway-session-observer";
-import { isMainSessionKey } from "./main-session-key";
+import { resolveChatHistorySessionKey, type ChatHistoryResult } from "./chat-run-lifecycle";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -375,13 +375,21 @@ export class GatewayClient {
   }
 
   /** Load chat history for a session. */
-  loadHistory(sessionKey: string): Promise<{
-    sessionKey?: string;
-    messages?: unknown[];
-    thinkingLevel?: string;
-    sessionInfo?: import("./chat-run-lifecycle").ChatSessionRuntime;
-  }> {
-    return this.request("chat.history", { sessionKey, limit: 200 });
+  async loadHistory(sessionKey: string): Promise<ChatHistoryResult> {
+    const generation = this.connectionGeneration;
+    const history = await this.request<ChatHistoryResult>("chat.history", {
+      sessionKey,
+      limit: 200,
+    });
+    const canonicalKey = resolveChatHistorySessionKey(sessionKey, history);
+    if (
+      generation === this.connectionGeneration &&
+      sessionKey === "main" &&
+      history.sessionInfo?.isMain === true
+    ) {
+      this._mainSessionKey = canonicalKey;
+    }
+    return { ...history, sessionKey: canonicalKey };
   }
 
   /** Abort the current chat run. */
@@ -464,15 +472,48 @@ export class GatewayClient {
   /**
    * Delete one persisted session and its transcript.
    *
-   * OpenClaw does not allow deleting an agent's main session, so reset
-   * those sessions instead. Ordinary sessions are deleted normally.
+   * OpenClaw does not allow deleting agent main sessions, so reset those.
+   * Resolve aliases and protection from Gateway metadata, not a key suffix.
    */
-  async deleteSession(sessionKey: string): Promise<void> {
-    if (isMainSessionKey(sessionKey, this._mainSessionKey)) {
-      await this.resetSession(sessionKey);
+  async deleteSession(
+    sessionKey: string,
+    beforeDelete?: (canonicalKey: string) => Promise<void>,
+  ): Promise<void> {
+    const generation = this.connectionGeneration;
+    const result = await this.request<{
+      session: { key: string; isMain?: boolean } | null;
+    }>("sessions.describe", {
+      key: sessionKey,
+      includeDerivedTitles: false,
+      includeLastMessage: false,
+    });
+    if (generation !== this.connectionGeneration) {
+      throw new Error("Gateway connection changed before deleting the session");
+    }
+    if (
+      !result ||
+      (result.session !== null &&
+        (!result.session ||
+          typeof result.session.key !== "string" ||
+          !result.session.key.trim() ||
+          result.session.key.trim() !== result.session.key ||
+          (result.session.isMain !== undefined && typeof result.session.isMain !== "boolean")))
+    ) {
+      throw new Error("Invalid Gateway session description");
+    }
+    const key = result.session?.key ?? sessionKey;
+    if ((sessionKey.startsWith("agent:") || sessionKey === "global") && key !== sessionKey) {
+      throw new Error("Gateway returned a different session before deletion");
+    }
+    await beforeDelete?.(key);
+    if (generation !== this.connectionGeneration) {
+      throw new Error("Gateway connection changed before deleting the session");
+    }
+    if (result.session?.isMain === true || key === this._mainSessionKey) {
+      await this.resetSession(key);
       return;
     }
-    await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
+    await this.request("sessions.delete", { key, deleteTranscript: true });
   }
 
   async resetSession(sessionKey: string): Promise<void> {
@@ -619,6 +660,10 @@ export class GatewayClient {
 
   weixinLoginQrCancel(sessionKey: string): Promise<{ cancelled: boolean }> {
     return this.request("weixin.login.cancel", { sessionKey });
+  }
+
+  weixinResumeAfterLogin(): Promise<{ resumed: boolean }> {
+    return this.request("weixin.login.resume", {});
   }
 
   // ── Internal ──

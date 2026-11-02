@@ -188,28 +188,18 @@ function harness(initialMode: WindowsNodeMxcRequestedMode = "off") {
 
 describe("actual main-process sandbox-toggle IPC handler", () => {
   it.each(["full", "limited-dacl", "off"] as const)(
-    "cancels from %s before any persistent mutation, process restart, lease or approval revocation",
+    "applies the switch directly from %s without any confirmation dialog",
     async (initialMode) => {
       const h = harness(initialMode);
-      h.nativeDialog.mockResolvedValue({ response: 0 });
-      const before = [...h.saved];
+      h.nativeDialog.mockRejectedValue(new Error("Unexpected confirmation dialog"));
       await h.invoke(initialMode === "off");
-      expect([...h.saved]).toEqual(before);
-      for (const effect of [
-        h.settingsStore.set,
-        h.settingsStore.delete,
-        h.stop,
-        h.start,
-        h.revokeLease,
-        h.persistRemote,
-        h.writeConfig,
-        h.revokeApprovals,
-        h.ready,
-        h.prepare,
-        h.context.closeWindowsNodeMxcIngress,
-      ])
-        expect(effect).not.toHaveBeenCalled();
-      expect(h.nativeDialog).toHaveBeenCalledOnce();
+      expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({
+        requestedMode: initialMode === "off" ? "full" : "off",
+      });
+      expect(h.nativeDialog).not.toHaveBeenCalled();
+      expect(handlerSource).not.toContain("showMessageBox");
+      expect(handlerSource).not.toContain("showDialog");
+      expect(h.stop).toHaveBeenCalledOnce();
       expect(h.coordinator.active).toBe(false);
     },
   );
@@ -223,7 +213,7 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
       const expected = tier === "appcontainer-dacl" ? "limited-dacl" : "full";
       expect(h.probeRunner).toHaveBeenCalledTimes(2);
       expect(h.prepare).toHaveBeenCalledExactlyOnceWith(expected);
-      expect(h.nativeDialog).toHaveBeenCalledOnce();
+      expect(h.nativeDialog).not.toHaveBeenCalled();
       expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({
         requestedMode: expected,
         limitedFilesystemAcknowledgedAt: expected === "limited-dacl" ? expect.any(String) : null,
@@ -253,15 +243,12 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
     "activates sandboxing once without rebinding a changed WeChat owner: %j",
     async (change) => {
       const changed: WeixinRemoteApprovalActivationOptions = { ...eligible(), ...change };
-      for (const stage of ["confirmation", "locked"] as const) {
+      for (const stage of ["selection", "locked"] as const) {
         const h = harness();
         h.readOptions.mockReturnValue(eligible());
         const replaceAccount = () => h.readOptions.mockReturnValue(changed);
-        if (stage === "confirmation") {
-          h.nativeDialog.mockImplementation(async () => {
-            replaceAccount();
-            return { response: 1 };
-          });
+        if (stage === "selection") {
+          h.readOptions.mockReturnValueOnce(eligible()).mockReturnValue(changed);
         } else {
           h.prepare.mockImplementation(async () => {
             replaceAccount();
@@ -270,7 +257,7 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
         }
         await h.invoke(true);
         expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({ requestedMode: "full" });
-        expect(h.nativeDialog).toHaveBeenCalledOnce();
+        expect(h.nativeDialog).not.toHaveBeenCalled();
         expect(h.prepare).toHaveBeenCalledOnce();
         expect(h.stop).toHaveBeenCalledOnce();
         expect(h.ready).toHaveBeenCalledOnce();
@@ -297,7 +284,7 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
     h.readOptions.mockReturnValueOnce(noAccount()).mockReturnValue(eligible());
     await h.invoke(true);
     expect(h.ready).toHaveBeenCalledOnce();
-    expect(h.nativeDialog).toHaveBeenCalledOnce();
+    expect(h.nativeDialog).not.toHaveBeenCalled();
     expect(h.persistRemote).toHaveBeenCalledExactlyOnceWith(
       { action: "persist", configuration: { enabled: false, owner: null } },
       "activation-disabled",
@@ -324,10 +311,10 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
       "activation-disabled",
     );
     expect(h.ready).toHaveBeenCalledOnce();
-    expect(h.nativeDialog).toHaveBeenCalledOnce();
+    expect(h.nativeDialog).not.toHaveBeenCalled();
   });
 
-  it.each(["confirmation", "locked"] as const)(
+  it.each(["selection", "locked"] as const)(
     "does not turn a WeChat account read failure at %s into successful activation",
     async (stage) => {
       const h = harness();
@@ -340,14 +327,14 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
       expect(h.ready).not.toHaveBeenCalled();
       expect(h.persistRemote).not.toHaveBeenCalled();
       expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({ requestedMode: "off" });
-      expect(h.nativeDialog).toHaveBeenCalledOnce();
+      expect(h.nativeDialog).not.toHaveBeenCalled();
     },
   );
 
   it.each([
     classifyMxcProbe(null, "", "", "failed probe"),
     classifyMxcProbe(0, JSON.stringify({ supported: false }), ""),
-  ])("rejects failed/no-tier probes before confirmation or mutation: %j", async (result) => {
+  ])("rejects failed/no-tier probes before mutation: %j", async (result) => {
     const h = harness();
     h.probeRunner.mockResolvedValue(result);
     await expect(h.invoke(true)).rejects.toThrow("No supported MXC sandbox");
@@ -361,12 +348,12 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
     ["base-container", "appcontainer-dacl"],
     ["appcontainer-dacl", "base-container"],
   ])(
-    "does not substitute %s with changed %s capability under the same confirmation",
+    "does not substitute %s with changed %s capability under the same toggle request",
     async (before, after) => {
       const h = harness();
       h.probeRunner.mockResolvedValueOnce(probe(before)).mockResolvedValueOnce(probe(after));
       await expect(h.invoke(true)).rejects.toThrow("No eligible MXC");
-      expect(h.nativeDialog).toHaveBeenCalledOnce();
+      expect(h.nativeDialog).not.toHaveBeenCalled();
       expect(h.probeRunner).toHaveBeenCalledTimes(2);
       expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({ requestedMode: "off" });
       expect(h.persistRemote).not.toHaveBeenCalled();
@@ -389,7 +376,9 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
   it("turns Off through the existing standard-backend lifecycle without deleting folders or remembered commands", async () => {
     const h = harness("full");
     await h.invoke(false);
-    expect(h.nativeDialog).toHaveBeenCalledOnce();
+    expect(h.context.setWindowsNodeMxcLifecycleState).toHaveBeenCalledWith("disabling");
+    expect(h.context.setWindowsNodeMxcLifecycleState).toHaveBeenCalledWith("starting-standard");
+    expect(h.nativeDialog).not.toHaveBeenCalled();
     expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({ requestedMode: "off" });
     expect(h.start).toHaveBeenCalledOnce();
     expect(h.persistRemote).toHaveBeenCalledWith(
@@ -418,27 +407,28 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
     await expect(h.invoke(true)).rejects.toThrow("Active readiness failed");
     expect(h.saved.get("windowsNodeMxcSelection")).toMatchObject({ requestedMode: "full" });
     expect(h.prepare).toHaveBeenCalledExactlyOnceWith("full");
-    expect(h.nativeDialog).toHaveBeenCalledOnce();
+    expect(h.nativeDialog).not.toHaveBeenCalled();
     expect(h.start).not.toHaveBeenCalled();
     expect(h.coordinator.active).toBe(false);
   });
 
-  it("joins duplicate On requests during native confirmation and rejects a conflicting Off request", async () => {
+  it("joins duplicate On requests during validation and rejects a conflicting Off request", async () => {
     const h = harness();
-    let decide!: (value: { response: number }) => void;
-    h.nativeDialog.mockReturnValue(
+    let finish!: (value: Awaited<ReturnType<typeof h.prepare>>) => void;
+    h.prepare.mockReturnValue(
       new Promise((resolve) => {
-        decide = resolve;
+        finish = resolve;
       }),
     );
     const first = h.invoke(true);
-    await vi.waitFor(() => expect(h.nativeDialog).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(h.prepare).toHaveBeenCalledOnce());
     const duplicate = h.invoke(true);
     await expect(h.invoke(false)).rejects.toThrow("Another Windows Node + MXC lifecycle");
-    decide({ response: 0 });
+    finish({ effectiveTier: "base-container", ambientAccess: null });
     await Promise.all([first, duplicate]);
-    expect(h.nativeDialog).toHaveBeenCalledOnce();
-    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.nativeDialog).not.toHaveBeenCalled();
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(h.ready).toHaveBeenCalledOnce();
     expect(h.coordinator.active).toBe(false);
   });
 

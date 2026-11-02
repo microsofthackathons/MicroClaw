@@ -6,6 +6,7 @@ import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/pr
 import { canonicalAgentId } from "../../../src/agent-catalog";
 import { isMainSessionKey } from "../../../src/main-session-key";
 import { ChatRunTracker } from "./chat-run-tracker";
+import { resolveChatHistorySessionKey } from "../../../src/chat-run-lifecycle";
 import type { WindowsNodeMxcApprovalActivity } from "../../../src/windows-node-mxc";
 
 /**
@@ -297,6 +298,7 @@ export const useChatStore = defineStore("chat", () => {
         expiresAtUnixMs?: number;
         label: string;
         pending: boolean;
+        processing?: boolean;
       }
     >
   >({});
@@ -323,6 +325,7 @@ export const useChatStore = defineStore("chat", () => {
     const waitingApproval = activities.some(
       ([, activity]) =>
         activity.pending &&
+        !activity.processing &&
         (activity.expiresAtUnixMs === undefined || activity.expiresAtUnixMs > Date.now()),
     );
     if (!wsConnected.value && (activities.length || streaming.value)) return "connection-unknown";
@@ -359,7 +362,7 @@ export const useChatStore = defineStore("chat", () => {
             name: activity.label,
             kind: "approval",
             done: false,
-            waitingPermission: true,
+            waitingPermission: !activity.processing,
           },
         ];
       }
@@ -386,6 +389,25 @@ export const useChatStore = defineStore("chat", () => {
     // Reject pre-approval snapshots without inventing a run-start event or timestamp.
     serverRuns.invalidateSnapshot(activity.sessionKey);
     synchronizeApprovalRows();
+  }
+
+  function markApprovalProcessing(id: string, label: string) {
+    const activity = approvalActivities.value[id];
+    if (!activity?.pending) return;
+    approvalActivities.value = {
+      ...approvalActivities.value,
+      [id]: { ...activity, label, processing: true },
+    };
+    const rowId = approvalToolId(id);
+    const update = (rows: typeof streamToolCalls.value) =>
+      rows.map((tool) =>
+        tool.id === rowId && tool.kind === "approval"
+          ? { ...tool, name: label, waitingPermission: false }
+          : tool,
+      );
+    streamToolCalls.value = update(streamToolCalls.value);
+    const cached = sessionStateCache.get(activity.sessionKey);
+    if (cached) cached.streamToolCalls = update(cached.streamToolCalls);
   }
 
   function settleApprovalActivity(id: string, result?: string, isError?: boolean) {
@@ -1119,7 +1141,10 @@ export const useChatStore = defineStore("chat", () => {
       if (seq !== _loadSeq) return;
       if (epoch !== historyEpoch) return;
       if (sessionKey.value !== callerSessionKey) return;
-      const canonicalKey = typeof res.sessionKey === "string" ? res.sessionKey : key;
+      const canonicalKey = resolveChatHistorySessionKey(key, res);
+      if (key === "main" && res.sessionInfo?.isMain === true) {
+        mainSessionKey.value = canonicalKey;
+      }
       _canonicalizeSessionKey(callerSessionKey, canonicalKey);
       acceptedSessionKey = sessionKey.value;
       const runtimeAccepted = serverRuns.snapshot(
@@ -2098,6 +2123,7 @@ export const useChatStore = defineStore("chat", () => {
     activityStatus,
     setGatewayGeneration,
     trackApprovalActivity,
+    markApprovalProcessing,
     settleApprovalActivity,
     clearApprovalActivities,
     sessionKey,

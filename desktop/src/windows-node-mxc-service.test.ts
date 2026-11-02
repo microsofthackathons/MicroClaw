@@ -238,6 +238,8 @@ describe("Windows Node MXC readiness smoke", () => {
     ["missing error code", { errorCode: undefined }],
     ["missing error message", { error: undefined }],
     ["an empty error message", { error: "" }],
+    ["contradictory command output", { stdout: "command actually ran" }],
+    ["a mismatched error message", { error: "approval-denied: Not a CWD rejection" }],
     ["a denial string in command output", { errorCode: undefined, stdout: "cwd-sensitive-root" }],
   ])("fails closed for %s instead of an explicit CWD rejection", async (_label, payload) => {
     const response = deniedCwdResponse();

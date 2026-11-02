@@ -389,6 +389,9 @@ function securityBindingHash(
         arguments: approval.arguments,
         canonicalCwd: approval.canonicalCwd,
         declaredAccess: approval.declaredAccess,
+        folderChanges: approval.folderChanges ?? [],
+        planSha256: approval.planSha256 ?? null,
+        policyFingerprint: approval.policyFingerprint ?? null,
         agent: approval.agent,
         sessionKey: approval.sessionKey,
         origin: approval.origin ?? null,
@@ -541,7 +544,10 @@ function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayAp
       (classifyLiteralFilesystemCommand(original) !== null &&
         !approval.arguments.some(hasSensitiveSemantics))) &&
     approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
-    approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path))
+    approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path)) &&
+    (approval.folderChanges ?? []).every(
+      (entry) => (entry.access === "ro" || entry.access === "rw") && isSafeWindowsPath(entry.path),
+    )
   );
 }
 
@@ -551,6 +557,7 @@ function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]
     if (
       approval.arguments.length > MAX_PROMPT_ARGUMENTS ||
       approval.declaredAccess.length > MAX_PROMPT_DECLARATIONS ||
+      (approval.folderChanges?.length ?? 0) > MAX_PROMPT_DECLARATIONS ||
       !/^[a-f0-9]{64}$/i.test(approval.executableSha256) ||
       !approvalHasSafeStructuredPresentation(approval)
     ) {
@@ -573,8 +580,10 @@ export function renderWeixinRemoteApprovalPrompt(params: {
     throw new Error("Cannot safely present these approval requests on WeChat");
   }
   const zh = params.locale === "zh-CN";
+  const addsFolders = params.requests.some(({ approval }) => approval.folderChanges?.length);
   const suffix = params.bareReplies === false ? ` ${params.code}` : "";
   const allowDurable =
+    !addsFolders &&
     params.allowDurable === true &&
     params.requests.every(
       ({ approval }) =>
@@ -582,12 +591,12 @@ export function renderWeixinRemoteApprovalPrompt(params: {
     );
   const choices = zh
     ? [
-        `回复 1${suffix}：仅允许一次`,
+        `回复 1${suffix}：${addsFolders ? "允许" : "仅允许一次"}`,
         ...(allowDurable ? [`2${suffix}：记住此会话的精确范围`] : []),
         `3${suffix}：拒绝`,
       ]
     : [
-        `Reply 1${suffix}: allow once`,
+        `Reply 1${suffix}: ${addsFolders ? "allow" : "allow once"}`,
         ...(allowDurable ? [`2${suffix}: remember exact scope in this conversation`] : []),
         `3${suffix}: deny`,
       ];
@@ -603,6 +612,13 @@ export function renderWeixinRemoteApprovalPrompt(params: {
   const lines = [
     zh ? "[MicroClaw 安全审批]" : "[MicroClaw Security Approval]",
     choices.join(" | "),
+    ...(addsFolders
+      ? [
+          zh
+            ? "允许将保存下列文件夹权限，直到在设置中移除；当前命令仅批准一次。"
+            : "Allow saves the folder grants below until removed in Settings; this command runs once.",
+        ]
+      : []),
     ...params.requests.flatMap(({ approval }) => {
       const original = originalPowerShellFilesystemApproval(approval);
       if (!original) throw new Error("Approval initialization could not be validated");
@@ -612,6 +628,11 @@ export function renderWeixinRemoteApprovalPrompt(params: {
           ? `${actions[operation.kind]}: ${operation.path}`
           : `${zh ? "命令" : "Command"}: ${approval.command}`,
         `${zh ? "程序" : "Executable"}: ${approval.executablePath}`,
+        `${zh ? "工作目录" : "CWD"}: ${approval.canonicalCwd}`,
+        ...(approval.folderChanges ?? []).map(
+          (entry) =>
+            `${zh ? "添加到" : "Add to"} ${entry.access === "rw" ? "RW" : "RO"}: ${entry.path}`,
+        ),
         ...(operation
           ? [
               ...(operation.recursive
@@ -816,12 +837,27 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       return reject("security-binding-invalid");
     if (
       input.requests.some(({ approval }) => approval.providerInitialization) &&
-      (input.security.requestedMode !== "limited-dacl" ||
-        input.security.effectiveMode !== "appcontainer-dacl")
+      !(
+        (input.security.requestedMode === "limited-dacl" &&
+          input.security.effectiveMode === "appcontainer-dacl") ||
+        (input.security.requestedMode === "full" &&
+          ["base-container", "appcontainer-bfs"].includes(input.security.effectiveMode))
+      )
     )
       return reject("security-binding-invalid");
     const approvalIds = input.requests.map(({ approval }) => approval.id);
     if (approvalIds.length !== 1) return reject("ambiguous-request-set");
+    if (
+      input.requests.some(
+        ({ approval }) =>
+          approval.folderChanges?.length &&
+          (!approval.planSha256 ||
+            !/^[a-f0-9]{64}$/i.test(approval.planSha256) ||
+            approval.policyFingerprint !== input.security.policyFingerprint ||
+            approval.allowedDecisions.includes("allow-always")),
+      )
+    )
+      return reject("security-binding-invalid");
     if (
       input.requests.some(
         ({ approval }) => !weixinApprovalOriginMatchesSecurity(approval, input.security),
@@ -845,7 +881,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         input.requests.some(
           ({ approval }) =>
             approval.arguments.some(hasSensitiveSemantics) ||
-            approval.declaredAccess.some((entry) => hasSensitiveSemantics(entry.path)),
+            approval.declaredAccess.some((entry) => hasSensitiveSemantics(entry.path)) ||
+            approval.folderChanges?.some((entry) => hasSensitiveSemantics(entry.path)),
         )
           ? "presentation-sensitive"
           : "presentation-unsupported",
@@ -892,7 +929,9 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         weixinRemoteApprovalConsentHash(this.configuration) !== null &&
         input.requests.every(
           ({ approval }) =>
-            approval.allowedDecisions.includes("allow-always") && !approval.hasMutableFileOperand,
+            !approval.folderChanges?.length &&
+            approval.allowedDecisions.includes("allow-always") &&
+            !approval.hasMutableFileOperand,
         ),
     };
     const text = renderWeixinRemoteApprovalPrompt({
@@ -1264,7 +1303,10 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     return this.notice(pending, "invalid");
   }
 
-  invalidateAll(reason: string): WeixinRemoteApprovalNotice[] {
+  invalidateAll(
+    reason: string,
+    preserveResolvingApprovalId?: string,
+  ): WeixinRemoteApprovalNotice[] {
     const notices: WeixinRemoteApprovalNotice[] = [];
     for (const [chatKey, challenge] of this.challengesByChat) {
       this.recordAudit(challenge, "invalidated", reason);
@@ -1273,10 +1315,21 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         expiresAtUnixMs: challenge.expiresAtUnixMs,
         locale: challenge.locale,
       });
-      notices.push(this.notice(challenge, "invalid"));
+      if (
+        !preserveResolvingApprovalId ||
+        !challenge.approvalIds.includes(preserveResolvingApprovalId)
+      )
+        notices.push(this.notice(challenge, "invalid"));
     }
     this.challengesByChat.clear();
     for (const [challengeId, challenge] of this.pendingResolutions) {
+      // Only an already-consumed exact decision may survive its own live folder update.
+      if (
+        preserveResolvingApprovalId &&
+        challenge.approvalIds.length === 1 &&
+        challenge.approvalIds[0] === preserveResolvingApprovalId
+      )
+        continue;
       this.recordAudit(challenge, "invalidated", reason);
       this.pendingResolutions.delete(challengeId);
     }

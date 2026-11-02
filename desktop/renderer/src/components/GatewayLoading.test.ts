@@ -96,6 +96,31 @@ describe("GatewayLoading MXC lifecycle", () => {
     expect(wrapper.find(".loading-status").text()).not.toContain("Disconnected");
   });
 
+  it.each(["full", "limited-dacl"] as const)(
+    "does not label the Off transition as %s starting while the previous mode is still persisted",
+    async (previousMode) => {
+      const wrapper = shallowMount(GatewayLoading, {
+        props: {
+          status: "restarting",
+          connected: false,
+          warming: false,
+          mxcDesired: true,
+          mxcRequestedMode: previousMode,
+          mxcEffectiveStrength: "off",
+          mxcPhase: "disabling",
+        },
+      });
+      expect(wrapper.find(".loading-status").text()).toContain("Turning off MXC");
+      expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+      await wrapper.setProps({ mxcPhase: "starting-standard" });
+      expect(wrapper.find(".loading-status").text()).toContain("Starting normal mode (MXC Off)");
+      expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+      await wrapper.setProps({ mxcDesired: false, mxcRequestedMode: "off" });
+      expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
+
   it("does not expose a conflicting retry when the Gateway timer expires mid-transition", () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {

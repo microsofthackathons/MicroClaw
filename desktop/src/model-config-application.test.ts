@@ -161,7 +161,11 @@ describe("applyModelConfig", () => {
       hash: "after",
       sentinel: { payload: { stats: { requiresRestart: true } } },
     });
-    await expect(applyModelConfig(state.deps, state.input)).rejects.toThrow("No restart or retry");
+    const pending = applyModelConfig(state.deps, state.input);
+    await expect(pending).rejects.toThrow("No restart or retry");
+    await expect(pending).rejects.toMatchObject({
+      cause: { name: "ModelConfigRestartRequiredError", savedHash: "after" },
+    });
     expect(state.deps.log).not.toHaveBeenCalledWith(expect.stringContaining("hot-applied"));
   });
 

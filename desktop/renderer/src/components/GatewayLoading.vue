@@ -92,7 +92,7 @@
           {{ statusText }}
           <span v-if="!isFailed" class="loading-pct">{{ Math.floor(displayProgress) }}%</span>
         </div>
-        <div v-if="props.mxcDesired" class="loading-mxc-strength">
+        <div v-if="props.mxcDesired && !isTurningMxcOff" class="loading-mxc-strength">
           {{ mxcStrengthText }}
         </div>
         <div v-if="isMxcTransition && props.mxcDetail" class="loading-mxc-detail">
@@ -170,6 +170,9 @@ const props = defineProps<{
 }>();
 defineEmits<{ retry: []; "disable-mxc": [] }>();
 
+const isTurningMxcOff = computed(() =>
+  ["disabling", "starting-standard"].includes(props.mxcPhase ?? ""),
+);
 const isMxcFailure = computed(
   () =>
     props.mxcDesired === true &&
@@ -224,6 +227,7 @@ const targetProgress = computed(() => {
   if (isMxcTransition.value) {
     const progress: Record<string, number> = {
       locking: 20,
+      disabling: 20,
       validating: 35,
       persisting: 50,
       "starting-locked": 72,

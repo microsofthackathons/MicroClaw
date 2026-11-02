@@ -2,6 +2,7 @@ import type { ChatEventPayload } from "./gateway-client";
 
 interface ChatSessionRuntimeBase {
   key: string;
+  isMain?: boolean;
   status?: string;
   lastRunId?: string;
   lastRunError?: string;
@@ -13,6 +14,29 @@ export type ChatSessionRuntime = ChatSessionRuntimeBase &
     | { hasActiveRun: boolean; activeRunIds: string[] }
     | { hasActiveRun: true; activeRunIds?: never }
   );
+
+export interface ChatHistoryResult {
+  sessionKey?: string;
+  messages?: unknown[];
+  thinkingLevel?: string;
+  sessionInfo?: ChatSessionRuntime;
+}
+
+export function resolveChatHistorySessionKey(
+  requestedKey: string,
+  history: ChatHistoryResult,
+): string {
+  const returnedKey = history.sessionKey ?? requestedKey;
+  if (history.sessionInfo === undefined) return returnedKey;
+  // chat.history can echo an unqualified alias while sessionInfo identifies its canonical owner.
+  const resolvesAlias =
+    returnedKey === requestedKey && requestedKey !== "global" && !requestedKey.startsWith("agent:");
+  const key = resolvesAlias ? history.sessionInfo?.key : returnedKey;
+  if (typeof key !== "string" || !key.trim() || !isChatSessionRuntime(history.sessionInfo, key)) {
+    throw new Error("Invalid Gateway chat runtime snapshot");
+  }
+  return key;
+}
 
 export function isChatSessionRuntime(value: unknown, key: string): value is ChatSessionRuntime {
   if (

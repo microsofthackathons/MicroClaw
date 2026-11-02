@@ -148,11 +148,15 @@
   </el-dialog>
 
   <!-- In-app permission dialog (replaces native OS dialog) -->
-  <PermissionDialog :request="currentPermission" @respond="handlePermissionResponse" />
+  <PermissionDialog
+    :request="currentPermission"
+    :responding="currentPermissionResponding"
+    @respond="handlePermissionResponse"
+  />
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, provide, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import SidePanel from "@/components/SidePanel.vue";
@@ -168,6 +172,10 @@ import { runStartupWarmup } from "@/startup-warmup";
 import { watchStartupServiceReadiness } from "@/startup-service-readiness";
 import { planGatewayStatusTransition } from "@/gateway-status-transition";
 import { resolveWindowsNodeMxcAllowedDecisions } from "@/windows-node-mxc-approval";
+import {
+  windowsNodeMxcLifecycleStateKey,
+  type WindowsNodeMxcLifecycleState,
+} from "@/windows-node-mxc-lifecycle";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
@@ -178,16 +186,23 @@ const route = useRoute();
 const agentStore = useAgentStore();
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
+const windowsNodeMxcLifecycleState = ref<WindowsNodeMxcLifecycleState | null>(null);
+provide(
+  windowsNodeMxcLifecycleStateKey,
+  computed(() => windowsNodeMxcLifecycleState.value),
+);
 
-function applyWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
-  const currentUpdatedAt = windowsNodeMxcStatus.value?.lifecycleState.updatedAt;
-  if (
-    currentUpdatedAt &&
-    Date.parse(status.lifecycleState.updatedAt) < Date.parse(currentUpdatedAt)
-  ) {
-    return;
-  }
+function applyWindowsNodeMxcLifecycleState(state: WindowsNodeMxcLifecycleState): boolean {
+  const currentUpdatedAt = windowsNodeMxcLifecycleState.value?.updatedAt;
+  if (currentUpdatedAt && Date.parse(state.updatedAt) < Date.parse(currentUpdatedAt)) return false;
+  windowsNodeMxcLifecycleState.value = state;
+  return true;
+}
+
+function applyWindowsNodeMxcStatus(status: WindowsNodeMxcStatus): boolean {
+  if (!applyWindowsNodeMxcLifecycleState(status.lifecycleState)) return false;
   windowsNodeMxcStatus.value = status;
+  return true;
 }
 
 // ── Setup wizard gate ──
@@ -243,9 +258,7 @@ async function warmThenMarkConnected() {
 async function handleRetry() {
   if (windowsNodeMxcStatus.value?.desiredEnabled) {
     try {
-      windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-        enabled: true,
-      });
+      applyWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.setEnabled({ enabled: true }));
     } catch (error) {
       gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -258,9 +271,7 @@ async function handleRetry() {
 
 async function disableWindowsNodeMxc() {
   try {
-    windowsNodeMxcStatus.value = await window.openclaw.windowsNodeMxc.setEnabled({
-      enabled: false,
-    });
+    applyWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.setEnabled({ enabled: false }));
   } catch (error) {
     gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -284,6 +295,7 @@ interface PermissionRequestData {
   approvalLayer?: "gateway" | "node";
   allowedDecisions?: Array<"deny" | "allow-once" | "allow-always">;
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
+  folderChanges?: Array<{ access: "ro" | "rw"; path: string }>;
   providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
   containmentStrength?: "full" | "limited-dacl";
   ambientAccess?: NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"];
@@ -293,8 +305,11 @@ interface PermissionRequestData {
     | null;
 }
 const permissionQueue = ref<PermissionRequestData[]>([]);
+const processingApprovals = ref(new Set<string>());
 const currentPermission = computed(() =>
-  permissionQueue.value.length > 0 ? permissionQueue.value[0] : null,
+  processingApprovals.value.size === 0 && permissionQueue.value.length > 0
+    ? permissionQueue.value[0]
+    : null,
 );
 
 type WindowsNodeMxcApproval = NonNullable<
@@ -307,8 +322,20 @@ let closedApprovalSequence = 0;
 let closedApprovalFloor = 0;
 const closedApprovals = new Map<string, number>();
 const approvalKey = (id: string, layer: "gateway" | "node" = "gateway") => `${layer}:${id}`;
+const respondingApprovals = ref(new Set<string>());
+const currentPermissionResponding = computed(() => {
+  const request = currentPermission.value;
+  return Boolean(
+    request &&
+    (respondingApprovals.value.has(approvalKey(request.requestId, request.approvalLayer)) ||
+      ["updating-folders", "updating-model", "connecting-weixin", "disconnecting-weixin"].includes(
+        windowsNodeMxcStatus.value?.lifecycleState.phase ?? "",
+      )),
+  );
+});
 function closeApproval(id: string, layer: "gateway" | "node" = "gateway") {
   const key = approvalKey(id, layer);
+  processingApprovals.value.delete(key);
   closedApprovals.delete(key);
   closedApprovals.set(key, ++closedApprovalSequence);
   if (closedApprovals.size > 256) {
@@ -320,6 +347,7 @@ function closeApproval(id: string, layer: "gateway" | "node" = "gateway") {
   }
 }
 function invalidateApprovals() {
+  processingApprovals.value.clear();
   chatStore.clearApprovalActivities();
   approvalEpoch++;
   closedApprovals.clear();
@@ -394,6 +422,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     dirPath: request.canonicalCwd,
     command,
     declaredAccess: request.declaredAccess,
+    folderChanges: request.folderChanges,
     providerInitialization: request.providerInitialization,
     source: "windows-node-mxc",
     approvalLayer: request.approvalLayer,
@@ -423,6 +452,9 @@ async function handlePermissionResponse(
   const req = permissionQueue.value[0];
   if (!req) return;
   if (req.source === "windows-node-mxc") {
+    if (currentPermissionResponding.value) return;
+    const key = approvalKey(req.requestId, req.approvalLayer);
+    respondingApprovals.value.add(key);
     try {
       await window.openclaw.windowsNodeMxc.respondApproval({
         requestId: req.requestId,
@@ -434,7 +466,14 @@ async function handlePermissionResponse(
       if (permissionQueue.value.includes(req)) {
         ElMessage.error(error instanceof Error ? error.message : String(error));
       }
+      if (processingApprovals.value.has(key)) {
+        closeApproval(req.requestId, req.approvalLayer);
+        permissionQueue.value = permissionQueue.value.filter((pending) => pending !== req);
+        chatStore.settleApprovalActivity(req.requestId, t("perm.mxcResolutionUnconfirmed"), true);
+      }
       return;
+    } finally {
+      respondingApprovals.value.delete(key);
     }
   }
   // Show immediate permission decision in exec panel
@@ -544,6 +583,7 @@ let unsubToolEvent: (() => void) | null = null;
 let unsubIntegrityAlert: (() => void) | null = null;
 let unsubWindowsNodeMxcApproval: (() => void) | null = null;
 let unsubWindowsNodeMxcApprovalResolved: (() => void) | null = null;
+let unsubWindowsNodeMxcApprovalProcessing: (() => void) | undefined;
 let unsubWindowsNodeMxcLifecycle: (() => void) | null = null;
 let unsubMaximizeChange: (() => void) | null = null;
 let historyPollTimer: number | null = null;
@@ -605,6 +645,23 @@ onMounted(async () => {
     approvalEventRevision++;
     void enqueueWindowsNodeMxcApproval(request);
   });
+  unsubWindowsNodeMxcApprovalProcessing = window.openclaw.windowsNodeMxc.onApprovalProcessing?.(
+    (result) => {
+      const key = approvalKey(result.requestId, result.approvalLayer);
+      if (
+        closedApprovals.has(key) ||
+        !permissionQueue.value.some(
+          (request) => approvalKey(request.requestId, request.approvalLayer) === key,
+        )
+      )
+        return;
+      processingApprovals.value.add(key);
+      chatStore.markApprovalProcessing(
+        result.requestId,
+        t(result.applyingFolders ? "perm.applyingFolders" : "perm.applyingDecision"),
+      );
+    },
+  );
   unsubWindowsNodeMxcApprovalResolved = window.openclaw.windowsNodeMxc.onApprovalResolved(
     (result) => {
       approvalEventRevision++;
@@ -696,11 +753,19 @@ onMounted(async () => {
     chatStore.wsConnected = false;
   });
   unsubWindowsNodeMxcLifecycle = window.openclaw.windowsNodeMxc.onLifecycleState((state) => {
+    if (!applyWindowsNodeMxcLifecycleState(state)) return;
     if (windowsNodeMxcStatus.value) {
       windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
     }
     if (
-      !["active", "idle"].includes(state.phase) &&
+      ![
+        "active",
+        "idle",
+        "updating-folders",
+        "updating-model",
+        "connecting-weixin",
+        "disconnecting-weixin",
+      ].includes(state.phase) &&
       (!["failed", "locked"].includes(state.phase) || windowsNodeMxcStatus.value?.desiredEnabled)
     ) {
       gateway.resetReady();
@@ -767,8 +832,17 @@ onMounted(async () => {
   window.openclaw.windowsNodeMxc
     .getStatus()
     .then((status) => {
-      applyWindowsNodeMxcStatus(status);
-      if (status.desiredEnabled && status.lifecycleState.phase !== "active") {
+      if (!applyWindowsNodeMxcStatus(status)) return;
+      if (
+        status.desiredEnabled &&
+        ![
+          "active",
+          "updating-folders",
+          "updating-model",
+          "connecting-weixin",
+          "disconnecting-weixin",
+        ].includes(status.lifecycleState.phase)
+      ) {
         gateway.resetReady();
         chatStore.wsConnected = false;
       }
@@ -814,6 +888,7 @@ onUnmounted(() => {
   unsubIntegrityAlert?.();
   unsubWindowsNodeMxcApproval?.();
   unsubWindowsNodeMxcApprovalResolved?.();
+  unsubWindowsNodeMxcApprovalProcessing?.();
   unsubWindowsNodeMxcLifecycle?.();
   unsubMaximizeChange?.();
   if (historyPollTimer) window.clearInterval(historyPollTimer);

@@ -179,7 +179,7 @@ public sealed class HostPolicy
         return Parse(json);
     }
 
-    private static HostPolicy Parse(ReadOnlySpan<byte> json)
+    internal static HostPolicy Parse(ReadOnlySpan<byte> json)
     {
         HostPolicyInput input;
         try
@@ -304,7 +304,7 @@ public sealed class HostPolicy
         };
     }
 
-    public CanonicalCwd ResolveCwd(string? requestedCwd)
+    public CanonicalCwd ResolveCwd(string? requestedCwd, bool allowMissingGrants = false)
     {
         if (string.IsNullOrWhiteSpace(requestedCwd))
             return new CanonicalCwd(
@@ -320,8 +320,14 @@ public sealed class HostPolicy
         var grant = ApprovedRoots
             .Where(root => WindowsPathCanonicalizer.IsEqualOrNested(canonical, root.Path))
             .OrderByDescending(root => root.Path.Length)
-            .FirstOrDefault()
-            ?? throw new HostPolicyException("cwd-outside-approved-roots", "The requested working directory is not within an approved folder.");
+            .FirstOrDefault();
+        if (grant is null)
+        {
+            if (!allowMissingGrants || DeniedRoots.Any(root =>
+                    WindowsPathCanonicalizer.IsEqualOrNested(root, canonical)))
+                throw new HostPolicyException("cwd-outside-approved-roots", "The requested working directory is not within an approved folder.");
+            return new CanonicalCwd(canonical, canonical, FolderAccess.ReadOnly, MatchedRoot: null);
+        }
 
         return new CanonicalCwd(canonical, canonical, grant.Access, grant.Path);
     }

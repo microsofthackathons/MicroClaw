@@ -74,6 +74,16 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       onIntegrityAlert: noopSub,
     },
     windowsNodeMxc: {
+      async getDisplayStatus() {
+        return {
+          status: await this.getStatus(),
+          verifiedAt: Date.now(),
+          refreshing: false,
+          error: null,
+        };
+      },
+      onDisplayStatus: noopSub,
+      onApprovalProcessing: noopSub,
       getFolders: async () => ({ rw: [], ro: [] }),
       setFolderPolicy: async () => {
         throw new Error("Unavailable in browser development");
@@ -329,6 +339,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           ready: false,
           qrSession: { state: "idle", message: "" },
           mutationLocked: false,
+          loginLocked: false,
           mutationLockRevision: 0,
         }),
         setEnabled: async () => ({ ok: true }),
