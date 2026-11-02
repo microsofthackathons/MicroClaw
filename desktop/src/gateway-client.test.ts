@@ -10,8 +10,44 @@ import {
   shouldHandleGatewayDisconnect,
   type GatewayEventFrame,
 } from "./gateway-client";
-import { AGENT_WARMUP_SESSION_KEY } from "./constants";
+import { AGENT_WARMUP_SESSION_KEY, WS_REQUEST_TIMEOUT_MS } from "./constants";
 import { GatewaySessionObserver } from "./gateway-session-observer";
+
+describe("GatewayClient agent roster", () => {
+  it.each([undefined, 250])("forwards the roster RPC timeout budget %s", async (timeoutMs) => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const result = { agents: [{ id: "main" }] };
+    const request = vi.spyOn(client, "request").mockResolvedValue(result);
+
+    await expect(client.listAgents(timeoutMs)).resolves.toEqual(result);
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "agents.list",
+      undefined,
+      timeoutMs ?? WS_REQUEST_TIMEOUT_MS,
+    );
+  });
+
+  it("clears an unanswered roster request when its remaining budget expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const response = client.listAgents(250);
+      const rejected = expect(response).rejects.toThrow(
+        "request 'agents.list' timed out after 250ms",
+      );
+
+      await vi.advanceTimersByTimeAsync(250);
+      await rejected;
+      expect(client["pending"].size).toBe(0);
+      expect(send).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("GatewayClient WeChat QR login", () => {
   it.each([
@@ -363,6 +399,13 @@ describe("GatewayClient.sendChat", () => {
     );
   });
 
+  it("returns the Gateway acknowledgment with its actual run ID", async () => {
+    const { client, request } = createClient();
+    const acknowledgment = { runId: "actual-run", status: "started" };
+    request.mockResolvedValueOnce(acknowledgment);
+    expect(await client.sendChat("session-123", "hello")).toBe(acknowledgment);
+  });
+
   it("adds gateway-compatible attachment objects when provided", async () => {
     const { client, request } = createClient();
     await client.sendChat("session-123", "", [
@@ -573,6 +616,18 @@ describe("GatewayClient.deleteSession", () => {
     expect(request).toHaveBeenLastCalledWith("sessions.delete", {
       key: "agent:writer:main",
       deleteTranscript: true,
+    });
+  });
+
+  it("exposes an explicit reset operation", async () => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+
+    await client.resetSession("agent:writer:main");
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sessions.reset", {
+      key: "agent:writer:main",
+      reason: "reset",
     });
   });
 

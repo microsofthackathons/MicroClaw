@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 export type GatewayRestartDependencies = {
   stopClient: () => void;
   stopProcess: () => void | Promise<void>;
@@ -9,14 +11,38 @@ export type GatewayRestartDependencies = {
 };
 
 export type AgentRosterReloadDependencies = {
-  listAgentIds: () => Promise<ReadonlySet<string>>;
+  listAgentIds: (timeoutMs: number) => Promise<ReadonlySet<string>>;
   isApplied: (agentIds: ReadonlySet<string>) => boolean;
   sleep: (ms: number) => Promise<void>;
   timeoutMs: number;
   pollMs: number;
+  now?: () => number;
 };
 
 export type AgentRosterApplyResult = "hot-reloaded" | "restarted" | "timed-out";
+
+export function getGatewayStartupFailure(
+  port: number,
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+  spawnError?: Error,
+): { status: "failed" | "timeout"; message: string } {
+  if (spawnError)
+    return { status: "failed", message: `Gateway spawn failed: ${spawnError.message}` };
+  if (exitCode !== null) {
+    return {
+      status: "failed",
+      message:
+        exitCode === 78
+          ? "Gateway rejected its configuration (exit 78); see the Gateway log"
+          : `Gateway exited during startup (code ${exitCode}); see the Gateway log`,
+    };
+  }
+  if (signal !== null) {
+    return { status: "failed", message: `Gateway exited during startup (signal ${signal})` };
+  }
+  return { status: "timeout", message: `Gateway health check timed out on port ${port}` };
+}
 
 export function getGatewayProcessStdio(
   platform: NodeJS.Platform = process.platform,
@@ -68,20 +94,35 @@ export function isApplicationServiceReadyState(
 export async function waitForAgentRosterReload(
   dependencies: AgentRosterReloadDependencies,
 ): Promise<boolean> {
-  if (dependencies.pollMs <= 0) {
+  if (!Number.isFinite(dependencies.pollMs) || dependencies.pollMs <= 0) {
     throw new Error("agent roster reload poll interval must be positive");
   }
+  if (!Number.isFinite(dependencies.timeoutMs) || dependencies.timeoutMs < 0) {
+    throw new Error("agent roster reload timeout must be finite and non-negative");
+  }
 
-  const attempts = Math.max(1, Math.ceil(dependencies.timeoutMs / dependencies.pollMs));
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  const now = dependencies.now ?? (() => performance.now());
+  const deadline = now() + dependencies.timeoutMs;
+  while (true) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) return false;
+    let readTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (dependencies.isApplied(await dependencies.listAgentIds())) return true;
+      const timeout = new Promise<null>((resolve) => {
+        readTimeout = setTimeout(() => resolve(null), remainingMs);
+      });
+      const agentIds = await Promise.race([dependencies.listAgentIds(remainingMs), timeout]);
+      if (agentIds === null || now() >= deadline) return false;
+      if (dependencies.isApplied(agentIds)) return true;
     } catch {
       // A watcher-driven config swap can briefly interrupt the RPC. Retry until timeout.
+    } finally {
+      if (readTimeout !== undefined) clearTimeout(readTimeout);
     }
-    if (attempt + 1 < attempts) await dependencies.sleep(dependencies.pollMs);
+    const remainingMsAfterRead = deadline - now();
+    if (remainingMsAfterRead <= 0) return false;
+    await dependencies.sleep(Math.min(dependencies.pollMs, remainingMsAfterRead));
   }
-  return false;
 }
 
 export async function applyAgentRosterReload(

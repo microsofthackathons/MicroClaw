@@ -237,6 +237,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       sendMessage: noopAsync,
       abort: noopAsync,
       deleteSession: noopAsync,
+      resetSession: noopAsync,
       clearHistory: async () => ({ cleared: 0 }),
       onEvent: noopSub,
       onToolEvent: noopSub,

@@ -733,8 +733,9 @@ export async function runWindowsNodeMxcSmoke(
     now: dependencies.now,
   });
   const profile = containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke";
+  const log = dependencies.log ?? console.info;
   const deniedOutsideRoot =
-    containmentStrength === "full" ? await invokeDeniedCwdSmoke(gateway, nodeId) : null;
+    containmentStrength === "full" ? await invokeDeniedCwdSmoke(gateway, nodeId, log) : null;
   const execution = await invokeInternalReadinessProbe(
     gateway,
     nodeId,
@@ -744,7 +745,7 @@ export async function runWindowsNodeMxcSmoke(
     minter,
     profile,
     dependencies.now ?? Date.now,
-    dependencies.log ?? console.info,
+    log,
   );
   return {
     profile,
@@ -763,9 +764,10 @@ export async function runWindowsNodeMxcSmoke(
 async function invokeDeniedCwdSmoke(
   gateway: WindowsNodeMxcGateway,
   nodeId: string,
+  log: (message: string) => void,
 ): Promise<MxcSmokeResult> {
   try {
-    const response = await gateway.request("node.invoke", {
+    const result = await gateway.request("node.invoke", {
       nodeId,
       command: "system.run",
       params: {
@@ -776,58 +778,88 @@ async function invokeDeniedCwdSmoke(
       timeoutMs: 20_000,
       idempotencyKey: randomUUID(),
     });
-    return classifyDeniedCwdResponse(response);
+    const outcome = classifyDeniedCwdSmokeResponse(result, nodeId);
+    log(
+      `[windows-node-mxc] protected-cwd-proof outcome=${outcome.outcome} ${describeDeniedCwdSmokeResponse(result, nodeId)}`,
+    );
+    return outcome;
   } catch (error) {
     return classifyDeniedCwdSmoke(messageOf(error));
   }
 }
 
-export function classifyDeniedCwdResponse(value: unknown): MxcSmokeResult {
-  const record = (candidate: unknown): Record<string, unknown> | null =>
-    candidate && typeof candidate === "object" && !Array.isArray(candidate)
-      ? (candidate as Record<string, unknown>)
-      : null;
-  const outer = record(value);
-  const response =
-    outer?.command === "system.run"
-      ? outer
-      : outer?.ok === true && outer.error == null && outer.command === undefined
-        ? record(outer.payload)
-        : null;
-  const payload = record(response?.payload);
-  let serializedMatches = true;
-  if (response?.payloadJSON != null) {
+function describeDeniedCwdSmokeResponse(value: unknown, nodeId: string): string {
+  const response = isRecord(value) ? value : null;
+  const payload = isRecord(response?.payload) ? response.payload : null;
+  return JSON.stringify({
+    ok: response?.ok === true,
+    commandMatches: response?.command === "system.run",
+    nodeMatches:
+      typeof response?.nodeId === "string" &&
+      response.nodeId.toLowerCase() === nodeId.toLowerCase(),
+    rejectedBeforeExecution: payload?.executionState === "rejectedBeforeExecution",
+    cwdErrorCode:
+      payload?.errorCode === "cwd-sensitive-root" ||
+      payload?.errorCode === "cwd-outside-approved-roots"
+        ? payload.errorCode
+        : "other-or-missing",
+    exitCode:
+      payload?.exitCode === undefined
+        ? "missing"
+        : payload.exitCode === null || typeof payload.exitCode === "number"
+          ? payload.exitCode
+          : "invalid",
+    successFalse: payload?.success === false,
+    timedOutFalse: payload?.timedOut === false,
+  });
+}
+
+function classifyDeniedCwdSmokeResponse(value: unknown, nodeId: string): MxcSmokeResult {
+  const failed: MxcSmokeResult = {
+    outcome: "failed",
+    reason: `The bundled node did not return a valid protected-CWD rejection before execution: ${describeDeniedCwdSmokeResponse(value, nodeId)}`,
+  };
+  if (
+    !isRecord(value) ||
+    value.ok !== true ||
+    value.command !== "system.run" ||
+    typeof value.nodeId !== "string" ||
+    value.nodeId.toLowerCase() !== nodeId.toLowerCase() ||
+    value.error != null ||
+    !isRecord(value.payload)
+  ) {
+    return failed;
+  }
+  const payload = value.payload;
+  if (
+    payload.success !== false ||
+    payload.executionState !== "rejectedBeforeExecution" ||
+    payload.exitCode != null ||
+    payload.timedOut !== false ||
+    (payload.stdout !== undefined && payload.stdout !== "") ||
+    typeof payload.error !== "string" ||
+    !payload.error.trim() ||
+    (payload.errorCode !== "cwd-sensitive-root" &&
+      payload.errorCode !== "cwd-outside-approved-roots") ||
+    !payload.error.startsWith(`${payload.errorCode}:`)
+  ) {
+    return failed;
+  }
+  if (value.payloadJSON != null) {
     try {
-      serializedMatches =
-        typeof response.payloadJSON === "string" &&
-        isDeepStrictEqual(JSON.parse(response.payloadJSON), payload);
+      if (
+        typeof value.payloadJSON !== "string" ||
+        !isDeepStrictEqual(JSON.parse(value.payloadJSON), payload)
+      ) {
+        return failed;
+      }
     } catch {
-      serializedMatches = false;
+      return failed;
     }
   }
-  if (
-    response?.ok === true &&
-    response.command === "system.run" &&
-    response.error == null &&
-    serializedMatches &&
-    payload?.success === false &&
-    payload.executionState === "rejectedBeforeExecution" &&
-    payload.exitCode === null &&
-    payload.timedOut === false &&
-    (payload.stdout === undefined || payload.stdout === "") &&
-    typeof payload.error === "string" &&
-    (payload.errorCode === "cwd-sensitive-root" ||
-      payload.errorCode === "cwd-outside-approved-roots") &&
-    payload.error.startsWith(`${payload.errorCode}:`)
-  ) {
-    return {
-      outcome: "passed",
-      reason: "The bundled node denied a protected CWD before execution",
-    };
-  }
   return {
-    outcome: "failed",
-    reason: "The bundled node did not prove that the protected CWD was rejected before execution",
+    outcome: "passed",
+    reason: "The bundled node denied a protected CWD outside approved roots",
   };
 }
 

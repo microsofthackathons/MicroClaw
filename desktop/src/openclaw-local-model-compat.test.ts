@@ -16,6 +16,7 @@ const {
   PINNED_LOCAL_PLUGIN_VERSION,
   patchLocalModelPlugin,
   createLocalModelCompatibilityLoadHook,
+  initializeLocalModelCompatibility,
 } = compatibility;
 
 function withProviderFiles(
@@ -52,6 +53,45 @@ function withProviderFiles(
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+describe("local provider compatibility initialization", () => {
+  it("does not register synchronous loading hooks when the provider is absent", () => {
+    withProviderFiles(({ root }) => {
+      const register = vi.fn();
+      expect(initializeLocalModelCompatibility(join(root, "missing-provider"), register)).toBe(
+        undefined,
+      );
+      expect(register).not.toHaveBeenCalled();
+    });
+  });
+
+  it("registers the verified load hook when the provider directory exists", () => {
+    withProviderFiles(({ plugin }) => {
+      const handle = { deregister: vi.fn() };
+      const register = vi.fn().mockReturnValue(handle);
+      expect(initializeLocalModelCompatibility(plugin, register)).toBe(handle);
+      expect(register).toHaveBeenCalledExactlyOnceWith({ load: expect.any(Function) });
+    });
+  });
+
+  it("rejects relative provider paths even when the provider is absent", () => {
+    const register = vi.fn();
+    expect(() => initializeLocalModelCompatibility("missing-provider", register)).toThrow(
+      "absolute local provider directory",
+    );
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("does not hide an invalid provider directory as an absent provider", () => {
+    withProviderFiles(({ plugin }) => {
+      const register = vi.fn();
+      expect(() =>
+        initializeLocalModelCompatibility(join(plugin, "package.json"), register),
+      ).toThrow("unredirected directory");
+      expect(register).not.toHaveBeenCalled();
+    });
+  });
+});
 
 describe("local provider capture loading", () => {
   it("leaves unrelated modules and lookalike capture roots unchanged", () => {

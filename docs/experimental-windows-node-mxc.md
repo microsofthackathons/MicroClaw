@@ -126,6 +126,14 @@ tools execute on the Windows host and would bypass Windows Node/MXC. Local file 
 MXC-contained Windows Node `exec` or the MicroClaw WeChat media broker. MXC Off restores the user's
 backed-up original tool policy.
 
+The bundled `github-copilot` model-provider plugin is a reviewed exception to the plugin
+suppression policy, not an additional tool or ingress capability. A configured Copilot default,
+fallback, or agent model enables this provider in both locked and active policies; an explicitly
+enabled provider remains available for session overrides. This is independent of the internal
+Copilot setup flag and does not start sign-in or change credentials. The policy validator rejects
+a missing or denied required provider and still rejects unreviewed plugins. Memory remains
+disabled, and the locked/active tool lists, node routing, and filesystem restrictions are unchanged.
+
 ## Canvas Phase 1
 
 Canvas Phase 1 is available only while Full or Limited MXC is **Active**. It is a Windows Node UI
@@ -613,15 +621,29 @@ this avoids allowing old containers or Canvas sessions to retain revoked grants.
 Activation still runs the fixed readiness checks; folder-only updates do not repeat them.
 Activation evidence binds the runtime settings, Gateway generation, node identity and containment
 tier, while folder revisions have their own signed acknowledgement and policy-bound lease.
-Full runs its outside-root denial check plus one deterministic contained execution smoke. Limited
+Full runs its outside-root denial check plus one deterministic contained execution smoke. The
+denial check accepts the bundled node's structured `system.run` result only when it explicitly
+reports `rejectedBeforeExecution` with `cwd-sensitive-root` or `cwd-outside-approved-roots` for
+the selected node, with no exit code (omitted by the Windows node's null-ignoring serializer or
+explicitly null). RPC completion alone is not proof of command execution or CWD acceptance;
+unrelated failures, malformed results, and actual command execution still fail readiness. Limited
 runs only the contained execution smoke because ambient-access assessment, not out-of-root denial,
 is its filesystem safety gate. The fixed smokes use internal one-use readiness proofs and never
 enter the user approval queue.
 Cancellation or any failure leaves execution locked and retains the attempted draft and previous
 policy for explicit retry or revert; MicroClaw never silently restores old active execution. Folder
 preparation never calls the retired launcher or opens an elevation prompt. UNC,
-device-namespace, missing, reparse, final-target-changing, and protected credential/state/browser
+device-namespace, reparse, final-target-changing, and protected credential/state/browser
 roots are rejected before persistence.
+
+At application startup and before a new MXC Gateway generation's approval-policy fingerprint is
+created, saved RO/RW roots confirmed missing are silently deleted from `windowsNodeMxcFolders`.
+Stale folder drafts are cleaned before validation as well. Remaining grants retain their access
+levels; an empty user grant list is valid. No notification or host fallback is introduced, no
+filesystem entry is deleted or created, and a removed grant does not return if its directory later
+reappears. Permission and inspection errors, existing files, and reparse components are not treated
+as missing folders; the existing strict policy checks remain authoritative. A command explicitly
+requesting a missing CWD is still rejected, and active-generation grants are not mutated in place.
 
 The native host passes canonical read-only/read-write roots directly into each fresh MXC
 container's filesystem configuration. It does not provision the retired MicroClaw AppContainer
@@ -933,7 +955,11 @@ modifying the installed package or requiring a configured Gateway.
 
 OpenClaw's doctor migrates the roster to keyed `agents.entries` with explicit ownership.
 Desktop startup, skill updates and MXC policy changes preserve this format and never reintroduce
-the retired per-agent `default` marker. Node command policy uses `gateway.nodes.commands.allow`
+the retired per-agent `default` marker. Legacy lists are accepted only as migration input; writes
+always use keyed entries without default markers. When an older roster becomes multi-agent, Desktop
+materializes the previous default agent's workspace and implicit surface owners before setting
+`agents.ownership` to `explicit`. A Gateway configuration rejection (exit 78) is a startup failure,
+not a health-check timeout. Node command policy uses `gateway.nodes.commands.allow`
 and `.deny`; execution timeouts use `timeoutSeconds`.
 
 The same pinned Gateway binds approval registration and replay to the prepared plan's exact argv,

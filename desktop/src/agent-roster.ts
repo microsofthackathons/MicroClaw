@@ -7,10 +7,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function usesKeyedAgentRoster(agents: Record<string, unknown>): boolean {
-  return agents.entries !== undefined || agents.ownership === "explicit";
-}
-
 /** Returns references to the stored configs, not copies, for in-place mutations. */
 export function readAgentRoster(agents: unknown): AgentConfigEntry[] {
   if (agents === undefined) return [];
@@ -34,24 +30,19 @@ export function readAgentRoster(agents: unknown): AgentConfigEntry[] {
   });
 }
 
-/** Preserve the runtime's schema; never undo doctor's explicit-ownership migration. */
 export function writeAgentRoster(
   agents: Record<string, unknown>,
   roster: AgentConfigEntry[],
 ): boolean {
   const before = JSON.stringify(agents);
-  if (usesKeyedAgentRoster(agents)) {
-    agents.entries = Object.fromEntries(
-      roster.map(({ id, config }) => [
-        id,
-        Object.fromEntries(
-          Object.entries(config).filter(([key]) => key !== "id" && key !== "default"),
-        ),
-      ]),
-    );
-    delete agents.list;
-  } else {
-    agents.list = roster.map(({ id, config }) => ({ ...config, id }));
-  }
+  agents.entries = Object.fromEntries(
+    roster.map(({ id, config }) => [
+      id,
+      Object.fromEntries(
+        Object.entries(config).filter(([key]) => key !== "id" && key !== "default"),
+      ),
+    ]),
+  );
+  delete agents.list;
   return before !== JSON.stringify(agents);
 }

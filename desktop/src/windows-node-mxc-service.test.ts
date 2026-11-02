@@ -12,7 +12,7 @@ import {
 import { classifyMxcProbe } from "./windows-node-mxc";
 import {
   inspectWindowsNodeMxc,
-  classifyDeniedCwdResponse,
+  isWindowsNodeMxcSmokePassed,
   preflightWindowsNodeMxcBackend,
   preflightWindowsNodeMxcExactBackend,
   runWindowsNodeMxcSmoke,
@@ -57,6 +57,42 @@ function authorization() {
       readinessTransitionId: transitionId,
     },
   };
+}
+
+function deniedCwdResponse(errorCode = "cwd-outside-approved-roots") {
+  return {
+    ok: true,
+    nodeId,
+    command: "system.run",
+    payload: {
+      success: false,
+      exitCode: null,
+      timedOut: false,
+      error: `${errorCode}: The requested working directory is not allowed.`,
+      errorCode,
+      executionState: "rejectedBeforeExecution",
+    },
+    payloadJSON: null as string | null,
+  };
+}
+
+function readinessRequestWithCwdResponse(response: unknown) {
+  return vi.fn(async (_method: string, envelope: unknown) => {
+    const call = envelope as { command: string };
+    if (call.command === "system.run") return response;
+    if (call.command === "system.run.prepare") return { payload: { plan: preparedPlan() } };
+    if (call.command === WINDOWS_NODE_MXC_READINESS_COMMAND) {
+      return {
+        payload: {
+          stdout: "MICROCLAW_MXC_EXECUTION_OK",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        },
+      };
+    }
+    throw new Error(`Unexpected command ${call.command}`);
+  });
 }
 
 describe("Windows Node MXC status inspection", () => {
@@ -127,59 +163,128 @@ describe("Windows Node MXC status inspection", () => {
 });
 
 describe("Windows Node MXC readiness smoke", () => {
-  const deniedPayload = {
-    success: false,
-    executionState: "rejectedBeforeExecution",
-    errorCode: "cwd-sensitive-root",
-    error: "cwd-sensitive-root: Protected folder",
-    exitCode: null,
-    timedOut: false,
-  };
-  const deniedResponse = {
-    ok: true,
-    command: "system.run",
-    payload: deniedPayload,
-    payloadJSON: JSON.stringify(deniedPayload),
-  };
-  it("recognizes the native structured pre-execution denial rather than RPC success", () => {
-    expect(classifyDeniedCwdResponse(deniedResponse).outcome).toBe("passed");
-    expect(classifyDeniedCwdResponse({ ok: true, payload: deniedResponse }).outcome).toBe("passed");
-  });
-  it.each([
-    { ...deniedResponse, payload: { ...deniedPayload, success: true, exitCode: 0 } },
-    { ...deniedResponse, payload: { ...deniedPayload, errorCode: "approval-required" } },
-    { ...deniedResponse, payload: { ...deniedPayload, executionState: undefined } },
-    { ...deniedResponse, payloadJSON: "{}" },
-    { ...deniedResponse, ok: false },
-    {
-      ...deniedResponse,
-      payload: { ...deniedPayload, stdout: "command actually ran" },
-      payloadJSON: undefined,
+  it.each(["cwd-sensitive-root", "cwd-outside-approved-roots"])(
+    "accepts the bundled host's structured %s rejection before execution",
+    async (errorCode) => {
+      const response = deniedCwdResponse(errorCode);
+      response.payloadJSON = JSON.stringify(response.payload);
+      const request = readinessRequestWithCwdResponse(response);
+      const smoke = await runWindowsNodeMxcSmoke(
+        { connected: true, request } as unknown as WindowsNodeMxcGateway,
+        generation,
+        nodeId,
+        "settings-fingerprint",
+        strongProbe,
+        authorization(),
+      );
+
+      expect(smoke.deniedOutsideRoot?.outcome).toBe("passed");
+      expect(smoke.execution.outcome).toBe("passed");
+      expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(true);
+      expect(request.mock.calls).toHaveLength(3);
     },
-    {},
-  ])("does not accept an unrelated, contradictory, completed or malformed response", (response) => {
-    expect(classifyDeniedCwdResponse(response).outcome).toBe("failed");
-  });
-  it("passes Full readiness with the actual native denial response shape", async () => {
-    const request = vi.fn(async (_method: string, value: unknown) => {
-      const call = value as { command: string };
-      if (call.command === "system.run") return deniedResponse;
-      if (call.command === "system.run.prepare") return { payload: { plan: preparedPlan() } };
-      return {
-        payload: { stdout: "MICROCLAW_MXC_EXECUTION_OK", stderr: "", exitCode: 0, timedOut: false },
-      };
-    });
-    const result = await runWindowsNodeMxcSmoke(
-      { connected: true, request } as WindowsNodeMxcGateway,
+  );
+
+  it("accepts structured rejection without a duplicate serialized payload", async () => {
+    const request = readinessRequestWithCwdResponse(deniedCwdResponse());
+    const smoke = await runWindowsNodeMxcSmoke(
+      { connected: true, request } as unknown as WindowsNodeMxcGateway,
       generation,
       nodeId,
       "settings-fingerprint",
       strongProbe,
       authorization(),
     );
-    expect(result.execution.outcome).toBe("passed");
-    expect(result.deniedOutsideRoot?.outcome).toBe("passed");
+
+    expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(true);
   });
+
+  it("accepts the wire rejection after the Windows node serializer omits null fields", async () => {
+    const response = deniedCwdResponse();
+    const { exitCode: _exitCode, ...payload } = response.payload;
+    const request = readinessRequestWithCwdResponse({
+      ...response,
+      payload,
+      payloadJSON: JSON.stringify(payload),
+    });
+    const logs: string[] = [];
+    const smoke = await runWindowsNodeMxcSmoke(
+      { connected: true, request } as unknown as WindowsNodeMxcGateway,
+      generation,
+      nodeId,
+      "settings-fingerprint",
+      strongProbe,
+      authorization(),
+      "full",
+      null,
+      { log: (message) => logs.push(message) },
+    );
+
+    expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(true);
+    expect(logs).toContainEqual(expect.stringContaining("protected-cwd-proof outcome=passed"));
+    expect(logs).toContainEqual(expect.stringContaining('"exitCode":"missing"'));
+    expect(logs.join("\n")).not.toContain(payload.error);
+  });
+
+  it.each([
+    ["successful execution", { success: true, exitCode: 0 }],
+    ["failed execution", { exitCode: 1, executionState: undefined }],
+    ["a numeric exit code on a rejection", { exitCode: 0 }],
+    ["a string exit code on a rejection", { exitCode: "0" }],
+    ["missing rejection state", { executionState: undefined }],
+    ["an unrelated policy denial", { errorCode: "approval-denied" }],
+    ["an extended error code", { errorCode: "cwd-outside-approved-roots-extra" }],
+    ["timeout", { timedOut: true }],
+    ["missing error code", { errorCode: undefined }],
+    ["missing error message", { error: undefined }],
+    ["an empty error message", { error: "" }],
+    ["contradictory command output", { stdout: "command actually ran" }],
+    ["a mismatched error message", { error: "approval-denied: Not a CWD rejection" }],
+    ["a denial string in command output", { errorCode: undefined, stdout: "cwd-sensitive-root" }],
+  ])("fails closed for %s instead of an explicit CWD rejection", async (_label, payload) => {
+    const response = deniedCwdResponse();
+    const request = readinessRequestWithCwdResponse({
+      ...response,
+      payload: { ...response.payload, ...(payload as Record<string, unknown>) },
+    });
+    const smoke = await runWindowsNodeMxcSmoke(
+      { connected: true, request } as unknown as WindowsNodeMxcGateway,
+      generation,
+      nodeId,
+      "settings-fingerprint",
+      strongProbe,
+      authorization(),
+    );
+
+    expect(smoke.deniedOutsideRoot?.outcome).toBe("failed");
+    expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(false);
+  });
+
+  it.each([
+    ["an unsuccessful RPC result", { ok: false }],
+    ["the wrong command", { command: "system.run.prepare" }],
+    ["another node", { nodeId: "d".repeat(64) }],
+    ["an RPC error", { error: "transport disconnected" }],
+    ["malformed serialized payload", { payloadJSON: "{" }],
+    ["a mismatched serialized payload", { payloadJSON: '{"success":true}' }],
+    ["a non-string serialized payload", { payloadJSON: 42 }],
+  ])("fails closed for %s", async (_label, envelope) => {
+    const request = readinessRequestWithCwdResponse({
+      ...deniedCwdResponse(),
+      ...(envelope as Record<string, unknown>),
+    });
+    const smoke = await runWindowsNodeMxcSmoke(
+      { connected: true, request } as unknown as WindowsNodeMxcGateway,
+      generation,
+      nodeId,
+      "settings-fingerprint",
+      strongProbe,
+      authorization(),
+    );
+
+    expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(false);
+  });
+
   it("uses only proof-bound internal probe commands and never requests an attended approval", async () => {
     const request = vi.fn(async (_method: string, envelope: unknown) => {
       const call = envelope as {

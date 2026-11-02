@@ -146,14 +146,14 @@ You can add or edit models any time under **Settings → Models**. Credentials a
 
 #### Internal provider testing
 
-GitHub Copilot is disabled by default: it is absent from onboarding, model settings and model pickers, and the desktop rejects its sign-in and model-selection requests. Existing credentials and configuration are retained, but cannot be used for desktop chats while disabled. Internal testing can opt in by setting `MICROCLAW_INTERNAL_GITHUB_COPILOT=1` in the process environment **before starting MicroClaw** (including packaged builds). Fully exit an existing app instance first; the flag is not a persisted user setting and takes effect after restart. Browser-only development keeps Copilot disabled.
+GitHub Copilot setup is hidden by default: it is absent from onboarding and provider-management cards, and the desktop rejects its setup and sign-in requests. This flag does not disable models already configured in OpenClaw: existing Copilot defaults and session overrides remain usable, count as configured models for onboarding, and appear in model pickers. Authentication and model-availability checks still apply; catalog reads do not start sign-in or modify credentials. Internal testing can expose the setup entry points by setting `MICROCLAW_INTERNAL_GITHUB_COPILOT=1` in the process environment **before starting MicroClaw** (including packaged builds). Fully exit an existing app instance first; the flag is not a persisted user setting and takes effect after restart. Browser-only development keeps Copilot setup hidden and does not provide real authentication or catalogs.
 
 ```powershell
 $env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
 & "$HOME\.microclaw\MicroClawDesktop.exe"
 ```
 
-Remove the environment variable and fully restart the app to disable the internal feature again. Other cloud and local model providers remain available.
+Remove the environment variable and fully restart the app to hide the setup entry points again. Existing OpenClaw model configuration and credentials are preserved and remain usable without the flag. Other cloud and local model providers remain available.
 
 #### Local models (experimental)
 

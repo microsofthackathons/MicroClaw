@@ -53,6 +53,16 @@ export class ChatRunTracker {
     const observedAt = this.unidentified.get(key);
     return observedAt === undefined ? null : { id: null, startedAt: observedAt };
   }
+  reset(key: string, pendingRunId?: string | null): void {
+    const ids = new Set(this.runs.get(key)?.keys());
+    if (pendingRunId) ids.add(pendingRunId);
+    for (const id of ids) {
+      this.finish(key, id);
+      this.commitOutput(key, id);
+    }
+    this.unidentified.delete(key);
+    this.change(key);
+  }
   snapshot(key: string, runtime: unknown, revision: number): boolean {
     if (runtime === undefined || this.revision(key) !== revision) return false;
     if (!isChatSessionRuntime(runtime, key)) {

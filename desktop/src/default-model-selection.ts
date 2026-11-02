@@ -1,6 +1,5 @@
 import { GatewayRequestError } from "./gateway-client";
 import { assertChatModelSupported } from "./provider-model-capabilities";
-import { assertModelProviderEnabled } from "./internal-features";
 import {
   parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
@@ -19,7 +18,6 @@ export interface DefaultModelSelection {
 }
 
 interface Dependencies {
-  githubCopilotEnabled?: boolean;
   gateway():
     | (Pick<
         LocalModelGateway,
@@ -67,7 +65,6 @@ export async function selectDefaultModel(
 ): Promise<{ modelRef: string }> {
   const params = parseDefaultModelSelection(input);
   const ref = params.modelRef;
-  assertModelProviderEnabled(ref, deps.githubCopilotEnabled);
   assertChatModelSupported(ref);
   deps.assertMutable();
   let expectedConfig = params.expectedConfig;

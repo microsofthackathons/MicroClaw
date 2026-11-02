@@ -5,6 +5,22 @@ describe("identified and unidentified authoritative conversation runtime", () =>
   const key = "agent:main:main";
   const busy = { key, hasActiveRun: true };
   const idle = { key, hasActiveRun: false, activeRunIds: [] };
+  it("fences pre-reset runs and snapshots without affecting another session", () => {
+    const tracker = new ChatRunTracker();
+    tracker.snapshot(key, busy, 0);
+    tracker.begin(key, "old-run");
+    tracker.begin("agent:writer:main", "other-run");
+    const revision = tracker.revision(key);
+
+    tracker.reset(key, "pending-final");
+
+    expect(tracker.active(key)).toBeNull();
+    expect(tracker.begin(key, "old-run")).toBe(false);
+    expect(tracker.outputCommitted(key, "old-run")).toBe(true);
+    expect(tracker.outputCommitted(key, "pending-final")).toBe(true);
+    expect(tracker.snapshot(key, busy, revision)).toBe(false);
+    expect(tracker.active("agent:writer:main")).toMatchObject({ id: "other-run" });
+  });
   it("represents unknown identity explicitly, retains known evidence and requires authoritative idle", () => {
     const tracker = new ChatRunTracker();
     expect(tracker.snapshot(key, busy, 0)).toBe(true);

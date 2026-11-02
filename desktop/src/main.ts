@@ -18,6 +18,8 @@ import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
+import { prepareBundledOpenClawDir } from "./bundled-runtime";
+import { configurePerformanceFixture, PERFORMANCE_ARGUMENT } from "./performance-fixture";
 import {
   hasLocalModelPrimary,
   LocalModelService,
@@ -26,7 +28,6 @@ import {
 import { assertChatModelSupported } from "./provider-model-capabilities";
 import {
   assertGitHubCopilotEnabled,
-  assertModelProviderEnabled,
   INTERNAL_GITHUB_COPILOT_ARGUMENT,
   readInternalFeatures,
 } from "./internal-features";
@@ -39,6 +40,7 @@ import type { LocalModelReceipt } from "./local-model-types";
 import {
   applyAgentRosterReload,
   getGatewayProcessStdio,
+  getGatewayStartupFailure,
   hardRestartGateway,
   isApplicationServiceReadyState,
   shouldRetryGatewayStartup,
@@ -71,6 +73,10 @@ import {
   type IntegrityResult,
 } from "./skill-integrity";
 import { migrateMxcOnlySecuritySettings } from "./mxc-only-settings";
+import {
+  pruneMissingWindowsNodeMxcFolders,
+  reconcileWindowsNodeMxcFolders,
+} from "./windows-node-mxc-folder-cleanup";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
@@ -123,6 +129,7 @@ import {
   MIN_WINDOW_WIDTH,
   MIN_WINDOW_HEIGHT,
   WEIXIN_LOGIN_TIMEOUT_MS,
+  WS_REQUEST_TIMEOUT_MS,
   SKILLS_STATUS_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
   UPDATE_MANIFEST_URL,
@@ -232,7 +239,7 @@ import {
   setWeixinPluginEnabled,
   WeixinPluginActivationError,
 } from "./weixin-plugin-lifecycle";
-import { stopGatewayChildProcess } from "./gateway-process-stop";
+import { GATEWAY_GRACEFUL_STOP_TIMEOUT_MS, stopGatewayChildProcess } from "./gateway-process-stop";
 import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
@@ -405,6 +412,7 @@ if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release(
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
+const performanceFixture = configurePerformanceFixture(app, process.env);
 const internalFeatures = readInternalFeatures(process.env);
 const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
   defaults: { windowBounds: null },
@@ -471,6 +479,7 @@ const migratedSecuritySettings = migrateMxcOnlySecuritySettings(settingsStore.st
 if (JSON.stringify(settingsStore.store) !== JSON.stringify(migratedSecuritySettings)) {
   settingsStore.store = migratedSecuritySettings;
 }
+reconcileWindowsNodeMxcFolders(settingsStore);
 const RENDERER_WRITABLE_SETTING_KEYS = new Set([
   "accentColor",
   "autoStart",
@@ -535,7 +544,6 @@ const localModelService = new LocalModelService({
   onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
 });
 const sessionModelService = new SessionModelService({
-  githubCopilotEnabled: internalFeatures.githubCopilot,
   gateway: () => gwClient,
   prepareModel: (modelRef) =>
     withModelConfigurationMutation(async () => {
@@ -784,7 +792,6 @@ async function assertChatModelEnabled(sessionKey?: string): Promise<void> {
   if (sessionKey && gwClient && supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
     modelRef = (await sessionModelService.get(sessionKey)).modelRef ?? modelRef;
   }
-  assertModelProviderEnabled(modelRef, internalFeatures.githubCopilot);
   if (modelRef) assertChatModelSupported(modelRef);
 }
 
@@ -2661,11 +2668,12 @@ async function normalizeCompleteWindowsNodeMxcFolderPolicy(draft: WindowsNodeMxc
     [...draft.ro, ...draft.rw].some((candidate) => typeof candidate !== "string")
   )
     throw new Error("The folder policy must contain RO and RW path lists");
+  const cleaned = pruneMissingWindowsNodeMxcFolders(draft);
   const validated = new Map<string, Awaited<ReturnType<typeof validateWindowsNodeMxcUserDir>>>();
-  for (const candidate of new Set([...draft.ro, ...draft.rw]))
+  for (const candidate of new Set([...cleaned.ro, ...cleaned.rw]))
     validated.set(candidate, await validateWindowsNodeMxcUserDir(candidate));
   const result = normalizeWindowsNodeMxcFolderPolicy(
-    draft,
+    cleaned,
     (candidate) => validated.get(candidate)!,
   );
   if (!result.ok)
@@ -3908,7 +3916,7 @@ function isConfigured(): boolean {
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (hasConfiguredModel(config, internalFeatures.githubCopilot)) return false;
+  if (hasConfiguredModel(config)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -4242,8 +4250,8 @@ async function applyGatewayAgentRoster(
 ) {
   if (!gwClient?.connected) throw new Error("Gateway not connected");
   return await applyAgentRosterReload({
-    listAgentIds: async () => {
-      const result = await gwClient!.listAgents();
+    listAgentIds: async (timeoutMs) => {
+      const result = await gwClient!.listAgents(Math.min(timeoutMs, WS_REQUEST_TIMEOUT_MS));
       if (!Array.isArray(result.agents))
         throw new Error("OpenClaw returned an invalid agent roster");
       return new Set(
@@ -4560,7 +4568,10 @@ function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      additionalArguments: internalFeatures.githubCopilot ? [INTERNAL_GITHUB_COPILOT_ARGUMENT] : [],
+      additionalArguments: [
+        ...(internalFeatures.githubCopilot ? [INTERNAL_GITHUB_COPILOT_ARGUMENT] : []),
+        ...(performanceFixture ? [PERFORMANCE_ARGUMENT] : []),
+      ],
       backgroundThrottling: !backgroundLaunch,
     },
   });
@@ -4805,7 +4816,7 @@ function stopGatewayProcess(reason = "Emergency Gateway cleanup"): void {
   let listenerScanSucceeded = gatewayPort === 0;
   let allGatewayProcessesStopped = process.platform === "win32";
   if (knownPid) pids.add(knownPid);
-  if (gatewayPort && process.platform === "win32") {
+  if (!performanceFixture && gatewayPort && process.platform === "win32") {
     try {
       const result = execFileSync("netstat", ["-ano"], {
         windowsHide: true,
@@ -4884,13 +4895,14 @@ async function stopGatewayProcessGracefully(reason: string): Promise<void> {
   const startedAt = Date.now();
   const stop = (async () => {
     console.info(
-      `[gateway-stop] requested mode=graceful pid=${pid} generation=${generation} reason=${reason}`,
+      `[gateway-stop] requested mode=graceful pid=${pid} generation=${generation} timeoutMs=${GATEWAY_GRACEFUL_STOP_TIMEOUT_MS} reason=${reason}`,
     );
     electronLifecycleDiagnostics.log("gateway-stop-requested", {
       reason,
       mode: "graceful",
       gatewayPid: pid,
       gatewayGeneration: generation,
+      timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS,
     });
     closeWindowsNodeMxcWeixinRemoteApproval("gateway-stopped");
     closeWindowsNodeMxcIngress();
@@ -4900,7 +4912,7 @@ async function stopGatewayProcessGracefully(reason: string): Promise<void> {
     windowsNodeMxcApprovalProofContext = null;
     const mode = await stopGatewayChildProcess({
       child,
-      timeoutMs: 10_000,
+      timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS,
       forceTimeoutMs: 3_000,
       forceStop: async () => {
         if (child.exitCode !== null || child.signalCode !== null) return;
@@ -5609,6 +5621,9 @@ async function startGatewayInner(
   // externally managed Gateway may observe the shared state directory.
   startupTiming.completeMicroclawPhase("configuration-and-personas");
   const alreadyRunning = await checkExistingGateway(configuredPort);
+  if (performanceFixture && alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null)) {
+    throw new Error("Performance fixture refuses to reuse or stop an external Gateway");
+  }
   startupTiming.completeMicroclawPhase("existing-gateway-check");
   logStartupTiming("gateway-existing-check-complete");
   const externallyManagedGateway =
@@ -5792,6 +5807,11 @@ async function startGatewayInner(
     if (gatewaySpawnedByUs && gatewayProcess) {
       await stopGatewayProcessGracefully("Replacing managed Gateway during startup");
     } else if (await isGatewayPortOccupied(configuredPort)) {
+      if (performanceFixture) {
+        throw new Error(
+          "Performance fixture Gateway port is occupied; no external process was stopped",
+        );
+      }
       stopGatewayProcess("Cleaning stale Gateway listener before startup");
     }
     const portReleaseDeadline = Date.now() + 8_000;
@@ -5888,6 +5908,7 @@ async function startGatewayInner(
         ? (preparedContainment ??
           (await prepareWindowsNodeMxcContainment(windowsNodeMxcRequestedMode)))
         : null;
+    if (windowsNodeMxcDesired) reconcileWindowsNodeMxcFolders(settingsStore);
     const nextGatewayGenerationId = randomUUID();
     const nextApprovalProofContext = windowsNodeMxcDesired
       ? bundledWindowsNodeHost.createApprovalProofContext(
@@ -6013,6 +6034,24 @@ async function startGatewayInner(
     Object.assign(gwEnv, nextHooksEnvironment);
     if (cronResumeFence) {
       Object.assign(gwEnv, getWindowsNodeMxcCronResumeEnvironment(cronResumeFence));
+    }
+
+    const archiveLoaderPath = path.join(process.resourcesPath, "openclaw-archive-loader.mjs");
+    const runtimeArchivePath = path.join(process.resourcesPath, "openclaw.asar");
+    const bundledRuntimeRoot = path.join(app.getPath("userData"), "runtime", "openclaw");
+    const useRuntimeArchive =
+      app.isPackaged &&
+      entryPath === path.join(bundledRuntimeRoot, "node_modules", "openclaw", "openclaw.mjs") &&
+      fs.existsSync(runtimeArchivePath);
+    if (useRuntimeArchive) {
+      if (!fs.existsSync(archiveLoaderPath))
+        throw new Error("The bundled runtime module archive loader is missing");
+      gwEnv.MICROCLAW_OPENCLAW_ARCHIVE = runtimeArchivePath;
+      gwEnv.MICROCLAW_OPENCLAW_RUNTIME_ROOT = bundledRuntimeRoot;
+      gwEnv.NODE_OPTIONS += ` --import=${pathToFileURL(archiveLoaderPath).href}`;
+    } else {
+      delete gwEnv.MICROCLAW_OPENCLAW_ARCHIVE;
+      delete gwEnv.MICROCLAW_OPENCLAW_RUNTIME_ROOT;
     }
 
     const approvalCompatPath = app.isPackaged
@@ -6145,6 +6184,7 @@ async function startGatewayInner(
       }
     });
     let startupStderr = "";
+    let startupError: Error | undefined;
     child.stderr?.on("data", (data: Buffer) => {
       startupStderr = (startupStderr + data.toString("utf-8")).slice(-8192);
       const msg = data.toString("utf-8").trim();
@@ -6155,6 +6195,7 @@ async function startGatewayInner(
     });
 
     child.on("error", (err) => {
+      startupError = err;
       electronLifecycleDiagnostics.log("gateway-spawn-error", {
         gatewayPid: child.pid ?? null,
         error: summarizeLifecycleError(err),
@@ -6257,24 +6298,22 @@ async function startGatewayInner(
         console.log("[gateway] Retrying once after plugin migration convergence requested restart");
         return startGatewayInner(startupRetriesRemaining - 1);
       }
-      mainWindow?.webContents.send(
-        "gateway:log",
-        `[warn] Gateway health check timed out on port ${configuredPort}`,
+      const failure = getGatewayStartupFailure(
+        configuredPort,
+        child.exitCode,
+        child.signalCode,
+        startupError,
       );
+      mainWindow?.webContents.send("gateway:log", `[error] ${failure.message}`);
       mainWindow?.webContents.send(
         "gateway:log",
         `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
       );
-      stopGatewayProcess("Gateway startup health check timed out");
+      stopGatewayProcess(failure.message);
       rollbackStartupAgentSkills();
-      setGatewayStatus("timeout");
-      signalPostInstallFailure(
-        new Error(
-          child.exitCode !== null
-            ? `Gateway exited during startup (code ${child.exitCode}); see the desktop handoff log`
-            : "Gateway health check timed out",
-        ),
-      );
+      setGatewayStatus(failure.status);
+      signalPostInstallFailure(new Error(failure.message));
+      if (failure.status === "failed") return;
     }
     // Always connect WS — even on timeout the gateway may start shortly after,
     // and GatewayClient has built-in reconnect with exponential backoff.
@@ -7506,7 +7545,7 @@ function registerIpcHandlers(): void {
       activeModelSessions.add(activeKey);
       try {
         await assertChatModelEnabled(params.sessionKey);
-        await gwClient.sendChat(
+        return await gwClient.sendChat(
           params.sessionKey,
           params.message,
           validateChatAttachments(params.attachments),
@@ -7567,6 +7606,15 @@ function registerIpcHandlers(): void {
     );
   });
 
+  ipcMain.handle("chat:reset-session", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    sessionModelService.assertIdle();
+    await withWindowsNodeMxcDurableApprovalLock(() =>
+      getWindowsNodeMxcDurableApprovalStore().revokeSession(params.sessionKey),
+    );
+    await gwClient.resetSession(params.sessionKey);
+  });
+
   ipcMain.handle("chat:clear-history", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     sessionModelService.assertIdle();
@@ -7580,11 +7628,7 @@ function registerIpcHandlers(): void {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     if (modelConfigurationMutationInProgress || localModelService.busy || sessionModelService.busy)
       return { outcome: "skipped", transcriptDeleted: true };
-    if (
-      hasLocalModelPrimary(readConfig()) ||
-      (!internalFeatures.githubCopilot &&
-        getPrimaryModel(readConfig())?.startsWith("github-copilot/"))
-    ) {
+    if (hasLocalModelPrimary(readConfig())) {
       return { outcome: "skipped", transcriptDeleted: true };
     }
     if (
@@ -8279,7 +8323,6 @@ function registerIpcHandlers(): void {
           () =>
             selectDefaultModel(
               {
-                githubCopilotEnabled: internalFeatures.githubCopilot,
                 gateway: () => gwClient,
                 readConfig,
                 assertMutable: assertCloudModelMutable,
@@ -8305,14 +8348,12 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("model:github-copilot:status", () => {
-    if (!internalFeatures.githubCopilot) return { authenticated: false };
     const client = gwClient;
     const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
-    if (!internalFeatures.githubCopilot) return [];
     const client = gwClient;
     const queryGateway = client?.connected
       ? (params: Record<string, unknown>, timeoutMs: number) =>
@@ -8576,7 +8617,7 @@ function registerIpcHandlers(): void {
       throw new Error(`Setting "${key}" cannot be changed through the generic settings API`);
     }
     settingsStore.set(key as any, value);
-    if (key === "autoStart") {
+    if (key === "autoStart" && !performanceFixture) {
       app.setLoginItemSettings({ openAtLogin: !!value });
     } else if (key === "language") {
       updateTrayMenu(gatewayStatus, resolveSupportedLocale(String(value)));
@@ -9151,15 +9192,18 @@ if (!gotLock) {
   requestExplicitQuit("single-instance-lock-denied");
 } else {
   app.on("second-instance", () => {
-    showOrRecoverMainWindow("second-instance");
-    // Ensure gateway is alive when user re-opens the app
-    ensureGatewayConnected().catch((err) =>
-      console.error("[second-instance] gateway reconnect failed:", err),
-    );
+    applicationStartup
+      .then(async () => {
+        if (explicitQuitRequested) return;
+        showOrRecoverMainWindow("second-instance");
+        // Ensure gateway is alive when user re-opens the app
+        await ensureGatewayConnected();
+      })
+      .catch((err) => console.error("[second-instance] gateway reconnect failed:", err));
   });
 }
 
-app.whenReady().then(async () => {
+const applicationStartup = app.whenReady().then(async () => {
   if (explicitQuitRequested) return;
   logStartupTiming("app-ready");
   if (!settingsStore.has("language")) {
@@ -9200,7 +9244,43 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
 
   // Sync auto-start with OS
-  app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
+  if (!performanceFixture) {
+    app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
+  }
+
+  try {
+    await prepareBundledOpenClawDir();
+    logStartupTiming("runtime-prepared");
+  } catch (error) {
+    signalPostInstallFailure(error);
+    console.error("[runtime] Bundled OpenClaw preparation failed:", error);
+    if (!performanceFixture) {
+      dialog.showErrorBox(
+        "OpenClaw runtime preparation failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    requestExplicitQuit("runtime-preparation-failed");
+    return;
+  }
+  if (explicitQuitRequested) return;
+
+  // Skill integrity check — must run BEFORE loading renderer so
+  // pendingIntegrityResult is ready when App.vue calls the IPC.
+  if (migrateLegacySkillIntegritySnapshot()) {
+    console.log("Migrated skill integrity snapshot to the current root-aware schema");
+  }
+  const integrityResult = verifySkillIntegrity();
+  if (!integrityResult.snapshotExists) {
+    console.log(
+      "No skill integrity snapshot found — generating baseline (installer may not have run)...",
+    );
+    generateAndSignSnapshot();
+  } else if (!integrityResult.valid) {
+    console.log("Skill integrity check failed — changes detected");
+    pendingIntegrityResult = integrityResult;
+  }
+  logStartupTiming("integrity-complete");
 
   const initialWindow = createMainWindow();
   mainWindow = initialWindow;
@@ -9223,31 +9303,6 @@ app.whenReady().then(async () => {
   };
   createTray(trayCallbacks, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
 
-  // Skill integrity check — must run BEFORE loading renderer so
-  // pendingIntegrityResult is ready when App.vue calls the IPC.
-  if (migrateLegacySkillIntegritySnapshot()) {
-    console.log("Migrated skill integrity snapshot to the current root-aware schema");
-  }
-  const integrityResult = verifySkillIntegrity();
-  if (!integrityResult.snapshotExists) {
-    console.log(
-      "No skill integrity snapshot found — generating baseline (installer may not have run)...",
-    );
-    generateAndSignSnapshot();
-  } else if (!integrityResult.valid) {
-    console.log("Skill integrity check failed — changes detected");
-    pendingIntegrityResult = integrityResult;
-  }
-  logStartupTiming("integrity-complete");
-
-  // Gateway startup is independent of renderer loading. Starting it here lets
-  // the local UI and background service initialize concurrently.
-  logStartupTiming("gateway-requested");
-  startApplicationServices().catch((err) => {
-    signalPostInstallFailure(err);
-    console.error("Failed to start application services:", err);
-  });
-
   try {
     await loadMainWindowRenderer(initialWindow);
     logStartupTiming("renderer-loaded");
@@ -9257,6 +9312,13 @@ app.whenReady().then(async () => {
     });
     scheduleMainWindowRecovery("initial-renderer-load-failed", initialWindow, true);
   }
+
+  if (explicitQuitRequested) return;
+  logStartupTiming("gateway-requested");
+  startApplicationServices().catch((err) => {
+    signalPostInstallFailure(err);
+    console.error("Failed to start application services:", err);
+  });
 
   // Watch skill directories for mid-session changes
   if (!explicitQuitRequested) startSkillFileWatcher();

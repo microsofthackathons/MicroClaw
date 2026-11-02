@@ -10,7 +10,7 @@ import {
 vi.mock("./local-model-files", () => ({ inspectLocalModelFiles: vi.fn(() => new Map()) }));
 
 type Row = Record<string, unknown>;
-function fixture(githubCopilotEnabled = true) {
+function fixture() {
   const config: Row = {
     agents: {
       defaults: { model: { primary: "cloud/a", fallbacks: ["cloud/b"] } },
@@ -121,7 +121,6 @@ function fixture(githubCopilotEnabled = true) {
   });
   const onRecoveryChanged = vi.fn();
   const service = new SessionModelService({
-    githubCopilotEnabled,
     gateway: () => current,
     readConfig: () => config,
     assertMutable,
@@ -161,23 +160,26 @@ function fixture(githubCopilotEnabled = true) {
 
 beforeEach(() => vi.mocked(inspectLocalModelFiles).mockReset().mockReturnValue(new Map()));
 
-describe("disabled GitHub Copilot session models", () => {
-  it("rejects direct selection before making any Gateway request", async () => {
-    const f = fixture(false);
+describe("externally configured GitHub Copilot session models", () => {
+  it("selects an authenticated Copilot override without the internal setup flag", async () => {
+    const setup = fixture();
     await expect(
-      f.service.select({ sessionKey: "chat", modelRef: "github-copilot/gpt-5" }),
-    ).rejects.toThrow("GitHub Copilot is disabled");
-    expect(f.request).not.toHaveBeenCalled();
+      setup.service.select({ sessionKey: "chat", modelRef: "github-copilot/gpt-5" }),
+    ).resolves.toMatchObject({ modelRef: "github-copilot/gpt-5", overridden: true });
+    expect(setup.request).toHaveBeenCalledWith("models.authStatus", { agentId: "main" });
   });
 
-  it("refuses resetting an override to a disabled inherited model without patching the session", async () => {
-    const f = fixture(false);
-    const agents = f.config.agents as Row;
+  it("resets an override to the configured Copilot default without the internal setup flag", async () => {
+    const setup = fixture();
+    const agents = setup.config.agents as Row;
     (agents.defaults as Row).model = { primary: "github-copilot/gpt-5" };
-    await expect(f.service.select({ sessionKey: "chat", modelRef: null })).rejects.toThrow(
-      "GitHub Copilot is disabled",
-    );
-    expect(f.patches()).toEqual([]);
+    await setup.service.select({ sessionKey: "chat", modelRef: "cloud/a" });
+    await expect(setup.service.select({ sessionKey: "chat", modelRef: null })).resolves.toEqual({
+      sessionKey: "agent:main:chat",
+      modelRef: "github-copilot/gpt-5",
+      overridden: false,
+    });
+    expect(setup.patches()).toHaveLength(2);
   });
 });
 

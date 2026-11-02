@@ -349,7 +349,7 @@ export function normalizeWindowsNodeSystemRunResponse(raw) {
   const rejectedBeforeExecution =
     payload.success === false &&
     payload.executionState === "rejectedBeforeExecution" &&
-    payload.exitCode === null &&
+    payload.exitCode == null &&
     payload.timedOut === false &&
     typeof payload.error === "string" &&
     payload.error.length > 0 &&

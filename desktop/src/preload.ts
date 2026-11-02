@@ -14,6 +14,7 @@ import type { SessionModelAPI } from "./session-model-types";
 contextBridge.exposeInMainWorld("openclaw", {
   features: {
     githubCopilot: process.argv.includes("--microclaw-internal-github-copilot"),
+    performance: process.argv.includes("--microclaw-performance"),
   },
   // --- Gateway lifecycle ---
   gateway: {
@@ -150,6 +151,8 @@ contextBridge.exposeInMainWorld("openclaw", {
     /** Delete one persisted session and its transcript. */
     deleteSession: (sessionKey: string) =>
       ipcRenderer.invoke("chat:delete-session", { sessionKey }),
+
+    resetSession: (sessionKey: string) => ipcRenderer.invoke("chat:reset-session", { sessionKey }),
 
     /** Clear ALL persisted chat history on the gateway. */
     clearHistory: () => ipcRenderer.invoke("chat:clear-history"),

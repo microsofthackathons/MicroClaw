@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { t } from "../i18n";
 import { AGENT_WARMUP_SESSION_KEY } from "../../../src/constants";
 import { canonicalAgentId } from "../../../src/agent-catalog";
+import { isMainSessionKey } from "../../../src/main-session-key";
 
 export interface Session {
   key: string;
@@ -73,7 +74,11 @@ export const useSessionStore = defineStore("sessions", () => {
    */
   function reconcileEmptySessions(key: string, agentId?: string) {
     if (key === AGENT_WARMUP_SESSION_KEY) return;
-    const emptySessions = sessions.value.filter((session) => !session.preview.trim());
+    const emptySessions = sessions.value.filter(
+      (session) =>
+        !session.preview.trim() &&
+        (session.key === key || session.key === "main" || !isMainSessionKey(session.key, key)),
+    );
     if (emptySessions.length === 0) return;
 
     const target = sessions.value.find((session) => session.key === key);

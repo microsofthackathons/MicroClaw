@@ -4,6 +4,7 @@ import { useSessionStore } from "./sessions";
 import { redactPii } from "@/utils/pii-scanner";
 import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
 import { canonicalAgentId } from "../../../src/agent-catalog";
+import { isMainSessionKey } from "../../../src/main-session-key";
 import { ChatRunTracker } from "./chat-run-tracker";
 import { resolveChatHistorySessionKey } from "../../../src/chat-run-lifecycle";
 import type { WindowsNodeMxcApprovalActivity } from "../../../src/windows-node-mxc";
@@ -26,6 +27,7 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   originalText?: string;
   stopReason?: string;
+  performanceRunId?: string;
 }
 
 /**
@@ -237,6 +239,8 @@ export const useChatStore = defineStore("chat", () => {
   );
 
   function reportChatError(raw: string, agentId = currentSessionAgentId.value) {
+    if (window.openclaw.features?.performance && agentId === currentSessionAgentId.value)
+      window.__microclawPerf?.conversationError(resolvedSessionKey.value || sessionKey.value);
     const error = classifyChatError(raw);
     if (error.code === "agent_initializing") {
       agentPreparationErrors.value[agentId] = error;
@@ -576,6 +580,8 @@ export const useChatStore = defineStore("chat", () => {
 
   /** Check if a message is a gateway system message (restart confirmations, doctor prompts). */
   function isGatewaySystemMessage(msg: unknown): boolean {
+    const message = msg as { role?: string; __openclaw?: { kind?: string } } | null;
+    if (message?.role === "system" && message.__openclaw?.kind === "reset") return true;
     const text = extractText(msg);
     if (!text) return false;
     return (
@@ -1167,13 +1173,31 @@ export const useChatStore = defineStore("chat", () => {
       const filtered = raw
         .map((m) => stripSystemLines(m))
         .filter((m): m is ChatMessage => m != null && !isGatewaySystemMessage(m));
-      const reconciled = preserveOptimisticMessages(messages.value, filtered);
+      let reconciled = preserveOptimisticMessages(messages.value, filtered);
+      if (window.openclaw.features?.performance) {
+        reconciled = reconciled.map((message, index) => {
+          const current = messages.value[index];
+          return current?.performanceRunId &&
+            current.timestamp === message.timestamp &&
+            JSON.stringify(current.content) === JSON.stringify(message.content) &&
+            _messagesEqual([current], [message])
+            ? { ...message, performanceRunId: current.performanceRunId }
+            : message;
+        });
+      }
       if (isInferredWaitError(lastError.value) && hasCompletedReply(reconciled)) {
         lastError.value = null;
       }
       // Only replace messages if content actually changed — avoids
       // unnecessary Vue reactivity triggers and DOM re-renders.
-      const changed = !_messagesEqual(messages.value, reconciled);
+      const changed =
+        !_messagesEqual(messages.value, reconciled) ||
+        (window.openclaw.features?.performance &&
+          messages.value.some(
+            (message, index) =>
+              message.performanceRunId &&
+              message.performanceRunId !== reconciled[index]?.performanceRunId,
+          ));
       if (changed) {
         messages.value = reconciled;
         // Update last message preview only when content changed
@@ -1228,6 +1252,7 @@ export const useChatStore = defineStore("chat", () => {
     sending.value = true;
     lastError.value = null;
     const sendingAgentId = currentSessionAgentId.value;
+    const requestedSessionKey = resolvedSessionKey.value || sessionKey.value;
     let optimisticTimestamp: number | undefined;
     try {
       // Strict privacy mode redacts PII before sending.
@@ -1262,13 +1287,16 @@ export const useChatStore = defineStore("chat", () => {
       lastRecoveryProbeAt = 0;
       streaming.value = true;
 
-      await window.openclaw.chat.sendMessage(
-        resolvedSessionKey.value || sessionKey.value,
+      const acknowledgment = await window.openclaw.chat.sendMessage(
+        requestedSessionKey,
         finalMsg,
         attachments.length ? attachments : undefined,
       );
+      if (window.openclaw.features?.performance)
+        window.__microclawPerf?.submitted(requestedSessionKey, acknowledgment);
       return true;
     } catch (err) {
+      if (window.openclaw.features?.performance) window.__microclawPerf?.submissionFailed();
       const error = String(err);
       reportChatError(error, sendingAgentId);
       streaming.value = false;
@@ -1411,6 +1439,7 @@ export const useChatStore = defineStore("chat", () => {
       }
       const rawMsg = payload.message as ChatMessage | undefined;
       const msg = rawMsg ? (stripSystemLines(rawMsg) as ChatMessage | null) : null;
+      if (msg && window.openclaw.features?.performance) msg.performanceRunId = payload.runId;
       if (msg && !isGatewaySystemMessage(msg)) {
         // If the final message content is a plain string and we have a valid offset,
         // trim the tool-context prefix so only the model's reply is stored.
@@ -1440,6 +1469,7 @@ export const useChatStore = defineStore("chat", () => {
               role: "assistant",
               content: [{ type: "text", text: modelReply }],
               timestamp: Date.now(),
+              ...(window.openclaw.features?.performance ? { performanceRunId: payload.runId } : {}),
             },
           ];
         }
@@ -1932,16 +1962,75 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  const sessionResetPromises = new Map<string, Promise<void>>();
+
+  function gatewaySessionKey(key: string): string {
+    return key === sessionKey.value
+      ? resolvedSessionKey.value || key
+      : sessionStateCache.get(key)?.resolvedSessionKey || key;
+  }
+
+  function isMainSession(key: string): boolean {
+    return isMainSessionKey(gatewaySessionKey(key), mainSessionKey.value);
+  }
+
+  function resetSession(key: string): Promise<void> {
+    const gatewayKey = gatewaySessionKey(key);
+    const pending = sessionResetPromises.get(gatewayKey);
+    if (pending) return pending;
+    const operation = performSessionReset(key, gatewayKey);
+    sessionResetPromises.set(gatewayKey, operation);
+    void operation.then(
+      () => sessionResetPromises.delete(gatewayKey),
+      () => sessionResetPromises.delete(gatewayKey),
+    );
+    return operation;
+  }
+
+  async function performSessionReset(key: string, gatewayKey: string): Promise<void> {
+    await window.openclaw.chat.resetSession(gatewayKey);
+    const affectedKeys = new Set([key, gatewayKey]);
+    for (const [cachedKey, cached] of sessionStateCache) {
+      if (cached.resolvedSessionKey === gatewayKey) affectedKeys.add(cachedKey);
+    }
+    const active = affectedKeys.has(sessionKey.value) || resolvedSessionKey.value === gatewayKey;
+    const sessionStore = useSessionStore();
+    for (const affectedKey of affectedKeys) {
+      const cached = sessionStateCache.get(affectedKey);
+      serverRuns.reset(affectedKey, cached?.chatRunId);
+      sessionStateCache.delete(affectedKey);
+      delete lastMessageMap.value[affectedKey];
+      sessionStore.updateSession(affectedKey, { preview: "" });
+    }
+    for (const [id, activity] of Object.entries(approvalActivities.value)) {
+      if (affectedKeys.has(activity.sessionKey)) retireApprovalActivity(id);
+    }
+    sessionTitleRefreshRevision.value++;
+    if (!active) return;
+    serverRuns.reset(gatewayKey, chatRunId.value);
+    invalidateHistoryObservation();
+    resolvedSessionKey.value = gatewayKey;
+    messages.value = [];
+    streamText.value = "";
+    streamTextOffset.value = 0;
+    streamToolCalls.value = [];
+    completedToolCallsMap.value = {};
+    streaming.value = false;
+    sending.value = false;
+    chatRunId.value = null;
+    streamStartedAt.value = null;
+    lastStreamEventAt.value = null;
+    lastError.value = null;
+    await loadHistory({ showLoading: false });
+  }
+
   /**
    * Delete a session from the Gateway source of truth, then remove its local
    * state and switch away without re-adding it.
    */
   async function deleteSession(key: string) {
-    const cached = sessionStateCache.get(key);
-    const gatewayKey =
-      key === sessionKey.value
-        ? resolvedSessionKey.value || key
-        : cached?.resolvedSessionKey || key;
+    if (isMainSession(key)) return resetSession(key);
+    const gatewayKey = gatewaySessionKey(key);
 
     await window.openclaw.chat.deleteSession(gatewayKey);
 
@@ -2078,6 +2167,8 @@ export const useChatStore = defineStore("chat", () => {
     recoverAfterReconnect,
     abort,
     newSession,
+    isMainSession,
+    resetSession,
     deleteSession,
     clearAllHistory,
   };

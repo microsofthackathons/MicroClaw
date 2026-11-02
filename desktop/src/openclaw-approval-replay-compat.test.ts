@@ -638,6 +638,35 @@ describe("pinned OpenClaw node approval proof backport", () => {
       expect(patched).toContain("MicroClaw MXC execution is locked to host=node.");
     });
 
+    it("accepts wire rejections with omitted null exitCode without accepting executed commands", () => {
+      const payload = {
+        success: false,
+        timedOut: false,
+        error: "cwd-outside-approved-roots: denied",
+        errorCode: "cwd-outside-approved-roots",
+        executionState: "rejectedBeforeExecution",
+      };
+      const response = {
+        ok: true,
+        nodeId: "node",
+        command: "system.run",
+        payload,
+        payloadJSON: JSON.stringify(payload),
+      };
+
+      expect(normalizeWindowsNodeSystemRunResponse(response)).toMatchObject({ payload });
+      for (const exitCode of [0, 1, "0", false]) {
+        const invalidPayload = { ...payload, exitCode };
+        expect(
+          normalizeWindowsNodeSystemRunResponse({
+            ...response,
+            payload: invalidPayload,
+            payloadJSON: JSON.stringify(invalidPayload),
+          }),
+        ).toBeNull();
+      }
+    });
+
     it("accepts only exact validated direct or RPC-wrapped system.run results", () => {
       const patched = patchPinnedOpenClawBashTools(source);
       const completed = {

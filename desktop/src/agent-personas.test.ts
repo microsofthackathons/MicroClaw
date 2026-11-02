@@ -51,10 +51,12 @@ describe("agent personas", () => {
 
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
     expect(listConfiguredAgents(config)).toEqual([{ id: "main", name: "Assistant" }]);
-    ensureAgentPersonasConfig(config, stateDir);
+    expect(config.agents).not.toHaveProperty("list");
+    expect(config.agents).not.toHaveProperty("entries.main.default");
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
-  it("preserves keyed entries and removes retired legacy default markers", () => {
+  it("preserves keyed entries while retiring single-agent default markers", () => {
     const stateDir = createStateDir();
     const agents: Record<string, unknown> = {
       entries: {
@@ -73,6 +75,51 @@ describe("agent personas", () => {
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
+  it("adds a second keyed agent with explicit ownership without moving the main workspace", () => {
+    const stateDir = createStateDir();
+    const agents: Record<string, unknown> = {
+      defaults: { workspace: path.join(stateDir, "existing-workspace") },
+      entries: { main: { name: "Existing Assistant" } },
+    };
+    const config = { agents };
+    const main = getAgentPersona("main")!;
+    const archive = getAgentPersona("master-archive")!;
+    const originalWorkspace = resolveAgentPersonaWorkspace(config, stateDir, main);
+
+    expect(
+      ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, archive]).changed,
+    ).toBe(true);
+
+    expect(agents).toHaveProperty("ownership", "explicit");
+    expect(agents).not.toHaveProperty("list");
+    expect(agents).not.toHaveProperty("entries.main.default");
+    expect(agents).toHaveProperty("entries.main.workspace", originalWorkspace);
+    expect(agents).not.toHaveProperty("entries.master-archive.default");
+    expect(agentList(config).filter((entry) => Object.hasOwn(entry, "default"))).toHaveLength(0);
+    expect(resolveAgentPersonaWorkspace(config, stateDir, main)).toBe(originalWorkspace);
+    expect(
+      ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, archive]).changed,
+    ).toBe(false);
+    expect(removeConfiguredAgent(config, "master-archive").changed).toBe(true);
+    expect(agents).toHaveProperty("ownership", "explicit");
+    expect(resolveAgentPersonaWorkspace(config, stateDir, main)).toBe(originalWorkspace);
+  });
+
+  it("repairs an existing markerless keyed fleet before Gateway startup", () => {
+    const stateDir = createStateDir();
+    const agents: Record<string, unknown> = {
+      entries: { main: { name: "Assistant" }, "master-archive": { name: "Master Archive" } },
+    };
+    const config = { agents };
+
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
+    expect(agents).toHaveProperty("ownership", "explicit");
+    expect(agents).toHaveProperty("entries.main.workspace", path.join(stateDir, "workspace"));
+    expect(agents).toHaveProperty("defaults.systemAgent.agentId", "main");
+    expect(agentList(config).every((entry) => !Object.hasOwn(entry, "default"))).toBe(true);
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+  });
+
   it("preserves the effective legacy default and removes extra default markers", () => {
     const stateDir = createStateDir();
     const config = {
@@ -86,10 +133,10 @@ describe("agent personas", () => {
 
     ensureAgentPersonasConfig(config, stateDir);
 
-    expect(config.agents.list.find((entry) => entry.id === "coder")).toMatchObject({
-      default: true,
-    });
-    expect(config.agents.list.find((entry) => entry.id === "main")).not.toHaveProperty("default");
+    expect(config.agents).not.toHaveProperty("list");
+    expect(config.agents).toHaveProperty("ownership", "explicit");
+    expect(config.agents).toHaveProperty("defaults.systemAgent.agentId", "coder");
+    expect(agentList(config).every((entry) => !Object.hasOwn(entry, "default"))).toBe(true);
   });
 
   it("rejects normalized id collisions without rewriting the legacy roster", () => {
@@ -497,7 +544,7 @@ Keep this section.
     );
   });
 
-  it("migrates an installed Master to Dr. Pulse without losing custom settings or default", () => {
+  it("migrates an installed Master to Dr. Pulse without losing custom settings or ownership", () => {
     const stateDir = createStateDir();
     const customWorkspace = path.join(stateDir, "custom-system-doctor");
     const config = {
@@ -527,7 +574,6 @@ Keep this section.
       workspace: customWorkspace,
       skills: ["custom-skill"],
       model: "custom/diagnostic-model",
-      default: true,
       confirmationMode: "always",
     });
     expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
@@ -538,6 +584,7 @@ Keep this section.
       confirmationMode: "always",
     });
     expect(agentList(config).find((entry) => entry.id === "master")).not.toHaveProperty("default");
+    expect(config.agents).toHaveProperty("defaults.systemAgent.agentId", "dr-pulse");
     expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
 
     seedAgentPersonaWorkspaces(config, stateDir);
@@ -629,7 +676,6 @@ Keep this section.
       workspace: path.join(stateDir, "workspace-dr-pulse"),
       skills: resolveSkillFilterNames(getAgentSkills("dr-pulse")),
       model: "custom/system-model",
-      default: true,
     });
     expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
       name: "Dr. Pulse",
@@ -671,7 +717,6 @@ Keep this section.
       workspace: drPulseWorkspace,
       skills: ["preferred-skill"],
       model: "custom/legacy-model",
-      default: true,
     });
     expect(agentList(config).find((entry) => entry.id === "master")).toMatchObject({
       name: "Trusted System Doctor",
@@ -710,7 +755,6 @@ Keep this section.
       workspace: customWorkspace,
       skills: ["custom-skill"],
       model: "custom/market-model",
-      default: true,
       dataProvider: "licensed-feed",
     });
     expect(agentList(config).find((entry) => entry.id === "leopard")).toMatchObject({
@@ -833,7 +877,6 @@ Keep this section.
       workspace: legacyWorkspace,
       skills: ["custom-skill"],
       model: "custom/office-model",
-      default: true,
       templatePack: "corporate",
     });
     expect(agentList(config).find((entry) => entry.id === "painter")).toMatchObject({
@@ -1044,7 +1087,8 @@ _Fill this in during your first conversation. Make it yours._
 
     expect(removeConfiguredAgent(config, "master-archive").changed).toBe(true);
     expect(config.agents.defaults).toEqual({ model: "custom/model" });
-    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+    expect(agentList(config)).toEqual([{ id: "main", name: "Assistant" }]);
+    expect(config.agents).not.toHaveProperty("list");
     expect(fs.readFileSync(soulPath, "utf-8")).toBe("custom persona\n");
     expect(removeConfiguredAgent(config, "master-archive").changed).toBe(false);
   });
@@ -1061,7 +1105,7 @@ _Fill this in during your first conversation. Make it yours._
     };
 
     expect(removeConfiguredAgent(config, "dr-pulse").changed).toBe(true);
-    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+    expect(agentList(config)).toEqual([{ id: "main", name: "Assistant" }]);
   });
 
   it("removes Market Sentinel and its Leopard compatibility alias together", () => {
@@ -1080,7 +1124,7 @@ _Fill this in during your first conversation. Make it yours._
     };
 
     expect(removeConfiguredAgent(config, "market-sentinel").changed).toBe(true);
-    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+    expect(agentList(config)).toEqual([{ id: "main", name: "Assistant" }]);
   });
 
   it("removes Office Artisan and its Painter compatibility alias together", () => {
@@ -1099,7 +1143,7 @@ _Fill this in during your first conversation. Make it yours._
     };
 
     expect(removeConfiguredAgent(config, "office-artisan").changed).toBe(true);
-    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+    expect(agentList(config)).toEqual([{ id: "main", name: "Assistant" }]);
   });
 
   it("does not allow the built-in default agent to be removed", () => {
@@ -1115,7 +1159,7 @@ _Fill this in during your first conversation. Make it yours._
     expect(config.agents.list).toHaveLength(1);
   });
 
-  it("makes main the default when removing a legacy default agent", () => {
+  it("removes a legacy default agent without adding a replacement default marker", () => {
     const config = {
       agents: {
         list: [
@@ -1127,7 +1171,33 @@ _Fill this in during your first conversation. Make it yours._
 
     removeConfiguredAgent(config, "coder");
 
-    expect(config.agents.list).toEqual([{ id: "main", name: "Assistant", default: true }]);
+    expect(agentList(config)).toEqual([{ id: "main", name: "Assistant" }]);
+    expect(config.agents).not.toHaveProperty("list");
+  });
+
+  it("preserves explicit ownership when removing an agent from a migrated keyed fleet", () => {
+    const stateDir = createStateDir();
+    const config = {
+      agents: {
+        entries: {
+          "code-geek": { name: "Coder" },
+          main: { name: "Assistant", default: true },
+          "master-archive": { name: "Master Archive" },
+        },
+      },
+    };
+
+    ensureAgentPersonasConfig(config, stateDir);
+    expect(removeConfiguredAgent(config, "code-geek").changed).toBe(true);
+    expect(config.agents.entries).toEqual({
+      main: expect.objectContaining({
+        name: "Assistant",
+        workspace: path.join(stateDir, "workspace"),
+      }),
+      "master-archive": expect.objectContaining({ name: "Master Archive" }),
+    });
+    expect(config.agents).toHaveProperty("ownership", "explicit");
+    expect(agentList(config).every((entry) => !Object.hasOwn(entry, "default"))).toBe(true);
   });
 
   it("does not overwrite user-customized workspace files", () => {
@@ -1251,7 +1321,8 @@ _Fill this in during your first conversation. Make it yours._
 
     const mainEntry = agentList(config).find((entry) => entry.id === "main");
     expect(mainEntry?.skills).toEqual(["stale-skill"]);
-    expect(result.changed).toBe(false);
+    expect(result.changed).toBe(true);
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
   it("adds Rednote Publisher to an untouched previous catalog skill set", () => {
@@ -1294,11 +1365,12 @@ _Fill this in during your first conversation. Make it yours._
       },
     };
 
-    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(true);
     expect(agentList(config).find((entry) => entry.id === "main")?.skills).toEqual(legacyAllSkills);
     expect(agentList(config).find((entry) => entry.id === "code-geek")?.skills).toEqual(
       legacyAllSkills,
     );
+    expect(ensureAgentPersonasConfig(config, stateDir).changed).toBe(false);
   });
 
   it("does not restore Rednote Publisher after the user removes it", () => {

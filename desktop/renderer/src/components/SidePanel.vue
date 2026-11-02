@@ -107,12 +107,17 @@
               ><IconPin :size="12"
             /></span>
             <span
-              class="sp-chat-item-action sp-chat-item-delete"
-              :title="t('sidebar.delete')"
-              :aria-label="t('sidebar.delete')"
-              @click.stop="deleteSession(s.key)"
-              ><IconClose :size="12" :stroke-width="2.5"
-            /></span>
+              class="sp-chat-item-action"
+              :class="chatStore.isMainSession(s.key) ? 'sp-chat-item-reset' : 'sp-chat-item-delete'"
+              :title="chatStore.isMainSession(s.key) ? t('sidebar.reset') : t('sidebar.delete')"
+              :aria-label="
+                chatStore.isMainSession(s.key) ? t('sidebar.reset') : t('sidebar.delete')
+              "
+              @click.stop="clearSession(s.key)"
+            >
+              <IconReset v-if="chatStore.isMainSession(s.key)" :size="12" :stroke-width="2" />
+              <IconClose v-else :size="12" :stroke-width="2.5" />
+            </span>
           </button>
           <div v-if="visibleSessions.length === 0" class="sp-empty-hint">
             {{ t("sidebar.noChats") }}
@@ -163,6 +168,7 @@ import { t } from "@/i18n";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
+import IconReset from "@/components/icons/IconReset.vue";
 import IconPin from "@/components/icons/IconPin.vue";
 import WeixinConnectionShortcut from "@/components/WeixinConnectionShortcut.vue";
 
@@ -332,12 +338,16 @@ function createNewChat() {
   router.push(`/chat/${agentStore.currentAgentId}`);
 }
 
-async function deleteSession(key: string) {
+async function clearSession(key: string) {
+  const reset = chatStore.isMainSession(key);
   try {
-    await chatStore.deleteSession(key);
+    if (reset) await chatStore.resetSession(key);
+    else await chatStore.deleteSession(key);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    ElMessage.error(t("sidebar.chatDeleteFailed", { error: message }));
+    ElMessage.error(
+      t(reset ? "sidebar.chatResetFailed" : "sidebar.chatDeleteFailed", { error: message }),
+    );
   }
 }
 
@@ -736,6 +746,10 @@ html.dark .sp-chat-item.selected {
 
 .sp-chat-item-delete:hover {
   color: var(--danger);
+}
+
+.sp-chat-item-reset:hover {
+  color: var(--text-primary);
 }
 
 .sp-chat-item:hover .sp-chat-item-action {

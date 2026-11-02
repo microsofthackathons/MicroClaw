@@ -50,6 +50,20 @@ describe("useSessionStore", () => {
     expect(store.sessions).toHaveLength(1);
   });
 
+  it("preserves other agents' empty main sessions during startup reconciliation", () => {
+    const store = useSessionStore();
+    store.ensureSession("agent:writer:main", "writer");
+    store.togglePinned("agent:writer:main");
+    store.ensureSession("session-stale");
+
+    store.reconcileEmptySessions("agent:main:main", "main");
+
+    expect(store.sessions).toEqual([
+      expect.objectContaining({ key: "agent:writer:main", agentId: "writer", pinned: true }),
+      expect.objectContaining({ key: "agent:main:main", agentId: "main" }),
+    ]);
+  });
+
   it("never creates or selects the reserved warm-up session", () => {
     const store = useSessionStore();
 

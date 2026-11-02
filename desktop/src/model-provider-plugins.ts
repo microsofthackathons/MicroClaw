@@ -1,3 +1,5 @@
+import { readAgentRoster } from "./agent-roster";
+
 type JsonObject = Record<string, unknown>;
 
 const GITHUB_COPILOT_PROVIDER = "github-copilot";
@@ -8,13 +10,26 @@ function asJsonObject(value: unknown): JsonObject | undefined {
     : undefined;
 }
 
-function getPrimaryModel(config: JsonObject): string | undefined {
+export function getSelectedModelProviderPluginIds(config: JsonObject): string[] {
   const agents = asJsonObject(config.agents);
   const defaults = asJsonObject(agents?.defaults);
-  const model = defaults?.model;
-  if (typeof model === "string") return model;
-  const modelConfig = asJsonObject(model);
-  return typeof modelConfig?.primary === "string" ? modelConfig.primary : undefined;
+  const selections = [
+    defaults?.model,
+    ...readAgentRoster(agents).map((entry) => entry.config.model),
+  ];
+  const models = selections.flatMap((model) => {
+    if (typeof model === "string") return [model];
+    const modelConfig = asJsonObject(model);
+    return [
+      modelConfig?.primary,
+      ...(Array.isArray(modelConfig?.fallbacks) ? modelConfig.fallbacks : []),
+    ];
+  });
+  return models.some(
+    (model) => typeof model === "string" && model.startsWith(`${GITHUB_COPILOT_PROVIDER}/`),
+  )
+    ? [GITHUB_COPILOT_PROVIDER]
+    : [];
 }
 
 /**
@@ -67,6 +82,6 @@ export function ensureGitHubCopilotProviderPlugin(config: JsonObject): boolean {
 }
 
 export function ensureSelectedModelProviderPlugins(config: JsonObject): boolean {
-  if (!getPrimaryModel(config)?.startsWith(`${GITHUB_COPILOT_PROVIDER}/`)) return false;
+  if (!getSelectedModelProviderPluginIds(config).includes(GITHUB_COPILOT_PROVIDER)) return false;
   return ensureGitHubCopilotProviderPlugin(config);
 }

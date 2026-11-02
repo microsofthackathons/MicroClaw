@@ -4,21 +4,31 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
+import { WindowsNodeMxcStatusCache } from "./windows-node-mxc-status-cache";
 
 const source = readFileSync(resolve(process.cwd(), "src", "main.ts"), "utf8");
-const statusSource = source.slice(
-  source.indexOf("async function getWindowsNodeMxcStatus("),
-  source.indexOf("function getBundledWindowsNodeFolders("),
-);
-const ingressSource = source.slice(
-  source.indexOf("async function requireEffectiveWindowsNodeMxc("),
-  source.indexOf("function currentApprovalWeixinConsentHash("),
-);
-const js = ts.transpileModule(`${statusSource}\n${ingressSource}`, {
+const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
+const declarations = [
+  "getWindowsNodeMxcStatus",
+  "inspectWindowsNodeMxcStatus",
+  "requireEffectiveWindowsNodeMxc",
+].map((name) => {
+  const declaration = ast.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === name,
+  );
+  if (!declaration) throw new Error(`Missing status function: ${name}`);
+  return declaration.getText(ast);
+});
+const js = ts.transpileModule(declarations.join("\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
 function harness(mode: WindowsNodeMxcRequestedMode) {
+  const cache = new WindowsNodeMxcStatusCache({
+    key: () => "generation-policy-lease",
+    inspect: () => functions.inspectWindowsNodeMxcStatus(),
+    publish: () => {},
+  });
   const validate = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const snapshot = vi.fn(() => ({ nodeId: "a".repeat(64), ambientAccess: null }));
   const inspect = vi.fn(async (options) => ({
@@ -61,12 +71,15 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     windowsNodeMxcIngressGeneration: "generation",
     windowsNodeMxcActivationInProgress: false,
     failClosedWindowsNodeMxc: failClosed,
+    captureGatewayReadinessCheckpoint: () => () => true,
+    windowsNodeMxcStatusCache: cache,
   };
   const functions = runInNewContext(
-    `${js}\n({ getWindowsNodeMxcStatus, requireEffectiveWindowsNodeMxc })`,
+    `${js}\n({ getWindowsNodeMxcStatus, inspectWindowsNodeMxcStatus, requireEffectiveWindowsNodeMxc })`,
     context,
   ) as {
     getWindowsNodeMxcStatus: () => Promise<{ effectiveEnabled: boolean }>;
+    inspectWindowsNodeMxcStatus: () => Promise<{ effectiveEnabled: boolean }>;
     requireEffectiveWindowsNodeMxc: () => Promise<void>;
   };
   return {
@@ -93,6 +106,7 @@ describe("main-process Windows node MXC status", () => {
           }),
       );
       const status = test.getWindowsNodeMxcStatus();
+      await Promise.resolve();
       expect(test.validate).toHaveBeenCalledWith(mode !== "off");
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(test.snapshot).not.toHaveBeenCalled();

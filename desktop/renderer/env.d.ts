@@ -193,6 +193,7 @@ type UpdateCheckResult =
 interface OpenClawAPI {
   readonly features: {
     readonly githubCopilot: boolean;
+    readonly performance?: boolean;
   };
   gateway: {
     getPort(): Promise<number>;
@@ -257,12 +258,13 @@ interface OpenClawAPI {
     observeSession(sessionKey: string | null): Promise<void>;
     onSessionUpdate(callback: (payload: { sessionKey: string }) => void): () => void;
     isConnected(): Promise<boolean>;
-    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<void>;
+    sendMessage(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<unknown>;
     loadHistory(sessionKey: string): Promise<import("../src/chat-run-lifecycle").ChatHistoryResult>;
     listSessionTitles(keys: string[]): Promise<{ titles: Record<string, string> }>;
     generateSessionTitle(sessionKey: string): Promise<string | null>;
     abort(sessionKey: string): Promise<void>;
     deleteSession(sessionKey: string): Promise<void>;
+    resetSession(sessionKey: string): Promise<void>;
     clearHistory(): Promise<{ cleared: number }>;
     onEvent(callback: (payload: ChatEventPayload) => void): () => void;
     onToolEvent(
@@ -654,4 +656,5 @@ interface OpenClawAPI {
 
 interface Window {
   openclaw: OpenClawAPI;
+  __microclawPerf?: import("./src/performance-probe").PerformanceProbe;
 }

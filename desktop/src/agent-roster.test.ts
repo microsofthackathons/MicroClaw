@@ -26,10 +26,39 @@ describe("Agent configuration roster", () => {
     expect(writeAgentRoster(agents, readAgentRoster(agents))).toBe(false);
   });
 
-  it("preserves legacy default selection when no ownership migration exists", () => {
-    const agents = { list: [{ id: "other", default: true }, { id: "main" }] };
+  it("converts legacy lists to keyed entries without retaining default markers", () => {
+    const agents = { list: [{ id: "main", name: "Assistant", default: true }] };
+    expect(writeAgentRoster(agents, readAgentRoster(agents))).toBe(true);
+    expect(agents).toEqual({ entries: { main: { name: "Assistant" } } });
     expect(writeAgentRoster(agents, readAgentRoster(agents))).toBe(false);
-    expect(agents.list[0].default).toBe(true);
+  });
+
+  it("never reintroduces retired default markers in keyed rosters", () => {
+    const agents = {
+      entries: {
+        main: { name: "Assistant", default: true },
+        "master-archive": { name: "Master Archive" },
+      },
+    };
+
+    expect(writeAgentRoster(agents, readAgentRoster(agents))).toBe(true);
+    expect(agents.entries.main).not.toHaveProperty("default");
+    expect(agents).not.toHaveProperty("ownership");
+    expect(agents).not.toHaveProperty("list");
+  });
+
+  it("preserves explicit ownership while stripping retired default markers", () => {
+    const agents: Record<string, unknown> = {
+      ownership: "explicit",
+      entries: { main: { default: true }, "master-archive": {} },
+    };
+
+    expect(writeAgentRoster(agents, readAgentRoster(agents))).toBe(true);
+    expect(agents).toEqual({
+      ownership: "explicit",
+      entries: { main: {}, "master-archive": {} },
+    });
+    expect(writeAgentRoster(agents, readAgentRoster(agents))).toBe(false);
   });
 
   it.each([

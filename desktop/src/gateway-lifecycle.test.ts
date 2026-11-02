@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   applyAgentRosterReload,
   getGatewayProcessStdio,
+  getGatewayStartupFailure,
   hardRestartGateway,
   isApplicationServiceReadyState,
   isGatewayServiceReady,
@@ -12,7 +13,51 @@ import {
   waitForAgentRosterReload,
 } from "./gateway-lifecycle";
 
+function rosterReloadClock() {
+  let elapsedMs = 0;
+  return {
+    now: () => elapsedMs,
+    advance: (milliseconds: number) => {
+      elapsedMs += milliseconds;
+    },
+    sleep: vi.fn(async (milliseconds: number) => {
+      elapsedMs += milliseconds;
+    }),
+  };
+}
+
 describe("Gateway startup convergence", () => {
+  it("reports rejected configuration as failure rather than a health-check timeout", () => {
+    expect(getGatewayStartupFailure(18789, 78, null)).toEqual({
+      status: "failed",
+      message: "Gateway rejected its configuration (exit 78); see the Gateway log",
+    });
+  });
+
+  it("distinguishes process exits, termination signals, spawn errors and actual timeouts", () => {
+    expect(getGatewayStartupFailure(18789, 1, null)).toMatchObject({ status: "failed" });
+    expect(getGatewayStartupFailure(18789, 0, null)).toMatchObject({ status: "failed" });
+    expect(getGatewayStartupFailure(18789, null, "SIGTERM")).toEqual({
+      status: "failed",
+      message: "Gateway exited during startup (signal SIGTERM)",
+    });
+    expect(getGatewayStartupFailure(18789, null, null, new Error("ENOENT"))).toEqual({
+      status: "failed",
+      message: "Gateway spawn failed: ENOENT",
+    });
+    expect(getGatewayStartupFailure(18789, null, null)).toEqual({
+      status: "timeout",
+      message: "Gateway health check timed out on port 18789",
+    });
+  });
+
+  it("keeps terminal startup failure separate from the timeout recovery connection", () => {
+    const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
+    expect(main).toContain("getGatewayStartupFailure(");
+    expect(main).toContain("setGatewayStatus(failure.status)");
+    expect(main).toContain('if (failure.status === "failed") return;');
+  });
+
   it.each<NodeJS.Platform>(["win32", "linux", "darwin"])(
     "preserves the stdin lifeline with platform-compatible handles on %s",
     (platform) => {
@@ -29,6 +74,12 @@ describe("Gateway startup convergence", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     expect(main).toContain('OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin"');
     expect(main).toContain("stdio: getGatewayProcessStdio()");
+    const gracefulStop = main.slice(
+      main.indexOf("async function stopGatewayProcessGracefully("),
+      main.indexOf("function getGatewayListenerPids("),
+    );
+    expect(gracefulStop).toContain("timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS");
+    expect(gracefulStop).not.toContain("timeoutMs: 10_000,\n      forceTimeoutMs:");
     const restart = main.slice(
       main.indexOf("async function restartManagedGateway("),
       main.indexOf("async function restartManagedGatewayAndRequireReady("),
@@ -240,42 +291,170 @@ describe("waitForAgentRosterReload", () => {
   });
 
   it("retries transient reads until the roster condition is applied", async () => {
+    const time = rosterReloadClock();
     const listAgentIds = vi
       .fn()
       .mockRejectedValueOnce(new Error("reload in progress"))
       .mockResolvedValueOnce(new Set(["main"]))
       .mockResolvedValueOnce(new Set(["main", "code-geek"]));
-    const sleep = vi.fn().mockResolvedValue(undefined);
-
     await expect(
       waitForAgentRosterReload({
+        ...time,
         listAgentIds,
         isApplied: (agentIds) => agentIds.has("code-geek"),
-        sleep,
         timeoutMs: 300,
         pollMs: 100,
       }),
     ).resolves.toBe(true);
 
     expect(listAgentIds).toHaveBeenCalledTimes(3);
-    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(time.sleep).toHaveBeenCalledTimes(2);
   });
 
   it("returns false when the roster condition is not applied before timeout", async () => {
+    const time = rosterReloadClock();
     const listAgentIds = vi.fn().mockResolvedValue(new Set(["main"]));
 
     await expect(
       waitForAgentRosterReload({
+        ...time,
         listAgentIds,
         isApplied: (agentIds) => agentIds.has("code-geek"),
-        sleep: vi.fn().mockResolvedValue(undefined),
         timeoutMs: 300,
         pollMs: 100,
       }),
     ).resolves.toBe(false);
 
     expect(listAgentIds).toHaveBeenCalledTimes(3);
+    expect(time.now()).toBe(300);
   });
+
+  it("includes slow roster reads in the deadline and caps the final sleep", async () => {
+    const time = rosterReloadClock();
+    const listAgentIds = vi.fn(async () => {
+      time.advance(220);
+      return new Set(["main"]);
+    });
+
+    await expect(
+      waitForAgentRosterReload({
+        ...time,
+        listAgentIds,
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        timeoutMs: 300,
+        pollMs: 100,
+      }),
+    ).resolves.toBe(false);
+
+    expect(listAgentIds).toHaveBeenCalledExactlyOnceWith(300);
+    expect(time.sleep).toHaveBeenCalledExactlyOnceWith(80);
+    expect(time.now()).toBe(300);
+  });
+
+  it("passes the remaining budget to each roster read and rejects late success", async () => {
+    const time = rosterReloadClock();
+    const listAgentIds = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        time.advance(120);
+        return new Set(["main"]);
+      })
+      .mockImplementationOnce(async () => {
+        time.advance(80);
+        return new Set(["main", "code-geek"]);
+      });
+
+    await expect(
+      waitForAgentRosterReload({
+        ...time,
+        listAgentIds,
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        timeoutMs: 300,
+        pollMs: 100,
+      }),
+    ).resolves.toBe(false);
+
+    expect(listAgentIds.mock.calls).toEqual([[300], [80]]);
+    expect(time.sleep).toHaveBeenCalledExactlyOnceWith(100);
+    expect(time.now()).toBe(300);
+  });
+
+  it("bounds a hanging read and safely consumes a rejection after timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectRead!: (error: Error) => void;
+      const listAgentIds = vi.fn(
+        () =>
+          new Promise<ReadonlySet<string>>((_resolve, reject) => {
+            rejectRead = reject;
+          }),
+      );
+      const sleep = vi.fn();
+      const response = waitForAgentRosterReload({
+        listAgentIds,
+        isApplied: (agentIds) => agentIds.has("code-geek"),
+        sleep,
+        now: Date.now,
+        timeoutMs: 300,
+        pollMs: 100,
+      });
+      const settled = expect(response).resolves.toBe(false);
+
+      await vi.advanceTimersByTimeAsync(300);
+      await settled;
+      rejectRead(new Error("late roster failure"));
+      await Promise.resolve();
+      expect(listAgentIds).toHaveBeenCalledExactlyOnceWith(300);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start a roster read when the budget is zero", async () => {
+    const listAgentIds = vi.fn();
+    await expect(
+      waitForAgentRosterReload({
+        ...rosterReloadClock(),
+        listAgentIds,
+        isApplied: () => true,
+        timeoutMs: 0,
+        pollMs: 100,
+      }),
+    ).resolves.toBe(false);
+    expect(listAgentIds).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects an invalid timeout budget %s",
+    async (timeoutMs) => {
+      await expect(
+        waitForAgentRosterReload({
+          ...rosterReloadClock(),
+          listAgentIds: vi.fn(),
+          isApplied: () => false,
+          timeoutMs,
+          pollMs: 100,
+        }),
+      ).rejects.toThrow("agent roster reload timeout must be finite and non-negative");
+    },
+  );
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects an invalid polling interval %s",
+    async (pollMs) => {
+      await expect(
+        waitForAgentRosterReload({
+          ...rosterReloadClock(),
+          listAgentIds: vi.fn(),
+          isApplied: () => false,
+          timeoutMs: 300,
+          pollMs,
+        }),
+      ).rejects.toThrow("agent roster reload poll interval must be positive");
+    },
+  );
 });
 
 describe("applyAgentRosterReload", () => {
@@ -297,13 +476,14 @@ describe("applyAgentRosterReload", () => {
   });
 
   it("restarts a managed Gateway only after the hot-reload timeout", async () => {
+    const time = rosterReloadClock();
     const restartGateway = vi.fn().mockResolvedValue(undefined);
 
     await expect(
       applyAgentRosterReload({
+        ...time,
         listAgentIds: async () => new Set(["main"]),
         isApplied: (agentIds) => agentIds.has("code-geek"),
-        sleep: vi.fn().mockResolvedValue(undefined),
         timeoutMs: 300,
         pollMs: 100,
         restartGateway,
@@ -316,12 +496,40 @@ describe("applyAgentRosterReload", () => {
   it("reports timeout without restarting an externally managed Gateway", async () => {
     await expect(
       applyAgentRosterReload({
+        ...rosterReloadClock(),
         listAgentIds: async () => new Set(["main"]),
         isApplied: (agentIds) => agentIds.has("code-geek"),
-        sleep: vi.fn().mockResolvedValue(undefined),
         timeoutMs: 300,
         pollMs: 100,
       }),
     ).resolves.toBe("timed-out");
+  });
+
+  it("restarts only once at the deadline even if a roster read never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const restartGateway = vi.fn().mockResolvedValue(undefined);
+      const listAgentIds = vi.fn(() => new Promise<ReadonlySet<string>>(() => {}));
+      const response = applyAgentRosterReload({
+        listAgentIds,
+        isApplied: () => false,
+        sleep: vi.fn(),
+        now: Date.now,
+        timeoutMs: 300,
+        pollMs: 100,
+        restartGateway,
+      });
+      const settled = expect(response).resolves.toBe("restarted");
+
+      await vi.advanceTimersByTimeAsync(299);
+      expect(restartGateway).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await settled;
+      expect(restartGateway).toHaveBeenCalledOnce();
+      expect(listAgentIds).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
