@@ -377,7 +377,26 @@ This script sequentially:
 
 1. Builds the desktop app (`desktop/` → Electron Builder)
 2. Creates portable zip package (`dist/microclaw-portable.zip`)
-3. Packages the installer exe (PyInstaller → `dist/MicroClawInstaller.exe`)
+3. Packages the installer directory (PyInstaller → `dist/MicroClawInstaller/`)
+4. Builds and verifies the complete single-file installer (`dist/MicroClawSetup.exe`)
+
+The default build uses faster zlib compression for the setup EXE and skips the
+additional installer ZIP. The EXE still contains the complete installer payload;
+native resource preparation, extraction verification, and optional signing are unchanged.
+Use `-SetupCompression lzma` for the previous compression method, or
+`-IncludeInstallerZip` to also create `dist/MicroClawInstaller.zip` (CI requests it explicitly).
+An existing installer ZIP is not refreshed unless that switch is supplied.
+
+Repeated builds automatically reuse unchanged native resources, the packaged desktop,
+portable ZIP, installer directory, and setup EXE. Cache hits require matching SHA-256
+content fingerprints of the stage's inputs and existing outputs, not just timestamps.
+Source, dependency, toolchain, resource, or compression changes rebuild the affected
+stages; missing or changed outputs also invalidate their cache. Final EXE extraction
+verification and the signing gate still run on every build. Signing-configured builds
+always repack the desktop and setup EXE. Installer caching requires the local `.venv`
+PyInstaller environment; other Python build strategies continue to work without reuse.
+The first build populates `build/package-cache/`; use `.\build.ps1 -Rebuild` to force
+all stages to run again. The optional installer ZIP is recreated when requested.
 
 ### MSIX package
 

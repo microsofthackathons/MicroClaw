@@ -166,7 +166,7 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Run build.ps1
-        run: .\build.ps1
+        run: .\build.ps1 -IncludeInstallerZip
 
       - name: Build unsigned MSIX
         run: npm run dist:msix --prefix desktop

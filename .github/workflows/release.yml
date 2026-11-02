@@ -132,7 +132,7 @@ jobs:
           }
 
       - name: Run build.ps1 (builds + signs MicroClawSetup.exe)
-        run: .\build.ps1
+        run: .\build.ps1 -IncludeInstallerZip
 
       - name: Build unsigned MSIX
         env:
