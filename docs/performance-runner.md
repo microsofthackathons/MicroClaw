@@ -5,23 +5,88 @@ fetch a baseline, build an application, install on the host, or change the curre
 checkout. Playwright is a root development dependency, not a desktop runtime
 dependency. Run `npm install` at the repository root before using the UI driver.
 
+## Agent entry point
+
+In a local Codex session opened on this repository, invoke:
+
+```text
+$test-performance
+```
+
+The repository skill prepares missing build dependencies and runtime resources,
+packages the current checkout, runs every built-in performance case, and delivers
+an interpreted report. The default is three samples per case with the local
+`fixed-response` model and no baseline comparison. Add a case name or other
+requirements only when narrowing or overriding that default.
+
+The suite is discovered from `SCENARIOS` in `scripts/performance/results.mjs`, not
+from a case list embedded in the prompt. New built-in cases are included without
+changing the invocation. External-fixture cases remain explicit opt-ins. Normal
+permission approvals still apply to dependency downloads and desktop launches.
+
+## Preparing a complete application
+
+For the agent's default current-checkout workflow, inspect the generated desktop
+resources before packaging. A normal `pack` prepares native helpers and the Weixin
+plugin, but does not itself stage Node and OpenClaw. An isolated performance fixture
+cannot rely on the user's existing OpenClaw installation.
+
+When Node/OpenClaw resources are missing, run from the repository root:
+
+```powershell
+npm run prepare-resources --prefix desktop
+npm run pack:prepared --prefix desktop
+```
+
+`prepare-resources` downloads the pinned OpenClaw runtime and recreates the
+generated `desktop/resources` directory, including Node, OpenClaw and the native
+resources. It can take substantial time and requires download/build permissions.
+When those resources are already complete, `pack:prepared` can reuse them. Build
+time is preparation, not a runtime metric.
+
+Use the newly built `desktop/release/win-unpacked/MicroClawDesktop.exe` with its
+complete directory, including `resources/node.exe` and `resources/openclaw.asar`.
+No system installation is needed, and building does not update the existing
+installed application. If the user supplies a specific artifact, use it unchanged
+and diagnose missing resources rather than silently replacing it.
+
 ## Commands
 
 ```powershell
-npm run perf -- report --app "C:\artifacts\win-unpacked\MicroClaw.exe" --scenario app.restart,chat.new-session --samples 3
-npm run perf -- compare --app "C:\artifacts\win-unpacked\MicroClaw.exe" --baseline "build/performance/<baseline-run>/results.json" --scenario app.restart,chat.new-session --samples 3
+npm run perf -- report --app "C:\artifacts\win-unpacked\MicroClawDesktop.exe" --scenario all --samples 3
+npm run perf -- compare --app "C:\artifacts\win-unpacked\MicroClawDesktop.exe" --baseline "build/performance/<baseline-run>/results.json" --scenario all --samples 3
 npm run perf -- --help
 ```
 
 All relative paths resolve against the repository root, even when the command is
 started from another directory. Results go to `build/performance/<run-id>/` by
 default; `--output` changes the parent directory. Existing runs are never reused.
+Each desktop scenario starts in a fresh isolated profile, so an already-built EXE
+may still need to extract its bundled runtime on the first launch. That unmeasured
+setup uses `--setup-timeout-ms` (default `600000`); measured desktop actions keep
+`--timeout-ms` (default `120000`). Setup elapsed time and its timeout are preserved
+in `<scenario>.setup.json`, including failed launches. Increasing the setup timeout
+does not rebuild the application or include setup time in restart/chat metrics.
+
+Packaged startup prepares a missing or stale bundled runtime in a worker thread,
+then completes integrity validation before creating the first window. A current
+runtime cache is reused without starting a worker. The renderer loads before
+Gateway preflight, so runtime extraction and plugin convergence do not block ASAR
+navigation. Integrity validation is not skipped. Windows lifecycle matching uses
+the Electron main-process PID, not Playwright's shell-wrapper PID.
+Second-instance recovery waits for initial preparation and navigation rather than
+racing a second extraction. Temporary cache-rename locks receive bounded retries;
+fixture preparation failures are logged and exit without an interactive dialog.
 Report mode has no baseline or regression verdict. Compare mode preserves the
 candidate report when a baseline is missing, malformed or incompatible. It shows
 deltas and failure-rate differences, without a gating verdict or invented thresholds.
 
-Default scope is all three scenarios, with three samples each. Without a suitable
-packaged application or VM adapter, affected samples are explicitly `unavailable`.
+Default scope, also selected by `--scenario all`, is every built-in case, with three
+samples each. Currently these are `app.restart` and `chat.new-session`; newly
+registered built-in cases are included automatically. `install.clean` requires
+explicit selection and an external disposable-VM adapter, so it is not part of
+the default suite. Without suitable prerequisites, affected samples are explicitly
+`unavailable`.
 `npm run perf -- report` is safe to use to check this reporting path: it does not
 launch an application or contact a model provider without an `--app` argument.
 The first version supports packaged Electron applications, not Vite/dev mode.
@@ -35,6 +100,12 @@ inspect `baseline.status` rather than interpreting exit code zero as a regressio
 
 Each run saves `results.json`, `report.md`, per-attempt JSON, observed renderer
 milestones, sanitized Electron lifecycle summaries and model-request counts/timings.
+`report.md` defaults to Chinese, retaining technical identifiers and original failure
+diagnostics for traceability. `results.json` keeps its machine-readable schema and values.
+The opening summary lists each built-in case's completion result, chat reply/error
+checks, and arithmetic mean of successful `totalMs` samples in seconds. Unselected
+cases are marked untested; failed or incomplete samples are excluded from the mean.
+Chat checks cover the measured conversation, not a full application-log audit.
 The source revision, relevant source-file hashes, dirty state, executable/application
 archive hashes and environment are recorded outside the measured interval. An
 existing binary is **not** attributed to the current source just because both are
@@ -47,12 +118,59 @@ hardware information must not be inferred from the source checkout.
   relaunched chat surface is observed ready. Both the owned desktop and Gateway
   must exit before relaunch. Reused Gateways, forced-shutdown fallbacks and missing
   startup summaries cannot produce a successful full-restart sample.
+  Scenario/probe contract v2 additionally waits for the real Electron main PID,
+  rejects a nonzero or signal-terminated Playwright wrapper, and requires matching
+  post-request graceful exit receipts (PID and generation, exit code zero, no signal)
+  for every Gateway spawned in the old main-process epoch. The new epoch must contain
+  a live newly spawned Gateway and a different main/Gateway PID; absence of negative
+  diagnostics is not affirmative proof of a normal restart.
+  Desktop's owned-Gateway graceful-stop deadline is `330000` ms, matching the
+  bundled OpenClaw 2026.10.5 service stop policy (`325000` ms for drain/cleanup plus
+  a `5000` ms supervisor exit margin). This is an upper bound, not a fixed wait:
+  shutdown completes as soon as the child exits. The old `10000` ms deadline
+  could kill a Gateway still performing normal server cleanup. Lifecycle
+  diagnostics record the requested deadline and any force fallback. The runner's
+  measured-action timeout remains unchanged; exceeding it still fails the sample.
+  A Gateway's own shutdown watchdog, nonzero exit, signal exit or failed stop
+  observation also fails the sample, even without a Desktop force-fallback event.
+  Packaged bundled-runtime ESM source is read from the existing `openclaw.asar`
+  through one retained descriptor instead of reopening thousands of extracted
+  module files. Normal Node resolution, archive-entry integrity verification and
+  the downstream compatibility hooks remain active. External runtimes, local
+  plugins, CommonJS, native modules and missing/unpacked archive entries retain
+  normal filesystem loading. The extracted runtime still supplies resolution,
+  package metadata, native binaries and other assets; build/extraction time is
+  not part of the restart sample.
+  The archive preload is inherited through `NODE_OPTIONS`, including OpenClaw's
+  SQLite Workers and forked inspectors that explicitly clear `execArgv`. It only
+  activates when the process/Worker entry belongs to the bundled runtime; unrelated
+  Node tool processes do not open the archive or register the loader.
+  The local-model compatibility preload only registers its synchronous module
+  loader when the local provider directory exists. A fixture without that provider
+  retains Node's normal loader; installing the provider for the first time restarts
+  the Gateway before model setup so the verified compatibility adapter takes effect.
 - `chat.new-session`: the real new-conversation button and composer are operated.
+  If the fixture's current conversation is empty, one UI chat first makes it nonempty
+  outside the measured interval. This preparation uses the same reply/error gates,
+  counts toward the shared model request budget, and is retained as `preparation`
+  in the per-attempt JSON. A failed preparation cannot become a successful sample.
+  The existing UI behavior of reusing an empty conversation is unchanged. Each
+  measured click must select a different, previously unused, empty conversation;
+  merely clicking the button does not satisfy the new-session boundary.
   The renderer records the click and submit keydown with its own monotonic clock.
   Session/run matching, response completion, nonempty answer DOM visibility and
   paint opportunities are required. Reasoning/tool panels, lifecycle-end alone,
   empty finals, duplicate terminal events and unrelated sessions cannot complete
   the sample. The send promise is not a completion signal.
+  Probe v2 binds the run ID from the actual `chat.send` acknowledgment, retaining
+  early events until it arrives. Only new visible answer bodies attributed to that
+  run count; an old answer elsewhere in the DOM cannot satisfy the fixed-response
+  check. Matching errors/cancellation or a reported conversation error through final
+  rendering fail the sample, including errors arriving after `final` but before paint.
+  Ordinary launches without the performance flag install no probe or observers.
+  Old v1 packaged probes are rejected with an upgrade diagnostic. Both scenarios
+  are version 2; prior reports remain intact and cannot be treated as measurements
+  under the stricter contract or directly compared as compatible baselines.
 - `install.clean`: the VM adapter supplies confirmation-through-first-service-
   readiness-and-final-validation timing, excluding VM restore/boot and human
   approval waits. It must restore its clean fixture before every sample.

@@ -36,7 +36,7 @@ export async function collectSource(root) {
     const files = [];
     for (const filename of [...new Set(filenames)].sort()) {
       if (
-        !/^(desktop\/|deployer\/|installer\/|scripts\/|plugins\/|\.agents\/skills\/microclaw-perf\/|deploy\.py$|package(-lock)?\.json$|requirements\.txt$|pyproject\.toml$)/.test(
+        !/^(desktop\/|deployer\/|installer\/|scripts\/|plugins\/|\.agents\/skills\/test-performance\/|deploy\.py$|package(-lock)?\.json$|requirements\.txt$|pyproject\.toml$)/.test(
           filename,
         )
       )

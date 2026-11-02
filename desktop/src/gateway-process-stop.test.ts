@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stopGatewayChildProcess } from "./gateway-process-stop";
+import { GATEWAY_GRACEFUL_STOP_TIMEOUT_MS, stopGatewayChildProcess } from "./gateway-process-stop";
 
 function createChild() {
   const input = { destroyed: false, writableEnded: false, end: vi.fn() };
@@ -50,19 +50,44 @@ describe("stopGatewayChildProcess", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("only uses force termination after the graceful shutdown deadline", async () => {
+  it("allows active work and server cleanup to finish beyond the old ten-second deadline", async () => {
+    vi.useFakeTimers();
+    const managed = createChild();
+    const forceStop = vi.fn();
+    const onForceStop = vi.fn();
+    const result = stopGatewayChildProcess({
+      child: managed.child,
+      timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS,
+      forceTimeoutMs: 3_000,
+      forceStop,
+      onForceStop,
+    });
+    setTimeout(() => managed.exit(), 30_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(forceStop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await result).toBe("graceful");
+    expect(managed.input.end).toHaveBeenCalledOnce();
+    expect(forceStop).not.toHaveBeenCalled();
+    expect(onForceStop).not.toHaveBeenCalled();
+    expect(managed.child.listenerCount("exit")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("only uses force termination after the OpenClaw service stop policy deadline", async () => {
     vi.useFakeTimers();
     const managed = createChild();
     const forceStop = vi.fn(() => managed.exit(null, "SIGKILL"));
     const onForceStop = vi.fn();
     const result = stopGatewayChildProcess({
       child: managed.child,
-      timeoutMs: 10_000,
+      timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS,
       forceTimeoutMs: 3_000,
       forceStop,
       onForceStop,
     });
-    await vi.advanceTimersByTimeAsync(9_999);
+    expect(GATEWAY_GRACEFUL_STOP_TIMEOUT_MS).toBe(330_000);
+    await vi.advanceTimersByTimeAsync(GATEWAY_GRACEFUL_STOP_TIMEOUT_MS - 1);
     expect(forceStop).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(await result).toBe("forced");

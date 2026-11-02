@@ -1,10 +1,13 @@
+import { reportText } from "./report-zh.mjs";
+
 export const SCENARIOS = {
   "install.clean": {
     version: 1,
+    requiresExternalFixture: true,
     endpoints: { totalMs: "installation-confirmed -> service-ready-and-final-validation" },
   },
   "app.restart": {
-    version: 1,
+    version: 2,
     endpoints: {
       totalMs: "normal-exit-request -> observed-chat-ready",
       shutdownMs: "normal-exit-request -> desktop-and-owned-gateway-exited",
@@ -12,7 +15,7 @@ export const SCENARIOS = {
     },
   },
   "chat.new-session": {
-    version: 1,
+    version: 2,
     endpoints: {
       totalMs: "new-conversation-click -> matching-final-body-after-paint-opportunity",
       sessionReadyMs: "new-conversation-click -> usable-empty-session",
@@ -21,6 +24,10 @@ export const SCENARIOS = {
     },
   },
 };
+
+export function builtInScenarioIds(registry = SCENARIOS) {
+  return Object.keys(registry).filter((id) => !registry[id].requiresExternalFixture);
+}
 
 export function aggregate(values) {
   const sorted = values
@@ -195,54 +202,119 @@ export function compare(candidate, baseline) {
 }
 
 const cell = (value) =>
-  String(value ?? "unknown")
+  String(value ?? "未知")
     .replaceAll("|", "\\|")
     .replace(/[\r\n]/g, " ");
-const timing = (value) => (value === null || value === undefined ? "n/a" : value.toFixed(2));
+const timing = (value) => (value === null || value === undefined ? "无数据" : value.toFixed(2));
+
+function renderSummary(result) {
+  const lines = [
+    "## 简洁总结",
+    "",
+    "| 场景 | 最终结果 | 流程检查 | 平均耗时（秒） |",
+    "| --- | --- | --- | ---: |",
+  ];
+  const scenarioIds = new Set([
+    ...builtInScenarioIds(),
+    ...result.scenarios.map((entry) => entry.id),
+  ]);
+  for (const scenarioId of scenarioIds) {
+    const scenario = result.scenarios.find((entry) => entry.id === scenarioId);
+    if (!scenario) {
+      lines.push(`| ${cell(reportText(scenarioId))} | 未测试 | — | — |`);
+      continue;
+    }
+    const attempts = result.samples.filter((entry) => entry.scenarioId === scenarioId);
+    const successful = attempts.filter(
+      (sample) =>
+        sample.outcome === "success" &&
+        !sample.failure &&
+        Object.keys(scenario.endpoints).every(
+          (metric) => Number.isFinite(sample.metrics[metric]) && sample.metrics[metric] >= 0,
+        ),
+    );
+    const passed =
+      scenario.requestedSamples > 0 &&
+      successful.length === scenario.requestedSamples &&
+      attempts.length === scenario.requestedSamples;
+    const observed = attempts.some(
+      (sample) => !["unavailable", "skipped"].includes(sample.outcome),
+    );
+    const status = passed ? "成功" : observed ? "未全部成功" : "未完成";
+    const average = successful.length
+      ? (
+          successful.reduce((total, sample) => total + sample.metrics.totalMs, 0) /
+          successful.length /
+          1000
+        ).toFixed(2)
+      : "—";
+    let check = passed ? "流程完成，未记录采样错误" : "失败或未完成，原因见逐次采样";
+    if (scenarioId === "app.restart" && passed) check = "正常退出并重启，聊天界面就绪";
+    if (scenarioId === "chat.new-session")
+      check = passed
+        ? "完整回复，未检测到聊天流程错误"
+        : successful.length
+          ? "部分采样完整回复，另有失败或未完成"
+          : "未确认正常回复，原因见逐次采样";
+    lines.push(
+      `| ${cell(reportText(scenarioId))} | ${status}（${successful.length}/${scenario.requestedSamples}） | ${check} | ${average} |`,
+    );
+  }
+  lines.push(
+    "",
+    "平均耗时为成功采样总耗时（totalMs）的算术平均值；不计失败采样、首次环境准备和报告生成。",
+    "聊天错误检查仅覆盖被测会话的模型错误、取消、空回复及采样失败，不代表全量日志无错误。",
+    "",
+  );
+  return lines;
+}
 
 export function renderReport(result) {
   const lines = [
-    "# MicroClaw performance report",
+    "# MicroClaw 性能测试报告",
     "",
-    `- Run: ${cell(result.runId)}`,
-    `- Mode: ${result.mode}; coverage: ${result.summary.coverage}`,
-    `- Source: ${cell(result.source.revision)}; dirty: ${cell(result.source.dirty)}`,
-    `- Source fingerprint: ${cell(result.source.dirtySourceFingerprint)}`,
-    `- Environment: ${cell(JSON.stringify(result.environment))}`,
-    `- Executable SHA-256: ${cell(result.source.artifact?.executableSha256)}`,
-    `- Application archive SHA-256: ${cell(result.source.artifact?.applicationSha256)}`,
-    `- OpenClaw archive SHA-256: ${cell(result.source.artifact?.openclawRuntimeSha256)}`,
-    `- Installer SHA-256: ${cell(result.source.installer?.sha256)}`,
-    `- Artifact/source association: ${cell(result.source.artifact?.sourceAssociation)}`,
-    `- Started: ${result.startedAt}; finished: ${result.finishedAt}`,
+    ...renderSummary(result),
+    "## 运行信息",
     "",
-    "Timings are milliseconds. Parallel/nested stages must not be added together.",
-    "Small sample sets do not establish tail latency. Failed durations are not successful timings.",
+    `- 运行编号：${cell(result.runId)}`,
+    `- 模式：${reportText(result.mode)}；覆盖状态：${reportText(result.summary.coverage)}`,
+    `- 源码版本：${cell(result.source.revision)}；存在未提交修改：${result.source.dirty === true ? "是" : result.source.dirty === false ? "否" : "未知"}`,
+    `- 源码指纹：${cell(result.source.dirtySourceFingerprint)}`,
+    `- 运行环境（原始配置）：${cell(JSON.stringify(result.environment))}`,
+    `- 可执行文件 SHA-256：${cell(result.source.artifact?.executableSha256)}`,
+    `- 应用归档 SHA-256：${cell(result.source.artifact?.applicationSha256)}`,
+    `- OpenClaw 归档 SHA-256：${cell(result.source.artifact?.openclawRuntimeSha256)}`,
+    `- 安装程序 SHA-256：${cell(result.source.installer?.sha256)}`,
+    `- 产物与源码的关联：${cell(reportText(result.source.artifact?.sourceAssociation))}`,
+    `- 开始时间：${result.startedAt}；结束时间：${result.finishedAt}（ISO 8601，Z 表示 UTC）`,
+    "",
+    "耗时单位均为毫秒（ms）。并行或嵌套阶段不可直接相加。",
+    "少量采样不足以确定尾延迟；失败采样的耗时不计入成功采样统计。",
     "",
   ];
   for (const scenario of result.scenarios) {
     const summary = result.summary.scenarios.find((entry) => entry.id === scenario.id);
     lines.push(
-      `## ${scenario.id}`,
+      `## ${reportText(scenario.id)}`,
       "",
-      `Profile: ${scenario.profile}; packaging: ${scenario.packaging}; cache: ${scenario.cachePolicy}.`,
-      `Coverage: ${summary.coverage}; successful ${summary.successful}/${summary.requested}; failed ${summary.failed}; unavailable ${summary.unavailable}; skipped ${summary.skipped}.`,
-      `Fixture: ${cell(JSON.stringify(scenario.fixture))}`,
+      `模型模式：${reportText(scenario.profile)}；打包方式：${reportText(scenario.packaging)}；缓存策略：${reportText(scenario.cachePolicy)}。`,
+      `覆盖状态：${reportText(summary.coverage)}；成功 ${summary.successful}/${summary.requested}；失败 ${summary.failed}；不可用 ${summary.unavailable}；跳过 ${summary.skipped}。`,
+      `测试夹具（原始配置）：${cell(JSON.stringify(scenario.fixture))}`,
       "",
-      "| Metric | Successful samples | Median | Min | Max |",
+      "| 指标 | 成功样本数 | 中位数 | 最小值 | 最大值 |",
       "| --- | ---: | ---: | ---: | ---: |",
     );
     for (const [metric, stats] of Object.entries(summary.metrics)) {
       lines.push(
-        `| ${metric} | ${stats.count} | ${timing(stats.median)} | ${timing(stats.min)} | ${timing(stats.max)} |`,
+        `| ${cell(reportText(metric))} | ${stats.count} | ${timing(stats.median)} | ${timing(stats.min)} | ${timing(stats.max)} |`,
       );
     }
-    lines.push("", "### Attempts", "");
+    lines.push("", "### 逐次采样", "");
     for (const sample of result.samples.filter((entry) => entry.scenarioId === scenario.id)) {
       lines.push(
-        `- ${sample.sampleId}: ${sample.outcome}; attempt elapsed ${timing(sample.elapsedMs)} ms; ${cell(sample.failure?.message ?? "completed")}`,
-        `  - Metrics: ${cell(JSON.stringify(sample.metrics))}`,
-        `  - Evidence: ${sample.evidence.map(cell).join(", ") || "none"}`,
+        `- ${sample.sampleId}：${reportText(sample.outcome)}；本次采样耗时 ${timing(sample.elapsedMs)} ms；${sample.failure ? `原因（保留原始诊断）：${cell(sample.failure.message)}` : "已完成"}`,
+        `  - 原始指标：${cell(JSON.stringify(sample.metrics))}`,
+        `  - 证据文件：${sample.evidence.map(cell).join("、") || "无"}`,
       );
     }
     const stages = Object.entries(summary.metrics)
@@ -251,20 +323,35 @@ export function renderReport(result) {
     if (stages.length)
       lines.push(
         "",
-        `Slowest observed stages: ${stages
+        `最慢阶段（按成功采样中位数排序）：${stages
           .slice(0, 5)
-          .map(([name, stats]) => `${name} ${timing(stats.median)} ms`)
-          .join("; ")}.`,
+          .map(([name, stats]) => `${reportText(name)} ${timing(stats.median)} ms`)
+          .join("；")}。`,
       );
-    lines.push("", `Metric endpoints: ${cell(JSON.stringify(scenario.endpoints))}`, "");
+    lines.push(
+      "",
+      "### 计时边界",
+      "",
+      ...Object.entries(scenario.endpoints).map(
+        ([metric, endpoint]) => `- ${cell(reportText(metric))}：${cell(reportText(endpoint))}`,
+      ),
+      "",
+    );
   }
-  lines.push("## Limitations", "", ...result.limitations.map((entry) => `- ${cell(entry)}`), "");
+  lines.push(
+    "## 测量限制",
+    "",
+    ...result.limitations.map((entry) => `- ${cell(reportText(entry))}`),
+    "",
+  );
   if (result.mode === "compare") {
     lines.push(
-      "## Comparison",
+      "## 基线对比",
       "",
-      `Status: ${result.baseline.status}. ${result.baseline.verdict ?? ""}`,
-      ...result.baseline.issues.map((entry) => `- ${cell(entry)}`),
+      `状态：${reportText(result.baseline.status)}。${result.baseline.verdict ? reportText(result.baseline.verdict) : ""}`,
+      ...result.baseline.issues.map((entry) => `- ${cell(reportText(entry))}`),
+      "",
+      "对比原始数据（保留机器字段名）：",
       "",
       "```json",
       JSON.stringify(result.baseline.deltas, null, 2),

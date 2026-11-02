@@ -48,6 +48,8 @@ nsis:
   shortcutName: OpenClaw
 
 extraResources:
+  - from: src/openclaw-archive-loader.mjs
+    to: openclaw-archive-loader.mjs
   - from: dist/github-copilot-auth-worker.js
     to: github-copilot-auth-worker.js
   - from: src/openclaw-approval-replay-compat.mjs

@@ -75,6 +75,123 @@ import {
   useChatStore,
 } from "./chat";
 import { useSessionStore } from "./sessions";
+
+describe("performance request and message attribution", () => {
+  const originalFeatures = window.openclaw.features;
+  const submitted = vi.fn();
+  const submissionFailed = vi.fn();
+  const conversationError = vi.fn();
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue({ runId: "submitted-run" });
+    mockGetSettings.mockReset().mockResolvedValue({});
+    window.openclaw = { ...window.openclaw, features: { githubCopilot: false, performance: true } };
+    window.__microclawPerf = {
+      submitted,
+      submissionFailed,
+      conversationError,
+    } as unknown as NonNullable<Window["__microclawPerf"]>;
+    submitted.mockClear();
+    submissionFailed.mockClear();
+    conversationError.mockClear();
+  });
+  afterEach(() => {
+    window.openclaw = { ...window.openclaw, features: originalFeatures };
+    delete window.__microclawPerf;
+  });
+
+  it("forwards the actual send acknowledgment with the submitted session", async () => {
+    const store = useChatStore();
+    store.newSession("main");
+    const key = store.sessionKey;
+    await store.sendMessage("hello");
+    expect(submitted).toHaveBeenCalledExactlyOnceWith(key, { runId: "submitted-run" });
+  });
+
+  it("keeps the original session when it changes before the acknowledgment", async () => {
+    const store = useChatStore();
+    let acknowledge!: (value: unknown) => void;
+    mockSendMessage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    const key = store.sessionKey;
+    const pending = store.sendMessage("hello");
+    await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
+    store.newSession("main");
+    acknowledge({ runId: "submitted-run" });
+    await pending;
+    expect(submitted).toHaveBeenCalledExactlyOnceWith(key, { runId: "submitted-run" });
+  });
+
+  it("reports submission rejection without inventing a run", async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error("provider denied"));
+    expect(await useChatStore().sendMessage("hello")).toBe(false);
+    expect(submissionFailed).toHaveBeenCalledExactlyOnceWith();
+    expect(submitted).not.toHaveBeenCalled();
+    expect(conversationError).toHaveBeenCalledExactlyOnceWith(useChatStore().sessionKey);
+  });
+
+  it.each([false, true])(
+    "attributes final output only when performance is enabled: %s",
+    async (enabled) => {
+      window.openclaw = {
+        ...window.openclaw,
+        features: { ...window.openclaw.features, performance: enabled },
+      };
+      const store = useChatStore();
+      const key = store.sessionKey;
+      await store.sendMessage("hello");
+      store.handleChatEvent({
+        sessionKey: key,
+        runId: "submitted-run",
+        state: "delta",
+        deltaText: "answer",
+      });
+      store.handleChatEvent({
+        sessionKey: key,
+        runId: "submitted-run",
+        state: "final",
+        message: { role: "assistant", content: "answer" },
+      });
+      expect(store.messages.at(-1)?.performanceRunId).toBe(enabled ? "submitted-run" : undefined);
+      expect(submitted).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    },
+  );
+
+  it("retains attribution across equivalent history but never stamps unrelated replacements", async () => {
+    const store = useChatStore();
+    const key = store.sessionKey;
+    await store.sendMessage("hello");
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "submitted-run",
+      state: "delta",
+      deltaText: "answer",
+    });
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "submitted-run",
+      state: "final",
+      message: { role: "assistant", content: "answer" },
+    });
+    const history = store.messages.map(({ performanceRunId: _runId, ...message }) => message);
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [...history, { role: "user", content: "next" }],
+    });
+    await store.loadHistory();
+    expect(store.messages[1].performanceRunId).toBe("submitted-run");
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [history[0], { ...history[1], timestamp: 12345 }],
+    });
+    await store.loadHistory();
+    expect(store.messages[1].performanceRunId).toBeUndefined();
+  });
+});
 // ChatEventPayload is declared globally in env.d.ts
 
 describe("optimistic text history reconciliation", () => {

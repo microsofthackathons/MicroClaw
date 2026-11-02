@@ -8,6 +8,7 @@ export function installPerformanceProbe(): void {
   const chat = useChatStore();
   const gateway = useGatewayStore();
   let sample: PerformanceChatSample | null = null;
+  let previousBodies = new WeakSet<Element>();
   let disposed = false;
   const milestones: Record<string, number> = { probeInstalledAt: performance.now() };
   let serviceReady = false;
@@ -31,6 +32,11 @@ export function installPerformanceProbe(): void {
     if (complete) milestones.chatReadyAt ??= performance.now();
     return complete;
   };
+  const sessionState = () => ({
+    sessionKey: chat.resolvedSessionKey || chat.sessionKey,
+    messageCount: chat.messages.length,
+    ready: ready(),
+  });
   const unsubscribe = window.openclaw.chat.onEvent((event) => sample?.event(event));
   const afterPaintOpportunity = () =>
     new Promise<void>((resolve) =>
@@ -41,22 +47,48 @@ export function installPerformanceProbe(): void {
     await afterPaintOpportunity();
     if (disposed || sample !== active) return;
     if (sample.sessionReadyAt === null && ready()) {
-      sample.sessionReady(chat.resolvedSessionKey || chat.sessionKey, performance.now());
+      sample.sessionReady(
+        chat.resolvedSessionKey || chat.sessionKey,
+        performance.now(),
+        chat.messages.length,
+      );
     }
     const activeKey = chat.resolvedSessionKey || chat.sessionKey;
     if (sample.sessionKey === activeKey) {
-      const bodies = document.querySelectorAll<HTMLElement>(".chat-bubble.assistant .chat-text");
-      const hasBody = [...bodies].some(
-        (body) => body.getClientRects().length > 0 && Boolean(body.innerText.trim()),
+      if (sample.sentAt !== null && chat.lastError) sample.fail("chat-error");
+      const settled = !chat.streaming && !chat.sending;
+      const bodies = document.querySelectorAll<HTMLElement>(
+        settled
+          ? ".chat-bubble.assistant:not(.streaming) .chat-text"
+          : ".chat-bubble.assistant .chat-text",
       );
-      sample.rendered(hasBody, !chat.streaming && !chat.sending, performance.now());
+      const texts = new Map<string, string[]>();
+      for (const body of bodies) {
+        const runId = body.closest<HTMLElement>("[data-perf-run-id]")?.dataset.perfRunId;
+        if (!runId || previousBodies.has(body) || !body.getClientRects().length) continue;
+        const text = body.innerText.trim();
+        if (text) texts.set(runId, [...(texts.get(runId) ?? []), text]);
+      }
+      for (const [runId, parts] of texts)
+        sample.rendered(runId, parts.join("\n"), settled, performance.now());
+      if (sample.runId && !texts.has(sample.runId))
+        sample.rendered(sample.runId, "", settled, performance.now());
     }
     if (!sample.outcome) requestAnimationFrame(() => void observe(active));
   };
-  const probe = {
-    version: 1,
+  const probe: PerformanceProbe = {
+    version: 2,
     ready: () => ({ ready: ready(), milestones: { ...milestones } }),
+    state: sessionState,
     snapshot: () => sample?.snapshot() ?? null,
+    reset: () => {
+      sample = null;
+    },
+    beginExisting: () => {
+      previousBodies = new WeakSet(document.querySelectorAll(".chat-bubble.assistant .chat-text"));
+      sample = new PerformanceChatSample(performance.now());
+      void observe(sample);
+    },
     arm: () => {
       sample = null;
       const button = document.querySelector<HTMLButtonElement>(".sp-create-btn");
@@ -64,7 +96,10 @@ export function installPerformanceProbe(): void {
       button.addEventListener(
         "click",
         () => {
-          sample = new PerformanceChatSample(performance.now());
+          previousBodies = new WeakSet(
+            document.querySelectorAll(".chat-bubble.assistant .chat-text"),
+          );
+          sample = new PerformanceChatSample(performance.now(), sessionState().sessionKey);
           void observe(sample);
         },
         { once: true, capture: true },
@@ -81,6 +116,13 @@ export function installPerformanceProbe(): void {
         { once: true, capture: true },
       );
     },
+    submitted: (sessionKey: string, acknowledgment: unknown) =>
+      sample?.submitted(sessionKey, acknowledgment),
+    submissionFailed: () => sample?.fail("submission-error"),
+    conversationError: (sessionKey: string) => {
+      if (sample && sample.sentAt !== null && sample.sessionKey === sessionKey)
+        sample.fail("chat-error");
+    },
     dispose: () => {
       disposed = true;
       sample = null;
@@ -90,3 +132,18 @@ export function installPerformanceProbe(): void {
   };
   Object.defineProperty(window, "__microclawPerf", { value: probe, configurable: true });
 }
+
+export type PerformanceProbe = {
+  version: number;
+  ready(): { ready: boolean; milestones: Record<string, number> };
+  state(): { sessionKey: string; messageCount: number; ready: boolean };
+  snapshot(): ReturnType<PerformanceChatSample["snapshot"]> | null;
+  reset(): void;
+  beginExisting(): void;
+  arm(): void;
+  armSend(): void;
+  submitted(sessionKey: string, acknowledgment: unknown): void;
+  submissionFailed(): void;
+  conversationError(sessionKey: string): void;
+  dispose(): void;
+};

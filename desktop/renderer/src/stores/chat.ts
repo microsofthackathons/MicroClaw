@@ -26,6 +26,7 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   originalText?: string;
   stopReason?: string;
+  performanceRunId?: string;
 }
 
 /**
@@ -237,6 +238,8 @@ export const useChatStore = defineStore("chat", () => {
   );
 
   function reportChatError(raw: string, agentId = currentSessionAgentId.value) {
+    if (window.openclaw.features?.performance && agentId === currentSessionAgentId.value)
+      window.__microclawPerf?.conversationError(resolvedSessionKey.value || sessionKey.value);
     const error = classifyChatError(raw);
     if (error.code === "agent_initializing") {
       agentPreparationErrors.value[agentId] = error;
@@ -1145,13 +1148,31 @@ export const useChatStore = defineStore("chat", () => {
       const filtered = raw
         .map((m) => stripSystemLines(m))
         .filter((m): m is ChatMessage => m != null && !isGatewaySystemMessage(m));
-      const reconciled = preserveOptimisticMessages(messages.value, filtered);
+      let reconciled = preserveOptimisticMessages(messages.value, filtered);
+      if (window.openclaw.features?.performance) {
+        reconciled = reconciled.map((message, index) => {
+          const current = messages.value[index];
+          return current?.performanceRunId &&
+            current.timestamp === message.timestamp &&
+            JSON.stringify(current.content) === JSON.stringify(message.content) &&
+            _messagesEqual([current], [message])
+            ? { ...message, performanceRunId: current.performanceRunId }
+            : message;
+        });
+      }
       if (isInferredWaitError(lastError.value) && hasCompletedReply(reconciled)) {
         lastError.value = null;
       }
       // Only replace messages if content actually changed — avoids
       // unnecessary Vue reactivity triggers and DOM re-renders.
-      const changed = !_messagesEqual(messages.value, reconciled);
+      const changed =
+        !_messagesEqual(messages.value, reconciled) ||
+        (window.openclaw.features?.performance &&
+          messages.value.some(
+            (message, index) =>
+              message.performanceRunId &&
+              message.performanceRunId !== reconciled[index]?.performanceRunId,
+          ));
       if (changed) {
         messages.value = reconciled;
         // Update last message preview only when content changed
@@ -1206,6 +1227,7 @@ export const useChatStore = defineStore("chat", () => {
     sending.value = true;
     lastError.value = null;
     const sendingAgentId = currentSessionAgentId.value;
+    const requestedSessionKey = resolvedSessionKey.value || sessionKey.value;
     let optimisticTimestamp: number | undefined;
     try {
       // Strict privacy mode redacts PII before sending.
@@ -1240,13 +1262,16 @@ export const useChatStore = defineStore("chat", () => {
       lastRecoveryProbeAt = 0;
       streaming.value = true;
 
-      await window.openclaw.chat.sendMessage(
-        resolvedSessionKey.value || sessionKey.value,
+      const acknowledgment = await window.openclaw.chat.sendMessage(
+        requestedSessionKey,
         finalMsg,
         attachments.length ? attachments : undefined,
       );
+      if (window.openclaw.features?.performance)
+        window.__microclawPerf?.submitted(requestedSessionKey, acknowledgment);
       return true;
     } catch (err) {
+      if (window.openclaw.features?.performance) window.__microclawPerf?.submissionFailed();
       const error = String(err);
       reportChatError(error, sendingAgentId);
       streaming.value = false;
@@ -1389,6 +1414,7 @@ export const useChatStore = defineStore("chat", () => {
       }
       const rawMsg = payload.message as ChatMessage | undefined;
       const msg = rawMsg ? (stripSystemLines(rawMsg) as ChatMessage | null) : null;
+      if (msg && window.openclaw.features?.performance) msg.performanceRunId = payload.runId;
       if (msg && !isGatewaySystemMessage(msg)) {
         // If the final message content is a plain string and we have a valid offset,
         // trim the tool-context prefix so only the model's reply is stored.
@@ -1418,6 +1444,7 @@ export const useChatStore = defineStore("chat", () => {
               role: "assistant",
               content: [{ type: "text", text: modelReply }],
               timestamp: Date.now(),
+              ...(window.openclaw.features?.performance ? { performanceRunId: payload.runId } : {}),
             },
           ];
         }

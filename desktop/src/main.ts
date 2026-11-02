@@ -18,6 +18,7 @@ import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
+import { prepareBundledOpenClawDir } from "./bundled-runtime";
 import { configurePerformanceFixture, PERFORMANCE_ARGUMENT } from "./performance-fixture";
 import {
   hasLocalModelPrimary,
@@ -238,7 +239,7 @@ import {
   setWeixinPluginEnabled,
   WeixinPluginActivationError,
 } from "./weixin-plugin-lifecycle";
-import { stopGatewayChildProcess } from "./gateway-process-stop";
+import { GATEWAY_GRACEFUL_STOP_TIMEOUT_MS, stopGatewayChildProcess } from "./gateway-process-stop";
 import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
 import {
   applyAgentSkillsToConfig,
@@ -4062,13 +4063,14 @@ async function stopGatewayProcessGracefully(reason: string): Promise<void> {
   const startedAt = Date.now();
   const stop = (async () => {
     console.info(
-      `[gateway-stop] requested mode=graceful pid=${pid} generation=${generation} reason=${reason}`,
+      `[gateway-stop] requested mode=graceful pid=${pid} generation=${generation} timeoutMs=${GATEWAY_GRACEFUL_STOP_TIMEOUT_MS} reason=${reason}`,
     );
     electronLifecycleDiagnostics.log("gateway-stop-requested", {
       reason,
       mode: "graceful",
       gatewayPid: pid,
       gatewayGeneration: generation,
+      timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS,
     });
     closeWindowsNodeMxcWeixinRemoteApproval("gateway-stopped");
     closeWindowsNodeMxcIngress();
@@ -4078,7 +4080,7 @@ async function stopGatewayProcessGracefully(reason: string): Promise<void> {
     windowsNodeMxcApprovalProofContext = null;
     const mode = await stopGatewayChildProcess({
       child,
-      timeoutMs: 10_000,
+      timeoutMs: GATEWAY_GRACEFUL_STOP_TIMEOUT_MS,
       forceTimeoutMs: 3_000,
       forceStop: async () => {
         if (child.exitCode !== null || child.signalCode !== null) return;
@@ -5189,6 +5191,24 @@ async function startGatewayInner(
     Object.assign(gwEnv, nextHooksEnvironment);
     if (cronResumeFence) {
       Object.assign(gwEnv, getWindowsNodeMxcCronResumeEnvironment(cronResumeFence));
+    }
+
+    const archiveLoaderPath = path.join(process.resourcesPath, "openclaw-archive-loader.mjs");
+    const runtimeArchivePath = path.join(process.resourcesPath, "openclaw.asar");
+    const bundledRuntimeRoot = path.join(app.getPath("userData"), "runtime", "openclaw");
+    const useRuntimeArchive =
+      app.isPackaged &&
+      entryPath === path.join(bundledRuntimeRoot, "node_modules", "openclaw", "openclaw.mjs") &&
+      fs.existsSync(runtimeArchivePath);
+    if (useRuntimeArchive) {
+      if (!fs.existsSync(archiveLoaderPath))
+        throw new Error("The bundled runtime module archive loader is missing");
+      gwEnv.MICROCLAW_OPENCLAW_ARCHIVE = runtimeArchivePath;
+      gwEnv.MICROCLAW_OPENCLAW_RUNTIME_ROOT = bundledRuntimeRoot;
+      gwEnv.NODE_OPTIONS += ` --import=${pathToFileURL(archiveLoaderPath).href}`;
+    } else {
+      delete gwEnv.MICROCLAW_OPENCLAW_ARCHIVE;
+      delete gwEnv.MICROCLAW_OPENCLAW_RUNTIME_ROOT;
     }
 
     const approvalCompatPath = app.isPackaged
@@ -6682,7 +6702,7 @@ function registerIpcHandlers(): void {
       activeModelSessions.add(activeKey);
       try {
         await assertChatModelEnabled(params.sessionKey);
-        await gwClient.sendChat(
+        return await gwClient.sendChat(
           params.sessionKey,
           params.message,
           validateChatAttachments(params.attachments),
@@ -8586,15 +8606,18 @@ if (!gotLock) {
   requestExplicitQuit("single-instance-lock-denied");
 } else {
   app.on("second-instance", () => {
-    showOrRecoverMainWindow("second-instance");
-    // Ensure gateway is alive when user re-opens the app
-    ensureGatewayConnected().catch((err) =>
-      console.error("[second-instance] gateway reconnect failed:", err),
-    );
+    applicationStartup
+      .then(async () => {
+        if (explicitQuitRequested) return;
+        showOrRecoverMainWindow("second-instance");
+        // Ensure gateway is alive when user re-opens the app
+        await ensureGatewayConnected();
+      })
+      .catch((err) => console.error("[second-instance] gateway reconnect failed:", err));
   });
 }
 
-app.whenReady().then(async () => {
+const applicationStartup = app.whenReady().then(async () => {
   if (explicitQuitRequested) return;
   logStartupTiming("app-ready");
   if (!settingsStore.has("language")) {
@@ -8639,6 +8662,40 @@ app.whenReady().then(async () => {
     app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
   }
 
+  try {
+    await prepareBundledOpenClawDir();
+    logStartupTiming("runtime-prepared");
+  } catch (error) {
+    signalPostInstallFailure(error);
+    console.error("[runtime] Bundled OpenClaw preparation failed:", error);
+    if (!performanceFixture) {
+      dialog.showErrorBox(
+        "OpenClaw runtime preparation failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    requestExplicitQuit("runtime-preparation-failed");
+    return;
+  }
+  if (explicitQuitRequested) return;
+
+  // Skill integrity check — must run BEFORE loading renderer so
+  // pendingIntegrityResult is ready when App.vue calls the IPC.
+  if (migrateLegacySkillIntegritySnapshot()) {
+    console.log("Migrated skill integrity snapshot to the current root-aware schema");
+  }
+  const integrityResult = verifySkillIntegrity();
+  if (!integrityResult.snapshotExists) {
+    console.log(
+      "No skill integrity snapshot found — generating baseline (installer may not have run)...",
+    );
+    generateAndSignSnapshot();
+  } else if (!integrityResult.valid) {
+    console.log("Skill integrity check failed — changes detected");
+    pendingIntegrityResult = integrityResult;
+  }
+  logStartupTiming("integrity-complete");
+
   const initialWindow = createMainWindow();
   mainWindow = initialWindow;
   logStartupTiming("window-created");
@@ -8660,31 +8717,6 @@ app.whenReady().then(async () => {
   };
   createTray(trayCallbacks, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
 
-  // Skill integrity check — must run BEFORE loading renderer so
-  // pendingIntegrityResult is ready when App.vue calls the IPC.
-  if (migrateLegacySkillIntegritySnapshot()) {
-    console.log("Migrated skill integrity snapshot to the current root-aware schema");
-  }
-  const integrityResult = verifySkillIntegrity();
-  if (!integrityResult.snapshotExists) {
-    console.log(
-      "No skill integrity snapshot found — generating baseline (installer may not have run)...",
-    );
-    generateAndSignSnapshot();
-  } else if (!integrityResult.valid) {
-    console.log("Skill integrity check failed — changes detected");
-    pendingIntegrityResult = integrityResult;
-  }
-  logStartupTiming("integrity-complete");
-
-  // Gateway startup is independent of renderer loading. Starting it here lets
-  // the local UI and background service initialize concurrently.
-  logStartupTiming("gateway-requested");
-  startApplicationServices().catch((err) => {
-    signalPostInstallFailure(err);
-    console.error("Failed to start application services:", err);
-  });
-
   try {
     await loadMainWindowRenderer(initialWindow);
     logStartupTiming("renderer-loaded");
@@ -8694,6 +8726,13 @@ app.whenReady().then(async () => {
     });
     scheduleMainWindowRecovery("initial-renderer-load-failed", initialWindow, true);
   }
+
+  if (explicitQuitRequested) return;
+  logStartupTiming("gateway-requested");
+  startApplicationServices().catch((err) => {
+    signalPostInstallFailure(err);
+    console.error("Failed to start application services:", err);
+  });
 
   // Watch skill directories for mid-session changes
   if (!explicitQuitRequested) startSkillFileWatcher();

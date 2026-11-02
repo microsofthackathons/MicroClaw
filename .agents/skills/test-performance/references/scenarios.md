@@ -19,7 +19,16 @@ adapter contract. No VM provisioning backend or committed performance baseline i
 bundled. Tests and synthetic adapter fixtures are not evidence of a real application
 or installation run. Prefer current source when locating an existing hook.
 
-## Initial scenarios
+## Suite selection
+
+The runner registry in `scripts/performance/results.mjs` is the source of truth.
+Omitting `--scenario`, or using `--scenario all`, selects every built-in case;
+new built-in registry entries are included automatically. Entries marked
+`requiresExternalFixture` are opt-in and must be explicitly selected. Currently
+the built-in suite contains `app.restart` and `chat.new-session`; `install.clean`
+is an external-VM adapter contract, not a third built-in installation backend.
+
+## Scenario boundaries
 
 | ID | Start | End | Metrics |
 | --- | --- | --- | --- |

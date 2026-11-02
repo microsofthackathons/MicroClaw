@@ -34,7 +34,7 @@ export async function runPerformance(options) {
       id === "install.clean"
         ? { version: 1, imageId: null, vmId: null }
         : {
-            version: 1,
+            version: 2,
             promptVersion: 1,
             model: options.model,
             provider:
@@ -47,7 +47,8 @@ export async function runPerformance(options) {
             },
             toolPolicy: "deny-all",
             streamingCadenceMs: options.profile === "fixed-response" ? 20 : null,
-            warmup: "normal-application-startup; included in model request budget",
+            warmup:
+              "normal-startup-and-optional-ui-chat-preparation; outside scenario timing; included in model request budget",
             modelRequestBudget: options.maxRequests,
           },
     cachePolicy:
@@ -69,7 +70,7 @@ export async function runPerformance(options) {
     limitations: [
       "Binary/source association is unknown unless separately established by a trusted build pipeline. Current source fingerprints are not attributed to an existing binary.",
       "UI timings observe DOM visibility after paint opportunities, not a physical screen presentation timestamp. Automation/observer scheduling adds measurement overhead.",
-      "Initial fixture startup and report generation are outside scenario timing. Normal startup may call the model for warmup/title work; all proxy requests count toward the request budget.",
+      "Initial fixture startup, optional UI chat preparation and report generation are outside scenario timing. Startup/preparation may call the model for warmup/title work; all proxy requests count toward the request budget.",
       "GPU identity, provider output token counts and internal model-runtime stages are unavailable. Real-model networking and inference are uncontrolled sources of variation.",
       "Synthetic fixture has no personal sessions, plugins or bundled skills enabled; it is not a measurement of a user's populated profile.",
     ],
@@ -130,7 +131,7 @@ export async function runPerformance(options) {
             activeDriver = driver;
             const setupStarted = performance.now();
             try {
-              await driver.launch();
+              await driver.launch({ timeoutMs: options.setupTimeoutMs });
             } finally {
               await writeFile(
                 path.join(output, `${scenario.id}.setup.json`),
@@ -138,6 +139,7 @@ export async function runPerformance(options) {
                   {
                     elapsedMs: performance.now() - setupStarted,
                     boundary: "unmeasured-initial-launch",
+                    timeoutMs: options.setupTimeoutMs,
                   },
                   null,
                   2,
@@ -208,6 +210,7 @@ export async function runPerformance(options) {
             } catch (error) {
               const partial = scenario.id === "chat.new-session" ? await driver.snapshot() : null;
               if (partial) sample.metrics = partial.metrics;
+              if (scenario.id === "chat.new-session") sample.preparation = driver.chatPreparation;
               sample.outcome = options.signal?.aborted
                 ? "cancelled"
                 : /timeout|timed out/i.test(String(error))

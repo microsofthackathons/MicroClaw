@@ -174,6 +174,7 @@
             v-for="(msg, idx) in group.messages"
             :key="group.key + '-' + idx"
             class="chat-bubble"
+            :data-perf-run-id="performanceEnabled ? msg.performanceRunId : undefined"
             :class="[
               group.normalizedRole,
               { editable: group.normalizedRole === 'user' && !isEditingMessage(group, idx) },
@@ -449,7 +450,11 @@
         </div>
 
         <!-- Text output (hidden entirely when plan progress panel is visible during streaming) -->
-        <div v-if="displayStreamText && !streamHasPlan" class="chat-bubble assistant streaming">
+        <div
+          v-if="displayStreamText && !streamHasPlan"
+          class="chat-bubble assistant streaming"
+          :data-perf-run-id="performanceEnabled ? chatStore.chatRunId : undefined"
+        >
           <div class="chat-text" v-html="renderMarkdown(displayStreamText)"></div>
           <button
             class="chat-copy-btn"
@@ -554,6 +559,7 @@ import mapGif from "@/assets/map.gif";
 import defaultAvatar from "@/assets/main-avatar.png";
 
 const chatStore = useChatStore();
+const performanceEnabled = Boolean(window.openclaw.features?.performance);
 const agentStore = useAgentStore();
 const router = useRouter();
 

@@ -399,6 +399,13 @@ describe("GatewayClient.sendChat", () => {
     );
   });
 
+  it("returns the Gateway acknowledgment with its actual run ID", async () => {
+    const { client, request } = createClient();
+    const acknowledgment = { runId: "actual-run", status: "started" };
+    request.mockResolvedValueOnce(acknowledgment);
+    expect(await client.sendChat("session-123", "hello")).toBe(acknowledgment);
+  });
+
   it("adds gateway-compatible attachment objects when provided", async () => {
     const { client, request } = createClient();
     await client.sendChat("session-123", "", [

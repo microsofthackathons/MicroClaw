@@ -1,9 +1,28 @@
 ---
-name: microclaw-perf
-description: Measure and report MicroClaw installation, restart, and new-session chat performance. Use for current-checkout performance reports or explicitly requested baseline/PR regression comparisons, not routine unit tests or unrelated code optimization.
+name: test-performance
+description: Prepare, build, run all built-in MicroClaw performance cases, and deliver a measured report. Use for end-to-end performance testing or explicitly requested baseline comparisons, not ordinary unit tests or unrelated optimization.
 ---
 
-# MicroClaw Scenario Performance
+# Test Performance
+
+## One-command workflow
+
+`$test-performance` requests an end-to-end report for the current checkout. Do the
+preparation, packaging, execution and report interpretation rather than handing
+the user a list of shell commands.
+
+- Run every built-in case via the runner's `all` selector, with three samples per
+  case and the deterministic `fixed-response` model. Discover cases from the runner
+  registry; do not hardcode a pair of case names or a fixed case count.
+- Prepare missing repository-local dependencies and generated runtime resources,
+  then build a complete packaged application. Request required permissions at the
+  relevant operation; do not install or replace the user's system application.
+- Preserve the current checkout and uncommitted changes. An explicitly supplied
+  application artifact is measured as supplied, not silently rebuilt or replaced.
+- External-fixture cases such as `install.clean` require explicit selection and a
+  disposable VM adapter; they are not part of the built-in suite.
+- Honor explicit scenario, sample, model and comparison choices instead of these
+  defaults. Do not fetch a baseline or use a real provider for a bare invocation.
 
 ## Choose the mode
 
@@ -33,18 +52,20 @@ scenarios before measuring.
 1. Record the current revision, dirty-tree state, application artifact identity,
    scenario version, and relevant environment. Include uncommitted changes when
    the request is about the current checkout; never silently replace it with HEAD.
-2. Locate the checked-in performance runner and use its defined commands if present.
-   Reuse deterministic helpers for execution, timing, aggregation, and comparison
-   rather than recreating those operations in the agent's reasoning.
-3. Use `npm run perf -- report --app "<packaged executable>" --scenario
-   app.restart,chat.new-session --samples <authorized count>` for desktop scenarios.
-   See [runner usage and limitations](../../../docs/performance-runner.md) before
-   execution. The runner defaults to a deterministic local model fixture; real-model
+2. Read [preparation, runner usage and limitations](../../../docs/performance-runner.md).
+   Use the checked-in resource-preparation and packaging scripts; `pack` alone does
+   not guarantee that the packaged application contains Node and OpenClaw. Unless
+   the user supplied an artifact, build from the current checkout and verify that
+   the complete runtime was packaged before launching the runner.
+3. Use `npm run perf -- report --app "<packaged executable>" --scenario all
+   --samples 3` by default, or pass the user's explicit scope and sample count.
+   Reuse the runner's deterministic execution, timing, aggregation and comparison
+   helpers. The runner defaults to a deterministic local model fixture; real-model
    runs require an explicit model, sample count and whole-run request budget.
    Clean installation requires an explicitly disposable external VM adapter; no
    VM provisioning backend is bundled. Missing prerequisites produce an unavailable
    report, not synthetic timings. Do not launch an older binary without the runner's
-   isolation contract or silently build/replace an application artifact.
+   isolation contract or replace an explicitly supplied application artifact.
 4. Prefer a packaged application built from the recorded source. Keep build time
    outside runtime metrics. A dev-mode measurement is allowed when requested, but
    label it explicitly and do not compare it with a packaged build.
@@ -66,6 +87,15 @@ scenarios before measuring.
   expand the workload. Keep fixed-response and real-model results separate.
 - Preserve every attempt, including failures and timeouts. A retry is a new sample,
   not a replacement for a failed sample. Do not manufacture missing timings.
+
+## Diagnose setup failures
+
+Read the report, per-attempt evidence and isolated startup logs before proposing a
+rerun. Resolve safe, repository-local build, runtime-resource or test-fixture issues
+yourself; do not change business behavior to obtain better timings. Allow at most
+one corrective rerun by default, in a new run directory with the earlier evidence
+retained. If execution still cannot proceed, report the concrete blocker and what
+was tried instead of repeatedly asking the user to run the same command.
 
 ## Produce the report
 
