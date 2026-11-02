@@ -278,7 +278,22 @@ npm run dev
 
 1. 构建桌面应用（`desktop/` → Electron Builder）
 2. 创建便携版 zip 包（`dist/microclaw-portable.zip`）
-3. 打包安装器 exe（PyInstaller → `dist/MicroClawInstaller.exe`）
+3. 打包安装器目录（PyInstaller → `dist/MicroClawInstaller/`）
+4. 生成并验证可分发给新机器的完整单文件安装器（`dist/MicroClawSetup.exe`）
+
+默认使用更快的 zlib 压缩生成安装 EXE，并跳过额外的安装器 ZIP。EXE 仍包含完整安装内容，
+原生资源准备、最终解压完整性校验及可选签名流程均保留。
+如需原来的压缩方式，添加 `-SetupCompression lzma`；如需同时生成
+`dist/MicroClawInstaller.zip`，添加 `-IncludeInstallerZip`（CI 会显式传入该参数）。
+未传入此开关时，已有的安装器 ZIP 不会更新。
+
+重复打包会自动复用未变化的原生资源、桌面应用、便携 ZIP、安装器目录和最终 EXE。
+每个阶段都按输入与已有输出的 SHA-256 内容指纹判断缓存，不仅比较时间戳；源码、依赖、
+工具链、资源或压缩参数变化时重建受影响的阶段，输出丢失或被改动也会使对应缓存失效。
+每次仍会实际解压并校验最终 EXE，签名检查也不跳过；配置签名时始终重新打包桌面和 EXE。
+安装器阶段仅在使用项目 `.venv` 中的 PyInstaller 时复用，其余 Python 构建方式保持可用但不复用。
+首次构建会建立 `build/package-cache/`；运行 `.\build.ps1 -Rebuild` 可强制全量重建。
+显式请求的额外安装器 ZIP 每次都会重新生成。
 
 ### 前置条件
 

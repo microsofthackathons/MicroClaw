@@ -49,7 +49,10 @@ OutFile "${OUT_FILE}"
 ; Extraction only — no admin needed. The inner installer self-elevates the
 ; individual steps (e.g. the Node.js MSI) when required.
 RequestExecutionLevel user
-SetCompressor /SOLID lzma
+!ifndef SETUP_COMPRESSION
+  !define SETUP_COMPRESSION zlib
+!endif
+SetCompressor /SOLID ${SETUP_COMPRESSION}
 
 InstallDir "$LOCALAPPDATA\MicroClaw\Setup\${PAYLOAD_ID}"
 SilentInstall silent

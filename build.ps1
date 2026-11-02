@@ -1,11 +1,16 @@
 ﻿# One-click build: desktop app + native MXC resources -> portable zip -> installer exe
 param(
     [ValidateSet('2026.9.3', '2026.10.3', '2026.10.5')]
-    [string]$OpenClawVersion = '2026.10.5'
+    [string]$OpenClawVersion = '2026.10.5',
+    [ValidateSet('zlib', 'lzma')]
+    [string]$SetupCompression = 'zlib',
+    [switch]$IncludeInstallerZip,
+    [switch]$Rebuild
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$buildTimer = [Diagnostics.Stopwatch]::StartNew()
 
 # Force UTF-8 so child-process output isn't garbled (e.g. 'ΓÇó' instead of '•').
 $OutputEncoding = [System.Text.UTF8Encoding]::new()
@@ -14,6 +19,50 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 $env:PYTHONIOENCODING = 'utf-8'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+function Invoke-BuildCache {
+    param([string[]]$Arguments)
+
+    $cachePython = "$root\.venv\Scripts\python.exe"
+    if (-not (Test-Path $cachePython)) { $cachePython = 'python' }
+    $result = & $cachePython "$root\scripts\build_cache.py" @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Build cache command failed: $Arguments" }
+    if ($result) { return ($result | ConvertFrom-Json) }
+}
+
+function Get-BuildCache {
+    param([string]$Stage, [string[]]$Context = @(), [string[]]$ExtraInputs = @(), [switch]$Disabled)
+
+    $cachePythonAvailable = Test-Path "$root\.venv\Scripts\python.exe"
+    if (-not $cachePythonAvailable) {
+        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        $cachePythonAvailable = $pythonCommand -and $pythonCommand.Source -notlike '*\WindowsApps\python.exe'
+    }
+    if ($Disabled -or -not $cachePythonAvailable) {
+        Write-Host "  Cache disabled: $Stage (build environment requires rebuilding)" -ForegroundColor DarkGray
+        return [pscustomobject]@{ stage = $Stage; key = $null; hit = $false }
+    }
+    $arguments = @('probe', '--root', $root, '--stage', $Stage)
+    foreach ($value in $Context) {
+        $arguments += '--context=' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value))
+    }
+    foreach ($path in $ExtraInputs) { $arguments += "--extra-input=$path" }
+    if ($Rebuild) { $arguments += '--rebuild' }
+    $cache = Invoke-BuildCache -Arguments $arguments
+    if ($cache.hit) {
+        Write-Host "  Cache hit: $Stage (input/output content verified)" -ForegroundColor Green
+    } else {
+        Write-Host "  Cache miss: $Stage ($($cache.reason))" -ForegroundColor DarkGray
+    }
+    return $cache
+}
+
+function Save-BuildCache {
+    param($Cache)
+
+    if (-not $Cache.key) { return }
+    Invoke-BuildCache -Arguments @('save', '--root', $root, '--stage', $Cache.stage, '--key', $Cache.key)
+}
 
 function Get-FileSetId {
     param(
@@ -127,21 +176,39 @@ try {
 
 # -- Step 1: Build native security helpers --
 Write-Host "`n=== Step 1/7: Build security helpers ===" -ForegroundColor Cyan
-Push-Location "$root\desktop"
-try {
-    npm run prepare-packaged-resources
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: packaged runtime resource preparation failed" -ForegroundColor Red
-        exit 1
+$nativeContext = @(
+    (& node --version),
+    (& dotnet --info | Out-String),
+    (& git -C "$root\third_party\openclaw-windows-node\source" rev-parse HEAD)
+)
+if ($LASTEXITCODE -ne 0) { throw 'Unable to verify pinned Windows Node revision' }
+$nativeCache = Get-BuildCache -Stage native -Context $nativeContext `
+    -ExtraInputs @((Get-Command node.exe).Source, (Get-Command dotnet.exe).Source)
+if (-not $nativeCache.hit) {
+    Push-Location "$root\desktop"
+    try {
+        npm run prepare-packaged-resources
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ERROR: packaged runtime resource preparation failed" -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
     }
-} finally {
-    Pop-Location
+    Save-BuildCache -Cache $nativeCache
 }
+
+$desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString())
+$signingConfigured = [bool]($env:CSC_LINK -or $env:WIN_CSC_LINK -or $env:CSC_NAME -or
+    $env:WIN_CSC_SUBJECT_NAME -or $env:WIN_CSC_SHA1 -or $env:TRUSTED_SIGNING_ENDPOINT -or
+    $env:TRUSTED_SIGNING_ACCOUNT -or $env:TRUSTED_SIGNING_PROFILE)
+$desktopCache = Get-BuildCache -Stage desktop -Context $desktopContext `
+    -ExtraInputs @((Get-Command node.exe).Source) -Disabled:$signingConfigured
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
 Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan
 $distDir = "$root\desktop\dist"
-if (Test-Path $distDir) {
+if (-not $desktopCache.hit -and (Test-Path $distDir)) {
     Remove-Item "$distDir\*.js" -Force -ErrorAction SilentlyContinue
     Remove-Item "$distDir\*.js.map" -Force -ErrorAction SilentlyContinue
     Write-Host "  Cleaned desktop\dist\"
@@ -156,18 +223,20 @@ if (-not (Test-Path $outDist)) {
 
 # -- Step 3: Build & pack desktop --
 Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
-Push-Location "$root\desktop"
-try {
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    npm run pack:prepared 2>&1 | ForEach-Object { Write-Host "  $_" }
-    $ErrorActionPreference = $prev
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: desktop build failed" -ForegroundColor Red
-        exit 1
+if (-not $desktopCache.hit) {
+    Push-Location "$root\desktop"
+    try {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        npm run pack:prepared 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $ErrorActionPreference = $prev
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ERROR: desktop build failed" -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
     }
-} finally {
-    Pop-Location
 }
 
 # -- Verify: ensure packed asar contains freshly compiled code --
@@ -181,12 +250,17 @@ if (Test-Path $desktopAsar) {
         Write-Host "  Verified: app.asar is newer than source files" -ForegroundColor Green
     }
 }
+if (-not $desktopCache.hit) { Save-BuildCache -Cache $desktopCache }
 
 # Step 4: Create portable zip
 Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
-if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
+$portableCache = Get-BuildCache -Stage portable -Context $desktopContext
+if (-not $portableCache.hit) {
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
+    Save-BuildCache -Cache $portableCache
+}
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  -> $zipPath  ${zipSizeMB} MB"
 
@@ -286,6 +360,10 @@ if ($hasUvProject) {
 }
 
 # --- Run PyInstaller ---
+$installerCache = Get-BuildCache -Stage installer -Disabled:($hasUvProject -or
+    -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe"))
+if ($installerCache.hit) { $installerBuilt = $true }
+$localInstallerBuilt = $false
 # Strategy 1: `uv run` — uses project .venv with all deps
 if (-not $installerBuilt -and $hasUvProject) {
     Write-Host "  Trying: uv run pyinstaller" -ForegroundColor DarkGray
@@ -297,7 +375,10 @@ if (-not $installerBuilt -and $hasUvProject) {
 if (-not $installerBuilt -and (Test-Path "$root\.venv\Scripts\pyinstaller.exe")) {
     Write-Host "  Trying: .venv\Scripts\pyinstaller.exe" -ForegroundColor DarkGray
     & "$root\.venv\Scripts\pyinstaller.exe" MicroClawDeployer.spec --noconfirm
-    if ($LASTEXITCODE -eq 0) { $installerBuilt = $true }
+    if ($LASTEXITCODE -eq 0) {
+        $installerBuilt = $true
+        $localInstallerBuilt = $true
+    }
 }
 
 # Strategy 3: pyinstaller on PATH
@@ -340,6 +421,7 @@ if (-not $installerBuilt) {
     Write-Host "  But MicroClawInstaller.exe is missing — end users cannot install." -ForegroundColor Yellow
     exit 1
 }
+if (-not $installerCache.hit -and $localInstallerBuilt) { Save-BuildCache -Cache $installerCache }
 
 # Step 6: Pack onedir output into a single distributable zip
 Write-Host "`n=== Step 6/7: Pack installer directory ===" -ForegroundColor Cyan
@@ -350,10 +432,14 @@ if (-not (Test-Path $installerDir)) {
     Write-Host "         PyInstaller reported success but produced no output." -ForegroundColor Red
     exit 1
 }
-if (Test-Path $installerZip) { Remove-Item $installerZip -Force }
-Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
-$instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
-Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
+if ($IncludeInstallerZip) {
+    if (Test-Path $installerZip) { Remove-Item $installerZip -Force }
+    Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
+    $instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
+    Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
+} else {
+    Write-Host "  Skipping optional installer zip; use -IncludeInstallerZip to create or refresh it." -ForegroundColor DarkGray
+}
 
 # Step 7: Build the single-exe setup (NSIS self-extractor) and code-sign it.
 # This is the ONE file end users download. It extracts the onedir installer to a
@@ -413,27 +499,37 @@ try {
 }
 Write-Host "  Payload ID: $payloadId" -ForegroundColor DarkGray
 
-if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
+$setupCache = Get-BuildCache -Stage setup -Context @($payloadId, $SetupCompression, $version4) `
+    -ExtraInputs @((Split-Path -Parent $makensis)) -Disabled:$signingConfigured
+if (-not $setupCache.hit) {
+    if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
 
-$prev = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-& $makensis `
-    "/INPUTCHARSET" `
-    "UTF8" `
-    "/DPAYLOAD_DIR=$installerDir" `
-    "/DOUT_FILE=$setupExe" `
-    "/DICON=$setupIcon" `
-    "/DVERSION=$version4" `
-    "/DPAYLOAD_ID=$payloadId" `
-    $nsiScript 2>&1 | ForEach-Object { Write-Host "  $_" }
-$nsisExit = $LASTEXITCODE
-$ErrorActionPreference = $prev
-if ($nsisExit -ne 0 -or -not (Test-Path $setupExe)) {
-    Write-Host "  ERROR: makensis failed (exit $nsisExit) — MicroClawSetup.exe not produced." -ForegroundColor Red
-    exit 1
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $setupTimer = [Diagnostics.Stopwatch]::StartNew()
+    & $makensis `
+        "/INPUTCHARSET" `
+        "UTF8" `
+        "/DPAYLOAD_DIR=$installerDir" `
+        "/DOUT_FILE=$setupExe" `
+        "/DICON=$setupIcon" `
+        "/DVERSION=$version4" `
+        "/DPAYLOAD_ID=$payloadId" `
+        "/DSETUP_COMPRESSION=$SetupCompression" `
+        $nsiScript 2>&1 | ForEach-Object { Write-Host "  $_" }
+    $nsisExit = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($nsisExit -ne 0 -or -not (Test-Path $setupExe)) {
+        Write-Host "  ERROR: makensis failed (exit $nsisExit) — MicroClawSetup.exe not produced." -ForegroundColor Red
+        exit 1
+    }
+    $setupSizeMB = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
+    Write-Host "  -> $setupExe  ${setupSizeMB} MB" -ForegroundColor Green
+    $setupTimer.Stop()
+    Write-Host "  Setup compression: $SetupCompression, $([math]::Round($setupTimer.Elapsed.TotalSeconds, 1)) seconds" -ForegroundColor DarkGray
+} else {
+    Write-Host "  Reusing complete setup EXE; extraction verification still runs." -ForegroundColor DarkGray
 }
-$setupSizeMB = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
-Write-Host "  -> $setupExe  ${setupSizeMB} MB" -ForegroundColor Green
 
 $verificationRoot = [IO.Path]::GetFullPath((Join-Path $root 'build')).TrimEnd('\') + '\'
 $verificationDir = [IO.Path]::GetFullPath((Join-Path $verificationRoot ("setup-payload-check-" + [Guid]::NewGuid().ToString('N'))))
@@ -463,9 +559,12 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  ERROR: signing step failed (exit $LASTEXITCODE)." -ForegroundColor Red
     exit 1
 }
+Save-BuildCache -Cache $setupCache
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
 Write-Host "  Setup (one-exe): $setupExe"
 Write-Host "  Installer dir:   $root\dist\MicroClawInstaller\"
-Write-Host "  Installer zip:   $installerZip"
+if ($IncludeInstallerZip) { Write-Host "  Installer zip:   $installerZip" }
 Write-Host "  Portable:        $zipPath"
+$buildTimer.Stop()
+Write-Host "  Total build:     $([math]::Round($buildTimer.Elapsed.TotalMinutes, 2)) minutes"
