@@ -11,11 +11,6 @@ export function readInternalFeatures(
 }
 
 export function assertGitHubCopilotEnabled(enabled = false): void {
-  if (!enabled) throw new Error("GitHub Copilot is disabled. Choose another model provider.");
-}
-
-export function assertModelProviderEnabled(modelRef: unknown, githubCopilotEnabled = false): void {
-  if (typeof modelRef === "string" && modelRef.trim().startsWith("github-copilot/")) {
-    assertGitHubCopilotEnabled(githubCopilotEnabled);
-  }
+  if (!enabled)
+    throw new Error("GitHub Copilot setup is disabled. Enable the internal feature to sign in.");
 }

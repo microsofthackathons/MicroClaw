@@ -27,7 +27,6 @@ import {
 import { assertChatModelSupported } from "./provider-model-capabilities";
 import {
   assertGitHubCopilotEnabled,
-  assertModelProviderEnabled,
   INTERNAL_GITHUB_COPILOT_ARGUMENT,
   readInternalFeatures,
 } from "./internal-features";
@@ -73,6 +72,10 @@ import {
   type IntegrityResult,
 } from "./skill-integrity";
 import { migrateMxcOnlySecuritySettings } from "./mxc-only-settings";
+import {
+  pruneMissingWindowsNodeMxcFolders,
+  reconcileWindowsNodeMxcFolders,
+} from "./windows-node-mxc-folder-cleanup";
 import { resolveSupportedLocale, t as mainT } from "./i18n";
 import { checkForUpdates } from "./update-checker";
 import { getUsdToCnyRate } from "./exchange-rate";
@@ -463,6 +466,7 @@ const migratedSecuritySettings = migrateMxcOnlySecuritySettings(settingsStore.st
 if (JSON.stringify(settingsStore.store) !== JSON.stringify(migratedSecuritySettings)) {
   settingsStore.store = migratedSecuritySettings;
 }
+reconcileWindowsNodeMxcFolders(settingsStore);
 const RENDERER_WRITABLE_SETTING_KEYS = new Set([
   "accentColor",
   "autoStart",
@@ -526,7 +530,6 @@ const localModelService = new LocalModelService({
   onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
 });
 const sessionModelService = new SessionModelService({
-  githubCopilotEnabled: internalFeatures.githubCopilot,
   gateway: () => gwClient,
   prepareModel: (modelRef) =>
     withModelConfigurationMutation(async () => {
@@ -631,7 +634,6 @@ async function assertChatModelEnabled(sessionKey?: string): Promise<void> {
   if (sessionKey && gwClient && supportsLocalModelGatewayVersion(gwClient.serverVersion)) {
     modelRef = (await sessionModelService.get(sessionKey)).modelRef ?? modelRef;
   }
-  assertModelProviderEnabled(modelRef, internalFeatures.githubCopilot);
   if (modelRef) assertChatModelSupported(modelRef);
 }
 
@@ -3081,7 +3083,7 @@ function isConfigured(): boolean {
  */
 function needsSetup(): boolean {
   const config = readConfig();
-  if (hasConfiguredModel(config, internalFeatures.githubCopilot)) return false;
+  if (hasConfiguredModel(config)) return false;
   // Also check .env for MODEL_API_KEY
   const env = loadStateDirEnv();
   if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
@@ -5068,6 +5070,7 @@ async function startGatewayInner(
         ? (preparedContainment ??
           (await prepareWindowsNodeMxcContainment(windowsNodeMxcRequestedMode)))
         : null;
+    if (windowsNodeMxcDesired) reconcileWindowsNodeMxcFolders(settingsStore);
     const nextGatewayGenerationId = randomUUID();
     const nextApprovalProofContext = windowsNodeMxcDesired
       ? bundledWindowsNodeHost.createApprovalProofContext(
@@ -6761,11 +6764,7 @@ function registerIpcHandlers(): void {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     if (modelConfigurationMutationInProgress || localModelService.busy || sessionModelService.busy)
       return { outcome: "skipped", transcriptDeleted: true };
-    if (
-      hasLocalModelPrimary(readConfig()) ||
-      (!internalFeatures.githubCopilot &&
-        getPrimaryModel(readConfig())?.startsWith("github-copilot/"))
-    ) {
+    if (hasLocalModelPrimary(readConfig())) {
       return { outcome: "skipped", transcriptDeleted: true };
     }
     if (
@@ -7365,7 +7364,6 @@ function registerIpcHandlers(): void {
       try {
         const selected = await selectDefaultModel(
           {
-            githubCopilotEnabled: internalFeatures.githubCopilot,
             gateway: () => gwClient,
             readConfig,
             assertMutable: assertCloudModelMutable,
@@ -7384,14 +7382,12 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle("model:github-copilot:status", () => {
-    if (!internalFeatures.githubCopilot) return { authenticated: false };
     const client = gwClient;
     const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
     return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
   });
 
   ipcMain.handle("model:github-copilot:list-models", async () => {
-    if (!internalFeatures.githubCopilot) return [];
     const client = gwClient;
     const queryGateway = client?.connected
       ? (params: Record<string, unknown>, timeoutMs: number) =>
@@ -8217,7 +8213,10 @@ function registerIpcHandlers(): void {
   };
 
   const normalizeCompleteWindowsNodeMxcFolderPolicy = (draft: WindowsNodeMxcFolderPolicy) => {
-    const result = normalizeWindowsNodeMxcFolderPolicy(draft, validateWindowsNodeMxcUserDir);
+    const result = normalizeWindowsNodeMxcFolderPolicy(
+      pruneMissingWindowsNodeMxcFolders(draft),
+      validateWindowsNodeMxcUserDir,
+    );
     if (!result.ok) {
       throw new Error(
         `Approved folder policy rejected${result.path ? ` (${result.path})` : ""}: ${

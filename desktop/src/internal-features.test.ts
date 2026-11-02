@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  assertGitHubCopilotEnabled,
-  assertModelProviderEnabled,
-  readInternalFeatures,
-} from "./internal-features";
+import { assertGitHubCopilotEnabled, readInternalFeatures } from "./internal-features";
 
 describe("internal GitHub Copilot feature", () => {
   it.each([undefined, "", "0", "false", "true", "yes", " 1 "])("defaults off for %j", (value) => {
@@ -11,7 +7,7 @@ describe("internal GitHub Copilot feature", () => {
     expect(features.githubCopilot).toBe(false);
     expect(Object.isFrozen(features)).toBe(true);
     expect(() => assertGitHubCopilotEnabled(features.githubCopilot)).toThrow(
-      "GitHub Copilot is disabled",
+      "GitHub Copilot setup is disabled",
     );
   });
 
@@ -20,18 +16,10 @@ describe("internal GitHub Copilot feature", () => {
     expect(readInternalFeatures({ NODE_ENV: "development" }).githubCopilot).toBe(false);
     const features = readInternalFeatures({ MICROCLAW_INTERNAL_GITHUB_COPILOT: "1" });
     expect(features.githubCopilot).toBe(true);
-    expect(() =>
-      assertModelProviderEnabled("github-copilot/gpt-5", features.githubCopilot),
-    ).not.toThrow();
+    expect(() => assertGitHubCopilotEnabled(features.githubCopilot)).not.toThrow();
   });
 
-  it("rejects disabled models while preserving cloud/local choices and empty selections", () => {
-    expect(() => assertGitHubCopilotEnabled()).toThrow("GitHub Copilot is disabled");
-    expect(() => assertModelProviderEnabled("github-copilot/gpt-5")).toThrow(
-      "GitHub Copilot is disabled",
-    );
-    for (const modelRef of [undefined, null, "", "qwen/qwen", "llama-cpp/qwen", "custom/model"]) {
-      expect(() => assertModelProviderEnabled(modelRef)).not.toThrow();
-    }
+  it("requires explicit opt-in for the desktop sign-in entry point", () => {
+    expect(() => assertGitHubCopilotEnabled()).toThrow("GitHub Copilot setup is disabled");
   });
 });
