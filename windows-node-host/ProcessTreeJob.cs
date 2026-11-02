@@ -64,6 +64,21 @@ internal sealed class ProcessTreeJob
         }
     }
 
+    public async Task EnsureNoChildProcessesAsync()
+    {
+        var deadline = Environment.TickCount64 + 5_000;
+        do
+        {
+            if (!QueryInformationJobObject(handle, 1, out var information,
+                    (uint)Marshal.SizeOf<JobObjectBasicAccountingInformation>(), nint.Zero))
+                throw CreateError("job-query-failed", "Windows could not verify contained process termination.");
+            if (information.ActiveProcesses == 1) return;
+            await Task.Delay(25);
+        } while (Environment.TickCount64 < deadline);
+        throw new HostPolicyException("live-policy-processes-active",
+            "The previous containment policy still has live child processes; execution remains locked.");
+    }
+
     private static HostPolicyException CreateError(string code, string message) =>
         new(code, $"{message} {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
 
@@ -84,6 +99,25 @@ internal sealed class ProcessTreeJob
 
     [DllImport("kernel32.dll")]
     private static extern nint GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryInformationJobObject(
+        SafeFileHandle job, int informationClass, out JobObjectBasicAccountingInformation information,
+        uint informationLength, nint returnLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectBasicAccountingInformation
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct JobObjectBasicLimitInformation

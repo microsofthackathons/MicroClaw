@@ -3,7 +3,7 @@ import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 import { assertConfigWriteAllowed } from "./config-write-policy";
 import { GatewayRequestError } from "./gateway-client";
 import { supportsLocalModelGatewayVersion } from "./local-model-service";
-import { assertModelConfigUnchanged } from "./model-setup";
+import { assertModelConfigUnchanged, ModelConfigRestartRequiredError } from "./model-setup";
 
 type JsonObject = Record<string, unknown>;
 
@@ -40,7 +40,7 @@ function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 }
 
-export async function applyModelConfig(deps: Dependencies, input: unknown): Promise<void> {
+export function parseModelConfigUpdate(input: unknown): ModelConfigUpdate {
   const params = object(input);
   if (
     Object.keys(params).some(
@@ -53,6 +53,16 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
     !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(params.providerKey)
   )
     throw new Error("Supply the model configuration, original configuration and change reason");
+  return {
+    config: params.config,
+    expectedConfig: params.expectedConfig,
+    action: params.action as ModelConfigUpdate["action"],
+    providerKey: params.providerKey,
+  };
+}
+
+export async function applyModelConfig(deps: Dependencies, input: unknown): Promise<void> {
+  const params = parseModelConfigUpdate(input);
   deps.assertMutable();
   assertConfigWriteAllowed(params.config, params.expectedConfig);
   assertModelConfigUnchanged(params.expectedConfig, deps.readConfig());
@@ -96,7 +106,7 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
       if (result.ok !== true || typeof result.hash !== "string" || !result.hash)
         throw new Error("The saved model configuration could not be confirmed");
       if (object(object(object(result.sentinel).payload).stats).requiresRestart === true)
-        throw new Error("Gateway reported that a restart is required to apply these settings");
+        throw new ModelConfigRestartRequiredError(result.hash);
       targetHash = result.hash;
     }
     const deadline = Date.now() + MODEL_APPLY_SETTLE_TIMEOUT_MS;

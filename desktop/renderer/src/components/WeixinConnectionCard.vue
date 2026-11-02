@@ -23,7 +23,14 @@
       >
         <IconClose :size="16" />
       </button>
-      <div v-if="!inline || connected || !dialogOpen || error" class="connection-actions">
+      <div
+        v-if="
+          !inlineAccountChangePending &&
+          !inlineSharedQr &&
+          (!inline || connected || !dialogOpen || error)
+        "
+        class="connection-actions"
+      >
         <el-button
           v-if="!connected"
           type="primary"
@@ -48,28 +55,23 @@
     </header>
     <div
       v-if="
-        mutationLocked ||
-        status?.pausedByMxc ||
-        status?.loginRequiresRestart ||
-        invalidAccounts ||
-        error ||
-        (!status?.ready && !connected)
+        !inlineAccountChangePending &&
+        !inlineSharedQr &&
+        (showLoginLock ||
+          status?.loginRequiresRestart ||
+          invalidAccounts ||
+          error ||
+          (!status?.ready && !connected && !dialogOpen))
       "
       class="weixin-body"
     >
       <el-alert
-        v-if="mutationLocked"
+        v-if="showLoginLock"
         type="info"
         :closable="false"
         :title="
-          t(mutationLockKnown ? 'plugins.weixinMutationLocked' : 'plugins.weixinMutationUnknown')
+          t(mutationLockKnown ? 'plugins.weixinLoginLocked' : 'plugins.weixinMutationUnknown')
         "
-      />
-      <el-alert
-        v-if="status?.pausedByMxc"
-        type="info"
-        :closable="false"
-        :title="t('plugins.weixinPausedByMxc')"
       />
       <el-alert
         v-if="status?.loginRequiresRestart"
@@ -84,19 +86,19 @@
         :title="t('plugins.multipleAccountsInvalid')"
       />
       <p v-if="error" class="connection-error" role="alert">{{ error }}</p>
-      <p v-if="!status?.ready && !connected" class="connection-hint">
+      <p v-if="!status?.ready && !connected && !dialogOpen" class="connection-hint">
         {{ t("plugins.weixinPreparing") }}
       </p>
     </div>
     <WeixinQrCode
-      v-if="inline && dialogOpen"
-      :data="qrData"
-      :message="qrMessage"
-      :expired="qrExpired"
+      v-if="inline && (dialogOpen || inlineAccountChangePending || inlineSharedQr)"
+      :data="dialogOpen ? qrData : inlineSharedQr ? (status?.qrSession?.qrDataUrl ?? '') : ''"
+      :message="dialogOpen ? qrMessage : inlineSharedQr ? (status?.qrSession?.message ?? '') : ''"
+      :expired="dialogOpen ? qrExpired : inlineSharedQr && status?.qrSession?.state === 'expired'"
       :disabled="starting || connectDisabled"
-      :loading="starting"
+      :loading="starting || inlineAccountChangePending"
       :error="error"
-      @refresh="startQr"
+      @refresh="dialogOpen ? startQr() : openConnection()"
       @render-error="error = t('plugins.qrRenderFailed')"
     />
     <el-dialog
@@ -126,7 +128,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { t } from "@/i18n";
@@ -135,6 +137,7 @@ import { useWeixinMutationLock } from "@/composables/useWeixinMutationLock";
 import IconClose from "@/components/icons/IconClose.vue";
 import WeixinQrCode from "@/components/WeixinQrCode.vue";
 import weixinIcon from "@/assets/wechat.png";
+import { windowsNodeMxcLifecycleStateKey } from "@/windows-node-mxc-lifecycle";
 
 const props = defineProps<{
   showMessages?: boolean;
@@ -142,20 +145,17 @@ const props = defineProps<{
   active?: boolean;
   headingId?: string;
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; confirmationChange: [pending: boolean] }>();
 type WeixinStatus = Awaited<ReturnType<typeof window.openclaw.plugin.weixin.getStatus>>;
 const router = useRouter();
 const chatStore = useChatStore();
-const {
-  locked: mutationLocked,
-  known: mutationLockKnown,
-  applyStatus,
-  canMutate,
-} = useWeixinMutationLock();
+const { loginLocked, known: mutationLockKnown, applyStatus, canLogin } = useWeixinMutationLock();
+const mxcLifecycleState = inject(windowsNodeMxcLifecycleStateKey, ref(null));
 const status = ref<WeixinStatus | null>(null);
 const dialogOpen = ref(false);
 const starting = ref(false);
 const disconnecting = ref(false);
+const confirming = ref(false);
 const error = ref("");
 const qrData = ref("");
 const qrMessage = ref("");
@@ -164,7 +164,7 @@ let inlineAttempted = false;
 let alive = true;
 let ownsQr = false;
 let loginRevision = 0;
-let cancelling: Promise<void> | null = null;
+const cancelling = shallowRef<Promise<void> | null>(null);
 let timer: ReturnType<typeof setTimeout> | undefined;
 let refreshing: Promise<void> | null = null;
 let pollRevision = 0;
@@ -181,12 +181,43 @@ const connected = computed(
     status.value?.runtimeKnown === true &&
     status.value.connected === true,
 );
+const inlineSharedQr = computed(() => {
+  const session = status.value?.qrSession;
+  return (
+    props.inline &&
+    !dialogOpen.value &&
+    !connected.value &&
+    !cancelling.value &&
+    !status.value?.loginRequiresRestart &&
+    !invalidAccounts.value &&
+    !error.value &&
+    Boolean(session?.qrDataUrl) &&
+    (session?.state === "expired" || (session?.state === "waiting" && loginLocked.value))
+  );
+});
+const inlineAccountChangePending = computed(
+  () =>
+    props.inline &&
+    loginLocked.value &&
+    !connected.value &&
+    !dialogOpen.value &&
+    !inlineSharedQr.value &&
+    !status.value?.loginRequiresRestart &&
+    !invalidAccounts.value &&
+    !error.value &&
+    (cancelling.value !== null ||
+      ["connecting-weixin", "disconnecting-weixin"].includes(mxcLifecycleState.value?.phase ?? "")),
+);
+const showLoginLock = computed(
+  () =>
+    loginLocked.value && !connected.value && !dialogOpen.value && !status.value?.loginInProgress,
+);
 const pendingQr = computed(() =>
   ["starting", "waiting"].includes(status.value?.qrSession?.state ?? ""),
 );
 const connectDisabled = computed(
   () =>
-    mutationLocked.value ||
+    loginLocked.value ||
     !status.value?.ready ||
     status.value.loginRequiresRestart ||
     disconnecting.value ||
@@ -194,7 +225,7 @@ const connectDisabled = computed(
 );
 const disconnectDisabled = computed(
   () =>
-    mutationLocked.value ||
+    loginLocked.value ||
     !status.value?.runtimeKnown ||
     status.value.loginRequiresRestart ||
     starting.value ||
@@ -242,17 +273,27 @@ function refreshStatus(force = false): Promise<void> {
   return refreshing;
 }
 
-async function pollStatus(): Promise<void> {
+async function pollStatus(force = false): Promise<void> {
   const revision = ++pollRevision;
   clearTimeout(timer);
-  await refreshStatus();
+  await refreshStatus(force);
   if (alive && revision === pollRevision && (!props.inline || props.active)) {
-    timer = setTimeout(pollStatus, dialogOpen.value ? 800 : 5_000);
+    timer = setTimeout(pollStatus, dialogOpen.value || inlineSharedQr.value ? 800 : 5_000);
   }
 }
 
+watch(loginLocked, (locked, wasLocked) => {
+  if (!locked && wasLocked && (!props.inline || props.active)) void pollStatus(true);
+});
 watch(status, () => {
-  if (!props.inline || !props.active || inlineAttempted || connectDisabled.value) return;
+  if (
+    !props.inline ||
+    !props.active ||
+    inlineAttempted ||
+    connectDisabled.value ||
+    inlineSharedQr.value
+  )
+    return;
   inlineAttempted = true;
   if (!connected.value) void openConnection();
 });
@@ -275,23 +316,21 @@ watch(dialogOpen, (open) => {
 });
 
 async function openConnection(): Promise<void> {
-  if (dialogOpen.value || connected.value || !canMutate() || connectDisabled.value) return;
-  if (hasStoredAccount.value || invalidAccounts.value) {
-    try {
-      await ElMessageBox.confirm(t("plugins.replaceWeixinConfirm"), t("plugins.confirm"), {
-        type: "warning",
-      });
-    } catch {
-      return;
-    }
-  }
-  if (!alive || (props.inline && !props.active) || !canMutate() || connectDisabled.value) return;
+  if (
+    !alive ||
+    (props.inline && !props.active) ||
+    dialogOpen.value ||
+    connected.value ||
+    !canLogin() ||
+    connectDisabled.value
+  )
+    return;
   dialogOpen.value = true;
   await startQr();
 }
 
 async function startQr(): Promise<void> {
-  if (!dialogOpen.value || starting.value || !canMutate() || connectDisabled.value) return;
+  if (!dialogOpen.value || starting.value || !canLogin() || connectDisabled.value) return;
   const revision = ++loginRevision;
   starting.value = true;
   error.value = "";
@@ -299,8 +338,8 @@ async function startQr(): Promise<void> {
   qrMessage.value = "";
   qrExpired.value = false;
   try {
-    if (cancelling) await cancelling;
-    if (!alive || revision !== loginRevision || !dialogOpen.value || !canMutate()) return;
+    if (cancelling.value) await cancelling.value;
+    if (!alive || revision !== loginRevision || !dialogOpen.value || !canLogin()) return;
     ownsQr = true;
     const result = await window.openclaw.plugin.weixin.loginQrStart({
       force: hasStoredAccount.value || invalidAccounts.value,
@@ -331,7 +370,7 @@ function stopConnection(): void {
   if (!ownsQr) return;
   ownsQr = false;
   const cancellation = window.openclaw.plugin.weixin.cancelLogin();
-  cancelling = cancellation;
+  cancelling.value = cancellation;
   void cancellation
     .catch((reason) => {
       if (alive && !dialogOpen.value) {
@@ -339,21 +378,26 @@ function stopConnection(): void {
       }
     })
     .finally(() => {
-      if (cancelling === cancellation) cancelling = null;
+      if (cancelling.value === cancellation) cancelling.value = null;
       if (alive) void refreshStatus(true);
     });
 }
 
 async function disconnectWeixin(): Promise<void> {
-  if (!canMutate() || disconnectDisabled.value) return;
+  if (confirming.value || !canLogin() || disconnectDisabled.value) return;
+  confirming.value = true;
+  emit("confirmationChange", true);
   try {
     await ElMessageBox.confirm(t("plugins.disconnectConfirm"), t("plugins.confirm"), {
       type: "warning",
     });
   } catch {
     return;
+  } finally {
+    confirming.value = false;
+    emit("confirmationChange", false);
   }
-  if (!alive || !canMutate() || disconnectDisabled.value) return;
+  if (!alive || !canLogin() || disconnectDisabled.value) return;
   const accountId = status.value?.currentAccount?.accountId;
   if (!accountId) return;
   disconnecting.value = true;

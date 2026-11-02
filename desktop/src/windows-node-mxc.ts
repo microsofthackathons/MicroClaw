@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { readAgentRoster } from "./agent-roster";
+import { computeWindowsNodeMxcApprovalPlanSha256 } from "./windows-node-mxc-readiness-proof";
 import {
   POWERSHELL_FILESYSTEM_SCOPE_MARKER,
   validatePowerShellFilesystemInitialization,
@@ -153,6 +154,9 @@ export interface WindowsNodeMxcGatewayApproval {
     path: string;
   }>;
   hasMutableFileOperand: boolean;
+  policyFingerprint?: string;
+  planSha256?: string;
+  folderChanges?: WindowsNodeMxcFolder[];
   allowedDecisions: WindowsNodeMxcApprovalDecision[];
   providerInitialization?: PowerShellFilesystemInitialization;
 }
@@ -175,6 +179,7 @@ export interface WindowsNodeMxcRendererApproval extends Pick<
   | "allowedDecisions"
   | "expiresAtUnixMs"
   | "providerInitialization"
+  | "folderChanges"
 > {
   commandText?: string;
   approvalLayer: "gateway" | "node";
@@ -349,6 +354,13 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const cwdBinding = typeof plan.cwdBinding === "string" ? plan.cwdBinding.trim() : "";
   const previewDeclaredAccess = parseGatewayDeclaredAccess(commandPreview);
   const declaredAccess = normalizeStructuredDeclaredAccess(plan.declaredAccess);
+  const policyFingerprint = plan.policyFingerprint;
+  if (
+    policyFingerprint !== undefined &&
+    (typeof policyFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(policyFingerprint))
+  ) {
+    return null;
+  }
   const hasMutableFileOperand =
     Object.hasOwn(plan, "mutableFileOperand") &&
     plan.mutableFileOperand !== null &&
@@ -389,7 +401,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     return null;
   }
   const providerInitialization =
-    hasInitialization && requestedMode === "limited-dacl"
+    hasInitialization && (requestedMode === "limited-dacl" || requestedMode === "full")
       ? validatePowerShellFilesystemInitialization(
           plan.providerInitialization,
           argv,
@@ -468,9 +480,65 @@ export function normalizeWindowsNodeMxcGatewayApproval(
     ...(origin ? { origin } : {}),
     declaredAccess,
     hasMutableFileOperand,
+    ...(typeof policyFingerprint === "string"
+      ? {
+          policyFingerprint,
+          planSha256: computeWindowsNodeMxcApprovalPlanSha256({
+            argv,
+            cwd: typeof plan.cwd === "string" ? plan.cwd : null,
+            commandText: plan.commandText as string,
+            commandPreview: typeof plan.commandPreview === "string" ? plan.commandPreview : null,
+            agentId: typeof plan.agentId === "string" ? plan.agentId : null,
+            sessionKey: plan.sessionKey as string,
+            executablePath: plan.executablePath as string,
+            executableSha256,
+            cwdBinding,
+            declaredAccess,
+            ...(providerInitialization ? { providerInitialization } : {}),
+            policyFingerprint,
+          }),
+        }
+      : {}),
     allowedDecisions: [...new Set(allowed)],
     ...(providerInitialization ? { providerInitialization } : {}),
   };
+}
+
+export function getWindowsNodeMxcMissingFolders(
+  approval: Pick<WindowsNodeMxcGatewayApproval, "canonicalCwd" | "declaredAccess">,
+  folders: WindowsNodeMxcFolder[],
+): WindowsNodeMxcFolder[] {
+  const requested = new Map<string, WindowsNodeMxcFolder>();
+  const entries = [
+    ...(approval.canonicalCwd === "isolated-scratch:v1"
+      ? []
+      : [{ path: approval.canonicalCwd, access: "ro" as const }]),
+    ...approval.declaredAccess,
+  ];
+  for (const entry of entries) {
+    const key = normalizeWindowsPath(entry.path);
+    const grant = folders
+      .filter((folder) => isWithinWindowsRoot(key, normalizeWindowsPath(folder.path)))
+      .sort((left, right) => right.path.length - left.path.length)[0];
+    if (grant && (grant.access === "rw" || entry.access === "ro")) continue;
+    const previous = requested.get(key);
+    if (!previous || entry.access === "rw") requested.set(key, { ...entry });
+  }
+  const missing = [...requested.values()];
+  return missing
+    .filter(
+      (entry) =>
+        !missing.some(
+          (parent) =>
+            parent !== entry &&
+            isWithinWindowsRoot(
+              normalizeWindowsPath(entry.path),
+              normalizeWindowsPath(parent.path),
+            ) &&
+            (parent.access === "rw" || parent.access === entry.access),
+        ),
+    )
+    .sort((left, right) => compareWindowsPaths(left.path, right.path));
 }
 
 export interface WindowsNodeMxcSettings {

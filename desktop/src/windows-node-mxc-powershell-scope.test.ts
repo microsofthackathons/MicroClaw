@@ -35,7 +35,7 @@ function preview(payload: string) {
   return `# [declare-access]rw:${access[0].path}[/declare-access]\n${payload}`;
 }
 
-describe("exact Limited PowerShell prepared initialization", () => {
+describe("exact contained PowerShell prepared initialization", () => {
   it.each([false, true])(
     "retains original literal bytes and independently regenerates form nested=%s",
     (nested) => {
@@ -153,7 +153,7 @@ describe("exact Limited PowerShell prepared initialization", () => {
       expect(approval.providerInitialization).toEqual(initialization);
       expect(
         normalizeWindowsNodeMxcGatewayApproval(envelope, nodeId, "test-generation", "full"),
-      ).toBeNull();
+      ).toEqual(expect.objectContaining({ providerInitialization: initialization }));
       const owner = normalizeWeixinRemoteApprovalOwner("bot", peer, "2026-10-20T00:00:00Z");
       const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () => ({
         accountId: "bot",

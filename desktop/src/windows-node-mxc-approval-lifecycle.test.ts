@@ -195,6 +195,30 @@ describe("authoritative MXC permission lifecycle", () => {
   );
 
   it.each(["en-US", "zh-CN"] as const)(
+    "reports saved folders independently of command success (%s)",
+    (locale) => {
+      for (const origin of ["wechat", "timeout"] as const) {
+        const text = renderMxcApprovalTerminal(
+          { status: "accepted", decision: origin === "wechat" ? "allow-once" : "deny", origin },
+          locale,
+          true,
+        );
+        expect(text).toMatch(locale === "en-US" ? /folder grants were saved/ : /文件夹权限已保存/);
+        expect(text).toMatch(
+          locale === "en-US" ? /not command execution success/ : /不代表命令执行成功/,
+        );
+        expect(text).not.toMatch(/no new permission granted|未授予新权限/);
+      }
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "unconfirmed", origin: "wechat", reason: "resolution-failed" },
+          locale,
+        ),
+      ).not.toMatch(/folder grants were saved|文件夹权限已保存/);
+    },
+  );
+
+  it.each(["en-US", "zh-CN"] as const)(
     "distinguishes expiry from operator denial and an accepted user decision (%s)",
     (locale) => {
       const expired = renderMxcApprovalTerminal(

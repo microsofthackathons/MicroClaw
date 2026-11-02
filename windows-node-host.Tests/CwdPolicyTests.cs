@@ -25,6 +25,106 @@ public sealed class CwdPolicyTests : IDisposable
         Directory.CreateDirectory(_root);
     }
 
+    [Fact]
+    public async Task LivePreparationCollectsMissingGrantsButExecutionStillRejectsThem()
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_root, "unlisted")).FullName;
+        var policy = Policy([]);
+        var capability = Capability(policy, policyFingerprint: new string('a', 64));
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var args = Parse(JsonSerializer.Serialize(new
+        {
+            command, cwd = folder, agentId = "main", sessionKey = "agent:main:test",
+        }));
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare", Args = args,
+        }, TestContext.Current.CancellationToken);
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        Assert.Equal(new string('a', 64), plan.GetProperty("policyFingerprint").GetString());
+        Assert.Equal(WindowsPathCanonicalizer.CanonicalizeDirectory(folder),
+            plan.GetProperty("cwdBinding").GetString());
+        var execution = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run", Args = args,
+        }, TestContext.Current.CancellationToken);
+        AssertRejectedBeforeExecution(execution, "cwd-outside-approved-roots");
+        var wirePayload = JsonSerializer.SerializeToElement(execution.Payload,
+            new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            });
+        Assert.Equal(JsonValueKind.Null, wirePayload.GetProperty("exitCode").ValueKind);
+        var declaration = await PrepareDeclared(capability, "rw", folder);
+        Assert.True(declaration.Ok, declaration.Error);
+        Assert.Throws<HostPolicyException>(() =>
+            DeclaredAccessParser.ParseAndValidate($"# [declare-access]rw:{folder}[/declare-access]\necho test", policy));
+    }
+
+    [Fact]
+    public void LivePreparationCannotRequestProtectedRootsOrTheirAncestors()
+    {
+        var secret = Directory.CreateDirectory(Path.Combine(_root, "protected")).FullName;
+        var policy = Policy([], [secret]);
+        Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(secret, allowMissingGrants: true));
+        Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(_root, allowMissingGrants: true));
+    }
+
+    [Fact]
+    public async Task LivePolicyReaderVerifiesSignatureRevisionAndImmutableRuntime()
+    {
+        using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var file = Path.Combine(_root, "live-policy.json");
+        var reader = new LivePolicyReader(file,
+            Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo()), "gateway-1");
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        string PolicyJson(bool withGrant, bool network = true) => JsonSerializer.Serialize(new
+        {
+            approvedRoots = withGrant
+                ? new[] { new { path = _root, access = "ReadOnly" } } : [],
+            deniedRoots = Array.Empty<string>(), wxcExecPath = wxc,
+            canvas = CreateCanvasPolicyInput(wxc), networkAllowed = network,
+            allowWindowsUi = true, clipboard = "none", inputInjection = false,
+            strictNoHostFallback = true,
+        });
+        string Envelope(int revision, string policyJson, string generation = "gateway-1")
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                contract = "microclaw.windows-node-live-policy.v1", gatewayGeneration = generation,
+                revision, policyJson,
+                policyFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(policyJson))).ToLowerInvariant(),
+            });
+            return JsonSerializer.Serialize(new
+            {
+                payload,
+                signature = Convert.ToBase64String(signer.SignData(Encoding.UTF8.GetBytes(payload),
+                    HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)),
+            });
+        }
+        var first = Envelope(1, PolicyJson(false));
+        await File.WriteAllTextAsync(file, first, TestContext.Current.CancellationToken);
+        Assert.Empty((await reader.ReadAsync()).Policy.ApprovedRoots);
+        Assert.Equal(1, (await reader.ReadAsync()).Revision);
+        var tampered = System.Text.Json.Nodes.JsonNode.Parse(first)!;
+        tampered["signature"] = Convert.ToBase64String(new byte[64]);
+        await File.WriteAllTextAsync(file, tampered.ToJsonString(), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-signature",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(2, PolicyJson(true)), TestContext.Current.CancellationToken);
+        Assert.Single((await reader.ReadAsync()).Policy.ApprovedRoots);
+        await File.WriteAllTextAsync(file, first, TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-stale",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, PolicyJson(true, false)), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-runtime-change",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, PolicyJson(true), "other"), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-stale",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+    }
+
     [Theory]
     [InlineData(0, false, true)]
     [InlineData(7, false, false)]
@@ -236,8 +336,12 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", @"C:\workspace")]));
     }
 
-    [Fact]
-    public void PowerShellFilesystemScopeReconstructsExactPreparedMetadataAndRejectsTampering()
+    [Theory]
+    [InlineData("limited-dacl", "appcontainer-dacl")]
+    [InlineData("full", "base-container")]
+    [InlineData("full", "appcontainer-bfs")]
+    public void PowerShellFilesystemScopeReconstructsExactPreparedMetadataAndRejectsTampering(
+        string strength, string tier)
     {
         var grant = Directory.CreateDirectory(Path.Combine(_root, "scope-grant")).FullName;
         var operation = $"New-Item -ItemType Directory -Path '{grant}\\child' -Force";
@@ -249,7 +353,7 @@ public sealed class CwdPolicyTests : IDisposable
             ApprovedRoots = [new ApprovedRoot(grant, FolderAccess.ReadWrite)],
             DeniedRoots = [], Canvas = Policy([]).Canvas,
             WxcExecPath = Policy([]).WxcExecPath,
-            RequestedStrength = "limited-dacl", EffectiveTier = "appcontainer-dacl",
+            RequestedStrength = strength, EffectiveTier = tier,
         };
         var preview = PowerShellFilesystemScope.Preview(access, initialization.FinalArgv[^1]);
         var result = PowerShellFilesystemScope.Validate(
@@ -1873,7 +1977,8 @@ public sealed class CwdPolicyTests : IDisposable
             snapshotSurfaceOnly = true,
         };
 
-    private BundledSystemCapability Capability(HostPolicy policy, string uiLocale = "en-US") =>
+    private BundledSystemCapability Capability(HostPolicy policy, string uiLocale = "en-US",
+        string? policyFingerprint = null) =>
         new(
             policy,
             string.Empty,
@@ -1884,7 +1989,8 @@ public sealed class CwdPolicyTests : IDisposable
                 "unused-generation",
                 "unused-fingerprint"),
             uiLocale,
-            isolationGuard: NoopIsolationGuard);
+            isolationGuard: NoopIsolationGuard,
+            policyFingerprint: policyFingerprint);
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 

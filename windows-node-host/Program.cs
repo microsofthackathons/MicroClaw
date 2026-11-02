@@ -122,11 +122,6 @@ internal static class Program
                             false,
                             GatewayErrorKind.LocalPortConflict,
                             "The expected MicroClaw Gateway process does not own the loopback listener."));
-            var activationLease = new ActivationLeaseGuard(
-                bootstrap.ActivationLeasePath,
-                bootstrap.ActivationLeaseSecret,
-                bootstrap.GatewayGeneration,
-                bootstrap.PolicyFingerprint);
             var logger = new StderrLogger();
             var identity = new DeviceIdentity(bootstrap.IdentityDirectory, logger);
             identity.Initialize();
@@ -136,6 +131,13 @@ internal static class Program
                     "The persisted bundled node identity does not match the configured MicroClaw node.");
 
             var recovery = new NodeDeviceTokenRecovery();
+            WindowsNodeClient? activeConnection = null;
+            using var liveCapabilities = new LivePolicyCapabilities(
+                bootstrap,
+                payload => activeConnection?.SendNodeEventAsync("agent.request", payload)
+                    ?? Task.FromResult(false),
+                processTreeJob);
+            await liveCapabilities.InitializeAsync();
             while (true)
             {
                 GatewayErrorKind failureKind;
@@ -147,6 +149,7 @@ internal static class Program
                         token: bootstrap.GatewayToken,
                         dataPath: bootstrap.IdentityDirectory,
                         logger: logger);
+                    activeConnection = connection;
                     connection.HandshakeAuthorizationAsync = AuthorizeGatewayAsync;
                     connection.ReconnectAuthorizationAsync = AuthorizeGatewayAsync;
                     connection.ConnectionFailure += (_, kind) =>
@@ -155,35 +158,8 @@ internal static class Program
                         if (kind == GatewayErrorKind.DeviceTokenMismatch)
                             tokenMismatch.TrySetResult(kind);
                     };
-                    using var canvasBroker = new CanvasHostBroker(
-                        policy,
-                        bootstrap.ActivationLeasePath,
-                        bootstrap.ActivationLeaseSecret,
-                        bootstrap.GatewayGeneration,
-                        bootstrap.PolicyFingerprint,
-                        bootstrap.NodeId,
-                        bootstrap.UiLocale,
-                        activationLease,
-                        payload => connection.SendNodeEventAsync("agent.request", payload));
-                    connection.RegisterCapability(new BundledSystemCapability(
-                        policy,
-                        bootstrap.ApprovalPipeName,
-                        bootstrap.ApprovalsPath,
-                        activationLease,
-                        bootstrap.UiLocale,
-                        new ApprovalProofVerifier(
-                            bootstrap.ApprovalProofSecret,
-                            bootstrap.GatewayGeneration,
-                            bootstrap.PolicyFingerprint,
-                            bootstrap.NodeId),
-                        new ReadinessProofVerifier(
-                            bootstrap.ApprovalProofSecret,
-                            bootstrap.GatewayGeneration,
-                            bootstrap.PolicyFingerprint,
-                            bootstrap.NodeId,
-                            bootstrap.ReadinessTransitionId)));
-                    connection.RegisterCapability(
-                        new BundledCanvasCapability(canvasBroker, activationLease));
+                    connection.RegisterCapability(liveCapabilities.System);
+                    connection.RegisterCapability(liveCapabilities.Canvas);
 
                     var connect = connection.ConnectAsync();
                     if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)
@@ -238,6 +214,8 @@ internal sealed class HostBootstrap
     public int GatewayProcessId { get; init; }
     public int OwnerProcessId { get; init; }
     public string PolicyPath { get; init; } = string.Empty;
+    public string LivePolicyPath { get; init; } = string.Empty;
+    public string LivePolicyPublicKey { get; init; } = string.Empty;
     public string IdentityDirectory { get; init; } = string.Empty;
     public string ApprovalPipeName { get; init; } = string.Empty;
     public string ApprovalsPath { get; init; } = string.Empty;

@@ -215,8 +215,6 @@ export default {
   "plugins.channelLoginDesc": "扫描二维码登录微信，登录后 AI 助手可以接收和处理微信消息。",
   "plugins.loginWeixin": "登录微信",
   "plugins.replaceWeixin": "更换微信账户",
-  "plugins.replaceWeixinConfirm":
-    "扫码成功后将替换当前微信账户，并删除其本地同步和授权状态。关闭二维码只收起窗口，不会取消后台连接流程。",
   "plugins.loginStatus": "状态",
   "plugins.loggedIn": "已登录",
   "plugins.notLoggedIn": "未登录",
@@ -322,6 +320,10 @@ export default {
   "settings.windowsNodeMxcAutomatic": "MicroClaw 会自动使用此电脑支持的保护方式。",
   "settings.windowsNodeMxcLearnMore": "了解更多 MXC 信息",
   "settings.windowsNodeMxcToggleUnavailable": "沙箱保护不可用或无法验证。请修复内置运行时后重试。",
+  "settings.windowsNodeMxcStatusRefreshing": "正在后台刷新 MXC 状态...",
+  "settings.windowsNodeMxcStatusVerified": "上次验证时间：{time}",
+  "perm.applyingFolders": "正在应用文件夹权限...",
+  "perm.applyingDecision": "正在应用权限决定...",
   "settings.windowsNodeMxcStatusLoading": "正在检查 MXC 可用性…",
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
@@ -478,13 +480,14 @@ export default {
   "settings.windowsNodeMxcFoldersLocked":
     "请先禁用 Windows Node + MXC，再添加、更改或移除批准的文件夹。",
   "settings.windowsNodeMxcFoldersStaged":
-    "更改仅处于暂存状态。应用时将暂停受保护聊天、撤销当前授权，然后重启、重新证明两个代际，并在两个代际中运行精确的内部受控探针。",
-  "settings.windowsNodeMxcApplyFolders": "应用更改并重新激活",
+    "更改仅处于暂存状态。应用时将更新权限，网关保持运行。待处理的批准和运行中的受控命令将被取消。",
+  "settings.windowsNodeMxcApplyFolders": "应用文件夹更改",
   "settings.windowsNodeMxcApplyFoldersWarning":
-    "代理执行和聊天将暂停，当前命令批准可能失效。如果策略、重启、证明、冒烟测试或激活的任一步骤被取消或失败，MicroClaw 将保持锁定。",
-  "settings.windowsNodeMxcApplyFoldersComplete": "文件夹策略已应用，已验证的 MXC 路由已重新激活。",
+    "新命令启动将短暂暂停。待处理的批准和运行中的受控命令将被取消，Canvas 将关闭。网关不会重启；如果更新失败，执行将保持锁定。",
+  "settings.windowsNodeMxcApplyFoldersComplete": "文件夹权限已更新，网关未重启。",
   "settings.windowsNodeMxcStagePreviousFolders": "暂存以前的策略",
   "settings.windowsNodeMxcLifecycle": "策略生命周期",
+  "settings.windowsNodeMxcLifecyclePhase.updating-folders": "正在更新文件夹权限",
   "settings.windowsNodeMxcLifecyclePhase.idle": "空闲",
   "settings.windowsNodeMxcLifecyclePhase.locking": "正在锁定执行",
   "settings.windowsNodeMxcLifecyclePhase.validating": "正在验证策略",
@@ -495,7 +498,10 @@ export default {
   "settings.windowsNodeMxcLifecyclePhase.smoking-active": "正在活动代际中运行内部探针",
   "settings.windowsNodeMxcLifecyclePhase.promoting-active": "正在当前代际中提升已验证策略",
   "settings.windowsNodeMxcLifecyclePhase.verifying-active": "正在验证活动路由",
-  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "正在启动标准安全模式",
+  "settings.windowsNodeMxcLifecyclePhase.connecting-weixin": "正在连接微信",
+  "settings.windowsNodeMxcLifecyclePhase.disconnecting-weixin": "正在断开微信连接",
+  "settings.windowsNodeMxcLifecyclePhase.disabling": "正在关闭 MXC",
+  "settings.windowsNodeMxcLifecyclePhase.starting-standard": "正在启动普通模式（MXC 已关闭）",
   "settings.windowsNodeMxcLifecyclePhase.active": "活动",
   "settings.windowsNodeMxcLifecyclePhase.locked": "锁定",
   "settings.windowsNodeMxcLifecyclePhase.failed": "转换失败",
@@ -1067,6 +1073,11 @@ export default {
   "perm.deny": "拒绝",
   "perm.allow": "允许",
   "perm.allowOnce": "允许一次",
+  "perm.mxcAllowFolders": "允许",
+  "perm.mxcFolderGrantLabel": "将添加或升级权限的文件夹",
+  "perm.mxcFolderGrantLocalOnly": "新的文件夹权限必须在桌面应用中批准。",
+  "perm.mxcFolderGrantScope":
+    "允许将执行此确切命令一次，并永久添加所列文件夹权限，但不会记住此命令，也不会再次弹出命令批准提示。其他待处理的批准和运行中的受控命令将被取消。",
   "perm.grantRO": "授予只读权限",
   "perm.grantRW": "授予读写权限",
   "perm.fileDesc": "允许对 {dir} 的写入权限",
@@ -1078,7 +1089,8 @@ export default {
   "perm.phoneSending": "正在向微信发送此审批；原超时期限仍然生效。",
   "perm.phoneSent":
     "已通知微信：回复 1 仅允许一次，3 拒绝；仅当手机提示提供 2 时才可使用。回复作用于当前已发送的审批，延迟回复可能影响更新的审批。",
-  "plugins.weixinMutationLocked": "请先关闭 MXC，再更改微信频道或账户。",
+  "plugins.weixinMutationLocked": "更改微信频道需要关闭 MXC。账户操作需要隔离已就绪。",
+  "plugins.weixinLoginLocked": "请等待隔离验证或当前微信账户操作完成。",
   "plugins.weixinMutationUnknown": "在确认主进程的 MXC 状态之前，微信配置保持锁定。",
   "perm.phoneCodeRequired":
     "已通知微信。请回复 1/2/3 并附带手机提示中的请求代码；目前无法验证裸数字回复的时序。",
@@ -1117,6 +1129,7 @@ export default {
   "perm.mxcAllowAlways": "在此对话中始终允许",
   "perm.callerLabel": "调用者",
   "perm.autoDeny": "{seconds}秒后自动拒绝",
+  "perm.responding": "正在应用您的决定…",
   "perm.aclTimeout":
     "{dir} 的权限已授予，但 ACL 验证超时。如果访问仍然失败，请到 设置 > 安全 中重新授权。",
   "perm.aclIneffective":

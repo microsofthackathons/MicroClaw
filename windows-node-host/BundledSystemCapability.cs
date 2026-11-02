@@ -21,7 +21,8 @@ internal sealed class BundledSystemCapability(
     ReadinessProofVerifier? readinessProof = null,
     Func<CancellationToken, Task>? isolationGuard = null,
     Func<CancellationToken, Task>? ambientGuard = null,
-    ReadinessPreparationGuard? readinessPreparation = null) : INodeCapability
+    ReadinessPreparationGuard? readinessPreparation = null,
+    string? policyFingerprint = null) : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private readonly ReadinessPreparationGuard _readinessPreparation =
@@ -92,8 +93,11 @@ internal sealed class BundledSystemCapability(
         try
         {
             await EnsureFilesystemIsolationAsync(cancellationToken);
-            var run = PowerShellFilesystemScope.Prepare(ParseRun(request.Args), policy);
-            var cwd = policy.ResolveCwd(run.Cwd);
+            var allowMissingGrants = policyFingerprint is not null
+                && !(request.Args.TryGetProperty("agentId", out var preparationAgent)
+                    && preparationAgent.GetString() == ReadinessProbeContract.AgentId);
+            var run = PowerShellFilesystemScope.Prepare(ParseRun(request.Args, allowMissingGrants), policy);
+            var cwd = policy.ResolveCwd(run.Cwd, allowMissingGrants);
             var commandText = WindowsCommandLine.Join(run.Argv);
             var commandPreview = BuildApprovalCommandPreview(run, commandText);
             var executable = ResolveExecutable(run.Argv[0])
@@ -139,7 +143,8 @@ internal sealed class BundledSystemCapability(
                     run.Argv, string.IsNullOrEmpty(cwd.LaunchPath) ? null : cwd.LaunchPath,
                     commandText, commandPreview, run.AgentId, run.SessionKey,
                     executableIdentity.ExecutablePath, executableIdentity.ExecutableSha256,
-                    cwd.ApprovalBinding, run.DeclaredAccess, run.ProviderInitialization),
+                    cwd.ApprovalBinding, run.DeclaredAccess, run.ProviderInitialization,
+                    policyFingerprint),
                 cwdBinding = cwd.ApprovalBinding,
                 cwdAccess = cwd.Access.ToString(),
                 matchedRoot = cwd.MatchedRoot,
@@ -497,7 +502,7 @@ internal sealed class BundledSystemCapability(
         };
     }
 
-    internal RunRequest ParseRun(JsonElement args)
+    internal RunRequest ParseRun(JsonElement args, bool allowMissingGrants = false)
     {
         var hasArgv = args.TryGetProperty("argv", out var argvElement);
         if (!hasArgv) hasArgv = args.TryGetProperty("command", out argvElement);
@@ -545,7 +550,7 @@ internal sealed class BundledSystemCapability(
         if (PowerShellFilesystemScope.ContainsMarker(argv))
             throw new HostPolicyException("powershell-initialization-metadata-required",
                 "The PowerShell filesystem initializer requires its complete prepared plan.");
-        var declaredAccess = DeclaredAccessParser.ParseAndValidate(commandPreview, policy);
+        var declaredAccess = DeclaredAccessParser.ParseAndValidate(commandPreview, policy, allowMissingGrants);
         var executableArgv = argv;
         var executableRawCommand = rawCommand;
         if (declaredAccess.Count > 0)
@@ -681,14 +686,15 @@ internal sealed class BundledSystemCapability(
         new()
         {
             Ok = true,
-            Payload = new
+            // The transport omits null object properties; this null is part of the result contract.
+            Payload = new JsonObject
             {
-                success = false,
-                exitCode = (int?)null,
-                timedOut = false,
-                error,
-                errorCode = code,
-                executionState = "rejectedBeforeExecution",
+                ["success"] = false,
+                ["exitCode"] = null,
+                ["timedOut"] = false,
+                ["error"] = error,
+                ["errorCode"] = code,
+                ["executionState"] = "rejectedBeforeExecution",
             },
         };
     private static NodeInvokeResponse Error(string error) => new() { Ok = false, Error = error };
@@ -734,7 +740,8 @@ internal static partial class DeclaredAccessParser
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
     private static partial Regex LeadingDeclarationPattern();
 
-    public static IReadOnlyList<DeclaredAccess> ParseAndValidate(string? rawCommand, HostPolicy policy)
+    public static IReadOnlyList<DeclaredAccess> ParseAndValidate(
+        string? rawCommand, HostPolicy policy, bool allowMissingGrants = false)
     {
         if (string.IsNullOrEmpty(rawCommand))
             return [];
@@ -777,18 +784,20 @@ internal static partial class DeclaredAccessParser
 
                 var canonical = WindowsPathCanonicalizer.CanonicalizeDirectory(requestedPath);
                 if (policy.DeniedRoots.Any(root =>
-                    WindowsPathCanonicalizer.IsEqualOrNested(canonical, root)))
+                    WindowsPathCanonicalizer.IsEqualOrNested(canonical, root)
+                    || (allowMissingGrants && WindowsPathCanonicalizer.IsEqualOrNested(root, canonical))))
                     throw new HostPolicyException(
                         "declare-access-sensitive-root",
                         "Declared access overlaps a protected root.");
                 var approved = policy.ApprovedRoots
                     .Where(root => WindowsPathCanonicalizer.IsEqualOrNested(canonical, root.Path))
                     .OrderByDescending(root => root.Path.Length)
-                    .FirstOrDefault()
-                    ?? throw new HostPolicyException(
+                    .FirstOrDefault();
+                if (approved is null && !allowMissingGrants)
+                    throw new HostPolicyException(
                         "declare-access-outside-approved-roots",
                         "Declared access is outside the globally approved folder policy.");
-                if (access == "rw" && approved.Access != FolderAccess.ReadWrite)
+                if (!allowMissingGrants && access == "rw" && approved?.Access != FolderAccess.ReadWrite)
                     throw new HostPolicyException(
                         "declare-access-exceeds-approved-root",
                         "Declared read-write access exceeds the globally approved folder policy.");

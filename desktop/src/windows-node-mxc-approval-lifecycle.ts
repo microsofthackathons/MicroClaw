@@ -157,7 +157,22 @@ export class WindowsNodeMxcApprovalLifecycle {
 export function renderMxcApprovalTerminal(
   outcome: MxcApprovalTerminal,
   locale: "en-US" | "zh-CN",
+  foldersSaved = false,
 ): string {
+  if (foldersSaved) {
+    const result =
+      outcome.origin === "timeout"
+        ? locale === "zh-CN"
+          ? "MicroClaw 安全审批结果：命令审批已到期；不会自动重试。"
+          : "MicroClaw Security Approval RESULT: command approval expired; no automatic retry."
+        : renderMxcApprovalTerminal(outcome, locale);
+    return (
+      result +
+      (locale === "zh-CN"
+        ? " 所示文件夹权限已保存，直到在设置中移除；这不代表命令执行成功。"
+        : " The displayed folder grants were saved until removed in Settings; this is not command execution success.")
+    );
+  }
   if (outcome.origin === "timeout") {
     if (outcome.status !== "accepted") {
       return locale === "zh-CN"

@@ -5,6 +5,60 @@ import { describe, expect, it, vi } from "vitest";
 import PermissionDialog from "./PermissionDialog.vue";
 
 describe("PermissionDialog", () => {
+  it("disables all decisions and suppresses timeout submissions while a decision is applying", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        responding: true,
+        request: {
+          requestId: "applying",
+          type: "mxc-approval",
+          command: "hostname.exe",
+          expiresAtUnixMs: Date.now() + 1000,
+        },
+      },
+    });
+    try {
+      expect(wrapper.get(".perm-card").attributes("aria-busy")).toBe("true");
+      expect(wrapper.text()).toContain("Applying your decision");
+      for (const button of wrapper.findAll("button")) {
+        expect(button.attributes("disabled")).toBeDefined();
+        await button.trigger("click");
+      }
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper.emitted("respond")).toBeUndefined();
+      await wrapper.setProps({ responding: false });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(wrapper.emitted("respond")).toEqual([["deny", "timeout"]]);
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers one combined Allow action and discloses persistent folder grants", async () => {
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        request: {
+          requestId: "folder-request",
+          type: "mxc-approval",
+          command: "hostname.exe",
+          folderChanges: [{ path: "C:\\Work", access: "rw" }],
+          allowedDecisions: ["deny", "allow-once", "allow-always"],
+        },
+      },
+    });
+    expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
+      "Deny",
+      "Allow",
+    ]);
+    expect(wrapper.get('[data-testid="mxc-folder-grants"]').text()).toContain("C:\\Work");
+    expect(wrapper.text()).toContain("permanently adds the listed folder permissions");
+    expect(wrapper.text()).toContain("It does not remember the command");
+    await wrapper.findAll(".perm-actions button")[1].trigger("click");
+    expect(wrapper.emitted("respond")?.[0]).toEqual(["allow-once"]);
+    wrapper.unmount();
+  });
   it("shows both approval actions for an external application", () => {
     const wrapper = mount(PermissionDialog, {
       props: {

@@ -1,7 +1,12 @@
 export type WindowsNodeMxcFolderTransactionPhase =
   | "idle"
   | "locking"
+  | "disabling"
   | "validating"
+  | "updating-folders"
+  | "updating-model"
+  | "connecting-weixin"
+  | "disconnecting-weixin"
   | "persisting"
   | "starting-locked"
   | "smoking-locked"

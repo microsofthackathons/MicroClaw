@@ -7,6 +7,41 @@ function readRepositoryFile(...parts: string[]): string {
 }
 
 describe("Weixin login lifecycle", () => {
+  it("restores the current MXC generation without a native popup or Gateway restart", () => {
+    const source = readRepositoryFile("desktop", "src", "main.ts");
+    const login = source.slice(
+      source.indexOf("async function beginWindowsNodeMxcWeixinAccountChange"),
+      source.indexOf("let weixinRuntimeRead"),
+    );
+    expect(login).not.toContain("showMessageBox");
+    expect(login).not.toContain("stopGatewayForSecurityTransition");
+    expect(login).not.toContain("runAutomaticWindowsNodeMxcReadiness");
+    expect(login).not.toContain("closeWindowsNodeMxcWeixinRemoteApproval");
+    expect(login).toContain('setActivationLease("active", 120_000)');
+    expect(login).toContain('assertWindowsNodeMxcBaseReady(status, "active", true)');
+    expect(login.indexOf("assertWindowsNodeMxcBaseReady")).toBeLessThan(
+      login.indexOf("releaseWindowsNodeMxcIngress(generation)"),
+    );
+    expect(login).toContain("weixinResumeAfterLogin");
+    expect(login).toContain('"mxc-weixin-login-failed"');
+    expect(login).toContain('"mxc-weixin-disconnect-failed"');
+  });
+
+  it("provisions transport independently of account enrollment and retains it across owner changes", () => {
+    const source = readRepositoryFile("desktop", "src", "main.ts");
+    const startup = source.slice(
+      source.indexOf("const nextWeixinContext ="),
+      source.indexOf("const nextHooksEnvironment ="),
+    );
+    expect(startup).toMatch(/getBundledWindowsNodeFolders\(\),\s*true,/);
+    expect(startup).not.toContain("nextRemoteApprovalConfiguration.enabled");
+    const reconcile = source.slice(
+      source.indexOf("function reconcileWindowsNodeMxcWeixinRemoteApprovalOwner"),
+      source.indexOf("function persistWindowsNodeMxcWeixinRemoteApprovalPlan"),
+    );
+    expect(reconcile).toContain("windowsNodeMxcWeixinRemoteApprovalBroker.configure(disabled)");
+    expect(reconcile).not.toContain("closeWindowsNodeMxcWeixinRemoteApproval");
+  });
   it("hot-applies plugin toggles and guards QR readiness before admitting a login", () => {
     const source = readRepositoryFile("desktop", "src", "main.ts");
     const toggle = source.slice(
@@ -63,8 +98,36 @@ describe("Weixin login lifecycle", () => {
     expect(handler).not.toContain("restartManagedGateway");
     expect(handler).not.toContain("writeFileSync");
     expect(handler).toContain('"channels.logout"');
+    expect(handler).toContain('beginWindowsNodeMxcWeixinAccountChange("disconnect")');
+    expect(handler).toContain('guard.finish(result.ok ? "disconnected" : "cancelled")');
     expect(source).toContain("weixinQrSession.start(");
     expect(source).toContain("sessionKey, timeoutMs: 35_000");
+  });
+
+  it("resumes cancelled and expired QR channels in Off without bypassing the MXC guard", () => {
+    const source = readRepositoryFile("desktop", "src", "main.ts");
+    const wait = source.slice(
+      source.indexOf("async function waitForWeixinConnection"),
+      source.indexOf("let weixinMutationLockRevision"),
+    );
+    expect(wait).toContain(
+      "!login && !weixinQrCancellation && !result.connected && !result.pending",
+    );
+    expect(wait.indexOf("await resumeWeixinAfterQr")).toBeLessThan(
+      wait.indexOf("weixinMutations.qrConnected"),
+    );
+    expect(wait).toContain("gateway.connectionGeneration !== connection");
+    expect(wait).toContain("const result = await gateway.weixinResumeAfterLogin()");
+    const cancel = source.slice(
+      source.indexOf('ipcMain.handle("plugin:weixin:cancel-login"'),
+      source.indexOf("// --- WeChat QR Login via Gateway"),
+    );
+    expect(cancel.indexOf("await weixinQrSession.cancel")).toBeLessThan(
+      cancel.indexOf("resumeWeixinAfterQr"),
+    );
+    expect(cancel).toContain("if (windowsNodeMxcWeixinLogin)");
+    expect(cancel).toContain("else if (hadQrSession && gateway");
+    expect(cancel).toContain("await weixinMutations.run(assertWeixinQrLoginMutable");
   });
 
   it("does not replace the Gateway after an attested successful CLI login", () => {

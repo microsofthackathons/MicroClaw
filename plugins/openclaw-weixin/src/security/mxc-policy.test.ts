@@ -18,6 +18,7 @@ describe("MXC WeChat policy", () => {
 
   afterEach(() => {
     process.env = { ...originalEnvironment };
+    Reflect.deleteProperty(globalThis, Symbol.for("microclaw.windows-node-mxc.live-policy.v1"));
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -55,6 +56,30 @@ describe("MXC WeChat policy", () => {
     ).toString("base64");
     return { root, selected, inbound, outbound, generation, fingerprint, token, releasePath };
   }
+
+  it("uses live grants and requires the new fingerprint before ingress resumes", async () => {
+    const policy = configure();
+    const file = path.join(policy.selected, "report.txt");
+    fs.writeFileSync(file, "selected");
+    const key = Symbol.for("microclaw.windows-node-mxc.live-policy.v1");
+    process.env.MICROCLAW_MXC_LIVE_POLICY_PATH = "live-policy";
+    let live = {
+      gatewayGeneration: policy.generation, policyFingerprint: policy.fingerprint,
+      policyJson: JSON.stringify({ approvedRoots: [{ path: policy.selected, access: "ReadOnly" }] }),
+    };
+    Reflect.set(globalThis, key, () => live);
+    fs.writeFileSync(policy.releasePath, JSON.stringify({
+      contract: "microclaw.windows-ingress-release.v1", gatewayGeneration: policy.generation,
+      policyFingerprint: policy.fingerprint, token: policy.token,
+    }));
+    await expect(authorizeMxcWeixinOutboundMedia(file)).resolves.toBe(fs.realpathSync(file));
+    expect(isMxcWeixinIngressReleased()).toBe(true);
+    live = { ...live, policyFingerprint: "b".repeat(64), policyJson: '{"approvedRoots":[]}' };
+    expect(isMxcWeixinIngressReleased()).toBe(false);
+    await expect(authorizeMxcWeixinOutboundMedia(file)).rejects.toThrow(/outside selected folders/);
+    Reflect.deleteProperty(globalThis, key);
+    await expect(authorizeMxcWeixinOutboundMedia(file)).rejects.toThrow(/reader is unavailable/);
+  });
 
   it("keeps inbound polling paused until the exact release record exists", () => {
     const policy = configure();

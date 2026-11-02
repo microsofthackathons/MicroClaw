@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   WINDOWS_NODE_MXC_REQUIRED_COMMANDS,
   WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
@@ -230,7 +231,9 @@ export async function inspectWindowsNodeMxc(
     );
   }
 
-  const settingsFingerprint = settings ? fingerprintSecuritySettings(settings) : null;
+  const settingsFingerprint = settings
+    ? fingerprintSecuritySettings(settings, Boolean(bundled))
+    : null;
   const folders = bundled
     ? (options.bundledFolders ?? [])
     : settings
@@ -762,7 +765,7 @@ async function invokeDeniedCwdSmoke(
   nodeId: string,
 ): Promise<MxcSmokeResult> {
   try {
-    await gateway.request("node.invoke", {
+    const response = await gateway.request("node.invoke", {
       nodeId,
       command: "system.run",
       params: {
@@ -773,13 +776,59 @@ async function invokeDeniedCwdSmoke(
       timeoutMs: 20_000,
       idempotencyKey: randomUUID(),
     });
-    return {
-      outcome: "failed",
-      reason: "The bundled node unexpectedly accepted a protected CWD outside approved roots",
-    };
+    return classifyDeniedCwdResponse(response);
   } catch (error) {
     return classifyDeniedCwdSmoke(messageOf(error));
   }
+}
+
+export function classifyDeniedCwdResponse(value: unknown): MxcSmokeResult {
+  const record = (candidate: unknown): Record<string, unknown> | null =>
+    candidate && typeof candidate === "object" && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>)
+      : null;
+  const outer = record(value);
+  const response =
+    outer?.command === "system.run"
+      ? outer
+      : outer?.ok === true && outer.error == null && outer.command === undefined
+        ? record(outer.payload)
+        : null;
+  const payload = record(response?.payload);
+  let serializedMatches = true;
+  if (response?.payloadJSON != null) {
+    try {
+      serializedMatches =
+        typeof response.payloadJSON === "string" &&
+        isDeepStrictEqual(JSON.parse(response.payloadJSON), payload);
+    } catch {
+      serializedMatches = false;
+    }
+  }
+  if (
+    response?.ok === true &&
+    response.command === "system.run" &&
+    response.error == null &&
+    serializedMatches &&
+    payload?.success === false &&
+    payload.executionState === "rejectedBeforeExecution" &&
+    payload.exitCode === null &&
+    payload.timedOut === false &&
+    (payload.stdout === undefined || payload.stdout === "") &&
+    typeof payload.error === "string" &&
+    (payload.errorCode === "cwd-sensitive-root" ||
+      payload.errorCode === "cwd-outside-approved-roots") &&
+    payload.error.startsWith(`${payload.errorCode}:`)
+  ) {
+    return {
+      outcome: "passed",
+      reason: "The bundled node denied a protected CWD before execution",
+    };
+  }
+  return {
+    outcome: "failed",
+    reason: "The bundled node did not prove that the protected CWD was rejected before execution",
+  };
 }
 
 export function classifyDeniedCwdSmoke(message: string): MxcSmokeResult {
@@ -913,7 +962,10 @@ async function readWindowsNodeSettings(
   return null;
 }
 
-function fingerprintSecuritySettings(settings: WindowsNodeMxcSettings): string {
+export function fingerprintSecuritySettings(
+  settings: WindowsNodeMxcSettings,
+  liveFolderPolicy = false,
+): string {
   const relevant = {
     EnableNodeMode: settings.EnableNodeMode,
     NodeSystemRunEnabled: settings.NodeSystemRunEnabled,
@@ -934,7 +986,11 @@ function fingerprintSecuritySettings(settings: WindowsNodeMxcSettings): string {
     SandboxDocumentsAccess: settings.SandboxDocumentsAccess,
     SandboxDownloadsAccess: settings.SandboxDownloadsAccess,
     SandboxDesktopAccess: settings.SandboxDesktopAccess,
-    SandboxCustomFolders: settings.SandboxCustomFolders,
+    // Signed folder revisions are acknowledged separately; activation probes bind the runtime.
+    SandboxCustomFolders: liveFolderPolicy ? undefined : settings.SandboxCustomFolders,
+    liveFolderPolicyContract: liveFolderPolicy
+      ? "microclaw.windows-node-live-policy.v1"
+      : undefined,
   };
   return createHash("sha256").update(JSON.stringify(relevant)).digest("hex");
 }

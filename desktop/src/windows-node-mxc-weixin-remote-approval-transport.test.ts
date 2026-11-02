@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { WindowsNodeMxcWeixinRemoteApprovalServer } from "./windows-node-mxc-weixin-remote-approval-transport";
+import { applyLiveFolderPolicy } from "./windows-node-mxc-live-folder-transaction";
 
 const contract = "microclaw.windows-weixin-remote-approval.v1";
 
@@ -113,6 +114,95 @@ describe("WeChat remote approval transport", () => {
       }),
     ).rejects.toThrow("transport is unavailable");
   });
+  it.each([true, false])(
+    "gates the live folder lock on real pipe delivery confirmation (accepted=%s)",
+    async (accepted) => {
+      const pipe = `\\\\.\\pipe\\microclaw-weixin-approval-test-${randomUUID()}`;
+      const server = new WindowsNodeMxcWeixinRemoteApprovalServer(pipe, "test-token", async () => ({
+        consumed: true,
+      }));
+      servers.push(server);
+      await server.start();
+      const socket = net.createConnection(pipe);
+      const frames: Array<Record<string, unknown>> = [];
+      let buffer = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk) => {
+        buffer += chunk;
+        while (buffer.includes("\n")) {
+          const end = buffer.indexOf("\n");
+          frames.push(JSON.parse(buffer.slice(0, end)) as Record<string, unknown>);
+          buffer = buffer.slice(end + 1);
+        }
+      });
+      try {
+        await new Promise<void>((resolve) => socket.once("connect", resolve));
+        socket.write(
+          JSON.stringify({ contract, type: "register", token: "test-token", accountId: "bot" }) +
+            "\n",
+        );
+        await waitFor(() => frames.some((frame) => frame.type === "registered"));
+        const stages: string[] = [];
+        const transaction = applyLiveFolderPolicy(
+          { ro: [], rw: ["C:\\Work"] },
+          {
+            validate: async (value) => value,
+            confirm: () =>
+              server.deliver({
+                accountId: "bot",
+                to: "owner",
+                kind: "notification",
+                text: "Allow received; applying folder permissions",
+              }),
+            lock: async () => {
+              stages.push("lock");
+            },
+            persist: async () => {
+              stages.push("persist");
+            },
+            publish: async () => {
+              stages.push("native-ack");
+            },
+            verify: async () => "active",
+            release: async () => {
+              stages.push("release");
+            },
+            failClosed: async () => {
+              stages.push("fail-closed");
+            },
+          },
+        ).then(
+          () => "applied",
+          (error) => error,
+        );
+        await waitFor(() => frames.some((frame) => frame.type === "deliver"));
+        expect(stages).toEqual([]);
+        const notice = frames.find((frame) => frame.type === "deliver")!;
+        expect(notice).toMatchObject({
+          kind: "notification",
+          text: "Allow received; applying folder permissions",
+        });
+        socket.write(
+          JSON.stringify({
+            contract,
+            type: "delivery-result",
+            deliveryId: notice.deliveryId,
+            ok: accepted,
+          }) + "\n",
+        );
+        const result = await transaction;
+        if (accepted) {
+          expect(result).toBe("applied");
+          expect(stages).toEqual(["lock", "persist", "native-ack", "release"]);
+        } else {
+          expect(result).toBeInstanceOf(Error);
+          expect(stages).toEqual([]);
+        }
+      } finally {
+        socket.destroy();
+      }
+    },
+  );
 
   it("rejects pending deliveries immediately when a plugin client is replaced", async () => {
     const pipe = `\\\\.\\pipe\\microclaw-weixin-approval-test-${randomUUID()}`;

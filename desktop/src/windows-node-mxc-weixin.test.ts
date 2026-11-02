@@ -159,6 +159,22 @@ describe("Windows Node MXC WeChat lifecycle", () => {
     ).toEqual([]);
   });
 
+  it("allows ingress reattestation after the last WeChat account is disconnected", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-disconnected-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "openclaw-weixin"), { recursive: true });
+    fs.writeFileSync(path.join(root, "openclaw-weixin", "accounts.json"), "[]");
+
+    expect(
+      preflightWindowsNodeMxcWeixinAuthorization({
+        stateDir: root,
+        config: {
+          plugins: { entries: { "openclaw-weixin": { enabled: true } } },
+        },
+      }),
+    ).toEqual({ migratedAccountIds: [] });
+  });
+
   it("blocks ingress release when an enabled account has no explicit sender identity", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-weixin-auth-"));
     roots.push(root);

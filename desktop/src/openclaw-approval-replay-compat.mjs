@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, createPublicKey, randomUUID, verify } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -443,6 +443,8 @@ const PATCHED_NODE_GATEWAY_MINT_INSERT_SOURCE = `function mintMicroclawNodeAppro
 function attachMicroclawNodeApprovalProof(params, request) {
 \tif (!request) return;
 \tconst proof = mintMicroclawNodeApprovalProof(request);
+\t// The native proof binds the full argv command text, not the upstream display preview.
+\tparams.rawCommand = request.plan.commandText;
 \tparams.microclawApprovalProof = proof;
 \tconst forwardedAtUnixMs = Date.now();
 \tconst decisionAtUnixMs = Number.isFinite(request.decisionAtUnixMs) ? request.decisionAtUnixMs : proof.issuedAtUnixMs;
@@ -708,6 +710,7 @@ function normalizeSystemRunApprovalPlan(candidate) {
 \tconst commandText = normalizeNullableString(candidate.commandText) ?? normalizeNullableString(candidate.rawCommand);
 \tif (!commandText) return null;
 \tconst hasMicroclawIdentity = candidate.executablePath !== void 0 || candidate.executableSha256 !== void 0 || candidate.cwdBinding !== void 0 || candidate.declaredAccess !== void 0;
+\tif (candidate.policyFingerprint !== void 0 && (!hasMicroclawIdentity || typeof candidate.policyFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(candidate.policyFingerprint))) return null;
 \tconst executablePath = normalizeNullableString(candidate.executablePath);
 \tconst executableSha256 = normalizeNullableString(candidate.executableSha256);
 \tconst cwdBinding = normalizeNullableString(candidate.cwdBinding);
@@ -732,6 +735,7 @@ function normalizeSystemRunApprovalPlan(candidate) {
 \t\t\texecutableSha256: executableSha256.toLowerCase(),
 \t\t\tcwdBinding,
 \t\t\tdeclaredAccess,
+\t\t\t...(typeof candidate.policyFingerprint === "string" && /^[a-f0-9]{64}$/.test(candidate.policyFingerprint) ? { policyFingerprint: candidate.policyFingerprint } : {}),
 \t\t\t...providerInitialization ? { providerInitialization } : {}
 \t\t} : {}
 \t};
@@ -787,7 +791,7 @@ const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": as
 \t\t\tconst rawPlan = params && typeof params === "object" && !Array.isArray(params) && params.systemRunPlan && typeof params.systemRunPlan === "object" && !Array.isArray(params.systemRunPlan) ? params.systemRunPlan : null;
 \t\t\tconst validationParams = rawPlan ? {
 \t\t\t\t...params,
-\t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess" && name !== "providerInitialization"))
+\t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess" && name !== "providerInitialization" && name !== "policyFingerprint"))
 \t\t\t} : params;
 \t\t\tif (!assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;`;
 
@@ -1665,6 +1669,9 @@ function normalizeApprovalPlan(plan) {
     executableSha256: requiredString("executableSha256").toLowerCase(),
     cwdBinding: requiredString("cwdBinding"),
     declaredAccess: normalizeDeclaredAccess(plan.declaredAccess),
+    ...(plan.policyFingerprint !== undefined
+      ? { policyFingerprint: requiredString("policyFingerprint") }
+      : {}),
     ...(providerInitialization ? { providerInitialization } : {}),
   };
 }
@@ -1728,7 +1735,53 @@ export function computeWindowsNodeMxcApprovalPlanSha256(plan) {
         encodeField("providerInitialization.finalArg", argument),
       ),
     );
+  if (normalized.policyFingerprint !== undefined) {
+    if (!/^[a-f0-9]{64}$/.test(normalized.policyFingerprint))
+      throw new Error("MicroClaw approval plan policy fingerprint is invalid");
+    fields.push(encodeField("policyFingerprint", normalized.policyFingerprint));
+  }
   return createHash("sha256").update(fields.join("\n"), "utf8").digest("hex");
+}
+
+export function createWindowsNodeMxcLivePolicyReader(config, read = readFileSync) {
+  const key = createPublicKey({
+    key: Buffer.from(config.publicKey, "base64"),
+    format: "der",
+    type: "spki",
+  });
+  let latest = null;
+  let lastEnvelope = null;
+  return () => {
+    const text = read(config.path, "utf8");
+    if (text === lastEnvelope) return latest;
+    const envelope = JSON.parse(text);
+    if (
+      typeof envelope.payload !== "string" ||
+      typeof envelope.signature !== "string" ||
+      !verify(
+        "sha256",
+        Buffer.from(envelope.payload, "utf8"),
+        { key, dsaEncoding: "ieee-p1363" },
+        Buffer.from(envelope.signature, "base64"),
+      )
+    )
+      throw new Error("MicroClaw live policy signature is invalid");
+    const policy = JSON.parse(envelope.payload);
+    if (
+      policy.contract !== "microclaw.windows-node-live-policy.v1" ||
+      policy.gatewayGeneration !== config.gatewayGeneration ||
+      !Number.isSafeInteger(policy.revision) ||
+      policy.revision <= (latest?.revision ?? 0) ||
+      typeof policy.policyJson !== "string" ||
+      createHash("sha256").update(policy.policyJson, "utf8").digest("hex") !==
+        policy.policyFingerprint
+    )
+      throw new Error("MicroClaw live policy generation, revision or fingerprint is invalid");
+    if (policy.approval && typeof policy.approval === "object") Object.freeze(policy.approval);
+    latest = Object.freeze(policy);
+    lastEnvelope = text;
+    return policy;
+  };
 }
 
 export function computeWindowsNodeMxcApprovalProofSignature(secret, proof) {
@@ -1770,14 +1823,27 @@ export function createWindowsNodeMxcApprovalProofMinter(config, dependencies = {
         throw new Error("MicroClaw approval proof node binding is invalid");
       }
       const issuedAtUnixMs = Math.floor(now());
+      const planSha256 = computeWindowsNodeMxcApprovalPlanSha256(plan);
+      const policy = dependencies.readPolicy?.();
+      if (policy && plan.policyFingerprint !== policy.policyFingerprint) {
+        const approval = policy.approval;
+        if (
+          !approval ||
+          approval.approvalId !== approvalId ||
+          approval.planSha256 !== planSha256 ||
+          !Number.isSafeInteger(approval.expiresAtUnixMs) ||
+          approval.expiresAtUnixMs <= issuedAtUnixMs
+        )
+          throw new Error("MicroClaw approval plan belongs to a stale folder policy");
+      }
       const proof = {
         contract: APPROVAL_PROOF_CONTRACT,
         approvalId,
         nonce: createNonce(),
         gatewayGeneration: config.gatewayGeneration,
-        policyFingerprint: config.policyFingerprint.toLowerCase(),
+        policyFingerprint: policy?.policyFingerprint ?? config.policyFingerprint.toLowerCase(),
         nodeId: config.nodeId.toLowerCase(),
-        planSha256: computeWindowsNodeMxcApprovalPlanSha256(plan),
+        planSha256,
         issuedAtUnixMs,
         expiresAtUnixMs: issuedAtUnixMs + APPROVAL_PROOF_TTL_MS,
       };
@@ -1797,12 +1863,31 @@ function readRequiredEnvironment(name, secret = false) {
 }
 
 function installApprovalProofMinter() {
-  const minter = createWindowsNodeMxcApprovalProofMinter({
+  const config = {
     secretBase64: readRequiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_SECRET", true),
     gatewayGeneration: readRequiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION"),
     policyFingerprint: readRequiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT"),
     nodeId: readRequiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID"),
-  });
+  };
+  const livePath = process.env.MICROCLAW_MXC_LIVE_POLICY_PATH;
+  const readPolicy = livePath
+    ? createWindowsNodeMxcLivePolicyReader({
+        path: livePath,
+        publicKey: readRequiredEnvironment("MICROCLAW_MXC_LIVE_POLICY_PUBLIC_KEY"),
+        gatewayGeneration: config.gatewayGeneration,
+      })
+    : undefined;
+  if (readPolicy && readPolicy().policyFingerprint !== config.policyFingerprint)
+    throw new Error("MicroClaw initial live policy does not match Gateway bootstrap");
+  if (readPolicy) {
+    Object.defineProperty(globalThis, Symbol.for("microclaw.windows-node-mxc.live-policy.v1"), {
+      value: readPolicy,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  const minter = createWindowsNodeMxcApprovalProofMinter(config, { readPolicy });
   Object.defineProperty(globalThis, APPROVAL_PROOF_MINTER_SYMBOL, {
     value: minter,
     writable: false,

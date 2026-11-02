@@ -28,6 +28,23 @@ function requiredEnvironment(name: string): string {
   return value;
 }
 
+function currentLivePolicy(): { policyFingerprint: string; policyJson: string } | null {
+  if (!process.env.MICROCLAW_MXC_LIVE_POLICY_PATH) return null;
+  const reader: unknown = Reflect.get(
+    globalThis, Symbol.for("microclaw.windows-node-mxc.live-policy.v1"),
+  );
+  if (typeof reader !== "function")
+    throw new Error("The authenticated MXC live policy reader is unavailable");
+  const value: unknown = reader();
+  if (!value || typeof value !== "object"
+      || !("gatewayGeneration" in value)
+      || value.gatewayGeneration !== requiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION")
+      || !("policyFingerprint" in value) || typeof value.policyFingerprint !== "string"
+      || !("policyJson" in value) || typeof value.policyJson !== "string")
+    throw new Error("The live media policy does not match the Gateway generation");
+  return { policyFingerprint: value.policyFingerprint, policyJson: value.policyJson };
+}
+
 export function isMxcManagedWeixin(): boolean {
   return process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1";
 }
@@ -41,8 +58,8 @@ export function isMxcWeixinIngressReleased(): boolean {
       record.contract === INGRESS_RELEASE_CONTRACT &&
       record.gatewayGeneration ===
         requiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION") &&
-      record.policyFingerprint ===
-        requiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT").toLowerCase() &&
+      record.policyFingerprint === (currentLivePolicy()?.policyFingerprint ??
+        requiredEnvironment("MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT").toLowerCase()) &&
       record.token === requiredEnvironment("MICROCLAW_MXC_INGRESS_RELEASE_TOKEN")
     );
   } catch {
@@ -125,7 +142,26 @@ function loadMediaPolicy(): MediaPolicy {
   ) {
     throw new Error("MXC WeChat media policy does not match the active generation");
   }
-  const approvedRoots = policy.approvedRoots.map((entry) => {
+  const livePolicy = currentLivePolicy();
+  let roots = policy.approvedRoots;
+  if (livePolicy) {
+    const nativePolicy: unknown = JSON.parse(livePolicy.policyJson);
+    if (!nativePolicy || typeof nativePolicy !== "object"
+        || !("approvedRoots" in nativePolicy) || !Array.isArray(nativePolicy.approvedRoots))
+      throw new Error("The live media policy has no valid folder grants");
+    roots = nativePolicy.approvedRoots.map((entry: unknown): MediaRoot => {
+      if (!entry || typeof entry !== "object" || !("path" in entry) || typeof entry.path !== "string"
+          || !("access" in entry) || (entry.access !== "ReadOnly" && entry.access !== "ReadWrite"))
+        throw new Error("The live media policy contains an invalid folder grant");
+      return {
+        path: entry.path,
+        access: entry.access === "ReadWrite" ? "rw" : "ro",
+        purpose: path.resolve(entry.path) === path.resolve(policy.inboundRoot!)
+          ? "weixin-inbound" : "selected-folder",
+      };
+    });
+  }
+  const approvedRoots = roots.map((entry) => {
     if (
       !entry ||
       typeof entry.path !== "string" ||
@@ -143,7 +179,7 @@ function loadMediaPolicy(): MediaPolicy {
   return {
     contract: MEDIA_POLICY_CONTRACT,
     gatewayGeneration: generation,
-    policyFingerprint: fingerprint,
+    policyFingerprint: livePolicy?.policyFingerprint ?? fingerprint,
     strictNoHostFallback: true,
     approvedRoots,
     inboundRoot: path.resolve(policy.inboundRoot),
@@ -213,6 +249,8 @@ export async function authorizeMxcWeixinOutboundMedia(filePath: string): Promise
     }
     if (!containsPath(canonicalRoot, canonicalFile)) continue;
     assertNoReparsePoints(canonicalRoot, canonicalFile);
+    if (loadMediaPolicy().policyFingerprint !== policy.policyFingerprint)
+      throw new Error("The folder policy changed during WeChat media authorization; retry the request");
     return canonicalFile;
   }
   throw new Error(

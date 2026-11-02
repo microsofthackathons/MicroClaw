@@ -17,11 +17,13 @@ import {
   BUNDLED_WINDOWS_NODE_REVISION,
   BundledWindowsNodeHost,
   type BundledWindowsNodeApprovalProofContext,
+  type BundledWindowsNodeGateway,
   MXC_EXACT_BACKEND_PROVISIONING,
   MXC_HOST_PREP_PATCH_REVISION,
   MXC_SDK_SOURCE_REVISION,
   assertApprovalResponseMatches,
   assertLoopbackGateway,
+  approveBundledDevicePairRequest,
   createBundledWindowsNodeEnvironment,
   endBundledWindowsNodeBootstrap,
   execFileText,
@@ -40,6 +42,7 @@ import {
 } from "./bundled-windows-node-host";
 import { WINDOWS_NODE_MXC_NODE_COMMANDS } from "./windows-node-mxc";
 import { createPowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
+import { WindowsNodeMxcPolicyAuthority } from "./windows-node-mxc-live-policy";
 
 vi.mock("electron", () => ({
   app: {
@@ -62,6 +65,64 @@ writeFileSync(policyCanvasHostPath, "canvas-host");
 afterAll(() => rmSync(policyCanvasRoot, { recursive: true, force: true }));
 
 describe("bundled Windows node host", () => {
+  it.each([true, false])(
+    "updates a live policy only after the exact node acknowledgement: %s",
+    async (acknowledged) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-live-folder-"));
+      try {
+        const host = createLeaseHost(root);
+        const process = Reflect.get(host, "process");
+        const authority = new WindowsNodeMxcPolicyAuthority(leaseProofContext.gatewayGeneration);
+        const policyPath = path.join(root, "live-policy.json");
+        const options = {
+          approvalProof: leaseProofContext,
+          gatewayGeneration: leaseProofContext.gatewayGeneration,
+        };
+        Object.assign(host, {
+          startOptions: options,
+          livePolicyAuthority: authority,
+          livePolicyPath: policyPath,
+          livePolicyBaseJson: '{"approvedRoots":[],"strictNoHostFallback":true}',
+        });
+        const stop = vi.spyOn(host, "stop");
+        const request = vi.fn(async () => {
+          const envelope = JSON.parse(readFileSync(policyPath, "utf8"));
+          const policy = JSON.parse(envelope.payload);
+          expect(JSON.parse(policy.policyJson)).toMatchObject({
+            strictNoHostFallback: true,
+            approvedRoots: expect.arrayContaining([{ path: "C:\\Work", access: "ReadWrite" }]),
+          });
+          return {
+            ok: true,
+            payload: {
+              revision: acknowledged ? policy.revision : 0,
+              policyFingerprint: policy.policyFingerprint,
+            },
+          };
+        });
+        const operation = host.applyLiveFolderPolicy({ request } as BundledWindowsNodeGateway, [
+          { path: "C:\\Work", access: "rw" },
+        ]);
+        if (acknowledged) {
+          const proof = await operation;
+          expect(proof.policyFingerprint).not.toBe(leaseProofContext.policyFingerprint);
+          expect(Reflect.get(host, "startOptions").approvalProof).toBe(proof);
+        } else {
+          await expect(operation).rejects.toThrow(/acknowledge/);
+          expect(Reflect.get(host, "startOptions")).toBe(options);
+        }
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(request.mock.calls[0]).toMatchObject([
+          "node.invoke",
+          { command: "system.run.cwd-policy" },
+        ]);
+        expect(stop).not.toHaveBeenCalled();
+        expect(Reflect.get(host, "process")).toBe(process);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
   it("ends bootstrap stdin and binds host lifetime to the Electron owner", () => {
     const end = vi.fn();
 
@@ -627,6 +688,84 @@ describe("bundled Windows node host", () => {
     );
 
     expect(requestId).toBe("owned-node");
+  });
+
+  it("reconnects only after the exact app-owned device pairing approval succeeds", async () => {
+    const nodeId = "e".repeat(64);
+    const requestId = "owned-node";
+    let approvalSucceeded = false;
+    const gateway = {
+      request: vi.fn(async (method: string) => {
+        if (method === "device.pair.list") {
+          return {
+            pending: [
+              {
+                requestId: "other-device",
+                deviceId: "f".repeat(64),
+                clientId: "node-host",
+                role: "node",
+              },
+              { requestId, deviceId: nodeId, clientId: "node-host", role: "node" },
+            ],
+          };
+        }
+        approvalSucceeded = true;
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+    const reconnect = vi.fn(() => {
+      expect(approvalSucceeded).toBe(true);
+    });
+
+    await expect(approveBundledDevicePairRequest(gateway, nodeId, reconnect)).resolves.toBe(true);
+
+    expect(gateway.request).toHaveBeenNthCalledWith(1, "device.pair.list", {});
+    expect(gateway.request).toHaveBeenNthCalledWith(2, "device.pair.approve", { requestId });
+    expect(reconnect).toHaveBeenCalledOnce();
+  });
+
+  it("does not reconnect for a missing or different device pairing request", async () => {
+    const nodeId = "1".repeat(64);
+    const reconnect = vi.fn();
+    const gateway = {
+      request: vi.fn(async () => ({
+        pending: [
+          {
+            requestId: "other-device",
+            deviceId: "2".repeat(64),
+            clientId: "node-host",
+            role: "node",
+          },
+        ],
+      })),
+    } as unknown as BundledWindowsNodeGateway;
+
+    await expect(approveBundledDevicePairRequest(gateway, nodeId, reconnect)).resolves.toBe(false);
+
+    expect(gateway.request).toHaveBeenCalledOnce();
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("does not reconnect when Gateway rejects the pairing approval", async () => {
+    const nodeId = "3".repeat(64);
+    const gateway = {
+      request: vi.fn(async (method: string) => {
+        if (method === "device.pair.list") {
+          return {
+            pending: [
+              { requestId: "owned-node", deviceId: nodeId, clientId: "node-host", role: "node" },
+            ],
+          };
+        }
+        throw new Error("approval failed");
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+    const reconnect = vi.fn();
+
+    await expect(approveBundledDevicePairRequest(gateway, nodeId, reconnect)).rejects.toThrow(
+      "approval failed",
+    );
+
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it("refuses ambiguous requests for the app-owned identity", () => {

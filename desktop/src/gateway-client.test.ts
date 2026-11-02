@@ -408,6 +408,68 @@ describe("GatewayClient.sendChat", () => {
   });
 });
 
+describe("GatewayClient.loadHistory", () => {
+  it("canonicalizes an echoed alias and learns main identity without hello defaults", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null, _connectionGeneration: 1 });
+    const history = {
+      sessionKey: "main",
+      messages: [{ role: "user", content: "Existing WeChat message" }],
+      sessionInfo: {
+        key: "agent:main:main",
+        isMain: true,
+        hasActiveRun: false,
+        activeRunIds: [],
+      },
+    };
+    const request = vi.spyOn(client, "request").mockResolvedValue(history);
+    await expect(client.loadHistory("main")).resolves.toEqual({
+      ...history,
+      sessionKey: "agent:main:main",
+    });
+    expect(request).toHaveBeenCalledExactlyOnceWith("chat.history", {
+      sessionKey: "main",
+      limit: 200,
+    });
+    expect(client.mainSessionKey).toBe("agent:main:main");
+  });
+
+  it("does not mistake another agent's main session for the default main alias", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null });
+    vi.spyOn(client, "request").mockResolvedValue({
+      sessionKey: "agent:other:main",
+      sessionInfo: {
+        key: "agent:other:main",
+        isMain: true,
+        hasActiveRun: false,
+        activeRunIds: [],
+      },
+    });
+    await client.loadHistory("agent:other:main");
+    expect(client.mainSessionKey).toBeNull();
+  });
+
+  it("does not cache main identity from a previous connection", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null, _connectionGeneration: 1 });
+    vi.spyOn(client, "request").mockImplementation(async () => {
+      Object.assign(client, { _connectionGeneration: 2 });
+      return {
+        sessionKey: "main",
+        sessionInfo: {
+          key: "agent:main:main",
+          isMain: true,
+          hasActiveRun: false,
+          activeRunIds: [],
+        },
+      };
+    });
+    await client.loadHistory("main");
+    expect(client.mainSessionKey).toBeNull();
+  });
+});
+
 describe("GatewayClient.deleteSession", () => {
   function createClient(mainSessionKey: string | null = "agent:main:main") {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
@@ -420,7 +482,12 @@ describe("GatewayClient.deleteSession", () => {
 
   it("deletes ordinary sessions and their transcripts", async () => {
     const client = createClient();
-    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "agent:main:session-123", isMain: false },
+      });
 
     await client.deleteSession("agent:main:session-123");
 
@@ -428,12 +495,17 @@ describe("GatewayClient.deleteSession", () => {
       key: "agent:main:session-123",
       deleteTranscript: true,
     });
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("resets the exact canonical main session from the Gateway handshake", async () => {
     const client = createClient("global");
-    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "global" },
+      });
 
     await client.deleteSession("global");
 
@@ -441,19 +513,127 @@ describe("GatewayClient.deleteSession", () => {
       key: "global",
       reason: "reset",
     });
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("deletes a non-default agent's main-named session", async () => {
+  it("resets a non-default agent's protected main session", async () => {
     const client = createClient("agent:painter:main");
-    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "agent:writer:main", isMain: true },
+      });
 
     await client.deleteSession("agent:writer:main");
 
-    expect(request).toHaveBeenCalledWith("sessions.delete", {
+    expect(request).toHaveBeenCalledWith("sessions.reset", {
+      key: "agent:writer:main",
+      reason: "reset",
+    });
+  });
+
+  it.each(["main", "agent:main:main"])(
+    "resolves %s without hello defaults and revokes canonical approvals before resetting",
+    async (key) => {
+      const client = createClient(null);
+      const request = vi
+        .spyOn(client, "request")
+        .mockResolvedValue(undefined)
+        .mockResolvedValueOnce({
+          session: { key: "agent:main:main", isMain: true },
+        });
+      const beforeDelete = vi.fn(async () => {
+        expect(request).toHaveBeenCalledTimes(1);
+      });
+      await client.deleteSession(key, beforeDelete);
+      expect(request).toHaveBeenNthCalledWith(1, "sessions.describe", {
+        key,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+      });
+      expect(beforeDelete).toHaveBeenCalledExactlyOnceWith("agent:main:main");
+      expect(request).toHaveBeenNthCalledWith(2, "sessions.reset", {
+        key: "agent:main:main",
+        reason: "reset",
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not infer protection from a main-named suffix", async () => {
+    const client = createClient(null);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "agent:writer:main", isMain: false },
+      });
+    await client.deleteSession("agent:writer:main");
+    expect(request).toHaveBeenLastCalledWith("sessions.delete", {
       key: "agent:writer:main",
       deleteTranscript: true,
     });
+  });
+
+  it("allows idempotent deletion of a session no longer in the catalog", async () => {
+    const client = createClient(null);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({ session: null });
+    await client.deleteSession("agent:main:removed");
+    expect(request).toHaveBeenLastCalledWith("sessions.delete", {
+      key: "agent:main:removed",
+      deleteTranscript: true,
+    });
+  });
+
+  it.each([
+    undefined,
+    {},
+    { session: {} },
+    { session: { key: "" } },
+    { session: { key: " agent:main:session-123" } },
+    { session: { key: "agent:main:session-123", isMain: "true" } },
+    { session: { key: "agent:other:main", isMain: true } },
+  ])("rejects malformed or mismatched session descriptions %# without mutation", async (result) => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValueOnce(result);
+    const beforeDelete = vi.fn();
+    await expect(client.deleteSession("agent:main:session-123", beforeDelete)).rejects.toThrow();
+    expect(beforeDelete).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset or delete after a connection change during resolution or revocation", async () => {
+    for (const phase of ["describe", "revoke"]) {
+      const client = createClient();
+      Object.assign(client, { _connectionGeneration: 1 });
+      const request = vi.spyOn(client, "request").mockImplementation(async () => {
+        if (phase === "describe") Object.assign(client, { _connectionGeneration: 2 });
+        return { session: { key: "agent:main:main", isMain: true } };
+      });
+      await expect(
+        client.deleteSession("main", async () => {
+          Object.assign(client, { _connectionGeneration: 2 });
+        }),
+      ).rejects.toThrow("Gateway connection changed");
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not mutate a session when approval revocation fails", async () => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValueOnce({
+      session: { key: "agent:main:main", isMain: true },
+    });
+    await expect(
+      client.deleteSession("main", async () => {
+        throw new Error("revocation failed");
+      }),
+    ).rejects.toThrow("revocation failed");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   describe("GatewayClient.warmUpAgent", () => {
@@ -608,6 +788,19 @@ describe("GatewayClient.deleteSession", () => {
       "permission denied",
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset an ordinary session after deletion is rejected", async () => {
+    const client = createClient();
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValueOnce({ session: { key: "agent:main:session-123", isMain: false } })
+      .mockRejectedValueOnce(new Error("permission denied"));
+    await expect(client.deleteSession("agent:main:session-123")).rejects.toThrow(
+      "permission denied",
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).not.toHaveBeenCalledWith("sessions.reset", expect.anything());
   });
 });
 

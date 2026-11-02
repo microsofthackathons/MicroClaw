@@ -478,6 +478,14 @@ describe("fenced selected-session activity reconciliation", () => {
       "Security approval",
       Date.now() + 60_000,
     );
+    store.markApprovalProcessing("approval", "Applying folders");
+    expect(store.activityStatus).toBe("running-tool");
+    expect(
+      store.streamToolCalls.find((tool) => tool.id === id && tool.kind === "approval"),
+    ).toMatchObject({ name: "Applying folders", done: false, waitingPermission: false });
+    expect(
+      store.streamToolCalls.find((tool) => tool.id === id && tool.kind !== "approval")?.name,
+    ).toBe("exec");
     store.settleApprovalActivity("approval", "Allowed once");
     expect(
       store.streamToolCalls.find((tool) => tool.id === id && tool.kind !== "approval")?.done,
@@ -611,6 +619,51 @@ describe("server-driven WeChat conversation busy state", () => {
     expect(store.sessionKey).toBe(key);
     expect(store.loading).toBe(false);
     expect(store.streaming).toBe(true);
+  });
+  it.each(["main", key])(
+    "opens existing main history with response key %s when hello omitted main identity",
+    async (responseKey) => {
+      const store = useChatStore();
+      const sessions = useSessionStore();
+      sessions.clearAll();
+      sessions.ensureSession("main");
+      sessions.ensureSession(key);
+      sessions.updateSession(key, { title: "WeChat conversation", preview: "Existing message" });
+      mockLoadHistory.mockImplementation(async (requestedKey) => ({
+        sessionKey: requestedKey === "main" ? responseKey : key,
+        messages: [{ role: "user", content: "Existing message" }],
+        sessionInfo: { key, isMain: true, hasActiveRun: false, activeRunIds: [] },
+      }));
+
+      await store.switchToMainSession();
+
+      expect(mockLoadHistory).toHaveBeenLastCalledWith("main");
+      expect(store.sessionKey).toBe(key);
+      expect(store.resolvedSessionKey).toBe(key);
+      expect(store.mainSessionKey).toBe(key);
+      expect(store.messages).toEqual([{ role: "user", content: "Existing message" }]);
+      expect(store.lastError).toBeNull();
+      expect(store.loading).toBe(false);
+      expect(sessions.sessions).toEqual([
+        expect.objectContaining({ key, title: "WeChat conversation" }),
+      ]);
+      await store.switchToMainSession();
+      expect(mockLoadHistory).toHaveBeenLastCalledWith(key);
+      expect(store.lastError).toBeNull();
+    },
+  );
+  it("rejects a snapshot belonging to a different explicit canonical session", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    mockLoadHistory.mockResolvedValue({
+      sessionKey: key,
+      messages: [{ role: "user", content: "Wrong conversation" }],
+      sessionInfo: { key: "agent:other:main", hasActiveRun: false, activeRunIds: [] },
+    });
+    await store.loadHistory();
+    expect(store.messages).toEqual([]);
+    expect(store.lastError?.raw).toContain("Invalid Gateway chat runtime snapshot");
+    expect(store.sessionKey).toBe(key);
   });
   it("restores only the selected session's active run after switching", async () => {
     const store = useChatStore();

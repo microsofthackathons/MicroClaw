@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createWindowsNodeMxcToggleConsentDialog,
-  planWeixinRemoteApprovalNativeTransition,
-} from "./windows-node-mxc-weixin-remote-approval-consent";
+import { planWeixinRemoteApprovalNativeTransition } from "./windows-node-mxc-weixin-remote-approval-consent";
 import {
   planWeixinRemoteApprovalTransition,
   revalidateAutomaticWeixinRemoteApprovalSelection,
@@ -27,66 +24,27 @@ const eligible = (): WeixinRemoteApprovalActivationOptions => ({
 });
 const disabled = { enabled: false, owner: null };
 
-function activation(response = 1) {
+function activation() {
   return {
     request: { enabled: true },
     currentMode: "off" as WindowsNodeMxcRequestedMode,
     requestedMode: "full" as WindowsNodeMxcRequestedMode,
     currentConfiguration: disabled,
     readOptions: vi.fn(eligible),
-    showDialog: vi.fn().mockResolvedValue({ response }),
-    locale: "en-US" as const,
   };
 }
 
 async function accept(params: Parameters<typeof planWeixinRemoteApprovalNativeTransition>[0]) {
   const result = await planWeixinRemoteApprovalNativeTransition(params);
-  if (result.cancelled) throw new Error("Expected an accepted transition");
   return result;
 }
 
-describe("one native sandbox restart confirmation", () => {
-  it.each(["en-US", "zh-CN"] as const)(
-    "localizes restart, tier acknowledgement and automatic WeChat disclosure in %s",
-    (locale) => {
-      for (const mode of ["full", "limited-dacl", "off"] as const) {
-        const dialog = createWindowsNodeMxcToggleConsentDialog(locale, mode, mode !== "off");
-        expect(dialog.buttons).toHaveLength(2);
-        expect(dialog.defaultId).toBe(0);
-        expect(dialog.cancelId).toBe(0);
-        expect(dialog.checkboxLabel).toBeUndefined();
-        expect(dialog.checkboxChecked).toBeUndefined();
-        expect(dialog.message).toMatch(
-          locale === "en-US"
-            ? /backend will restart.*window will stay open/
-            : /后端将重启.*窗口将保持打开/,
-        );
-        const copy = JSON.stringify(dialog);
-        expect(copy).not.toMatch(/accountId|userId|@im\.wechat|exact-bot|exact-user|mxc\.toggle/);
-        if (mode === "limited-dacl") {
-          expect(dialog.detail).toMatch(locale === "en-US" ? /not an exclusive/ : /并非排他/);
-          expect(dialog.buttons?.[1]).toMatch(locale === "en-US" ? /Accept Limited/ : /接受有限/);
-        }
-        if (mode !== "off") {
-          expect(dialog.detail).toMatch(
-            locale === "en-US" ? /Each command still needs approval/ : /每条命令仍需审批/,
-          );
-          expect(dialog.detail).toMatch(
-            locale === "en-US" ? /does not grant durable/ : /不会授予永久/,
-          );
-        }
-      }
-    },
-  );
-
+describe("direct sandbox toggle planning", () => {
   it.each(["full", "limited-dacl"] as const)(
-    "confirms %s exactly once and binds the fresh eligible account by default without durable consent",
+    "plans %s directly and binds the fresh eligible account without durable consent",
     async (requestedMode) => {
       const params = { ...activation(), requestedMode };
       const result = await accept(params);
-      expect(params.showDialog).toHaveBeenCalledExactlyOnceWith(
-        createWindowsNodeMxcToggleConsentDialog("en-US", requestedMode, true),
-      );
       expect(params.readOptions).toHaveBeenCalledTimes(2);
       expect(result.limitedFilesystemAcknowledged).toBe(requestedMode === "limited-dacl");
       expect(result.selection).toEqual({ enabled: true, owner });
@@ -100,21 +58,6 @@ describe("one native sandbox restart confirmation", () => {
     },
   );
 
-  it.each(["full", "limited-dacl", "off"] as const)(
-    "cancels %s without returning any selection, acknowledgement or mutation plan",
-    async (requestedMode) => {
-      const params = { ...activation(0), requestedMode };
-      expect(await planWeixinRemoteApprovalNativeTransition(params)).toEqual({ cancelled: true });
-      expect(params.showDialog).toHaveBeenCalledOnce();
-    },
-  );
-
-  it.each([-1, 2, 99])("rejects invalid native response %s", async (response) => {
-    await expect(planWeixinRemoteApprovalNativeTransition(activation(response))).rejects.toThrow(
-      "Invalid native sandbox",
-    );
-  });
-
   it.each([
     { invariantState: "none", account: null, enableAvailable: false },
     { invariantState: "multiple", account: null, enableAvailable: false },
@@ -122,7 +65,7 @@ describe("one native sandbox restart confirmation", () => {
     { weixinEnabled: false, enableAvailable: false },
     { enableAvailable: false, unavailableReason: "not-authenticated" },
   ] satisfies Partial<WeixinRemoteApprovalActivationOptions>[])(
-    "still shows one restart confirmation and disables remote approvals for ineligible state %j",
+    "disables remote approvals for ineligible state %j without blocking the toggle",
     async (state) => {
       const params = activation();
       params.readOptions.mockReturnValue({ ...eligible(), ...state });
@@ -130,9 +73,6 @@ describe("one native sandbox restart confirmation", () => {
         selection: { enabled: false },
         plan: { action: "persist", configuration: disabled },
       });
-      expect(params.showDialog).toHaveBeenCalledExactlyOnceWith(
-        createWindowsNodeMxcToggleConsentDialog("en-US", "full", false),
-      );
     },
   );
 
@@ -156,17 +96,15 @@ describe("one native sandbox restart confirmation", () => {
         plan: { action: "persist", configuration: disabled },
         enrollmentDisabledReason: expect.any(String),
       });
-      expect(params.showDialog).toHaveBeenCalledOnce();
     },
   );
 
-  it("copies the owner before awaiting without weakening the strict explicit-selection planner", async () => {
+  it("copies the owner before revalidation without weakening the strict explicit-selection planner", async () => {
     const params = activation();
     const initial = eligible();
-    params.readOptions.mockReturnValue(initial);
-    params.showDialog.mockImplementation(async () => {
+    params.readOptions.mockReturnValueOnce(initial).mockImplementationOnce(() => {
       initial.account!.userId = "replacement-user";
-      return { response: 1 };
+      return initial;
     });
     expect(await accept(params)).toMatchObject({
       selection: { enabled: false },
@@ -211,7 +149,6 @@ describe("one native sandbox restart confirmation", () => {
       "Renderer-supplied",
     );
     expect(params.readOptions).not.toHaveBeenCalled();
-    expect(params.showDialog).not.toHaveBeenCalled();
   });
 
   it.each([undefined, WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE] as const)(

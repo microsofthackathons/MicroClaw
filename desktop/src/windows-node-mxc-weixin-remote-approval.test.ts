@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import { createPowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
 import {
   migrateWeixinRemoteApprovalConfiguration,
   projectWeixinRemoteApprovalRuntimeConfiguration,
@@ -155,6 +156,166 @@ function candidate(
     ...overrides,
   };
 }
+
+describe("WeChat combined folder approvals", () => {
+  function folderInput() {
+    const request = input();
+    request.requests = [
+      {
+        approval: {
+          ...approval,
+          canonicalCwd: "C:\\Work",
+          declaredAccess: [{ path: "C:\\Work", access: "rw" }],
+          folderChanges: [
+            { path: "C:\\Work", access: "rw" },
+            { path: "C:\\Reference", access: "ro" },
+          ],
+          allowedDecisions: ["allow-once", "deny"],
+          policyFingerprint: request.security.policyFingerprint,
+          planSha256: "e".repeat(64),
+        },
+      },
+    ];
+    return request;
+  }
+  it.each(["en-US", "zh-CN"] as const)(
+    "discloses persistent exact grants with only Allow and Deny (%s)",
+    (locale) => {
+      const broker = configuredBroker();
+      const request = { ...folderInput(), locale };
+      const delivery = broker.createChallenge(request)!;
+      expect(delivery).not.toBeNull();
+      expect(delivery.text).toContain("RW: C:\\Work");
+      expect(delivery.text).toContain("RO: C:\\Reference");
+      expect(delivery.text).toContain(
+        locale === "en-US" ? "until removed in Settings" : "直到在设置中移除",
+      );
+      expect(delivery.text).toContain(
+        locale === "en-US" ? "Reply 1: allow | 3: deny" : "回复 1：允许 | 3：拒绝",
+      );
+      expect(delivery.text.split("\n")[1]).not.toMatch(/2[:：]/);
+      expect(
+        broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })),
+      ).toMatchObject({ status: "approved", decision: "allow-once" });
+    },
+  );
+  it.each(["path", "access", "plan", "policy"] as const)(
+    "rejects changed %s consent on reply",
+    (field) => {
+      const broker = configuredBroker();
+      const request = folderInput();
+      const delivery = broker.createChallenge(request)!;
+      const changed = structuredClone(request.requests);
+      const value = changed[0].approval;
+      if (field === "path") value.folderChanges![0].path = "C:\\Other";
+      if (field === "access") value.folderChanges![1].access = "rw";
+      if (field === "plan") value.planSha256 = "f".repeat(64);
+      if (field === "policy") value.policyFingerprint = "f".repeat(64);
+      expect(
+        broker.resolveCandidate(candidate(delivery.replyCode, { requests: changed })).status,
+      ).toBe("rejected");
+    },
+  );
+  it("never treats folder consent as a remembered command approval", () => {
+    const broker = configuredBroker();
+    const request = folderInput();
+    const delivery = broker.createChallenge(request)!;
+    expect(
+      broker.resolveCandidate(
+        candidate(delivery.replyCode, {
+          requests: request.requests,
+          text: `2 ${delivery.replyCode}`,
+        }),
+      ).status,
+    ).toBe("rejected");
+    request.requests[0].approval.allowedDecisions.push("allow-always");
+    expect(broker.createChallengeResult(request)).toEqual({
+      status: "rejected",
+      reason: "security-binding-invalid",
+    });
+  });
+  it.each(["C:\\Work\nHidden", "C:\\Secrets\\api-key", "C:\\Work\\" + "x".repeat(180)])(
+    "keeps unsafe or unrenderable folder grants local: %s",
+    (folder) => {
+      const request = folderInput();
+      request.requests[0].approval.folderChanges![0].path = folder;
+      expect(configuredBroker().createChallenge(request)).toBeNull();
+    },
+  );
+  it("preserves only the consumed exact resolution across its own policy update", () => {
+    const audit = vi.fn();
+    const broker = configuredBroker(audit);
+    const request = folderInput();
+    const delivery = broker.createChallenge(request)!;
+    expect(
+      broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })).status,
+    ).toBe("approved");
+    const another = input();
+    another.requests = [{ approval: { ...approval, id: "other-approval" } }];
+    broker.createChallenge(another);
+    expect(broker.invalidateAll("live-folder-update", approval.id)).toHaveLength(1);
+    broker.completeResolution(delivery.challengeId, "approved");
+    expect(audit).toHaveBeenLastCalledWith(expect.objectContaining({ result: "approved" }));
+    expect(
+      broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })).status,
+    ).toBe("rejected");
+  });
+  it("does not preserve an unconsumed prompt or survive a real relock", () => {
+    const audit = vi.fn();
+    const broker = configuredBroker(audit);
+    const request = folderInput();
+    const delivery = broker.createChallenge(request)!;
+    broker.invalidateAll("live-folder-update", approval.id);
+    expect(
+      broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })).status,
+    ).toBe("rejected");
+    const next = broker.createChallenge({ ...request, now: 3000 })!;
+    broker.resolveCandidate(candidate(next.replyCode, { requests: request.requests, now: 4000 }));
+    broker.invalidateAll("real-relock");
+    audit.mockClear();
+    broker.completeResolution(next.challengeId, "approved");
+    expect(audit).not.toHaveBeenCalled();
+  });
+  it.each(["base-container", "appcontainer-bfs"])(
+    "supports exact prepared PowerShell in Full %s",
+    (effectiveMode) => {
+      const request = input();
+      request.security = { ...request.security, requestedMode: "full", effectiveMode };
+      const access = [{ path: "C:\\Work", access: "rw" as const }];
+      const executablePath = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+      const initialization = createPowerShellFilesystemInitialization(
+        [
+          "powershell.exe",
+          "-NoProfile",
+          "-Command",
+          "Remove-Item -Path 'C:\\Work\\file.txt' -Force",
+        ],
+        executablePath,
+        access,
+      )!;
+      expect(initialization).not.toBeNull();
+      request.requests = [
+        {
+          approval: {
+            ...approval,
+            executable: "powershell.exe",
+            executablePath,
+            arguments: initialization.finalArgv.slice(1),
+            command: `powershell.exe -NoProfile -Command "${initialization.finalArgv.at(-1)}"`,
+            declaredAccess: access,
+            providerInitialization: initialization,
+          },
+        },
+      ];
+      expect(configuredBroker().createChallengeResult(request).status).toBe("created");
+      request.security.effectiveMode = "appcontainer-dacl";
+      expect(configuredBroker().createChallengeResult(request)).toEqual({
+        status: "rejected",
+        reason: "security-binding-invalid",
+      });
+    },
+  );
+});
 
 describe("WeChat remote approval broker", () => {
   it("preserves legacy once-only consent without manufacturing durable authority and hashes the native scope and epoch", () => {

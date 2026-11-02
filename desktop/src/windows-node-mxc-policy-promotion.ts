@@ -140,8 +140,7 @@ async function probeAgentDatabaseReadiness(
   agentId: string,
   timeoutMs: number,
 ): Promise<
-  | { status: "ready" }
-  | { status: "error"; admissionCode?: string; gatewayCode?: string }
+  { status: "ready" } | { status: "error"; admissionCode?: string; gatewayCode?: string }
 > {
   try {
     await options.gateway.request(
@@ -340,7 +339,7 @@ async function patchAgents(
       baseHash,
       raw: JSON.stringify({ agents }),
       replacePaths,
-      note: "Promote verified MicroClaw MXC policy without restarting the Gateway",
+      // No note or delivery target: OpenClaw consumes internal acknowledgements without a chat turn.
     },
     "MXC policy patch request",
   );

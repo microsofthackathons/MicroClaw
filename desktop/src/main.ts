@@ -32,7 +32,7 @@ import {
 } from "./internal-features";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
-import { applyModelConfig } from "./model-config-application";
+import { applyModelConfig, parseModelConfigUpdate } from "./model-config-application";
 import { resolveGatewayRestartReason } from "./gateway-restart-reason";
 import { registerSessionModelHandlers } from "./session-model-ipc";
 import type { LocalModelReceipt } from "./local-model-types";
@@ -134,7 +134,7 @@ import {
   resolveModelApiKey,
 } from "./model-connection";
 import { assertModelConfigUnchanged, getPrimaryModel, hasConfiguredModel } from "./model-setup";
-import { selectDefaultModel } from "./default-model-selection";
+import { parseDefaultModelSelection, selectDefaultModel } from "./default-model-selection";
 import { discoverProviderModels } from "./provider-model-catalog";
 import {
   registerProviderCatalogModel,
@@ -249,6 +249,7 @@ import {
   normalizeWindowsNodeMxcGatewayApproval,
   normalizeWindowsNodeMxcFolderPolicy,
   planWindowsNodeMxcFolderUpsert,
+  getWindowsNodeMxcMissingFolders,
   restoreWindowsNodeMxcGatewayPolicy,
   selectWindowsNodeMxcGatewayStartPolicy,
   validateWindowsNodeMxcFolderPath,
@@ -257,6 +258,19 @@ import {
   type WindowsNodeMxcGatewayApproval,
   projectWindowsNodeMxcApprovalForRenderer,
 } from "./windows-node-mxc";
+import { applyLiveFolderPolicy } from "./windows-node-mxc-live-folder-transaction";
+import { checkWindowsNodeMxcHealth } from "./windows-node-mxc-health-check";
+import { WindowsNodeMxcStatusCache, type MxcStatusSnapshot } from "./windows-node-mxc-status-cache";
+import {
+  assertWindowsNodeMxcModelOnlyChange,
+  assertWindowsNodeMxcModelSettingsUnchanged,
+  runWindowsNodeMxcModelUpdate,
+} from "./windows-node-mxc-model-config";
+import {
+  assertWeixinLoginConfigUnchanged,
+  createWeixinLoginApprovalConfiguration,
+  WindowsNodeMxcWeixinAccountSession,
+} from "./windows-node-mxc-weixin-login";
 import {
   annotateWindowsNodeMxcPausedCronJobs,
   createWindowsNodeMxcCronResumeFence,
@@ -274,7 +288,6 @@ import {
 } from "./windows-node-mxc-hooks";
 import {
   describeWindowsNodeMxcFolderTransactionError,
-  runWindowsNodeMxcFolderPolicyTransaction,
   type WindowsNodeMxcFolderPolicy,
   type WindowsNodeMxcFolderTransactionPhase,
 } from "./windows-node-mxc-folder-transaction";
@@ -310,7 +323,6 @@ import {
   probeWindowsNodeMxcAutomaticMode,
   runWindowsNodeMxcSmoke,
   isWindowsNodeMxcSmokePassed,
-  shouldStopManagedGatewayForWindowsNodeMxc,
   type StoredWindowsNodeMxcSmoke,
   type WindowsNodeMxcRuntimeStatus,
 } from "./windows-node-mxc-service";
@@ -476,6 +488,7 @@ let gatewayPort = 0;
 let gatewayToken = "";
 const activeModelSessions = new Set<string>();
 let modelConfigurationMutationInProgress = false;
+let windowsNodeMxcModelUpdateInProgress = false;
 let githubCopilotLoginInProgress = false;
 const modelChatKey = (key: string) =>
   sessionModelChatKey(readConfig(), key, gwClient?.mainSessionKey);
@@ -585,7 +598,13 @@ async function withModelConfigurationMutation<T>(operation: () => Promise<T>): P
 }
 
 function assertCloudModelMutable(): void {
-  assertWindowsNodeMxcConfigurationMutable();
+  if (!windowsNodeMxcModelUpdateInProgress) assertWindowsNodeMxcConfigurationMutable();
+  else {
+    localModelService.assertIdle();
+    sessionModelService.assertIdle();
+    if (!windowsNodeMxcSecurityTransitionInProgress || !isWindowsNodeMxcDesired())
+      throw new Error("The guarded MXC model update is no longer active");
+  }
   if (githubCopilotLoginInProgress) throw new Error("GitHub Copilot sign-in is still in progress");
   if (!gatewaySpawnedByUs || gatewayRestarting)
     throw new Error("Model selection requires MicroClaw's connected managed Gateway");
@@ -594,31 +613,169 @@ function assertCloudModelMutable(): void {
 }
 
 function applyModelConfiguration(input: unknown): Promise<void> {
-  return applyModelConfig(
-    {
-      gateway: () => gwClient,
-      readConfig,
-      assertMutable: assertCloudModelMutable,
-      log: (message) => {
-        console.info(message);
-        sendToWindow(mainWindow, "gateway:log", message);
-        electronLifecycleDiagnostics.log("model-config-application", { message });
-      },
-    },
-    input,
+  const params = parseModelConfigUpdate(input);
+  if (isWindowsNodeMxcDesired()) {
+    assertModelConfigUnchanged(params.expectedConfig, readConfig());
+    assertWindowsNodeMxcModelOnlyChange(params.expectedConfig, params.config);
+  }
+  return withWindowsNodeMxcModelUpdate(
+    () =>
+      applyModelConfig(
+        {
+          gateway: () => gwClient,
+          readConfig,
+          assertMutable: assertCloudModelMutable,
+          log: (message) => {
+            console.info(message);
+            sendToWindow(mainWindow, "gateway:log", message);
+            electronLifecycleDiagnostics.log("model-config-application", { message });
+          },
+        },
+        params,
+      ),
+    () => undefined,
   );
 }
 
 function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown): Promise<unknown> {
-  return registerProviderCatalogModel(
-    {
-      gateway: () => gwClient,
-      readConfig,
-      assertMutable: assertCloudModelMutable,
-      discover: (input) => discoverProviderModels(input, { ...process.env, ...loadStateDirEnv() }),
+  assertModelConfigUnchanged(expectedConfig, readConfig());
+  return withWindowsNodeMxcModelUpdate(
+    () =>
+      registerProviderCatalogModel(
+        {
+          gateway: () => gwClient,
+          readConfig,
+          assertMutable: assertCloudModelMutable,
+          discover: (input) =>
+            discoverProviderModels(input, { ...process.env, ...loadStateDirEnv() }),
+        },
+        modelRef,
+        expectedConfig,
+      ),
+    readConfig,
+  );
+}
+
+async function withWindowsNodeMxcModelUpdate<T>(
+  operation: () => Promise<T>,
+  resultAfterRestart: () => T,
+): Promise<T> {
+  if (!isWindowsNodeMxcDesired() || windowsNodeMxcModelUpdateInProgress) return operation();
+  localModelService.assertIdle();
+  sessionModelService.assertIdle();
+  if (githubCopilotLoginInProgress || activeModelSessions.size > 0)
+    throw new Error("Finish the current sign-in or chat response before changing the model");
+  const requestedMode = getWindowsNodeMxcRequestedMode();
+  await requireEffectiveWindowsNodeMxc(true);
+  if (getWindowsNodeMxcRequestedMode() !== requestedMode)
+    throw new Error("Containment mode changed before model setup");
+  let client = gwClient;
+  let generation = gatewayGenerationId;
+  let child = gatewayProcess;
+  let proofContext = windowsNodeMxcApprovalProofContext;
+  let connection = client?.connectionGeneration;
+  const assertCurrent = () => {
+    if (
+      !client?.connected ||
+      gwClient !== client ||
+      gatewayGenerationId !== generation ||
+      gatewayProcess !== child ||
+      client.connectionGeneration !== connection ||
+      windowsNodeMxcApprovalProofContext !== proofContext ||
+      !isManagedGatewayProcessAlive()
+    )
+      throw new Error("The managed MXC runtime changed during model setup");
+  };
+  return windowsNodeMxcLifecycleOperations.run(
+    { kind: "update-model" },
+    async () => {
+      if (activeModelSessions.size > 0 || githubCopilotLoginInProgress)
+        throw new Error("Finish the current sign-in or chat response before changing the model");
+      windowsNodeMxcModelUpdateInProgress = true;
+      try {
+        return await runWindowsNodeMxcModelUpdate({
+          readConfig,
+          pause: async () => {
+            assertCurrent();
+            windowsNodeMxcActivationInProgress = true;
+            setWindowsNodeMxcLifecycleState(
+              "updating-model",
+              "Applying model settings with containment locked",
+            );
+            closeWindowsNodeMxcIngress();
+            bundledWindowsNodeHost.revokeActivationLease();
+            await Promise.all(
+              allPendingWindowsNodeMxcGatewayApprovals().map((pending) =>
+                pending.lifecycle.cancel("model-configuration-changed"),
+              ),
+            );
+            const pending = bundledWindowsNodeHost.status().pendingApproval;
+            if (pending) bundledWindowsNodeHost.respond(pending.id, "deny");
+          },
+          apply: operation,
+          restartSavedConfig: async (hash) => {
+            assertCurrent();
+            const snapshot = await client!.request<{ valid?: boolean; hash?: string }>(
+              "config.get",
+              {},
+            );
+            assertCurrent();
+            if (snapshot.valid !== true || snapshot.hash !== hash)
+              throw new Error("The saved model configuration changed before the required restart");
+            const saved = structuredClone(readConfig());
+            await stopGatewayForSecurityTransition(gatewayPort);
+            windowsNodeMxcActivationInProgress = false;
+            await runAutomaticWindowsNodeMxcReadiness(undefined, false);
+            assertWindowsNodeMxcModelSettingsUnchanged(saved, readConfig());
+            client = gwClient;
+            generation = gatewayGenerationId;
+            child = gatewayProcess;
+            proofContext = windowsNodeMxcApprovalProofContext;
+            connection = client?.connectionGeneration;
+            return resultAfterRestart();
+          },
+          verify: async () => {
+            assertCurrent();
+            const snapshot = await client!.request<{
+              valid?: boolean;
+              configRevisionHash?: string;
+              appliedConfigHash?: string;
+            }>("config.get", {});
+            assertCurrent();
+            if (
+              snapshot.valid !== true ||
+              !snapshot.configRevisionHash ||
+              snapshot.appliedConfigHash !== snapshot.configRevisionHash
+            )
+              throw new Error("The Gateway has not applied the saved model configuration");
+            await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+            const status = await getWindowsNodeMxcStatus();
+            assertCurrent();
+            assertWindowsNodeMxcBaseReady(status, "active", true);
+            if (!status.effectiveEnabled) throw new Error("MXC model update attestation failed");
+          },
+          resume: () => {
+            assertCurrent();
+            releaseWindowsNodeMxcIngress(generation);
+            windowsNodeMxcActivationInProgress = false;
+            setWindowsNodeMxcLifecycleState("active");
+          },
+          failClosed: () =>
+            failClosedWindowsNodeMxc(
+              "Model configuration could not be confirmed; reload settings and retry containment readiness",
+            ),
+        });
+      } finally {
+        windowsNodeMxcModelUpdateInProgress = false;
+      }
     },
-    modelRef,
-    expectedConfig,
+    {
+      beforeStart: () => beginWindowsNodeMxcLifecycleOperation(),
+      afterSettled: () => {
+        endWindowsNodeMxcLifecycleOperation();
+        if (isApplicationServiceReady()) sendToWindow(mainWindow, "gateway:service-ready");
+      },
+    },
   );
 }
 
@@ -708,6 +865,7 @@ interface PendingWindowsNodeMxcGatewayApproval {
   remoteDelivery: WeixinRemoteDeliveryState | null;
   remoteSource: WeixinRemoteApprovalSource | null;
   remoteSecurity: WeixinRemoteApprovalSecurityBinding | null;
+  folderGrantsSaved?: boolean;
   remoteChallengeId: string | null;
   remoteAttempt: Promise<unknown> | null;
   remoteCoordinator: WeixinRemoteDeliveryCoordinator;
@@ -842,6 +1000,187 @@ async function withWindowsNodeMxcDurableApprovalLock<T>(operation: () => Promise
 let gatewayStatus: GatewayStatus = "stopped";
 const weixinMutations = new WeixinMutationCoordinator();
 const weixinQrSession = new WeixinQrSession();
+let windowsNodeMxcWeixinLogin: WindowsNodeMxcWeixinAccountSession | null = null;
+let weixinQrCancellation: Promise<void> | null = null;
+
+function assertWeixinQrLoginMutable(): void {
+  if (!isWindowsNodeMxcDesired()) {
+    assertWindowsNodeMxcConfigurationMutable();
+    return;
+  }
+  if (!windowsNodeMxcWeixinLogin)
+    throw new Error("MXC WeChat sign-in requires the guarded desktop QR flow");
+  windowsNodeMxcWeixinLogin.assertWaiting();
+}
+
+async function beginWindowsNodeMxcWeixinAccountChange(
+  kind: "login" | "disconnect",
+): Promise<WindowsNodeMxcWeixinAccountSession | null> {
+  if (!isWindowsNodeMxcDesired()) {
+    assertWindowsNodeMxcConfigurationMutable();
+    return null;
+  }
+  if (windowsNodeMxcWeixinLogin) throw new Error("A WeChat account change is already in progress");
+  const requestedMode = getWindowsNodeMxcRequestedMode();
+  localModelService.assertIdle();
+  sessionModelService.assertIdle();
+  if (activeModelSessions.size || githubCopilotLoginInProgress)
+    throw new Error("Finish the current chat or sign-in before changing the WeChat account");
+  await requireEffectiveWindowsNodeMxc(true);
+  if (getWindowsNodeMxcRequestedMode() !== requestedMode)
+    throw new Error("Containment mode changed before the WeChat account change");
+  const client = gwClient;
+  const connection = client?.connectionGeneration;
+  const generation = gatewayGenerationId;
+  const mode = getWindowsNodeMxcRequestedMode();
+  const child = gatewayProcess;
+  const proof = windowsNodeMxcApprovalProofContext;
+  const transport = windowsNodeMxcWeixinRemoteApprovalServer;
+  if (!transport)
+    throw new Error("WeChat account transport is unavailable; restart MicroClaw to recover it");
+  const folders = structuredClone(getWindowsNodeMxcFolderPolicy());
+  const config = structuredClone(readConfig());
+  const previousRemote = migrateWeixinRemoteApprovalConfiguration(
+    settingsStore.get("windowsNodeMxcWeixinRemoteApproval"),
+  );
+  const previousOwner = readAuthenticatedWeixinWireOwner(getOpenClawStateDir());
+  const assertCurrent = () => {
+    if (
+      gwClient !== client ||
+      !client?.connected ||
+      client.connectionGeneration !== connection ||
+      gatewayGenerationId !== generation ||
+      gatewayProcess !== child ||
+      windowsNodeMxcApprovalProofContext !== proof ||
+      windowsNodeMxcWeixinRemoteApprovalServer !== transport ||
+      getWindowsNodeMxcRequestedMode() !== mode ||
+      !isManagedGatewayProcessAlive()
+    )
+      throw new Error("The managed MXC runtime changed during the WeChat account change");
+    assertWeixinLoginConfigUnchanged(config, readConfig());
+    assertWeixinLoginConfigUnchanged(folders, getWindowsNodeMxcFolderPolicy());
+  };
+  const lease = windowsNodeMxcLifecycleOperations.acquire<void>(
+    { kind: kind === "login" ? "login-weixin" : "disconnect-weixin" },
+    {
+      beforeStart: () => beginWindowsNodeMxcLifecycleOperation(),
+      afterSettled: () => {
+        endWindowsNodeMxcLifecycleOperation();
+        if (isApplicationServiceReady()) sendToWindow(mainWindow, "gateway:service-ready");
+      },
+    },
+  );
+  if (lease.joined)
+    throw new Error("A WeChat account change cannot join another lifecycle operation");
+  let paused = false;
+  const login = new WindowsNodeMxcWeixinAccountSession({
+    assertCurrent,
+    pause: async () => {
+      assertCurrent();
+      localModelService.assertIdle();
+      sessionModelService.assertIdle();
+      if (activeModelSessions.size || githubCopilotLoginInProgress)
+        throw new Error("Finish the current chat or sign-in before changing the WeChat account");
+      paused = true;
+      windowsNodeMxcActivationInProgress = true;
+      setWindowsNodeMxcLifecycleState(
+        kind === "login" ? "connecting-weixin" : "disconnecting-weixin",
+        kind === "login"
+          ? "Chat and tools are paused while connecting WeChat"
+          : "Chat and tools are paused while disconnecting WeChat",
+      );
+      closeWindowsNodeMxcIngress();
+      bundledWindowsNodeHost.revokeActivationLease();
+      await Promise.all(
+        allPendingWindowsNodeMxcGatewayApprovals().map((pending) =>
+          pending.lifecycle.cancel(kind === "login" ? "weixin-login" : "weixin-logout"),
+        ),
+      );
+      const pending = bundledWindowsNodeHost.status().pendingApproval;
+      if (pending) bundledWindowsNodeHost.respond(pending.id, "deny");
+      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", { enabled: false, owner: null });
+      windowsNodeMxcWeixinRemoteApprovalBroker.configure({ enabled: false, owner: null });
+    },
+    complete: async (outcome) => {
+      assertCurrent();
+      if (outcome === "cancelled") {
+        const resumed = await client!.weixinResumeAfterLogin();
+        if (!resumed.resumed) throw new Error("The previous WeChat account could not resume");
+        assertCurrent();
+      }
+      const owner = readAuthenticatedWeixinWireOwner(getOpenClawStateDir());
+      if (
+        outcome === "disconnected" &&
+        readWeixinAccountStatus(getOpenClawStateDir()).invariantState !== "none"
+      )
+        throw new Error("WeChat account removal was not confirmed");
+      const next =
+        outcome === "connected"
+          ? createWeixinLoginApprovalConfiguration(getWeixinRemoteApprovalActivationOptions())
+          : outcome === "cancelled" &&
+              JSON.stringify(owner) === JSON.stringify(previousOwner) &&
+              !shouldRevokeWeixinRemoteApprovalOwner(
+                readWeixinAccountStatus(getOpenClawStateDir()),
+                previousRemote.owner,
+              )
+            ? previousRemote
+            : { enabled: false, owner: null };
+      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", next);
+      windowsNodeMxcWeixinRemoteApprovalBroker.configure(next);
+      await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+      assertCurrent();
+      const status = await getWindowsNodeMxcStatus();
+      assertCurrent();
+      assertWindowsNodeMxcBaseReady(status, "active", true);
+      if (!status.effectiveEnabled) throw new Error("MXC WeChat account-change attestation failed");
+      if (
+        getWindowsNodeMxcRequestedMode() !== mode ||
+        JSON.stringify(readAuthenticatedWeixinWireOwner(getOpenClawStateDir())) !==
+          JSON.stringify(owner) ||
+        (outcome === "disconnected" &&
+          readWeixinAccountStatus(getOpenClawStateDir()).invariantState !== "none") ||
+        JSON.stringify(
+          migrateWeixinRemoteApprovalConfiguration(
+            settingsStore.get("windowsNodeMxcWeixinRemoteApproval"),
+          ),
+        ) !== JSON.stringify(next)
+      )
+        throw new Error("The WeChat owner changed while restoring containment");
+      releaseWindowsNodeMxcIngress(generation);
+      weixinRuntimeRead = null;
+      windowsNodeMxcActivationInProgress = false;
+      setWindowsNodeMxcLifecycleState("active");
+    },
+    failClosed: async (error) => {
+      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", { enabled: false, owner: null });
+      const detail = summarizeLifecycleError(error);
+      electronLifecycleDiagnostics.log(
+        kind === "login" ? "mxc-weixin-login-failed" : "mxc-weixin-disconnect-failed",
+        { error: detail },
+      );
+      await failClosedWindowsNodeMxc(
+        `WeChat ${kind === "login" ? "sign-in" : "disconnect"} could not be confirmed: ${detail}`,
+      );
+    },
+    settled: (error) => {
+      if (windowsNodeMxcWeixinLogin === login) windowsNodeMxcWeixinLogin = null;
+      if (error === null) lease.succeed();
+      else lease.fail(error);
+    },
+  });
+  if (kind === "login") windowsNodeMxcWeixinLogin = login;
+  try {
+    await login.start();
+    return login;
+  } catch (error) {
+    if (paused) await login.finish("cancelled", error);
+    else {
+      windowsNodeMxcWeixinLogin = null;
+      lease.fail(error);
+    }
+    throw error;
+  }
+}
 let weixinRuntimeRead: {
   gateway: GatewayClient;
   generation: number;
@@ -883,35 +1222,87 @@ async function waitForWeixinConnection(params: {
   accountId?: string;
   timeoutMs?: number;
 }) {
-  return weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
-    const qrEpoch = weixinMutations.requireQr();
-    if (!gwClient?.connected) {
-      weixinMutations.qrUnconfirmed(qrEpoch);
-      return { connected: false, message: "Gateway not connected", restartRequired: true };
-    }
-    try {
-      const result = await gwClient.weixinLoginQrWait(params);
-      if (result.connected || !result.pending) weixinMutations.qrConnected(qrEpoch);
-      if (result.connected) {
-        weixinRuntimeRead = null;
-        reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-replaced");
+  const login = windowsNodeMxcWeixinLogin;
+  const result = await weixinMutations
+    .run(assertWeixinQrLoginMutable, async () => {
+      const qrEpoch = weixinMutations.requireQr();
+      if (!gwClient?.connected) {
+        weixinMutations.qrUnconfirmed(qrEpoch);
+        return { connected: false, message: "Gateway not connected", restartRequired: true };
       }
-      return result;
-    } catch (error) {
-      weixinMutations.qrUnconfirmed(qrEpoch);
-      return {
-        connected: false,
-        message: error instanceof Error ? error.message : String(error),
-        restartRequired: true,
-      };
-    }
-  });
+      const gateway = gwClient;
+      const connection = gateway.connectionGeneration;
+      try {
+        const result = await gateway.weixinLoginQrWait(params);
+        if (login && !weixinQrCancellation) {
+          login.assertWaiting();
+          if (
+            result.connected &&
+            (!result.accountId ||
+              readAuthenticatedWeixinWireOwner(getOpenClawStateDir())?.accountId !==
+                result.accountId.trim().toLowerCase())
+          )
+            throw new Error(
+              "WeChat sign-in returned a different account from the saved authenticated owner",
+            );
+        }
+        if (!login && !weixinQrCancellation && !result.connected && !result.pending) {
+          await resumeWeixinAfterQr(gateway, connection);
+        }
+        if (result.connected || !result.pending) weixinMutations.qrConnected(qrEpoch);
+        if (result.connected) {
+          weixinRuntimeRead = null;
+          reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-replaced");
+        }
+        return result;
+      } catch (error) {
+        weixinMutations.qrUnconfirmed(qrEpoch);
+        return {
+          connected: false,
+          message: error instanceof Error ? error.message : String(error),
+          restartRequired: true,
+        };
+      }
+    })
+    .catch(async (error: unknown) => {
+      if (login && !weixinQrCancellation) await login.finish("cancelled", error);
+      throw error;
+    });
+  if (
+    login &&
+    !weixinQrCancellation &&
+    (result.connected || !("pending" in result && result.pending))
+  ) {
+    await login.finish(
+      result.connected ? "connected" : "cancelled",
+      "restartRequired" in result && result.restartRequired ? new Error(result.message) : undefined,
+    );
+  }
+  return result;
 }
+
+async function resumeWeixinAfterQr(gateway: GatewayClient, connection: number): Promise<void> {
+  const assertCurrent = () => {
+    assertWeixinQrLoginMutable();
+    if (gwClient !== gateway || !gateway.connected || gateway.connectionGeneration !== connection)
+      throw new Error("Gateway changed while resuming WeChat after sign-in");
+  };
+  assertCurrent();
+  const result = await gateway.weixinResumeAfterLogin();
+  assertCurrent();
+  if (!result.resumed) throw new Error("The previous WeChat account could not resume");
+  weixinRuntimeRead = null;
+}
+
 let weixinMutationLockRevision = 0;
 
 function getWeixinMutationLock() {
   return {
     locked: isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress,
+    loginLocked:
+      windowsNodeMxcSecurityTransitionInProgress ||
+      Boolean(windowsNodeMxcWeixinLogin) ||
+      (isWindowsNodeMxcDesired() && !isApplicationServiceReady()),
     revision: weixinMutationLockRevision,
   };
 }
@@ -921,7 +1312,10 @@ function publishWeixinMutationLock(): void {
   mainWindow?.webContents.send("plugin:weixin:mutation-lock", getWeixinMutationLock());
 }
 
-function beginWindowsNodeMxcLifecycleOperation(disabling = false): void {
+function beginWindowsNodeMxcLifecycleOperation(
+  disabling = false,
+  ownsApprovalResolution = false,
+): void {
   if (windowsNodeMxcFailClosedPromise) {
     throw new Error("Wait for the current Windows Node + MXC fail-closed recovery to finish");
   }
@@ -934,7 +1328,7 @@ function beginWindowsNodeMxcLifecycleOperation(disabling = false): void {
   if (windowsNodeMxcFolderPolicyMutationInProgress) {
     throw new Error("Wait for the approved folder policy change to finish");
   }
-  if (windowsNodeMxcApprovalResolutionInProgress) {
+  if (windowsNodeMxcApprovalResolutionInProgress && !ownsApprovalResolution) {
     throw new Error("Wait for the current Windows Node + MXC approval response to finish");
   }
   if (!disabling) weixinMutations.assertActivationAvailable(!!weixinLoginProcess);
@@ -1002,6 +1396,7 @@ function setWindowsNodeMxcLifecycleState(
   windowsNodeMxcLifecycleState = state;
   windowsNodeMxcLifecycleDetail = detail;
   windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
+  publishWindowsNodeMxcDisplayStatus(windowsNodeMxcStatusCache.snapshot());
   electronLifecycleDiagnostics.log("mxc-lifecycle-phase", {
     phase: state,
     detail: detail ? summarizeLifecycleError(detail) : null,
@@ -1492,7 +1887,8 @@ function reconcileWindowsNodeMxcWeixinRemoteApprovalOwner(reason: string): void 
   if (!shouldRevokeWeixinRemoteApprovalOwner(accountStatus, configuration.owner)) {
     return;
   }
-  closeWindowsNodeMxcWeixinRemoteApproval(reason, false);
+  windowsNodeMxcWeixinRemoteApprovalBroker.invalidateAll(reason);
+  windowsNodeMxcWeixinRemoteApprovalSources.clear();
   const disabled = { enabled: false, owner: null };
   settingsStore.set("windowsNodeMxcWeixinRemoteApproval", disabled);
   windowsNodeMxcWeixinRemoteApprovalBroker.configure(disabled);
@@ -1612,7 +2008,7 @@ async function handleWindowsNodeMxcWeixinRemoteApprovalInbound(
   const pending = pendingWindowsNodeMxcGatewayApproval;
   if (pending && candidateLike) {
     try {
-      await requireEffectiveWindowsNodeMxc(true, false);
+      if (!pending.request.folderChanges?.length) await requireEffectiveWindowsNodeMxc(true, false);
       if (!currentWindowsNodeMxcWeixinRemoteApprovalSecurity()) {
         throw new Error("The current remote approval activation authority is unavailable");
       }
@@ -1882,14 +2278,26 @@ function isWindowsNodeMxcDesired(): boolean {
   return getWindowsNodeMxcRequestedMode() !== "off";
 }
 
-function closeWindowsNodeMxcIngress(): void {
+function closeWindowsNodeMxcIngress(preserveApprovalId?: string): void {
+  const preservedSource = preserveApprovalId
+    ? findPendingWindowsNodeMxcGatewayApproval(preserveApprovalId)?.remoteSource
+    : null;
+  const retainSource =
+    preservedSource &&
+    windowsNodeMxcWeixinRemoteApprovalSources.get(preservedSource.sessionKey) === preservedSource;
   for (const pending of allPendingWindowsNodeMxcGatewayApprovals()) {
-    void pending.lifecycle.cancel("security-ingress-closed");
+    if (pending.request.id !== preserveApprovalId)
+      void pending.lifecycle.cancel("security-ingress-closed");
   }
   windowsNodeMxcIngressGeneration = null;
   revokeWindowsNodeMxcWeixinIngress(windowsNodeMxcWeixinContext);
-  const notices = windowsNodeMxcWeixinRemoteApprovalBroker.invalidateAll("security-relock");
+  const notices = windowsNodeMxcWeixinRemoteApprovalBroker.invalidateAll(
+    "security-relock",
+    preserveApprovalId,
+  );
   windowsNodeMxcWeixinRemoteApprovalSources.clear();
+  if (retainSource)
+    windowsNodeMxcWeixinRemoteApprovalSources.set(preservedSource.sessionKey, preservedSource);
   const server = windowsNodeMxcWeixinRemoteApprovalServer;
   if (server) {
     void Promise.allSettled(
@@ -2019,7 +2427,71 @@ function getWindowsNodeMxcDurableApprovalStore(): WindowsNodeMxcDurableApprovalS
   return windowsNodeMxcDurableApprovalStore;
 }
 
-async function getWindowsNodeMxcStatus(): Promise<
+type MxcInspectedStatus = Awaited<ReturnType<typeof inspectWindowsNodeMxcStatus>>;
+const windowsNodeMxcStatusCache = new WindowsNodeMxcStatusCache<MxcInspectedStatus>({
+  key: () =>
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          config: readConfig(),
+          folders: getWindowsNodeMxcFolderPolicy(),
+          mode: getWindowsNodeMxcRequestedMode(),
+          generation: gatewayGenerationId,
+          connection: gwClient?.connectionGeneration,
+          connected: gwClient?.connected,
+          process: gatewayProcess?.pid,
+          alive: isManagedGatewayProcessAlive(),
+          lifecycle: windowsNodeMxcLifecycleOperations.generation,
+          ingress: windowsNodeMxcIngressGeneration,
+          transitioning: windowsNodeMxcSecurityTransitionInProgress,
+          lease: windowsNodeMxcApprovalProofContext
+            ? bundledWindowsNodeHost.getActivationLeaseBindingHash(
+                windowsNodeMxcApprovalProofContext,
+              )
+            : null,
+        }),
+      )
+      .digest("hex"),
+  inspect: inspectWindowsNodeMxcStatus,
+  publish: publishWindowsNodeMxcDisplayStatus,
+});
+
+function presentWindowsNodeMxcDisplayStatus(snapshot: MxcStatusSnapshot<MxcInspectedStatus>) {
+  const status = snapshot.status;
+  return {
+    ...snapshot,
+    status: status
+      ? {
+          ...status,
+          lifecycleState: {
+            phase: windowsNodeMxcSecurityTransitionInProgress
+              ? windowsNodeMxcLifecycleState
+              : status.effectiveEnabled
+                ? ("active" as const)
+                : status.desiredEnabled
+                  ? ("locked" as const)
+                  : ("idle" as const),
+            detail: windowsNodeMxcLifecycleDetail,
+            updatedAt: windowsNodeMxcLifecycleUpdatedAt,
+          },
+        }
+      : null,
+  };
+}
+
+function publishWindowsNodeMxcDisplayStatus(snapshot: MxcStatusSnapshot<MxcInspectedStatus>) {
+  sendToWindow(
+    mainWindow,
+    "windows-node-mxc:display-status",
+    presentWindowsNodeMxcDisplayStatus(snapshot),
+  );
+}
+
+function getWindowsNodeMxcStatus(): Promise<MxcInspectedStatus> {
+  return windowsNodeMxcStatusCache.fresh();
+}
+
+async function inspectWindowsNodeMxcStatus(): Promise<
   WindowsNodeMxcRuntimeStatus & {
     lifecycleState: {
       phase: WindowsNodeMxcFolderTransactionPhase;
@@ -2043,13 +2515,14 @@ async function getWindowsNodeMxcStatus(): Promise<
   const hooksConfig =
     requestedMode === "off" ? config.hooks : getWindowsNodeMxcIngressBackup(backups, "hooks");
   const bundledFolders = getBundledWindowsNodeFolders();
-  const bundledHost = bundledWindowsNodeHost.status();
   let runtimeIntegrityError: string | undefined;
   try {
-    bundledWindowsNodeHost.getValidatedMxcExecutablePath();
+    // Off only probes availability; enabled health/ingress checks still validate the full tree.
+    await bundledWindowsNodeHost.validateRuntimeIntegrity(requestedMode !== "off");
   } catch (error) {
     runtimeIntegrityError = error instanceof Error ? error.message : String(error);
   }
+  const bundledHost = bundledWindowsNodeHost.status();
   const status = await inspectWindowsNodeMxc({
     requestedMode,
     desiredEnabled: isWindowsNodeMxcDesired(),
@@ -2112,6 +2585,240 @@ function getWindowsNodeMxcFolderPolicy(): WindowsNodeMxcFolderPolicy {
   return { rw: [...folders.rw], ro: [...folders.ro] };
 }
 
+async function getReparsePathComponents(dir: string): Promise<Set<string>> {
+  const normalized = path.win32.normalize(dir);
+  const parsed = path.win32.parse(normalized);
+  const components: string[] = [];
+  let current = parsed.root;
+  for (const component of normalized.slice(parsed.root.length).split("\\").filter(Boolean)) {
+    current = path.win32.join(current, component);
+    components.push(current);
+  }
+  if (components.length === 0) return new Set();
+  const powershellPath = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const encodedPaths = Buffer.from(JSON.stringify(components), "utf8").toString("base64");
+  const script = `$paths=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPaths}'))); foreach ($candidate in $paths) { try { [Console]::Out.WriteLine([int][IO.File]::GetAttributes($candidate)) } catch { exit 2 } }`;
+  const output = await new Promise<string>((resolve, reject) => {
+    execFile(
+      powershellPath,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)),
+    );
+  });
+  const attributes = output
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((value) => Number.parseInt(value, 10));
+  if (
+    attributes.length !== components.length ||
+    attributes.some((value) => !Number.isInteger(value))
+  )
+    throw new Error("Could not verify the selected folder's Windows reparse attributes");
+  return new Set(
+    components
+      .filter((_component, index) => (attributes[index] & 0x400) !== 0)
+      .map((component) => normalizeDirPath(component).toLowerCase()),
+  );
+}
+
+async function validateWindowsNodeMxcUserDir(dir: string) {
+  const reparseComponents = await getReparsePathComponents(dir);
+  return validateWindowsNodeMxcFolderPath(
+    dir,
+    (candidate) => fs.realpathSync.native(candidate),
+    (candidate) => {
+      return (
+        fs.lstatSync(candidate).isSymbolicLink() ||
+        reparseComponents.has(normalizeDirPath(candidate).toLowerCase())
+      );
+    },
+    sensitiveWindowsRoots(
+      path.join(app.getPath("userData"), "windows-node"),
+      getOpenClawStateDir(),
+    ),
+  );
+}
+
+async function normalizeCompleteWindowsNodeMxcFolderPolicy(draft: WindowsNodeMxcFolderPolicy) {
+  if (
+    !draft ||
+    !Array.isArray(draft.ro) ||
+    !Array.isArray(draft.rw) ||
+    [...draft.ro, ...draft.rw].some((candidate) => typeof candidate !== "string")
+  )
+    throw new Error("The folder policy must contain RO and RW path lists");
+  const validated = new Map<string, Awaited<ReturnType<typeof validateWindowsNodeMxcUserDir>>>();
+  for (const candidate of new Set([...draft.ro, ...draft.rw]))
+    validated.set(candidate, await validateWindowsNodeMxcUserDir(candidate));
+  const result = normalizeWindowsNodeMxcFolderPolicy(
+    draft,
+    (candidate) => validated.get(candidate)!,
+  );
+  if (!result.ok)
+    throw new Error(
+      `Approved folder policy rejected${result.path ? ` (${result.path})` : ""}: ${result.reason ?? "invalid policy"}`,
+    );
+  return result.dirs;
+}
+
+async function applyRunningWindowsNodeMxcFolders(
+  draft: WindowsNodeMxcFolderPolicy,
+  approval?: PendingWindowsNodeMxcGatewayApproval,
+  assertApprovalCurrent?: () => void,
+  confirmApproval?: () => Promise<void>,
+): Promise<WindowsNodeMxcRuntimeStatus> {
+  if (!isWindowsNodeMxcDesired()) throw new Error("Live folder updates require containment");
+  const startedAt = Date.now();
+  await requireEffectiveWindowsNodeMxc(true);
+  console.info(
+    `[windows-node-mxc-folder-timing] stage=preflight elapsedMs=${Date.now() - startedAt}`,
+  );
+  const previous = getWindowsNodeMxcFolderPolicy();
+  const client = gwClient;
+  const generation = gatewayGenerationId;
+  if (!client?.connected) throw new Error("The managed Gateway is not connected");
+  return windowsNodeMxcLifecycleOperations.run(
+    { kind: "apply-folder-policy" },
+    () =>
+      applyLiveFolderPolicy(draft, {
+        timing: (stage, elapsedMs) =>
+          console.info(`[windows-node-mxc-folder-timing] stage=${stage} elapsedMs=${elapsedMs}`),
+        validate: async (candidate) => normalizeCompleteWindowsNodeMxcFolderPolicy(candidate),
+        confirm: confirmApproval,
+        lock: async () => {
+          assertApprovalCurrent?.();
+          if (approval && (!approval.lifecycle.pending || Date.now() >= approval.expiresAtUnixMs))
+            throw new Error("The combined command and folder approval has expired");
+          setWindowsNodeMxcLifecycleState(
+            "updating-folders",
+            "Applying folder permissions without restarting the Gateway",
+          );
+          windowsNodeMxcActivationInProgress = true;
+          closeWindowsNodeMxcIngress(approval?.request.id);
+          for (const pending of allPendingWindowsNodeMxcGatewayApprovals()) {
+            if (pending !== approval && pending.lifecycle.pending)
+              await pending.lifecycle.cancel("folder-policy-changed");
+          }
+          const nodePending = bundledWindowsNodeHost.status().pendingApproval;
+          if (nodePending) bundledWindowsNodeHost.respond(nodePending.id, "deny");
+          bundledWindowsNodeHost.revokeActivationLease();
+        },
+        persist: async (next) => {
+          assertApprovalCurrent?.();
+          if (approval && (!approval.lifecycle.pending || Date.now() >= approval.expiresAtUnixMs))
+            throw new Error("The combined command and folder approval has expired");
+          settingsStore.store = {
+            ...settingsStore.store,
+            windowsNodeMxcFolders: next,
+            windowsNodeMxcFolderPolicyRecovery: {
+              previous,
+              draft: next,
+              updatedAt: new Date().toISOString(),
+              lastError: null,
+              failurePhase: null,
+            },
+          };
+        },
+        publish: async (next) => {
+          if (client !== gwClient || generation !== gatewayGenerationId)
+            throw new Error("The Gateway changed during the live folder update");
+          if (approval && (!approval.request.planSha256 || Date.now() >= approval.expiresAtUnixMs))
+            throw new Error("The combined command and folder approval is stale");
+          const proof = await bundledWindowsNodeHost.applyLiveFolderPolicy(
+            client,
+            [
+              ...next.ro.map((folder) => ({ path: folder, access: "ro" as const })),
+              ...next.rw.map((folder) => ({ path: folder, access: "rw" as const })),
+            ],
+            approval
+              ? {
+                  approvalId: approval.request.id,
+                  planSha256: approval.request.planSha256!,
+                  expiresAtUnixMs: approval.expiresAtUnixMs,
+                }
+              : null,
+          );
+          windowsNodeMxcApprovalProofContext = proof;
+          if (
+            !windowsNodeMxcWeixinContext ||
+            windowsNodeMxcWeixinContext.gatewayGeneration !== generation
+          )
+            throw new Error("The live media policy context is unavailable");
+          windowsNodeMxcWeixinContext = {
+            ...windowsNodeMxcWeixinContext,
+            policyFingerprint: proof.policyFingerprint,
+          };
+          await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+        },
+        verify: async () => {
+          if (client !== gwClient || generation !== gatewayGenerationId)
+            throw new Error("The managed Gateway changed before live policy verification");
+          const status = await getWindowsNodeMxcStatus();
+          if (approval && Date.now() >= approval.expiresAtUnixMs)
+            throw new Error("The combined command and folder approval expired during the update");
+          if (!status.effectiveEnabled)
+            throw new Error(
+              `Live folder policy verification failed: ${status.blockers.join("; ")}`,
+            );
+          return status;
+        },
+        release: async (status) => {
+          assertApprovalCurrent?.();
+          releaseWindowsNodeMxcIngress(generation);
+          windowsNodeMxcActivationInProgress = false;
+          settingsStore.delete("windowsNodeMxcFolderPolicyRecovery");
+          setWindowsNodeMxcLifecycleState("active");
+          status.lifecycleState = {
+            phase: "active",
+            detail: null,
+            updatedAt: windowsNodeMxcLifecycleUpdatedAt,
+          };
+        },
+        failClosed: async (error) => {
+          closeWindowsNodeMxcIngress();
+          bundledWindowsNodeHost.revokeActivationLease();
+          bundledWindowsNodeHost.stop(true);
+          windowsNodeMxcActivationInProgress = false;
+          const detail = describeWindowsNodeMxcFolderTransactionError(error);
+          console.error("[windows-node-mxc] Live folder policy update failed:", error);
+          setWindowsNodeMxcLifecycleState("locked", detail);
+          settingsStore.store = {
+            ...settingsStore.store,
+            windowsNodeMxcFolders: previous,
+            windowsNodeMxcFolderPolicyRecovery: {
+              previous,
+              draft,
+              updatedAt: new Date().toISOString(),
+              lastError: detail,
+              failurePhase: "updating-folders",
+            },
+          };
+        },
+      }),
+    {
+      beforeStart: () => beginWindowsNodeMxcLifecycleOperation(false, Boolean(approval)),
+      afterSettled: () => {
+        endWindowsNodeMxcLifecycleOperation();
+        if (isApplicationServiceReady()) sendToWindow(mainWindow, "gateway:service-ready");
+      },
+    },
+  );
+}
+
 async function requireEffectiveWindowsNodeMxc(
   deferRelock = false,
   renewActivationLease = true,
@@ -2140,15 +2847,25 @@ async function requireEffectiveWindowsNodeMxc(
   ) {
     throw new Error("Windows Node + MXC ingress is locked pending current-generation attestation");
   }
+  const isCurrent = captureGatewayReadinessCheckpoint();
+  const assertCurrent = (cause?: unknown) => {
+    if (!isCurrent())
+      throw new Error("MXC readiness changed during verification; wait for the update and retry", {
+        cause,
+      });
+  };
+  assertCurrent();
   let status: WindowsNodeMxcRuntimeStatus;
   try {
     status = await getWindowsNodeMxcStatus();
   } catch (error) {
+    assertCurrent(error);
     await relock(
       `Runtime attestation failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     throw error;
   }
+  assertCurrent();
   if (!status.effectiveEnabled) {
     const detail = status.blockers.join("; ") || "readiness proof failed";
     await relock(`Runtime attestation drifted: ${detail}`);
@@ -2158,11 +2875,13 @@ async function requireEffectiveWindowsNodeMxc(
     try {
       await bundledWindowsNodeHost.setActivationLease("active", 120_000);
     } catch (error) {
+      assertCurrent(error);
       await relock(
         `Activation lease renewal failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       throw error;
     }
+    assertCurrent();
   }
 }
 
@@ -2190,13 +2909,46 @@ async function handleWindowsNodeMxcGatewayApproval(
     await windowsNodeMxcApprovalResolutionCompletion;
   }
   const proofContext = windowsNodeMxcApprovalProofContext;
+  const folderChanges = getWindowsNodeMxcMissingFolders(approval, [
+    ...getBundledWindowsNodeFolders(),
+    ...(windowsNodeMxcWeixinContext
+      ? [{ path: windowsNodeMxcWeixinContext.inboundRoot, access: "ro" as const }]
+      : []),
+  ]);
+  if (
+    approval.policyFingerprint &&
+    approval.policyFingerprint !== proofContext?.policyFingerprint
+  ) {
+    await gwClient?.request("exec.approval.resolve", { id: approval.id, decision: "deny" });
+    throw new Error("The requested command was prepared under a stale folder policy");
+  }
+  if (folderChanges.length > 0) {
+    if (!approval.policyFingerprint || !approval.planSha256)
+      throw new Error("Folder approval requires an authenticated, policy-bound prepared command");
+    for (const change of folderChanges) {
+      const validated = await validateWindowsNodeMxcUserDir(change.path);
+      if (
+        !validated.ok ||
+        !validated.canonicalPath ||
+        validated.canonicalPath.toLowerCase() !== change.path.toLowerCase()
+      ) {
+        await gwClient?.request("exec.approval.resolve", { id: approval.id, decision: "deny" });
+        throw new Error(
+          `The requested folder cannot be approved: ${validated.reason ?? "path changed"}`,
+        );
+      }
+    }
+    approval = { ...approval, folderChanges, allowedDecisions: ["deny", "allow-once"] };
+  }
   let identity = proofContext
     ? durableApprovalIdentityFromGateway(approval, proofContext.policyFingerprint)
     : null;
-  let durable = canUseWindowsNodeMxcDurableApproval(getWindowsNodeMxcRequestedMode(), identity)
-    ? getWindowsNodeMxcDurableApprovalStore().findExact(identity)
-    : null;
-  if (!durable && identity) {
+  let durable =
+    folderChanges.length === 0 &&
+    canUseWindowsNodeMxcDurableApproval(getWindowsNodeMxcRequestedMode(), identity)
+      ? getWindowsNodeMxcDurableApprovalStore().findExact(identity)
+      : null;
+  if (!durable && identity && folderChanges.length === 0) {
     const consentHash = currentApprovalWeixinConsentHash(approval);
     if (consentHash) {
       identity = { ...identity, weixinConsentHash: consentHash };
@@ -2216,6 +2968,8 @@ async function handleWindowsNodeMxcGatewayApproval(
             async () => {
               if (
                 approvalGeneration !== gatewayGenerationId ||
+                proofContext !== windowsNodeMxcApprovalProofContext ||
+                windowsNodeMxcSecurityTransitionInProgress ||
                 proofContext !== windowsNodeMxcApprovalProofContext ||
                 windowsNodeMxcSecurityTransitionInProgress ||
                 !isWindowsNodeMxcIngressReleased(
@@ -2485,7 +3239,7 @@ async function finishPendingWindowsNodeMxcGatewayApproval(
       accountId: source.accountId,
       kind: "terminal",
       to: source.senderId,
-      text: `${renderMxcApprovalTerminal(outcome, locale)} [${remoteApprovalDiagnosticBinding(pending.request).approvalHash}]`,
+      text: `${renderMxcApprovalTerminal(outcome, locale, pending.folderGrantsSaved)} [${remoteApprovalDiagnosticBinding(pending.request).approvalHash}]`,
       ...(pending.remoteChallengeId ? { terminalChallengeId: pending.remoteChallengeId } : {}),
       onDiagnostic: (diagnostic) =>
         console.info(
@@ -2580,15 +3334,40 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
     const approvalGeneration = gatewayApproval.gatewayGeneration;
     const proofContext = windowsNodeMxcApprovalProofContext;
     const client = gwClient;
+    const remoteConfiguration =
+      origin === "wechat" ? getWindowsNodeMxcWeixinRemoteApprovalConfiguration() : null;
+    const assertRemoteApprovalCurrent = () => {
+      if (!remoteConfiguration) return;
+      const current = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+      if (
+        JSON.stringify(current) !== JSON.stringify(remoteConfiguration) ||
+        approvalGeneration !== gatewayGenerationId ||
+        client !== gwClient ||
+        !client?.connected ||
+        exactWeixinApprovalSource(
+          current,
+          gatewayApproval.remoteSource ?? undefined,
+          gatewayApproval.request,
+          readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
+        ) !== null
+      )
+        throw new Error("The exact WeChat folder approval authority changed");
+    };
     if (approvalGeneration !== gatewayGenerationId || !proofContext) {
       throw new Error("The Gateway approval belongs to a stale security generation");
     }
     if (!gatewayApproval.request.allowedDecisions.includes(decision)) {
       throw new Error("The requested Gateway approval decision is unavailable");
     }
-    if (expectedRemoteSecurity) {
+    sendToWindow(mainWindow, "windows-node-mxc:approval-processing", {
+      requestId,
+      approvalLayer: "gateway",
+      applyingFolders:
+        decision !== "deny" && Boolean(gatewayApproval.request.folderChanges?.length),
+    });
+    if (expectedRemoteSecurity && !gatewayApproval.request.folderChanges?.length) {
       await requireEffectiveWindowsNodeMxc(true, false);
-    } else if (decision !== "deny") {
+    } else if (decision !== "deny" && !gatewayApproval.request.folderChanges?.length) {
       await requireEffectiveWindowsNodeMxc(true);
     }
     if (
@@ -2647,6 +3426,57 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
     if (decision === "allow-always" && !durableIdentity) {
       throw new Error("This command is not eligible for an exact durable MXC approval");
     }
+    if (decision !== "deny" && gatewayApproval.request.folderChanges?.length) {
+      if (
+        (origin !== "desktop" && origin !== "wechat") ||
+        decision !== "allow-once" ||
+        (origin === "wechat" && !expectedRemoteSecurity)
+      ) {
+        throw new Error(
+          "New folder grants require an exact desktop or authenticated WeChat Allow decision",
+        );
+      }
+      let next = getWindowsNodeMxcFolderPolicy();
+      for (const change of gatewayApproval.request.folderChanges) {
+        const validation = await validateWindowsNodeMxcUserDir(change.path);
+        if (
+          !validation.ok ||
+          !validation.canonicalPath ||
+          validation.canonicalPath.toLowerCase() !== change.path.toLowerCase()
+        ) {
+          throw new Error("An approved folder changed before the policy could be applied");
+        }
+        const plan = planWindowsNodeMxcFolderUpsert(next, validation.canonicalPath, change.access);
+        if (!plan.ok) throw new Error(`The approved folder change is invalid: ${plan.reason}`);
+        next = plan.dirs;
+      }
+      await applyRunningWindowsNodeMxcFolders(
+        next,
+        gatewayApproval,
+        assertRemoteApprovalCurrent,
+        origin === "wechat"
+          ? async () => {
+              assertRemoteApprovalCurrent();
+              const source = gatewayApproval.remoteSource;
+              const server = windowsNodeMxcWeixinRemoteApprovalServer;
+              if (!source || !server)
+                throw new Error("WeChat confirmation delivery is unavailable");
+              const locale = resolveSupportedLocale(settingsStore.get("language") ?? "en-US");
+              await server.deliver({
+                accountId: source.accountId,
+                to: source.senderId,
+                kind: "notification",
+                text:
+                  locale === "zh-CN"
+                    ? "MicroClaw 安全审批：已收到允许决策，正在应用文件夹权限。命令尚未放行；请勿重复回复，最终结果将另行通知。"
+                    : "MicroClaw Security Approval: Allow received; applying folder permissions. Command not yet released. Do not reply again; a separate final result will follow.",
+              });
+            }
+          : undefined,
+      );
+      gatewayApproval.folderGrantsSaved = true;
+    }
+    assertRemoteApprovalCurrent();
     return commitMxcApprovalDecision({
       decision,
       origin,
@@ -2917,6 +3747,7 @@ function assertWindowsNodeMxcSmokePassed(
 
 async function runAutomaticWindowsNodeMxcReadiness(
   preparedContainment?: PreparedWindowsNodeMxcContainment,
+  releaseIngressOnSuccess = true,
 ): Promise<WindowsNodeMxcRuntimeStatus> {
   if (windowsNodeMxcActivationInProgress) {
     throw new Error("Windows Node + MXC activation is already in progress");
@@ -3013,8 +3844,8 @@ async function runAutomaticWindowsNodeMxcReadiness(
       return finalStatus;
     },
     releaseIngress: () => {
-      releaseWindowsNodeMxcIngress(activeGeneration);
-      windowsNodeMxcActivationInProgress = false;
+      if (releaseIngressOnSuccess) releaseWindowsNodeMxcIngress(activeGeneration);
+      windowsNodeMxcActivationInProgress = !releaseIngressOnSuccess;
       markWindowsNodeMxcStartupTiming("ingress-release");
       windowsNodeMxcStartupTiming = null;
     },
@@ -4365,6 +5196,29 @@ function isManagedGatewayProcessAlive(): boolean {
   return gatewayProcess !== null && gatewayProcess.exitCode === null && !gatewayProcess.killed;
 }
 
+function captureGatewayReadinessCheckpoint(): () => boolean {
+  const idle = windowsNodeMxcLifecycleOperations.captureIdleCheckpoint();
+  const generation = gatewayGenerationId;
+  const process = gatewayProcess;
+  const client = gwClient;
+  const connection = client?.connectionGeneration;
+  const mode = getWindowsNodeMxcRequestedMode();
+  return () =>
+    idle() &&
+    !explicitQuitRequested &&
+    !gatewayStopPromise &&
+    !gatewayRestarting &&
+    !windowsNodeMxcFailClosedPromise &&
+    !windowsNodeMxcSecurityTransitionInProgress &&
+    !windowsNodeMxcActivationInProgress &&
+    !bundledWindowsNodeStartup &&
+    gatewayGenerationId === generation &&
+    gatewayProcess === process &&
+    gwClient === client &&
+    client?.connectionGeneration === connection &&
+    getWindowsNodeMxcRequestedMode() === mode;
+}
+
 function startHealthMonitor(): void {
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   let consecutiveFailures = 0;
@@ -4383,47 +5237,28 @@ function startHealthMonitor(): void {
       return;
     }
     if (!gatewayPort) return;
+    const isCurrent = captureGatewayReadinessCheckpoint();
+    if (!isCurrent()) return;
     if (isWindowsNodeMxcDesired()) {
-      // Pairing and internal proof-bound smokes are part of one activation transaction.
-      // Avoid a competing health attestation until that transaction settles.
-      if (windowsNodeMxcActivationInProgress || bundledWindowsNodeStartup) return;
-      const inspectedProcess = gatewayProcess;
+      if (!isManagedGatewayProcessAlive()) return;
       try {
-        const status = await getWindowsNodeMxcStatus();
         if (
-          !isWindowsNodeMxcDesired() ||
-          !inspectedProcess ||
-          gatewayProcess !== inspectedProcess ||
-          !isManagedGatewayProcessAlive()
-        ) {
+          !(await checkWindowsNodeMxcHealth({
+            isCurrent: () => isCurrent() && isManagedGatewayProcessAlive(),
+            inspect: getWindowsNodeMxcStatus,
+            renewLease: () => bundledWindowsNodeHost.setActivationLease("active", 120_000),
+            failClosed: failClosedWindowsNodeMxc,
+          }))
+        )
           return;
-        }
-        if (shouldStopManagedGatewayForWindowsNodeMxc(status)) {
-          await failClosedWindowsNodeMxc(
-            `Readiness drifted: ${status.blockers.join("; ") || "unknown readiness failure"}`,
-          );
-          return;
-        }
-        if (status.effectiveEnabled) {
-          try {
-            await bundledWindowsNodeHost.setActivationLease("active", 120_000);
-          } catch (error) {
-            await failClosedWindowsNodeMxc(
-              `Activation lease renewal failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            throw error;
-          }
-        }
       } catch (error) {
-        await failClosedWindowsNodeMxc(
-          `Health attestation failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        console.error("[windows-node-mxc] Health fail-closed recovery failed:", error);
         return;
       }
     }
 
     const alive = await checkExistingGateway(gatewayPort);
-    if (explicitQuitRequested || gatewayStopPromise) return;
+    if (!isCurrent()) return;
     if (alive) {
       consecutiveFailures = 0;
       unresponsiveSince = null;
@@ -5066,22 +5901,28 @@ async function startGatewayInner(
           containmentPreparation?.ambientAccess ?? null,
         )
       : null;
-    const nextRemoteApprovalConfiguration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+    getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
+    const livePolicyEnvironment = nextApprovalProofContext
+      ? await bundledWindowsNodeHost.initializeLivePolicy(nextApprovalProofContext, {
+          folders: getBundledWindowsNodeFolders(),
+          openClawStateRoot: stateDir,
+          requestedStrength:
+            windowsNodeMxcRequestedMode === "limited-dacl" ? "limited-dacl" : "full",
+          effectiveTier: containmentPreparation?.effectiveTier ?? "",
+          ambientAccess: containmentPreparation?.ambientAccess ?? null,
+        })
+      : {};
     const nextWeixinContext = nextApprovalProofContext
       ? prepareWindowsNodeMxcWeixinContext(
           app.getPath("userData"),
           nextApprovalProofContext.gatewayGeneration,
           nextApprovalProofContext.policyFingerprint,
           getBundledWindowsNodeFolders(),
-          nextRemoteApprovalConfiguration.enabled,
+          true,
         )
       : null;
     closeWindowsNodeMxcWeixinRemoteApproval("gateway-generation-change");
-    if (
-      nextWeixinContext?.remoteApprovalPipe &&
-      nextWeixinContext.remoteApprovalToken &&
-      nextRemoteApprovalConfiguration.enabled
-    ) {
+    if (nextWeixinContext?.remoteApprovalPipe && nextWeixinContext.remoteApprovalToken) {
       const server = new WindowsNodeMxcWeixinRemoteApprovalServer(
         nextWeixinContext.remoteApprovalPipe,
         nextWeixinContext.remoteApprovalToken,
@@ -5141,6 +5982,7 @@ async function startGatewayInner(
       : {};
     const gwEnv: Record<string, string> = {
       ...gatewayEnvironment,
+      ...livePolicyEnvironment,
       OPENCLAW_STATE_DIR: stateDir,
       NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
       NODE_ENV: "production",
@@ -6718,10 +7560,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     sessionModelService.assertIdle();
-    await withWindowsNodeMxcDurableApprovalLock(() =>
-      getWindowsNodeMxcDurableApprovalStore().revokeSession(params.sessionKey),
+    await gwClient.deleteSession(params.sessionKey, (canonicalKey) =>
+      withWindowsNodeMxcDurableApprovalLock(() =>
+        getWindowsNodeMxcDurableApprovalStore().revokeSession(canonicalKey),
+      ),
     );
-    await gwClient.deleteSession(params.sessionKey);
   });
 
   ipcMain.handle("chat:clear-history", async () => {
@@ -6860,6 +7703,7 @@ function registerIpcHandlers(): void {
         !!weixinLoginProcess || ["starting", "waiting"].includes(weixinQrSession.status.state),
       loginRequiresRestart: weixinMutations.loginRequiresRestart,
       mutationLocked: getWeixinMutationLock().locked,
+      loginLocked: getWeixinMutationLock().loginLocked,
       mutationLockRevision: weixinMutationLockRevision,
     };
   });
@@ -7009,100 +7853,143 @@ function registerIpcHandlers(): void {
     }),
   );
 
-  ipcMain.handle("plugin:weixin:cancel-login", async () => {
-    if (weixinLoginProcess) {
-      weixinLoginProcess.kill();
-      weixinLoginProcess = null;
-    }
-    const gateway = gwClient;
-    const connectionGeneration = gateway?.connectionGeneration;
-    const qrEpoch = weixinMutations.currentEpoch;
-    await weixinQrSession.cancel(async (sessionKey) => {
+  ipcMain.handle("plugin:weixin:cancel-login", async (event) => {
+    assertTrustedRendererIpc(event);
+    if (weixinQrCancellation) return weixinQrCancellation;
+    const login = windowsNodeMxcWeixinLogin;
+    if (login?.finishing) return login.finish("cancelled");
+    const cancellation = Promise.resolve().then(async () => {
+      if (weixinLoginProcess) {
+        weixinLoginProcess.kill();
+        weixinLoginProcess = null;
+      }
+      const gateway = gwClient;
+      const connectionGeneration = gateway?.connectionGeneration;
+      const qrEpoch = weixinMutations.currentEpoch;
+      let hadQrSession = false;
       try {
-        if (sessionKey) {
-          if (
-            !gateway?.connected ||
-            gwClient !== gateway ||
-            gateway.connectionGeneration !== connectionGeneration
-          ) {
-            throw new Error("Gateway changed while cancelling WeChat login");
+        await weixinQrSession.cancel(async (sessionKey) => {
+          try {
+            if (sessionKey) {
+              hadQrSession = true;
+              if (
+                !gateway?.connected ||
+                gwClient !== gateway ||
+                gateway.connectionGeneration !== connectionGeneration
+              ) {
+                throw new Error("Gateway changed while cancelling WeChat login");
+              }
+              const result = await gateway.weixinLoginQrCancel(sessionKey);
+              if (!result.cancelled) throw new Error("WeChat login cancellation was not confirmed");
+            }
+            await weixinMutations.cancelQr();
+          } catch (error) {
+            if (sessionKey) weixinMutations.qrUnconfirmed(qrEpoch);
+            throw error;
           }
-          const result = await gateway.weixinLoginQrCancel(sessionKey);
-          if (!result.cancelled) throw new Error("WeChat login cancellation was not confirmed");
+        });
+        // The guard can have been acquired while cancellation waited for QR creation.
+        if (windowsNodeMxcWeixinLogin) await windowsNodeMxcWeixinLogin.finish("cancelled");
+        else if (hadQrSession && gateway && connectionGeneration !== undefined) {
+          await weixinMutations.run(assertWeixinQrLoginMutable, () =>
+            resumeWeixinAfterQr(gateway, connectionGeneration),
+          );
         }
-        await weixinMutations.cancelQr();
       } catch (error) {
-        if (sessionKey) weixinMutations.qrUnconfirmed(qrEpoch);
+        await windowsNodeMxcWeixinLogin?.finish("cancelled", error);
         throw error;
       }
     });
+    weixinQrCancellation = cancellation;
+    try {
+      await cancellation;
+    } finally {
+      if (weixinQrCancellation === cancellation) weixinQrCancellation = null;
+    }
   });
 
   // --- WeChat QR Login via Gateway RPC (fast path, no CLI spawn) ---
   ipcMain.handle(
     "plugin:weixin:login-qr-start",
-    async (_event, params?: { accountId?: string; force?: boolean }) => {
-      assertWindowsNodeMxcConfigurationMutable();
+    async (event, params?: { accountId?: string; force?: boolean }) => {
+      assertTrustedRendererIpc(event);
       return weixinQrSession.start(
-        () =>
-          weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
-            if (!gwClient?.connected) {
-              return { ok: false, message: "Gateway not connected", canFallback: false };
-            }
-            const gateway = gwClient;
-            const connectionGeneration = gateway.connectionGeneration;
-            try {
-              const status = await gateway.getChannelsStatus();
-              assertWindowsNodeMxcConfigurationMutable();
-              if (
-                gwClient !== gateway ||
-                !gateway.connected ||
-                gateway.connectionGeneration !== connectionGeneration ||
-                !isWeixinLoginReady(status)
-              ) {
+        async () => {
+          const login = await beginWindowsNodeMxcWeixinAccountChange("login");
+          try {
+            const result = await weixinMutations.run(assertWeixinQrLoginMutable, async () => {
+              if (!gwClient?.connected) {
+                return { ok: false, message: "Gateway not connected", canFallback: false };
+              }
+              const gateway = gwClient;
+              const connectionGeneration = gateway.connectionGeneration;
+              try {
+                const status = await gateway.getChannelsStatus();
+                assertWeixinQrLoginMutable();
+                if (
+                  gwClient !== gateway ||
+                  !gateway.connected ||
+                  gateway.connectionGeneration !== connectionGeneration ||
+                  !isWeixinLoginReady(status)
+                ) {
+                  return {
+                    ok: false,
+                    message: "WeChat channel is not ready yet",
+                    canFallback: false,
+                  };
+                }
+              } catch (error) {
                 return {
                   ok: false,
-                  message: "WeChat channel is not ready yet",
+                  message: error instanceof Error ? error.message : String(error),
                   canFallback: false,
                 };
               }
-            } catch (error) {
-              return {
-                ok: false,
-                message: error instanceof Error ? error.message : String(error),
-                canFallback: false,
-              };
-            }
-            weixinMutations.prepareCliLogin();
-            if (weixinLoginProcess) throw new Error("Finish the current WeChat login first");
-            const qrEpoch = weixinMutations.beginQr();
-            try {
-              const result = await gateway.weixinLoginQrStart(params);
-              if (result.qrDataUrl && !result.sessionKey) {
-                weixinMutations.qrUnconfirmed(qrEpoch);
+              weixinMutations.prepareCliLogin();
+              if (weixinLoginProcess) throw new Error("Finish the current WeChat login first");
+              const qrEpoch = weixinMutations.beginQr();
+              try {
+                const result = await gateway.weixinLoginQrStart(params);
+                assertWeixinQrLoginMutable();
+                if (result.qrDataUrl && !result.sessionKey) {
+                  weixinMutations.qrUnconfirmed(qrEpoch);
+                  return {
+                    ok: false,
+                    message: "Gateway returned a QR without a session key",
+                    restartRequired: true,
+                  };
+                }
+                weixinMutations.settleKnownQrStart(Boolean(result.qrDataUrl), qrEpoch);
+                return { ok: true, ...result, canFallback: !result.qrDataUrl };
+              } catch (error) {
+                const knownRejection = isKnownWeixinQrStartRejection(error);
+                if (knownRejection) weixinMutations.settleKnownQrStart(false, qrEpoch);
+                else weixinMutations.qrUnconfirmed(qrEpoch);
+                const message = error instanceof Error ? error.message : String(error);
+                console.error("[weixin:login-qr-start] failed:", message);
                 return {
                   ok: false,
-                  message: "Gateway returned a QR without a session key",
-                  restartRequired: true,
+                  message,
+                  error: message,
+                  canFallback: knownRejection,
+                  restartRequired: !knownRejection,
                 };
               }
-              weixinMutations.settleKnownQrStart(Boolean(result.qrDataUrl), qrEpoch);
-              return { ok: true, ...result, canFallback: !result.qrDataUrl };
-            } catch (error) {
-              const knownRejection = isKnownWeixinQrStartRejection(error);
-              if (knownRejection) weixinMutations.settleKnownQrStart(false, qrEpoch);
-              else weixinMutations.qrUnconfirmed(qrEpoch);
-              const message = error instanceof Error ? error.message : String(error);
-              console.error("[weixin:login-qr-start] failed:", message);
-              return {
-                ok: false,
-                message,
-                error: message,
-                canFallback: knownRejection,
-                restartRequired: !knownRejection,
-              };
+            });
+            if (login && (!result.ok || !("qrDataUrl" in result && result.qrDataUrl))) {
+              await login.finish(
+                "cancelled",
+                "restartRequired" in result && result.restartRequired
+                  ? new Error(result.message)
+                  : undefined,
+              );
             }
-          }),
+            return { ...result, canFallback: login ? false : result.canFallback };
+          } catch (error) {
+            if (login) await login.finish("cancelled", error);
+            throw error;
+          }
+        },
         (sessionKey) => waitForWeixinConnection({ sessionKey, timeoutMs: 35_000 }),
       );
     },
@@ -7120,41 +8007,86 @@ function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle("plugin:weixin:disconnect", async (_event, params?: { accountId?: string }) =>
-    weixinMutations.run(assertWindowsNodeMxcConfigurationMutable, async () => {
-      weixinMutations.prepareCliLogin();
-      if (weixinLoginProcess) throw new Error("Finish the current WeChat login first");
-      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", { enabled: false, owner: null });
-      closeWindowsNodeMxcWeixinRemoteApproval("weixin-logout");
-      const gateway = gwClient;
-      if (!gateway?.connected) return { ok: false, error: "Gateway not connected" };
-      const status = readWeixinAccountStatus(getOpenClawStateDir());
-      if (status.invariantState === "multiple" || status.invariantState === "invalid") {
-        return { ok: false, error: "Repair the invalid WeChat account index before disconnecting" };
-      }
-      const accountId = status.currentAccount?.accountId;
-      if (!accountId) return { ok: true };
-      if (params?.accountId && params.accountId !== accountId) {
-        return { ok: false, error: "The WeChat account changed; refresh its status first" };
-      }
-      try {
-        const result = await gateway.request<{ cleared?: boolean; loggedOut?: boolean }>(
-          "channels.logout",
-          { channel: "openclaw-weixin", accountId },
-          10_000,
-        );
-        weixinRuntimeRead = null;
-        if (!result.cleared || result.loggedOut === false) {
-          return { ok: false, error: "WeChat logout was not confirmed" };
-        }
-        weixinQrSession.reset();
-        return { ok: true };
-      } catch (error) {
-        if (!isKnownWeixinQrStartRejection(error)) weixinMutations.qrUnconfirmed();
-        return { ok: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    }),
-  );
+  ipcMain.handle("plugin:weixin:disconnect", async (event, params?: { accountId?: string }) => {
+    assertTrustedRendererIpc(event);
+    const initial = readWeixinAccountStatus(getOpenClawStateDir());
+    if (initial.invariantState === "multiple" || initial.invariantState === "invalid") {
+      return { ok: false, error: "Repair the invalid WeChat account index before disconnecting" };
+    }
+    const accountId = initial.currentAccount?.accountId;
+    if (!accountId) {
+      reconcileWindowsNodeMxcWeixinRemoteApprovalOwner("weixin-account-status-changed");
+      return { ok: true };
+    }
+    if (params?.accountId && params.accountId !== accountId) {
+      return { ok: false, error: "The WeChat account changed; refresh its status first" };
+    }
+    const isOriginalAccount = () => {
+      const current = readWeixinAccountStatus(getOpenClawStateDir());
+      return (
+        current.loggedIn &&
+        current.invariantState === "single" &&
+        current.currentAccount?.accountId === accountId &&
+        current.currentAccount.userId === initial.currentAccount?.userId
+      );
+    };
+    const guard = await beginWindowsNodeMxcWeixinAccountChange("disconnect");
+    let requestIssued = false;
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await weixinMutations.run(
+        guard ? () => guard.assertWaiting() : assertWindowsNodeMxcConfigurationMutable,
+        async () => {
+          weixinMutations.prepareCliLogin();
+          if (weixinLoginProcess) throw new Error("Finish the current WeChat login first");
+          const gateway = gwClient;
+          if (!gateway?.connected) return { ok: false, error: "Gateway not connected" };
+          if (!isOriginalAccount()) {
+            return { ok: false, error: "The WeChat account changed; refresh its status first" };
+          }
+          if (!guard) {
+            settingsStore.set("windowsNodeMxcWeixinRemoteApproval", {
+              enabled: false,
+              owner: null,
+            });
+            closeWindowsNodeMxcWeixinRemoteApproval("weixin-logout");
+          }
+          const connection = gateway.connectionGeneration;
+          requestIssued = true;
+          const response = await gateway.request<{ cleared?: boolean; loggedOut?: boolean }>(
+            "channels.logout",
+            { channel: "openclaw-weixin", accountId },
+            10_000,
+          );
+          guard?.assertWaiting();
+          if (
+            gwClient !== gateway ||
+            !gateway.connected ||
+            gateway.connectionGeneration !== connection
+          )
+            throw new Error("Gateway changed while disconnecting WeChat");
+          weixinRuntimeRead = null;
+          if (!response.cleared || response.loggedOut === false) {
+            if (isOriginalAccount()) {
+              return { ok: false, error: "WeChat logout was not confirmed" };
+            }
+            throw new Error("WeChat logout returned an unconfirmed account state");
+          }
+          if (readWeixinAccountStatus(getOpenClawStateDir()).invariantState !== "none")
+            throw new Error("WeChat account removal was not confirmed");
+          weixinQrSession.reset();
+          return { ok: true };
+        },
+      );
+    } catch (error) {
+      const uncertain = requestIssued && !isKnownWeixinQrStartRejection(error);
+      if (uncertain) weixinMutations.qrUnconfirmed();
+      if (guard) await guard.finish("cancelled", uncertain ? error : undefined);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (guard) await guard.finish(result.ok ? "disconnected" : "cancelled");
+    return result;
+  });
 
   registerLocalModelHandlers(ipcMain, localModelService);
   registerSessionModelHandlers(ipcMain, sessionModelService);
@@ -7163,16 +8095,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle("model:discover-models", (_event, params: unknown) =>
     discoverProviderModels(params, { ...process.env, ...loadStateDirEnv() }),
   );
-  ipcMain.handle("model:register-catalog-model", (_event, input: unknown) =>
-    withModelConfigurationMutation(async () => {
+  ipcMain.handle("model:register-catalog-model", (event, input: unknown) => {
+    assertTrustedRendererIpc(event);
+    return withModelConfigurationMutation(async () => {
       const params = parseProviderCatalogSelection(input);
       await prepareProviderCatalogModel(params.modelRef, params.expectedConfig);
       settingsStore.set("modelFormSelections", {
         ...settingsStore.get("modelFormSelections"),
         [params.modelRef.split("/", 1)[0]]: params.modelRef,
       });
-    }),
-  );
+    });
+  });
   ipcMain.handle(
     "model:test-connection",
     async (
@@ -7335,19 +8268,31 @@ function registerIpcHandlers(): void {
     });
   });
 
-  ipcMain.handle("model:select-default", async (_event, params: unknown) =>
-    withModelConfigurationMutation(async () => {
+  ipcMain.handle("model:select-default", async (event, params: unknown) => {
+    assertTrustedRendererIpc(event);
+    return withModelConfigurationMutation(async () => {
+      const selection = parseDefaultModelSelection(params);
+      assertModelConfigUnchanged(selection.expectedConfig, readConfig());
       const startedAt = Date.now();
       try {
-        const selected = await selectDefaultModel(
-          {
-            githubCopilotEnabled: internalFeatures.githubCopilot,
-            gateway: () => gwClient,
-            readConfig,
-            assertMutable: assertCloudModelMutable,
-            prepareModel: prepareProviderCatalogModel,
+        const selected = await withWindowsNodeMxcModelUpdate(
+          () =>
+            selectDefaultModel(
+              {
+                githubCopilotEnabled: internalFeatures.githubCopilot,
+                gateway: () => gwClient,
+                readConfig,
+                assertMutable: assertCloudModelMutable,
+                prepareModel: prepareProviderCatalogModel,
+              },
+              selection,
+            ),
+          () => {
+            const modelRef = getPrimaryModel(readConfig());
+            if (modelRef !== selection.modelRef)
+              throw new Error("The requested default model has not been applied after restart");
+            return { modelRef };
           },
-          params,
         );
         console.info(`[model:select-default] applied in ${Date.now() - startedAt}ms`);
         return selected;
@@ -7356,8 +8301,8 @@ function registerIpcHandlers(): void {
         console.warn(`[model:select-default] failed after ${Date.now() - startedAt}ms: ${message}`);
         throw new Error(message, { cause });
       }
-    }),
-  );
+    });
+  });
 
   ipcMain.handle("model:github-copilot:status", () => {
     if (!internalFeatures.githubCopilot) return { authenticated: false };
@@ -7640,6 +8585,9 @@ function registerIpcHandlers(): void {
 
   // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
   ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
+  ipcMain.handle("windows-node-mxc:display-status", () =>
+    presentWindowsNodeMxcDisplayStatus(windowsNodeMxcStatusCache.display()),
+  );
   ipcMain.handle("windows-node-mxc:approval-current", () =>
     getPendingWindowsNodeMxcApprovalForRenderer(),
   );
@@ -7721,36 +8669,23 @@ function registerIpcHandlers(): void {
                   bundledWindowsNodeHost.getValidatedMxcExecutablePath(),
                 );
         }
-        const nativeConsent = await planWeixinRemoteApprovalNativeTransition({
+        const nativePlan = await planWeixinRemoteApprovalNativeTransition({
           request: params,
           currentMode: currentSelection.requestedMode,
           requestedMode,
           currentConfiguration: previousRemoteApprovalConfiguration,
           readOptions: () => getWeixinRemoteApprovalActivationOptions(readConfig()),
-          locale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
-          showDialog: async (options) => {
-            const window = mainWindow;
-            if (!window || window.isDestroyed()) {
-              throw new Error("The MicroClaw window is unavailable for local consent");
-            }
-            return dialog.showMessageBox(window, options);
-          },
         });
-        if (nativeConsent.cancelled) {
-          const status = await getWindowsNodeMxcStatus();
-          lifecycleOperation.succeed(status);
-          return status;
-        }
         const nextSelection = createWindowsNodeMxcSelection(
           requestedMode,
-          nativeConsent.limitedFilesystemAcknowledged,
+          nativePlan.limitedFilesystemAcknowledged,
         );
-        remoteApprovalPlan = nativeConsent.plan;
-        remoteApprovalSelection = nativeConsent.selection;
-        if (nativeConsent.enrollmentDisabledReason) {
+        remoteApprovalPlan = nativePlan.plan;
+        remoteApprovalSelection = nativePlan.selection;
+        if (nativePlan.enrollmentDisabledReason) {
           electronLifecycleDiagnostics.log("mxc-weixin-enrollment-disabled", {
-            stage: "confirmation",
-            reason: nativeConsent.enrollmentDisabledReason,
+            stage: "selection",
+            reason: nativePlan.enrollmentDisabledReason,
           });
         }
 
@@ -7805,7 +8740,7 @@ function registerIpcHandlers(): void {
 
         if (!cronSuspendedBeforePreflight) {
           transitionMutationStarted = true;
-          setWindowsNodeMxcLifecycleState("locking");
+          setWindowsNodeMxcLifecycleState(requestedMode === "off" ? "disabling" : "locking");
           closeWindowsNodeMxcIngress();
           windowsNodeMxcActivationInProgress = false;
           bundledWindowsNodeHost.revokeActivationLease();
@@ -8118,92 +9053,6 @@ function registerIpcHandlers(): void {
     windowsNodeMxcFolderPolicyMutationInProgress = false;
   };
 
-  const getReparsePathComponents = (dir: string): Set<string> => {
-    const normalized = path.win32.normalize(dir);
-    const parsed = path.win32.parse(normalized);
-    const components: string[] = [];
-    let current = parsed.root;
-    for (const component of normalized.slice(parsed.root.length).split("\\").filter(Boolean)) {
-      current = path.win32.join(current, component);
-      components.push(current);
-    }
-    if (components.length === 0) return new Set();
-
-    const powershellPath = path.join(
-      process.env.SystemRoot ?? "C:\\Windows",
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-    const script =
-      "& { foreach ($candidate in $args) { try { [Console]::Out.WriteLine([int][System.IO.File]::GetAttributes($candidate)) } catch { exit 2 } } }";
-    try {
-      const output = execFileSync(
-        powershellPath,
-        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, ...components],
-        {
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 10_000,
-        },
-      );
-      const attributes = output
-        .trim()
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .map((value) => Number.parseInt(value, 10));
-      if (
-        attributes.length !== components.length ||
-        attributes.some((value) => !Number.isInteger(value))
-      ) {
-        throw new Error("Unexpected Windows file-attribute response");
-      }
-      return new Set(
-        components
-          .filter((_component, index) => (attributes[index] & 0x400) !== 0)
-          .map((component) => normalizeDirPath(component).toLowerCase()),
-      );
-    } catch (error) {
-      console.warn(
-        `[windows-node-mxc] Could not verify reparse attributes for "${dir}"; rejecting the folder:`,
-        error,
-      );
-      return new Set(components.map((component) => normalizeDirPath(component).toLowerCase()));
-    }
-  };
-
-  const validateWindowsNodeMxcUserDir = (dir: string) => {
-    let reparseComponents: Set<string> | null = null;
-    return validateWindowsNodeMxcFolderPath(
-      dir,
-      (candidate) => fs.realpathSync.native(candidate),
-      (candidate) => {
-        reparseComponents ??= getReparsePathComponents(dir);
-        return (
-          fs.lstatSync(candidate).isSymbolicLink() ||
-          reparseComponents.has(normalizeDirPath(candidate).toLowerCase())
-        );
-      },
-      sensitiveWindowsRoots(
-        path.join(app.getPath("userData"), "windows-node"),
-        getOpenClawStateDir(),
-      ),
-    );
-  };
-
-  const normalizeCompleteWindowsNodeMxcFolderPolicy = (draft: WindowsNodeMxcFolderPolicy) => {
-    const result = normalizeWindowsNodeMxcFolderPolicy(draft, validateWindowsNodeMxcUserDir);
-    if (!result.ok) {
-      throw new Error(
-        `Approved folder policy rejected${result.path ? ` (${result.path})` : ""}: ${
-          result.reason ?? "invalid policy"
-        }`,
-      );
-    }
-    return result.dirs;
-  };
-
   const persistWindowsNodeMxcFolderPolicy = (
     next: WindowsNodeMxcFolderPolicy,
     previous: WindowsNodeMxcFolderPolicy,
@@ -8226,14 +9075,14 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "windows-node-mxc:set-folder-policy",
-    (event, draft: WindowsNodeMxcFolderPolicy) => {
+    async (event, draft: WindowsNodeMxcFolderPolicy) => {
       assertTrustedRendererIpc(event);
       beginWindowsNodeMxcFolderDraftMutation();
       try {
         if (isWindowsNodeMxcDesired()) {
-          throw new Error("Use Apply and reactivate to change an active MXC folder policy");
+          throw new Error("Use Apply folder changes to change an active MXC folder policy");
         }
-        const next = normalizeCompleteWindowsNodeMxcFolderPolicy(draft);
+        const next = await normalizeCompleteWindowsNodeMxcFolderPolicy(draft);
         persistWindowsNodeMxcFolderPolicy(next, getWindowsNodeMxcFolderPolicy(), null);
         return next;
       } finally {
@@ -8251,13 +9100,13 @@ function registerIpcHandlers(): void {
         if (params?.access !== "rw" && params?.access !== "ro") {
           throw new Error("Invalid MXC folder access");
         }
-        const current = normalizeCompleteWindowsNodeMxcFolderPolicy(params.draft);
+        const current = await normalizeCompleteWindowsNodeMxcFolderPolicy(params.draft);
         if (!mainWindow) return { ok: false, canceled: true, dirs: current };
         const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
         if (result.canceled || result.filePaths.length === 0) {
           return { ok: false, canceled: true, dirs: current };
         }
-        const validation = validateWindowsNodeMxcUserDir(result.filePaths[0]);
+        const validation = await validateWindowsNodeMxcUserDir(result.filePaths[0]);
         if (!validation.ok || !validation.canonicalPath) {
           return {
             ok: false,
@@ -8289,268 +9138,7 @@ function registerIpcHandlers(): void {
     "windows-node-mxc:apply-folder-policy",
     async (event, draft: WindowsNodeMxcFolderPolicy) => {
       assertTrustedRendererIpc(event);
-      if (!isWindowsNodeMxcDesired()) {
-        throw new Error("Apply and reactivate requires Windows Node + MXC mode");
-      }
-      const lifecycleOperation =
-        windowsNodeMxcLifecycleOperations.acquire<WindowsNodeMxcRuntimeStatus>(
-          { kind: "apply-folder-policy" },
-          windowsNodeMxcLifecycleOperationHooks(),
-        );
-      if (lifecycleOperation.joined) return lifecycleOperation.promise;
-      try {
-        windowsNodeMxcActivationInProgress = true;
-        const previous = getWindowsNodeMxcFolderPolicy();
-        const recovery = {
-          previous: { rw: [...previous.rw], ro: [...previous.ro] },
-          draft: {
-            rw: Array.isArray(draft?.rw) ? [...draft.rw] : [],
-            ro: Array.isArray(draft?.ro) ? [...draft.ro] : [],
-          },
-          updatedAt: new Date().toISOString(),
-          lastError: null,
-          failurePhase: null,
-        };
-        settingsStore.set("windowsNodeMxcFolderPolicyRecovery", recovery);
-        await runWindowsNodeMxcFolderPolicyTransaction(draft, previous, {
-          setPhase: setWindowsNodeMxcLifecycleState,
-          closeIngress: () => {
-            closeWindowsNodeMxcIngress();
-            sendToWindow(mainWindow, "gateway:ws-disconnected", "Applying MXC folder policy");
-          },
-          rejectPendingApprovals: async () => {
-            for (const pending of allPendingWindowsNodeMxcGatewayApprovals()) {
-              if (gwClient?.connected) {
-                await gwClient.request("exec.approval.resolve", {
-                  id: pending.request.id,
-                  decision: "deny",
-                });
-              }
-            }
-            pendingWindowsNodeMxcGatewayApproval = null;
-            queuedWindowsNodeMxcGatewayApprovals.length = 0;
-            const nodePending = bundledWindowsNodeHost.status().pendingApproval;
-            if (nodePending) bundledWindowsNodeHost.respond(nodePending.id, "deny");
-            sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
-          },
-          revokeAuthorization: () => {
-            bundledWindowsNodeHost.revokeActivationLease();
-            windowsNodeMxcApprovalProofContext = null;
-            settingsStore.delete("windowsNodeMxcSmoke");
-          },
-          preflightExactBackend: async () => {
-            const requestedMode = getWindowsNodeMxcRequestedMode();
-            if (requestedMode === "off") throw new Error("MXC containment mode is off");
-            await prepareWindowsNodeMxcContainment(requestedMode);
-          },
-          validatePolicy: (candidate) => normalizeCompleteWindowsNodeMxcFolderPolicy(candidate),
-          stopCurrentGeneration: async () => {
-            await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
-          },
-          persistPolicy: async (next, old) => {
-            // The new native MXC generation owns its filesystem grants.
-            persistWindowsNodeMxcFolderPolicy(next, old, null);
-          },
-          startLockedGeneration: async () => {
-            const config = readConfig();
-            if (!config || typeof config !== "object" || Array.isArray(config)) {
-              throw new Error("OpenClaw configuration is unavailable");
-            }
-            const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-            const locked = applyWindowsNodeMxcGatewayPolicy(
-              config,
-              nodeId,
-              settingsStore.get("windowsNodeMxcToolBackups"),
-              "locked",
-            );
-            settingsStore.set("windowsNodeMxcToolBackups", locked.backups);
-            writeConfigTextAtomically(JSON.stringify(locked.config, null, 2));
-            await startGatewayWithWindowsNodeMxcPolicy("locked");
-            const generation = gatewayGenerationId;
-            await waitForBundledWindowsNodeGeneration(generation);
-            return waitForWindowsNodeMxcBaseReady(generation, "locked", false);
-          },
-          attestLockedGeneration: (status) =>
-            assertWindowsNodeMxcBaseReady(status, "locked", false),
-          smokeLockedGeneration: async (status) => {
-            const smoke = await runCurrentWindowsNodeMxcSmoke(status);
-            if (!isWindowsNodeMxcSmokePassed(smoke)) {
-              throw new Error(
-                `Locked-generation ${smoke.profile} failed: execution=${smoke.execution.reason}; outsideRoot=${smoke.deniedOutsideRoot?.reason ?? "not-required"}`,
-              );
-            }
-          },
-          startActiveGeneration: async () => {
-            const config = readConfig();
-            if (!config || typeof config !== "object" || Array.isArray(config)) {
-              throw new Error("OpenClaw configuration is unavailable");
-            }
-            const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-            const active = applyWindowsNodeMxcGatewayPolicy(
-              config,
-              nodeId,
-              settingsStore.get("windowsNodeMxcToolBackups"),
-              "active",
-            );
-            await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
-            settingsStore.delete("windowsNodeMxcSmoke");
-            settingsStore.set("windowsNodeMxcToolBackups", active.backups);
-            writeConfigTextAtomically(JSON.stringify(active.config, null, 2));
-            await startGatewayWithWindowsNodeMxcPolicy("active");
-            const generation = gatewayGenerationId;
-            await waitForBundledWindowsNodeGeneration(generation);
-            return waitForWindowsNodeMxcBaseReady(generation, "active", false);
-          },
-          attestActiveGeneration: (status) =>
-            assertWindowsNodeMxcBaseReady(status, "active", false),
-          smokeActiveGeneration: async (status) => {
-            const smoke = await runCurrentWindowsNodeMxcSmoke(status);
-            if (!isWindowsNodeMxcSmokePassed(smoke)) {
-              throw new Error(
-                `Active-generation ${smoke.profile} failed: execution=${smoke.execution.reason}; outsideRoot=${smoke.deniedOutsideRoot?.reason ?? "not-required"}`,
-              );
-            }
-          },
-          mintActivationLease: async () => {
-            await bundledWindowsNodeHost.setActivationLease("active", 120_000);
-          },
-          verifyActiveGeneration: async () => {
-            const status = await getWindowsNodeMxcStatus();
-            if (!status.effectiveEnabled) {
-              throw new Error(
-                `Final MXC activation verification failed: ${status.blockers.join("; ")}`,
-              );
-            }
-            return status;
-          },
-          releaseIngress: (status) => {
-            releaseWindowsNodeMxcIngress(status.gatewayGeneration);
-            windowsNodeMxcActivationInProgress = false;
-            sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
-          },
-          lockAfterFailure: async (error, context) => {
-            const primaryErrorDetail = describeWindowsNodeMxcFolderTransactionError(error);
-            setWindowsNodeMxcLifecycleState(
-              "locked",
-              `${context.failurePhase}: ${primaryErrorDetail}`,
-            );
-            closeWindowsNodeMxcIngress();
-            windowsNodeMxcActivationInProgress = true;
-            bundledWindowsNodeHost.revokeActivationLease();
-            settingsStore.delete("windowsNodeMxcSmoke");
-            const recoveryErrors: unknown[] = [];
-            let generationStopped = false;
-            try {
-              await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
-              generationStopped = true;
-            } catch (recoveryError) {
-              recoveryErrors.push(recoveryError);
-            }
-            if (context.persisted) {
-              if (!context.applied) {
-                recoveryErrors.push(
-                  new Error("Persisted MXC folder policy is unavailable for exact rollback"),
-                );
-              } else {
-                if (generationStopped) {
-                  try {
-                    persistWindowsNodeMxcFolderPolicy(
-                      context.previous,
-                      context.applied,
-                      "Previous folder policy restored after activation failure",
-                    );
-                  } catch (recoveryError) {
-                    recoveryErrors.push(recoveryError);
-                  }
-                } else {
-                  recoveryErrors.push(
-                    new Error(
-                      "Folder policy rollback was blocked because the previous MXC process tree could not be proven stopped",
-                    ),
-                  );
-                }
-              }
-            }
-            try {
-              settingsStore.set("windowsNodeMxcFolderPolicyRecovery", {
-                previous: context.previous,
-                draft: context.applied ?? context.draft,
-                updatedAt: new Date().toISOString(),
-                lastError: primaryErrorDetail,
-                failurePhase: context.failurePhase,
-              });
-            } catch (recoveryError) {
-              recoveryErrors.push(recoveryError);
-            }
-            let lockedConfigReady = false;
-            try {
-              const config = readConfig();
-              if (!config || typeof config !== "object" || Array.isArray(config)) {
-                throw new Error("OpenClaw configuration is unavailable for locked recovery");
-              }
-              const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
-              const locked = applyWindowsNodeMxcGatewayPolicy(
-                config,
-                nodeId,
-                settingsStore.get("windowsNodeMxcToolBackups"),
-                "locked",
-              );
-              settingsStore.set("windowsNodeMxcToolBackups", locked.backups);
-              writeConfigTextAtomically(JSON.stringify(locked.config, null, 2));
-              lockedConfigReady = true;
-            } catch (recoveryError) {
-              recoveryErrors.push(recoveryError);
-            }
-            if (generationStopped && lockedConfigReady) {
-              try {
-                await startGatewayWithWindowsNodeMxcPolicy("locked");
-              } catch (startError) {
-                recoveryErrors.push(startError);
-                setGatewayStatus("failed");
-              }
-            }
-            windowsNodeMxcActivationInProgress = false;
-            if (recoveryErrors.length > 0) {
-              const recoveryFailure = new AggregateError(
-                [error, ...recoveryErrors],
-                "MXC folder policy failed and locked recovery was incomplete",
-              );
-              const recoveryFailureDetail =
-                describeWindowsNodeMxcFolderTransactionError(recoveryFailure);
-              setWindowsNodeMxcLifecycleState(
-                "locked",
-                `${context.failurePhase}: ${recoveryFailureDetail}`,
-              );
-              try {
-                settingsStore.set("windowsNodeMxcFolderPolicyRecovery", {
-                  previous: context.previous,
-                  draft: context.applied ?? context.draft,
-                  updatedAt: new Date().toISOString(),
-                  lastError: recoveryFailureDetail,
-                  failurePhase: context.failurePhase,
-                });
-              } catch (persistError) {
-                console.error(
-                  "[windows-node-mxc] Could not persist complete folder recovery diagnostics:",
-                  persistError,
-                );
-              }
-              throw recoveryFailure;
-            }
-          },
-        });
-        const status = await getWindowsNodeMxcStatus();
-        lifecycleOperation.succeed(status);
-        return status;
-      } catch (error) {
-        console.error(
-          `[windows-node-mxc] Folder policy apply failed during ${windowsNodeMxcLifecycleState}: ${describeWindowsNodeMxcFolderTransactionError(error)}`,
-        );
-        lifecycleOperation.fail(error);
-        throw error;
-      } finally {
-        windowsNodeMxcActivationInProgress = false;
-      }
+      return applyRunningWindowsNodeMxcFolders(draft);
     },
   );
 }

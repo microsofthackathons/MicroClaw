@@ -1,7 +1,7 @@
 import { GatewayRequestError } from "./gateway-client";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
 import { supportsLocalModelGatewayVersion } from "./local-model-service";
-import { assertModelConfigUnchanged } from "./model-setup";
+import { assertModelConfigUnchanged, ModelConfigRestartRequiredError } from "./model-setup";
 import type { ProviderCatalogInput, ProviderCatalogResult } from "./provider-model-catalog";
 import { assertChatModelSupported } from "./provider-model-capabilities";
 
@@ -106,7 +106,9 @@ export async function registerProviderCatalogModel(
     if (patched.ok !== true || !contains(patched.config, providerId, modelId))
       throw new Error("The registered model could not be confirmed");
     if (object(object(object(patched.sentinel).payload).stats).requiresRestart === true)
-      throw new Error("This Gateway requires a restart to apply the saved model catalog");
+      throw new ModelConfigRestartRequiredError(
+        typeof patched.hash === "string" ? patched.hash : "",
+      );
     const deadline = Date.now() + MODEL_APPLY_SETTLE_TIMEOUT_MS;
     while (true) {
       const applied = object(

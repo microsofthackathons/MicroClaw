@@ -12,6 +12,7 @@ import {
 import { classifyMxcProbe } from "./windows-node-mxc";
 import {
   inspectWindowsNodeMxc,
+  classifyDeniedCwdResponse,
   preflightWindowsNodeMxcBackend,
   preflightWindowsNodeMxcExactBackend,
   runWindowsNodeMxcSmoke,
@@ -126,6 +127,59 @@ describe("Windows Node MXC status inspection", () => {
 });
 
 describe("Windows Node MXC readiness smoke", () => {
+  const deniedPayload = {
+    success: false,
+    executionState: "rejectedBeforeExecution",
+    errorCode: "cwd-sensitive-root",
+    error: "cwd-sensitive-root: Protected folder",
+    exitCode: null,
+    timedOut: false,
+  };
+  const deniedResponse = {
+    ok: true,
+    command: "system.run",
+    payload: deniedPayload,
+    payloadJSON: JSON.stringify(deniedPayload),
+  };
+  it("recognizes the native structured pre-execution denial rather than RPC success", () => {
+    expect(classifyDeniedCwdResponse(deniedResponse).outcome).toBe("passed");
+    expect(classifyDeniedCwdResponse({ ok: true, payload: deniedResponse }).outcome).toBe("passed");
+  });
+  it.each([
+    { ...deniedResponse, payload: { ...deniedPayload, success: true, exitCode: 0 } },
+    { ...deniedResponse, payload: { ...deniedPayload, errorCode: "approval-required" } },
+    { ...deniedResponse, payload: { ...deniedPayload, executionState: undefined } },
+    { ...deniedResponse, payloadJSON: "{}" },
+    { ...deniedResponse, ok: false },
+    {
+      ...deniedResponse,
+      payload: { ...deniedPayload, stdout: "command actually ran" },
+      payloadJSON: undefined,
+    },
+    {},
+  ])("does not accept an unrelated, contradictory, completed or malformed response", (response) => {
+    expect(classifyDeniedCwdResponse(response).outcome).toBe("failed");
+  });
+  it("passes Full readiness with the actual native denial response shape", async () => {
+    const request = vi.fn(async (_method: string, value: unknown) => {
+      const call = value as { command: string };
+      if (call.command === "system.run") return deniedResponse;
+      if (call.command === "system.run.prepare") return { payload: { plan: preparedPlan() } };
+      return {
+        payload: { stdout: "MICROCLAW_MXC_EXECUTION_OK", stderr: "", exitCode: 0, timedOut: false },
+      };
+    });
+    const result = await runWindowsNodeMxcSmoke(
+      { connected: true, request } as WindowsNodeMxcGateway,
+      generation,
+      nodeId,
+      "settings-fingerprint",
+      strongProbe,
+      authorization(),
+    );
+    expect(result.execution.outcome).toBe("passed");
+    expect(result.deniedOutsideRoot?.outcome).toBe("passed");
+  });
   it("uses only proof-bound internal probe commands and never requests an attended approval", async () => {
     const request = vi.fn(async (_method: string, envelope: unknown) => {
       const call = envelope as {

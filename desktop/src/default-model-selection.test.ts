@@ -248,11 +248,17 @@ describe("default model hot selection", () => {
         ? {
             ok: true,
             config: f.config,
+            hash: "saved-model-revision",
             sentinel: { payload: { stats: { requiresRestart: true } } },
           }
         : result;
     });
-    await expect(f.select()).rejects.toThrow(/requires a Gateway restart/);
+    const pending = f.select();
+    await expect(pending).rejects.toThrow(/requires a Gateway restart/);
+    await expect(pending).rejects.toMatchObject({
+      name: "ModelConfigRestartRequiredError",
+      savedHash: "saved-model-revision",
+    });
   });
 
   it("rejects unconfigured or unauthenticated models without touching the default", async () => {

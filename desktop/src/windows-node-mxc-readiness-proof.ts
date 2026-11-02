@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import type { PowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
 
 export const WINDOWS_NODE_MXC_READINESS_PROOF_CONTRACT = "microclaw.windows-node-readiness.v1";
 export const WINDOWS_NODE_MXC_READINESS_COMMAND = "system.run.readiness";
@@ -34,6 +35,8 @@ export interface WindowsNodeMxcReadinessPlan {
   executableSha256: string;
   cwdBinding: string;
   declaredAccess: Array<{ access: "ro" | "rw"; path: string }>;
+  providerInitialization?: PowerShellFilesystemInitialization;
+  policyFingerprint?: string;
 }
 
 export interface WindowsNodeMxcReadinessProof {
@@ -118,6 +121,10 @@ function assertExactProbePlan(
 export function computeWindowsNodeMxcReadinessPlanSha256(
   plan: WindowsNodeMxcReadinessPlan,
 ): string {
+  return computeWindowsNodeMxcApprovalPlanSha256(plan);
+}
+
+export function computeWindowsNodeMxcApprovalPlanSha256(plan: WindowsNodeMxcReadinessPlan): string {
   const declaredAccess = [...plan.declaredAccess].sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
@@ -139,6 +146,29 @@ export function computeWindowsNodeMxcReadinessPlanSha256(
       encodeField("path", entry.path),
     ]),
   ];
+  const initialization = plan.providerInitialization;
+  if (initialization) {
+    fields.push(
+      encodeField("providerInitialization.contract", initialization.contract),
+      encodeField("providerInitialization.form", initialization.form),
+      `providerInitialization.originalArgv=${initialization.originalArgv.length}`,
+      ...initialization.originalArgv.map((argument) =>
+        encodeField("providerInitialization.originalArg", argument),
+      ),
+      encodeField(
+        "providerInitialization.originalCommandPreview",
+        initialization.originalCommandPreview,
+      ),
+      `providerInitialization.finalArgv=${initialization.finalArgv.length}`,
+      ...initialization.finalArgv.map((argument) =>
+        encodeField("providerInitialization.finalArg", argument),
+      ),
+    );
+  }
+  if (plan.policyFingerprint !== undefined) {
+    requireSha256(plan.policyFingerprint, "policy fingerprint");
+    fields.push(encodeField("policyFingerprint", plan.policyFingerprint));
+  }
   return createHash("sha256").update(fields.join("\n"), "utf8").digest("hex");
 }
 

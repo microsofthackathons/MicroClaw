@@ -24,7 +24,10 @@ internal sealed record PreparedSystemRunPlan(
     [property: JsonPropertyName("declaredAccess")] IReadOnlyList<DeclaredAccess> DeclaredAccess,
     [property: JsonPropertyName("providerInitialization")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    PowerShellFilesystemInitialization? ProviderInitialization);
+    PowerShellFilesystemInitialization? ProviderInitialization,
+    [property: JsonPropertyName("policyFingerprint")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PolicyFingerprint = null);
 
 internal static class PowerShellFilesystemScope
 {
@@ -41,6 +44,10 @@ internal static class PowerShellFilesystemScope
     internal static bool IsLimited(HostPolicy policy) =>
         policy.RequestedStrength == "limited-dacl" && policy.EffectiveTier == "appcontainer-dacl";
 
+    private static bool SupportsInitialization(HostPolicy policy) =>
+        IsLimited(policy) || (policy.RequestedStrength == "full" &&
+            policy.EffectiveTier is "base-container" or "appcontainer-bfs");
+
     internal static string Preview(IReadOnlyList<DeclaredAccess> access, string payload) =>
         $"# [declare-access]{string.Join(';', access.OrderBy(entry => entry.Path, StringComparer.Ordinal).Select(entry => $"{entry.Access}:{entry.Path}"))}[/declare-access]\n{payload}";
 
@@ -48,7 +55,7 @@ internal static class PowerShellFilesystemScope
         BundledSystemCapability.RunRequest run, HostPolicy policy)
     {
         if (run.ProviderInitialization is not null) return run;
-        var initialization = IsLimited(policy)
+        var initialization = SupportsInitialization(policy)
             ? Create(run.Argv, run.DeclaredAccess) : null;
         if (initialization is null) return run;
         ValidateTarget(initialization, run.DeclaredAccess);
@@ -101,7 +108,7 @@ internal static class PowerShellFilesystemScope
     internal static (PowerShellFilesystemInitialization Initialization, IReadOnlyList<DeclaredAccess> Access)
         Validate(JsonElement value, IReadOnlyList<string> argv, string? preview, HostPolicy policy)
     {
-        if (!IsLimited(policy)) throw Invalid();
+        if (!SupportsInitialization(policy)) throw Invalid();
         var supplied = Read(value);
         var access = DeclaredAccessParser.ParseAndValidate(supplied.OriginalCommandPreview, policy);
         var expected = Create(supplied.OriginalArgv, access);
@@ -183,7 +190,7 @@ internal static class PowerShellFilesystemScope
 
     private static HostPolicyException Invalid() => new(
         "powershell-initialization-invalid",
-        "The Limited PowerShell filesystem initialization does not match its exact prepared literal command.");
+        "The contained PowerShell filesystem initialization does not match its exact prepared literal command.");
 
     private static bool IsPowerShell(string value) =>
         Path.GetFileName(value).Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) ||

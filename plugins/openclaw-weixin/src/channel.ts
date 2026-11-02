@@ -637,6 +637,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
             },
             clearContextTokensForAccount,
           );
+          result.accountId = replacement.accountId;
           logger.info(
             `loginWithQrWait: committed single account=${replacement.accountId} replaced=${replacement.replacedAccounts.length}`,
           );

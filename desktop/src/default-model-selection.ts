@@ -10,6 +10,7 @@ import {
   assertModelConfigUnchanged,
   getPrimaryModel,
   waitForDefaultModelApplied,
+  ModelConfigRestartRequiredError,
 } from "./model-setup";
 
 export interface DefaultModelSelection {
@@ -42,10 +43,7 @@ function object(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export async function selectDefaultModel(
-  deps: Dependencies,
-  input: unknown,
-): Promise<{ modelRef: string }> {
+export function parseDefaultModelSelection(input: unknown): DefaultModelSelection {
   const params = object(input);
   const ref = params.modelRef;
   if (
@@ -60,6 +58,15 @@ export async function selectDefaultModel(
     );
   if (ref.startsWith("llama-cpp/"))
     throw new Error("Use local model selection so preparation and file checks are preserved");
+  return { modelRef: ref, expectedConfig: params.expectedConfig };
+}
+
+export async function selectDefaultModel(
+  deps: Dependencies,
+  input: unknown,
+): Promise<{ modelRef: string }> {
+  const params = parseDefaultModelSelection(input);
+  const ref = params.modelRef;
   assertModelProviderEnabled(ref, deps.githubCopilotEnabled);
   assertChatModelSupported(ref);
   deps.assertMutable();
@@ -154,9 +161,7 @@ export async function selectDefaultModel(
       );
     const stats = object(object(object(result.sentinel).payload).stats);
     if (stats.requiresRestart === true)
-      throw new Error(
-        "The model settings were saved, but OpenClaw requires a Gateway restart to apply them",
-      );
+      throw new ModelConfigRestartRequiredError(typeof result.hash === "string" ? result.hash : "");
   }
   try {
     const applied = await waitForDefaultModelApplied(ref, (timeoutMs) =>
