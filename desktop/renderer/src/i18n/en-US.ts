@@ -811,6 +811,7 @@ export default {
   "modelManager.noMatches": "No matching models.",
   "modelManager.clearSearch": "Clear search",
   "modelManager.moreModels": "More models · {count}",
+  "modelManager.moreModelsMenu": "More models",
   "modelManager.fewerModels": "Fewer models",
   "modelManager.recommended": "Recommended",
   "modelManager.noFeaturedModels": "No featured models available for this account.",
