@@ -7,6 +7,7 @@ import platform
 import stat
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def fingerprint(root, paths, excludes=()):
         content = hashlib.sha256()
         size = 0
         with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
+            for block in iter(lambda: stream.read(64 * 1024), b""):
                 content.update(block)
                 size += len(block)
         return size, content.hexdigest()
@@ -252,8 +253,15 @@ def main():
     root = arguments.root.resolve()
     _, outputs = stage_paths(root, arguments.stage)
     if arguments.command == "probe":
+        started = time.perf_counter()
         key = input_key(root, arguments.stage, arguments.context, arguments.extra_input)
-        print(json.dumps(probe(root, arguments.stage, key, outputs, arguments.rebuild)))
+        inputs_finished = time.perf_counter()
+        result = probe(root, arguments.stage, key, outputs, arguments.rebuild)
+        result["timings"] = {
+            "inputs": round(inputs_finished - started, 4),
+            "verification": round(time.perf_counter() - inputs_finished, 4),
+        }
+        print(json.dumps(result))
     else:
         if not arguments.key:
             parser.error("save requires --key")

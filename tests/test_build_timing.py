@@ -21,6 +21,7 @@ class BuildTimingWiringTests(unittest.TestCase):
             "Step 1/7: check native cache": "Get-BuildCache -Stage native",
             "Step 1/7: prepare packaged resources": "npm run prepare-packaged-resources",
             "Step 1/7: save native cache": "Save-BuildCache -Cache $nativeCache",
+            "Preflight: desktop toolchain context": "npm --version",
             "Preflight: check desktop cache": "Get-BuildCache -Stage desktop",
             "Step 2/7: clean stale build artifacts": "Remove-Item",
             "Step 3/7: build and pack desktop": "npm run pack:prepared",
