@@ -39,6 +39,7 @@ _MANAGED_STATE_CORE_PATHS = (
     Path("openclaw.json"),
     Path("skill_catalog.json"),
     Path("managed_skill_catalog.json"),
+    Path("microclaw-search-setup.json"),
     Path("skills"),
     Path("skills_snapshot.json"),
     Path("skills_snapshot.sig"),

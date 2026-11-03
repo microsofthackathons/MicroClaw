@@ -3688,7 +3688,9 @@ class WindowsSetup:
             or isinstance(existing_api_key, str)
             and bool(existing_api_key.strip())
         )
-        if existing_search_usable:
+        if existing_search.get("enabled") is False:
+            self.log.info("  Preserving disabled web search configuration")
+        elif existing_search_usable:
             self.log.info(f"  Preserving web search provider: {existing_search['provider']}")
         elif brave_api_key:
             tools = existing.setdefault("tools", {})
@@ -4516,6 +4518,45 @@ class WindowsSetup:
             return True
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
             self.log.error(f"Local provider preparation failed: {error}")
+            return False
+
+    def defer_search_provider_plugin(self) -> bool:
+        state_dir = Path.home() / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        pending_path = state_dir / "microclaw-search-setup.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            search = config.get("tools", {}).get("web", {}).get("search", {})
+            if search.get("provider") != _PARALLEL_FREE_PROVIDER or search.get("enabled") is False:
+                return True
+            if self._parallel_plugin_is_installed_locally(state_dir):
+                self.log.info("  Parallel web search plugin is already installed")
+                return True
+            suspended_search = {**search, "enabled": False}
+            suspended_search.pop("provider", None)
+            plugins = config.setdefault("plugins", {})
+            entries = plugins.setdefault("entries", {})
+            pending = {
+                "schemaVersion": 1,
+                "search": search,
+                "suspendedSearch": suspended_search,
+                "pluginEntry": entries.pop(_PARALLEL_PLUGIN_ID, {}),
+            }
+            if isinstance(plugins.get("allow"), list):
+                plugins["allow"] = [
+                    plugin_id for plugin_id in plugins["allow"] if plugin_id != _PARALLEL_PLUGIN_ID
+                ]
+            config["tools"]["web"]["search"] = suspended_search
+            temporary = pending_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+            os.replace(temporary, pending_path)
+            temporary = config_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            os.replace(temporary, config_path)
+            self.log.info("  Web search will be installed silently after the desktop is ready")
+            return True
+        except (OSError, ValueError, TypeError) as error:
+            self.log.error(f"Could not defer web search setup: {error}")
             return False
 
     def install_search_provider_plugin(self) -> bool:

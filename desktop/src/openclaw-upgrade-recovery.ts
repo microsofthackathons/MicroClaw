@@ -37,6 +37,7 @@ const managedStatePaths = new Set([
   "openclaw.json",
   "skill_catalog.json",
   "managed_skill_catalog.json",
+  "microclaw-search-setup.json",
   "skills",
   "skills_snapshot.json",
   "skills_snapshot.sig",

@@ -591,7 +591,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
         self.assertEqual(uninstaller_step[3], 1)
 
-    def test_both_installers_install_web_search_provider_after_configuration(self):
+    def test_both_installers_defer_web_search_provider_after_configuration(self):
         setup = unittest.mock.Mock()
         app = object.__new__(DeployerApp)
         app._prepare_upgrade = unittest.mock.Mock()
@@ -602,10 +602,10 @@ class WebInstallerBridgeTests(unittest.TestCase):
 
         for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
             labels = self._step_labels(steps)
-            search_index = labels.index("Installing web search provider...")
+            search_index = labels.index("Preparing background web search setup...")
             self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
             self.assertLess(search_index, labels.index("Installing uninstaller..."))
-            self.assertEqual(steps[search_index][2], setup.install_search_provider_plugin)
+            self.assertEqual(steps[search_index][2], setup.defer_search_provider_plugin)
 
     def test_both_installers_defer_local_provider_installation(self):
         setup = unittest.mock.Mock()

@@ -20,6 +20,10 @@ import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
 import { prepareBundledOpenClawDir } from "./bundled-runtime";
 import { INSTALLER_RUNTIME_ARGUMENT, prepareInstallerRuntime } from "./installer-runtime";
+import {
+  BackgroundSearchProvider,
+  searchSetupUpgradeCommitted,
+} from "./background-search-provider";
 import { configurePerformanceFixture, PERFORMANCE_ARGUMENT } from "./performance-fixture";
 import {
   hasLocalModelPrimary,
@@ -509,6 +513,21 @@ let modelConfigurationMutationInProgress = false;
 let commandConsentUpdating = false;
 let windowsNodeMxcModelUpdateInProgress = false;
 let githubCopilotLoginInProgress = false;
+const backgroundSearchProvider = new BackgroundSearchProvider({
+  stateDir: getOpenClawStateDir,
+  gateway: () => gwClient,
+  ready: () =>
+    isApplicationServiceReady() &&
+    activeModelSessions.size === 0 &&
+    !modelConfigurationMutationInProgress &&
+    !localModelService.busy &&
+    !sessionModelService.busy &&
+    searchSetupUpgradeCommitted(
+      path.join(app.getPath("home"), ".microclaw"),
+      postInstallTransactionId,
+    ),
+  log: (message) => console.log(`[web-search] ${message}`),
+});
 const modelChatKey = (key: string) =>
   sessionModelChatKey(readConfig(), key, gwClient?.mainSessionKey);
 const modelGatewayIdentity = () =>
@@ -2518,6 +2537,7 @@ function notifyRendererApplicationReady(): void {
   sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
   sendToWindow(mainWindow, "gateway:service-ready");
   signalPostInstallReady();
+  if (!performanceFixture) backgroundSearchProvider.start();
 }
 
 function getWindowsNodeMxcDurableApprovalStore(): WindowsNodeMxcDurableApprovalStore {
@@ -9660,6 +9680,7 @@ app.on("before-quit", (event) => {
     watcherDebounceTimer = null;
   }
   destroyTray();
+  backgroundSearchProvider.stop();
   githubCopilotAuthManager.stop();
   gwClient?.stop();
   stopBundledWindowsNodeHost();
