@@ -402,6 +402,12 @@ PyInstaller environment; other Python build strategies continue to work without 
 The first build populates `build/package-cache/`; use `.\build.ps1 -Rebuild` to force
 all stages to run again. The optional installer ZIP is recreated when requested.
 
+Each build logs stage start/completion timings and ends with a summary of seconds,
+percentage of total time, and total build duration. Cache checks and cache writes
+are timed separately from resource preparation, desktop packaging, ZIP creation,
+manifest/payload hashing, PyInstaller, NSIS compression, setup extraction/verification,
+and signing. Failed builds also print the summary, marking the active stage as failed.
+
 During installation, the desktop's bundled OpenClaw runtime is prepared before
 plugin installation and service startup, with a separate extraction timeout.
 Plugin installation, peer-link repair, and compile-cache warmup use the same bundled

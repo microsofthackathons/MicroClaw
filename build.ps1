@@ -20,6 +20,14 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+. "$root\scripts\windows\build-timing.ps1"
+Start-BuildTiming -Timer $buildTimer
+
+trap {
+    Write-BuildTimingSummary -Status failed
+    break
+}
+
 function Invoke-BuildCache {
     param([string[]]$Arguments)
 
@@ -85,6 +93,7 @@ function Get-FileSetId {
     }
 }
 
+Start-BuildStage 'Preflight: resolve Node.js'
 . "$root\scripts\windows\node-runtime.ps1"
 
 # Prefer a supported standard MSI install, then the legacy zip and PATH.
@@ -128,21 +137,25 @@ if (-not $nodeFound) {
     Write-Host "    - PATH (Get-Command node.exe)" -ForegroundColor Red
     Write-Host "  OpenClaw 2026.10.5 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
     Write-Host "  Install Node.js 26 (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
+    Write-BuildTimingSummary -Status failed
     exit 1
 }
 
+Start-BuildStage 'Preflight: initialize OpenClaw source'
 $windowsNodeSharedProject = "$root\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
 if (-not (Test-Path $windowsNodeSharedProject)) {
     Write-Host "  Initializing pinned OpenClaw Windows Node source..." -ForegroundColor Yellow
     git -C $root submodule update --init --recursive -- third_party/openclaw-windows-node/source
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $windowsNodeSharedProject)) {
         Write-Host "  ERROR: unable to initialize the pinned OpenClaw Windows Node submodule" -ForegroundColor Red
+        Write-BuildTimingSummary -Status failed
         exit 1
     }
 }
 
 # Bootstrap desktop dependencies before building the Windows node, because the
 # resource preparation step consumes the pinned @microsoft/mxc-sdk package.
+Start-BuildStage 'Preflight: desktop dependencies'
 Push-Location "$root\desktop"
 try {
     $needsNpmInstall = -not (Test-Path "$root\desktop\node_modules")
@@ -167,6 +180,7 @@ try {
         $ErrorActionPreference = $prev
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  ERROR: npm install failed" -ForegroundColor Red
+            Write-BuildTimingSummary -Status failed
             exit 1
         }
     }
@@ -175,6 +189,7 @@ try {
 }
 
 # -- Step 1: Build native security helpers --
+Start-BuildStage 'Step 1/7: check native cache'
 Write-Host "`n=== Step 1/7: Build security helpers ===" -ForegroundColor Cyan
 $nativeContext = @(
     (& node --version),
@@ -184,20 +199,24 @@ $nativeContext = @(
 if ($LASTEXITCODE -ne 0) { throw 'Unable to verify pinned Windows Node revision' }
 $nativeCache = Get-BuildCache -Stage native -Context $nativeContext `
     -ExtraInputs @((Get-Command node.exe).Source, (Get-Command dotnet.exe).Source)
+Start-BuildStage 'Step 1/7: prepare packaged resources'
 if (-not $nativeCache.hit) {
     Push-Location "$root\desktop"
     try {
         npm run prepare-packaged-resources
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  ERROR: packaged runtime resource preparation failed" -ForegroundColor Red
+            Write-BuildTimingSummary -Status failed
             exit 1
         }
     } finally {
         Pop-Location
     }
+    Start-BuildStage 'Step 1/7: save native cache'
     Save-BuildCache -Cache $nativeCache
 }
 
+Start-BuildStage 'Preflight: check desktop cache'
 $desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString())
 $signingConfigured = [bool]($env:CSC_LINK -or $env:WIN_CSC_LINK -or $env:CSC_NAME -or
     $env:WIN_CSC_SUBJECT_NAME -or $env:WIN_CSC_SHA1 -or $env:TRUSTED_SIGNING_ENDPOINT -or
@@ -206,6 +225,7 @@ $desktopCache = Get-BuildCache -Stage desktop -Context $desktopContext `
     -ExtraInputs @((Get-Command node.exe).Source) -Disabled:$signingConfigured
 
 # -- Step 2: Clean dist/ to prevent stale TypeScript output --
+Start-BuildStage 'Step 2/7: clean stale build artifacts'
 Write-Host "`n=== Step 2/7: Clean stale build artifacts ===" -ForegroundColor Cyan
 $distDir = "$root\desktop\dist"
 if (-not $desktopCache.hit -and (Test-Path $distDir)) {
@@ -222,6 +242,7 @@ if (-not (Test-Path $outDist)) {
 }
 
 # -- Step 3: Build & pack desktop --
+Start-BuildStage 'Step 3/7: build and pack desktop'
 Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
 if (-not $desktopCache.hit) {
     Push-Location "$root\desktop"
@@ -232,6 +253,7 @@ if (-not $desktopCache.hit) {
         $ErrorActionPreference = $prev
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  ERROR: desktop build failed" -ForegroundColor Red
+            Write-BuildTimingSummary -Status failed
             exit 1
         }
     } finally {
@@ -250,15 +272,19 @@ if (Test-Path $desktopAsar) {
         Write-Host "  Verified: app.asar is newer than source files" -ForegroundColor Green
     }
 }
+Start-BuildStage 'Step 3/7: save desktop cache'
 if (-not $desktopCache.hit) { Save-BuildCache -Cache $desktopCache }
 
 # Step 4: Create portable zip
+Start-BuildStage 'Step 4/7: check portable cache'
 Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
 $portableCache = Get-BuildCache -Stage portable -Context $desktopContext
+Start-BuildStage 'Step 4/7: create portable zip'
 if (-not $portableCache.hit) {
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
+    Start-BuildStage 'Step 4/7: save portable cache'
     Save-BuildCache -Cache $portableCache
 }
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
@@ -266,6 +292,7 @@ Write-Host "  -> $zipPath  ${zipSizeMB} MB"
 
 # Build identity consumed by repeat-install fast paths. It is generated before
 # PyInstaller so the onedir bundle carries the identity of every managed input.
+Start-BuildStage 'Step 4/7: generate install manifest'
 $manifestPath = "$root\dist\install-manifest.json"
 $skillsFiles = @(Get-ChildItem "$root\skills" -File -Recurse)
 $installerIdentityFiles = @(
@@ -280,6 +307,7 @@ $installerIdentityFiles = @(
 $versionSource = Get-Content "$root\deployer\openclaw_version.py" -Raw
 if ($versionSource -notmatch 'OPENCLAW_TARGET_VERSION\s*=\s*"([^"]+)"') {
     Write-Host "  ERROR: could not resolve OPENCLAW_TARGET_VERSION" -ForegroundColor Red
+    Write-BuildTimingSummary -Status failed
     exit 1
 }
 $installManifest = [ordered]@{
@@ -294,6 +322,7 @@ $installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
 Write-Host "  Install manifest: $manifestPath" -ForegroundColor DarkGray
 
 # Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
+Start-BuildStage 'Step 5/7: Python dependencies'
 Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan
 Push-Location $root
 $installerBuilt = $false
@@ -360,10 +389,12 @@ if ($hasUvProject) {
 }
 
 # --- Run PyInstaller ---
+Start-BuildStage 'Step 5/7: check installer cache'
 $installerCache = Get-BuildCache -Stage installer -Disabled:($hasUvProject -or
     -not (Test-Path "$root\.venv\Scripts\pyinstaller.exe"))
 if ($installerCache.hit) { $installerBuilt = $true }
 $localInstallerBuilt = $false
+Start-BuildStage 'Step 5/7: PyInstaller'
 # Strategy 1: `uv run` — uses project .venv with all deps
 if (-not $installerBuilt -and $hasUvProject) {
     Write-Host "  Trying: uv run pyinstaller" -ForegroundColor DarkGray
@@ -419,17 +450,21 @@ if (-not $installerBuilt) {
     Write-Host "`n=== Build FAILED: installer was not produced ===" -ForegroundColor Red
     Write-Host "  Portable zip was built at: $zipPath" -ForegroundColor Yellow
     Write-Host "  But MicroClawInstaller.exe is missing — end users cannot install." -ForegroundColor Yellow
+    Write-BuildTimingSummary -Status failed
     exit 1
 }
+Start-BuildStage 'Step 5/7: save installer cache'
 if (-not $installerCache.hit -and $localInstallerBuilt) { Save-BuildCache -Cache $installerCache }
 
 # Step 6: Pack onedir output into a single distributable zip
+Start-BuildStage 'Step 6/7: pack optional installer zip'
 Write-Host "`n=== Step 6/7: Pack installer directory ===" -ForegroundColor Cyan
 $installerDir = "$root\dist\MicroClawInstaller"
 $installerZip = "$root\dist\MicroClawInstaller.zip"
 if (-not (Test-Path $installerDir)) {
     Write-Host "  ERROR: installer directory not found at $installerDir" -ForegroundColor Red
     Write-Host "         PyInstaller reported success but produced no output." -ForegroundColor Red
+    Write-BuildTimingSummary -Status failed
     exit 1
 }
 if ($IncludeInstallerZip) {
@@ -446,6 +481,7 @@ if ($IncludeInstallerZip) {
 # real directory under %LOCALAPPDATA% (not %TEMP%, preserving WDAC safety) and
 # auto-launches MicroClawInstaller.exe. Only this stub needs signing to clear
 # SmartScreen (it is the only file that carries Mark-of-the-Web on download).
+Start-BuildStage 'Step 7/7: resolve NSIS and version'
 Write-Host "`n=== Step 7/7: Build single-exe setup + sign ===" -ForegroundColor Cyan
 $setupExe = "$root\dist\MicroClawSetup.exe"
 $nsiScript = "$root\installer\microclaw-setup.nsi"
@@ -469,6 +505,7 @@ if (-not $makensis) {
 if (-not $makensis) {
     Write-Host "  ERROR: makensis (NSIS) not found. Install NSIS 3.x (e.g. 'choco install nsis')." -ForegroundColor Red
     Write-Host "         The onedir installer + zip were still produced." -ForegroundColor Yellow
+    Write-BuildTimingSummary -Status failed
     exit 1
 }
 Write-Host "  Using makensis: $makensis"
@@ -484,6 +521,7 @@ $version4 = ($verParts[0..3]) -join '.'
 # Fingerprint the complete onedir payload. The bootstrapper persists this ID
 # only after extraction finishes, allowing subsequent launches of the same
 # setup build to reuse the verified-complete staging directory.
+Start-BuildStage 'Step 7/7: fingerprint setup payload'
 $payloadEntries = Get-ChildItem $installerDir -File -Recurse | Sort-Object FullName | ForEach-Object {
     $relativePath = $_.FullName.Substring($installerDir.Length).TrimStart('\').Replace('\', '/')
     $fileHash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -499,8 +537,10 @@ try {
 }
 Write-Host "  Payload ID: $payloadId" -ForegroundColor DarkGray
 
+Start-BuildStage 'Step 7/7: check setup cache'
 $setupCache = Get-BuildCache -Stage setup -Context @($payloadId, $SetupCompression, $version4) `
     -ExtraInputs @((Split-Path -Parent $makensis)) -Disabled:$signingConfigured
+Start-BuildStage 'Step 7/7: NSIS compression'
 if (-not $setupCache.hit) {
     if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
 
@@ -521,6 +561,7 @@ if (-not $setupCache.hit) {
     $ErrorActionPreference = $prev
     if ($nsisExit -ne 0 -or -not (Test-Path $setupExe)) {
         Write-Host "  ERROR: makensis failed (exit $nsisExit) — MicroClawSetup.exe not produced." -ForegroundColor Red
+        Write-BuildTimingSummary -Status failed
         exit 1
     }
     $setupSizeMB = [math]::Round((Get-Item $setupExe).Length / 1MB, 1)
@@ -531,6 +572,7 @@ if (-not $setupCache.hit) {
     Write-Host "  Reusing complete setup EXE; extraction verification still runs." -ForegroundColor DarkGray
 }
 
+Start-BuildStage 'Step 7/7: extract setup for verification'
 $verificationRoot = [IO.Path]::GetFullPath((Join-Path $root 'build')).TrimEnd('\') + '\'
 $verificationDir = [IO.Path]::GetFullPath((Join-Path $verificationRoot ("setup-payload-check-" + [Guid]::NewGuid().ToString('N'))))
 if (-not $verificationDir.StartsWith($verificationRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -540,6 +582,7 @@ $verification = Start-Process -FilePath $setupExe -ArgumentList @('/EXTRACT_ONLY
 if ($verification.ExitCode -ne 0) {
     throw "Final setup extraction failed (exit $($verification.ExitCode))."
 }
+Start-BuildStage 'Step 7/7: verify extracted payload'
 $extractedFiles = @(Get-ChildItem -LiteralPath $verificationDir -File -Recurse |
     Where-Object { $_.FullName -ne (Join-Path $verificationDir '.payload-complete') })
 $extractedId = Get-FileSetId -Files $extractedFiles -BasePath $verificationDir
@@ -552,13 +595,16 @@ Write-Host "  Verified: final setup extracts the complete current payload withou
 # (TRUSTED_SIGNING_ENDPOINT/ACCOUNT/PROFILE), so local + PR builds are unchanged.
 # Run in a child process using the SAME PowerShell host (the signer calls
 # `exit`, which would otherwise terminate this build script).
+Start-BuildStage 'Step 7/7: sign setup'
 $psHost = (Get-Process -Id $PID).Path
 if (-not $psHost) { $psHost = 'powershell' }
 & $psHost -NoProfile -File "$root\scripts\windows\sign-artifact.ps1" -Path $setupExe
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  ERROR: signing step failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    Write-BuildTimingSummary -Status failed
     exit 1
 }
+Start-BuildStage 'Step 7/7: save setup cache'
 Save-BuildCache -Cache $setupCache
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
@@ -566,5 +612,4 @@ Write-Host "  Setup (one-exe): $setupExe"
 Write-Host "  Installer dir:   $root\dist\MicroClawInstaller\"
 if ($IncludeInstallerZip) { Write-Host "  Installer zip:   $installerZip" }
 Write-Host "  Portable:        $zipPath"
-$buildTimer.Stop()
-Write-Host "  Total build:     $([math]::Round($buildTimer.Elapsed.TotalMinutes, 2)) minutes"
+Write-BuildTimingSummary
