@@ -89,6 +89,14 @@ authenticated updates response sets connection status; API failures and stops
 clear it. Read-only runtime checks are cached for two seconds and fail closed
 if the Gateway connection changes.
 
+Approval compatibility is enabled in both host and MXC modes; that flag alone
+does not identify an isolated WeChat runtime. An authenticated live policy with
+`requestedStrength: "off"` and `effectiveTier: "host"` keeps ordinary WeChat
+polling and media handling available without an MXC ingress release or media
+policy. Full and limited isolation still require the exact release record.
+Missing, invalid, unauthenticated, or stale live policies retain the existing
+fail-closed containment behavior.
+
 **Disconnect** uses native `channels.logout`. The Gateway first stops the
 account and aborts its updates poll, then the plugin transactionally removes
 credentials, sync/context artifacts, the account allowlist, and its index entry.
@@ -109,6 +117,7 @@ From `desktop/`:
 
 ```powershell
 npx vitest run src/weixin-connection.test.ts src/weixin-plugin-lifecycle.test.ts src/weixin-mutation-coordinator.test.ts src/weixin-login-lifecycle.test.ts
+npx vitest run --config vitest.weixin-integration.config.mts ../plugins/openclaw-weixin/src/security/mxc-policy.test.ts
 npm run test:weixin-runtime
 npm run prepare-weixin-plugin-resource
 ```

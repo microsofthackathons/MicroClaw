@@ -13,6 +13,7 @@ export default defineConfig({
   test: {
     include: [
       "integration/**/*.test.mjs",
+      "../plugins/openclaw-weixin/src/security/mxc-policy.test.ts",
       "../plugins/openclaw-weixin/src/security/remote-approval.test.ts",
       "../plugins/openclaw-weixin/src/monitor/monitor.remote-approval.test.ts",
     ],
