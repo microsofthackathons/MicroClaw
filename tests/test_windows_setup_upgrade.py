@@ -2168,6 +2168,22 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(written["tools"]["web"]["search"], {"provider": "parallel-free"})
         self.assertEqual(written["plugins"]["entries"]["parallel"], {"enabled": True})
 
+    def test_write_config_preserves_search_disabled_for_background_setup_or_by_user(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True, exist_ok=True)
+        config_path = state / "openclaw.json"
+        search = {"enabled": False, "maxResults": 7}
+        config_path.write_text(json.dumps({"tools": {"web": {"search": search}}}), encoding="utf-8")
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["tools"]["web"]["search"], search)
+        self.assertNotIn("parallel", written.get("plugins", {}).get("entries", {}))
+
     def test_write_config_disables_new_managed_skills_outside_whitelist(self):
         self.ws.cfg = _Config(
             {
