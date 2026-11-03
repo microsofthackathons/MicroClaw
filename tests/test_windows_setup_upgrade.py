@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import platform
@@ -2944,6 +2945,90 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
         self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
+    def test_entry_points_require_embedded_desktop_icon(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        desktop_exe.parent.mkdir(parents=True)
+        desktop_exe.write_bytes(b"exe")
+        desktop = self.root / "Desktop"
+        programs = self.root / "Programs"
+        desktop.mkdir()
+        programs.mkdir()
+        (desktop / "MicroClawDesktop.lnk").write_bytes(b"lnk")
+        (programs / "MicroClaw.lnk").write_bytes(b"lnk")
+        self.ws._build_install_identity_matches = unittest.mock.Mock(return_value=True)
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=desktop)
+        self.ws._get_start_menu_path = unittest.mock.Mock(return_value=programs)
+        registry_values = {
+            "DisplayVersion": OPENCLAW_TARGET_VERSION,
+            "InstallLocation": str(desktop_exe.parent),
+            "UninstallString": f'"{self.home / ".openclaw" / "MicroClawInstaller.exe"}" --uninstall',
+        }
+
+        def query_value(_key, name):
+            if name not in registry_values:
+                raise OSError("missing registry value")
+            return registry_values[name], 1
+
+        fake_winreg = unittest.mock.MagicMock()
+        fake_winreg.QueryValueEx.side_effect = query_value
+        for display_icon, expected in (
+            (None, False),
+            (str(self.home / ".openclaw" / "microclaw.ico"), False),
+            (r"%USERPROFILE%\.openclaw\microclaw.ico", False),
+            (str(desktop_exe), True),
+        ):
+            with self.subTest(display_icon=display_icon):
+                if display_icon is not None:
+                    registry_values["DisplayIcon"] = display_icon
+                with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+                    self.assertEqual(self.ws._entry_points_are_current(), expected)
+
+    def test_resolve_icon_prefers_desktop_executable_without_state_directory(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        desktop_exe.parent.mkdir(parents=True)
+        desktop_exe.write_bytes(b"exe")
+
+        with unittest.mock.patch("deployer.windows_setup.shutil.copy2") as copy_icon:
+            self.assertEqual(self.ws._resolve_icon(), desktop_exe)
+
+        copy_icon.assert_not_called()
+        self.assertFalse((self.home / ".openclaw").exists())
+
+    def test_resolve_icon_retains_packaged_fallback_without_desktop(self):
+        icon = self.ws._resolve_icon()
+
+        self.assertEqual(icon, self.home / ".openclaw" / "microclaw.ico")
+        self.assertTrue(icon.is_file())
+        self.assertGreater(icon.stat().st_size, 0)
+
+    def test_app_shortcuts_use_embedded_desktop_icon(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        desktop_exe.parent.mkdir(parents=True)
+        desktop_exe.write_bytes(b"exe")
+        desktop = self.root / "Desktop"
+        programs = self.root / "Programs"
+        desktop.mkdir()
+        self.ws._get_start_menu_path = unittest.mock.Mock(return_value=programs)
+
+        for helper_name, shortcut_path, arguments in (
+            ("_create_lnk_shortcut", desktop / "MicroClawDesktop.lnk", (desktop, desktop_exe)),
+            ("_create_start_menu_shortcut", programs / "MicroClaw.lnk", (desktop_exe,)),
+        ):
+            with self.subTest(helper=helper_name):
+
+                def fake_run(_command, destination=shortcut_path, **_kwargs):
+                    destination.write_bytes(b"lnk")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+                self.ws._run = unittest.mock.Mock(side_effect=fake_run)
+
+                self.assertTrue(getattr(self.ws, helper_name)(*arguments))
+
+                command = self.ws._run.call_args.args[0]
+                script = base64.b64decode(command[-1]).decode("utf-16-le")
+                self.assertIn(f'$s.IconLocation = "{desktop_exe},0";', script)
+                self.assertNotIn("microclaw.ico", script)
+
     def test_create_desktop_shortcut_treats_shortcut_failures_as_nonfatal(self):
         for helper_name in (
             "_create_lnk_shortcut",
@@ -3027,8 +3112,9 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_register_installed_app_writes_hkcu_uninstall_key(self):
         target_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        target_exe.parent.mkdir(parents=True)
+        target_exe.write_bytes(b"exe")
         persisted = self._write_persisted_uninstaller()
-        self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
 
         fake_winreg = unittest.mock.MagicMock()
         fake_winreg.HKEY_CURRENT_USER = 0x11111111
@@ -3049,6 +3135,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         values = {call.args[1]: call.args[4] for call in fake_winreg.SetValueEx.call_args_list}
         self.assertEqual(values["DisplayName"], "MicroClaw")
         self.assertEqual(values["DisplayVersion"], OPENCLAW_TARGET_VERSION)
+        self.assertEqual(values["DisplayIcon"], str(target_exe))
         self.assertEqual(values["UninstallString"], f'"{persisted}" --uninstall')
         self.assertEqual(values["NoModify"], 1)
         self.assertEqual(len(self.ws._rollback_actions), 1)
