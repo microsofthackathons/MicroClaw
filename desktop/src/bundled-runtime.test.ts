@@ -4,6 +4,11 @@ import * as path from "path";
 import { createPackage } from "@electron/asar";
 import { afterEach, describe, expect, it } from "vitest";
 import { materializeRuntimeArchive, runtimeArchiveCacheVersion } from "./bundled-runtime";
+import {
+  RUNTIME_PREPARATION_TIMING_PREFIX,
+  RuntimePreparationTiming,
+  type RuntimePreparationTimingEvent,
+} from "./runtime-preparation-timing";
 
 const roots: string[] = [];
 
@@ -14,6 +19,78 @@ afterEach(() => {
 });
 
 describe("materializeRuntimeArchive", () => {
+  it("reports rebuild stages and skips them on a cache hit", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-runtime-timing-"));
+    roots.push(root);
+    const runtimeRoot = path.join(root, "runtime");
+    const events: RuntimePreparationTimingEvent[] = [];
+    const timing = new RuntimePreparationTiming("worker", (message) => {
+      events.push(JSON.parse(message.slice(RUNTIME_PREPARATION_TIMING_PREFIX.length)));
+    });
+    const extract = (_archive: string, destination: string) => {
+      const packageRoot = path.join(destination, "node_modules", "openclaw");
+      fs.mkdirSync(packageRoot, { recursive: true });
+      fs.writeFileSync(path.join(packageRoot, "openclaw.mjs"), "export {};");
+    };
+    materializeRuntimeArchive("archive", runtimeRoot, "current", extract, timing);
+    expect(
+      events.filter((event) => event.status === "success").map((event) => event.phase),
+    ).toEqual([
+      "cache-check",
+      "staging-cleanup",
+      "staging-parent-create",
+      "archive-extract",
+      "entry-validation",
+      "version-marker-write",
+      "old-runtime-remove",
+      "runtime-publish",
+    ]);
+    expect(events[1]).toMatchObject({ cache: "miss" });
+    events.length = 0;
+    materializeRuntimeArchive(
+      "archive",
+      runtimeRoot,
+      "current",
+      () => {
+        throw new Error("A current runtime must not be extracted again");
+      },
+      timing,
+    );
+    expect(events).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ phase: "cache-check", cache: "hit" });
+  });
+
+  it("reports extraction failure and cleanup without replacing the old runtime", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-runtime-timing-"));
+    roots.push(root);
+    const runtimeRoot = path.join(root, "runtime");
+    fs.mkdirSync(runtimeRoot);
+    fs.writeFileSync(path.join(runtimeRoot, "previous"), "preserved");
+    const events: RuntimePreparationTimingEvent[] = [];
+    const timing = new RuntimePreparationTiming("worker", (message) => {
+      events.push(JSON.parse(message.slice(RUNTIME_PREPARATION_TIMING_PREFIX.length)));
+    });
+    expect(() =>
+      materializeRuntimeArchive(
+        "archive",
+        runtimeRoot,
+        "current",
+        (_archive, stagingRoot) => {
+          fs.mkdirSync(stagingRoot);
+          throw new Error("disk full");
+        },
+        timing,
+      ),
+    ).toThrow("Failed to prepare");
+    expect(events).toContainEqual(
+      expect.objectContaining({ phase: "archive-extract", status: "failed" }),
+    );
+    expect(events.at(-1)).toMatchObject({ phase: "failed-staging-cleanup", status: "success" });
+    expect(fs.readFileSync(path.join(runtimeRoot, "previous"), "utf8")).toBe("preserved");
+    expect(fs.existsSync(`${runtimeRoot}.staging-${process.pid}`)).toBe(false);
+    expect(events.some((event) => event.phase === "old-runtime-remove")).toBe(false);
+  });
+
   it("extracts once per desktop version and replaces stale runtimes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-runtime-"));
     roots.push(root);

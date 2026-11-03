@@ -19,6 +19,7 @@ import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
 import { prepareBundledOpenClawDir } from "./bundled-runtime";
+import { INSTALLER_RUNTIME_ARGUMENT, prepareInstallerRuntime } from "./installer-runtime";
 import { configurePerformanceFixture, PERFORMANCE_ARGUMENT } from "./performance-fixture";
 import {
   hasLocalModelPrimary,
@@ -9206,6 +9207,10 @@ if (!gotLock) {
 const applicationStartup = app.whenReady().then(async () => {
   if (explicitQuitRequested) return;
   logStartupTiming("app-ready");
+  if (process.argv.includes(INSTALLER_RUNTIME_ARGUMENT)) {
+    app.exit(await prepareInstallerRuntime(prepareBundledOpenClawDir));
+    return;
+  }
   if (!settingsStore.has("language")) {
     settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
   }

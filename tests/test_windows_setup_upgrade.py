@@ -122,6 +122,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws.log = _Log()
         self.ws.node_dir = self.program_files / "nodejs"
         self.ws._node_bin = None
+        self.ws._desktop_runtime_root = None
         self.ws._git_bin = None
         self.ws._mirror_probe_pending = False
         self.ws._rollback_actions = []
@@ -2313,6 +2314,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 "openclaw.cmd",
                 "plugins",
                 "install",
+                "--force",
                 f"@openclaw/parallel-plugin@{OPENCLAW_TARGET_VERSION}",
             ],
         )
