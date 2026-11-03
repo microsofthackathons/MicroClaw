@@ -98,7 +98,7 @@ graph TB
 |---|---|---|---|
 | **Desktop App** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
 | **Native MXC host** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | Native Windows tool execution with exact approvals and Full/Limited containment |
-| **Installer** | `deploy.py` + `deployer/` | Python 3 + Tkinter | Wizard-style graphical installer (can be packaged as a single exe) |
+| **Installer** | `deploy.py` + `deployer/` | Python 3 + pywebview | Wizard-style graphical installer (can be packaged as a single exe) |
 | **Skill Packs** | `skills/` | Markdown + JSON + Python/Node | Office, search, browser automation managed skills |
 | **WeChat Plugin** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | WeChat channel integration |
 
@@ -130,11 +130,13 @@ The installer handles the Windows-side setup in a single run:
 - Installs the MicroClaw desktop client, managed skills, and Windows sandbox components; the WeChat plugin is not bundled or automatically installed
 - Adds Windows Defender exclusions, creates desktop shortcuts (including one-click Uninstall)
 
-After install, launch **MicroClaw** from the Start menu or the desktop shortcut. The desktop app auto-starts the Gateway.
+The installer only installs and validates files; it does not automatically launch **MicroClaw** or start the Gateway. After install, manually launch **MicroClaw** from the Start menu or the desktop shortcut. The desktop app auto-starts the Gateway.
+
+Installation and uninstallation use the same WebView interface. The compatibility UI, `--legacy-ui` switch, and `LEGACY_INSTALL_UI` environment override have been removed. If the interface cannot start, setup shows the dependency error and available log path, then exits without installing or uninstalling.
 
 App shortcuts and the Installed apps entry use the icon embedded in the installed desktop executable, not a separate `~/.openclaw/microclaw.ico` file. Rerunning the updated installer refreshes older icon references. To repair an existing shortcut manually, open **Properties → Change Icon → Browse** and select the executable shown in the shortcut's **Target** field (normally `%USERPROFILE%\.microclaw\MicroClawDesktop.exe`).
 
-To upgrade an existing installation, rerun the MicroClaw installer. It stops the Gateway, creates and verifies a full OpenClaw data/workspace backup, checks the backup's SHA-256, installs the exact target with npm at the existing prefix, and runs the new runtime's `doctor --fix --non-interactive` once. It does not run `openclaw update` or `update repair`, snapshot the old runtime's `node_modules`, or reject a data backup because its `ctime`/`mtime` changed. The installer starts the desktop/Gateway and requires HTTP 200 from `/health` before reporting success; it does not run additional channel-status or plugin RPC checks. Failed upgrades retain the backup and a resumable record without automatically restoring older user data. The legacy dependency helper refuses in-place upgrades. Old Node 22/23/25 configurations are advanced to a supported line. `stable` is an exact version pin, not npm's moving `latest` tag.
+To upgrade an existing installation, rerun the MicroClaw installer. It stops the Gateway, creates and verifies a full OpenClaw data/workspace backup, checks the backup's SHA-256, installs the exact target with npm at the existing prefix, and runs the new runtime's `doctor --fix --non-interactive` once. It does not run `openclaw update` or `update repair`, snapshot the old runtime's `node_modules`, or reject a data backup because its `ctime`/`mtime` changed. The installer validates the installed runtime without launching the desktop or Gateway; startup health checks run when the user manually opens MicroClaw. Failed upgrades retain the backup and a resumable record without automatically restoring older user data. The legacy dependency helper refuses in-place upgrades. Old Node 22/23/25 configurations are advanced to a supported line. `stable` is an exact version pin, not npm's moving `latest` tag.
 
 Desktop updates extract the archive into a staging directory and replace bundled directories as complete trees, rather than overlaying files. This removes obsolete native runtime files that would otherwise fail integrity checks, while preserving the installer's upgrade records, backups, and install state. Extraction or publication failures leave or restore the previous desktop payload; recovery files are retained if restoration fails.
 
@@ -410,11 +412,15 @@ are timed separately from resource preparation, desktop packaging, ZIP creation,
 manifest/payload hashing, PyInstaller, NSIS compression, setup extraction/verification,
 and signing. Failed builds also print the summary, marking the active stage as failed.
 
-During installation, the desktop's bundled OpenClaw runtime is prepared before
-plugin installation and service startup, with a separate extraction timeout.
-Plugin installation, peer-link repair, and compile-cache warmup use the same bundled
-host as the desktop. Final service validation still requires application readiness
-and a successful HTTP health check.
+During installation, the desktop's bundled OpenClaw runtime is extracted in a dedicated
+preparation mode, with a separate extraction timeout.
+Plugin installation and peer-link repair use the same bundled host as the desktop.
+Setup no longer starts a temporary Gateway to warm the compile cache.
+Setup validates the installed version and entry file before
+committing the installation transaction; validation or commit failures still roll back.
+Setup does not open the desktop app, start the Gateway, or wait for application
+readiness or HTTP health checks. Startup and service health checks run when the user
+manually opens MicroClaw.
 
 ### MSIX package
 
@@ -463,7 +469,7 @@ download-update path.
 Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `.ps1` files are retained as compatibility wrappers so existing commands keep working.
 
 ```
-├── deploy.py                    # Stable installer entry point (Tkinter GUI)
+├── deploy.py                    # WebView installer and uninstaller entry point
 ├── deployer/
 │   ├── config.py                # Configuration management (.env + YAML)
 │   ├── logger.py                # Thread-safe logger + in-memory ring buffer
