@@ -99,7 +99,7 @@ import { interceptWeixinRemoteApprovalMessage } from "../../plugins/openclaw-wei
 import { monitorWeixinProvider } from "../../plugins/openclaw-weixin/src/monitor/monitor.js";
 import { parseWeixinUpdatesJson } from "../../plugins/openclaw-weixin/src/api/provider-metadata.js";
 import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
-import { buildMicroclawWindowsNodeShellCommand } from "../src/openclaw-approval-replay-compat.mjs";
+import { explicitPowerShellCommand } from "./fixtures/explicit-powershell-command.mjs";
 import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc";
 import {
   commitMxcApprovalDecision,
@@ -162,7 +162,7 @@ function normalizedApproval(operation = operations[0][1], envelope = {}) {
   // Pinned wrapper plus source-derived replay of the unchanged host's declaration stripping/quoting.
   // This is not a captured historical Gateway payload. Windows uses the actual interpreter file hash.
   const input = `# [declare-access]rw:${root}[/declare-access]\npowershell -NoProfile -Command "${operation}"`;
-  const gatewayArgv = buildMicroclawWindowsNodeShellCommand(input, { SystemRoot: "C:\\Windows" });
+  const gatewayArgv = explicitPowerShellCommand(input, { SystemRoot: "C:\\Windows" });
   const cleanCommand = input.slice(input.indexOf("\n") + 1);
   const argv = gatewayArgv.map((argument) => (argument === input ? cleanCommand : argument));
   const approval = normalizeWindowsNodeMxcGatewayApproval(
@@ -200,6 +200,7 @@ function normalizedApproval(operation = operations[0][1], envelope = {}) {
           agentId: "main",
           sessionKey,
           declaredAccess: [{ access: "rw", path: root }],
+          commandConsent: { required: true, allowAlwaysAvailable: false },
         },
       },
       allowedDecisions: ["allow-once", "allow-always", "deny"],
@@ -447,12 +448,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
 
   const cases = operations.flatMap(([operation, script]) =>
     ["desktop", "wechat"].flatMap((origin) =>
-      ["allow-once", "allow-always", "deny"].map((decision) => [
-        operation,
-        script,
-        origin,
-        decision,
-      ]),
+      ["allow-once", "deny"].map((decision) => [operation, script, origin, decision]),
     ),
   );
 
@@ -471,6 +467,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
         executablePath: base.executablePath,
         executableSha256: base.executableSha256,
         declaredAccess: base.declaredAccess,
+        commandConsent: base.commandConsent,
       },
       "OWNER@IM.WECHAT",
     );
@@ -700,12 +697,10 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     if (origin === "desktop") await state.lifecycle.decide(decision, origin);
     else {
       const code = delivery.replyCode;
-      const option = decision === "allow-once" ? "1" : decision === "allow-always" ? "2" : "3";
+      const option = decision === "allow-once" ? "1" : "3";
       expect(await state.reply(`${option} ${code}`)).toBe(true);
     }
-    expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith(
-      decision === "allow-always" ? "allow-once" : decision,
-    );
+    expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith(decision);
     expect(state.resolved).toEqual([
       expect.objectContaining({
         requestId: state.approval.id,
@@ -717,16 +712,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(mocks.send).toHaveBeenCalledTimes(2);
     expect(mocks.send.mock.calls[1][0].text).toContain(`(${origin})`);
     expect(mocks.send.mock.calls[1][0].text).toContain("not command execution success");
-    expect(state.store.list()).toHaveLength(decision === "allow-always" ? 1 : 0);
-    if (decision === "allow-always") {
-      const record = state.store.list()[0];
-      expect(record.argv).toEqual([state.approval.executable, ...state.approval.arguments]);
-      expect(record.declaredAccess).toEqual(state.approval.declaredAccess);
-      expect(record.sessionKey).toBe(sessionKey);
-      expect(record.weixinConsentHash).toEqual(
-        origin === "wechat" ? expect.stringMatching(/^[a-f0-9]{64}$/) : undefined,
-      );
-    }
+    expect(state.store.list()).toHaveLength(0);
     expect(await state.reply("1", 44)).toBe(true);
     expect(state.resolveGateway).toHaveBeenCalledTimes(1);
   });
@@ -1031,7 +1017,8 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(state.resolved).toHaveLength(1);
     expect(state.resolved[0]).toMatchObject({ decision: "allow-once", origin: "desktop" });
     expect(state.store.list()).toEqual([]);
-    expect(mocks.send).toHaveBeenCalledTimes(2);
+    expect(mocks.send).toHaveBeenCalledTimes(3);
+    expect(mocks.send.mock.calls.at(-1)[0].text).toContain("not command execution success");
   });
 
   it("lets a phone decision win a concurrent Desktop denial, once", async () => {

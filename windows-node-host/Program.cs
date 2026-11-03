@@ -1,5 +1,6 @@
 using System.Text.Json;
 using OpenClaw.Shared;
+using OpenClaw.Shared.ExecApprovals;
 
 namespace MicroClaw.WindowsNodeHost;
 
@@ -9,6 +10,41 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        if (args is ["--remember-command", var consentDirectory])
+        {
+            try
+            {
+                SecureStateDirectory.Ensure(consentDirectory);
+                using var store = new ExecApprovalsStore(consentDirectory, NullLogger.Instance);
+                if (!string.Equals(ExecApprovalsStore.ResolveFilePath(consentDirectory),
+                        Path.Combine(consentDirectory, "exec-approvals.json"), StringComparison.OrdinalIgnoreCase))
+                    throw new HostPolicyException("consent-path-invalid", "Unexpected command consent store.");
+                using var document = JsonDocument.Parse(await Console.In.ReadLineAsync() ?? "");
+                var request = new NodeInvokeRequest
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Command = "system.run",
+                    Args = document.RootElement.Clone(),
+                };
+                var agent = request.Args.TryGetProperty("agentId", out var value) && value.ValueKind == JsonValueKind.String
+                    ? value.GetString() : null;
+                var defaults = store.ResolveReadOnly(agent).Defaults;
+                if (defaults.Security != ExecSecurity.Allowlist || defaults.Ask != ExecAsk.OnMiss)
+                    throw new HostPolicyException("consent-policy-changed", "Ask when needed is no longer active.");
+                var consent = new CommandConsent(store, NullLogger.Instance);
+                await consent.AuthorizeAsync(request, "allow-always");
+                if ((await consent.PrepareAsync(request)).Preview.Required)
+                    throw new HostPolicyException("consent-not-saved", "Windows Node did not persist a matching allowlist entry.");
+                Console.WriteLine("remembered");
+                return 0;
+            }
+            catch (Exception ex) when (ex is HostPolicyException or JsonException or IOException)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 2;
+            }
+        }
+
         if (args is ["--attestation"])
         {
             Console.WriteLine(JsonSerializer.Serialize(CwdPolicyAttestation.Current));
@@ -103,11 +139,14 @@ internal static class Program
             var policy = await HostPolicy.LoadVerifiedAsync(
                 bootstrap.PolicyPath,
                 bootstrap.PolicyFingerprint);
-            await MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
-                policy.WxcExecPath,
-                policy.RequestedStrength,
-                policy.EffectiveTier);
-            await AmbientAccessAssessment.RevalidateAsync(policy);
+            if (policy.RequestedStrength != "off")
+            {
+                await MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
+                    policy.WxcExecPath,
+                    policy.RequestedStrength,
+                    policy.EffectiveTier);
+                await AmbientAccessAssessment.RevalidateAsync(policy);
+            }
             SecureStateDirectory.Ensure(bootstrap.IdentityDirectory);
             var approvalDirectory = Path.GetDirectoryName(bootstrap.ApprovalsPath)
                 ?? throw new HostPolicyException(

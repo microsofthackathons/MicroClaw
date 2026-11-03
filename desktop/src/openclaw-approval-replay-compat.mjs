@@ -132,7 +132,7 @@ const PINNED_RELEASE_MODULES = {
     ],
   },
 };
-export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
+export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v2";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 30_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
@@ -404,18 +404,6 @@ export function describeWindowsNodeSystemRunResponseShape(raw) {
     `nestedPayload=${describe(nestedPayload)}`,
     `payloadJSON=${describe(outer?.payloadJSON ?? outerPayload?.payloadJSON)}`,
   ].join(" ");
-}
-
-export function buildMicroclawWindowsNodeShellCommand(command, env = process.env) {
-  const windowsRoot = (env.SystemRoot ?? env.WINDIR ?? "C:\\Windows").replace(/[\\/]+$/, "");
-  return [
-    `${windowsRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    command,
-  ];
 }
 
 export const PINNED_WEB_FETCH_HTTP_ONLY_SOURCE =
@@ -716,6 +704,8 @@ function normalizeSystemRunApprovalPlan(candidate) {
 \tconst cwdBinding = normalizeNullableString(candidate.cwdBinding);
 \tconst declaredAccess = normalizeMicroclawSystemRunDeclaredAccess(candidate.declaredAccess);
 \tconst providerInitialization = candidate.providerInitialization === void 0 ? void 0 : normalizePowerShellProviderInitialization(candidate.providerInitialization);
+\tconst commandConsent = candidate.commandConsent;
+\tif (commandConsent !== void 0 && (!hasMicroclawIdentity || !commandConsent || typeof commandConsent.required !== "boolean" || typeof commandConsent.allowAlwaysAvailable !== "boolean" || (!commandConsent.required && commandConsent.allowAlwaysAvailable))) return null;
 \tif (candidate.providerInitialization !== void 0 && !providerInitialization) return null;
 \tif (providerInitialization && !hasMicroclawIdentity) return null;
 \tif (argv.some(argument => argument.includes("[void]'microclaw.powershell-filesystem-scope.")) && !providerInitialization) return null;
@@ -735,6 +725,7 @@ function normalizeSystemRunApprovalPlan(candidate) {
 \t\t\texecutableSha256: executableSha256.toLowerCase(),
 \t\t\tcwdBinding,
 \t\t\tdeclaredAccess,
+\t\t\t...(commandConsent ? { commandConsent: { required: commandConsent.required, allowAlwaysAvailable: commandConsent.allowAlwaysAvailable } } : {}),
 \t\t\t...(typeof candidate.policyFingerprint === "string" && /^[a-f0-9]{64}$/.test(candidate.policyFingerprint) ? { policyFingerprint: candidate.policyFingerprint } : {}),
 \t\t\t...providerInitialization ? { providerInitialization } : {}
 \t\t} : {}
@@ -791,7 +782,7 @@ const PATCHED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.request": as
 \t\t\tconst rawPlan = params && typeof params === "object" && !Array.isArray(params) && params.systemRunPlan && typeof params.systemRunPlan === "object" && !Array.isArray(params.systemRunPlan) ? params.systemRunPlan : null;
 \t\t\tconst validationParams = rawPlan ? {
 \t\t\t\t...params,
-\t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess" && name !== "providerInitialization" && name !== "policyFingerprint"))
+\t\t\t\tsystemRunPlan: Object.fromEntries(Object.entries(rawPlan).filter(([name]) => name !== "executablePath" && name !== "executableSha256" && name !== "cwdBinding" && name !== "declaredAccess" && name !== "providerInitialization" && name !== "policyFingerprint" && name !== "commandConsent"))
 \t\t\t} : params;
 \t\t\tif (!assertValidParams(validationParams, validateExecApprovalRequestParams, "exec.approval.request", respond)) return;`;
 
@@ -1137,11 +1128,6 @@ export const PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE = `\tif (normalized.startsWi
 \t\tcommand
 \t];`;
 
-const PATCHED_BASH_TOOLS_WINDOWS_SHELL_SOURCE = `\tif (normalized.startsWith("win")) {
-\t\tconst buildMicroclawWindowsNodeShellCommand = ${buildMicroclawWindowsNodeShellCommand.toString()};
-\t\treturn buildMicroclawWindowsNodeShellCommand(command, process.env);
-\t}`;
-
 const PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatewayTool("node.invoke", { timeoutMs: params.invokeWaitMs }, params.invoke, callOptions);
 \t\tconst normalizeMicroclawNodeSystemRunResponse = ${normalizeWindowsNodeSystemRunResponse.toString()};
 \t\tconst describeMicroclawNodeSystemRunResponseShape = ${describeWindowsNodeSystemRunResponseShape.toString()};
@@ -1211,12 +1197,6 @@ export function patchPinnedOpenClawBashTools(source) {
     PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
     PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
     "node semantic pre-execution rejection classification",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
-    PATCHED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
-    "Windows node PowerShell selection",
   );
   patched = replaceExactlyOnce(
     patched,
@@ -1795,6 +1775,7 @@ export function computeWindowsNodeMxcApprovalProofSignature(secret, proof) {
     encodeField("planSha256", proof.planSha256.toLowerCase()),
     `issuedAtUnixMs=${proof.issuedAtUnixMs}`,
     `expiresAtUnixMs=${proof.expiresAtUnixMs}`,
+    encodeField("consentDecision", proof.consentDecision ?? "allow-once"),
   ];
   return createHmac("sha256", secret).update(fields.join("\n"), "utf8").digest("hex");
 }
@@ -1846,6 +1827,7 @@ export function createWindowsNodeMxcApprovalProofMinter(config, dependencies = {
         planSha256,
         issuedAtUnixMs,
         expiresAtUnixMs: issuedAtUnixMs + APPROVAL_PROOF_TTL_MS,
+        consentDecision: plan.commandConsent?.required === false ? "policy" : "allow-once",
       };
       return {
         ...proof,

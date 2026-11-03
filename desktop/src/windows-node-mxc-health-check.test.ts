@@ -47,6 +47,7 @@ describe("MXC health checks across live transitions", () => {
   it.each<WindowsNodeMxcLifecycleOperationDescriptor>([
     { kind: "update-model" },
     { kind: "apply-folder-policy" },
+    { kind: "update-command-consent" },
     { kind: "set-enabled", requestedMode: "full" },
   ])("ignores an intentionally revoked lease observed during $kind", async (descriptor) => {
     const f = fixture();

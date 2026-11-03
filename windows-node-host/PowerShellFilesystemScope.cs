@@ -13,11 +13,19 @@ internal sealed record PowerShellFilesystemInitialization(
 
 internal sealed record PreparedSystemRunPlan(
     [property: JsonPropertyName("argv")] IReadOnlyList<string> Argv,
-    [property: JsonPropertyName("cwd")] string? Cwd,
+    [property: JsonPropertyName("cwd")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    string? Cwd,
     [property: JsonPropertyName("commandText")] string CommandText,
-    [property: JsonPropertyName("commandPreview")] string? CommandPreview,
-    [property: JsonPropertyName("agentId")] string? AgentId,
-    [property: JsonPropertyName("sessionKey")] string? SessionKey,
+    [property: JsonPropertyName("commandPreview")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    string? CommandPreview,
+    [property: JsonPropertyName("agentId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    string? AgentId,
+    [property: JsonPropertyName("sessionKey")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    string? SessionKey,
     [property: JsonPropertyName("executablePath")] string ExecutablePath,
     [property: JsonPropertyName("executableSha256")] string ExecutableSha256,
     [property: JsonPropertyName("cwdBinding")] string CwdBinding,
@@ -27,7 +35,10 @@ internal sealed record PreparedSystemRunPlan(
     PowerShellFilesystemInitialization? ProviderInitialization,
     [property: JsonPropertyName("policyFingerprint")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? PolicyFingerprint = null);
+    string? PolicyFingerprint = null,
+    [property: JsonPropertyName("commandConsent")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    CommandConsentPreview? CommandConsent = null);
 
 internal static class PowerShellFilesystemScope
 {

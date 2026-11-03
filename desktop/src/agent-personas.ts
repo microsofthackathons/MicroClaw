@@ -12,6 +12,7 @@ import {
 import { hasAgentOwnedSkillMarker } from "./agent-owned-skills";
 import { readAgentRoster, writeAgentRoster } from "./agent-roster";
 import { AgentOwnershipConfig, ensureExplicitAgentOwnership } from "./agent-roster-ownership";
+import { updateWindowsNodeInstructions } from "./windows-node-command-instructions";
 
 type WorkspaceFileName = "AGENTS.md" | "IDENTITY.md" | "SOUL.md";
 type WorkspaceFiles = Partial<Record<WorkspaceFileName, string>>;
@@ -1123,6 +1124,7 @@ export function seedAgentPersonaWorkspaces(
   env: NodeJS.ProcessEnv = process.env,
   homeDir = os.homedir(),
   cwd = process.cwd(),
+  legacySoulAppendix = "",
 ): string[] {
   const updatedFiles: string[] = [];
   const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
@@ -1130,7 +1132,16 @@ export function seedAgentPersonaWorkspaces(
   for (const persona of AGENT_PERSONAS) {
     if (!persona.workspaceFiles || !configuredIds.has(persona.id)) continue;
     updatedFiles.push(
-      ...seedAgentPersonaWorkspace(config, stateDir, persona, soulAppendix, env, homeDir, cwd),
+      ...seedAgentPersonaWorkspace(
+        config,
+        stateDir,
+        persona,
+        soulAppendix,
+        env,
+        homeDir,
+        cwd,
+        legacySoulAppendix,
+      ),
     );
   }
 
@@ -1145,6 +1156,7 @@ export function seedAgentPersonaWorkspace(
   env: NodeJS.ProcessEnv = process.env,
   homeDir = os.homedir(),
   cwd = process.cwd(),
+  legacySoulAppendix = "",
 ): string[] {
   if (!persona.workspaceFiles) return [];
   const updatedFiles: string[] = [];
@@ -1162,6 +1174,14 @@ export function seedAgentPersonaWorkspace(
     const filePath = path.join(workspaceDir, filename);
     if (fs.existsSync(filePath)) {
       let existing = fs.readFileSync(filePath, "utf-8");
+      if (filename === "SOUL.md" && legacySoulAppendix) {
+        const updated = updateWindowsNodeInstructions(existing, legacySoulAppendix);
+        if (updated !== existing) {
+          fs.writeFileSync(filePath, updated, "utf-8");
+          updatedFiles.push(filePath);
+          existing = updated;
+        }
+      }
       if (persona.id === "main" && filename === "IDENTITY.md" && isUnconfiguredIdentity(existing)) {
         fs.writeFileSync(filePath, `${workspaceSource.trimEnd()}\n`, "utf-8");
         updatedFiles.push(filePath);
@@ -1289,7 +1309,7 @@ export function seedAgentPersonaWorkspace(
     updatedFiles.push(filePath);
   }
 
-  return updatedFiles;
+  return [...new Set(updatedFiles)];
 }
 
 function markdownSectionMarker(contents: string): string {

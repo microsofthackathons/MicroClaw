@@ -65,6 +65,7 @@ export class WindowsNodeMxcStatusCache<T> {
         this.hooks.publish(this.snapshot());
       });
     this.pending.set(key, operation);
+    this.hooks.publish(this.snapshot());
     return operation;
   }
 

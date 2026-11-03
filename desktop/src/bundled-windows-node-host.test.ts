@@ -82,7 +82,8 @@ describe("bundled Windows node host", () => {
           startOptions: options,
           livePolicyAuthority: authority,
           livePolicyPath: policyPath,
-          livePolicyBaseJson: '{"approvedRoots":[],"strictNoHostFallback":true}',
+          livePolicyBaseJson:
+            '{"approvedRoots":[],"strictNoHostFallback":true,"commandConsentMode":"ask-when-needed"}',
         });
         const stop = vi.spyOn(host, "stop");
         const request = vi.fn(async () => {
@@ -91,6 +92,10 @@ describe("bundled Windows node host", () => {
           expect(JSON.parse(policy.policyJson)).toMatchObject({
             strictNoHostFallback: true,
             approvedRoots: expect.arrayContaining([{ path: "C:\\Work", access: "ReadWrite" }]),
+            commandConsentMode: "ask-when-needed",
+            livePolicyEpoch: expect.stringMatching(
+              /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+            ),
           });
           return {
             ok: true,
@@ -123,6 +128,60 @@ describe("bundled Windows node host", () => {
       }
     },
   );
+  it("preserves live consent and folder changes and gives every revision a fresh epoch", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-live-consent-"));
+    try {
+      const host = createLeaseHost(root);
+      const process = Reflect.get(host, "process");
+      const authority = new WindowsNodeMxcPolicyAuthority(leaseProofContext.gatewayGeneration);
+      const policyPath = path.join(root, "live-policy.json");
+      Object.assign(host, {
+        startOptions: {
+          approvalProof: leaseProofContext,
+          gatewayGeneration: leaseProofContext.gatewayGeneration,
+        },
+        livePolicyAuthority: authority,
+        livePolicyPath: policyPath,
+        livePolicyBaseJson:
+          '{"approvedRoots":[],"strictNoHostFallback":true,"commandConsentMode":"ask-when-needed"}',
+      });
+      const revisions: Array<{
+        policyFingerprint: string;
+        approval: unknown;
+        policyJson: string;
+      }> = [];
+      const request = vi.fn(async () => {
+        const envelope = JSON.parse(readFileSync(policyPath, "utf8"));
+        const policy = JSON.parse(envelope.payload);
+        revisions.push(policy);
+        return {
+          ok: true,
+          payload: { revision: policy.revision, policyFingerprint: policy.policyFingerprint },
+        };
+      });
+      const gateway = { request } as BundledWindowsNodeGateway;
+      const stop = vi.spyOn(host, "stop");
+      await host.applyLiveCommandConsentPolicy(gateway, "allow-always");
+      await host.applyLiveFolderPolicy(gateway, [{ path: "C:\\Work", access: "rw" }]);
+      await host.applyLiveCommandConsentPolicy(gateway, "ask-when-needed");
+      const policies = revisions.map((revision) => JSON.parse(revision.policyJson));
+      expect(policies.map((policy) => policy.commandConsentMode)).toEqual([
+        "allow-always",
+        "allow-always",
+        "ask-when-needed",
+      ]);
+      expect(policies[2].approvedRoots).toEqual(policies[1].approvedRoots);
+      expect(policies[2].approvedRoots).toContainEqual({ path: "C:\\Work", access: "ReadWrite" });
+      expect(new Set(policies.map((policy) => policy.livePolicyEpoch)).size).toBe(3);
+      expect(new Set(revisions.map((revision) => revision.policyFingerprint)).size).toBe(3);
+      expect(revisions.map((revision) => revision.approval)).toEqual([null, null, null]);
+      expect(Reflect.get(host, "startOptions").commandConsentMode).toBe("ask-when-needed");
+      expect(Reflect.get(host, "process")).toBe(process);
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("ends bootstrap stdin and binds host lifetime to the Electron owner", () => {
     const end = vi.fn();
 
@@ -840,6 +899,114 @@ describe("bundled Windows node host", () => {
     ).toBe("owned");
   });
 
+  it("waits for the old connection to close and reconnects after node reapproval", async () => {
+    const nodeId = "d".repeat(64);
+    const commands = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const startOptions = { requestedStrength: "off" };
+    const initialProcess = { exitCode: null, signalCode: null };
+    const restartedProcess = { exitCode: null, signalCode: null };
+    const host = new BundledWindowsNodeHost();
+    Object.assign(host, { process: initialProcess, startOptions });
+    vi.spyOn(host, "ensureIdentityNodeId").mockReturnValue(nodeId);
+    const order: string[] = [];
+    const stop = vi.spyOn(host, "stop");
+    const start = vi.spyOn(host, "start").mockImplementation(async (options) => {
+      order.push("start");
+      Object.assign(host, { process: restartedProcess, startOptions: options });
+    });
+    let approved = false;
+    let nodeListCalls = 0;
+    const node = {
+      nodeId,
+      connected: true,
+      commands,
+      displayName: "MicroClaw Bundled Windows Node",
+    };
+    const gateway = {
+      request: vi.fn(async (method: string) => {
+        switch (method) {
+          case "device.pair.list":
+            return { pending: [] };
+          case "node.pair.list":
+            return {
+              pending: approved ? [] : [{ nodeId, requestId: "owned", commands }],
+            };
+          case "node.pair.approve":
+            approved = true;
+            order.push("approve");
+            return {};
+          case "node.list":
+            nodeListCalls += 1;
+            if (nodeListCalls === 1) {
+              order.push("previous connected");
+              return { nodes: [node] };
+            }
+            if (nodeListCalls === 2) {
+              order.push("previous closed");
+              return { nodes: [] };
+            }
+            order.push("new connected");
+            return { nodes: [node] };
+          default:
+            throw new Error(`Unexpected request: ${method}`);
+        }
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+
+    await host.ensurePaired(gateway);
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(order).toEqual([
+      "approve",
+      "previous connected",
+      "previous closed",
+      "start",
+      "new connected",
+    ]);
+  });
+
+  it("does not restart a stopped node while waiting for pairing reconnection", async () => {
+    const nodeId = "d".repeat(64);
+    const commands = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const host = new BundledWindowsNodeHost();
+    Object.assign(host, {
+      process: { exitCode: null, signalCode: null },
+      startOptions: { requestedStrength: "off" },
+    });
+    vi.spyOn(host, "ensureIdentityNodeId").mockReturnValue(nodeId);
+    const start = vi.spyOn(host, "start").mockResolvedValue();
+    let requested!: () => void;
+    let release!: (value: { nodes: [] }) => void;
+    const requestStarted = new Promise<void>((resolve) => (requested = resolve));
+    const response = new Promise<{ nodes: [] }>((resolve) => (release = resolve));
+    const gateway = {
+      request: vi.fn(async (method: string) => {
+        switch (method) {
+          case "device.pair.list":
+            return { pending: [] };
+          case "node.pair.list":
+            return { pending: [{ nodeId, requestId: "owned", commands }] };
+          case "node.pair.approve":
+            return {};
+          case "node.list":
+            requested();
+            return response;
+          default:
+            throw new Error(`Unexpected request: ${method}`);
+        }
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+
+    const pairing = host.ensurePaired(gateway);
+    await requestStarted;
+    host.stop(true);
+    release({ nodes: [] });
+
+    await expect(pairing).rejects.toThrow("changed while waiting for pairing reconnection");
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("selects only the exact bundled identity and ignores foreign same-name records", () => {
     const nodeId = "d".repeat(64);
     const foreignId = "e".repeat(64);
@@ -907,6 +1074,34 @@ describe("bundled Windows node host", () => {
         "d".repeat(64),
       ),
     ).toThrow(/unexpected command surface/);
+  });
+
+  it("accepts only the required reviewed command subset in regular mode", () => {
+    const nodeId = "d".repeat(64);
+    const required = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const node = (commands: string[]) => ({ nodeId, connected: true, commands });
+    const pending = (commands: string[]) => ({
+      pending: [{ ...node(commands), requestId: "regular-node" }],
+    });
+
+    expect(inspectBundledNodeList({ nodes: [node(required)] }, nodeId, false).node?.connected).toBe(
+      true,
+    );
+    expect(findBundledNodePairRequest(pending(required), nodeId, false)).toBe("regular-node");
+    expect(() => inspectBundledNodeList({ nodes: [node(required)] }, nodeId)).toThrow(
+      /unexpected command surface/,
+    );
+    expect(findBundledNodePairRequest(pending(required), nodeId)).toBeNull();
+    for (const commands of [
+      required.slice(0, -1),
+      [...required, "canvas.eval"],
+      [...required, required[0]],
+    ]) {
+      expect(() => inspectBundledNodeList({ nodes: [node(commands)] }, nodeId, false)).toThrow(
+        /unexpected command surface/,
+      );
+      expect(findBundledNodePairRequest(pending(commands), nodeId, false)).toBeNull();
+    }
   });
 
   it("rejects duplicate records for the exact bundled identity", () => {
@@ -1046,6 +1241,34 @@ describe("bundled Windows node host", () => {
     expect(environment.TEMP).toBe(String.raw`C:\MicroClaw\scratch`);
     expect(environment).not.toHaveProperty("APPDATA");
     expect(environment).not.toHaveProperty("USERPROFILE");
+  });
+
+  it("preserves ordinary user paths and batch commands only in regular mode", () => {
+    const environment = createBundledWindowsNodeEnvironment(
+      String.raw`C:\Windows`,
+      String.raw`C:\MicroClaw\scratch`,
+      {
+        PATH: String.raw`C:\Tools;C:\Windows\System32`,
+        PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        USERPROFILE: String.raw`C:\Users\Alice`,
+        APPDATA: String.raw`C:\Users\Alice\AppData\Roaming`,
+        OPENCLAW_STATE_DIR: String.raw`C:\private-state`,
+        MODEL_API_KEY: "not-forwarded",
+      },
+    );
+
+    expect(environment).toMatchObject({
+      PATH: String.raw`C:\Tools;C:\Windows\System32`,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      USERPROFILE: String.raw`C:\Users\Alice`,
+      APPDATA: String.raw`C:\Users\Alice\AppData\Roaming`,
+      TEMP: String.raw`C:\MicroClaw\scratch`,
+    });
+    expect(environment).not.toHaveProperty("OPENCLAW_STATE_DIR");
+    expect(environment).not.toHaveProperty("MODEL_API_KEY");
+    expect(createBundledWindowsNodeEnvironment(String.raw`C:\Windows`, "scratch", {}).PATHEXT).toBe(
+      ".COM;.EXE;.BAT;.CMD",
+    );
   });
 
   it("retries a transient Windows atomic replacement without weakening failures", async () => {

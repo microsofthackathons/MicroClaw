@@ -21,7 +21,7 @@ interface PermissionRequest {
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
   folderChanges?: Array<{ access: "ro" | "rw"; path: string }>;
   providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
-  containmentStrength?: "full" | "limited-dacl";
+  containmentStrength?: "off" | "full" | "limited-dacl";
   ambientAccess?: Array<{
     category: WindowsNodeMxcAmbientAccessCategory;
     status: "denied" | "read" | "read-write";
@@ -135,6 +135,7 @@ const allowsAlways = computed(
     (!props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always")),
 );
 const mxcScopeText = computed(() => {
+  if (props.request?.containmentStrength === "off") return t("perm.hostCommandScope");
   if (folderChanges.value.length > 0) return t("perm.mxcFolderGrantScope");
   if (isLimitedMxcApproval.value) {
     return allowsAlways.value ? t("perm.mxcLimitedScope") : t("perm.mxcLimitedScopeOnce");
@@ -164,6 +165,7 @@ const dialogIcon = computed(() => {
 });
 const dialogTitle = computed(() => {
   if (!props.request) return t("perm.title");
+  if (props.request.containmentStrength === "off") return t("perm.titleCommand");
   if (isLimitedMxcApproval.value) return t("perm.titleMxcLimited");
   if (isMxcApproval.value) return t("perm.titleMxc");
   if (props.request.type === "app-approval") return t("perm.titleApp");

@@ -20,6 +20,7 @@ import {
   seedAgentPersonaWorkspaces,
 } from "./agent-personas";
 import { readAgentRoster } from "./agent-roster";
+import { WINDOWS_NODE_ACCESS_INSTRUCTIONS } from "./windows-node-command-instructions";
 
 const tempDirs: string[] = [];
 
@@ -258,6 +259,7 @@ describe("agent personas", () => {
       id: "code-geek",
       name: "Code Geek",
     });
+
     const created = seedAgentPersonaWorkspaces(config, stateDir, "## Shared safety rule");
     const workspace = getAgentWorkspacePath(stateDir, persona);
     if (!workspace) throw new Error("Code Geek workspace is not configured");
@@ -273,6 +275,84 @@ describe("agent personas", () => {
     expect(fs.readFileSync(path.join(workspace, "IDENTITY.md"), "utf-8")).toContain(
       "Name: Code Geek",
     );
+  });
+
+  it("migrates generated command instructions in existing specialist workspaces", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const persona = getAgentPersona("code-geek")!;
+    const legacy = "## Pre-declaring File System Access\n\nLegacy PowerShell examples.\n";
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+    seedAgentPersonaWorkspaces(config, stateDir, legacy);
+    const soulPath = path.join(getAgentWorkspacePath(stateDir, persona)!, "SOUL.md");
+    fs.appendFileSync(soulPath, "\n## User notes\n\nPreserve these notes.\n");
+
+    const updated = seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      undefined,
+      undefined,
+      undefined,
+      legacy,
+    );
+    const soul = fs.readFileSync(soulPath, "utf-8");
+    expect(updated).toContain(soulPath);
+    expect(soul).toContain("Preserve these notes.");
+    expect(soul).toContain("## Windows Node command transport");
+    expect(soul).toContain("## PowerShell command quoting");
+    expect(soul).toContain("## PowerShell deletion in MXC");
+    expect(soul).not.toContain("Legacy PowerShell examples.");
+    expect(
+      seedAgentPersonaWorkspaces(
+        config,
+        stateDir,
+        WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+        undefined,
+        undefined,
+        undefined,
+        legacy,
+      ),
+    ).toEqual([]);
+  });
+
+  it("adds PowerShell quoting guidance to existing main and specialist workspaces", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const specialist = getAgentPersona("code-geek")!;
+    const main = getAgentPersona("main")!;
+    const existing = `## Pre-declaring File System Access
+
+My custom folder guidance.
+
+## Windows Node command transport
+
+My custom transport guidance.
+`;
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, specialist]);
+    seedAgentPersonaWorkspaces(config, stateDir, existing);
+
+    const updated = seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      undefined,
+      undefined,
+      undefined,
+      "Legacy generated appendix",
+    );
+    for (const persona of [main, specialist]) {
+      const soulPath = path.join(
+        resolveAgentPersonaWorkspace(config, stateDir, persona),
+        "SOUL.md",
+      );
+      const soul = fs.readFileSync(soulPath, "utf-8");
+      expect(updated).toContain(soulPath);
+      expect(soul).toContain("My custom folder guidance.");
+      expect(soul).toContain("My custom transport guidance.");
+      expect(soul).toContain("## PowerShell command quoting");
+      expect(soul).toContain("## PowerShell deletion in MXC");
+    }
   });
 
   it("seeds the Intel Analyst workspace with its research context", () => {

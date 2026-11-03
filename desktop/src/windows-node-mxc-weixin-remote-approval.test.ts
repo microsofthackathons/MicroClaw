@@ -157,6 +157,75 @@ function candidate(
   };
 }
 
+describe("WeChat stock CMD approvals", () => {
+  function cmdInput(payload: string, folders = false): WeixinRemoteApprovalCreateInput {
+    const request = input();
+    request.requests = [
+      {
+        approval: {
+          ...approval,
+          command: `cmd.exe /d /s /c ${payload.includes(" ") ? `"${payload}"` : payload}`,
+          executable: "cmd.exe",
+          executablePath: "C:\\Windows\\System32\\cmd.exe",
+          arguments: ["/d", "/s", "/c", payload],
+          declaredAccess: folders ? [{ access: "rw", path: "C:\\Work" }] : [],
+          folderChanges: folders ? [{ access: "rw", path: "C:\\Work" }] : undefined,
+          allowedDecisions: ["allow-once", "deny"],
+          commandConsent: { required: true, allowAlwaysAvailable: false },
+          policyFingerprint: request.security.policyFingerprint,
+          planSha256: "e".repeat(64),
+        },
+      },
+    ];
+    return request;
+  }
+
+  it("allows a single safe stock CMD command once, not as a durable phone approval", () => {
+    const request = cmdInput("git status");
+    const broker = configuredBroker();
+    const delivery = broker.createChallenge(request)!;
+
+    expect(delivery.text).toContain('cmd.exe /d /s /c "git status"');
+    expect(delivery.text).not.toContain("2: remember");
+    expect(
+      broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })),
+    ).toMatchObject({ status: "approved", decision: "allow-once" });
+  });
+
+  it("retains a single combined folder and command approval for a literal CMD operation", () => {
+    const request = cmdInput("mkdir C:\\Work\\child", true);
+    const broker = configuredBroker();
+    const delivery = broker.createChallenge(request)!;
+
+    expect(delivery.text).toContain("mkdir C:\\Work\\child");
+    expect(delivery.text).toContain("Add to RW: C:\\Work");
+    expect(delivery.text).toContain("command runs once");
+    expect(
+      broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })),
+    ).toMatchObject({ status: "approved", decision: "allow-once" });
+  });
+
+  it.each([
+    "git status & whoami",
+    "git status | whoami",
+    "git status\nwhoami",
+    "type C:\\Work\\%SECRET%",
+    "mkdir C:\\Work\\foo^&whoami",
+    "mkdir C:\\Other\\child",
+    "type C:\\Work\\credentials.txt",
+    "danger.bat",
+    "powershell -Command whoami",
+  ])("keeps unsupported or unsafe CMD text on Desktop: %s", (payload) => {
+    expect(configuredBroker().createChallenge(cmdInput(payload, true))).toBeNull();
+  });
+
+  it("does not present a write under a read-only declaration", () => {
+    const request = cmdInput("mkdir C:\\Work\\child", true);
+    request.requests[0].approval.declaredAccess[0].access = "ro";
+    expect(configuredBroker().createChallenge(request)).toBeNull();
+  });
+});
+
 describe("WeChat combined folder approvals", () => {
   function folderInput() {
     const request = input();
@@ -315,6 +384,56 @@ describe("WeChat combined folder approvals", () => {
       });
     },
   );
+});
+
+describe("WeChat Windows Node command consent", () => {
+  function upstreamConsentInput() {
+    const request = input();
+    request.requests = [
+      {
+        approval: {
+          ...approval,
+          commandConsent: { required: true, allowAlwaysAvailable: true },
+        },
+      },
+    ];
+    return request;
+  }
+
+  it("allows one-use approval without extending old conversation consent to agent-wide rules", () => {
+    const broker = configuredBroker();
+    const request = upstreamConsentInput();
+    const delivery = broker.createChallenge(request)!;
+
+    expect(delivery.text).not.toMatch(/2: remember/);
+    expect(
+      broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })),
+    ).toMatchObject({ status: "approved", decision: "allow-once" });
+  });
+
+  it("rejects a remote remember decision and binds the consent preview", () => {
+    const request = upstreamConsentInput();
+    const broker = configuredBroker();
+    const delivery = broker.createChallenge(request)!;
+    expect(
+      broker.resolveCandidate(
+        candidate(delivery.replyCode, {
+          requests: request.requests,
+          text: `2 ${delivery.replyCode}`,
+        }),
+      ).status,
+    ).not.toBe("approved");
+
+    const changed = upstreamConsentInput();
+    const anotherBroker = configuredBroker();
+    const anotherDelivery = anotherBroker.createChallenge(changed)!;
+    changed.requests[0].approval.commandConsent!.required = false;
+    expect(
+      anotherBroker.resolveCandidate(
+        candidate(anotherDelivery.replyCode, { requests: changed.requests }),
+      ).status,
+    ).toBe("rejected");
+  });
 });
 
 describe("WeChat remote approval broker", () => {
@@ -810,7 +929,9 @@ describe("WeChat remote approval broker", () => {
       expect(prompt).not.toContain(approval.executableSha256);
       expect(prompt).toContain(approval.executablePath);
       expect(prompt).toMatch(
-        locale === "zh-CN" ? /记住此会话的精确范围/ : /remember exact scope in this conversation/,
+        locale === "zh-CN"
+          ? /为此智能体记住命令和参数/
+          : /remember command and arguments for this agent across conversations/,
       );
       expect(prompt).toMatch(locale === "zh-CN" ? /完整技术细节见桌面/ : /full details: Desktop/);
     }

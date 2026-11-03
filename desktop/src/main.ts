@@ -250,6 +250,7 @@ import {
 import {
   WINDOWS_NODE_MXC_NODE_COMMANDS,
   applyWindowsNodeMxcGatewayPolicy,
+  applyWindowsNodeCommandPolicy,
   getWindowsNodeMxcIngressBackup,
   getWindowsNodeMxcGatewayPolicyState,
   isWindowsNodeMxcIngressReleased,
@@ -266,6 +267,11 @@ import {
   type WindowsNodeMxcGatewayApproval,
   projectWindowsNodeMxcApprovalForRenderer,
 } from "./windows-node-mxc";
+import {
+  applyCommandConsentChange,
+  parseCommandConsentMode,
+  type CommandConsentMode,
+} from "./command-consent";
 import { applyLiveFolderPolicy } from "./windows-node-mxc-live-folder-transaction";
 import { checkWindowsNodeMxcHealth } from "./windows-node-mxc-health-check";
 import { WindowsNodeMxcStatusCache, type MxcStatusSnapshot } from "./windows-node-mxc-status-cache";
@@ -318,10 +324,11 @@ import {
 import { startAfterGatewayRpcReady } from "./gateway-rpc-readiness";
 import { waitForGatewayHttpReadiness } from "./gateway-http-readiness";
 import {
+  updateWindowsNodeInstructions,
+  WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+} from "./windows-node-command-instructions";
+import {
   WindowsNodeMxcDurableApprovalStore,
-  canUseWindowsNodeMxcDurableApproval,
-  consumeExactDurableApproval,
-  durableApprovalIdentityFromGateway,
   type WindowsNodeMxcDurableApprovalInspection,
 } from "./windows-node-mxc-durable-approvals";
 import {
@@ -364,7 +371,6 @@ import {
   projectWeixinRemoteApprovalRuntimeConfiguration,
   WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
-  weixinRemoteApprovalConsentHash,
   weixinRemoteApprovalWireSourceRejection,
   type WeixinRemoteApprovalOwnerBinding,
   type WeixinRemoteApprovalConfiguration,
@@ -420,6 +426,7 @@ const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
 });
 
 const settingsStore = new Store<{
+  commandConsentMode: CommandConsentMode;
   language?: string;
   autoStart: boolean;
   minimizeToTray: boolean;
@@ -467,6 +474,7 @@ const settingsStore = new Store<{
 }>({
   name: "settings",
   defaults: {
+    commandConsentMode: "ask-when-needed",
     autoStart: false,
     minimizeToTray: false,
     themeMode: "light",
@@ -498,6 +506,7 @@ let gatewayPort = 0;
 let gatewayToken = "";
 const activeModelSessions = new Set<string>();
 let modelConfigurationMutationInProgress = false;
+let commandConsentUpdating = false;
 let windowsNodeMxcModelUpdateInProgress = false;
 let githubCopilotLoginInProgress = false;
 const modelChatKey = (key: string) =>
@@ -511,7 +520,11 @@ const localModelService = new LocalModelService({
   identity: modelGatewayIdentity,
   assertMutable: () => {
     sessionModelService.assertIdle();
-    if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
+    if (
+      modelConfigurationMutationInProgress ||
+      githubCopilotLoginInProgress ||
+      commandConsentUpdating
+    ) {
       throw new Error("A model configuration change is in progress");
     }
     if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
@@ -567,7 +580,11 @@ const sessionModelService = new SessionModelService({
   readConfig,
   assertMutable: () => {
     localModelService.assertIdle();
-    if (modelConfigurationMutationInProgress || githubCopilotLoginInProgress) {
+    if (
+      modelConfigurationMutationInProgress ||
+      githubCopilotLoginInProgress ||
+      commandConsentUpdating
+    ) {
       throw new Error("A model configuration change is in progress");
     }
     if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
@@ -586,6 +603,7 @@ const sessionModelService = new SessionModelService({
 async function withModelConfigurationMutation<T>(operation: () => Promise<T>): Promise<T> {
   localModelService.assertIdle();
   sessionModelService.assertIdle();
+  if (commandConsentUpdating) throw new Error("Command consent settings are being applied");
   if (modelConfigurationMutationInProgress) {
     throw new Error("A model configuration change is in progress");
   }
@@ -1015,6 +1033,7 @@ function assertWeixinQrLoginMutable(): void {
 async function beginWindowsNodeMxcWeixinAccountChange(
   kind: "login" | "disconnect",
 ): Promise<WindowsNodeMxcWeixinAccountSession | null> {
+  if (commandConsentUpdating) throw new Error("Command consent settings are being applied");
   if (!isWindowsNodeMxcDesired()) {
     assertWindowsNodeMxcConfigurationMutable();
     return null;
@@ -1025,7 +1044,13 @@ async function beginWindowsNodeMxcWeixinAccountChange(
   sessionModelService.assertIdle();
   if (activeModelSessions.size || githubCopilotLoginInProgress)
     throw new Error("Finish the current chat or sign-in before changing the WeChat account");
-  await requireEffectiveWindowsNodeMxc(true);
+  if (kind === "login") {
+    // QR entry only removes authority; fresh attestation gates the later ingress release.
+    if (!isApplicationServiceReady() || !captureGatewayReadinessCheckpoint()())
+      throw new Error("Wait for current-generation MXC readiness before connecting WeChat");
+  } else {
+    await requireEffectiveWindowsNodeMxc(true);
+  }
   if (getWindowsNodeMxcRequestedMode() !== requestedMode)
     throw new Error("Containment mode changed before the WeChat account change");
   const client = gwClient;
@@ -1297,9 +1322,13 @@ let weixinMutationLockRevision = 0;
 
 function getWeixinMutationLock() {
   return {
-    locked: isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress,
+    locked:
+      isWindowsNodeMxcDesired() ||
+      windowsNodeMxcSecurityTransitionInProgress ||
+      commandConsentUpdating,
     loginLocked:
       windowsNodeMxcSecurityTransitionInProgress ||
+      commandConsentUpdating ||
       Boolean(windowsNodeMxcWeixinLogin) ||
       (isWindowsNodeMxcDesired() && !isApplicationServiceReady()),
     revision: weixinMutationLockRevision,
@@ -1704,9 +1733,10 @@ function seedWorkspaceFiles(stateDir: string): void {
     // This patches existing SOUL.md files from older versions that lack it.
     try {
       const existing = fs.readFileSync(soulPath, "utf-8");
-      if (!existing.includes("## Pre-declaring File System Access")) {
-        fs.appendFileSync(soulPath, "\n" + DECLARE_ACCESS_SECTION, "utf-8");
-        console.log("[seed] Patched SOUL.md with Pre-declaring File System Access section");
+      const updated = updateWindowsNodeInstructions(existing, DECLARE_ACCESS_SECTION);
+      if (updated !== existing) {
+        fs.writeFileSync(soulPath, updated, "utf-8");
+        console.log("[seed] Updated generated Windows Node command instructions");
       }
     } catch (err) {
       console.warn("[seed] Failed to patch SOUL.md:", err);
@@ -1716,7 +1746,11 @@ function seedWorkspaceFiles(stateDir: string): void {
       if (!fs.existsSync(workspaceDir)) {
         fs.mkdirSync(workspaceDir, { recursive: true });
       }
-      fs.writeFileSync(soulPath, DEFAULT_SOUL_MD, "utf-8");
+      fs.writeFileSync(
+        soulPath,
+        updateWindowsNodeInstructions(DEFAULT_SOUL_MD, DECLARE_ACCESS_SECTION),
+        "utf-8",
+      );
       console.log(`[seed] Created default SOUL.md at ${soulPath}`);
     } catch (err) {
       console.warn("[seed] Failed to create SOUL.md:", err);
@@ -2391,6 +2425,29 @@ function assertPreparedWindowsNodeMxcContainment(
 }
 
 function isApplicationIngressReady(): boolean {
+  return !commandConsentUpdating && isExecutionRuntimeReady();
+}
+
+function isExecutionRuntimeReady(): boolean {
+  if (!isWindowsNodeMxcDesired()) {
+    const host = bundledWindowsNodeHost.status();
+    const proof = windowsNodeMxcApprovalProofContext;
+    return (
+      !windowsNodeMxcSecurityTransitionInProgress &&
+      gatewaySpawnedByUs &&
+      isManagedGatewayProcessAlive() &&
+      gatewayHttpReadyGeneration === gatewayGenerationId &&
+      !!proof &&
+      proof.gatewayGeneration === gatewayGenerationId &&
+      proof.nodeId === host.nodeId?.toLowerCase() &&
+      proof.policyFingerprint === host.policyFingerprint &&
+      host.processRunning &&
+      host.gatewayGeneration === gatewayGenerationId &&
+      host.requestedStrength === "off" &&
+      host.activationLease?.mode === "active" &&
+      host.activationLease.expiresAtUnixMs > Date.now()
+    );
+  }
   return (
     !windowsNodeMxcSecurityTransitionInProgress &&
     isWindowsNodeMxcIngressReleased(
@@ -2400,6 +2457,50 @@ function isApplicationIngressReady(): boolean {
       windowsNodeMxcActivationInProgress,
     )
   );
+}
+
+function captureHostCommandConsentCheckpoint(): () => boolean {
+  const gateway = gwClient;
+  const gatewayChild = gatewayProcess;
+  const connection = gateway?.connectionGeneration;
+  const generation = gatewayGenerationId;
+  const proof = windowsNodeMxcApprovalProofContext;
+  const host = bundledWindowsNodeHost.status();
+  const hostGeneration = bundledWindowsNodeGeneration;
+  return () => {
+    const currentHost = bundledWindowsNodeHost.status();
+    return (
+      !commandConsentUpdating &&
+      !explicitQuitRequested &&
+      !gatewayRestarting &&
+      !gatewayStopPromise &&
+      !windowsNodeMxcSecurityTransitionInProgress &&
+      !isWindowsNodeMxcDesired() &&
+      gatewaySpawnedByUs &&
+      !!gateway &&
+      gateway === gwClient &&
+      gateway.connected &&
+      gateway.connectionGeneration === connection &&
+      !!gatewayChild &&
+      gatewayChild === gatewayProcess &&
+      isManagedGatewayProcessAlive() &&
+      !!generation &&
+      gatewayGenerationId === generation &&
+      gatewayHttpReadyGeneration === generation &&
+      !!proof &&
+      proof === windowsNodeMxcApprovalProofContext &&
+      proof.gatewayGeneration === generation &&
+      hostGeneration === bundledWindowsNodeGeneration &&
+      host.processRunning &&
+      host.processId !== null &&
+      currentHost.processRunning &&
+      currentHost.processId === host.processId &&
+      currentHost.requestedStrength === "off" &&
+      currentHost.gatewayGeneration === generation &&
+      currentHost.nodeId?.toLowerCase() === proof.nodeId &&
+      currentHost.policyFingerprint === proof.policyFingerprint
+    );
+  };
 }
 
 function isApplicationServiceReady(): boolean {
@@ -2819,14 +2920,182 @@ async function applyRunningWindowsNodeMxcFolders(
   );
 }
 
+async function applyRunningCommandConsent(
+  previous: CommandConsentMode,
+  next: CommandConsentMode,
+): Promise<void> {
+  const client = gwClient;
+  const gateway = gatewayProcess;
+  const generation = gatewayGenerationId;
+  const connection = client?.connectionGeneration;
+  const hostGeneration = bundledWindowsNodeGeneration;
+  const initialHost = bundledWindowsNodeHost.status();
+  const initialProof = windowsNodeMxcApprovalProofContext;
+  const requestedMode = getWindowsNodeMxcRequestedMode();
+  const contained = requestedMode !== "off";
+  if (
+    !client?.connected ||
+    !gateway ||
+    !isApplicationServiceReady() ||
+    !initialProof ||
+    !initialHost.processRunning ||
+    initialHost.processId === null
+  ) {
+    throw new Error("Wait for the managed Gateway and Windows Node to become ready");
+  }
+
+  const assertCurrent = () => {
+    const host = bundledWindowsNodeHost.status();
+    const proof = windowsNodeMxcApprovalProofContext;
+    if (
+      client !== gwClient ||
+      !client.connected ||
+      client.connectionGeneration !== connection ||
+      explicitQuitRequested ||
+      gatewayRestarting ||
+      gatewayStopPromise ||
+      gateway !== gatewayProcess ||
+      !gatewaySpawnedByUs ||
+      !isManagedGatewayProcessAlive() ||
+      gatewayHttpReadyGeneration !== generation ||
+      gatewayGenerationId !== generation ||
+      bundledWindowsNodeGeneration !== hostGeneration ||
+      !host.processRunning ||
+      host.processId !== initialHost.processId ||
+      host.gatewayGeneration !== generation ||
+      host.requestedStrength !== requestedMode ||
+      host.nodeId?.toLowerCase() !== initialProof.nodeId ||
+      !proof ||
+      proof.gatewayGeneration !== generation ||
+      proof.nodeId !== initialProof.nodeId ||
+      proof.secretBase64 !== initialProof.secretBase64 ||
+      proof.readinessTransitionId !== initialProof.readinessTransitionId ||
+      proof.policyFingerprint !== host.policyFingerprint ||
+      getWindowsNodeMxcRequestedMode() !== requestedMode
+    ) {
+      throw new Error("The managed execution generation changed during the consent update");
+    }
+    return { host, proof };
+  };
+
+  const assertActiveLease = () => {
+    const { host, proof } = assertCurrent();
+    if (
+      host.activationLease?.mode !== "active" ||
+      host.activationLease.gatewayGeneration !== generation ||
+      host.activationLease.policyFingerprint !== proof.policyFingerprint ||
+      host.activationLease.expiresAtUnixMs <= Date.now()
+    ) {
+      throw new Error("The live command consent activation lease is not current");
+    }
+  };
+
+  await windowsNodeMxcLifecycleOperations.run(
+    { kind: "update-command-consent" },
+    () =>
+      applyCommandConsentChange(previous, next, {
+        lock: async () => {
+          setWindowsNodeMxcLifecycleState(
+            "updating-consent",
+            "Applying command consent without restarting the Gateway",
+          );
+          windowsNodeMxcActivationInProgress = contained;
+          const pending = allPendingWindowsNodeMxcGatewayApprovals();
+          closeWindowsNodeMxcIngress();
+          bundledWindowsNodeHost.revokeActivationLease();
+          const nodePending = bundledWindowsNodeHost.status().pendingApproval;
+          if (nodePending) bundledWindowsNodeHost.respond(nodePending.id, "deny");
+          for (const approval of pending) {
+            await approval.lifecycle.cancel("command-consent-changed");
+            if (client.connected && gatewayGenerationId === generation) {
+              await client.request("exec.approval.resolve", {
+                id: approval.request.id,
+                decision: "deny",
+              });
+            }
+          }
+        },
+        save: (mode) => settingsStore.set("commandConsentMode", mode),
+        publish: async (mode) => {
+          assertCurrent();
+          const proof = await bundledWindowsNodeHost.applyLiveCommandConsentPolicy(client, mode);
+          windowsNodeMxcApprovalProofContext = proof;
+          assertCurrent();
+          if (contained) {
+            if (
+              !windowsNodeMxcWeixinContext ||
+              windowsNodeMxcWeixinContext.gatewayGeneration !== generation
+            ) {
+              throw new Error("The live media policy context is unavailable");
+            }
+            windowsNodeMxcWeixinContext = {
+              ...windowsNodeMxcWeixinContext,
+              policyFingerprint: proof.policyFingerprint,
+            };
+          }
+          await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+        },
+        verify: async (mode) => {
+          assertActiveLease();
+          if (settingsStore.get("commandConsentMode") !== mode) {
+            throw new Error("The live command consent policy could not be verified");
+          }
+          if (contained) {
+            const status = await getWindowsNodeMxcStatus();
+            assertActiveLease();
+            if (!status.effectiveEnabled) {
+              throw new Error(
+                `Live command consent verification failed: ${status.blockers.join("; ")}`,
+              );
+            }
+          }
+        },
+        release: async () => {
+          assertActiveLease();
+          if (contained) releaseWindowsNodeMxcIngress(generation);
+          windowsNodeMxcActivationInProgress = false;
+          setWindowsNodeMxcLifecycleState(contained ? "active" : "idle");
+        },
+        failClosed: async (error) => {
+          closeWindowsNodeMxcIngress();
+          bundledWindowsNodeHost.revokeActivationLease();
+          windowsNodeMxcActivationInProgress = false;
+          await failClosedWindowsNodeMxc(
+            `Live command consent recovery failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        },
+      }),
+    {
+      beforeStart: () => {
+        beginWindowsNodeMxcLifecycleOperation();
+        commandConsentUpdating = true;
+        publishWeixinMutationLock();
+      },
+      afterSettled: () => {
+        endWindowsNodeMxcLifecycleOperation();
+        commandConsentUpdating = false;
+        publishWeixinMutationLock();
+      },
+    },
+  );
+}
+
 async function requireEffectiveWindowsNodeMxc(
   deferRelock = false,
   renewActivationLease = true,
 ): Promise<void> {
-  if (windowsNodeMxcSecurityTransitionInProgress) {
+  if (windowsNodeMxcSecurityTransitionInProgress || commandConsentUpdating) {
     throw new Error("Chat ingress is locked during the security-mode transition");
   }
-  if (!isWindowsNodeMxcDesired()) return;
+  if (!isWindowsNodeMxcDesired()) {
+    const isCurrent = captureHostCommandConsentCheckpoint();
+    if (!isCurrent()) throw new Error("Windows Node command consent is not ready");
+    if (renewActivationLease) await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+    if (!isCurrent()) throw new Error("Windows Node command consent changed before execution");
+    return;
+  }
   const relock = async (reason: string) => {
     const operation = failClosedWindowsNodeMxc(reason);
     if (deferRelock) {
@@ -2885,21 +3154,6 @@ async function requireEffectiveWindowsNodeMxc(
   }
 }
 
-function currentApprovalWeixinConsentHash(
-  approval: WindowsNodeMxcGatewayApproval,
-  source = findWeixinApprovalSource(windowsNodeMxcWeixinRemoteApprovalSources, approval),
-): string | null {
-  const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-  return exactWeixinApprovalSource(
-    configuration,
-    source,
-    approval,
-    readAuthenticatedWeixinWireOwner(getOpenClawStateDir()),
-  ) === null
-    ? weixinRemoteApprovalConsentHash(configuration)
-    : null;
-}
-
 async function handleWindowsNodeMxcGatewayApproval(
   approval: WindowsNodeMxcGatewayApproval,
   approvalGeneration: string,
@@ -2909,12 +3163,16 @@ async function handleWindowsNodeMxcGatewayApproval(
     await windowsNodeMxcApprovalResolutionCompletion;
   }
   const proofContext = windowsNodeMxcApprovalProofContext;
-  const folderChanges = getWindowsNodeMxcMissingFolders(approval, [
-    ...getBundledWindowsNodeFolders(),
-    ...(windowsNodeMxcWeixinContext
-      ? [{ path: windowsNodeMxcWeixinContext.inboundRoot, access: "ro" as const }]
-      : []),
-  ]);
+  if (!approval.commandConsent)
+    throw new Error("Windows Node did not return its command consent decision");
+  const folderChanges = isWindowsNodeMxcDesired()
+    ? getWindowsNodeMxcMissingFolders(approval, [
+        ...getBundledWindowsNodeFolders(),
+        ...(windowsNodeMxcWeixinContext
+          ? [{ path: windowsNodeMxcWeixinContext.inboundRoot, access: "ro" as const }]
+          : []),
+      ])
+    : [];
   if (
     approval.policyFingerprint &&
     approval.policyFingerprint !== proofContext?.policyFingerprint
@@ -2940,79 +3198,22 @@ async function handleWindowsNodeMxcGatewayApproval(
     }
     approval = { ...approval, folderChanges, allowedDecisions: ["deny", "allow-once"] };
   }
-  let identity = proofContext
-    ? durableApprovalIdentityFromGateway(approval, proofContext.policyFingerprint)
-    : null;
-  let durable =
-    folderChanges.length === 0 &&
-    canUseWindowsNodeMxcDurableApproval(getWindowsNodeMxcRequestedMode(), identity)
-      ? getWindowsNodeMxcDurableApprovalStore().findExact(identity)
-      : null;
-  if (!durable && identity && folderChanges.length === 0) {
-    const consentHash = currentApprovalWeixinConsentHash(approval);
-    if (consentHash) {
-      identity = { ...identity, weixinConsentHash: consentHash };
-      durable = getWindowsNodeMxcDurableApprovalStore().findExact(identity);
-    }
-  }
-  if (durable) {
-    try {
-      const consumed = await withWindowsNodeMxcApprovalResolution(async () => {
-        await requireEffectiveWindowsNodeMxc(true);
-        return withWindowsNodeMxcDurableApprovalLock(async () => {
-          if (!identity) return false;
-          return consumeExactDurableApproval(
-            getWindowsNodeMxcDurableApprovalStore(),
-            identity,
-            durable.id,
-            async () => {
-              if (
-                approvalGeneration !== gatewayGenerationId ||
-                proofContext !== windowsNodeMxcApprovalProofContext ||
-                windowsNodeMxcSecurityTransitionInProgress ||
-                proofContext !== windowsNodeMxcApprovalProofContext ||
-                windowsNodeMxcSecurityTransitionInProgress ||
-                !isWindowsNodeMxcIngressReleased(
-                  true,
-                  gatewayGenerationId,
-                  windowsNodeMxcIngressGeneration,
-                  windowsNodeMxcActivationInProgress,
-                ) ||
-                !gwClient?.connected
-              ) {
-                throw new Error("The Gateway approval belongs to a stale security generation");
-              }
-              if (
-                identity.weixinConsentHash &&
-                currentApprovalWeixinConsentHash(approval) !== identity.weixinConsentHash
-              ) {
-                throw new Error("The exact WeChat consent changed before durable approval use");
-              }
-              await gwClient.request("exec.approval.resolve", {
-                id: approval.id,
-                decision: "allow-once",
-              });
-            },
-            (error) =>
-              console.error("[windows-node-mxc] Could not update durable approval usage:", error),
-          );
-        });
-      });
-      if (consumed) return;
-    } catch (error) {
-      console.error("[windows-node-mxc] Exact durable approval could not be consumed:", error);
-    }
+  if (folderChanges.length === 0 && approval.commandConsent?.required === false) {
+    await withWindowsNodeMxcApprovalResolution(async () => {
+      await requireEffectiveWindowsNodeMxc(true);
+      if (
+        approvalGeneration !== gatewayGenerationId ||
+        proofContext !== windowsNodeMxcApprovalProofContext ||
+        !isApplicationIngressReady() ||
+        !gwClient?.connected
+      )
+        throw new Error("Command consent belongs to a stale execution generation");
+      await gwClient.request("exec.approval.resolve", { id: approval.id, decision: "allow-once" });
+    });
+    return;
   }
 
-  if (
-    approvalGeneration !== gatewayGenerationId ||
-    !isWindowsNodeMxcIngressReleased(
-      true,
-      gatewayGenerationId,
-      windowsNodeMxcIngressGeneration,
-      windowsNodeMxcActivationInProgress,
-    )
-  ) {
+  if (approvalGeneration !== gatewayGenerationId || !isApplicationIngressReady()) {
     if (gwClient?.connected) {
       await gwClient
         .request("exec.approval.resolve", { id: approval.id, decision: "deny" })
@@ -3074,6 +3275,7 @@ async function handleWindowsNodeMxcGatewayApproval(
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
     ...projectWindowsNodeMxcApprovalForRenderer(rendererApproval, approvalGeneration),
     commandText: rendererApproval.command,
+    containmentStrength: getWindowsNodeMxcRequestedMode(),
     approvalLayer: "gateway",
     expiresAtUnixMs,
     remoteDelivery: pending.remoteDelivery,
@@ -3192,6 +3394,7 @@ function publishPendingWeixinRemoteDelivery(
   sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
     ...projectWindowsNodeMxcApprovalForRenderer(pending.request, pending.gatewayGeneration),
     commandText: pending.request.command,
+    containmentStrength: getWindowsNodeMxcRequestedMode(),
     approvalLayer: "gateway",
     expiresAtUnixMs: pending.expiresAtUnixMs,
     remoteDelivery: pending.remoteDelivery,
@@ -3269,6 +3472,7 @@ function getPendingWindowsNodeMxcApprovalForRenderer() {
     return {
       ...projectWindowsNodeMxcApprovalForRenderer(approval, pending.gatewayGeneration),
       commandText: approval.command,
+      containmentStrength: getWindowsNodeMxcRequestedMode(),
       approvalLayer: "gateway" as const,
       expiresAtUnixMs: pending.expiresAtUnixMs,
       remoteDelivery: pending.remoteDelivery,
@@ -3326,6 +3530,9 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
   ) {
     throw new Error("The exact WeChat approval owner is no longer available");
   }
+  if (origin === "wechat" && decision === "allow-always") {
+    throw new Error("Remembering commands requires a desktop decision");
+  }
   const decisionAtUnixMs = Date.now();
   console.info(
     `[windows-node-mxc-approval-timing] stage=operator-decision layer=gateway unixMs=${decisionAtUnixMs} promptToDecisionMs=${Math.max(0, decisionAtUnixMs - gatewayApproval.receivedAtUnixMs)} decision=${decision}`,
@@ -3375,12 +3582,7 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
       findPendingWindowsNodeMxcGatewayApproval(requestId) !== gatewayApproval ||
       approvalGeneration !== gatewayGenerationId ||
       proofContext !== windowsNodeMxcApprovalProofContext ||
-      !isWindowsNodeMxcIngressReleased(
-        true,
-        gatewayGenerationId,
-        windowsNodeMxcIngressGeneration,
-        windowsNodeMxcActivationInProgress,
-      ) ||
+      !isApplicationIngressReady() ||
       !client?.connected ||
       client !== gwClient
     ) {
@@ -3408,23 +3610,11 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
     ) {
       throw new Error("The exact WeChat approval owner changed before resolution");
     }
-    let durableIdentity =
-      decision === "allow-always"
-        ? durableApprovalIdentityFromGateway(
-            gatewayApproval.request,
-            proofContext.policyFingerprint,
-          )
-        : null;
-    if (durableIdentity && origin === "wechat") {
-      const consentHash = currentApprovalWeixinConsentHash(
-        gatewayApproval.request,
-        gatewayApproval.remoteSource ?? undefined,
-      );
-      if (!consentHash) throw new Error("The exact WeChat consent is unavailable");
-      durableIdentity = { ...durableIdentity, weixinConsentHash: consentHash };
-    }
-    if (decision === "allow-always" && !durableIdentity) {
-      throw new Error("This command is not eligible for an exact durable MXC approval");
+    if (
+      decision === "allow-always" &&
+      !gatewayApproval.request.commandConsent?.allowAlwaysAvailable
+    ) {
+      throw new Error("Windows Node does not support remembering this command");
     }
     if (decision !== "deny" && gatewayApproval.request.folderChanges?.length) {
       if (
@@ -3510,28 +3700,13 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
           }
         }
       },
-      persistDurable: durableIdentity
-        ? async () => {
-            if (!durableIdentity) throw new Error("The exact durable identity is unavailable");
-            if (
-              durableIdentity.weixinConsentHash &&
-              currentApprovalWeixinConsentHash(
-                gatewayApproval.request,
-                gatewayApproval.remoteSource ?? undefined,
-              ) !== durableIdentity.weixinConsentHash
-            ) {
-              throw new Error(
-                "The exact WeChat consent changed before durable approval persistence",
-              );
-            }
-            await withWindowsNodeMxcDurableApprovalLock(() =>
-              getWindowsNodeMxcDurableApprovalStore().add(durableIdentity),
-            );
-          }
-        : null,
+      persistDurable:
+        decision === "allow-always"
+          ? () => bundledWindowsNodeHost.rememberCommand(gatewayApproval.request)
+          : null,
       persistenceError: (error) =>
         console.error(
-          "[windows-node-mxc] Exact durable approval persistence failed after accepted one-use decision:",
+          "[command-consent] Windows Node allowlist persistence failed after accepted one-use decision:",
           error,
         ),
     });
@@ -3544,7 +3719,11 @@ function assertWindowsNodeMxcConfigurationMutable(): void {
   if (activeModelSessions.size > 0) {
     throw new Error("Wait for the active chat response before changing Gateway configuration");
   }
-  if (isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress) {
+  if (
+    isWindowsNodeMxcDesired() ||
+    windowsNodeMxcSecurityTransitionInProgress ||
+    commandConsentUpdating
+  ) {
     throw new Error(
       "This Gateway configuration is locked while Windows Node + MXC mode is enabled",
     );
@@ -4129,8 +4308,8 @@ function writeConfigTextAtomically(contents: string): void {
 
 function failForExternalGateway(port: number): never {
   const message =
-    `Agent or owned-skill state requires reconciliation, but Gateway port ${port} ` +
-    "is owned by another process. Stop that Gateway and retry so MicroClaw can apply it safely.";
+    `Gateway port ${port} is owned by another process. ` +
+    "Stop that Gateway and retry so MicroClaw can enforce command consent safely.";
   setGatewayStatus("failed");
   mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
   throw new Error(message);
@@ -4145,10 +4324,11 @@ function seedSpecialistAgentWorkspaces(
   const seededFiles = seedAgentPersonaWorkspaces(
     config,
     stateDir,
-    DECLARE_ACCESS_SECTION,
+    WINDOWS_NODE_ACCESS_INSTRUCTIONS,
     gatewayEnvironment,
     os.homedir(),
     path.dirname(entryPath),
+    DECLARE_ACCESS_SECTION,
   );
   if (seededFiles.length > 0) {
     console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
@@ -4318,10 +4498,11 @@ async function addCatalogAgent(
       config,
       stateDir,
       persona,
-      DECLARE_ACCESS_SECTION,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
       gatewayEnvironment,
       os.homedir(),
       path.dirname(entryPath),
+      DECLARE_ACCESS_SECTION,
     );
     persistAgentPersonas(config);
     let applyResult: "hot-reloaded" | "restarted" | "timed-out";
@@ -5084,9 +5265,24 @@ async function stopGatewayForSecurityTransition(
 }
 
 async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
-  if (!isWindowsNodeMxcDesired()) return;
   if (windowsNodeMxcFailClosedPromise) return windowsNodeMxcFailClosedPromise;
   const failClosed = (async () => {
+    if (!isWindowsNodeMxcDesired()) {
+      const message = `Windows Node command consent stopped: ${reason}`;
+      closeWindowsNodeMxcIngress();
+      bundledWindowsNodeHost.revokeActivationLease();
+      console.error(`[command-consent] ${message}`);
+      sendToWindow(mainWindow, "gateway:service-loading");
+      sendToWindow(mainWindow, "gateway:log", `[error] ${message}`);
+      sendToWindow(mainWindow, "gateway:ws-disconnected", message);
+      gwClient?.stop();
+      try {
+        await stopGatewayProcessGracefully(message);
+      } finally {
+        setGatewayStatus("failed");
+      }
+      return;
+    }
     closeWindowsNodeMxcIngress();
     setWindowsNodeMxcLifecycleState("locked", reason);
     sendToWindow(mainWindow, "gateway:service-loading");
@@ -5212,6 +5408,7 @@ function captureGatewayReadinessCheckpoint(): () => boolean {
     !explicitQuitRequested &&
     !gatewayStopPromise &&
     !gatewayRestarting &&
+    !commandConsentUpdating &&
     !windowsNodeMxcFailClosedPromise &&
     !windowsNodeMxcSecurityTransitionInProgress &&
     !windowsNodeMxcActivationInProgress &&
@@ -5261,6 +5458,28 @@ function startHealthMonitor(): void {
       }
     }
 
+    if (!isWindowsNodeMxcDesired() && isManagedGatewayProcessAlive() && gwClient?.connected) {
+      try {
+        const isHostCurrent = captureHostCommandConsentCheckpoint();
+        if (!isHostCurrent()) throw new Error("Managed Gateway or Windows Node identity changed");
+        await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+        if (!isHostCurrent()) {
+          if (!isCurrent()) return;
+          throw new Error("Managed Gateway or Windows Node identity changed during renewal");
+        }
+      } catch (error) {
+        if (isCurrent()) {
+          try {
+            await failClosedWindowsNodeMxc(
+              `Host authorization renewal failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          } catch (failure) {
+            console.error("[command-consent] Fail-closed recovery failed:", failure);
+          }
+        }
+        return;
+      }
+    }
     const alive = await checkExistingGateway(gatewayPort);
     if (!isCurrent()) return;
     if (alive) {
@@ -5512,6 +5731,25 @@ async function startGatewayInner(
   logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   let config = readConfig();
+  if (config === null && !fs.existsSync(getConfigPath())) {
+    console.info("[gateway] Waiting for initial configuration before starting command consent");
+    setGatewayStatus("stopped");
+    return;
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("A valid OpenClaw configuration is required to start command consent");
+  }
+  const configuredPort = config?.gateway?.port || DEFAULT_PORT;
+  const alreadyRunning = await checkExistingGateway(configuredPort);
+  if (
+    (alreadyRunning || (await isGatewayPortOccupied(configuredPort))) &&
+    (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())
+  ) {
+    if (performanceFixture) {
+      throw new Error("Performance fixture refuses to reuse or stop an external Gateway");
+    }
+    failForExternalGateway(configuredPort);
+  }
   if (isWindowsNodeMxcDesired()) {
     const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
     const policyState = getWindowsNodeMxcGatewayPolicyState(config, nodeId);
@@ -5543,9 +5781,15 @@ async function startGatewayInner(
       setGatewayStatus("failed");
       return;
     }
+  } else {
+    const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId(false);
+    const pinned = applyWindowsNodeCommandPolicy(config, nodeId);
+    if (JSON.stringify(config) !== JSON.stringify(pinned))
+      writeConfigTextAtomically(JSON.stringify(pinned, null, 2));
+    config = pinned;
+    settingsStore.set("windowsNodeMxcNodeId", nodeId);
   }
   gatewayToken = config?.gateway?.auth?.token || "";
-  const configuredPort = config?.gateway?.port || DEFAULT_PORT;
   gatewayPort = configuredPort;
   const stateDir = getOpenClawStateDir();
   let nodePath: string;
@@ -5612,7 +5856,6 @@ async function startGatewayInner(
   // Check ownership before any agent-owned skill filesystem mutation. An
   // externally managed Gateway may observe the shared state directory.
   startupTiming.completeMicroclawPhase("configuration-and-personas");
-  const alreadyRunning = await checkExistingGateway(configuredPort);
   if (performanceFixture && alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null)) {
     throw new Error("Performance fixture refuses to reuse or stop an external Gateway");
   }
@@ -5620,6 +5863,7 @@ async function startGatewayInner(
   logStartupTiming("gateway-existing-check-complete");
   const externallyManagedGateway =
     alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
+  if (externallyManagedGateway) failForExternalGateway(configuredPort);
   logStartupTiming("weixin-runtime-start");
   if (!alreadyRunning) {
     const bundledWeixinPluginRoot = resolveBundledWeixinPluginRoot(
@@ -5782,7 +6026,6 @@ async function startGatewayInner(
       console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
       startupTiming.reused(gatewayGenerationId);
       currentGatewayStartupTiming = startupTiming;
-      gatewaySpawnedByUs = false;
       postSpawnChannelCheck = null;
       setGatewayStatus("running");
       connectGatewayWs();
@@ -5799,12 +6042,7 @@ async function startGatewayInner(
     if (gatewaySpawnedByUs && gatewayProcess) {
       await stopGatewayProcessGracefully("Replacing managed Gateway during startup");
     } else if (await isGatewayPortOccupied(configuredPort)) {
-      if (performanceFixture) {
-        throw new Error(
-          "Performance fixture Gateway port is occupied; no external process was stopped",
-        );
-      }
-      stopGatewayProcess("Cleaning stale Gateway listener before startup");
+      failForExternalGateway(configuredPort);
     }
     const portReleaseDeadline = Date.now() + 8_000;
     while (await isGatewayPortOccupied(configuredPort)) {
@@ -5902,38 +6140,40 @@ async function startGatewayInner(
         : null;
     if (windowsNodeMxcDesired) reconcileWindowsNodeMxcFolders(settingsStore);
     const nextGatewayGenerationId = randomUUID();
-    const nextApprovalProofContext = windowsNodeMxcDesired
-      ? bundledWindowsNodeHost.createApprovalProofContext(
-          nextGatewayGenerationId,
-          settingsStore.get("windowsNodeMxcNodeId"),
-          getBundledWindowsNodeFolders(),
-          stateDir,
-          windowsNodeMxcReadinessTransitionId ?? randomUUID(),
-          windowsNodeMxcRequestedMode === "limited-dacl" ? "limited-dacl" : "full",
-          containmentPreparation?.effectiveTier ?? "",
-          containmentPreparation?.ambientAccess ?? null,
-        )
-      : null;
+    const nextApprovalProofContext = bundledWindowsNodeHost.createApprovalProofContext(
+      nextGatewayGenerationId,
+      settingsStore.get("windowsNodeMxcNodeId"),
+      getBundledWindowsNodeFolders(),
+      stateDir,
+      windowsNodeMxcReadinessTransitionId ?? randomUUID(),
+      windowsNodeMxcRequestedMode,
+      windowsNodeMxcDesired ? (containmentPreparation?.effectiveTier ?? "") : "host",
+      containmentPreparation?.ambientAccess ?? null,
+      settingsStore.get("commandConsentMode"),
+    );
     getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
     const livePolicyEnvironment = nextApprovalProofContext
       ? await bundledWindowsNodeHost.initializeLivePolicy(nextApprovalProofContext, {
           folders: getBundledWindowsNodeFolders(),
           openClawStateRoot: stateDir,
-          requestedStrength:
-            windowsNodeMxcRequestedMode === "limited-dacl" ? "limited-dacl" : "full",
-          effectiveTier: containmentPreparation?.effectiveTier ?? "",
+          requestedStrength: windowsNodeMxcRequestedMode,
+          effectiveTier: windowsNodeMxcDesired
+            ? (containmentPreparation?.effectiveTier ?? "")
+            : "host",
           ambientAccess: containmentPreparation?.ambientAccess ?? null,
+          commandConsentMode: settingsStore.get("commandConsentMode"),
         })
       : {};
-    const nextWeixinContext = nextApprovalProofContext
-      ? prepareWindowsNodeMxcWeixinContext(
-          app.getPath("userData"),
-          nextApprovalProofContext.gatewayGeneration,
-          nextApprovalProofContext.policyFingerprint,
-          getBundledWindowsNodeFolders(),
-          true,
-        )
-      : null;
+    const nextWeixinContext =
+      windowsNodeMxcDesired && nextApprovalProofContext
+        ? prepareWindowsNodeMxcWeixinContext(
+            app.getPath("userData"),
+            nextApprovalProofContext.gatewayGeneration,
+            nextApprovalProofContext.policyFingerprint,
+            getBundledWindowsNodeFolders(),
+            true,
+          )
+        : null;
     closeWindowsNodeMxcWeixinRemoteApproval("gateway-generation-change");
     if (nextWeixinContext?.remoteApprovalPipe && nextWeixinContext.remoteApprovalToken) {
       const server = new WindowsNodeMxcWeixinRemoteApprovalServer(
@@ -6073,7 +6313,7 @@ async function startGatewayInner(
     }
     gwEnv.MICROCLAW_FS_SAFE_COMPAT = "1";
     gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
-    if (windowsNodeMxcDesired || cronResumeFence) {
+    if (nextApprovalProofContext || cronResumeFence) {
       if (!fs.existsSync(approvalCompatPath)) {
         const msg = `[error] Windows Node + MXC compatibility preload is missing: ${approvalCompatPath}`;
         console.error(msg);
@@ -6082,7 +6322,7 @@ async function startGatewayInner(
         rollbackStartupAgentSkills();
         return;
       }
-      if (windowsNodeMxcDesired) {
+      if (nextApprovalProofContext) {
         gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
         if (!nextApprovalProofContext) {
           throw new Error("Windows Node + MXC approval proof context is unavailable");
@@ -6103,7 +6343,7 @@ async function startGatewayInner(
       pathToFileURL(fsSafeCompatPath).href,
       "--import",
       pathToFileURL(localModelCompatPath).href,
-      ...(windowsNodeMxcDesired || cronResumeFence
+      ...(nextApprovalProofContext || cronResumeFence
         ? ["--import", pathToFileURL(approvalCompatPath).href]
         : []),
       entryPath,
@@ -6396,7 +6636,7 @@ function connectGatewayWs(): void {
   gwClient = new GatewayClient({
     port: gatewayPort,
     token: gatewayToken,
-    supportsExecApprovals: isWindowsNodeMxcDesired(),
+    supportsExecApprovals: true,
     beforeChatSend: requireEffectiveWindowsNodeMxc,
     onConnected: () => {
       if (explicitQuitRequested || gatewayStopPromise) return;
@@ -6408,7 +6648,7 @@ function connectGatewayWs(): void {
           console.error("[cron] MXC resume acknowledgement failed:", error);
         });
       }
-      if (isWindowsNodeMxcDesired()) {
+      {
         const gateway = gwClient;
         if (gateway && !bundledWindowsNodeStartup) {
           const gatewayGeneration = gatewayProcess;
@@ -6431,10 +6671,9 @@ function connectGatewayWs(): void {
             return;
           }
           const hostGeneration = ++bundledWindowsNodeGeneration;
-          const expectedGatewayPolicy = getWindowsNodeMxcGatewayPolicyState(
-            readConfig(),
-            approvalProof.nodeId,
-          );
+          const expectedGatewayPolicy = isWindowsNodeMxcDesired()
+            ? getWindowsNodeMxcGatewayPolicyState(readConfig(), approvalProof.nodeId)
+            : "host";
           if (expectedGatewayPolicy === "drift") {
             void failClosedWindowsNodeMxc(
               "Gateway policy drifted before authenticated RPC readiness",
@@ -6449,18 +6688,32 @@ function connectGatewayWs(): void {
             uiLocale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
             openClawStateRoot: getOpenClawStateDir(),
             folders: getBundledWindowsNodeFolders(),
-            requestedStrength:
-              getWindowsNodeMxcRequestedMode() === "limited-dacl"
-                ? ("limited-dacl" as const)
-                : ("full" as const),
-            effectiveTier: windowsNodeMxcCurrentEffectiveTier ?? "",
-            ambientAccess: windowsNodeMxcCurrentAmbientAccess,
+            requestedStrength: getWindowsNodeMxcRequestedMode(),
+            effectiveTier: isWindowsNodeMxcDesired()
+              ? (windowsNodeMxcCurrentEffectiveTier ?? "")
+              : "host",
+            ambientAccess: isWindowsNodeMxcDesired() ? windowsNodeMxcCurrentAmbientAccess : null,
+            commandConsentMode: settingsStore.get("commandConsentMode"),
             approvalProof,
             onDiagnostic: (
               event: string,
               details: Record<string, string | number | boolean | null>,
             ) => {
               electronLifecycleDiagnostics.log(`bundled-node-${event}`, details);
+              if (
+                (event === "exit" || event === "spawn-error") &&
+                bundledWindowsNodeGeneration === hostGeneration &&
+                gatewayProcess === gatewayGeneration &&
+                !windowsNodeMxcSecurityTransitionInProgress &&
+                !commandConsentUpdating &&
+                !explicitQuitRequested &&
+                !gatewayStopPromise &&
+                !gatewayRestarting
+              ) {
+                void failClosedWindowsNodeMxc(`Bundled Windows node ${event}`).catch((error) =>
+                  console.error("[bundled-windows-node] Fail-closed recovery failed:", error),
+                );
+              }
             },
             onApproval: (approval: BundledApprovalRequest | null) => {
               if (
@@ -6518,11 +6771,27 @@ function connectGatewayWs(): void {
                 timeoutMs,
               );
               assertCurrentGatewayGeneration();
-              attestWindowsNodeMxcGatewaySnapshot(
-                snapshot,
-                approvalProof.nodeId,
-                expectedGatewayPolicy,
-              );
+              if (expectedGatewayPolicy !== "host") {
+                attestWindowsNodeMxcGatewaySnapshot(
+                  snapshot,
+                  approvalProof.nodeId,
+                  expectedGatewayPolicy,
+                );
+              } else {
+                const config = snapshot.config;
+                if (
+                  !config ||
+                  typeof config !== "object" ||
+                  Array.isArray(config) ||
+                  JSON.stringify(
+                    applyWindowsNodeCommandPolicy(
+                      config as Record<string, unknown>,
+                      approvalProof.nodeId,
+                    ),
+                  ) !== JSON.stringify(config)
+                )
+                  throw new Error("Gateway command consent routing is not effective");
+              }
             },
             isCurrent: () => {
               try {
@@ -6554,10 +6823,14 @@ function connectGatewayWs(): void {
               assertCurrentGatewayGeneration();
               await bundledWindowsNodeHost.ensurePaired(gateway);
               assertCurrentGatewayGeneration();
+              if (!isWindowsNodeMxcDesired())
+                await bundledWindowsNodeHost.setActivationLease("active", 120_000);
               markWindowsNodeMxcStartupTiming("node-connected");
             },
           })
-            .then(() => undefined)
+            .then(() => {
+              notifyRendererApplicationReady();
+            })
             .catch((error) => {
               if (bundledWindowsNodeGeneration === hostGeneration) {
                 bundledWindowsNodeHost.stop();
@@ -6570,7 +6843,7 @@ function connectGatewayWs(): void {
           bundledWindowsNodeStartup = startup;
           void startup.catch((error) => {
             console.error("[bundled-windows-node] start failed:", error);
-            if (!windowsNodeMxcSecurityTransitionInProgress) {
+            if (!windowsNodeMxcSecurityTransitionInProgress && !commandConsentUpdating) {
               void failClosedWindowsNodeMxc(
                 `Bundled node startup failed during authenticated RPC readiness: ${
                   error instanceof Error ? error.message : String(error)
@@ -6650,7 +6923,7 @@ function connectGatewayWs(): void {
         )
       )
         return;
-      if (evt.event === "exec.approval.requested" && isWindowsNodeMxcDesired()) {
+      if (evt.event === "exec.approval.requested") {
         console.info(
           "[weixin-remote-approval-context]",
           describeGatewayApprovalContext(evt.payload),
@@ -7661,6 +7934,7 @@ function registerIpcHandlers(): void {
     return await gwClient.listAgents();
   });
   ipcMain.handle("agents:add", async (_event, agentId: string) => {
+    if (commandConsentUpdating) throw new Error("Command consent settings are being applied");
     if (typeof agentId !== "string" || !agentId.trim()) {
       throw new Error("Agent id is required");
     }
@@ -7679,6 +7953,7 @@ function registerIpcHandlers(): void {
     }
   });
   ipcMain.handle("agents:remove", async (_event, agentId: string) => {
+    if (commandConsentUpdating) throw new Error("Command consent settings are being applied");
     if (typeof agentId !== "string" || !agentId.trim()) {
       throw new Error("Agent id is required");
     }
@@ -8604,6 +8879,43 @@ function registerIpcHandlers(): void {
 
   // --- Settings ---
   ipcMain.handle("settings:get", () => settingsStore.store);
+  ipcMain.handle("command-consent:set-mode", async (event, value: unknown) => {
+    assertTrustedRendererIpc(event);
+    const mode = parseCommandConsentMode(value);
+    if (
+      commandConsentUpdating ||
+      windowsNodeMxcSecurityTransitionInProgress ||
+      gatewayRestarting ||
+      gatewayStartInProgress ||
+      gatewayStopPromise ||
+      bundledWindowsNodeStartup ||
+      windowsNodeMxcActivationInProgress ||
+      windowsNodeMxcFolderPolicyMutationInProgress ||
+      windowsNodeMxcApprovalResolutionInProgress ||
+      agentRosterChangeInProgress ||
+      modelConfigurationMutationInProgress ||
+      githubCopilotLoginInProgress ||
+      activeModelSessions.size > 0 ||
+      allPendingWindowsNodeMxcGatewayApprovals().length > 0
+    )
+      throw new Error(
+        "Wait for active work and permission requests before changing command consent",
+      );
+    localModelService.assertIdle();
+    sessionModelService.assertIdle();
+    weixinMutations.assertActivationAvailable(Boolean(weixinLoginProcess));
+    if (windowsNodeMxcWeixinLogin)
+      throw new Error("Finish the WeChat account change before changing command consent");
+    const previous = settingsStore.get("commandConsentMode");
+    if (previous === mode) return mode;
+    const host = bundledWindowsNodeHost.status();
+    if (!gatewayProcess && !gwClient?.connected && !host.processRunning) {
+      settingsStore.set("commandConsentMode", mode);
+    } else {
+      await applyRunningCommandConsent(previous, mode);
+    }
+    return mode;
+  });
   ipcMain.handle("settings:set", (_event, key: string, value: any) => {
     if (!RENDERER_WRITABLE_SETTING_KEYS.has(key)) {
       throw new Error(`Setting "${key}" cannot be changed through the generic settings API`);
@@ -8648,6 +8960,7 @@ function registerIpcHandlers(): void {
     async (event: Electron.IpcMainInvokeEvent, params: { enabled: boolean }) => {
       assertTrustedRendererIpc(event);
       assertNativeWeixinRemoteApprovalAuthority(params);
+      if (commandConsentUpdating) throw new Error("Command consent settings are being applied");
       if (typeof params?.enabled !== "boolean") {
         throw new Error("A boolean sandboxing choice is required");
       }

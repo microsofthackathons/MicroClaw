@@ -4,6 +4,7 @@ export type WindowsNodeMxcFolderTransactionPhase =
   | "disabling"
   | "validating"
   | "updating-folders"
+  | "updating-consent"
   | "updating-model"
   | "connecting-weixin"
   | "disconnecting-weixin"

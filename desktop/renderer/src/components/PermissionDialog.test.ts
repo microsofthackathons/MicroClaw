@@ -135,7 +135,7 @@ describe("PermissionDialog", () => {
     expect(wrapper.find(".perm-mxc-access script").exists()).toBe(false);
     expect(wrapper.find(".perm-mxc-value").text()).toBe("isolated-scratch:v1");
     expect(wrapper.findAll(".perm-body")[1].text()).toContain(
-      "Conversation-scoped approval remembers only this exact executable",
+      "Remembering uses Windows Node's executable and argument allowlist",
     );
     expect(wrapper.text()).not.toContain("Requested folder access");
   });
@@ -166,7 +166,7 @@ describe("PermissionDialog", () => {
     ]);
   });
 
-  it("keeps Limited approval concise and offers exact conversation-scoped reuse", () => {
+  it("keeps Limited approval concise and explains agent-scoped reuse", () => {
     const wrapper = mount(PermissionDialog, {
       props: {
         request: {
@@ -196,13 +196,13 @@ describe("PermissionDialog", () => {
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
       "Deny",
       "Allow once",
-      "Always allow in this conversation",
+      "Remember for this agent",
     ]);
     expect(wrapper.findAll(".perm-body")[1].text()).toContain(
       "additive, not an exclusive allowlist",
     );
     expect(wrapper.findAll(".perm-body")[1].text()).toContain(
-      "exact executable, arguments, working directory, declared access, agent, and conversation",
+      "for this agent across conversations; it does not bind the working directory or folders",
     );
   });
 

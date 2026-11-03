@@ -66,6 +66,10 @@ contextBridge.exposeInMainWorld("openclaw", {
     get: () => ipcRenderer.invoke("settings:get"),
     set: (key: string, value: any) => ipcRenderer.invoke("settings:set", key, value),
   },
+  commandConsent: {
+    setMode: (mode: "ask-when-needed" | "allow-always") =>
+      ipcRenderer.invoke("command-consent:set-mode", mode),
+  },
 
   // --- Updates ---
   updates: {

@@ -185,6 +185,19 @@ public sealed class ApprovalProofTests
     }
 
     [Fact]
+    public void ConsentDecisionIsAuthenticated()
+    {
+        var policyProof = Sign(VectorProof() with { ConsentDecision = "policy" });
+        var validated = Verifier(IssuedAtUnixMs).ValidateAndConsume(Args(policyProof), CurrentIdentity);
+
+        Assert.Equal("policy", validated.ConsentDecision);
+        var tampered = VectorProof() with { ConsentDecision = "policy" };
+        AssertCode(
+            "approval-proof-signature-invalid",
+            () => Verifier(IssuedAtUnixMs).ValidateAndConsume(Args(tampered), CurrentIdentity));
+    }
+
+    [Fact]
     public void UsesCultureInvariantOrdinalDeclarationOrdering()
     {
         var current = CurrentIdentity with
@@ -292,7 +305,7 @@ public sealed class ApprovalProofTests
             "121d69569e93b8e70445e4d8815cf9d72fd68d5065fa11106c4f204f4c78b661",
             IssuedAtUnixMs,
             IssuedAtUnixMs + ApprovalProofContract.MaximumLifetimeMs,
-            "be550cd55e9ba5040270c80bcefc88179813a0cd8e18c393545fa6155c43f296");
+            "bd59c7a12592b8153fc2a991f24b078c5f5e832857bf1c231b9060bb236b236f");
 
     private static ApprovalProofRecord Sign(ApprovalProofRecord proof) =>
         proof with

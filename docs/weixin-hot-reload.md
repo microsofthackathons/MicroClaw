@@ -49,6 +49,14 @@ An already connected account shows the same compact connection controls in both 
 Disconnect remains available while MXC is active; a current account change or containment
 transition temporarily disables it.
 
+For an already-ready MXC generation, QR startup enters the exclusive account-change guard
+directly: it closes ingress, revokes the activation lease, and disables the old approval
+authority before requesting the QR. It does not repeat the full runtime scan or renew a lease
+that would immediately be revoked. This is a transition into a locked state, not permission
+to execute tools. A fresh containment attestation remains mandatory before ingress resumes
+after connection, expiry, or cancellation; unavailable readiness and runtime drift still block
+the operation. Off-mode QR startup is unchanged.
+
 The returned session key is passed to every poll. A polling-window timeout is
 not a login timeout: it preserves the session and reports `pending`. QR expiry
 stops polling immediately and releases the login fence without fetching another

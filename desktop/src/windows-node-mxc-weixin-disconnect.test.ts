@@ -63,7 +63,7 @@ const absent = (): WeixinAccountStatus => ({
   currentAccount: null,
 });
 
-function harness(mode: "full" | "off" = "full") {
+function harness(mode: "full" | "limited-dacl" | "off" = "full") {
   const events: string[] = [];
   let account = present();
   let lifecycleBusy = false;
@@ -90,11 +90,14 @@ function harness(mode: "full" | "off" = "full") {
     getChannelsStatus: vi.fn(async () => ({
       channels: { "openclaw-weixin": { enabled: true } },
     })),
-    weixinLoginQrStart: vi.fn(async (_params?: { force?: boolean }) => ({
-      qrDataUrl: "https://example.test/qr",
-      sessionKey: "qr-session",
-      message: "Scan QR",
-    })),
+    weixinLoginQrStart: vi.fn(async (_params?: { force?: boolean }) => {
+      events.push("request-qr");
+      return {
+        qrDataUrl: "https://example.test/qr",
+        sessionKey: "qr-session",
+        message: "Scan QR",
+      };
+    }),
     weixinLoginQrWait: vi.fn<
       () => Promise<{
         connected: boolean;
@@ -117,6 +120,8 @@ function harness(mode: "full" | "off" = "full") {
   };
   const broker = { configure: vi.fn() };
   const requireEffective = vi.fn(async () => undefined);
+  const serviceReady = vi.fn(() => true);
+  const readinessCurrent = vi.fn(() => true);
   const getStatus = vi.fn(async () => ({ effectiveEnabled: true }));
   const attest = vi.fn((status: { effectiveEnabled: boolean }) => {
     events.push("attest");
@@ -161,7 +166,9 @@ function harness(mode: "full" | "off" = "full") {
     sessionModelService: { assertIdle: vi.fn() },
     activeModelSessions: new Set<string>(),
     githubCopilotLoginInProgress: false,
+    commandConsentUpdating: false,
     requireEffectiveWindowsNodeMxc: requireEffective,
+    captureGatewayReadinessCheckpoint: () => readinessCurrent,
     gwClient: gateway,
     gatewayGenerationId: "gateway-generation",
     gatewayProcess: { pid: 123 },
@@ -208,7 +215,7 @@ function harness(mode: "full" | "off" = "full") {
     endWindowsNodeMxcLifecycleOperation: () => {
       lifecycleBusy = false;
     },
-    isApplicationServiceReady: () => true,
+    isApplicationServiceReady: serviceReady,
     sendToWindow: vi.fn(),
     mainWindow: {},
     setWindowsNodeMxcLifecycleState: vi.fn(),
@@ -259,6 +266,8 @@ function harness(mode: "full" | "off" = "full") {
     mutations,
     request,
     requireEffective,
+    serviceReady,
+    readinessCurrent,
     getStatus,
     attest,
     release,
@@ -273,7 +282,142 @@ function harness(mode: "full" | "off" = "full") {
   };
 }
 
+describe("actual guarded WeChat QR startup", () => {
+  it("does not start a QR while command consent settings are changing", async () => {
+    const h = harness();
+    h.context.commandConsentUpdating = true;
+    expect(await h.startQr()).toMatchObject({
+      ok: false,
+      message: expect.stringContaining("Command consent settings are being applied"),
+    });
+    expect(h.gateway.weixinLoginQrStart).not.toHaveBeenCalled();
+  });
+
+  it.each(["full", "limited-dacl"] as const)(
+    "returns the QR in %s without a preflight scan, but waits for fresh attestation before resuming",
+    async (mode) => {
+      const h = harness(mode);
+      h.setAccount(absent());
+      h.requireEffective.mockImplementation(() => new Promise(() => {}));
+      let finishLogin!: (value: { connected: boolean; accountId: string; message: string }) => void;
+      h.gateway.weixinLoginQrWait.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishLogin = resolve;
+          }),
+      );
+      let finishAttestation!: (value: { effectiveEnabled: boolean }) => void;
+      h.getStatus.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishAttestation = resolve;
+          }),
+      );
+
+      const starting = h.startQr();
+      await vi.waitFor(() => expect(h.gateway.weixinLoginQrStart).toHaveBeenCalledOnce());
+      expect(await starting).toMatchObject({ ok: true, sessionKey: "qr-session" });
+      expect(h.requireEffective).not.toHaveBeenCalled();
+      expect(h.serviceReady).toHaveBeenCalled();
+      expect(h.readinessCurrent).toHaveBeenCalledOnce();
+      for (const step of ["close-ingress", "revoke-lease", "disable-remote"]) {
+        expect(h.events).toContain(step);
+        expect(h.events.indexOf(step)).toBeLessThan(h.events.indexOf("request-qr"));
+      }
+      expect(h.broker.configure).toHaveBeenLastCalledWith({ enabled: false, owner: null });
+      expect(h.host.setActivationLease).not.toHaveBeenCalled();
+      expect(h.getStatus).not.toHaveBeenCalled();
+      expect(h.release).not.toHaveBeenCalled();
+      expect(h.lifecycle.active).toBe(true);
+
+      h.setAccount(present());
+      finishLogin({ connected: true, accountId: owner.accountId, message: "Connected" });
+      await vi.waitFor(() => expect(h.getStatus).toHaveBeenCalledOnce());
+      expect(h.release).not.toHaveBeenCalled();
+      expect(h.lifecycle.active).toBe(true);
+      expect(h.qr.status.state).toBe("waiting");
+      finishAttestation({ effectiveEnabled: true });
+      await vi.waitFor(() => expect(h.qr.status.state).toBe("connected"));
+      expect(h.release).toHaveBeenCalledOnce();
+      expect(h.lifecycle.active).toBe(false);
+    },
+  );
+
+  it.each(["service", "checkpoint"] as const)(
+    "rejects a QR request when current MXC %s readiness is unavailable",
+    async (gate) => {
+      const h = harness();
+      h.setAccount(absent());
+      if (gate === "service") h.serviceReady.mockReturnValue(false);
+      else h.readinessCurrent.mockReturnValue(false);
+      expect(await h.startQr()).toMatchObject({
+        ok: false,
+        message: expect.stringContaining("MXC readiness"),
+      });
+      expect(h.gateway.weixinLoginQrStart).not.toHaveBeenCalled();
+      expect(h.host.revokeActivationLease).not.toHaveBeenCalled();
+      expect(h.requireEffective).not.toHaveBeenCalled();
+      expect(h.lifecycle.active).toBe(false);
+    },
+  );
+
+  it("fails closed if the fresh post-login attestation rejects containment", async () => {
+    const h = harness();
+    h.getStatus.mockResolvedValueOnce({ effectiveEnabled: false });
+    h.gateway.weixinLoginQrWait.mockResolvedValueOnce({
+      connected: true,
+      accountId: owner.accountId,
+      message: "Connected",
+    });
+    expect(await h.startQr()).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(h.qr.status.state).toBe("error"));
+    expect(h.getStatus).toHaveBeenCalledOnce();
+    expect(h.failClosed).toHaveBeenCalledOnce();
+    expect(h.release).not.toHaveBeenCalled();
+    expect(h.lifecycle.active).toBe(false);
+  });
+
+  it("rejects runtime drift during the channel check before requesting a QR", async () => {
+    const h = harness();
+    h.gateway.getChannelsStatus.mockImplementationOnce(async () => {
+      h.gateway.connectionGeneration++;
+      return { channels: { "openclaw-weixin": { enabled: true } } };
+    });
+    expect(await h.startQr()).toMatchObject({
+      ok: false,
+      message: expect.stringContaining("runtime changed"),
+    });
+    expect(h.gateway.weixinLoginQrStart).not.toHaveBeenCalled();
+    expect(h.failClosed).toHaveBeenCalledOnce();
+    expect(h.release).not.toHaveBeenCalled();
+  });
+
+  it("keeps Off-mode QR startup free of MXC gates and leases", async () => {
+    const h = harness("off");
+    h.serviceReady.mockReturnValue(false);
+    h.readinessCurrent.mockReturnValue(false);
+    h.gateway.weixinLoginQrWait.mockResolvedValueOnce({
+      connected: true,
+      accountId: owner.accountId,
+      message: "Connected",
+    });
+    expect(await h.startQr()).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(h.qr.status.state).toBe("connected"));
+    expect(h.requireEffective).not.toHaveBeenCalled();
+    expect(h.readinessCurrent).not.toHaveBeenCalled();
+    expect(h.host.revokeActivationLease).not.toHaveBeenCalled();
+    expect(h.getStatus).not.toHaveBeenCalled();
+  });
+});
+
 describe("actual guarded WeChat disconnect IPC handler", () => {
+  it("does not disconnect while command consent settings are changing", async () => {
+    const h = harness();
+    h.context.commandConsentUpdating = true;
+    await expect(h.invoke()).rejects.toThrow("Command consent settings are being applied");
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
   it.each(["off", "full"] as const)(
     "disconnects in %s without replacing the Gateway",
     async (mode) => {
@@ -293,6 +437,7 @@ describe("actual guarded WeChat disconnect IPC handler", () => {
       expect(h.lifecycle.active).toBe(false);
       expect(h.failClosed).not.toHaveBeenCalled();
       if (mode === "full") {
+        expect(h.requireEffective).toHaveBeenCalledExactlyOnceWith(true);
         expect(h.events.indexOf("close-ingress")).toBeLessThan(h.events.indexOf("logout"));
         expect(h.events.indexOf("disable-remote")).toBeLessThan(h.events.indexOf("logout"));
         expect(h.events.indexOf("revoke-lease")).toBeLessThan(h.events.indexOf("logout"));
@@ -307,6 +452,7 @@ describe("actual guarded WeChat disconnect IPC handler", () => {
         expect(h.transport.close).not.toHaveBeenCalled();
         expect(h.gateway.weixinResumeAfterLogin).not.toHaveBeenCalled();
       } else {
+        expect(h.requireEffective).not.toHaveBeenCalled();
         expect(h.closeTransport).toHaveBeenCalledWith("weixin-logout");
         expect(h.host.revokeActivationLease).not.toHaveBeenCalled();
       }

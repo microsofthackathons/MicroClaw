@@ -297,7 +297,7 @@ interface PermissionRequestData {
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
   folderChanges?: Array<{ access: "ro" | "rw"; path: string }>;
   providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
-  containmentStrength?: "full" | "limited-dacl";
+  containmentStrength?: "off" | "full" | "limited-dacl";
   ambientAccess?: NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"];
   expiresAtUnixMs?: number;
   remoteDelivery?:
@@ -328,9 +328,13 @@ const currentPermissionResponding = computed(() => {
   return Boolean(
     request &&
     (respondingApprovals.value.has(approvalKey(request.requestId, request.approvalLayer)) ||
-      ["updating-folders", "updating-model", "connecting-weixin", "disconnecting-weixin"].includes(
-        windowsNodeMxcStatus.value?.lifecycleState.phase ?? "",
-      )),
+      [
+        "updating-folders",
+        "updating-consent",
+        "updating-model",
+        "connecting-weixin",
+        "disconnecting-weixin",
+      ].includes(windowsNodeMxcStatus.value?.lifecycleState.phase ?? "")),
   );
 });
 function closeApproval(id: string, layer: "gateway" | "node" = "gateway") {
@@ -408,11 +412,14 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
   }
   if (updateExisting()) return;
   const containmentStrength =
-    windowsNodeMxcStatus.value &&
-    windowsNodeMxcStatus.value.effectiveStrength !== "limited-dacl" &&
-    windowsNodeMxcStatus.value.requestedMode !== "limited-dacl"
-      ? "full"
-      : "limited-dacl";
+    request.containmentStrength ??
+    (windowsNodeMxcStatus.value?.requestedMode === "off"
+      ? "off"
+      : windowsNodeMxcStatus.value &&
+          windowsNodeMxcStatus.value.effectiveStrength !== "limited-dacl" &&
+          windowsNodeMxcStatus.value.requestedMode !== "limited-dacl"
+        ? "full"
+        : "limited-dacl");
   const allowedDecisions = resolveWindowsNodeMxcAllowedDecisions(request);
   const command = request.commandText ?? [request.executable, ...request.arguments].join(" ");
   permissionQueue.value.push({
@@ -762,6 +769,7 @@ onMounted(async () => {
         "active",
         "idle",
         "updating-folders",
+        "updating-consent",
         "updating-model",
         "connecting-weixin",
         "disconnecting-weixin",
@@ -838,6 +846,7 @@ onMounted(async () => {
         ![
           "active",
           "updating-folders",
+          "updating-consent",
           "updating-model",
           "connecting-weixin",
           "disconnecting-weixin",

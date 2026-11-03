@@ -191,7 +191,9 @@ export function renderMxcApprovalTerminal(
   const labels = {
     "allow-once": locale === "zh-CN" ? "仅允许一次" : "allowed once",
     "allow-always":
-      locale === "zh-CN" ? "已保存此精确范围的永久审批" : "always allowed for this exact scope",
+      locale === "zh-CN"
+        ? "已保存此智能体的 Windows Node 命令允许列表规则"
+        : "saved in this agent's Windows Node command allowlist",
     deny:
       outcome.origin === "gateway"
         ? locale === "zh-CN"

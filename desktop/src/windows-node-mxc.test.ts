@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyWindowsNodeCommandPolicy,
   applyWindowsNodeMxcGatewayPolicy,
   assertWindowsNodeMxcFolderPolicyMutable,
   buildWindowsNodeMxcLockedToolPolicy,
@@ -96,7 +97,7 @@ describe("Gateway node exec approval bridge", () => {
       agent: "main",
       sessionKey: "agent:main:approval-regression",
       declaredAccess: [],
-      allowedDecisions: ["allow-once", "deny", "allow-always"],
+      allowedDecisions: ["allow-once", "deny"],
     });
   });
 
@@ -138,7 +139,7 @@ describe("Gateway node exec approval bridge", () => {
         { access: "rw", path: String.raw`C:\Users\test\Desktop` },
         { access: "ro", path: String.raw`C:\Users\test\Documents` },
       ],
-      allowedDecisions: ["allow-once", "deny", "allow-always"],
+      allowedDecisions: ["allow-once", "deny"],
     });
     expect(approval?.command).not.toContain("declare-access");
   });
@@ -233,11 +234,26 @@ describe("Gateway node exec approval bridge", () => {
     }
   });
 
-  it("offers MicroClaw-owned exact allow-always for every fully bound plan", () => {
+  it("only offers remembering when Windows Node says the command is eligible", () => {
     expect(
       normalizeWindowsNodeMxcGatewayApproval({ ...payload, allowedDecisions: undefined }, nodeId)
         ?.allowedDecisions,
-    ).toEqual(["allow-once", "deny", "allow-always"]);
+    ).toEqual(["allow-once", "deny"]);
+    const withPreview = {
+      ...payload,
+      request: {
+        ...payload.request,
+        systemRunPlan: {
+          ...payload.request.systemRunPlan,
+          commandConsent: { required: true, allowAlwaysAvailable: true },
+        },
+      },
+    };
+    expect(normalizeWindowsNodeMxcGatewayApproval(withPreview, nodeId)?.allowedDecisions).toContain(
+      "allow-always",
+    );
+    withPreview.request.systemRunPlan.commandConsent.required = false;
+    expect(normalizeWindowsNodeMxcGatewayApproval(withPreview, nodeId)).toBeNull();
   });
 
   it("accepts the pinned Gateway event envelope with decisions inside the request", () => {
@@ -269,7 +285,7 @@ describe("Gateway node exec approval bridge", () => {
         },
         nodeId,
       )?.allowedDecisions,
-    ).toEqual(["allow-once", "allow-always", "deny"]);
+    ).toEqual(["allow-once", "deny"]);
   });
 });
 
@@ -305,8 +321,8 @@ describe("bundled Windows Node CWD attestation", () => {
           approvedRootOnly: true,
           canonicalFinalPath: true,
           rejectsReparseComponents: true,
-          durableApprovalBindsCwd: true,
-          durableApprovalBindsDeclaredAccess: true,
+          durableApprovalBindsCwd: false,
+          durableApprovalBindsDeclaredAccess: false,
           launchTimeRevalidation: true,
           omittedCwdUsesIsolatedScratch: true,
           hostFallbackAbsent: true,
@@ -314,7 +330,7 @@ describe("bundled Windows Node CWD attestation", () => {
           generationBoundActivation: true,
           policyBoundActivation: true,
           launchTimeLeaseRevalidation: true,
-          approvalProofContract: "microclaw.windows-node-approval.v1",
+          approvalProofContract: "microclaw.windows-node-approval.v2",
           activeRunsRequireApprovalProof: true,
           approvalProofOneUse: true,
           approvalProofBindsPreparedPlan: true,
@@ -366,8 +382,8 @@ describe("bundled Windows Node CWD attestation", () => {
       approvedRootOnly: true,
       canonicalFinalPath: true,
       rejectsReparseComponents: true,
-      durableApprovalBindsCwd: true,
-      durableApprovalBindsDeclaredAccess: true,
+      durableApprovalBindsCwd: false,
+      durableApprovalBindsDeclaredAccess: false,
       launchTimeRevalidation: true,
       omittedCwdUsesIsolatedScratch: true,
       hostFallbackAbsent: true,
@@ -375,7 +391,7 @@ describe("bundled Windows Node CWD attestation", () => {
       generationBoundActivation: true,
       policyBoundActivation: true,
       launchTimeLeaseRevalidation: true,
-      approvalProofContract: "microclaw.windows-node-approval.v1",
+      approvalProofContract: "microclaw.windows-node-approval.v2",
       activeRunsRequireApprovalProof: true,
       approvalProofOneUse: true,
       approvalProofBindsPreparedPlan: true,
@@ -542,6 +558,63 @@ describe("bundled Windows Node CWD attestation", () => {
 });
 
 describe("Windows Node MXC Gateway policy", () => {
+  it("routes regular exec through the node without disabling existing native file tools", () => {
+    const source = {
+      tools: { allow: ["read", "write", "edit", "exec"], deny: ["browser"] },
+      agents: {
+        entries: {
+          main: { tools: { allow: ["read", "write", "exec"] } },
+          coder: { tools: { deny: ["browser"] } },
+        },
+      },
+      gateway: {
+        nodes: {
+          commands: { allow: ["custom.read"], deny: ["other", "canvas.snapshot", "system.run"] },
+        },
+      },
+    };
+    const original = structuredClone(source);
+    const applied = applyWindowsNodeCommandPolicy(source, "node-123");
+
+    expect(source).toEqual(original);
+    expect(applied).toMatchObject({
+      tools: {
+        allow: ["read", "write", "edit", "exec"],
+        deny: ["browser"],
+        exec: { host: "node", node: "node-123", ask: "always" },
+      },
+      agents: {
+        entries: {
+          main: {
+            tools: {
+              allow: ["read", "write", "exec"],
+              exec: { host: "node", node: "node-123", ask: "always" },
+            },
+          },
+          coder: { tools: { deny: ["browser"], exec: { node: "node-123" } } },
+        },
+      },
+      gateway: {
+        nodes: {
+          commands: {
+            allow: expect.arrayContaining([
+              "custom.read",
+              "system.run",
+              "system.run.prepare",
+              "system.which",
+              "system.run.cwd-policy",
+            ]),
+            deny: ["other", "canvas.snapshot"],
+          },
+        },
+      },
+    });
+    expect((applied.gateway as typeof source.gateway).nodes.commands.allow).not.toContain(
+      "canvas.snapshot",
+    );
+    expect(applyWindowsNodeCommandPolicy(applied, "node-123")).toEqual(applied);
+  });
+
   it("gives an explicit Gateway-start policy precedence over activation state", () => {
     expect(selectWindowsNodeMxcGatewayStartPolicy("locked", true)).toBe("locked");
     expect(selectWindowsNodeMxcGatewayStartPolicy("active", false)).toBe("active");
@@ -559,7 +632,7 @@ describe("Windows Node MXC Gateway policy", () => {
         host: "node",
         node: "node-123",
         security: "allowlist",
-        ask: "on-miss",
+        ask: "always",
         timeoutSeconds: 1800,
         strictInlineEval: true,
       },

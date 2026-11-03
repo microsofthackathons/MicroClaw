@@ -11,6 +11,27 @@ public sealed class PowerShellFilesystemScopeNativeTests
 {
     public static bool NativeAvailable => CwdPolicyTests.NativeMxcAvailable;
 
+    public static bool NativeLimitedDaclAvailable
+    {
+        get
+        {
+            if (!NativeAvailable) return false;
+            var runtime = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!;
+            try
+            {
+                MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(runtime, "limited-dacl", null)
+                    .GetAwaiter().GetResult();
+                return true;
+            }
+            catch (HostPolicyException error) when (error.Code == "mxc-filesystem-isolation-insufficient")
+            {
+                MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(runtime, "full", null)
+                    .GetAwaiter().GetResult();
+                return false;
+            }
+        }
+    }
+
     [Fact(SkipUnless = nameof(NativeAvailable), Skip = "Requires a verified native SDK and isolated test scratch.")]
     public async Task FullContainmentCreatesUpdatesAndDeletesAcrossContainersWithoutBroadeningGrants()
     {
@@ -32,6 +53,7 @@ public sealed class PowerShellFilesystemScopeNativeTests
             Canvas = new CanvasHostPolicy(executable, new string('0', 64), new string('1', 64),
                 CanvasPhase1Policy.Commands, CanvasPhase1Policy.Actions),
             RequestedStrength = "full", EffectiveTier = "base-container", NetworkAllowed = false,
+            AllowWindowsUi = true,
         };
         async Task Run(string script, bool prepare = false)
         {
@@ -72,7 +94,7 @@ public sealed class PowerShellFilesystemScopeNativeTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
-    [Fact(SkipUnless = nameof(NativeAvailable), Skip = "Requires a verified native SDK and isolated test scratch.")]
+    [Fact(SkipUnless = nameof(NativeLimitedDaclAvailable), Skip = "Requires the native appcontainer-dacl tier and isolated test scratch.")]
     public async Task ScopedProviderPreservesReadOnlyAndUngrantSiblingDenials()
     {
         var runtime = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!;
@@ -160,6 +182,7 @@ public sealed class PowerShellFilesystemScopeNativeTests
             Canvas = new CanvasHostPolicy(executable, new string('0', 64), new string('1', 64),
                 CanvasPhase1Policy.Commands, CanvasPhase1Policy.Actions),
             RequestedStrength = "limited-dacl", EffectiveTier = "appcontainer-dacl", NetworkAllowed = false,
+            AllowWindowsUi = true,
         };
         using var lease = DirectoryPathLease.Acquire([rw, ro, scratch]);
         var config = BundledSystemCapability.BuildMxcConfig(

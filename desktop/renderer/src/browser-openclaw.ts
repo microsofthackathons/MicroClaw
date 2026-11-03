@@ -73,6 +73,11 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       generateSnapshot: noopAsync,
       onIntegrityAlert: noopSub,
     },
+    commandConsent: {
+      setMode: async () => {
+        throw new Error("Command consent settings require the native desktop app");
+      },
+    },
     windowsNodeMxc: {
       async getDisplayStatus() {
         return {
