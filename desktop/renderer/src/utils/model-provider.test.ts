@@ -416,6 +416,67 @@ describe("model provider config", () => {
 });
 
 describe("removing a provider connection", () => {
+  it("disconnects local models and disables only their plugin without deleting install metadata", () => {
+    const existing = {
+      models: {
+        providers: {
+          "llama-cpp": { models: [{ id: "local" }], localService: { command: "llama-server" } },
+          qwen: { apiKey: "keep", models: [{ id: "remote" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen/remote", fallbacks: ["llama-cpp/local", "qwen/backup"] },
+          models: { "llama-cpp/local": {}, "qwen/remote": {} },
+        },
+        list: [{ id: "local-agent", model: "llama-cpp/local", workspace: "keep" }],
+        entries: { worker: { model: { primary: "llama-cpp/local" } } },
+      },
+      plugins: {
+        allow: ["llama-cpp", "other"],
+        entries: {
+          "llama-cpp": { enabled: true, config: { keep: true } },
+          other: { enabled: true },
+        },
+        installs: { "llama-cpp": { installPath: "keep-plugin-files" } },
+      },
+      memory: { provider: "keep" },
+    };
+    const original = structuredClone(existing);
+    const result = removeProviderConnectionConfig(existing, "llama-cpp");
+    expect(result.models).toEqual({ providers: { qwen: existing.models.providers.qwen } });
+    expect(result.agents).toEqual({
+      defaults: {
+        model: { primary: "qwen/remote", fallbacks: ["qwen/backup"] },
+        models: { "qwen/remote": {} },
+      },
+      list: [{ id: "local-agent", workspace: "keep" }],
+      entries: { worker: {} },
+    });
+    expect(result.plugins).toEqual({
+      ...existing.plugins,
+      entries: {
+        ...existing.plugins.entries,
+        "llama-cpp": { enabled: false, config: { keep: true } },
+      },
+    });
+    expect(result.memory).toEqual(existing.memory);
+    expect(existing).toEqual(original);
+  });
+
+  it("can disable the local plugin before any model connection has been prepared", () => {
+    const existing = {
+      plugins: { entries: { "llama-cpp": { enabled: true } } },
+      agents: { defaults: { model: "llama-cpp/stale" } },
+    };
+    const original = structuredClone(existing);
+    const result = removeProviderConnectionConfig(existing, "llama-cpp");
+    expect(result.models).toEqual({ providers: {} });
+    expect(result.agents).toEqual({ defaults: {} });
+    expect(result.plugins).toEqual({ entries: { "llama-cpp": { enabled: false } } });
+    expect(existing).toEqual(original);
+  });
+
   it("removes the last provider and clears its default without choosing a replacement", () => {
     const existing = {
       models: {

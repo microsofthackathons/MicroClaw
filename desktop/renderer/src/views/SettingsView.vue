@@ -338,10 +338,12 @@
               :default-agent-override="defaultAgentOverride"
               :streaming="chatStore.streaming"
               :removable-connections="removableLocalConnections"
-              :connection-mutation-busy="Boolean(removingModelRef)"
+              :removable-provider="provider.removable"
+              :connection-mutation-busy="modelMutationBlocked"
               @close="showLocalSetup = false"
               @configured="handleProviderConfigured"
               @remove-connection="removeLocalConnection"
+              @remove-provider="removeProviderConnection(provider.key)"
             />
             <div
               v-if="
@@ -1596,7 +1598,10 @@ const providerCards = computed(() => {
       models,
       signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
       editableModels: key === "github-copilot" || getManagedModelProvider(key) ? [] : models,
-      removable: Boolean(getManagedModelProvider(key) && providerCatalogInputs.value[key]),
+      removable:
+        key === "llama-cpp"
+          ? Boolean(localProviderReady.value || providerCatalogInputs.value[key])
+          : Boolean(getManagedModelProvider(key) && providerCatalogInputs.value[key]),
       missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
     };
   });
@@ -2148,7 +2153,11 @@ async function selectModel(modelRef: string) {
 }
 
 async function removeProviderConnection(providerKey: string): Promise<void> {
-  if (modelMutationBlocked.value || !getManagedModelProvider(providerKey)) return;
+  if (
+    modelMutationBlocked.value ||
+    (!getManagedModelProvider(providerKey) && providerKey !== "llama-cpp")
+  )
+    return;
   removingModelRef.value = `${providerKey}/*`;
   try {
     const existing = await window.openclaw.config.read();
@@ -2157,7 +2166,9 @@ async function removeProviderConnection(providerKey: string): Promise<void> {
     }
     const nextConfig = removeProviderConnectionConfig(existing, providerKey);
     await ElMessageBox.confirm(
-      t("modelManager.removeProviderConfirm", { provider: providerName(providerKey) }),
+      providerKey === "llama-cpp"
+        ? t("localModel.removeProviderConfirm")
+        : t("modelManager.removeProviderConfirm", { provider: providerName(providerKey) }),
       t("modelManager.removeProviderTitle"),
       {
         type: "warning",
@@ -2180,6 +2191,7 @@ async function removeProviderConnection(providerKey: string): Promise<void> {
       action: "provider-remove",
       providerKey,
     });
+    if (providerKey === "llama-cpp") showLocalSetup.value = false;
     showProviderSetup.value = false;
     editingProviderKey.value = "";
     editingModelRef.value = "";

@@ -395,7 +395,7 @@ export function removeProviderConnectionConfig(
 ): JsonObject {
   const models = asJsonObject(existing.models);
   const providers = asJsonObject(models.providers);
-  if (!Object.hasOwn(providers, providerKey)) {
+  if (!Object.hasOwn(providers, providerKey) && providerKey !== "llama-cpp") {
     throw new Error(`Provider "${providerKey}" is not configured`);
   }
   const nextProviders = { ...providers };
@@ -443,9 +443,22 @@ export function removeProviderConnectionConfig(
       Object.entries(agents.entries).map(([id, agent]) => [id, clearModelReferences(agent)]),
     );
   }
-  return {
+  const nextConfig = {
     ...existing,
     models: { ...models, providers: nextProviders },
     agents: nextAgents,
+  };
+  if (providerKey !== "llama-cpp") return nextConfig;
+  const plugins = asJsonObject(existing.plugins);
+  const entries = asJsonObject(plugins.entries);
+  return {
+    ...nextConfig,
+    plugins: {
+      ...plugins,
+      entries: {
+        ...entries,
+        "llama-cpp": { ...asJsonObject(entries["llama-cpp"]), enabled: false },
+      },
+    },
   };
 }

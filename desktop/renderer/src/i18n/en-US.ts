@@ -1043,6 +1043,8 @@ export default {
   "localModel.catalogNotice":
     "Catalog availability is not a running-service or GPU-readiness indicator. Unknown capabilities are not inferred.",
   "localModel.removeConnection": "Remove connection",
+  "localModel.removeProviderConfirm":
+    "Remove the local model connection, disable the llama.cpp component, and clear local model references from defaults and agents? Downloaded models, caches, and runtime files will be kept. You can enable the component again later. Sessions using local models will need another model selected.",
   "localModel.selectBeforeRemove":
     "Select and apply another default model explicitly before removing this connection.",
   "localModel.removalNotice":
