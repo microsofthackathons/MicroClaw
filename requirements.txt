@@ -1,5 +1,5 @@
 # Runtime dependencies for the installer (deploy.py / MicroClawDeployer.exe):
-# The GUI uses tkinter (bundled with Python 3).
+# The GUI uses pywebview; tkinter is used only for the folder picker.
 # pyyaml is optional but recommended for full YAML support.
 pyyaml>=6.0
 pywebview>=5.1

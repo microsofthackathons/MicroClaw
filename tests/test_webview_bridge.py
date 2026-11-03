@@ -5,7 +5,7 @@ import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
-from deploy import DeployerApp, _run_installer, main, select_installer_font_family
+from deploy import main
 from deployer.webview_bridge import (
     _STRINGS,
     InstallationCancelled,
@@ -39,35 +39,12 @@ class WebInstallerBridgeTests(unittest.TestCase):
     def _step_labels(steps):
         return [step[1] for step in steps]
 
-    def test_both_installers_copy_setup_runtime_gate(self):
-        app = DeployerApp.__new__(DeployerApp)
-        app.logger = _Log()
-        for module, copy_assets in (
-            ("deployer.webview_bridge", self.bridge._copy_bundled_assets),
-            ("deploy", lambda: app._copy_bundled_assets(None)),
-        ):
-            with self.subTest(module=module):
-                destination = Path(self.temp.name) / module
-                with (
-                    unittest.mock.patch(f"{module}.DEFAULT_DESKTOP_DIR", destination),
-                    unittest.mock.patch(f"{module}.shutil.copytree"),
-                ):
-                    self.assertTrue(copy_assets())
-                self.assertIn(
-                    "Test-SupportedNodeVersion",
-                    (destination / "node-runtime.ps1").read_text(encoding="utf-8"),
-                )
-                self.assertIn(
-                    r'. "$PSScriptRoot\node-runtime.ps1"',
-                    (destination / "setup-dependencies.ps1").read_text(encoding="utf-8"),
-                )
-
     def test_installer_window_titles_are_distinct_from_the_desktop(self):
         for mode, expected, background in (
             ("install", "MicroClaw Setup", "0"),
             ("install", "MicroClaw Setup", "1"),
-            ("uninstall-confirmation", "MicroClaw Uninstall", "0"),
-            ("uninstall-confirmation", "MicroClaw Uninstall", "1"),
+            ("uninstall", "MicroClaw Uninstall", "0"),
+            ("uninstall", "MicroClaw Uninstall", "1"),
         ):
             with self.subTest(mode=mode, background=background):
                 webview = unittest.mock.MagicMock()
@@ -92,7 +69,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
                         "deployer.webview_bridge.WebInstallerBridge", return_value=bridge
                     ),
                     unittest.mock.patch(
-                        "deployer.webview_bridge.WebUninstallConfirmationBridge",
+                        "deployer.webview_bridge.WebUninstallBridge",
                         return_value=bridge,
                     ),
                     unittest.mock.patch(
@@ -282,46 +259,75 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.settings_path.parent.mkdir(parents=True)
         self.settings_path.write_text('{"themeMode":"dark"}', encoding="utf-8")
         self.bridge.set_language("zh")
-        self.bridge._launch_desktop = unittest.mock.Mock()
-
         self.bridge._finish_ok()
 
         settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self.assertEqual(settings, {"themeMode": "dark", "language": "zh-CN"})
 
-    def test_handoff_launches_app_and_validates_its_gateway(self):
+    def test_successful_install_does_not_launch_desktop_or_gateway(self):
         setup = unittest.mock.Mock()
-        setup.get_openclaw_upgrade_transaction_id.return_value = "20260720T000000Z-1234abcd"
-        setup.validate_running_gateway.return_value = True
-        self.bridge._launch_desktop = unittest.mock.Mock(return_value=True)
-        self.bridge._wait_for_desktop_service = unittest.mock.Mock(return_value=True)
+        self.bridge._state["running"] = True
 
-        self.assertTrue(self.bridge._start_and_validate_desktop(setup))
+        with (
+            unittest.mock.patch("deployer.webview_bridge.WindowsSetup", return_value=setup),
+            unittest.mock.patch.object(self.bridge, "_build_install_steps", return_value=[]),
+            unittest.mock.patch("subprocess.Popen") as popen,
+            unittest.mock.patch("os.startfile") as startfile,
+        ):
+            self.bridge._install_thread()
 
-        self.bridge._launch_desktop.assert_called_once_with("20260720T000000Z-1234abcd")
-        self.bridge._wait_for_desktop_service.assert_called_once_with("20260720T000000Z-1234abcd")
-        setup.validate_running_gateway.assert_called_once_with()
+        self.assertEqual(self.bridge.get_state()["status"], "success")
+        self.assertFalse(self.bridge.get_state()["running"])
+        self.assertEqual(
+            setup.method_calls,
+            [
+                unittest.mock.call.begin_openclaw_upgrade_validation(),
+                unittest.mock.call.commit_openclaw_upgrade(),
+            ],
+        )
+        popen.assert_not_called()
+        startfile.assert_not_called()
 
-    def test_handoff_requires_ready_desktop_before_gateway_validation(self):
-        setup = unittest.mock.Mock()
-        setup.get_openclaw_upgrade_transaction_id.return_value = "20260720T000000Z-1234abcd"
-        self.bridge._launch_desktop = unittest.mock.Mock(return_value=True)
-        self.bridge._wait_for_desktop_service = unittest.mock.Mock(return_value=False)
+    def test_final_step_failure_rolls_back_without_launching_desktop(self):
+        for failed_step in ("begin_openclaw_upgrade_validation", "commit_openclaw_upgrade"):
+            with self.subTest(failed_step=failed_step):
+                setup = unittest.mock.Mock()
+                getattr(setup, failed_step).return_value = False
+                self.bridge._state["running"] = True
 
-        with self.assertRaisesRegex(RuntimeError, "did not become ready"):
-            self.bridge._start_and_validate_desktop(setup)
+                with (
+                    unittest.mock.patch("deployer.webview_bridge.WindowsSetup", return_value=setup),
+                    unittest.mock.patch.object(
+                        self.bridge, "_build_install_steps", return_value=[]
+                    ),
+                    unittest.mock.patch("deployer.webview_bridge.time.sleep"),
+                    unittest.mock.patch("subprocess.Popen") as popen,
+                    unittest.mock.patch("os.startfile") as startfile,
+                ):
+                    self.bridge._install_thread()
 
-        setup.validate_running_gateway.assert_not_called()
+                self.assertEqual(self.bridge.get_state()["status"], "failed")
+                self.assertFalse(self.bridge.get_state()["running"])
+                setup.rollback_openclaw_upgrade.assert_called_once_with()
+                if failed_step == "begin_openclaw_upgrade_validation":
+                    setup.commit_openclaw_upgrade.assert_not_called()
+                popen.assert_not_called()
+                startfile.assert_not_called()
 
-    def test_service_handoff_is_not_retried_with_a_second_desktop(self):
+    def test_web_final_steps_only_validate_and_commit_installation(self):
         setup = unittest.mock.Mock()
 
         final_steps = self.bridge._build_final_steps(setup)
 
-        retries_by_key = {progress_key: retries for _, progress_key, _, retries in final_steps}
-        self.assertEqual(retries_by_key["startService"], 0)
-        self.assertEqual(retries_by_key["verifyUpgrade"], 1)
-        self.assertEqual(retries_by_key["commitUpgrade"], 1)
+        self.assertEqual(
+            final_steps,
+            [
+                (99, "verifyUpgrade", setup.begin_openclaw_upgrade_validation, 1),
+                (100, "commitUpgrade", setup.commit_openclaw_upgrade, 1),
+            ],
+        )
+        for strings in _STRINGS.values():
+            self.assertNotIn("startService", strings["steps"])
 
     def test_managed_backup_runs_after_core_update_without_extra_doctor(self):
         setup = unittest.mock.Mock()
@@ -332,44 +338,6 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertLess(backup_index, actions.index(setup.write_config))
         self.assertNotIn(setup.migrate_openclaw_state, actions)
         self.assertEqual(next(step[3] for step in steps if step[0] == 50), 0)
-
-    def test_service_wait_allows_slow_gateway_cold_start(self):
-        defaults = WebInstallerBridge._wait_for_desktop_service.__defaults__
-
-        self.assertEqual(defaults, (300,))
-
-    def test_service_wait_stops_when_launched_app_exits(self):
-        process = unittest.mock.Mock(pid=4321)
-        process.poll.return_value = 1
-        self.bridge._launched_desktop_process = process
-
-        self.assertFalse(self.bridge._wait_for_desktop_service("20260720T000000Z-1234abcd"))
-
-    def test_service_rejection_is_reported_without_waiting_for_timeout(self):
-        root = Path(self.temp.name)
-        transaction_id = "20260720T000000Z-1234abcd"
-        ready_path = root / "upgrade" / f"desktop-ready-{transaction_id}.json"
-        ready_path.parent.mkdir()
-        ready_path.write_text(
-            json.dumps(
-                {
-                    "transactionId": transaction_id,
-                    "pid": 4321,
-                    "error": "Gateway rejected its configuration (exit 78)",
-                }
-            ),
-            encoding="utf-8",
-        )
-        self.bridge._state["running"] = True
-        self.bridge._launched_desktop_process = unittest.mock.Mock(pid=4321)
-        self.bridge._launched_desktop_process.poll.return_value = None
-        with (
-            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", root),
-            unittest.mock.patch("deployer.webview_bridge.time.sleep") as sleep,
-            self.assertRaisesRegex(RuntimeError, "Gateway rejected its configuration"),
-        ):
-            self.bridge._wait_for_desktop_service(transaction_id)
-        sleep.assert_not_called()
 
     def test_failed_install_does_not_persist_language(self):
         self.bridge.set_language("zh")
@@ -382,8 +350,6 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.settings_path.parent.mkdir(parents=True)
         self.settings_path.write_text("not json", encoding="utf-8")
         self.bridge.set_language("zh")
-        self.bridge._launch_desktop = unittest.mock.Mock()
-
         self.bridge._finish_ok()
 
         self.assertEqual(self.settings_path.read_text(encoding="utf-8"), "not json")
@@ -432,13 +398,6 @@ class WebInstallerBridgeTests(unittest.TestCase):
             self.assertIn("DM+Sans:ital,opsz,wght@0,9..40,400", source)
             self.assertIn("Noto+Sans+SC:wght@400;500;600;700", source)
 
-    def test_legacy_installer_uses_matching_bilingual_font_preferences(self):
-        available = {"DM Sans", "Noto Sans SC", "Microsoft YaHei UI", "Segoe UI"}
-
-        self.assertEqual(select_installer_font_family(available, "en"), "DM Sans")
-        self.assertEqual(select_installer_font_family(available, "zh"), "Noto Sans SC")
-        self.assertEqual(select_installer_font_family({"Segoe UI"}, "zh"), "Segoe UI")
-
     def test_prepare_upgrade_cancels_without_stopping_gateway(self):
         gateway = ActiveGateway(pid=4321, port=18789, lock_path=None)
         active = ActiveInstallation(pids=(4321,), gateway=gateway)
@@ -475,37 +434,6 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(self.bridge.get_state()["status"], "cancelled")
         self.assertEqual(self.bridge.get_state()["error"], "")
 
-    def test_legacy_installer_uses_the_same_confirmed_close_flow(self):
-        active = ActiveInstallation(
-            pids=(1234,),
-            gateway=ActiveGateway(pid=4321, port=18789, lock_path=None),
-        )
-        setup = unittest.mock.Mock()
-        setup.get_active_installation.return_value = active
-        setup.stop_active_installation_for_upgrade.return_value = True
-        setup.prepare_openclaw_update.return_value = True
-        app = object.__new__(DeployerApp)
-        app._confirm_close_running_apps = unittest.mock.Mock(return_value=True)
-
-        self.assertTrue(app._prepare_upgrade(setup))
-
-        app._confirm_close_running_apps.assert_called_once_with(active)
-        setup.stop_active_installation_for_upgrade.assert_called_once_with(active)
-        setup.prepare_openclaw_update.assert_called_once_with()
-
-    def test_legacy_installer_does_not_close_apps_when_prompt_is_declined(self):
-        active = ActiveInstallation(pids=(1234,), gateway=None)
-        setup = unittest.mock.Mock()
-        setup.get_active_installation.return_value = active
-        app = object.__new__(DeployerApp)
-        app._confirm_close_running_apps = unittest.mock.Mock(return_value=False)
-
-        with self.assertRaises(InstallationCancelled):
-            app._prepare_upgrade(setup)
-
-        setup.stop_active_installation_for_upgrade.assert_not_called()
-        setup.prepare_openclaw_upgrade.assert_not_called()
-
     def test_uninstaller_check_exits_without_ui_or_elevation(self):
         with (
             unittest.mock.patch("deploy._setup_windows_taskbar") as taskbar,
@@ -524,57 +452,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
             self.assertEqual(main(["--uninstall"]), 0)
 
         taskbar.assert_called_once_with()
-        run_installer.assert_called_once_with(auto_uninstall=True, use_legacy_ui=False)
-
-    def test_web_uninstall_consent_starts_confirmed_progress_ui(self):
-        app = unittest.mock.Mock()
-        with (
-            unittest.mock.patch(
-                "deploy.run_web_uninstall_confirmation",
-                return_value=True,
-            ) as confirm,
-            unittest.mock.patch("deploy.DeployerApp", return_value=app) as app_type,
-        ):
-            _run_installer(auto_uninstall=True, use_legacy_ui=False)
-
-        confirm.assert_called_once_with()
-        app_type.assert_called_once_with(auto_uninstall=True, uninstall_confirmed=True)
-        app.mainloop.assert_called_once_with()
-
-    def test_cancelled_web_uninstall_does_not_start_progress_ui(self):
-        with (
-            unittest.mock.patch(
-                "deploy.run_web_uninstall_confirmation",
-                return_value=False,
-            ) as confirm,
-            unittest.mock.patch("deploy.DeployerApp") as app_type,
-        ):
-            _run_installer(auto_uninstall=True, use_legacy_ui=False)
-
-        confirm.assert_called_once_with()
-        app_type.assert_not_called()
-
-    def test_legacy_pipeline_installs_uninstaller_before_shortcuts(self):
-        app = object.__new__(DeployerApp)
-        app._prepare_upgrade = unittest.mock.Mock()
-        app._ensure_node = unittest.mock.Mock()
-        app._ensure_openclaw = unittest.mock.Mock()
-        app._copy_bundled_assets = unittest.mock.Mock()
-        app._write_env_file = unittest.mock.Mock()
-        setup = unittest.mock.Mock()
-
-        steps = app._build_install_steps(setup)
-        labels = self._step_labels(steps)
-        uninstaller_index = labels.index("Installing uninstaller...")
-
-        self.assertLess(
-            uninstaller_index,
-            labels.index("Creating desktop shortcut..."),
-        )
-        self.assertEqual(
-            steps[uninstaller_index][2],
-            setup.install_uninstaller_bundle,
-        )
+        run_installer.assert_called_once_with(auto_uninstall=True)
 
     def test_web_pipeline_installs_uninstaller_before_shortcuts(self):
         setup = unittest.mock.Mock()
@@ -591,48 +469,41 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
         self.assertEqual(uninstaller_step[3], 1)
 
-    def test_both_installers_defer_web_search_provider_after_configuration(self):
+    def test_installer_copies_setup_runtime_gate(self):
+        destination = Path(self.temp.name) / "desktop"
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", destination),
+            unittest.mock.patch("deployer.webview_bridge.shutil.copytree"),
+        ):
+            self.assertTrue(self.bridge._copy_bundled_assets())
+        self.assertIn(
+            "Test-SupportedNodeVersion",
+            (destination / "node-runtime.ps1").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            r'. "$PSScriptRoot\node-runtime.ps1"',
+            (destination / "setup-dependencies.ps1").read_text(encoding="utf-8"),
+        )
+
+    def test_installer_defers_web_search_provider_after_configuration(self):
         setup = unittest.mock.Mock()
-        app = object.__new__(DeployerApp)
-        app._prepare_upgrade = unittest.mock.Mock()
-        app._ensure_node = unittest.mock.Mock()
-        app._ensure_openclaw = unittest.mock.Mock()
-        app._copy_bundled_assets = unittest.mock.Mock()
-        app._write_env_file = unittest.mock.Mock()
+        steps = self.bridge._build_install_steps(setup)
+        labels = self._step_labels(steps)
+        search_index = labels.index("Preparing background web search setup...")
+        self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
+        self.assertLess(search_index, labels.index("Installing uninstaller..."))
+        self.assertEqual(steps[search_index][2], setup.defer_search_provider_plugin)
 
-        for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
-            labels = self._step_labels(steps)
-            search_index = labels.index("Preparing background web search setup...")
-            self.assertGreater(search_index, labels.index("Writing MicroClaw configuration..."))
-            self.assertLess(search_index, labels.index("Installing uninstaller..."))
-            self.assertEqual(steps[search_index][2], setup.defer_search_provider_plugin)
-
-    def test_both_installers_defer_local_provider_installation(self):
+    def test_installer_defers_optional_components_and_gateway_warmup(self):
         setup = unittest.mock.Mock()
-        app = object.__new__(DeployerApp)
-        app._prepare_upgrade = unittest.mock.Mock()
-        app._ensure_node = unittest.mock.Mock()
-        app._ensure_openclaw = unittest.mock.Mock()
-        app._copy_bundled_assets = unittest.mock.Mock()
-        app._write_env_file = unittest.mock.Mock()
+        actions = [step[2] for step in self.bridge._build_install_steps(setup)]
 
-        for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
-            self.assertNotIn(setup.install_local_model_provider, [step[2] for step in steps])
-        setup.install_local_model_provider.assert_not_called()
+        self.assertNotIn(setup.warmup_compile_cache, actions)
+        self.assertNotIn(setup.install_local_model_provider, actions)
+        self.assertNotIn(setup.install_weixin_plugin, actions)
         for strings in _STRINGS.values():
+            self.assertNotIn("compileCache", strings["steps"])
             self.assertNotIn("localProvider", strings["steps"])
-
-    def test_both_installers_exclude_wechat_installation(self):
-        setup = unittest.mock.Mock()
-        app = object.__new__(DeployerApp)
-        app._prepare_upgrade = unittest.mock.Mock()
-        app._ensure_node = unittest.mock.Mock()
-        app._ensure_openclaw = unittest.mock.Mock()
-        app._copy_bundled_assets = unittest.mock.Mock()
-        app._write_env_file = unittest.mock.Mock()
-
-        for steps in (app._build_install_steps(setup), self.bridge._build_install_steps(setup)):
-            self.assertNotIn(setup.install_weixin_plugin, [step[2] for step in steps])
 
 
 if __name__ == "__main__":

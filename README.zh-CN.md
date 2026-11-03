@@ -44,7 +44,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 |---|---|---|---|
 | **桌面应用** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
 | **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及 Full/Limited 原生隔离 |
-| **安装器** | `deploy.py` + `deployer/` | Python 3 + Tkinter | 向导式图形化安装器（可打包为单文件 exe） |
+| **安装器** | `deploy.py` + `deployer/` | Python 3 + pywebview | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
 | **微信插件** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | 微信频道接入 |
 
@@ -76,7 +76,9 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 - 安装 MicroClaw 桌面客户端、托管技能及 Windows 沙箱组件；微信插件不随安装包捆绑，也不会自动安装
 - 添加 Windows Defender 排除项，创建桌面快捷方式（含一键卸载）
 
-安装完成后，从开始菜单或桌面快捷方式启动 **MicroClaw**。桌面应用会自动拉起 Gateway。
+安装器只负责安装和校验，不会自动启动 **MicroClaw** 或 Gateway。安装完成后，从开始菜单或桌面快捷方式手动启动 **MicroClaw**；桌面应用会自动拉起 Gateway。
+
+安装与卸载统一使用 WebView 界面，不再提供旧版兼容界面或 `--legacy-ui` 开关，`LEGACY_INSTALL_UI` 环境变量也不再生效。界面启动失败时显示依赖错误及可用的日志位置并退出，不继续安装或卸载。
 
 应用快捷方式及“已安装的应用”条目直接使用桌面客户端 EXE 内嵌图标，不依赖单独的 `~/.openclaw/microclaw.ico`。重新运行更新后的安装器会更新旧版图标引用。已有快捷方式也可手动修复：打开**属性 → 更改图标 → 浏览**，选择快捷方式“目标”栏中的 EXE（默认位于 `%USERPROFILE%\.microclaw\MicroClawDesktop.exe`）。
 
@@ -305,9 +307,11 @@ npm run dev
 缓存检查与缓存写入会单独计时，与资源准备、桌面应用打包、ZIP 压缩、清单及载荷哈希、
 PyInstaller、NSIS 压缩、安装包解包校验和签名区分。构建失败时也会输出汇总，并标记失败阶段。
 
-安装时会先准备桌面内置的 OpenClaw 运行时，再安装插件、启动服务；运行时解压拥有独立超时，
-不占用最终服务启动的等待时间。插件安装、宿主链接修复及编译缓存预热均使用桌面实际运行的
-同一份内置宿主。最终仍须同时通过应用就绪检测和 HTTP 健康检查，才会判定安装成功。
+安装时会先以专用准备模式展开桌面内置的 OpenClaw 运行时，运行时解压拥有独立超时。
+插件安装和宿主链接修复均使用桌面实际运行的同一份内置宿主，不再通过临时启动 Gateway 预热编译缓存。
+安装完成前校验已安装版本和入口文件，再提交安装事务；校验或提交失败仍会回滚。
+安装流程不打开桌面应用、不启动 Gateway，也不等待应用就绪或 HTTP 健康检查；
+启动和服务健康检查留到用户手动打开 MicroClaw 时进行。
 
 ### 前置条件
 
@@ -324,7 +328,7 @@ PyInstaller、NSIS 压缩、安装包解包校验和签名区分。构建失败�
 Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目录保留 `.bat` 和 `.ps1` 兼容包装层，因此现有命令仍可继续使用。
 
 ```
-├── deploy.py                    # 稳定安装器入口（Tkinter GUI）
+├── deploy.py                    # WebView 安装与卸载入口
 ├── deployer/
 │   ├── config.py                # 配置管理（.env + YAML）
 │   ├── logger.py                # 线程安全日志 + 内存环形缓冲

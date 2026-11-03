@@ -1442,6 +1442,25 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             env = self.ws._with_state_owner_compatibility({}, installation)
         self.assertEqual(env["NODE_OPTIONS"], f'--import "{preload.as_uri()}"')
 
+    def test_installation_validation_does_not_start_gateway_or_query_health(self):
+        for valid_version in (False, True):
+            with self.subTest(valid_version=valid_version):
+                transaction = unittest.mock.Mock()
+                self.ws._openclaw_transaction = transaction
+                self.ws._validate_installed_version = unittest.mock.Mock(return_value=valid_version)
+                self.ws._start_validation_gateway = unittest.mock.Mock()
+                self.ws._validate_gateway_health = unittest.mock.Mock()
+                self.ws._run_openclaw_json = unittest.mock.Mock()
+
+                self.assertIs(self.ws.begin_openclaw_upgrade_validation(), valid_version)
+
+                transaction.mark_verifying.assert_called_once_with()
+                transaction.record_validation.assert_called_once_with("version", valid_version)
+                self.ws._validate_installed_version.assert_called_once_with()
+                self.ws._start_validation_gateway.assert_not_called()
+                self.ws._validate_gateway_health.assert_not_called()
+                self.ws._run_openclaw_json.assert_not_called()
+
     def test_upgrade_validation_records_health_without_deep_rpc_checks_and_stops_gateway(self):
         transaction = unittest.mock.Mock()
         process = unittest.mock.Mock()
