@@ -1,7 +1,10 @@
 import { createHash } from "crypto";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -33,6 +36,7 @@ function createHost(root: string, version = "2026.10.5", includeExport = true): 
     version,
     exports: includeExport ? { "./plugin-sdk/runtime": "./dist/runtime.js" } : {},
   });
+  fs.writeFileSync(path.join(host, "openclaw.mjs"), "export const ready = true;\n", "utf8");
   return host;
 }
 
@@ -198,7 +202,104 @@ describe("Weixin plugin runtime convergence", () => {
 
     expect(convergeWeixinPluginRuntime(options).changed).toBe(true);
     expect(fs.readFileSync(entry, "utf8")).toBe(original);
+    expect(fs.readFileSync(path.join(options.hostPackageDir, "openclaw.mjs"), "utf8")).toBe(
+      "export const ready = true;\n",
+    );
   });
+
+  it.runIf(process.platform === "win32")(
+    "preserves the host during junction cleanup in real Electron replacement and rollback",
+    () => {
+      const root = createRoot();
+      const fixtures = ["replace", "rollback", "staging"].map((mode) => {
+        const fixture = path.join(root, mode);
+        const options = {
+          bundledPluginRoot: createBundle(fixture),
+          stateDir: path.join(fixture, "state"),
+          hostPackageDir: createHost(fixture),
+        };
+        convergeWeixinPluginRuntime(options);
+        fs.writeFileSync(
+          path.join(installedRoot(options.stateDir), "dist", "index.js"),
+          "previous-runtime",
+          "utf8",
+        );
+        return { mode, options };
+      });
+      const compiled = ts.transpileModule(
+        fs.readFileSync(path.join(__dirname, "weixin-plugin-convergence.ts"), "utf8"),
+        {
+          compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2022,
+            esModuleInterop: true,
+          },
+        },
+      ).outputText;
+      fs.writeFileSync(path.join(root, "convergence.cjs"), compiled, "utf8");
+      writeJson(path.join(root, "package.json"), {
+        name: "microclaw-weixin-convergence-test",
+        version: "1.0.0",
+        main: "main.cjs",
+      });
+      fs.writeFileSync(
+        path.join(root, "main.cjs"),
+        `
+const { app } = require("electron");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { convergeWeixinPluginRuntime } = require("./convergence.cjs");
+app.whenReady().then(() => {
+  try {
+    for (const { mode, options } of ${JSON.stringify(fixtures)}) {
+      const installed = path.join(options.stateDir, "extensions", "openclaw-weixin");
+      const rename = fs.renameSync;
+      try {
+        if (mode === "replace") {
+          assert.equal(convergeWeixinPluginRuntime(options).changed, true);
+        } else {
+          if (mode === "rollback") {
+            options.hooks = { afterInstalledRename() { throw new Error("injected rollback"); } };
+          } else {
+            fs.renameSync = (source, destination) => {
+              if (String(source).includes(".openclaw-weixin-stage-") && destination === installed)
+                throw new Error("injected staging failure");
+              return rename(source, destination);
+            };
+          }
+          assert.throws(() => convergeWeixinPluginRuntime(options), /injected/);
+          assert.equal(fs.readFileSync(path.join(installed, "dist", "index.js"), "utf8"), "previous-runtime");
+        }
+      } finally {
+        fs.renameSync = rename;
+      }
+      assert.equal(fs.readFileSync(path.join(options.hostPackageDir, "openclaw.mjs"), "utf8"), "export const ready = true;\\n");
+      assert.equal(JSON.parse(fs.readFileSync(path.join(options.hostPackageDir, "package.json"), "utf8")).name, "openclaw");
+      assert.equal(fs.readdirSync(path.dirname(installed)).some(entry => entry.startsWith(".openclaw-weixin-")), false);
+    }
+    console.log("peer-cleanup-ok");
+    app.exit(0);
+  } catch (error) {
+    console.error(error);
+    app.exit(1);
+  }
+});
+`,
+        "utf8",
+      );
+      const environment = { ...process.env };
+      delete environment.ELECTRON_RUN_AS_NODE;
+      const electronPath = createRequire(__filename)("electron") as string;
+      const output = execFileSync(
+        electronPath,
+        [root, `--user-data-dir=${path.join(root, "profile")}`, "--disable-gpu"],
+        { env: environment, encoding: "utf8", windowsHide: true, timeout: 30_000 },
+      );
+      expect(output).toContain("peer-cleanup-ok");
+    },
+    40_000,
+  );
 
   it("validates the bundled tree before replacing an invalid installation", () => {
     const root = createRoot();

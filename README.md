@@ -134,6 +134,8 @@ After install, launch **MicroClaw** from the Start menu or the desktop shortcut.
 
 To upgrade an existing installation, rerun the MicroClaw installer. It stops the Gateway, creates and verifies a full OpenClaw data/workspace backup, checks the backup's SHA-256, installs the exact target with npm at the existing prefix, and runs the new runtime's `doctor --fix --non-interactive` once. It does not run `openclaw update` or `update repair`, snapshot the old runtime's `node_modules`, or reject a data backup because its `ctime`/`mtime` changed. The installer starts the desktop/Gateway and requires HTTP 200 from `/health` before reporting success; it does not run additional channel-status or plugin RPC checks. Failed upgrades retain the backup and a resumable record without automatically restoring older user data. The legacy dependency helper refuses in-place upgrades. Old Node 22/23/25 configurations are advanced to a supported line. `stable` is an exact version pin, not npm's moving `latest` tag.
 
+Desktop updates extract the archive into a staging directory and replace bundled directories as complete trees, rather than overlaying files. This removes obsolete native runtime files that would otherwise fail integrity checks, while preserving the installer's upgrade records, backups, and install state. Extraction or publication failures leave or restore the previous desktop payload; recovery files are retained if restoration fails.
+
 ### 2. Add your model credentials
 
 On first launch, the desktop app opens a SetupWizard only when model configuration is missing. The required user input is your model connection:
@@ -399,6 +401,12 @@ always repack the desktop and setup EXE. Installer caching requires the local `.
 PyInstaller environment; other Python build strategies continue to work without reuse.
 The first build populates `build/package-cache/`; use `.\build.ps1 -Rebuild` to force
 all stages to run again. The optional installer ZIP is recreated when requested.
+
+During installation, the desktop's bundled OpenClaw runtime is prepared before
+plugin installation and service startup, with a separate extraction timeout.
+Plugin installation, peer-link repair, and compile-cache warmup use the same bundled
+host as the desktop. Final service validation still requires application readiness
+and a successful HTTP health check.
 
 ### MSIX package
 

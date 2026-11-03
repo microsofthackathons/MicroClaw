@@ -3906,9 +3906,6 @@ class WindowsSetup:
                     "MicroClaw restarted during the upgrade. Exit it from the system tray and retry."
                 )
                 return False
-            # Overlay the verified archive instead of deleting the whole
-            # MicroClaw root: active upgrade manifests and backups live under
-            # this directory and must survive until the transaction commits.
 
         # 1. Try local bundled zip
         local_zip = self._find_local_desktop_zip()
@@ -4021,7 +4018,7 @@ class WindowsSetup:
         return True
 
     def _extract_desktop_zip(self, zip_path: Path, install_dir: Path) -> bool:
-        """Extract a desktop client zip to install_dir."""
+        """Replace bundled desktop payloads without deleting installer state."""
         if not zipfile.is_zipfile(zip_path):
             self.log.error("文件不是有效的 zip 包")
             return False
@@ -4029,54 +4026,77 @@ class WindowsSetup:
         self.log.step("解压桌面客户端…")
         install_dir.mkdir(parents=True, exist_ok=True)
 
+        work = Path(tempfile.mkdtemp(prefix=".desktop-install-", dir=install_dir))
+        payload = work / "payload"
+        previous = work / "previous"
+        preserve_work = False
         try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(install_dir)
-        except Exception as e:
-            self.log.error(f"解压失败: {e}")
+            with zipfile.ZipFile(zip_path, "r") as archive:
+                archive.extractall(payload)
+
+            executable = payload / "MicroClawDesktop.exe"
+            if not executable.is_file():
+                subdirectories = [entry for entry in payload.iterdir() if entry.is_dir()]
+                if len(subdirectories) == 1:
+                    nested_executable = subdirectories[0] / "MicroClawDesktop.exe"
+                    if nested_executable.is_file():
+                        payload = subdirectories[0]
+                        executable = nested_executable
+            if not executable.is_file():
+                executables = [entry for entry in payload.glob("*.exe") if entry.is_file()]
+                if not executables:
+                    self.log.error("解压后未找到可执行文件")
+                    return False
+                executable = executables[0]
+
+            previous.mkdir()
+            replaced: list[tuple[Path, Path | None]] = []
+            try:
+                for source in sorted(payload.iterdir()):
+                    destination = install_dir / source.name
+                    backup = None
+                    if destination.exists() or destination.is_symlink():
+                        backup = previous / source.name
+                        destination.replace(backup)
+                    replaced.append((destination, backup))
+                    source.replace(destination)
+            except Exception as publication_error:
+                restoration_errors = []
+                for destination, backup in reversed(replaced):
+                    try:
+                        if destination.is_dir() and not destination.is_symlink():
+                            shutil.rmtree(destination)
+                        elif destination.exists() or destination.is_symlink():
+                            destination.unlink()
+                        if backup is not None:
+                            backup.replace(destination)
+                    except OSError as restoration_error:
+                        restoration_errors.append(f"{destination}: {restoration_error}")
+                if restoration_errors:
+                    preserve_work = True
+                    raise RuntimeError(
+                        f"Desktop publication failed: {publication_error}; "
+                        f"restoration failed: {'; '.join(restoration_errors)}; "
+                        f"recovery files retained at {work}"
+                    ) from publication_error
+                raise
+
+            self.log.success(f"桌面客户端安装到 {install_dir} (exe: {executable.name})")
+
+            def _rollback_desktop(directory=str(install_dir)):
+                shutil.rmtree(directory, ignore_errors=True)
+
+            self._register_rollback("删除桌面客户端", _rollback_desktop)
+            return True
+        except Exception as error:
+            self.log.error(f"解压失败: {error}")
             return False
-
-        exe_path = install_dir / "MicroClawDesktop.exe"
-
-        # electron-builder portable may nest inside a subfolder
-        # e.g. "win-unpacked/" — detect and flatten if needed
-        subdirs = [d for d in install_dir.iterdir() if d.is_dir()]
-        if not exe_path.exists() and len(subdirs) == 1:
-            nested_exe = subdirs[0] / "MicroClawDesktop.exe"
-            if nested_exe.exists():
-                for item in subdirs[0].iterdir():
-                    dest = install_dir / item.name
-                    if dest.exists():
-                        if dest.is_dir():
-                            shutil.rmtree(dest)
-                        else:
-                            dest.unlink()
-                    shutil.move(str(item), str(dest))
-                subdirs[0].rmdir()
-
-        if exe_path.exists():
-            self.log.success(f"桌面客户端安装到 {install_dir}")
-
-            def _rollback_desktop(d=str(install_dir)):
-                shutil.rmtree(d, ignore_errors=True)
-
-            self._register_rollback("删除桌面客户端", _rollback_desktop)
-            return True
-
-        # Try to find exe with different name
-        exes = list(install_dir.glob("*.exe"))
-        if exes:
-            self.log.success(f"桌面客户端安装到 {install_dir} (exe: {exes[0].name})")
-
-            def _rollback_desktop(d=str(install_dir)):
-                shutil.rmtree(d, ignore_errors=True)
-
-            self._register_rollback("删除桌面客户端", _rollback_desktop)
-            return True
-
-        self.log.error("解压后未找到可执行文件")
-        shutil.rmtree(install_dir, ignore_errors=True)
-        return False
+        finally:
+            if not preserve_work:
+                try:
+                    shutil.rmtree(work)
+                except OSError as error:
+                    self.log.warn(f"Could not clean temporary desktop files at {work}: {error}")
 
     def _find_desktop_exe(self) -> Path | None:
         """Find the desktop client exe."""
