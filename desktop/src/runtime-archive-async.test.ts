@@ -11,6 +11,11 @@ import {
   materializeRuntimeArchiveAsync,
   type RuntimeArchiveRequest,
 } from "./runtime-archive";
+import {
+  RUNTIME_PREPARATION_TIMING_PREFIX,
+  RuntimePreparationTiming,
+  type RuntimePreparationTimingEvent,
+} from "./runtime-preparation-timing";
 
 const roots: string[] = [];
 
@@ -25,7 +30,7 @@ function fixture() {
   roots.push(root);
   const runtimeRoot = path.join(root, "runtime");
   const worker = new EventEmitter() as unknown as Worker;
-  const startWorker = vi.fn((_request: RuntimeArchiveRequest) => worker);
+  const startWorker = vi.fn<(request: RuntimeArchiveRequest) => Worker>(() => worker);
   const extract = (_archive: string, destination: string) => {
     const packageRoot = path.join(destination, "node_modules", "openclaw");
     fs.mkdirSync(packageRoot, { recursive: true });
@@ -35,6 +40,115 @@ function fixture() {
 }
 
 describe("asynchronous bundled runtime preparation", () => {
+  it("reports worker startup through module readiness and validates its result", async () => {
+    const { runtimeRoot, worker, startWorker, extract } = fixture();
+    const events: RuntimePreparationTimingEvent[] = [];
+    const timing = new RuntimePreparationTiming("desktop", (message) => {
+      events.push(JSON.parse(message.slice(RUNTIME_PREPARATION_TIMING_PREFIX.length)));
+    });
+    const preparation = materializeRuntimeArchiveAsync(
+      "archive",
+      runtimeRoot,
+      "current",
+      startWorker,
+      timing,
+    );
+    expect(startWorker).toHaveBeenCalledWith({
+      archivePath: "archive",
+      runtimeRoot,
+      version: "current",
+      timing: true,
+    });
+    worker.emit("online");
+    expect(
+      events.some((event) => event.phase === "worker-startup" && event.status === "success"),
+    ).toBe(false);
+    worker.emit("message", { type: "runtime-preparation-ready" });
+    materializeRuntimeArchive("archive", runtimeRoot, "current", extract);
+    worker.emit("exit", 0);
+    await expect(preparation).resolves.toBe(runtimeRoot);
+    expect(events).toContainEqual(expect.objectContaining({ phase: "cache-check", cache: "miss" }));
+    expect(events).toContainEqual(
+      expect.objectContaining({ phase: "worker-startup", status: "success" }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ phase: "worker-result-validation", status: "success" }),
+    );
+    expect(events.at(-1)).toMatchObject({
+      phase: "worker-total",
+      kind: "summary",
+      status: "success",
+    });
+    events.length = 0;
+    startWorker.mockClear();
+    await materializeRuntimeArchiveAsync("archive", runtimeRoot, "current", startWorker, timing);
+    expect(startWorker).not.toHaveBeenCalled();
+    expect(events).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ phase: "cache-check", cache: "hit" });
+  });
+
+  it("records a worker failure once even when error is followed by exit", async () => {
+    const { runtimeRoot, worker, startWorker } = fixture();
+    const events: RuntimePreparationTimingEvent[] = [];
+    const timing = new RuntimePreparationTiming("desktop", (message) => {
+      events.push(JSON.parse(message.slice(RUNTIME_PREPARATION_TIMING_PREFIX.length)));
+    });
+    const preparation = materializeRuntimeArchiveAsync(
+      "archive",
+      runtimeRoot,
+      "current",
+      startWorker,
+      timing,
+    );
+    const assertion = expect(preparation).rejects.toThrow("worker failed");
+    worker.emit("error", new Error("worker failed"));
+    worker.emit("exit", 1);
+    await assertion;
+    expect(
+      events.filter((event) => event.phase === "worker-total" && event.status === "failed"),
+    ).toHaveLength(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({ phase: "worker-startup", status: "failed" }),
+    );
+  });
+
+  it("records bounded publish retry waits without changing the retry policy", () => {
+    let milliseconds = 0;
+    const events: RuntimePreparationTimingEvent[] = [];
+    const timing = new RuntimePreparationTiming(
+      "worker",
+      (message) => {
+        events.push(JSON.parse(message.slice(RUNTIME_PREPARATION_TIMING_PREFIX.length)));
+      },
+      () => milliseconds,
+    );
+    const failure = Object.assign(new Error("locked"), { code: "EPERM" });
+    const renameDirectory = vi.fn(() => {
+      throw failure;
+    });
+    expect(() =>
+      commitRuntimeArchive(
+        "staging",
+        "runtime",
+        renameDirectory,
+        (delay) => {
+          milliseconds += delay;
+        },
+        timing,
+      ),
+    ).toThrow(failure);
+    expect(renameDirectory).toHaveBeenCalledTimes(11);
+    const waits = events.filter((event) => event.status === "success");
+    expect(waits).toHaveLength(10);
+    expect(waits.at(-1)).toMatchObject({
+      phase: "publish-retry-wait",
+      durationMs: 1000,
+      attempt: 10,
+      errorCode: "EPERM",
+    });
+    expect(waits.reduce((total, event) => total + (event.durationMs ?? 0), 0)).toBe(5500);
+  });
+
   it.each(["EPERM", "EACCES", "EBUSY"])("retries temporary rename failures: %s", (code) => {
     const failure = Object.assign(new Error("temporarily locked"), { code });
     const renameDirectory = vi.fn().mockImplementationOnce(() => {

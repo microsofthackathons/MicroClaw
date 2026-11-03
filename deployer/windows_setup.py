@@ -32,6 +32,7 @@ from deployer.install_manifest import (
     resolve_bundled_install_manifest,
     write_install_manifest,
 )
+from deployer.install_timing import RuntimePreparationTiming
 from deployer.logger import DeployerLogger
 from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
 from deployer.openclaw_upgrade import (
@@ -186,6 +187,8 @@ _CREATE_SUSPENDED = 0x00000004
 # newly-written files) that start alone can take 30-60s, so this must be well
 # above the CLI boot time to avoid spurious validation failures.
 _OPENCLAW_RPC_TIMEOUT = 120
+_DESKTOP_RUNTIME_PREPARATION_TIMEOUT = 600
+_DESKTOP_RUNTIME_RECEIPT = "MICROCLAW_INSTALLER_RUNTIME "
 
 
 class _WindowsKillOnCloseJob:
@@ -419,6 +422,7 @@ class WindowsSetup:
         # Re-read env var at construction time (UI may have set it)
         self.node_dir = Path(os.environ.get("OPENCLAW_NODE_DIR", str(DEFAULT_NODE_DIR)))
         self._node_bin: Path | None = None
+        self._desktop_runtime_root: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
         self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
@@ -3055,7 +3059,6 @@ class WindowsSetup:
             or status == "disabled"
         )
 
-
     def get_openclaw_upgrade_transaction_id(self) -> str | None:
         transaction = self._openclaw_transaction
         return transaction.manifest.transaction_id if transaction is not None else None
@@ -3274,6 +3277,9 @@ class WindowsSetup:
                     break
             if entry:
                 break
+        if self._desktop_runtime_root is not None:
+            node = DEFAULT_DESKTOP_DIR / "resources" / "node.exe"
+            entry = self._desktop_runtime_root / "node_modules" / "openclaw" / "openclaw.mjs"
         if not node.exists() or entry is None:
             self.log.info("  Node or openclaw entry not found — skipping warmup")
             return True
@@ -3889,7 +3895,7 @@ class WindowsSetup:
         install_dir = DEFAULT_DESKTOP_DIR
         if self._desktop_install_is_current():
             self.log.info("桌面客户端与当前安装包一致，跳过解压")
-            return True
+            return self._prepare_desktop_runtime()
 
         # If already installed, overwrite with bundled version
         exe_path = install_dir / "MicroClawDesktop.exe"
@@ -3908,7 +3914,10 @@ class WindowsSetup:
         local_zip = self._find_local_desktop_zip()
         if local_zip:
             self.log.step(f"从本地安装桌面客户端 ({local_zip.name})…")
-            return self._extract_desktop_zip(local_zip, install_dir)
+            return (
+                self._extract_desktop_zip(local_zip, install_dir)
+                and self._prepare_desktop_runtime()
+            )
 
         # 2. Try network download
         download_url = self.cfg.get("desktop.download_url", "")
@@ -3927,10 +3936,89 @@ class WindowsSetup:
             self._download_with_progress(download_url, zip_path)
             result = self._extract_desktop_zip(zip_path, install_dir)
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            return result
+            return result and self._prepare_desktop_runtime()
         except Exception as e:
             self.log.error(f"桌面客户端下载失败: {e}")
             return False
+
+    def _prepare_desktop_runtime(self) -> bool:
+        self._desktop_runtime_root = None
+        resources = DEFAULT_DESKTOP_DIR / "resources"
+        if not (resources / "openclaw.asar").is_file():
+            return True
+        executable = DEFAULT_DESKTOP_DIR / "MicroClawDesktop.exe"
+        if not executable.is_file() or not (resources / "node.exe").is_file():
+            self.log.error("The packaged desktop executable or Node runtime is missing")
+            return False
+        self.log.step("Preparing the bundled OpenClaw runtime before service startup…")
+        timing = RuntimePreparationTiming(self.log)
+        try:
+            with timing.phase("preparation-total", summary=True):
+                with timing.phase("environment-preparation"):
+                    environment = self._get_env()
+                    environment.pop("ELECTRON_RUN_AS_NODE", None)
+                with timing.phase("helper-process", summary=True):
+                    try:
+                        result = self._run(
+                            [str(executable), "--prepare-installer-runtime"],
+                            env=environment,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=_DESKTOP_RUNTIME_PREPARATION_TIMEOUT,
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        timing.forward_output(error.stdout)
+                        timing.forward_output(error.stderr)
+                        raise
+                    timing.forward_output(result.stdout)
+                    timing.forward_output(result.stderr)
+                    if result.returncode != 0:
+                        detail = (result.stderr or result.stdout or "").strip()[-1500:]
+                        raise RuntimeError(
+                            f"Desktop runtime helper exited with code {result.returncode}: {detail}"
+                        )
+                with timing.phase("result-validation"):
+                    receipts = [
+                        json.loads(line[len(_DESKTOP_RUNTIME_RECEIPT) :])
+                        for line in result.stdout.splitlines()
+                        if line.startswith(_DESKTOP_RUNTIME_RECEIPT)
+                    ]
+                    if len(receipts) != 1 or not isinstance(receipts[0], dict):
+                        raise ValueError("The desktop did not confirm runtime preparation")
+                    runtime_root = Path(receipts[0]["runtimeRoot"])
+                    appdata = Path(
+                        os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+                    )
+                    expected_root = appdata / "microclaw" / "runtime" / "openclaw"
+                    if runtime_root.resolve() != expected_root.resolve():
+                        raise ValueError("The desktop prepared an unexpected runtime directory")
+                    package_dir = runtime_root / "node_modules" / "openclaw"
+                    package = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+                    if (
+                        not (package_dir / "openclaw.mjs").is_file()
+                        or not (runtime_root / ".microclaw-version")
+                        .read_text(encoding="utf-8")
+                        .strip()
+                        or not isinstance(package, dict)
+                        or package.get("name") != "openclaw"
+                        or not package.get("version")
+                    ):
+                        raise ValueError("The prepared OpenClaw runtime is incomplete")
+                    self._desktop_runtime_root = runtime_root
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+        ) as error:
+            self.log.error(f"Bundled OpenClaw runtime preparation failed: {error}")
+            return False
+        self.log.success(f"Bundled OpenClaw runtime is ready: {runtime_root}")
+        return True
 
     def _extract_desktop_zip(self, zip_path: Path, install_dir: Path) -> bool:
         """Extract a desktop client zip to install_dir."""
@@ -4242,6 +4330,17 @@ class WindowsSetup:
                     and isinstance(extensions, list)
                     and extensions
                     and all((plugin_dir / str(path)).is_file() for path in extensions)
+                    and (
+                        self._desktop_runtime_root is None
+                        or (
+                            package.get("version") == OPENCLAW_TARGET_VERSION
+                            and (plugin_dir / "node_modules" / "openclaw").is_dir()
+                            and os.path.samefile(
+                                plugin_dir / "node_modules" / "openclaw",
+                                self._desktop_runtime_root / "node_modules" / "openclaw",
+                            )
+                        )
+                    )
                 ):
                     return True
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -4428,15 +4527,6 @@ class WindowsSetup:
         if cli_context is None:
             return False
         openclaw_cmd, env = cli_context
-        try:
-            inspection = self._run_openclaw_json(
-                ["plugins", "inspect", _PARALLEL_PLUGIN_ID, "--json"]
-            )
-            if isinstance(inspection, dict):
-                self.log.info("  Parallel web search plugin is already installed")
-                return True
-        except RuntimeError:
-            pass
 
         self.log.step("Installing Parallel web search plugin…")
         registries = self._npm_registry_attempts()
@@ -4446,7 +4536,7 @@ class WindowsSetup:
             self.log.info(f"  Parallel npm registry attempt: {registry}")
             try:
                 result = self._run(
-                    openclaw_cmd + ["plugins", "install", _PARALLEL_PLUGIN_SPEC],
+                    openclaw_cmd + ["plugins", "install", "--force", _PARALLEL_PLUGIN_SPEC],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -4461,6 +4551,12 @@ class WindowsSetup:
                 self.log.error(f"Parallel web search plugin install failed: {error}")
                 return False
             if result.returncode == 0:
+                if (
+                    self._desktop_runtime_root is not None
+                    and not self._parallel_plugin_is_installed_locally(state_dir)
+                ):
+                    self.log.error("Parallel plugin is not linked to the desktop OpenClaw runtime")
+                    return False
                 self.log.success("Parallel-free web search is ready")
                 return True
             detail = result.stderr.strip() or result.stdout.strip()
@@ -4924,11 +5020,6 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"注册“已安装的应用”失败: {e}")
             return False
-
-
-
-
-
 
     # ────────────────────── Uninstall ──────────────────────
 
@@ -5724,6 +5815,10 @@ class WindowsSetup:
 
         Prefer .cmd over bare name to avoid .ps1 execution-policy issues.
         """
+        if self._desktop_runtime_root is not None:
+            node = DEFAULT_DESKTOP_DIR / "resources" / "node.exe"
+            entry = self._desktop_runtime_root / "node_modules" / "openclaw" / "openclaw.mjs"
+            return [str(node), str(entry)] if node.is_file() and entry.is_file() else None
         # Prefix used by the most recent install (set by install_openclaw_windows)
         install_prefix = getattr(self, "install_prefix", None)
         # Managed node dir (always check, even if _node_bin not set)
@@ -5763,6 +5858,8 @@ class WindowsSetup:
             path_prefix += str(self._node_bin) + os.pathsep
         if self._git_bin:
             path_prefix += self._git_bin + os.pathsep
+        if self._desktop_runtime_root is not None:
+            path_prefix = str(DEFAULT_DESKTOP_DIR / "resources") + os.pathsep + path_prefix
         if path_prefix:
             env["PATH"] = path_prefix + env.get("PATH", "")
 

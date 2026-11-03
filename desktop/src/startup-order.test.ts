@@ -3,6 +3,26 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("desktop startup order", () => {
+  it("prepares the installer runtime headlessly before upgrade recovery or application startup", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const lifecycle = source.slice(source.indexOf("const applicationStartup = app.whenReady()"));
+    const preparation = lifecycle.indexOf("process.argv.includes(INSTALLER_RUNTIME_ARGUMENT)");
+    const exit = lifecycle.indexOf(
+      "app.exit(await prepareInstallerRuntime(prepareBundledOpenClawDir))",
+    );
+    expect(preparation).toBeGreaterThan(-1);
+    expect(exit).toBeGreaterThan(preparation);
+    expect(lifecycle.slice(exit, lifecycle.indexOf("if (!settingsStore.has"))).toContain("return;");
+    for (const action of [
+      "validateInstallerOwnedUpgrade(",
+      "registerIpcHandlers()",
+      "const initialWindow = createMainWindow()",
+      "startApplicationServices().catch",
+    ]) {
+      expect(lifecycle.indexOf(action)).toBeGreaterThan(exit);
+    }
+  });
+
   it("keeps configured model use and catalog reads independent of the Copilot setup flag", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const chatValidation = source.slice(
