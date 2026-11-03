@@ -395,9 +395,16 @@ Use `-SetupCompression lzma` for the previous compression method, or
 `-IncludeInstallerZip` to also create `dist/MicroClawInstaller.zip` (CI requests it explicitly).
 An existing installer ZIP is not refreshed unless that switch is supplied.
 
+The portable ZIP defaults to `Fastest` compression. Use `-PortableCompression Optimal`
+for the previous ZIP compression level, or `-PortableCompression NoCompression` to
+leave compression to the outer setup EXE. Compare total build time and final EXE size
+when changing this setting; the installer still consumes the same ZIP layout.
+
 Repeated builds automatically reuse unchanged native resources, the packaged desktop,
 portable ZIP, installer directory, and setup EXE. Cache hits require matching SHA-256
 content fingerprints of the stage's inputs and existing outputs, not just timestamps.
+Content hashing uses smaller read buffers for dependency-heavy input trees; installed
+dependency contents remain part of the cache inputs.
 Source, dependency, toolchain, resource, or compression changes rebuild the affected
 stages; missing or changed outputs also invalidate their cache. Final EXE extraction
 verification and the signing gate still run on every build. Signing-configured builds
@@ -411,6 +418,8 @@ percentage of total time, and total build duration. Cache checks and cache write
 are timed separately from resource preparation, desktop packaging, ZIP creation,
 manifest/payload hashing, PyInstaller, NSIS compression, setup extraction/verification,
 and signing. Failed builds also print the summary, marking the active stage as failed.
+Desktop toolchain version discovery is timed separately from its cache check. Cache
+checks also report input fingerprint time and cache lookup/output verification time.
 
 During installation, the desktop's bundled OpenClaw runtime is extracted in a dedicated
 preparation mode, with a separate extraction timeout.

@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -212,6 +214,88 @@ class BuildCacheTests(unittest.TestCase):
         before = build_cache.fingerprint(self.root, ["tree"])
         self.assertEqual(build_cache.fingerprint(self.root, ["tree"]), before)
 
+    def test_content_hashing_preserves_depth_first_fingerprint_order(self):
+        nested = self.write("tree/a/nested/data.txt", "nested payload")
+        sibling = self.write("tree/a.txt", "sibling payload")
+        entries = [
+            ("missing", "missing"),
+            ("tree", "directory"),
+            ("tree/a", "directory"),
+            ("tree/a/nested", "directory"),
+            (
+                "tree/a/nested/data.txt",
+                "file",
+                nested.stat().st_size,
+                hashlib.sha256(nested.read_bytes()).hexdigest(),
+            ),
+            (
+                "tree/a.txt",
+                "file",
+                sibling.stat().st_size,
+                hashlib.sha256(sibling.read_bytes()).hexdigest(),
+            ),
+        ]
+        expected = hashlib.sha256()
+        for entry in entries:
+            expected.update(json.dumps(entry, ensure_ascii=True).encode("utf-8") + b"\n")
+        self.assertEqual(
+            build_cache.fingerprint(self.root, ["tree", "missing"]), expected.hexdigest()
+        )
+
+    def test_hashing_preserves_contents_across_read_buffer_boundaries(self):
+        content = bytes(range(256)) * 513
+        (self.root / "source.txt").write_bytes(content)
+        entry = ("source.txt", "file", len(content), hashlib.sha256(content).hexdigest())
+        expected = hashlib.sha256(
+            json.dumps(entry, ensure_ascii=True).encode("utf-8") + b"\n"
+        ).hexdigest()
+        self.assertEqual(self.key(), expected)
+
+    def test_content_hashing_keeps_name_and_subtree_exclusions(self):
+        self.write("tree/source/data.txt", "source")
+        excludes = ("*.tmp", "tree/generated")
+        before = build_cache.fingerprint(self.root, ["tree"], excludes)
+        self.write("tree/generated/nested/output.js", "generated")
+        self.write("tree/source/ignored.tmp", "temporary")
+        self.assertEqual(build_cache.fingerprint(self.root, ["tree"], excludes), before)
+
+    def test_nested_equal_length_edits_with_restored_timestamps_change_fingerprint(self):
+        source = self.write("tree/nested/data.txt", "before")
+        metadata = source.stat()
+        before = build_cache.fingerprint(self.root, ["tree"])
+        source.write_text("after!", encoding="utf-8")
+        os.utime(source, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        self.assertNotEqual(build_cache.fingerprint(self.root, ["tree"]), before)
+
+    def test_content_hashing_errors_are_not_silently_ignored(self):
+        self.write("tree/nested/data.txt", "source")
+        with (
+            patch.object(Path, "open", side_effect=PermissionError("unreadable input")),
+            self.assertRaisesRegex(PermissionError, "unreadable input"),
+        ):
+            build_cache.fingerprint(self.root, ["tree"])
+
+    def test_cli_reports_input_and_output_verification_timings(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                build_cache.__file__,
+                "probe",
+                "--root",
+                str(self.root),
+                "--stage",
+                "portable",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertFalse(data["hit"])
+        self.assertGreaterEqual(data["timings"]["inputs"], 0)
+        self.assertGreaterEqual(data["timings"]["verification"], 0)
+
     def test_directory_link_cycles_are_rejected(self):
         directory = self.root / "tree"
         directory.mkdir()
@@ -256,7 +340,7 @@ class BuildCachePowerShellTests(unittest.TestCase):
             parameters
             + "$ErrorActionPreference = 'Stop'\n$root = $PSScriptRoot\n"
             + functions
-            + '\n$context = @("PowerShell fixture", "quoted `"value`"`nsecond line")\n'
+            + '\n$context = @("PowerShell fixture", $PortableCompression, "quoted `"value`"`nsecond line")\n'
             + "$first = Get-BuildCache -Stage portable -Context $context\n"
             + "if (-not $first.hit) { Save-BuildCache -Cache $first }\n"
             + "$second = Get-BuildCache -Stage portable -Context $context\n"
@@ -294,6 +378,17 @@ class BuildCachePowerShellTests(unittest.TestCase):
     def test_rebuild_switch_bypasses_cache(self):
         self.run_harness()
         self.assertEqual(self.run_harness("-Rebuild"), {"first": False, "second": False})
+
+    def test_changing_portable_compression_invalidates_cached_archive(self):
+        self.assertEqual(self.run_harness(), {"first": False, "second": True})
+        self.assertEqual(
+            self.run_harness("-PortableCompression", "NoCompression"),
+            {"first": False, "second": True},
+        )
+        self.assertEqual(
+            self.run_harness("-PortableCompression", "NoCompression"),
+            {"first": True, "second": True},
+        )
 
     def test_disabled_cache_does_not_save_reusable_records(self):
         source = self.harness.read_text(encoding="utf-8-sig")

@@ -4,6 +4,8 @@ param(
     [string]$OpenClawVersion = '2026.10.5',
     [ValidateSet('zlib', 'lzma')]
     [string]$SetupCompression = 'zlib',
+    [ValidateSet('Optimal', 'Fastest', 'NoCompression')]
+    [string]$PortableCompression = 'Fastest',
     [switch]$IncludeInstallerZip,
     [switch]$Rebuild
 )
@@ -62,6 +64,8 @@ function Get-BuildCache {
     } else {
         Write-Host "  Cache miss: $Stage ($($cache.reason))" -ForegroundColor DarkGray
     }
+    Write-Host ("  Cache timing: {0}: inputs {1:F2}s, lookup/output verification {2:F2}s" -f `
+        $Stage, $cache.timings.inputs, $cache.timings.verification) -ForegroundColor DarkGray
     return $cache
 }
 
@@ -216,11 +220,12 @@ if (-not $nativeCache.hit) {
     Save-BuildCache -Cache $nativeCache
 }
 
-Start-BuildStage 'Preflight: check desktop cache'
+Start-BuildStage 'Preflight: desktop toolchain context'
 $desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString())
 $signingConfigured = [bool]($env:CSC_LINK -or $env:WIN_CSC_LINK -or $env:CSC_NAME -or
     $env:WIN_CSC_SUBJECT_NAME -or $env:WIN_CSC_SHA1 -or $env:TRUSTED_SIGNING_ENDPOINT -or
     $env:TRUSTED_SIGNING_ACCOUNT -or $env:TRUSTED_SIGNING_PROFILE)
+Start-BuildStage 'Preflight: check desktop cache'
 $desktopCache = Get-BuildCache -Stage desktop -Context $desktopContext `
     -ExtraInputs @((Get-Command node.exe).Source) -Disabled:$signingConfigured
 
@@ -279,16 +284,19 @@ if (-not $desktopCache.hit) { Save-BuildCache -Cache $desktopCache }
 Start-BuildStage 'Step 4/7: check portable cache'
 Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
-$portableCache = Get-BuildCache -Stage portable -Context $desktopContext
+$portableContext = $desktopContext + @($PortableCompression)
+$portableCache = Get-BuildCache -Stage portable -Context $portableContext
 Start-BuildStage 'Step 4/7: create portable zip'
 if (-not $portableCache.hit) {
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath
+    Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath `
+        -CompressionLevel $PortableCompression
     Start-BuildStage 'Step 4/7: save portable cache'
     Save-BuildCache -Cache $portableCache
 }
 $zipSizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  -> $zipPath  ${zipSizeMB} MB"
+Write-Host "  Portable compression: $PortableCompression" -ForegroundColor DarkGray
 
 # Build identity consumed by repeat-install fast paths. It is generated before
 # PyInstaller so the onedir bundle carries the identity of every managed input.
