@@ -326,6 +326,7 @@ import {
   type GatewayConfigSnapshot,
 } from "./windows-node-mxc-policy-promotion";
 import { startAfterGatewayRpcReady } from "./gateway-rpc-readiness";
+import { describeWindowsNodeCommandPolicyMismatch } from "./windows-node-command-policy-diagnostics";
 import { waitForGatewayHttpReadiness } from "./gateway-http-readiness";
 import {
   updateWindowsNodeInstructions,
@@ -6776,6 +6777,7 @@ function connectGatewayWs(): void {
               throw new Error("Managed Gateway generation changed before Windows node startup");
             }
           };
+          let lastCommandPolicyDiagnostic = "";
           const startup = startAfterGatewayRpcReady({
             probe: async (timeoutMs) => {
               assertCurrentGatewayGeneration();
@@ -6793,18 +6795,27 @@ function connectGatewayWs(): void {
                 );
               } else {
                 const config = snapshot.config;
-                if (
-                  !config ||
-                  typeof config !== "object" ||
-                  Array.isArray(config) ||
-                  JSON.stringify(
-                    applyWindowsNodeCommandPolicy(
-                      config as Record<string, unknown>,
-                      approvalProof.nodeId,
-                    ),
-                  ) !== JSON.stringify(config)
-                )
+                const expectedConfig =
+                  config && typeof config === "object" && !Array.isArray(config)
+                    ? applyWindowsNodeCommandPolicy(
+                        config as Record<string, unknown>,
+                        approvalProof.nodeId,
+                      )
+                    : undefined;
+                if (!expectedConfig || JSON.stringify(expectedConfig) !== JSON.stringify(config)) {
+                  const diagnostic = JSON.stringify({
+                    gatewayGeneration: approvalProof.gatewayGeneration,
+                    nodeId: approvalProof.nodeId,
+                    ...describeWindowsNodeCommandPolicyMismatch(config, expectedConfig),
+                  });
+                  if (diagnostic !== lastCommandPolicyDiagnostic) {
+                    console.warn(
+                      `[command-consent] Gateway command consent routing mismatch: ${diagnostic}`,
+                    );
+                    lastCommandPolicyDiagnostic = diagnostic;
+                  }
                   throw new Error("Gateway command consent routing is not effective");
+                }
               }
             },
             isCurrent: () => {
