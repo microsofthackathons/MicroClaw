@@ -7,9 +7,12 @@ import {
   assertMxcWeixinOutboundMediaSource,
   authorizeMxcWeixinOutboundMedia,
   fetchWeixinRemoteMediaWithPolicy,
+  hasMxcWeixinMediaPolicy,
+  isMxcManagedWeixin,
   isMxcWeixinIngressReleased,
   isWeixinSenderAllowedByPolicy,
   stageMxcWeixinInboundMedia,
+  waitForMxcWeixinIngressRelease,
 } from "./mxc-policy.js";
 
 describe("MXC WeChat policy", () => {
@@ -56,6 +59,91 @@ describe("MXC WeChat policy", () => {
     ).toString("base64");
     return { root, selected, inbound, outbound, generation, fingerprint, token, releasePath };
   }
+
+  function configureLivePolicy(policyJson: string, gatewayGeneration = "generation-1") {
+    process.env.MICROCLAW_MXC_LIVE_POLICY_PATH = "live-policy";
+    Reflect.set(globalThis, Symbol.for("microclaw.windows-node-mxc.live-policy.v1"), () => ({
+      gatewayGeneration,
+      policyFingerprint: "a".repeat(64),
+      policyJson,
+    }));
+  }
+
+  it("keeps host-mode polling and media available with approval compatibility enabled", async () => {
+    configure();
+    configureLivePolicy(JSON.stringify({ requestedStrength: "off", effectiveTier: "host" }));
+    delete process.env.MICROCLAW_MXC_INGRESS_RELEASE_PATH;
+    delete process.env.MICROCLAW_MXC_INGRESS_RELEASE_TOKEN;
+    delete process.env.MICROCLAW_MXC_WEIXIN_MEDIA_POLICY;
+    const response = new Response("image");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    expect(isMxcManagedWeixin()).toBe(false);
+    expect(isMxcWeixinIngressReleased()).toBe(true);
+    await expect(waitForMxcWeixinIngressRelease()).resolves.toBeUndefined();
+    expect(hasMxcWeixinMediaPolicy()).toBe(false);
+    await expect(
+      fetchWeixinRemoteMediaWithPolicy("https://example.test/image.png", fetchMock),
+    ).resolves.toBe(response);
+    expect(fetchMock).toHaveBeenCalledWith("https://example.test/image.png");
+  });
+
+  it.each([
+    ["full", "base-container"],
+    ["limited", "limited-container"],
+    ["full", "host"],
+    ["limited", "host"],
+    ["off", "base-container"],
+  ])("retains containment for %s mode with %s tier", (requestedStrength, effectiveTier) => {
+    configure();
+    configureLivePolicy(JSON.stringify({ requestedStrength, effectiveTier }));
+
+    expect(isMxcManagedWeixin()).toBe(true);
+    expect(isMxcWeixinIngressReleased()).toBe(false);
+    expect(hasMxcWeixinMediaPolicy()).toBe(true);
+    expect(() => assertMxcWeixinOutboundMediaSource("https://example.test/image.png")).toThrow(
+      /blocks remote HTTP\(S\) media/,
+    );
+  });
+
+  it("rechecks the authenticated mode instead of caching a host-mode exemption", () => {
+    configure();
+    configureLivePolicy(JSON.stringify({ requestedStrength: "off", effectiveTier: "host" }));
+    expect(isMxcWeixinIngressReleased()).toBe(true);
+
+    configureLivePolicy(JSON.stringify({ requestedStrength: "full", effectiveTier: "base-container" }));
+    expect(isMxcManagedWeixin()).toBe(true);
+    expect(isMxcWeixinIngressReleased()).toBe(false);
+  });
+
+  it.each(["invalid json", "null", "[]", "{}", '{"requestedStrength":"off"}'])(
+    "fails closed for malformed or incomplete live policy %s",
+    (policyJson) => {
+      configure();
+      configureLivePolicy(policyJson);
+
+      expect(isMxcManagedWeixin()).toBe(true);
+      expect(isMxcWeixinIngressReleased()).toBe(false);
+    },
+  );
+
+  it("does not accept an unauthenticated or stale host-mode policy", () => {
+    configure();
+    const policyJson = JSON.stringify({ requestedStrength: "off", effectiveTier: "host" });
+    configureLivePolicy(policyJson, "stale-generation");
+    expect(isMxcManagedWeixin()).toBe(true);
+    expect(isMxcWeixinIngressReleased()).toBe(false);
+
+    Reflect.set(globalThis, Symbol.for("microclaw.windows-node-mxc.live-policy.v1"), () => {
+      throw new Error("Invalid live policy signature");
+    });
+    expect(isMxcManagedWeixin()).toBe(true);
+    expect(isMxcWeixinIngressReleased()).toBe(false);
+
+    Reflect.deleteProperty(globalThis, Symbol.for("microclaw.windows-node-mxc.live-policy.v1"));
+    expect(isMxcManagedWeixin()).toBe(true);
+    expect(isMxcWeixinIngressReleased()).toBe(false);
+  });
 
   it("uses live grants and requires the new fingerprint before ingress resumes", async () => {
     const policy = configure();

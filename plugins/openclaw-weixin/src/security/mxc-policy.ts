@@ -46,7 +46,23 @@ function currentLivePolicy(): { policyFingerprint: string; policyJson: string } 
 }
 
 export function isMxcManagedWeixin(): boolean {
-  return process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1";
+  if (process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1") return false;
+  try {
+    const livePolicy = currentLivePolicy();
+    if (!livePolicy) return true;
+    const policy: unknown = JSON.parse(livePolicy.policyJson);
+    return !(
+      policy &&
+      typeof policy === "object" &&
+      !Array.isArray(policy) &&
+      "requestedStrength" in policy &&
+      policy.requestedStrength === "off" &&
+      "effectiveTier" in policy &&
+      policy.effectiveTier === "host"
+    );
+  } catch {
+    return true;
+  }
 }
 
 export function isMxcWeixinIngressReleased(): boolean {
