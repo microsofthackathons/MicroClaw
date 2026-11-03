@@ -5802,13 +5802,6 @@ async function startGatewayInner(
       setGatewayStatus("failed");
       return;
     }
-  } else {
-    const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId(false);
-    const pinned = applyWindowsNodeCommandPolicy(config, nodeId);
-    if (JSON.stringify(config) !== JSON.stringify(pinned))
-      writeConfigTextAtomically(JSON.stringify(pinned, null, 2));
-    config = pinned;
-    settingsStore.set("windowsNodeMxcNodeId", nodeId);
   }
   gatewayToken = config?.gateway?.auth?.token || "";
   gatewayPort = configuredPort;
@@ -5838,6 +5831,19 @@ async function startGatewayInner(
     !isWindowsNodeMxcDesired() && requiresPostSpawnChannelCheck(readConfig());
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
+  if (!isWindowsNodeMxcDesired()) {
+    if (!preparedPersonas) {
+      throw new Error("A valid agent configuration is required to start command consent");
+    }
+    const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId(false);
+    const pinned = applyWindowsNodeCommandPolicy(
+      preparedPersonas.config as Record<string, unknown>,
+      nodeId,
+    );
+    preparedPersonas.changed ||= JSON.stringify(preparedPersonas.config) !== JSON.stringify(pinned);
+    preparedPersonas.config = pinned;
+    settingsStore.set("windowsNodeMxcNodeId", nodeId);
+  }
   if (isWindowsNodeMxcDesired() && preparedPersonas) {
     settingsStore.set(
       "windowsNodeMxcToolBackups",
