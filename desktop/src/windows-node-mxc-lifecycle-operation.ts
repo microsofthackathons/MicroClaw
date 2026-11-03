@@ -9,6 +9,7 @@ export type WindowsNodeMxcLifecycleOperationDescriptor =
   | { kind: "apply-folder-policy" }
   | { kind: "login-weixin" }
   | { kind: "disconnect-weixin" }
+  | { kind: "update-command-consent" }
   | { kind: "update-model" };
 
 interface TrackedWindowsNodeMxcLifecycleOperation {

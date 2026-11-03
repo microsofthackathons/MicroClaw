@@ -7,7 +7,7 @@ namespace MicroClaw.WindowsNodeHost;
 
 internal static class ApprovalProofContract
 {
-    public const string Version = "microclaw.windows-node-approval.v1";
+    public const string Version = "microclaw.windows-node-approval.v2";
     public const string PlanVersion = "microclaw.windows-node-approval-plan.v2";
     public const int MaximumLifetimeMs = 30_000;
     public const int MaximumClockSkewMs = 5_000;
@@ -24,13 +24,15 @@ internal sealed record ApprovalProofRecord(
     [property: JsonPropertyName("planSha256")] string PlanSha256,
     [property: JsonPropertyName("issuedAtUnixMs")] long IssuedAtUnixMs,
     [property: JsonPropertyName("expiresAtUnixMs")] long ExpiresAtUnixMs,
-    [property: JsonPropertyName("signature")] string Signature);
+    [property: JsonPropertyName("signature")] string Signature,
+    [property: JsonPropertyName("consentDecision")] string ConsentDecision = "allow-once");
 
 internal sealed record ValidatedApprovalProof(
     string ApprovalId,
     string Nonce,
     string PlanSha256,
-    long LaunchExpiresAtUnixMs);
+    long LaunchExpiresAtUnixMs,
+    string ConsentDecision = "allow-once");
 
 internal sealed class ApprovalProofVerifier
 {
@@ -100,6 +102,8 @@ internal sealed class ApprovalProofVerifier
             throw new HostPolicyException(
                 "approval-proof-contract-invalid",
                 "The Gateway approval proof contract is unsupported.");
+        if (proof.ConsentDecision is not ("allow-once" or "policy"))
+            throw new HostPolicyException("consent-decision-invalid", "Invalid signed command consent decision.");
         if (string.IsNullOrWhiteSpace(proof.ApprovalId) || proof.ApprovalId.Length > 256
             || string.IsNullOrWhiteSpace(proof.Nonce) || proof.Nonce.Length > 128
             || !Guid.TryParse(proof.Nonce, out _))
@@ -176,7 +180,8 @@ internal sealed class ApprovalProofVerifier
             proof.ApprovalId,
             proof.Nonce,
             planSha256,
-            checked(now + ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs));
+            checked(now + ApprovalProofContract.MaximumPostConsumptionLaunchDelayMs),
+            proof.ConsentDecision);
     }
 
     public void Revalidate(ValidatedApprovalProof proof)
@@ -296,6 +301,7 @@ internal sealed class ApprovalProofVerifier
             EncodeField("planSha256", proof.PlanSha256.ToLowerInvariant()),
             $"issuedAtUnixMs={proof.IssuedAtUnixMs}",
             $"expiresAtUnixMs={proof.ExpiresAtUnixMs}",
+            EncodeField("consentDecision", proof.ConsentDecision),
         };
         return Convert.ToHexString(
             HMACSHA256.HashData(secret, Encoding.UTF8.GetBytes(string.Join('\n', fields))))

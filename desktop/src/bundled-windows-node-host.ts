@@ -9,7 +9,8 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import type { CommandConsentMode } from "./command-consent";
 import {
   type PowerShellFilesystemInitialization,
   validateNativePowerShellFilesystemInitialization,
@@ -18,6 +19,7 @@ import {
   WINDOWS_NODE_MXC_CANVAS_ACTIONS,
   WINDOWS_NODE_MXC_CANVAS_COMMANDS,
   WINDOWS_NODE_MXC_NODE_COMMANDS,
+  WINDOWS_NODE_COMMAND_CONSENT_COMMANDS,
 } from "./windows-node-mxc";
 import {
   validateWindowsNodeMxcAmbientAccessAssessment,
@@ -33,7 +35,7 @@ import {
 
 export const BUNDLED_WINDOWS_NODE_CWD_CONTRACT = "microclaw.windows-cwd.v1";
 export const BUNDLED_WINDOWS_NODE_ACTIVATION_CONTRACT = "microclaw.windows-activation.v1";
-export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v1";
+export const BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v2";
 export const BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT = "microclaw.windows-node-mxc.canvas.v1";
 export const BUNDLED_WINDOWS_NODE_DISPLAY_NAME = "MicroClaw Bundled Windows Node";
 export const BUNDLED_WINDOWS_NODE_REVISION = "fc9add75eda78daf548d80a55ffb64e63b159961";
@@ -112,7 +114,8 @@ interface StartOptions {
   uiLocale: string;
   openClawStateRoot: string;
   folders: BundledWindowsNodeFolder[];
-  requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">;
+  requestedStrength: WindowsNodeMxcEffectiveStrength;
+  commandConsentMode?: CommandConsentMode;
   effectiveTier: string;
   ambientAccess: BundledWindowsNodeAmbientAccess | null;
   approvalProof: BundledWindowsNodeApprovalProofContext;
@@ -178,9 +181,10 @@ export class BundledWindowsNodeHost {
     folders: BundledWindowsNodeFolder[],
     openClawStateRoot: string,
     readinessTransitionId: string,
-    requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off"> = "full",
+    requestedStrength: WindowsNodeMxcEffectiveStrength = "full",
     effectiveTier = "base-container",
     ambientAccess: BundledWindowsNodeAmbientAccess | null = null,
+    commandConsentMode: CommandConsentMode = "ask-when-needed",
   ): BundledWindowsNodeApprovalProofContext {
     if (!gatewayGeneration.trim()) throw new Error("Gateway generation is required");
     if (!/^[a-f0-9]{64}$/i.test(nodeId)) throw new Error("Bundled Windows node ID is invalid");
@@ -193,6 +197,7 @@ export class BundledWindowsNodeHost {
       requestedStrength,
       effectiveTier,
       ambientAccess,
+      commandConsentMode,
     );
     return {
       contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
@@ -212,7 +217,12 @@ export class BundledWindowsNodeHost {
     this.hostStderrTail = [];
     this.hostExit = null;
     assertLoopbackGateway(options.gatewayUrl);
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
+    assertBundledArtifacts(
+      this.hostPath,
+      this.wxcExecPath,
+      this.canvasHostPath,
+      options.requestedStrength !== "off",
+    );
     if (
       !this.livePolicyPath ||
       this.livePolicyAuthority?.gatewayGeneration !== options.gatewayGeneration
@@ -236,6 +246,7 @@ export class BundledWindowsNodeHost {
       options.requestedStrength,
       options.effectiveTier,
       options.ambientAccess,
+      options.commandConsentMode,
     );
     await writeTextAtomically(policyPath, policyJson);
     await fs.promises.rm(activationLeasePath, { force: true });
@@ -296,7 +307,11 @@ export class BundledWindowsNodeHost {
     const child = spawn(this.hostPath, [], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: createBundledWindowsNodeEnvironment(process.env.SystemRoot, scratchRoot),
+      env: createBundledWindowsNodeEnvironment(
+        process.env.SystemRoot,
+        scratchRoot,
+        options.requestedStrength === "off" ? process.env : undefined,
+      ),
     });
     this.process = child;
     options.onDiagnostic?.("spawned", {
@@ -371,7 +386,12 @@ export class BundledWindowsNodeHost {
     proof: BundledWindowsNodeApprovalProofContext,
     options: Pick<
       StartOptions,
-      "folders" | "openClawStateRoot" | "requestedStrength" | "effectiveTier" | "ambientAccess"
+      | "folders"
+      | "openClawStateRoot"
+      | "requestedStrength"
+      | "effectiveTier"
+      | "ambientAccess"
+      | "commandConsentMode"
     >,
   ): Promise<Record<string, string>> {
     const policyJson = this.buildPolicyJson(
@@ -380,6 +400,7 @@ export class BundledWindowsNodeHost {
       options.requestedStrength,
       options.effectiveTier,
       options.ambientAccess,
+      options.commandConsentMode,
     );
     const authority = new WindowsNodeMxcPolicyAuthority(proof.gatewayGeneration);
     const issued = authority.issue(policyJson);
@@ -403,6 +424,27 @@ export class BundledWindowsNodeHost {
     folders: BundledWindowsNodeFolder[],
     approval: LivePolicyApproval | null = null,
   ): Promise<BundledWindowsNodeApprovalProofContext> {
+    return this.applyLivePolicy(
+      gateway,
+      { approvedRoots: this.buildApprovedRoots(folders) },
+      { folders },
+      approval,
+    );
+  }
+
+  async applyLiveCommandConsentPolicy(
+    gateway: BundledWindowsNodeGateway,
+    commandConsentMode: CommandConsentMode,
+  ): Promise<BundledWindowsNodeApprovalProofContext> {
+    return this.applyLivePolicy(gateway, { commandConsentMode }, { commandConsentMode }, null);
+  }
+
+  private async applyLivePolicy(
+    gateway: BundledWindowsNodeGateway,
+    changes: Record<string, unknown>,
+    optionsChanges: Partial<Pick<StartOptions, "folders" | "commandConsentMode">>,
+    approval: LivePolicyApproval | null,
+  ): Promise<BundledWindowsNodeApprovalProofContext> {
     const expectedProcess = this.process;
     const options = this.startOptions;
     const authority = this.livePolicyAuthority;
@@ -415,13 +457,14 @@ export class BundledWindowsNodeHost {
       !this.livePolicyBaseJson ||
       authority.gatewayGeneration !== options.gatewayGeneration
     ) {
-      throw new Error("A running, managed node is required to apply a live folder policy");
+      throw new Error("A running, managed node is required to apply a live policy");
     }
     const runtimePolicy: Record<string, unknown> = JSON.parse(this.livePolicyBaseJson);
     const policyJson = JSON.stringify(
       {
         ...runtimePolicy,
-        approvedRoots: this.buildApprovedRoots(folders),
+        ...changes,
+        livePolicyEpoch: randomUUID(),
       },
       null,
       2,
@@ -450,7 +493,9 @@ export class BundledWindowsNodeHost {
     }
     if (
       this.process !== expectedProcess ||
+      expectedProcess.exitCode !== null ||
       this.startOptions !== options ||
+      response?.ok === false ||
       response?.revision !== issued.policy.revision ||
       response?.policyFingerprint !== issued.policy.policyFingerprint
     ) {
@@ -458,7 +503,8 @@ export class BundledWindowsNodeHost {
     }
     const proof = { ...options.approvalProof, policyFingerprint: issued.policy.policyFingerprint };
     this.policyFingerprint = proof.policyFingerprint;
-    this.startOptions = { ...options, folders, approvalProof: proof };
+    this.livePolicyBaseJson = policyJson;
+    this.startOptions = { ...options, ...optionsChanges, approvalProof: proof };
     this.activationLeaseAuthorityRevision++;
     return proof;
   }
@@ -477,9 +523,10 @@ export class BundledWindowsNodeHost {
   private buildPolicyJson(
     folders: BundledWindowsNodeFolder[],
     openClawStateRoot: string,
-    requestedStrength: Exclude<WindowsNodeMxcEffectiveStrength, "off">,
+    requestedStrength: WindowsNodeMxcEffectiveStrength,
     effectiveTier: string,
     ambientAccess: BundledWindowsNodeAmbientAccess | null,
+    commandConsentMode: CommandConsentMode = "ask-when-needed",
   ): string {
     const stateRoot = path.join(app.getPath("userData"), "windows-node");
     const ambientAssessmentScratchRoot = path.join(stateRoot, "ambient-scratch");
@@ -488,8 +535,10 @@ export class BundledWindowsNodeHost {
         policySchemaVersion: 2,
         requestedStrength,
         effectiveTier,
-        approvedRoots: this.buildApprovedRoots(folders),
-        deniedRoots: sensitiveWindowsRoots(stateRoot, openClawStateRoot),
+        commandConsentMode,
+        approvedRoots: requestedStrength === "off" ? [] : this.buildApprovedRoots(folders),
+        deniedRoots:
+          requestedStrength === "off" ? [] : sensitiveWindowsRoots(stateRoot, openClawStateRoot),
         wxcExecPath: this.wxcExecPath,
         canvas: {
           enabled: true,
@@ -714,10 +763,47 @@ export class BundledWindowsNodeHost {
     if (!expectedProcess || expectedProcess.exitCode !== null) {
       throw new Error("Bundled Windows node process is not running");
     }
-    const nodeId = this.ensureIdentityNodeId();
+    const requireMxcSurface = this.startOptions.requestedStrength !== "off";
+    const nodeId = this.ensureIdentityNodeId(requireMxcSurface);
     let approved = false;
     let lastForeignNodeCount = -1;
     const deadline = Date.now() + 5 * 60_000;
+    const restartAfterApproval = async () => {
+      const startOptions = this.startOptions;
+      if (!startOptions || this.process !== expectedProcess) {
+        throw new Error("Bundled Windows node changed before pairing approval completed");
+      }
+      this.stop(true);
+      const restartEpoch = this.activationLeaseEpoch;
+      const assertRestartCurrent = () => {
+        if (
+          this.activationLeaseEpoch !== restartEpoch ||
+          this.process !== null ||
+          this.startOptions !== null
+        ) {
+          throw new Error("Bundled Windows node changed while waiting for pairing reconnection");
+        }
+      };
+      while (Date.now() < deadline) {
+        assertRestartCurrent();
+        try {
+          const nodes = await gateway.request<unknown>("node.list", {});
+          assertRestartCurrent();
+          if (!inspectBundledNodeList(nodes, nodeId, requireMxcSurface).node?.connected) {
+            await this.start(startOptions);
+            expectedProcess = this.process;
+            if (!expectedProcess) {
+              throw new Error("Bundled Windows node did not restart after pairing approval");
+            }
+            return;
+          }
+        } catch (error) {
+          if (!isGatewayRequestTimeout(error)) throw error;
+        }
+        await delay(500);
+      }
+      throw new Error("The previous Windows node connection did not close after pairing approval");
+    };
 
     while (Date.now() < deadline) {
       const processError = this.describePairingProcessChange(expectedProcess);
@@ -726,28 +812,23 @@ export class BundledWindowsNodeHost {
       }
       try {
         if (!approved) {
-          approved = await approveBundledDevicePairRequest(gateway, nodeId, async () => {
-            const startOptions = this.startOptions;
-            if (!startOptions || this.process !== expectedProcess) {
-              throw new Error("Bundled Windows node changed before pairing approval completed");
-            }
-            this.stop(true);
-            await this.start(startOptions);
-            expectedProcess = this.process;
-            if (!expectedProcess) {
-              throw new Error("Bundled Windows node did not restart after pairing approval");
-            }
-          });
+          approved = await approveBundledDevicePairRequest(gateway, nodeId, restartAfterApproval);
         }
         const nodePairing = await gateway.request<unknown>("node.pair.list", {});
-        const nodePairRequestId = findBundledNodePairRequest(nodePairing, nodeId);
+        const nodePairRequestId = findBundledNodePairRequest(
+          nodePairing,
+          nodeId,
+          requireMxcSurface,
+        );
         if (nodePairRequestId) {
           await gateway.request("node.pair.approve", { requestId: nodePairRequestId });
           approved = true;
+          await restartAfterApproval();
+          continue;
         }
 
         const nodes = await gateway.request<unknown>("node.list", {});
-        const observation = inspectBundledNodeList(nodes, nodeId);
+        const observation = inspectBundledNodeList(nodes, nodeId, requireMxcSurface);
         if (observation.foreignNodeCount !== lastForeignNodeCount) {
           lastForeignNodeCount = observation.foreignNodeCount;
           this.startOptions?.onDiagnostic?.("pairing-node-list", {
@@ -804,9 +885,9 @@ export class BundledWindowsNodeHost {
     return null;
   }
 
-  ensureIdentityNodeId(): string {
+  ensureIdentityNodeId(includeMxc = true): string {
     this.identityNodeId = null;
-    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath);
+    assertBundledArtifacts(this.hostPath, this.wxcExecPath, this.canvasHostPath, includeMxc);
     const identityDirectory = path.join(app.getPath("userData"), "windows-node", "identity");
     const nodeId = execFileSync(this.hostPath, ["--identity", identityDirectory], {
       encoding: "utf8",
@@ -843,6 +924,48 @@ export class BundledWindowsNodeHost {
       await sha256FileAsync(this.canvasHostPath),
       await sha256DirectoryTreeAsync(path.dirname(this.canvasHostPath)),
     );
+  }
+
+  async rememberCommand(request: {
+    executable: string;
+    arguments: string[];
+    canonicalCwd: string;
+    agent: string | null;
+    sessionKey: string;
+  }): Promise<void> {
+    const stateDirectory = path.join(app.getPath("userData"), "windows-node", "command-consent");
+    const input = JSON.stringify({
+      command: [request.executable, ...request.arguments],
+      ...(request.canonicalCwd === "isolated-scratch:v1" ? {} : { cwd: request.canonicalCwd }),
+      agentId: request.agent,
+      sessionKey: request.sessionKey,
+    });
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile(
+        this.hostPath,
+        ["--remember-command", stateDirectory],
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 15_000,
+          env: createBundledWindowsNodeEnvironment(process.env.SystemRoot, app.getPath("temp")),
+        },
+        (error, stdout, stderr) => {
+          if (error)
+            return reject(
+              new Error(
+                `Windows Node could not remember the command: ${stderr.trim() || error.message}`,
+              ),
+            );
+          if (stdout.trim() !== "remembered")
+            return reject(new Error("Windows Node did not confirm the allowlist entry"));
+          resolve();
+        },
+      );
+      if (!child.stdin) return reject(new Error("Windows Node consent input is unavailable"));
+      child.stdin.on("error", reject);
+      child.stdin.end(input + "\n");
+    });
   }
 
   respond(requestId: string, decision: "deny" | "allow-once" | "allow-always"): void {
@@ -1180,7 +1303,11 @@ export async function approveBundledDevicePairRequest(
   return true;
 }
 
-export function findBundledNodePairRequest(payload: unknown, nodeId: string): string | null {
+export function findBundledNodePairRequest(
+  payload: unknown,
+  nodeId: string,
+  requireMxcSurface = true,
+): string | null {
   const pending = getRecordArray(payload, "pending");
   const matches = pending.filter((entry) => {
     const candidateId = stringField(entry, "nodeId") || stringField(entry, "deviceId");
@@ -1190,7 +1317,7 @@ export function findBundledNodePairRequest(payload: unknown, nodeId: string): st
       candidateId.toLowerCase() === nodeId.toLowerCase() &&
       (!platform || platform === "windows" || platform === "win32") &&
       (!remoteIp || isLoopbackAddress(remoteIp)) &&
-      hasExactBundledCommands(stringArrayField(entry, "commands"))
+      hasExpectedBundledCommands(stringArrayField(entry, "commands"), requireMxcSurface)
     );
   });
   if (matches.length > 1) {
@@ -1214,6 +1341,7 @@ export function assertApprovalResponseMatches(pendingRequestId: string, response
 export function inspectBundledNodeList(
   payload: unknown,
   nodeId: string,
+  requireMxcSurface = true,
 ): {
   node: { connected: boolean; displayName: string; commands: string[] } | null;
   foreignNodeCount: number;
@@ -1242,7 +1370,7 @@ export function inspectBundledNodeList(
     displayName: stringField(match, "displayName") || stringField(match, "name"),
     commands: stringArrayField(match, "commands"),
   };
-  if (node.connected && !hasExactBundledCommands(node.commands)) {
+  if (node.connected && !hasExpectedBundledCommands(node.commands, requireMxcSurface)) {
     throw new Error("Connected app-owned Windows node declared an unexpected command surface");
   }
   return { node, foreignNodeCount };
@@ -1321,13 +1449,13 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
     : [];
 }
 
-function hasExactBundledCommands(commands: string[]): boolean {
-  return (
-    commands.length === WINDOWS_NODE_MXC_NODE_COMMANDS.length &&
-    [...commands]
-      .sort()
-      .every((command, index) => command === [...WINDOWS_NODE_MXC_NODE_COMMANDS].sort()[index])
-  );
+function hasExpectedBundledCommands(commands: string[], requireMxcSurface: boolean): boolean {
+  const expected = new Set<string>(WINDOWS_NODE_MXC_NODE_COMMANDS);
+  const actual = new Set(commands);
+  if (actual.size !== commands.length || commands.some((command) => !expected.has(command)))
+    return false;
+  if (requireMxcSurface) return actual.size === expected.size;
+  return WINDOWS_NODE_COMMAND_CONSENT_COMMANDS.every((command) => actual.has(command));
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -1389,11 +1517,13 @@ function assertBundledArtifacts(
   hostPath: string,
   wxcExecPath: string,
   canvasHostPath: string,
+  includeMxc = true,
 ): void {
   if (!fs.existsSync(hostPath))
     throw new Error(`Bundled Windows node host is missing: ${hostPath}`);
   if (!fs.existsSync(canvasHostPath))
     throw new Error(`Bundled Windows node Canvas host is missing: ${canvasHostPath}`);
+  if (!includeMxc) return;
   const architecture = assertBundledMxcProbeArtifact(wxcExecPath);
   const resourceRoot = path.dirname(path.dirname(hostPath));
   const patchedHostPrepPath = path.join(resourceRoot, "host-prep", "microclaw-mxc-host-prep.exe");
@@ -1647,11 +1777,12 @@ function isTransientWindowsReplaceError(error: unknown): boolean {
 export function createBundledWindowsNodeEnvironment(
   systemRoot: string | undefined,
   scratchRoot: string,
+  hostEnvironment?: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) {
     throw new Error("A valid Windows system root is required for the bundled Windows node");
   }
-  return {
+  const environment: NodeJS.ProcessEnv = {
     SystemRoot: systemRoot,
     WINDIR: systemRoot,
     PATH: [
@@ -1662,6 +1793,33 @@ export function createBundledWindowsNodeEnvironment(
     TEMP: scratchRoot,
     TMP: scratchRoot,
   };
+  if (hostEnvironment) {
+    environment.PATHEXT = ".COM;.EXE;.BAT;.CMD";
+    for (const name of [
+      "PATH",
+      "PATHEXT",
+      "USERPROFILE",
+      "HOME",
+      "HOMEDRIVE",
+      "HOMEPATH",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "PROGRAMDATA",
+      "ProgramFiles",
+      "ProgramFiles(x86)",
+      "ProgramW6432",
+      "ComSpec",
+      "SystemDrive",
+      "USERNAME",
+      "USERDOMAIN",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+    ]) {
+      if (hostEnvironment[name] !== undefined) environment[name] = hostEnvironment[name];
+    }
+  }
+  return environment;
 }
 
 export function sensitiveWindowsRoots(...stateRoots: string[]): string[] {

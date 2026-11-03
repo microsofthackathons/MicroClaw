@@ -494,7 +494,7 @@
             <div class="mxc-subtitle">{{ t("settings.windowsNodeMxcAutomatic") }}</div>
           </div>
           <div
-            v-if="windowsNodeMxcStatusLoading"
+            v-if="windowsNodeMxcStatusLoading || windowsNodeMxcFolderApplying"
             class="mxc-alert"
             role="status"
             data-testid="mxc-status-loading"
@@ -743,76 +743,35 @@
                 </el-button>
               </div>
             </div>
-            <div
-              v-if="!windowsNodeMxcLimitedMode"
-              class="card-row no-border mxc-folder-policy"
-              style="flex-direction: column; align-items: stretch"
-            >
-              <div class="mxc-folder-policy-heading">
-                <span class="row-label">{{ t("settings.windowsNodeMxcDurableApprovals") }}</span>
-                <el-button
-                  v-if="windowsNodeMxcStatus.durableApprovals.records.length"
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="revokeAllWindowsNodeMxcDurableApprovals"
-                >
-                  {{ t("settings.windowsNodeMxcRevokeAllApprovals") }}
-                </el-button>
-              </div>
-              <div class="mxc-folder-policy-hint">
-                {{ t("settings.windowsNodeMxcDurableApprovalsHint") }}
-              </div>
-              <div
-                v-for="approval in windowsNodeMxcStatus.durableApprovals.records"
-                :key="approval.id"
-                class="mxc-durable-approval"
-              >
-                <strong>{{ approval.commandText }}</strong>
-                <span>{{ approval.executablePath }}</span>
-                <span
-                  >{{ t("settings.windowsNodeMxcApprovalCwd") }}: {{ approval.cwdBinding }}</span
-                >
-                <span>
-                  {{ t("settings.windowsNodeMxcApprovalAccess") }}:
-                  {{
-                    approval.declaredAccess
-                      .map((entry) => `${entry.access.toUpperCase()} ${entry.path}`)
-                      .join(", ") || "none"
-                  }}
-                </span>
-                <span>
-                  {{ t("settings.windowsNodeMxcApprovalScope") }}:
-                  {{ approval.agentId ?? "none" }} / {{ approval.sessionKey }}
-                </span>
-                <span>
-                  {{ t("settings.windowsNodeMxcApprovalCreated") }}: {{ approval.createdAt }} ·
-                  {{ t("settings.windowsNodeMxcApprovalLastUsed") }}:
-                  {{ approval.lastUsedAt ?? t("settings.windowsNodeMxcApprovalNever") }}
-                </span>
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="revokeWindowsNodeMxcDurableApproval(approval.id)"
-                >
-                  {{ t("settings.windowsNodeMxcRevokeApproval") }}
-                </el-button>
-              </div>
-              <div
-                v-if="windowsNodeMxcStatus.durableApprovals.records.length === 0"
-                class="dir-empty"
-              >
-                {{ t("settings.windowsNodeMxcNoDurableApprovals") }}
-              </div>
-              <div
-                v-if="windowsNodeMxcStatus.durableApprovals.warning"
-                class="mxc-alert mxc-alert-warning"
-              >
-                {{ windowsNodeMxcStatus.durableApprovals.warning }}
-              </div>
-            </div>
           </template>
+        </div>
+        <div class="card-group" data-testid="command-consent-settings">
+          <div
+            class="card-row no-border"
+            style="flex-direction: column; align-items: stretch; gap: 12px"
+          >
+            <span class="row-label">{{ t("settings.commandConsent") }}</span>
+            <el-radio-group
+              :model-value="settings.commandConsentMode"
+              :disabled="
+                commandConsentApplying ||
+                windowsNodeMxcApplying ||
+                windowsNodeMxcFolderApplying ||
+                chatStore.streaming
+              "
+              @change="setCommandConsentMode"
+            >
+              <el-radio value="ask-when-needed">{{
+                t("settings.commandConsentAskWhenNeeded")
+              }}</el-radio>
+              <el-radio value="allow-always">{{
+                t("settings.commandConsentAllowAlways")
+              }}</el-radio>
+            </el-radio-group>
+            <div class="mxc-folder-policy-hint">{{ t("settings.commandConsentHint") }}</div>
+            <div class="mxc-folder-policy-hint">{{ t("settings.commandConsentNativeTools") }}</div>
+            <div class="mxc-folder-policy-hint">{{ t("settings.commandConsentLiveUpdate") }}</div>
+          </div>
         </div>
       </div>
 
@@ -1136,6 +1095,7 @@ const windowsNodeMxcApplying = ref(false);
 const windowsNodeMxcFolderApplying = ref(false);
 const windowsNodeMxcTransitionPhases = new Set([
   "updating-folders",
+  "updating-consent",
   "updating-model",
   "connecting-weixin",
   "disconnecting-weixin",
@@ -1349,14 +1309,14 @@ function replaceWindowsNodeMxcFolderBaseline(policy: { rw: string[]; ro: string[
   windowsNodeMxcFolderBaseline.ro.splice(0, windowsNodeMxcFolderBaseline.ro.length, ...policy.ro);
 }
 
-function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus) {
+function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus, replaceFolderDraft = false) {
   windowsNodeMxcStatus.value = status;
   windowsNodeMxcStatusError.value = "";
   const effectiveFolders = {
     rw: status.folders.filter((entry) => entry.access === "rw").map((entry) => entry.path),
     ro: status.folders.filter((entry) => entry.access === "ro").map((entry) => entry.path),
   };
-  if (!windowsNodeMxcFolderDraftDirty.value || windowsNodeMxcFolderApplying.value) {
+  if (!windowsNodeMxcFolderDraftDirty.value || replaceFolderDraft) {
     replaceWindowsNodeMxcFolderDraft(effectiveFolders);
   }
   replaceWindowsNodeMxcFolderBaseline(effectiveFolders);
@@ -1513,7 +1473,7 @@ async function applyWindowsNodeMxcFolderPolicy() {
       rw: [...windowsNodeMxcFolderDraft.rw],
       ro: [...windowsNodeMxcFolderDraft.ro],
     });
-    updateWindowsNodeMxcStatus(status);
+    updateWindowsNodeMxcStatus(status, true);
     ElMessage.success(t("settings.windowsNodeMxcApplyFoldersComplete"));
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
@@ -1528,34 +1488,22 @@ function stagePreviousWindowsNodeMxcFolderPolicy() {
   if (previous) replaceWindowsNodeMxcFolderDraft(previous);
 }
 
-async function revokeWindowsNodeMxcDurableApproval(id: string) {
+const commandConsentApplying = ref(false);
+async function setCommandConsentMode(value: string | number | boolean | undefined) {
+  if (value !== "ask-when-needed" && value !== "allow-always") return;
+  commandConsentApplying.value = true;
   try {
-    await window.openclaw.windowsNodeMxc.revokeDurableApproval(id);
+    settings.commandConsentMode = await window.openclaw.commandConsent.setMode(value);
     await loadWindowsNodeMxcStatus();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    commandConsentApplying.value = false;
   }
-}
-
-async function revokeAllWindowsNodeMxcDurableApprovals() {
-  try {
-    await ElMessageBox.confirm(
-      t("settings.windowsNodeMxcRevokeAllApprovalsWarning"),
-      t("settings.windowsNodeMxcRevokeAllApprovals"),
-      {
-        type: "warning",
-        confirmButtonText: t("settings.windowsNodeMxcRevokeAllApprovals"),
-        cancelButtonText: t("common.cancel"),
-      },
-    );
-  } catch {
-    return;
-  }
-  await window.openclaw.windowsNodeMxc.revokeAllDurableApprovals();
-  await loadWindowsNodeMxcStatus();
 }
 
 const settings = reactive({
+  commandConsentMode: "ask-when-needed" as "ask-when-needed" | "allow-always",
   language: "en-US",
   autoStart: false,
   minimizeToTray: false,
@@ -2114,6 +2062,7 @@ onMounted(async () => {
   const saved = await window.openclaw.settings.get();
   if (saved) {
     modelFormSelections.value = saved.modelFormSelections ?? {};
+    settings.commandConsentMode = saved.commandConsentMode ?? "ask-when-needed";
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
     settings.minimizeToTray = saved.minimizeToTray ?? false;
@@ -3376,22 +3325,6 @@ async function clearChatHistory() {
   margin-top: 12px;
 }
 
-.mxc-durable-approval {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 10px;
-  padding: 10px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.mxc-durable-approval .el-button {
-  align-self: flex-start;
-  margin-top: 4px;
-}
 .mxc-actions {
   justify-content: flex-end;
   gap: 8px;

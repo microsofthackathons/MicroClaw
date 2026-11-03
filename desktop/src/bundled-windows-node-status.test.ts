@@ -151,6 +151,30 @@ describe("nonblocking bundled Windows node status", () => {
     expect(host.status().nodeId).toBeNull();
   });
 
+  it("pairs in regular mode without requiring MXC artifacts", async () => {
+    fs.rmSync(path.join(root, "mxc", "wxc-exec.exe"));
+    Object.assign(host, {
+      startOptions: { requestedStrength: "off" },
+      process: { exitCode: null, signalCode: null },
+    });
+    const gateway = { request: vi.fn().mockRejectedValue(new Error("gateway reached")) };
+    await expect(host.ensurePaired(gateway)).rejects.toThrow("gateway reached");
+    expect(gateway.request).toHaveBeenCalledWith("device.pair.list", {});
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("still requires MXC artifacts before pairing in sandboxed mode", async () => {
+    fs.rmSync(path.join(root, "mxc", "wxc-exec.exe"));
+    Object.assign(host, {
+      startOptions: { requestedStrength: "full" },
+      process: { exitCode: null, signalCode: null },
+    });
+    const gateway = { request: vi.fn() };
+    await expect(host.ensurePaired(gateway)).rejects.toThrow("Pinned MXC runtime is missing");
+    expect(gateway.request).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
   it("validates the full runtime asynchronously and yields to the event loop", async () => {
     acceptOfficialFixtures();
     let completed = false;

@@ -195,6 +195,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
 
   it.each([
     "updating-folders",
+    "updating-consent",
     "updating-model",
     "connecting-weixin",
     "disconnecting-weixin",

@@ -11,7 +11,6 @@ import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
-  buildMicroclawWindowsNodeShellCommand,
   classifyWindowsNodeMxcInvokeFailure,
   describeWindowsNodeSystemRunResponseShape,
   normalizeWindowsNodeSystemRunResponse,
@@ -599,7 +598,6 @@ describe("pinned OpenClaw node approval proof backport", () => {
       PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
-      PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
       PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
       PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
       PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
@@ -823,24 +821,12 @@ describe("pinned OpenClaw node approval proof backport", () => {
       expect(patched).toContain("describeMicroclawNodeSystemRunResponseShape(raw)");
     });
 
-    it.each([
-      String.raw`New-Item -ItemType Directory -Path "C:\Users\sunt\Desktop\MXC-Approval-Smoke-20261020-1150"`,
-      String.raw`mkdir "C:\Users\sunt\Desktop\MXC-Approval-Smoke-20261020-1150"`,
-    ])("uses PowerShell for Windows node shell payloads: %s", (command) => {
-      expect(
-        buildMicroclawWindowsNodeShellCommand(command, { SystemRoot: "D:\\Windows\\" }),
-      ).toEqual([
-        "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        command,
-      ]);
-
-      const patched = patchPinnedOpenClawBashTools(source);
-      expect(patched).toContain("buildMicroclawWindowsNodeShellCommand(command, process.env)");
-      expect(patched).not.toContain(PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE);
+    it("preserves OpenClaw's own Windows node shell transport", () => {
+      const patched = patchPinnedOpenClawBashTools(
+        source + "\n" + PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
+      );
+      expect(patched).toContain(PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE);
+      expect(patched).not.toContain("buildMicroclawWindowsNodeShellCommand");
     });
 
     it("deduplicates an exact unresolved plan before approval and records both dispatch paths", () => {
@@ -863,7 +849,6 @@ describe("pinned OpenClaw node approval proof backport", () => {
       PINNED_BASH_TOOLS_DISPATCH_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_FOLLOWUP_FAILURE_SOURCE,
       PINNED_BASH_TOOLS_INVOKE_RESULT_SOURCE,
-      PINNED_BASH_TOOLS_WINDOWS_SHELL_SOURCE,
       PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
       PINNED_BASH_TOOLS_POLICY_DENIED_GUIDANCE_SOURCE,
       PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
@@ -1088,7 +1073,8 @@ describe("Windows Node MXC approval proof minter", () => {
       planSha256: "121d69569e93b8e70445e4d8815cf9d72fd68d5065fa11106c4f204f4c78b661",
       issuedAtUnixMs: 1_735_689_600_000,
       expiresAtUnixMs: 1_735_689_600_000 + APPROVAL_PROOF_TTL_MS,
-      signature: "be550cd55e9ba5040270c80bcefc88179813a0cd8e18c393545fa6155c43f296",
+      consentDecision: "allow-once",
+      signature: "bd59c7a12592b8153fc2a991f24b078c5f5e832857bf1c231b9060bb236b236f",
     });
   });
 

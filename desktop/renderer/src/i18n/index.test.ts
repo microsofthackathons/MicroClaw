@@ -193,12 +193,12 @@ describe("i18n", () => {
     setLocale("en-US");
     expect(t("perm.titleMxcLimited")).toBe("Limited filesystem containment");
     expect(t("perm.mxcLimitedScope")).toContain("additive, not an exclusive allowlist");
-    expect(t("perm.mxcAllowAlways")).toBe("Always allow in this conversation");
+    expect(t("perm.mxcAllowAlways")).toBe("Remember for this agent");
 
     setLocale("zh-CN");
     expect(t("perm.titleMxcLimited")).toBe("有限文件系统隔离");
     expect(t("perm.mxcLimitedScope")).toContain("叠加式授权");
-    expect(t("perm.mxcAllowAlways")).toBe("在此对话中始终允许");
+    expect(t("perm.mxcAllowAlways")).toBe("为此智能体记住");
     setLocale("en-US");
   });
 

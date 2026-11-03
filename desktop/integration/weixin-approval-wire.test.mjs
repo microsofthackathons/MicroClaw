@@ -17,10 +17,8 @@ import {
   readAuthenticatedWeixinWireOwner,
   readWeixinAccountStatus,
 } from "../src/weixin-account-status";
-import {
-  buildMicroclawWindowsNodeShellCommand,
-  createWindowsNodeMxcApprovalProofMinter,
-} from "../src/openclaw-approval-replay-compat.mjs";
+import { createWindowsNodeMxcApprovalProofMinter } from "../src/openclaw-approval-replay-compat.mjs";
+import { explicitPowerShellCommand } from "./fixtures/explicit-powershell-command.mjs";
 import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc";
 import {
   normalizeWeixinRemoteApprovalOwner,
@@ -103,8 +101,8 @@ function approvalFor(
   const preview = declaredAccess.length
     ? `# [declare-access]${declaredAccess.map((entry) => `${entry.access}:${entry.path}`).join("; ")}[/declare-access]\n${command}`
     : command;
-  const argv = buildMicroclawWindowsNodeShellCommand(preview, { SystemRoot: "C:\\Windows" }).map(
-    (argument) => (argument === preview ? command : argument),
+  const argv = explicitPowerShellCommand(preview, { SystemRoot: "C:\\Windows" }).map((argument) =>
+    argument === preview ? command : argument,
   );
   const initialization = initialized
     ? createPowerShellFilesystemInitialization(argv, executable, declaredAccess)
@@ -129,6 +127,7 @@ function approvalFor(
       )
       .digest("hex"),
     declaredAccess,
+    commandConsent: { required: true, allowAlwaysAvailable: false },
     ...(initialization ? { providerInitialization: initialization } : {}),
   };
   captured ??= runPinnedApprovalRequests(plan, rawPeer, security.nodeId).find(
@@ -355,6 +354,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       activationLeaseWriteQueue: Promise.resolve(),
       gatewayGeneration: security.gatewayGeneration,
       policyFingerprint: security.policyFingerprint,
+      identityNodeId: security.nodeId,
       startOptions: {
         requestedStrength: security.requestedMode,
         effectiveTier: security.effectiveMode,
@@ -374,12 +374,15 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     });
     const readiness = createMainFunctionFixture("requireEffectiveWindowsNodeMxc", {
       windowsNodeMxcSecurityTransitionInProgress: false,
+      commandConsentUpdating: false,
       isWindowsNodeMxcDesired: () => true,
       isWindowsNodeMxcIngressReleased: () => true,
+      captureGatewayReadinessCheckpoint: () => () => true,
       gatewayGenerationId: security.gatewayGeneration,
       windowsNodeMxcIngressGeneration: security.gatewayGeneration,
       windowsNodeMxcActivationInProgress: false,
       bundledWindowsNodeHost: host,
+      isApplicationIngressReady: () => true,
       getWindowsNodeMxcStatus: async () => ({
         effectiveEnabled:
           host.status().processRunning && host.status().activationLease?.mode === "active",
@@ -392,6 +395,98 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     main.replace("requireEffectiveWindowsNodeMxc", readiness.handle);
     return { host, current, readiness, proofContext };
   }
+  it.each([true, false])(
+    "requires one combined folder prompt even when command consent is required=%s",
+    async (required) => {
+      const request = {
+        ...approval,
+        commandConsent: { required, allowAlwaysAvailable: required },
+        allowedDecisions: ["allow-once", "allow-always", "deny"],
+        policyFingerprint: security.policyFingerprint,
+        planSha256: "d".repeat(64),
+      };
+      const proof = { policyFingerprint: security.policyFingerprint };
+      const send = vi.fn();
+      const resolve = vi.fn().mockResolvedValue({});
+      const client = { connected: true, request: resolve };
+      let pending;
+      const handler = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", {
+        windowsNodeMxcApprovalResolutionCompletion: null,
+        windowsNodeMxcApprovalProofContext: proof,
+        isWindowsNodeMxcDesired: () => true,
+        getWindowsNodeMxcMissingFolders: () => [{ path: root, access: "rw" }],
+        getBundledWindowsNodeFolders: () => [],
+        windowsNodeMxcWeixinContext: null,
+        validateWindowsNodeMxcUserDir: async (folder) => ({ ok: true, canonicalPath: folder }),
+        gatewayGenerationId: security.gatewayGeneration,
+        isApplicationIngressReady: () => true,
+        gwClient: client,
+        findPendingWindowsNodeMxcGatewayApproval: () => null,
+        mxcApprovalDeadline: (now) => now + 60_000,
+        findWeixinApprovalSource: () => null,
+        windowsNodeMxcWeixinRemoteApprovalSources: sources,
+        currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => null,
+        windowsNodeMxcWeixinRemoteApprovalServer: null,
+        resolveSupportedLocale: () => "en-US",
+        settingsStore: { get: () => "en-US" },
+        WindowsNodeMxcApprovalLifecycle: class {
+          pending = true;
+          start() {}
+        },
+        WeixinRemoteDeliveryCoordinator,
+        pendingWindowsNodeMxcGatewayApproval: null,
+        queuedWindowsNodeMxcGatewayApprovals: [],
+        beginPendingWindowsNodeMxcRemoteDelivery: (entry) => {
+          pending = entry;
+        },
+        sendToWindow: send,
+        mainWindow: {},
+        projectWindowsNodeMxcApprovalForRenderer,
+        getWindowsNodeMxcRequestedMode: () => "full",
+        console: { info: vi.fn() },
+      });
+      await handler.handle(request, security.gatewayGeneration);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(pending.request.folderChanges).toEqual([{ path: root, access: "rw" }]);
+      expect(pending.request.allowedDecisions).toEqual(["deny", "allow-once"]);
+
+      const applyFolders = vi.fn().mockResolvedValue({});
+      const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
+        withWindowsNodeMxcApprovalResolution: (operation) => operation(),
+        gatewayGenerationId: security.gatewayGeneration,
+        windowsNodeMxcApprovalProofContext: proof,
+        gwClient: client,
+        sendToWindow: vi.fn(),
+        mainWindow: {},
+        windowsNodeMxcSecurityTransitionInProgress: false,
+        findPendingWindowsNodeMxcGatewayApproval: () => pending,
+        isApplicationIngressReady: () => true,
+        getWindowsNodeMxcFolderPolicy: () => ({ ro: [], rw: [] }),
+        validateWindowsNodeMxcUserDir: async (folder) => ({ ok: true, canonicalPath: folder }),
+        planWindowsNodeMxcFolderUpsert: (_policy, folder, access) => ({
+          ok: true,
+          dirs: { ro: [], rw: access === "rw" ? [folder] : [] },
+        }),
+        applyRunningWindowsNodeMxcFolders: applyFolders,
+        commitMxcApprovalDecision,
+        windowsNodeMxcGatewayApprovalResolutionTarget: null,
+        console: { info: vi.fn(), error: vi.fn() },
+      });
+      const outcome = await commit.handle(pending, "allow-once", "desktop", null);
+      expect(outcome).toMatchObject({ status: "accepted", decision: "allow-once" });
+      expect(applyFolders).toHaveBeenCalledExactlyOnceWith(
+        { ro: [], rw: [root] },
+        pending,
+        expect.any(Function),
+        undefined,
+      );
+      expect(resolve).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
+        id: request.id,
+        decision: "allow-once",
+      });
+    },
+  );
   function useActualMainCommit(authority, expiresAtUnixMs, remoteSecurity, beforeResolve) {
     const outcomes = [];
     const entry = {
@@ -414,6 +509,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       requireEffectiveWindowsNodeMxc: (...args) => authority.readiness.handle(...args),
       windowsNodeMxcSecurityTransitionInProgress: false,
       findPendingWindowsNodeMxcGatewayApproval: () => entry,
+      sendToWindow: vi.fn(),
+      mainWindow: {},
+      isApplicationIngressReady: () => true,
       isWindowsNodeMxcIngressReleased: () => true,
       windowsNodeMxcIngressGeneration: security.gatewayGeneration,
       windowsNodeMxcActivationInProgress: false,
@@ -460,6 +558,11 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       windowsNodeMxcApprovalResolutionCompletion: null,
       windowsNodeMxcApprovalProofContext: null,
       canUseWindowsNodeMxcDurableApproval: () => false,
+      isWindowsNodeMxcDesired: () => true,
+      getWindowsNodeMxcMissingFolders: () => [],
+      getBundledWindowsNodeFolders: () => [],
+      windowsNodeMxcWeixinContext: null,
+      isApplicationIngressReady: () => true,
       getWindowsNodeMxcRequestedMode: () => "limited-dacl",
       gatewayGenerationId: security.gatewayGeneration,
       windowsNodeMxcIngressGeneration: security.gatewayGeneration,
@@ -500,6 +603,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       sendToWindow: send,
       mainWindow: {},
       projectWindowsNodeMxcApprovalForRenderer,
+      getWindowsNodeMxcRequestedMode: () => "limited-dacl",
     });
     publication.handle(pending, {
       state: "sent",
@@ -510,6 +614,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     const snapshot = createMainFunctionFixture("getPendingWindowsNodeMxcApprovalForRenderer", {
       allPendingWindowsNodeMxcGatewayApprovals: () => [pending],
       projectWindowsNodeMxcApprovalForRenderer,
+      getWindowsNodeMxcRequestedMode: () => "limited-dacl",
     });
     for (const value of [...send.mock.calls.map((call) => call[2]), snapshot.handle()]) {
       expect(value.activity).toEqual({
@@ -549,30 +654,22 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
 
     const resolve = vi.fn().mockResolvedValue({});
     const proofContext = { policyFingerprint: security.policyFingerprint };
-    const durable = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", {
+    const policyApproved = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", {
       ...dependencies,
       windowsNodeMxcApprovalProofContext: proofContext,
-      durableApprovalIdentityFromGateway: () => ({ sessionKey: executionSessionKey }),
-      canUseWindowsNodeMxcDurableApproval: () => true,
-      getWindowsNodeMxcDurableApprovalStore: () => ({
-        findExact: () => ({ id: "existing-exact-record" }),
-      }),
       withWindowsNodeMxcApprovalResolution: (run) => run(),
       requireEffectiveWindowsNodeMxc: async () => undefined,
-      withWindowsNodeMxcDurableApprovalLock: (run) => run(),
-      consumeExactDurableApproval: async (_store, _identity, _id, execute) => {
-        await execute();
-        return true;
-      },
-      windowsNodeMxcSecurityTransitionInProgress: false,
       gwClient: { connected: true, request: resolve },
     });
-    await durable.handle(request, security.gatewayGeneration);
+    await policyApproved.handle(
+      { ...request, commandConsent: { required: false, allowAlwaysAvailable: false } },
+      security.gatewayGeneration,
+    );
     expect(resolve).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
       id: request.id,
       decision: "allow-once",
     });
-    expect(send).toHaveBeenCalledTimes(2); // Existing exact durable use creates no pending display activity.
+    expect(send).toHaveBeenCalledTimes(2); // Policy approval creates no pending display activity.
   });
 
   it.each([
@@ -878,7 +975,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       ["whoami", "exists-ro"].map((operation) => [nativeConsent, operation]),
     ),
   )(
-    "accepts bare 2 only for an actually normalized eligible plan with native durable consent=%s (%s)",
+    "never offers a phone Always for Windows Node consent, even with native durable consent=%s (%s)",
     async (nativeConsent, operation) => {
       const executable = String.raw`C:\Windows\System32\whoami.exe`;
       const argv = [executable, "/all"];
@@ -899,6 +996,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           )
           .digest("hex"),
         declaredAccess: [],
+        commandConsent: { required: true, allowAlwaysAvailable: true },
       };
       approval = normalizeWindowsNodeMxcGatewayApproval(
         {
@@ -911,7 +1009,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
       expect(approval).not.toBeNull();
       expect(approval.hasMutableFileOperand).toBe(false);
-      expect(approval.allowedDecisions).toContain("allow-always");
+      expect(approval.allowedDecisions.includes("allow-always")).toBe(operation === "whoami");
       if (nativeConsent) {
         configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
         broker.configure(configuration);
@@ -919,7 +1017,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       const before = JSON.stringify(configuration);
       const delivery = await deliver();
       expect(delivery).not.toBeNull();
-      expect(delivery.text.includes("2: remember")).toBe(nativeConsent);
+      expect(delivery.text).not.toContain("2: remember");
       expect(
         await transport.intercept({
           message: message({
@@ -932,9 +1030,20 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           sourcePhase: "candidate",
         }),
       ).toBe(true);
-      expect(decisions).toEqual(
-        nativeConsent ? [{ approvalIds: [approval.id], decision: "allow-always" }] : [],
-      );
+      expect(decisions).toEqual([]);
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1003,
+            seq: 44,
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([{ approvalIds: [approval.id], decision: "allow-once" }]);
       expect(JSON.stringify(configuration)).toBe(before);
     },
   );
@@ -1009,7 +1118,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
       broker.configure(configuration);
       const delivered = await deliver();
-      expect(delivered.text).toContain("2: remember");
+      expect(delivered.text).not.toContain("2: remember");
       if (change === "authenticated-owner-replaced") credential(rawPeer.toLowerCase());
       else {
         configuration =
@@ -1023,7 +1132,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           message: message({
             message_id: 1002,
             seq: 43,
-            item_list: [{ type: 1, text_item: { text: "2" } }],
+            item_list: [{ type: 1, text_item: { text: "1" } }],
           }),
           agentId: "main",
           sessionKey: key,
@@ -1148,7 +1257,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
         Object.assign(authority.host, { gatewayGeneration: "replacement-generation" });
         await authority.host.setActivationLease("active", 120_000);
       }
-      if (change === "node drift") authority.host.ensureIdentityNodeId = () => "replacement-node";
+      if (change === "node drift") authority.host.identityNodeId = "replacement-node";
       if (change === "requested mode drift" || change === "deactivated")
         authority.current.replace("getWindowsNodeMxcRequestedMode", () =>
           change === "deactivated" ? "off" : "full",
@@ -1709,7 +1818,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
               : `Remove-Item -Path '${target}' -Recurse -Force`;
           const script = step < 4 ? operation : `powershell -NoProfile -Command "${operation}"`;
           const rawCommand = `# [declare-access]rw:${info.grant}[/declare-access]\n${script}`;
-          const command = buildMicroclawWindowsNodeShellCommand(rawCommand);
+          const command = explicitPowerShellCommand(rawCommand);
           write(`${step}.input.json`, {
             command,
             rawCommand,

@@ -338,6 +338,15 @@ export default {
   "settings.security": "Security sandbox",
   "settings.windowsNodeMxc": "Experimental bundled Windows Node + MXC",
   "settings.windowsNodeMxcSandboxing": "Sandboxing",
+  "settings.commandConsent": "Command consent",
+  "settings.commandConsentAskWhenNeeded": "Ask when needed",
+  "settings.commandConsentAllowAlways": "Allow always",
+  "settings.commandConsentHint":
+    "Ask when needed uses Windows Node's allowlist and asks for unmatched commands. Allow always skips command-consent prompts. Neither setting grants new MXC folder access, which may still require approval.",
+  "settings.commandConsentNativeTools":
+    "Command consent applies to exec in both modes. In regular mode, OpenClaw's native file tools remain available and bypass command consent. In MXC mode, native file tools are disabled.",
+  "settings.commandConsentLiveUpdate":
+    "Changes apply without restarting the Gateway. Wait for active work to finish.",
   "settings.windowsNodeMxcOn": "On",
   "settings.windowsNodeMxcAutomatic":
     "MicroClaw automatically uses the supported protection on this PC.",
@@ -520,6 +529,7 @@ export default {
   "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
   "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
   "settings.windowsNodeMxcLifecyclePhase.updating-folders": "Updating folder permissions",
+  "settings.windowsNodeMxcLifecyclePhase.updating-consent": "Updating command consent",
   "settings.windowsNodeMxcLifecyclePhase.idle": "Idle",
   "settings.windowsNodeMxcLifecyclePhase.locking": "Locking execution",
   "settings.windowsNodeMxcLifecyclePhase.validating": "Validating policy",
@@ -554,9 +564,6 @@ export default {
     "Windows could not apply and verify the folder access policy.",
   "settings.windowsNodeMxcFolderNotConfigured": "This folder is no longer configured.",
   "settings.windowsNodeMxcFolderMutationFailed": "Could not update the approved folder policy.",
-  "settings.windowsNodeMxcDurableApprovals": "Remembered exact commands",
-  "settings.windowsNodeMxcDurableApprovalsHint":
-    "Allow always remembers only the exact executable content, arguments, CWD, declared folder use, policy, agent, and session. It never changes global folders.",
   "settings.windowsNodeMxcLimitedAcknowledgeTitle": "Enable Limited filesystem containment?",
   "settings.windowsNodeMxcLimitedAcknowledgeBody":
     "Limited containment relies on additive Windows DACL grants. It is not an exclusive filesystem allowlist, and a read-only grant cannot remove access already available through ambient ACLs.",
@@ -1183,7 +1190,7 @@ export default {
   "perm.mxcResolutionUnconfirmed":
     "Permission decision could not be confirmed. No automatic retry; check the current request status.",
   "perm.mxcDurableNotSaved":
-    "The current one-use decision was accepted, but its exact durable approval could not be saved.",
+    "The one-use decision was accepted, but the Windows Node allowlist entry could not be saved.",
   "perm.mxcLimitedDesc": "AI wants to run this command with Limited filesystem containment.",
   "perm.mxcAccessLabel": "Declared folder use",
   "perm.mxcAdditionalAccessLabel": "Additional filesystem grants",
@@ -1191,15 +1198,15 @@ export default {
   "perm.mxcAccessRw": "Read and write",
   "perm.mxcCwdLabel": "Canonical working directory",
   "perm.mxcScope":
-    "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access. Conversation-scoped approval remembers only this exact executable, arguments, canonical working directory, declared access, agent, and conversation.",
+    "Approval authorizes this command inside MXC, without changing folder access. Remembering uses Windows Node's executable and argument allowlist for this agent across conversations; it does not bind the working directory or declared folders.",
   "perm.mxcScopeOnce":
     "Approval authorizes this command itself inside MXC. Declared folders are existing MXC grants; approval does not grant or change folder access.",
   "perm.mxcScopeNoAccess":
-    "Approval authorizes this command itself inside MXC with the canonical working directory shown. Conversation-scoped approval remembers only this exact executable, arguments, canonical working directory, agent, and conversation.",
+    "Approval authorizes this command inside MXC with the working directory shown. Remembering uses Windows Node's executable and argument allowlist for this agent across conversations; it does not bind the working directory.",
   "perm.mxcScopeNoAccessOnce":
     "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
   "perm.mxcLimitedScope":
-    "Additional folder grants are additive, not an exclusive allowlist. Conversation-scoped approval remembers only this exact executable, arguments, working directory, declared access, agent, and conversation.",
+    "Additional folder grants are additive, not an exclusive allowlist. Remembering uses Windows Node's executable and argument allowlist for this agent across conversations; it does not bind the working directory or folders.",
   "perm.mxcLimitedScopeOnce":
     "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist.",
   "perm.mxcPowerShellScope":
@@ -1214,7 +1221,9 @@ export default {
     "Limited filesystem containment: review the command and additional requested grants before allowing.",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Allow always",
-  "perm.mxcAllowAlways": "Always allow in this conversation",
+  "perm.mxcAllowAlways": "Remember for this agent",
+  "perm.hostCommandScope":
+    "This command runs directly on Windows without MXC containment. Remembering, when available, uses Windows Node's executable and argument allowlist for this agent across conversations, not a working-directory or folder binding.",
   "perm.callerLabel": "Caller",
   "perm.autoDeny": "Auto-deny in {seconds}s",
   "perm.responding": "Applying your decision…",

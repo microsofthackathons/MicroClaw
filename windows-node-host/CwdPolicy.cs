@@ -66,8 +66,8 @@ public sealed record CwdPolicyAttestation(
         ApprovedRootOnly: true,
         CanonicalFinalPath: true,
         RejectsReparseComponents: true,
-        DurableApprovalBindsCwd: true,
-        DurableApprovalBindsDeclaredAccess: true,
+        DurableApprovalBindsCwd: false,
+        DurableApprovalBindsDeclaredAccess: false,
         LaunchTimeRevalidation: true,
         OmittedCwdUsesIsolatedScratch: true,
         HostFallbackAbsent: true,
@@ -155,6 +155,7 @@ public sealed class HostPolicy
     public bool StrictNoHostFallback { get; init; }
     public string RequestedStrength { get; init; } = "full";
     public string EffectiveTier { get; init; } = "base-container";
+    public string CommandConsentMode { get; init; } = CommandConsent.AskWhenNeeded;
     public AmbientAccessPolicy? AmbientAccess { get; init; }
     public string AmbientAssessmentScratchRoot { get; init; } = Path.GetTempPath();
     public required CanvasHostPolicy Canvas { get; init; }
@@ -196,6 +197,8 @@ public sealed class HostPolicy
 
         if (!input.StrictNoHostFallback)
             throw new HostPolicyException("host-fallback-enabled", "Strict no-host-fallback must be enabled.");
+        if (input.CommandConsentMode is not (CommandConsent.AskWhenNeeded or CommandConsent.AllowAlways))
+            throw new HostPolicyException("consent-mode-invalid", "Unknown command consent mode.");
         if (!input.AllowWindowsUi)
             throw new HostPolicyException("windows-ui-disabled", "allowWindowsUi must be enabled for MXC 0.7.");
         if (!input.NetworkAllowed)
@@ -206,10 +209,12 @@ public sealed class HostPolicy
             throw new HostPolicyException(
                 "unsafe-capability",
                 "Clipboard and input injection must remain disabled.");
-        if (input.RequestedStrength is not ("full" or "limited-dacl"))
+        if (input.RequestedStrength is not ("off" or "full" or "limited-dacl"))
             throw new HostPolicyException(
                 "containment-strength-invalid",
                 "The requested containment strength is invalid.");
+        if (input.RequestedStrength == "off" && input.EffectiveTier != "host")
+            throw new HostPolicyException("containment-tier-mismatch", "Unsandboxed execution must use the host tier.");
         if (string.IsNullOrWhiteSpace(input.EffectiveTier))
             throw new HostPolicyException(
                 "containment-tier-missing",
@@ -273,7 +278,9 @@ public sealed class HostPolicy
                 "approved-root-overlaps-sensitive-root",
                 "Approved folders must not contain or be contained by a protected root.");
         }
-        var wxc = WindowsPathCanonicalizer.CanonicalizeFile(input.WxcExecPath);
+        var wxc = input.RequestedStrength == "off"
+            ? Path.GetFullPath(input.WxcExecPath)
+            : WindowsPathCanonicalizer.CanonicalizeFile(input.WxcExecPath);
         var canvasHost = WindowsPathCanonicalizer.CanonicalizeFile(input.Canvas.HostPath);
         var ambientScratch =
             input.RequestedStrength == "limited-dacl"
@@ -293,6 +300,7 @@ public sealed class HostPolicy
             StrictNoHostFallback = true,
             RequestedStrength = input.RequestedStrength,
             EffectiveTier = input.EffectiveTier.ToLowerInvariant(),
+            CommandConsentMode = input.CommandConsentMode,
             AmbientAccess = input.AmbientAccess,
             AmbientAssessmentScratchRoot = ambientScratch,
             Canvas = new CanvasHostPolicy(
@@ -314,6 +322,8 @@ public sealed class HostPolicy
                 MatchedRoot: null);
 
         var canonical = WindowsPathCanonicalizer.CanonicalizeDirectory(requestedCwd);
+        if (RequestedStrength == "off")
+            return new CanonicalCwd(canonical, canonical, FolderAccess.ReadWrite, MatchedRoot: null);
         if (DeniedRoots.Any(root => WindowsPathCanonicalizer.IsEqualOrNested(canonical, root)))
             throw new HostPolicyException("cwd-sensitive-root", "The requested working directory overlaps a protected root.");
 
@@ -352,6 +362,7 @@ public sealed class HostPolicy
         public bool StrictNoHostFallback { get; init; }
         public string RequestedStrength { get; init; } = "full";
         public string EffectiveTier { get; init; } = "base-container";
+        public string CommandConsentMode { get; init; } = CommandConsent.AskWhenNeeded;
         public AmbientAccessPolicy? AmbientAccess { get; init; }
         public string AmbientAssessmentScratchRoot { get; init; } = Path.GetTempPath();
         public CanvasHostPolicyInput? Canvas { get; init; }

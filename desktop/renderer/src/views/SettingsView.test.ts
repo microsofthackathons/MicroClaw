@@ -227,6 +227,9 @@ describe("SettingsView", () => {
         }),
         set: vi.fn().mockResolvedValue(undefined),
       },
+      commandConsent: {
+        setMode: vi.fn().mockImplementation(async (mode) => mode),
+      },
       logs: {
         exportGateway: exportGatewayLogs,
       },
@@ -468,7 +471,10 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
     expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(true);
     expect(wrapper.find('[data-testid="mxc-add-rw"]').exists()).toBe(true);
-    expect(wrapper.find(".mxc-card").text()).toContain("Remembered exact commands");
+    expect(wrapper.text()).not.toContain("Remembered exact commands");
+    expect(wrapper.find('[data-testid="command-consent-settings"]').text()).toContain(
+      "Command consent",
+    );
     expect(wrapper.find(".mxc-card").text()).not.toContain("Gateway generation");
   });
 
@@ -597,7 +603,7 @@ describe("SettingsView", () => {
       "Reconnect the exact bundled node before retrying.",
     );
     expect(wrapper.find('[data-testid="mxc-add-ro"]').exists()).toBe(true);
-    expect(wrapper.find(".mxc-card").text()).toContain("No exact commands are remembered.");
+    expect(wrapper.find('[data-testid="command-consent-settings"]').exists()).toBe(true);
   });
 
   it("does not expose manual readiness or activation actions", async () => {
@@ -1104,6 +1110,92 @@ describe("SettingsView", () => {
     },
   );
 
+  it.each(["success", "failure"] as const)(
+    "shows folder Apply verification without changing tabs and preserves the draft until %s",
+    async (outcome) => {
+      routeState.section = "security";
+      const initial: WindowsNodeMxcStatus = {
+        ...status("node-local"),
+        folders: [{ path: "C:\\Work", access: "rw" }],
+      };
+      let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+      const getDisplay = vi.fn().mockResolvedValue({
+        status: initial,
+        verifiedAt: 100,
+        refreshing: false,
+        error: null,
+      });
+      window.openclaw.windowsNodeMxc.getDisplayStatus = getDisplay;
+      window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+        update = callback;
+        return vi.fn();
+      };
+      stageFolder.mockResolvedValue({
+        ok: true,
+        dirs: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
+      });
+      let finish!: (value: WindowsNodeMxcStatus) => void;
+      let fail!: (error: Error) => void;
+      applyFolderPolicy.mockReturnValueOnce(
+        new Promise<WindowsNodeMxcStatus>((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+      );
+      vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+      const errorMessage = vi.spyOn(ElMessage, "error");
+      const wrapper = shallowMount(SettingsView, {
+        global: { plugins: [createPinia()] },
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(false);
+      await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="mxc-apply-folder-policy"]').trigger("click");
+      await flushPromises();
+      expect(applyFolderPolicy).toHaveBeenCalledExactlyOnceWith({
+        rw: ["C:\\Work"],
+        ro: ["C:\\Docs"],
+      });
+      expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(true);
+
+      update({ status: initial, verifiedAt: 100, refreshing: true, error: null });
+      await flushPromises();
+      expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Docs");
+      update({ status: null, verifiedAt: null, refreshing: true, error: null });
+      await flushPromises();
+      expect(wrapper.get('[data-testid="mxc-status-loading"]').text()).toBe(
+        "Checking MXC availability...",
+      );
+      update({ status: initial, verifiedAt: 200, refreshing: false, error: null });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(true);
+      expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Docs");
+
+      if (outcome === "success") {
+        finish({
+          ...initial,
+          folders: [
+            { path: "C:\\Work", access: "rw" },
+            { path: "C:\\Docs", access: "ro" },
+          ],
+        });
+      } else {
+        fail(new Error("Folder update failed"));
+      }
+      await flushPromises();
+      expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(false);
+      expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Docs");
+      expect(wrapper.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(
+        outcome === "failure",
+      );
+      expect(getDisplay).toHaveBeenCalledTimes(outcome === "success" ? 1 : 2);
+      expect(getWindowsNodeMxcStatus).not.toHaveBeenCalled();
+      if (outcome === "failure") expect(errorMessage).toHaveBeenCalledWith("Folder update failed");
+      wrapper.unmount();
+    },
+  );
+
   it.each([
     ["en-US", "MXC is off. Tools run without MXC isolation.", "Learn more about MXC"],
     ["zh-CN", "MXC 已关闭。工具运行时不受 MXC 隔离保护。", "了解更多 MXC 信息"],
@@ -1280,18 +1372,19 @@ describe("SettingsView", () => {
     });
     await flushPromises();
     expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Work");
-    expect(wrapper.find(".mxc-durable-approval").text()).toContain("hostname.exe");
+    expect(wrapper.find(".mxc-durable-approval").exists()).toBe(false);
 
     for (const hidden of [true, false]) {
       await toggleSandbox(wrapper);
       await flushPromises();
       expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(hidden);
       expect(wrapper.find(".mxc-folder-policy").exists()).toBe(!hidden);
-      expect(wrapper.find(".mxc-durable-approval").exists()).toBe(!hidden);
+      expect(wrapper.find(".mxc-durable-approval").exists()).toBe(false);
+      expect(wrapper.find('[data-testid="command-consent-settings"]').exists()).toBe(true);
     }
 
     expect(wrapper.find(".mxc-folder-policy").text()).toContain("C:\\Work");
-    expect(wrapper.find(".mxc-durable-approval").text()).toContain("hostname.exe");
+    expect(wrapper.find(".mxc-durable-approval").exists()).toBe(false);
     expect(setFolderPolicy).not.toHaveBeenCalled();
     expect(applyFolderPolicy).not.toHaveBeenCalled();
     expect(window.openclaw.windowsNodeMxc.revokeDurableApproval).not.toHaveBeenCalled();

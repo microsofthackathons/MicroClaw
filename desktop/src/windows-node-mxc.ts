@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { readAgentRoster } from "./agent-roster";
+import { parseCommandConsentPreview, type CommandConsentPreview } from "./command-consent";
 import { computeWindowsNodeMxcApprovalPlanSha256 } from "./windows-node-mxc-readiness-proof";
 import {
   ensureSelectedModelProviderPlugins,
@@ -20,6 +21,12 @@ export const WINDOWS_NODE_MXC_REQUIRED_COMMANDS = [
   "system.which",
 ] as const;
 export const WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND = "system.run.cwd-policy";
+export const WINDOWS_NODE_COMMAND_CONSENT_COMMANDS = [
+  "system.run",
+  "system.run.prepare",
+  "system.which",
+  WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
+] as const;
 export const WINDOWS_NODE_MXC_CANVAS_COMMANDS = [
   "canvas.present",
   "canvas.hide",
@@ -164,6 +171,7 @@ export interface WindowsNodeMxcGatewayApproval {
   folderChanges?: WindowsNodeMxcFolder[];
   allowedDecisions: WindowsNodeMxcApprovalDecision[];
   providerInitialization?: PowerShellFilesystemInitialization;
+  commandConsent?: CommandConsentPreview;
 }
 
 export interface WindowsNodeMxcApprovalActivity {
@@ -187,6 +195,7 @@ export interface WindowsNodeMxcRendererApproval extends Pick<
   | "folderChanges"
 > {
   commandText?: string;
+  containmentStrength?: "off" | "limited-dacl" | "full";
   approvalLayer: "gateway" | "node";
   activity?: WindowsNodeMxcApprovalActivity;
   remoteDelivery?:
@@ -335,6 +344,8 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   const envelope = asRecord(payload);
   const request = asRecord(envelope.request);
   const plan = asRecord(request.systemRunPlan);
+  const commandConsent = parseCommandConsentPreview(plan.commandConsent);
+  if (Object.hasOwn(plan, "commandConsent") && !commandConsent) return null;
   const id = typeof envelope.id === "string" ? envelope.id.trim() : "";
   const expiresAtMs = envelope.expiresAtMs;
   const host = typeof request.host === "string" ? request.host : "";
@@ -433,7 +444,9 @@ export function normalizeWindowsNodeMxcGatewayApproval(
   );
   if (!allowed.includes("deny")) allowed.push("deny");
   if (!allowed.includes("allow-once")) allowed.unshift("allow-once");
-  if (!allowed.includes("allow-always")) allowed.push("allow-always");
+  const alwaysIndex = allowed.indexOf("allow-always");
+  if (!commandConsent?.allowAlwaysAvailable && alwaysIndex >= 0) allowed.splice(alwaysIndex, 1);
+  if (commandConsent?.allowAlwaysAvailable && alwaysIndex < 0) allowed.push("allow-always");
 
   const rawOrigin = asRecord(request.remoteApprovalOrigin);
   const origin =
@@ -505,6 +518,7 @@ export function normalizeWindowsNodeMxcGatewayApproval(
         }
       : {}),
     allowedDecisions: [...new Set(allowed)],
+    ...(commandConsent ? { commandConsent } : {}),
     ...(providerInitialization ? { providerInitialization } : {}),
   };
 }
@@ -678,11 +692,46 @@ export function buildWindowsNodeMxcToolPolicy(nodeId: string): Record<string, un
       host: "node",
       node: normalizedNodeId,
       security: "allowlist",
-      ask: "on-miss",
+      // The Gateway supplies a one-use dispatch proof for every node run. The
+      // native Windows Node policy decides whether the user actually sees a prompt.
+      ask: "always",
       timeoutSeconds: 1800,
       strictInlineEval: true,
     },
   };
+}
+
+export function applyWindowsNodeCommandPolicy(
+  source: Record<string, unknown>,
+  nodeId: string,
+): Record<string, unknown> {
+  const config = structuredClone(source);
+  const exec = buildWindowsNodeMxcToolPolicy(nodeId).exec;
+  const globalTools = asRecord(config.tools);
+  config.tools = { ...globalTools, exec: { ...asRecord(globalTools.exec), ...asRecord(exec) } };
+  const agents = asRecord(config.agents);
+  for (const { config: agent } of readAgentRoster(agents)) {
+    const tools = asRecord(agent.tools);
+    agent.tools = { ...tools, exec: { ...asRecord(tools.exec), ...asRecord(exec) } };
+  }
+  config.agents = agents;
+  const gateway = asRecord(config.gateway);
+  const nodes = asRecord(gateway.nodes);
+  const commands = asRecord(nodes.commands);
+  const required = new Set<string>(WINDOWS_NODE_COMMAND_CONSENT_COMMANDS);
+  const commandList = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  nodes.commands = {
+    allow: [...new Set([...commandList(commands.allow ?? nodes.allowCommands), ...required])],
+    deny: commandList(commands.deny ?? nodes.denyCommands).filter(
+      (command) => !required.has(command),
+    ),
+  };
+  delete nodes.allowCommands;
+  delete nodes.denyCommands;
+  gateway.nodes = nodes;
+  config.gateway = gateway;
+  return config;
 }
 
 export function buildWindowsNodeMxcLockedToolPolicy(nodeId: string): Record<string, unknown> {

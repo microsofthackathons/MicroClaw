@@ -18,6 +18,7 @@ interface ChatEventPayload {
 }
 
 interface AppSettings {
+  commandConsentMode?: "ask-when-needed" | "allow-always";
   language: string;
   autoStart: boolean;
   minimizeToTray: boolean;
@@ -221,6 +222,9 @@ interface OpenClawAPI {
   settings: {
     get(): Promise<AppSettings>;
     set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>;
+  };
+  commandConsent: {
+    setMode(mode: "ask-when-needed" | "allow-always"): Promise<"ask-when-needed" | "allow-always">;
   };
   updates: {
     check(): Promise<UpdateCheckResult>;
@@ -460,6 +464,7 @@ interface OpenClawAPI {
           | "disabling"
           | "validating"
           | "updating-folders"
+          | "updating-consent"
           | "updating-model"
           | "connecting-weixin"
           | "disconnecting-weixin"

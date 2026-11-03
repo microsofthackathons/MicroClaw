@@ -1,7 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import path from "node:path";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
-import { classifyLiteralFilesystemCommand } from "./windows-node-mxc-literal-filesystem-command";
+import {
+  classifyLiteralFilesystemCommand,
+  isLiteralLocalPath,
+  tokenizeLiteralCommand,
+} from "./windows-node-mxc-literal-filesystem-command";
 import { originalPowerShellFilesystemApproval } from "./windows-node-mxc-powershell-scope";
 import {
   normalizeWeixinProviderInteger,
@@ -400,6 +405,7 @@ function securityBindingHash(
           : {}),
         hasMutableFileOperand: approval.hasMutableFileOperand,
         allowedDecisions: approval.allowedDecisions,
+        commandConsent: approval.commandConsent ?? null,
       })),
       security,
       challenge,
@@ -529,10 +535,66 @@ function exactWindowsCommand(values: string[]): string {
   return values.map(quoteWindowsArgument).join(" ");
 }
 
+function safelyPresentedLiteralCmd(approval: WindowsNodeMxcGatewayApproval): boolean {
+  const executable = path.win32.basename(approval.executable).toLowerCase();
+  if (
+    executable !== "cmd.exe" ||
+    path.win32.basename(approval.executablePath).toLowerCase() !== "cmd.exe" ||
+    (approval.executable.includes("\\") &&
+      approval.executable.toLowerCase() !== approval.executablePath.toLowerCase()) ||
+    approval.arguments.length !== 4 ||
+    approval.arguments
+      .slice(0, 3)
+      .map((value) => value.toLowerCase())
+      .join(" ") !== "/d /s /c"
+  )
+    return false;
+  const payload = approval.arguments[3];
+  if (!isSafeAsciiDisplayValue(payload) || /[%!^']/.test(payload)) return false;
+  const tokens = tokenizeLiteralCommand(payload);
+  if (!tokens?.length || tokens[0].quoted) return false;
+  const command = tokens[0].value.toLowerCase();
+  if (
+    tokens.length === 1 &&
+    ["dir", "hostname", "hostname.exe", "whoami", "whoami.exe"].includes(command)
+  )
+    return true;
+  if (
+    command === "git" &&
+    (tokens.length === 2 || (tokens.length === 3 && tokens[2].value === "--short")) &&
+    !tokens[1].quoted &&
+    tokens[1].value.toLowerCase() === "status"
+  )
+    return true;
+  if (!["dir", "type", "mkdir", "md"].includes(command) || tokens.length !== 2) return false;
+  const target = tokens[1].value;
+  if (!isLiteralLocalPath(target) || !isSafeWindowsPath(target)) return false;
+  const needsWrite = command === "mkdir" || command === "md";
+  return approval.declaredAccess.some((entry) => {
+    if (
+      (needsWrite && entry.access !== "rw") ||
+      !isLiteralLocalPath(entry.path) ||
+      !isSafeWindowsPath(entry.path)
+    )
+      return false;
+    const relative = path.win32.relative(entry.path.toLowerCase(), target.toLowerCase());
+    return relative === "" || (!relative.startsWith("..") && !path.win32.isAbsolute(relative));
+  });
+}
+
 function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayApproval): boolean {
   const canonicalCwdIsSafe =
     approval.canonicalCwd === "isolated-scratch:v1" || isSafeWindowsPath(approval.canonicalCwd);
   const original = originalPowerShellFilesystemApproval(approval);
+  const isCmd =
+    path.win32.basename(approval.executable).toLowerCase() === "cmd.exe" ||
+    path.win32.basename(approval.executablePath).toLowerCase() === "cmd.exe";
+  const argumentsAreSafe = isCmd
+    ? safelyPresentedLiteralCmd(approval)
+    : argumentsCanBeSafelyRendered(approval.arguments) ||
+      (original !== null &&
+        classifyLiteralFilesystemCommand(original) !== null &&
+        !approval.arguments.some(hasSensitiveSemantics));
   return (
     original !== null &&
     (isSafeRelativeFile(approval.executable) || isSafeWindowsPath(approval.executable)) &&
@@ -540,9 +602,7 @@ function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayAp
     canonicalCwdIsSafe &&
     SAFE_STRUCTURAL_ID_PATTERN.test(approval.sessionKey) &&
     (approval.agent === null || SAFE_STRUCTURAL_ID_PATTERN.test(approval.agent)) &&
-    (argumentsCanBeSafelyRendered(approval.arguments) ||
-      (classifyLiteralFilesystemCommand(original) !== null &&
-        !approval.arguments.some(hasSensitiveSemantics))) &&
+    argumentsAreSafe &&
     approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
     approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path)) &&
     (approval.folderChanges ?? []).every(
@@ -587,17 +647,23 @@ export function renderWeixinRemoteApprovalPrompt(params: {
     params.allowDurable === true &&
     params.requests.every(
       ({ approval }) =>
-        approval.allowedDecisions.includes("allow-always") && !approval.hasMutableFileOperand,
+        !approval.commandConsent &&
+        approval.allowedDecisions.includes("allow-always") &&
+        !approval.hasMutableFileOperand,
     );
   const choices = zh
     ? [
         `回复 1${suffix}：${addsFolders ? "允许" : "仅允许一次"}`,
-        ...(allowDurable ? [`2${suffix}：记住此会话的精确范围`] : []),
+        ...(allowDurable ? [`2${suffix}：为此智能体记住命令和参数（跨对话，不绑定工作目录）`] : []),
         `3${suffix}：拒绝`,
       ]
     : [
         `Reply 1${suffix}: ${addsFolders ? "allow" : "allow once"}`,
-        ...(allowDurable ? [`2${suffix}: remember exact scope in this conversation`] : []),
+        ...(allowDurable
+          ? [
+              `2${suffix}: remember command and arguments for this agent across conversations (not bound to the working directory)`,
+            ]
+          : []),
         `3${suffix}: deny`,
       ];
   const actions = {
@@ -930,6 +996,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         input.requests.every(
           ({ approval }) =>
             !approval.folderChanges?.length &&
+            !approval.commandConsent &&
             approval.allowedDecisions.includes("allow-always") &&
             !approval.hasMutableFileOperand,
         ),
@@ -1028,8 +1095,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
             ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）或 3（拒绝）；不接受引用、转发或混合内容。"
             : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once) or 3 (deny), without quotes, forwarding or other content."
           : challenge.locale === "zh-CN"
-            ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）、2（记住此会话的精确范围）或 3（拒绝）；不接受引用、转发或混合内容。"
-            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once), 2 (remember exact scope in this conversation), or 3 (deny), without quotes, forwarding or other content.";
+            ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）、2（为此智能体跨对话记住命令和参数，不绑定工作目录）或 3（拒绝）；不接受引用、转发或混合内容。"
+            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once), 2 (remember command and arguments for this agent across conversations, not bound to the working directory), or 3 (deny), without quotes, forwarding or other content.";
       }
       return { consumed: true, status: "rejected", reason, acknowledgement: text };
     };

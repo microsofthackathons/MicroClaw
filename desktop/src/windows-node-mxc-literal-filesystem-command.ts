@@ -46,7 +46,7 @@ export function tokenizeLiteralCommand(text: string): LiteralToken[] | null {
   return tokens;
 }
 
-function literalLocalPath(value: string): boolean {
+export function isLiteralLocalPath(value: string): boolean {
   if (!/^[A-Za-z]:\\/.test(value)) return false;
   return value
     .slice(3)
@@ -171,7 +171,7 @@ function filesystemPayload(
   }
   if (values.has("-path") && values.has("-literalpath")) return null;
   const target = values.get("-path") ?? values.get("-literalpath");
-  if (!target || !literalLocalPath(target)) return null;
+  if (!target || !isLiteralLocalPath(target)) return null;
   const value = values.get("-value");
   if (value !== undefined && !PUBLIC_CONTENT_LITERALS.has(value)) return null;
   const encoding = values.get("-encoding");
@@ -242,7 +242,7 @@ export function classifyLiteralFilesystemCommand(approval: {
   const declared = approval.declaredAccess.some((entry) => {
     if (
       (entry.access !== "rw" && !(operation.kind === "exists-path" && entry.access === "ro")) ||
-      !literalLocalPath(entry.path)
+      !isLiteralLocalPath(entry.path)
     )
       return false;
     const relative = path.win32.relative(entry.path.toLowerCase(), operation.path.toLowerCase());

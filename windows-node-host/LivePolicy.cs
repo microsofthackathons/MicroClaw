@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenClaw.Shared;
+using OpenClaw.Shared.ExecApprovals;
 
 namespace MicroClaw.WindowsNodeHost;
 
@@ -17,6 +18,7 @@ internal sealed class LivePolicyReader(string filePath, string publicKey, string
     private LivePolicySnapshot? _current;
     private JsonNode? _runtimePolicy;
     private string? _lastEnvelope;
+    private readonly HashSet<Guid> _policyEpochs = [];
 
     public async Task<LivePolicySnapshot> ReadAsync()
     {
@@ -48,11 +50,30 @@ internal sealed class LivePolicyReader(string filePath, string publicKey, string
             throw new HostPolicyException("live-policy-fingerprint", "The live policy fingerprint is invalid.");
         var runtimePolicy = JsonNode.Parse(policyJson)?.AsObject()
             ?? throw new HostPolicyException("live-policy-invalid", "The sandbox policy is invalid.");
+        var epochText = runtimePolicy["livePolicyEpoch"]?.GetValue<string>();
+        Guid? epoch = null;
+        if (epochText is not null)
+        {
+            if (!Guid.TryParseExact(epochText, "D", out var parsedEpoch) || _policyEpochs.Contains(parsedEpoch))
+                throw new HostPolicyException("live-policy-epoch", "The live policy epoch is invalid or reused.");
+            epoch = parsedEpoch;
+        }
+        else if (_current is not null)
+            throw new HostPolicyException("live-policy-epoch", "A new live policy epoch is required.");
+        if (_current is not null && runtimePolicy["commandConsentMode"]?.GetValue<string>()
+            is not (CommandConsent.AskWhenNeeded or CommandConsent.AllowAlways))
+            throw new HostPolicyException("consent-mode-invalid", "A valid command consent mode is required.");
         runtimePolicy.Remove("approvedRoots");
+        runtimePolicy.Remove("commandConsentMode");
+        runtimePolicy.Remove("livePolicyEpoch");
         if (_runtimePolicy is not null && !JsonNode.DeepEquals(_runtimePolicy, runtimePolicy))
-            throw new HostPolicyException("live-policy-runtime-change", "Only folder grants may change in a live policy.");
+            throw new HostPolicyException("live-policy-runtime-change", "Only folder grants and command consent may change in a live policy.");
         var policy = HostPolicy.Parse(Encoding.UTF8.GetBytes(policyJson));
+        if (_current is not null && policy.CommandConsentMode != _current.Policy.CommandConsentMode
+            && value["approval"] is not null)
+            throw new HostPolicyException("live-policy-consent-approval", "A command consent update cannot bridge a previous approval.");
         _runtimePolicy ??= runtimePolicy;
+        if (epoch.HasValue) _policyEpochs.Add(epoch.Value);
         _current = new LivePolicySnapshot(revision, fingerprint, policy, payload);
         _lastEnvelope = text;
         return _current;
@@ -74,6 +95,9 @@ internal sealed class LivePolicyCapabilities : IDisposable
     private BundledCanvasCapability? _canvas;
     private CanvasHostBroker? _broker;
     private bool _locked = true;
+    private ExecApprovalsStore? _consentStore;
+    private CommandConsent? _consent;
+    private string? _appliedConsentMode;
 
     public LivePolicyCapabilities(HostBootstrap bootstrap, Func<JsonObject, Task<bool>> sendEvent,
         ProcessTreeJob processTreeJob)
@@ -90,6 +114,13 @@ internal sealed class LivePolicyCapabilities : IDisposable
         var initial = await _reader.ReadAsync();
         if (initial.Fingerprint != _bootstrap.PolicyFingerprint)
             throw new HostPolicyException("live-policy-bootstrap", "The initial live policy does not match bootstrap.");
+        var consentDirectory = Path.Combine(Path.GetDirectoryName(_bootstrap.ApprovalsPath)!, "command-consent");
+        SecureStateDirectory.Ensure(consentDirectory);
+        _consentStore = new ExecApprovalsStore(consentDirectory, NullLogger.Instance);
+        if (!string.Equals(ExecApprovalsStore.ResolveFilePath(consentDirectory),
+                Path.Combine(consentDirectory, "exec-approvals.json"), StringComparison.OrdinalIgnoreCase))
+            throw new HostPolicyException("consent-path-invalid", "The command consent store must remain app-owned.");
+        _consent = new CommandConsent(_consentStore, NullLogger.Instance);
         await SynchronizeAsync();
     }
 
@@ -118,6 +149,14 @@ internal sealed class LivePolicyCapabilities : IDisposable
             await _processTreeJob.EnsureNoChildProcessesAsync();
             _generationCancellation.Dispose();
             _generationCancellation = new CancellationTokenSource();
+            if (_appliedConsentMode != next.Policy.CommandConsentMode)
+            {
+                _appliedConsentMode = null;
+                await (_consent ?? throw new HostPolicyException(
+                    "consent-unavailable", "The command consent store is unavailable."))
+                    .SetModeAsync(next.Policy.CommandConsentMode);
+                _appliedConsentMode = next.Policy.CommandConsentMode;
+            }
             var lease = new ActivationLeaseGuard(
                 _bootstrap.ActivationLeasePath, _bootstrap.ActivationLeaseSecret,
                 _bootstrap.GatewayGeneration, next.Fingerprint);
@@ -133,7 +172,8 @@ internal sealed class LivePolicyCapabilities : IDisposable
                 new ReadinessProofVerifier(_bootstrap.ApprovalProofSecret,
                     _bootstrap.GatewayGeneration, next.Fingerprint, _bootstrap.NodeId,
                     _bootstrap.ReadinessTransitionId),
-                policyFingerprint: next.Fingerprint);
+                policyFingerprint: next.Fingerprint,
+                commandConsent: _consent);
             _canvas = new BundledCanvasCapability(_broker, lease);
             lock (_gate)
             {
@@ -202,6 +242,7 @@ internal sealed class LivePolicyCapabilities : IDisposable
     {
         _generationCancellation.Cancel();
         _broker?.Dispose();
+        _consentStore?.Dispose();
     }
 
     private sealed class Proxy(

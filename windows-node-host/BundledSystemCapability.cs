@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using OpenClaw.Shared;
+using OpenClaw.Shared.ExecApprovals;
 using OpenClaw.Shared.Mxc;
 
 namespace MicroClaw.WindowsNodeHost;
@@ -22,7 +23,8 @@ internal sealed class BundledSystemCapability(
     Func<CancellationToken, Task>? isolationGuard = null,
     Func<CancellationToken, Task>? ambientGuard = null,
     ReadinessPreparationGuard? readinessPreparation = null,
-    string? policyFingerprint = null) : INodeCapability
+    string? policyFingerprint = null,
+    CommandConsent? commandConsent = null) : INodeCapability
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private readonly ReadinessPreparationGuard _readinessPreparation =
@@ -96,7 +98,19 @@ internal sealed class BundledSystemCapability(
             var allowMissingGrants = policyFingerprint is not null
                 && !(request.Args.TryGetProperty("agentId", out var preparationAgent)
                     && preparationAgent.GetString() == ReadinessProbeContract.AgentId);
-            var run = PowerShellFilesystemScope.Prepare(ParseRun(request.Args, allowMissingGrants), policy);
+            var run = ParseRun(request.Args, allowMissingGrants);
+            if (policy.RequestedStrength != "off")
+                run = PowerShellFilesystemScope.Prepare(run, policy);
+            CommandConsentPreview? consentPreview = null;
+            if (commandConsent is not null && run.AgentId != ReadinessProbeContract.AgentId)
+            {
+                var preparation = await commandConsent.PrepareAsync(CommandConsent.Request(
+                    run.Argv, run.Cwd, run.TimeoutMs, run.AgentId, run.SessionKey));
+                run = run with { Argv = preparation.Execution.Argv.ToArray() };
+                consentPreview = preparation.Preview;
+                if (run.DeclaredAccess.Count > 0)
+                    run = run with { RawCommand = run.Argv[^1] };
+            }
             var cwd = policy.ResolveCwd(run.Cwd, allowMissingGrants);
             var commandText = WindowsCommandLine.Join(run.Argv);
             var commandPreview = BuildApprovalCommandPreview(run, commandText);
@@ -144,7 +158,7 @@ internal sealed class BundledSystemCapability(
                     commandText, commandPreview, run.AgentId, run.SessionKey,
                     executableIdentity.ExecutablePath, executableIdentity.ExecutableSha256,
                     cwd.ApprovalBinding, run.DeclaredAccess, run.ProviderInitialization,
-                    policyFingerprint),
+                    policyFingerprint, consentPreview),
                 cwdBinding = cwd.ApprovalBinding,
                 cwdAccess = cwd.Access.ToString(),
                 matchedRoot = cwd.MatchedRoot,
@@ -232,6 +246,7 @@ internal sealed class BundledSystemCapability(
             declaredApprovalAccess);
         ValidatedReadinessProof? validatedReadiness = null;
         ValidatedApprovalProof? validatedApproval = null;
+        ExecApprovedExecution? consentExecution = null;
         if (readiness)
         {
             if (validatedActivation.Mode is not ActivationLeaseMode.Diagnostic)
@@ -253,6 +268,15 @@ internal sealed class BundledSystemCapability(
                     "approval-proof-unavailable",
                     "The active Gateway approval proof verifier is unavailable.");
             validatedApproval = approvalProof.ValidateAndConsume(args, approvedIdentity);
+            if (commandConsent is not null)
+            {
+                consentExecution = await commandConsent.AuthorizeAsync(CommandConsent.Request(
+                    request.Argv, request.Cwd, request.TimeoutMs, request.AgentId, request.SessionKey),
+                    validatedApproval.ConsentDecision);
+                if (!consentExecution.Argv.SequenceEqual(request.Argv, StringComparer.Ordinal))
+                    throw new HostPolicyException("consent-command-changed",
+                        "Windows Node resolved a different command after approval. Request a fresh approval.");
+            }
         }
 
         var durable = policy.DurableApprovalsAllowed
@@ -299,6 +323,38 @@ internal sealed class BundledSystemCapability(
             return RejectedBeforeExecution(
                 "approval-changed-before-launch: The durable approval is no longer current.",
                 "approval-changed-before-launch");
+
+        if (policy.RequestedStrength == "off")
+        {
+            if (readiness || validatedApproval is null || consentExecution is null || commandConsent is null)
+                throw new HostPolicyException("command-consent-required", "Host execution requires Windows Node command consent.");
+            string? hostScratch = null;
+            try
+            {
+                var commandRequest = consentExecution.ToCommandRequest();
+                if (string.IsNullOrEmpty(currentCwd.LaunchPath))
+                {
+                    hostScratch = Path.Combine(Path.GetTempPath(), "microclaw-host-" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(hostScratch);
+                }
+                commandRequest.Cwd = hostScratch ?? currentCwd.LaunchPath;
+                await commandConsent.RevalidateAsync(consentExecution, cancellationToken);
+                activationLease.Revalidate(validatedActivation, request.Argv);
+                approvalProof!.Revalidate(validatedApproval);
+                var result = await HostCommandRunner.RunAsync(commandRequest, cancellationToken);
+                return Completed(result.Stdout, result.Stderr, result.ExitCode, result.TimedOut,
+                    result.DurationMs, "off", "host");
+            }
+            finally
+            {
+                if (hostScratch is not null)
+                {
+                    try { Directory.Delete(hostScratch, recursive: true); }
+                    catch (IOException error) { Console.Error.WriteLine($"[host-command] Scratch cleanup failed: {error.Message}"); }
+                    catch (UnauthorizedAccessException error) { Console.Error.WriteLine($"[host-command] Scratch cleanup failed: {error.Message}"); }
+                }
+            }
+        }
 
         var scratch = Path.Combine(Path.GetTempPath(), "microclaw-mxc-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
@@ -349,13 +405,6 @@ internal sealed class BundledSystemCapability(
                         StringComparison.Ordinal)),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 cancellationToken);
-            using var environment = ProcessEnvironmentOverride.Apply(
-                new Dictionary<string, string>
-                {
-                    ["TEMP"] = scratch,
-                    ["TMP"] = scratch,
-                    ["TMPDIR"] = scratch,
-                });
             currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
             validatedActivation = activationLease.Revalidate(validatedActivation, request.Argv);
             currentIdentity = executableLease.Capture(
@@ -370,6 +419,8 @@ internal sealed class BundledSystemCapability(
             {
                 PowerShellFilesystemScope.ValidateTarget(request.ProviderInitialization, request.DeclaredAccess);
                 approvalProof!.Revalidate(validatedApproval);
+                if (consentExecution is not null)
+                    await commandConsent!.RevalidateAsync(consentExecution, cancellationToken);
             }
             if (validatedReadiness is not null)
             {
@@ -385,20 +436,14 @@ internal sealed class BundledSystemCapability(
                 throw new HostPolicyException(
                     "approval-changed-before-launch",
                     "The durable approval is no longer current.");
-            var result = await new MxcExecutor(
-                    wxcExecutableLease.CanonicalPath,
-                    4 * 1024 * 1024,
-                    4 * 1024 * 1024)
-                .RunWithConfigFileAsync(
-                    configPath,
-                    cancellationToken,
-                    workingDirectory: launchCwd);
+            var result = await MxcProcessRunner.RunAsync(
+                wxcExecutableLease.CanonicalPath, configPath, launchCwd, scratch, cancellationToken);
             if (validatedReadiness is not null)
                 Console.Error.WriteLine(
                     $"[readiness-probe] completed internal fixed probe kind={validatedReadiness.ProbeKind} exitCode={result.ExitCode} timedOut={result.TimedOut}");
             return Completed(
-                result.Output ?? string.Empty,
-                result.Error ?? string.Empty,
+                result.Stdout,
+                result.Stderr,
                 result.ExitCode,
                 result.TimedOut,
                 result.DurationMs,
@@ -413,6 +458,7 @@ internal sealed class BundledSystemCapability(
     }
 
     private Task EnsureAmbientAccessAsync(CancellationToken cancellationToken) =>
+        policy.RequestedStrength == "off" ? Task.CompletedTask :
         ambientGuard?.Invoke(cancellationToken)
         ?? AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
 
@@ -429,7 +475,7 @@ internal sealed class BundledSystemCapability(
     private Task EnsureFilesystemIsolationAsync(
         CancellationToken cancellationToken,
         ExecutableApprovalLease? wxcExecutableLease = null) =>
-        isolationGuard?.Invoke(cancellationToken)
+        policy.RequestedStrength == "off" ? Task.CompletedTask : isolationGuard?.Invoke(cancellationToken)
         ?? (wxcExecutableLease is null
             ? MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
                 policy.WxcExecPath,
@@ -465,13 +511,21 @@ internal sealed class BundledSystemCapability(
             .Select(root => root.Path)
             .Append(scratch)
             .ToArray();
+        var argv = MxcCmdSerializer.ForContainer(new[] { executable }.Concat(arguments).ToArray());
         return new MxcConfig
         {
             Version = "0.7.0-alpha",
             ContainerId = Guid.NewGuid().ToString("N"),
             Process = new MxcProcess
             {
-                CommandLine = WindowsCommandLine.Join([executable, .. arguments]),
+                CommandLine = MxcConfigBuilder.Build(
+                    new SandboxExecutionRequest(
+                        "system.run",
+                        JsonSerializer.SerializeToElement(new { argv }),
+                        new SandboxPolicy("0.7.0-alpha", Ui: new UiPolicy(AllowWindows: policy.AllowWindowsUi)),
+                        timeoutMs,
+                        launchCwd),
+                    scratch).Process.CommandLine,
                 Cwd = launchCwd,
                 TimeoutMs = timeoutMs,
             },
@@ -550,7 +604,8 @@ internal sealed class BundledSystemCapability(
         if (PowerShellFilesystemScope.ContainsMarker(argv))
             throw new HostPolicyException("powershell-initialization-metadata-required",
                 "The PowerShell filesystem initializer requires its complete prepared plan.");
-        var declaredAccess = DeclaredAccessParser.ParseAndValidate(commandPreview, policy, allowMissingGrants);
+        var declaredAccess = DeclaredAccessParser.ParseAndValidate(
+            commandPreview, policy, allowMissingGrants || policy.RequestedStrength == "off");
         var executableArgv = argv;
         var executableRawCommand = rawCommand;
         if (declaredAccess.Count > 0)
@@ -678,7 +733,7 @@ internal sealed class BundledSystemCapability(
             timedOut,
             success = exitCode == 0 && !timedOut,
             durationMs,
-            containment = "mxc",
+            containment = containmentStrength == "off" ? "host" : "mxc",
             containmentStrength,
             effectiveTier,
         });
@@ -831,33 +886,6 @@ internal static partial class DeclaredAccessParser
                 "declare-access-command-empty",
                 "Declare-access metadata must be followed by a command.");
         return executable;
-    }
-}
-
-internal sealed class ProcessEnvironmentOverride : IDisposable
-{
-    private readonly IReadOnlyDictionary<string, string?> _original;
-
-    private ProcessEnvironmentOverride(IReadOnlyDictionary<string, string?> original)
-    {
-        _original = original;
-    }
-
-    public static ProcessEnvironmentOverride Apply(IReadOnlyDictionary<string, string> values)
-    {
-        var original = values.Keys.ToDictionary(
-            key => key,
-            Environment.GetEnvironmentVariable,
-            StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, value) in values)
-            Environment.SetEnvironmentVariable(key, value);
-        return new ProcessEnvironmentOverride(original);
-    }
-
-    public void Dispose()
-    {
-        foreach (var (key, value) in _original)
-            Environment.SetEnvironmentVariable(key, value);
     }
 }
 

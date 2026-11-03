@@ -26,6 +26,89 @@ function fixture() {
 }
 
 describe("MXC display snapshots and shared inspections", () => {
+  it("publishes the start of an inspection to existing subscribers without another display read", async () => {
+    const f = fixture();
+    const result = f.cache.fresh();
+    expect(f.publish).toHaveBeenCalledExactlyOnceWith({
+      status: null,
+      verifiedAt: null,
+      refreshing: true,
+      error: null,
+    });
+    expect(f.cache.fresh()).toBe(result);
+    expect(f.publish).toHaveBeenCalledOnce();
+    await result;
+    expect(f.publish).toHaveBeenLastCalledWith({
+      status: { effective: true },
+      verifiedAt: 100,
+      refreshing: false,
+      error: null,
+    });
+  });
+
+  it("publishes a refresh alongside the last verified snapshot", async () => {
+    const f = fixture();
+    await f.cache.fresh();
+    f.publish.mockClear();
+    f.age();
+    const result = f.cache.fresh();
+    expect(f.publish).toHaveBeenCalledExactlyOnceWith({
+      status: { effective: true },
+      verifiedAt: 100,
+      refreshing: true,
+      error: null,
+    });
+    await result;
+    expect(f.publish).toHaveBeenLastCalledWith({
+      status: { effective: true },
+      verifiedAt: 11_100,
+      refreshing: false,
+      error: null,
+    });
+  });
+
+  it("keeps the current refresh visible when an obsolete inspection finishes", async () => {
+    const f = fixture();
+    let finishOld!: (value: { effective: boolean }) => void;
+    let finishCurrent!: (value: { effective: boolean }) => void;
+    f.inspect.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishOld = resolve;
+      }),
+    );
+    const old = f.cache.fresh();
+    await Promise.resolve();
+    f.change();
+    f.inspect.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishCurrent = resolve;
+      }),
+    );
+    const current = f.cache.fresh();
+    expect(f.publish).toHaveBeenLastCalledWith({
+      status: null,
+      verifiedAt: null,
+      refreshing: true,
+      error: null,
+    });
+    finishOld({ effective: true });
+    await expect(old).rejects.toThrow("status changed");
+    expect(f.publish).toHaveBeenLastCalledWith({
+      status: null,
+      verifiedAt: null,
+      refreshing: true,
+      error: null,
+    });
+    finishCurrent({ effective: true });
+    await current;
+    expect(f.publish).toHaveBeenLastCalledWith({
+      status: { effective: true },
+      verifiedAt: 100,
+      refreshing: false,
+      error: null,
+    });
+  });
+
   it("returns a recent display snapshot without another scan but never caches enforcement results", async () => {
     const f = fixture();
     await f.cache.fresh();

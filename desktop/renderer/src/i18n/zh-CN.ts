@@ -318,6 +318,14 @@ export default {
   "settings.security": "安全沙箱",
   "settings.windowsNodeMxc": "实验性内置 Windows Node + MXC",
   "settings.windowsNodeMxcSandboxing": "沙箱保护",
+  "settings.commandConsent": "命令审批",
+  "settings.commandConsentAskWhenNeeded": "按需询问",
+  "settings.commandConsentAllowAlways": "始终允许",
+  "settings.commandConsentHint":
+    "按需询问使用 Windows Node 的允许列表，并询问未匹配的命令。始终允许会跳过命令审批提示。这两个选项均不会授予新的 MXC 文件夹权限，文件夹访问仍可能需要审批。",
+  "settings.commandConsentNativeTools":
+    "命令审批适用于两种模式下的 exec。普通模式保留 OpenClaw 原生文件工具，这些工具不经过命令审批。MXC 模式禁用原生文件工具。",
+  "settings.commandConsentLiveUpdate": "更改会即时生效，无需重启网关。请先等待当前任务完成。",
   "settings.windowsNodeMxcOn": "开启",
   "settings.windowsNodeMxcAutomatic": "MicroClaw 会自动使用此电脑支持的保护方式。",
   "settings.windowsNodeMxcLearnMore": "了解更多 MXC 信息",
@@ -490,6 +498,7 @@ export default {
   "settings.windowsNodeMxcStagePreviousFolders": "暂存以前的策略",
   "settings.windowsNodeMxcLifecycle": "策略生命周期",
   "settings.windowsNodeMxcLifecyclePhase.updating-folders": "正在更新文件夹权限",
+  "settings.windowsNodeMxcLifecyclePhase.updating-consent": "正在更新命令审批",
   "settings.windowsNodeMxcLifecyclePhase.idle": "空闲",
   "settings.windowsNodeMxcLifecyclePhase.locking": "正在锁定执行",
   "settings.windowsNodeMxcLifecyclePhase.validating": "正在验证策略",
@@ -518,9 +527,6 @@ export default {
   "settings.windowsNodeMxcFolderAclFailed": "Windows 无法应用并验证文件夹访问策略。",
   "settings.windowsNodeMxcFolderNotConfigured": "此文件夹已不在配置中。",
   "settings.windowsNodeMxcFolderMutationFailed": "无法更新批准的文件夹策略。",
-  "settings.windowsNodeMxcDurableApprovals": "记住的精确命令",
-  "settings.windowsNodeMxcDurableApprovalsHint":
-    "“始终允许”仅记住精确的可执行文件内容、参数、工作目录、声明的文件夹用途、策略、代理和会话，绝不会更改全局文件夹。",
   "settings.windowsNodeMxcLimitedAcknowledgeTitle": "启用有限文件系统隔离？",
   "settings.windowsNodeMxcLimitedAcknowledgeBody":
     "有限隔离依赖叠加式 Windows DACL 授权。它不是排他的文件系统允许列表，而且只读授权无法移除环境 ACL 已允许的访问。",
@@ -1099,7 +1105,7 @@ export default {
   "perm.phoneLocalOnly": "无法通过手机审批（{reason}）。请在此决策；未授予远程权限。",
   "perm.phoneUnconfirmed": "手机送达状态未确认。请在此决策；不会自动重发。",
   "perm.mxcResolutionUnconfirmed": "无法确认权限决策。不会自动重试；请查看当前请求状态。",
-  "perm.mxcDurableNotSaved": "当前一次性决策已接受，但未能保存其精确范围的永久审批。",
+  "perm.mxcDurableNotSaved": "当前一次性决策已接受，但未能保存 Windows Node 允许列表条目。",
   "perm.mxcLimitedDesc": "AI 助手想使用有限文件系统隔离运行此命令。",
   "perm.mxcAccessLabel": "声明的文件夹用途",
   "perm.mxcAdditionalAccessLabel": "额外文件系统授权",
@@ -1107,14 +1113,14 @@ export default {
   "perm.mxcAccessRw": "读写",
   "perm.mxcCwdLabel": "规范化工作目录",
   "perm.mxcScope":
-    "批准仅授权此命令本身在 MXC 内运行。所声明的文件夹是 MXC 已有的全局授权；批准不会授予或更改文件夹访问权限。对话范围授权仅记住此确切可执行文件、参数、规范化工作目录、声明访问、智能体和对话。",
+    "批准此命令在 MXC 内运行，不改变文件夹权限。记住命令使用 Windows Node 的可执行文件和参数允许列表，适用于此智能体的所有对话，不绑定工作目录或声明的文件夹。",
   "perm.mxcScopeOnce":
     "批准仅授权此命令本身在 MXC 内运行。所声明的文件夹是 MXC 已有的全局授权；批准不会授予或更改文件夹访问权限。",
   "perm.mxcScopeNoAccess":
-    "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。对话范围授权仅记住此确切可执行文件、参数、规范化工作目录、智能体和对话。",
+    "批准此命令在 MXC 内使用所示工作目录运行。记住命令使用 Windows Node 的可执行文件和参数允许列表，适用于此智能体的所有对话，不绑定工作目录。",
   "perm.mxcScopeNoAccessOnce": "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。",
   "perm.mxcLimitedScope":
-    "额外文件夹授权是叠加式授权，并非排他允许列表。对话范围授权仅记住此确切可执行文件、参数、工作目录、声明访问、智能体和对话。",
+    "额外文件夹授权是叠加式授权，并非排他边界。记住命令使用 Windows Node 的可执行文件和参数允许列表，适用于此智能体的所有对话，不绑定工作目录或文件夹。",
   "perm.mxcLimitedScopeOnce":
     "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表。",
   "perm.mxcPowerShellScope":
@@ -1128,7 +1134,9 @@ export default {
   "perm.riskMxcLimited": "有限文件系统隔离：允许前请检查命令和额外请求的授权。",
   "perm.commandLabel": "命令",
   "perm.allowAlways": "始终允许",
-  "perm.mxcAllowAlways": "在此对话中始终允许",
+  "perm.mxcAllowAlways": "为此智能体记住",
+  "perm.hostCommandScope":
+    "此命令直接在 Windows 上运行，不受 MXC 隔离。可用时，记住命令使用 Windows Node 的可执行文件和参数允许列表，适用于此智能体的所有对话，不绑定工作目录或文件夹。",
   "perm.callerLabel": "调用者",
   "perm.autoDeny": "{seconds}秒后自动拒绝",
   "perm.responding": "正在应用您的决定…",
