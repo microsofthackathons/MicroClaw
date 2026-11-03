@@ -283,9 +283,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertFalse(self.ws.check_openclaw_windows())
 
-
-
-
     def test_source_installer_requires_compatible_staged_weixin_runtime(self):
         project = self.root / "project"
         source = project / "plugins" / "openclaw-weixin"
@@ -2673,7 +2670,6 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             (state_dir / "skills" / "officecli" / "SKILL.md").read_text(encoding="utf-8"),
             "updated",
         )
-
 
     def test_defender_exclusions_skip_elevation_when_already_configured(self):
         directories = [self.root / "one", self.root / "two"]

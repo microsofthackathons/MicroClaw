@@ -233,7 +233,16 @@ function validatePackageIdentity(root: string, manifest: RuntimeManifest): void 
 }
 
 function removeDirectory(directory: string): void {
-  fs.rmSync(directory, { recursive: true, force: true });
+  const entry = fs.lstatSync(directory, { throwIfNoEntry: false });
+  if (!entry) return;
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    fs.unlinkSync(directory);
+    return;
+  }
+  for (const filename of fs.readdirSync(directory)) {
+    removeDirectory(path.join(directory, filename));
+  }
+  fs.rmdirSync(directory);
 }
 
 export function resolveBundledWeixinPluginRoot(

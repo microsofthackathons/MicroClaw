@@ -3,6 +3,21 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("desktop startup order", () => {
+  it("rejects missing gateway runtime files instead of silently waiting for the installer timeout", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    for (const filename of ["nodePath", "entryPath"]) {
+      const start = source.indexOf(`if (!fs.existsSync(${filename}))`);
+      const guard = source.slice(start, source.indexOf("\n    }", start));
+      expect(start).toBeGreaterThan(-1);
+      expect(guard).toContain('setGatewayStatus("failed")');
+      expect(guard).toContain("rollbackStartupAgentSkills()");
+      expect(guard).toContain("throw new Error(");
+      expect(guard).not.toContain("return;");
+    }
+    const services = source.slice(source.indexOf("startApplicationServices().catch"));
+    expect(services.slice(0, services.indexOf("});"))).toContain("signalPostInstallFailure(err)");
+  });
+
   it("prepares the installer runtime headlessly before upgrade recovery or application startup", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const lifecycle = source.slice(source.indexOf("const applicationStartup = app.whenReady()"));

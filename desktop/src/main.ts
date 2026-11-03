@@ -6079,25 +6079,19 @@ async function startGatewayInner(
       const msg = `[error] node.exe not found at ${nodePath}`;
       console.error(msg);
       mainWindow?.webContents.send("gateway:log", msg);
-      mainWindow?.webContents.send(
-        "gateway:log",
-        "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
-      );
+      mainWindow?.webContents.send("gateway:log", "[hint] 请重新运行安装程序修复运行时文件");
       setGatewayStatus("failed");
       rollbackStartupAgentSkills();
-      return;
+      throw new Error(msg);
     }
     if (!fs.existsSync(entryPath)) {
       const msg = `[error] openclaw entry not found at ${entryPath}`;
       console.error(msg);
       mainWindow?.webContents.send("gateway:log", msg);
-      mainWindow?.webContents.send(
-        "gateway:log",
-        "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
-      );
+      mainWindow?.webContents.send("gateway:log", "[hint] 请重新运行安装程序修复运行时文件");
       setGatewayStatus("failed");
       rollbackStartupAgentSkills();
-      return;
+      throw new Error(msg);
     }
 
     console.log(
