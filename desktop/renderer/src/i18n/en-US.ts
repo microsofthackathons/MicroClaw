@@ -976,6 +976,8 @@ export default {
   "localModel.source": "Source",
   "localModel.installProvider": "Install and enable",
   "localModel.enableProvider": "Enable component",
+  "localModel.reloadProvider": "Retry loading component",
+  "localModel.loadingProvider": "Loading component…",
   "localModel.installingProvider": "Installing and enabling…",
   "localModel.confirmProviderInstall": "Allow and continue",
   "localModel.prepareTitle": "Prepare a connection",

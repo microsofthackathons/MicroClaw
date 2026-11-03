@@ -907,6 +907,8 @@ export default {
   "localModel.source": "来源",
   "localModel.installProvider": "安装并启用",
   "localModel.enableProvider": "启用组件",
+  "localModel.reloadProvider": "重试加载组件",
+  "localModel.loadingProvider": "正在加载组件…",
   "localModel.installingProvider": "正在安装并启用…",
   "localModel.confirmProviderInstall": "同意并继续",
   "localModel.prepareTitle": "准备连接",

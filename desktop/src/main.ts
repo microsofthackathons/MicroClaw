@@ -533,15 +533,6 @@ const localModelService = new LocalModelService({
     if (receipt) settingsStore.set("localModelOperation", receipt);
     else settingsStore.delete("localModelOperation");
   },
-  restartGateway: async () => {
-    await restartManagedGateway("Applying official local model setup");
-    const deadline = Date.now() + GATEWAY_READY_TIMEOUT_MS;
-    while (!gwClient?.connected) {
-      if (Date.now() >= deadline)
-        throw new Error("Gateway did not reconnect after local model setup");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  },
   onChange: (operation) => sendToWindow(mainWindow, "model:local:event", operation),
 });
 const sessionModelService = new SessionModelService({

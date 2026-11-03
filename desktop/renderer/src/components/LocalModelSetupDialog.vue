@@ -142,11 +142,15 @@
             {{
               t(
                 metadataPending
-                  ? "localModel.installingProvider"
+                  ? capabilities.plugin.installed && capabilities.plugin.enabled
+                    ? "localModel.loadingProvider"
+                    : "localModel.installingProvider"
                   : review
                     ? "localModel.confirmProviderInstall"
                     : capabilities.plugin.installed
-                      ? "localModel.enableProvider"
+                      ? capabilities.plugin.enabled
+                        ? "localModel.reloadProvider"
+                        : "localModel.enableProvider"
                       : "localModel.installProvider",
               )
             }}
@@ -368,7 +372,10 @@ let activationObserved = false;
 let snapshotRevision = 0;
 let capabilitiesRevision = 0;
 const providerReady = computed(
-  () => capabilities.value?.plugin.installed && capabilities.value.plugin.enabled,
+  () =>
+    capabilities.value?.plugin.installed &&
+    capabilities.value.plugin.enabled &&
+    capabilities.value.plugin.loaded !== false,
 );
 const canMutate = computed(() =>
   Boolean(capabilities.value?.supported && capabilities.value.mutable),
@@ -391,7 +398,8 @@ const canInstall = computed(
     canMutate.value &&
     Boolean(
       capabilities.value?.plugin.canInstall ||
-      (capabilities.value?.plugin.installed && !capabilities.value.plugin.enabled),
+      (capabilities.value?.plugin.installed &&
+        (!capabilities.value.plugin.enabled || capabilities.value.plugin.loaded === false)),
     ),
 );
 const capabilityReasons = computed(() => {
@@ -551,7 +559,10 @@ async function installProvider() {
       review.value = inspected.value;
       return;
     }
-    if (!result.ok) throw new Error(result.error);
+    if (!result.ok) {
+      await loadCapabilities();
+      throw new Error(result.error);
+    }
     capabilities.value = result.value;
     await Promise.all([loadSnapshot(), loadCapabilities()]);
   });

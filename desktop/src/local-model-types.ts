@@ -8,6 +8,7 @@ export interface LocalModelCapabilities {
   plugin: {
     installed: boolean;
     enabled: boolean;
+    loaded?: boolean;
     version?: string;
     canInstall: boolean;
   };

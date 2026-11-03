@@ -370,6 +370,23 @@ describe("SettingsView model integration", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it("does not show an unloaded local component as connected", async () => {
+    const installProvider = vi.spyOn(window.openclaw.model.local, "installProvider");
+    window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        supported: true,
+        mutable: true,
+        blockers: [],
+        gatewayVersion: "2026.10.5",
+        plugin: { installed: true, enabled: true, loaded: false, canInstall: false },
+      },
+    });
+    const { wrapper } = await open();
+    expect(wrapper.get('[data-provider="llama-cpp"]').text()).not.toContain("Connected");
+    expect(installProvider).not.toHaveBeenCalled();
+  });
+
   it("labels the local provider for users and keeps the runtime name secondary", async () => {
     const { wrapper } = await open();
     const card = wrapper.get('[data-provider="llama-cpp"]');

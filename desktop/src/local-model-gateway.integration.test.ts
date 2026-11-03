@@ -133,8 +133,8 @@ it.skipIf(!entry)(
       });
       return process;
     }
-    let child = startGateway();
-    let client = new GatewayClient({ port, token });
+    const child = startGateway();
+    const client = new GatewayClient({ port, token });
     async function stopGateway() {
       client.stop();
       if (child.pid && child.exitCode === null && child.signalCode === null) {
@@ -158,6 +158,7 @@ it.skipIf(!entry)(
         timeout: 90_000,
         interval: 500,
       });
+      const connectionGeneration = client.connectionGeneration;
       let receipt: LocalModelReceipt | undefined;
       const service = new LocalModelService({
         gateway: () => client,
@@ -167,18 +168,6 @@ it.skipIf(!entry)(
         readReceipt: () => receipt,
         saveReceipt: (value) => {
           receipt = value ?? undefined;
-        },
-        restartGateway: async () => {
-          if (!installProvider && !selectionPluginDir)
-            throw new Error("Plugin installation was not opted into");
-          await stopGateway();
-          child = startGateway();
-          client = new GatewayClient({ port, token });
-          client.start();
-          await vi.waitFor(() => expect(client.connected).toBe(true), {
-            timeout: 90_000,
-            interval: 500,
-          });
         },
         onChange: () => {},
       });
@@ -232,6 +221,9 @@ it.skipIf(!entry)(
         const installed = await service.getCapabilities();
         expect(installed.plugin.installed).toBe(true);
         expect(installed.plugin.enabled).toBe(true);
+        expect(installed.plugin.loaded).not.toBe(false);
+        expect(client.connectionGeneration).toBe(connectionGeneration);
+        expect(child.exitCode).toBeNull();
         const operation = await service.prepare({
           authChoice: "llama-cpp",
           modelRef: "llama-cpp/qwen3.5-4b-q4_k_m",
