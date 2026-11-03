@@ -897,6 +897,143 @@ describe("SettingsView model integration", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  function mockInstalledLocalProvider() {
+    config.plugins = {
+      entries: { "llama-cpp": { enabled: true }, other: { enabled: true } },
+      installs: { "llama-cpp": { installPath: "keep-plugin-files" } },
+    };
+    window.openclaw.model.local.getCapabilities = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        supported: true,
+        mutable: true,
+        blockers: [],
+        gatewayVersion: "2026.10.5",
+        plugin: {
+          installed: true,
+          enabled: config.plugins.entries["llama-cpp"].enabled,
+          canInstall: false,
+        },
+      },
+    }));
+  }
+
+  it("removes the local connection after confirmation and no longer labels the plugin connected", async () => {
+    mockInstalledLocalProvider();
+    const original = structuredClone(config);
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    const { wrapper } = await open();
+    expect(wrapper.get('[data-provider="llama-cpp"]').text()).toContain("Connected");
+    await wrapper.get('[data-testid="add-local-model"]').trigger("click");
+    const dialog = wrapper.getComponent(LocalModelSetupDialog);
+    expect(dialog.props("removableProvider")).toBe(true);
+    dialog.vm.$emit("remove-provider");
+    await flushPromises();
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("Downloaded models, caches, and runtime files will be kept"),
+      "Remove model connection",
+      expect.any(Object),
+    );
+    expect(window.openclaw.model.applyConfig).toHaveBeenCalledExactlyOnceWith({
+      config,
+      expectedConfig: original,
+      action: "provider-remove",
+      providerKey: "llama-cpp",
+    });
+    expect(config.models.providers["llama-cpp"]).toBeUndefined();
+    expect(config.models.providers.cloud).toEqual(original.models.providers.cloud);
+    expect(config.agents.defaults.model).toBeUndefined();
+    expect(config.agents.list).toEqual(original.agents.list);
+    expect(config.memory).toEqual(original.memory);
+    expect(config.plugins).toEqual({
+      ...original.plugins,
+      entries: { ...original.plugins.entries, "llama-cpp": { enabled: false } },
+    });
+    expect(wrapper.get('[data-provider="llama-cpp"]').text()).toContain("Not configured");
+    expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(false);
+    expect(window.openclaw.gateway.restart).not.toHaveBeenCalled();
+    expect(window.openclaw.config.write).not.toHaveBeenCalled();
+    expect(window.openclaw.model.selectDefault).not.toHaveBeenCalled();
+  });
+
+  it("offers removal for an enabled local plugin even without prepared models", async () => {
+    config = {};
+    mockInstalledLocalProvider();
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="add-local-model"]').trigger("click");
+    const dialog = wrapper.getComponent(LocalModelSetupDialog);
+    expect(dialog.props("removableProvider")).toBe(true);
+    dialog.vm.$emit("remove-provider");
+    await flushPromises();
+    expect(config.plugins.entries["llama-cpp"].enabled).toBe(false);
+    expect(wrapper.get('[data-provider="llama-cpp"]').text()).toContain("Not configured");
+  });
+
+  it.each(["cancel", "close"])(
+    "keeps the local connection when removal is dismissed with %s",
+    async (action) => {
+      mockInstalledLocalProvider();
+      const original = structuredClone(config);
+      vi.spyOn(ElMessageBox, "confirm").mockRejectedValue(action);
+      const error = vi.spyOn(ElMessage, "error");
+      const { wrapper } = await open();
+      await wrapper.get('[data-testid="add-local-model"]').trigger("click");
+      wrapper.getComponent(LocalModelSetupDialog).vm.$emit("remove-provider");
+      await flushPromises();
+      expect(config).toEqual(original);
+      expect(write).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(true);
+    },
+  );
+
+  it("blocks local removal while chatting and rechecks after confirmation", async () => {
+    mockInstalledLocalProvider();
+    const original = structuredClone(config);
+    let confirmRemoval!: () => void;
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          confirmRemoval = () => resolve("confirm" as never);
+        }),
+    );
+    const { wrapper, chat } = await open();
+    await wrapper.get('[data-testid="add-local-model"]').trigger("click");
+    const dialog = wrapper.getComponent(LocalModelSetupDialog);
+    chat.streaming = true;
+    await flushPromises();
+    expect(dialog.props("connectionMutationBusy")).toBe(true);
+    dialog.vm.$emit("remove-provider");
+    await flushPromises();
+    expect(confirm).not.toHaveBeenCalled();
+    chat.streaming = false;
+    await flushPromises();
+    dialog.vm.$emit("remove-provider");
+    await flushPromises();
+    chat.streaming = true;
+    confirmRemoval();
+    await flushPromises();
+    expect(config).toEqual(original);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("keeps the local plugin and connection when the configuration changed before removal", async () => {
+    mockInstalledLocalProvider();
+    const original = structuredClone(config);
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    write.mockRejectedValueOnce(new Error("Configuration changed; reload before saving"));
+    const error = vi.spyOn(ElMessage, "error");
+    const { wrapper } = await open();
+    await wrapper.get('[data-testid="add-local-model"]').trigger("click");
+    wrapper.getComponent(LocalModelSetupDialog).vm.$emit("remove-provider");
+    await flushPromises();
+    expect(write.mock.calls[0]![1]).toEqual(original);
+    expect(config).toEqual(original);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("Configuration changed"));
+    expect(wrapper.findComponent(LocalModelSetupDialog).exists()).toBe(true);
+  });
+
   it("toggles the local provider panel with the same arrow behavior", async () => {
     const { wrapper } = await open();
     const button = wrapper.get('[data-testid="add-local-model"]');

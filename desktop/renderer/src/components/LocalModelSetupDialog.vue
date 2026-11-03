@@ -296,6 +296,18 @@
           {{ t("localModel.finish") }}
         </button>
       </template>
+      <div v-if="removableProvider" class="connection-actions">
+        <button
+          class="danger-action"
+          data-testid="remove-provider-llama-cpp"
+          :disabled="
+            blocked || metadataPending || !canMutate || streaming || connectionMutationBusy
+          "
+          @click="emit('remove-provider')"
+        >
+          {{ t("localModel.removeConnection") }}
+        </button>
+      </div>
     </section>
     <LocalModelDownloadDialog
       v-if="fixedSelection"
@@ -332,10 +344,16 @@ const props = defineProps<{
   streaming?: boolean;
   defaultAgentOverride?: { agentId: string; modelRef: string } | null;
   removableConnections?: Array<{ modelRef: string; name: string }>;
+  removableProvider?: boolean;
   connectionMutationBusy?: boolean;
   inline?: boolean;
 }>();
-const emit = defineEmits<{ close: []; configured: []; "remove-connection": [modelRef: string] }>();
+const emit = defineEmits<{
+  close: [];
+  configured: [];
+  "remove-connection": [modelRef: string];
+  "remove-provider": [];
+}>();
 const api = window.openclaw.model.local;
 const {
   operation,
@@ -854,6 +872,17 @@ select {
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.connection-actions {
+  margin-top: 20px;
+}
+.danger-action {
+  color: var(--smtc-status-danger-foreground, #b42318);
+  border-color: currentColor;
+  font-size: 13px;
+}
+.danger-action:hover:not(:disabled) {
+  background: var(--smtc-background-ctrl-subtle-hover, #f8f9fa);
 }
 .primary-action {
   background: var(--ux-brand-bg, #18181b);

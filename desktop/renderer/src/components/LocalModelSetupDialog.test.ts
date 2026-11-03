@@ -104,6 +104,43 @@ describe("LocalModelSetupDialog", () => {
     vi.clearAllMocks();
   });
 
+  it("offers provider removal only when the parent has a removable local connection", async () => {
+    const wrapper = await open();
+    expect(wrapper.find('[data-testid="remove-provider-llama-cpp"]').exists()).toBe(false);
+    await wrapper.setProps({ removableProvider: true });
+    const remove = wrapper.get('[data-testid="remove-provider-llama-cpp"]');
+    expect(remove.text()).toBe("Remove connection");
+    await remove.trigger("click");
+    expect(wrapper.emitted("remove-provider")).toEqual([[]]);
+    expect(api.prepare).not.toHaveBeenCalled();
+    expect(api.installProvider).not.toHaveBeenCalled();
+  });
+
+  it.each(["streaming", "connectionMutationBusy"])(
+    "blocks provider removal while %s",
+    async (blockedProp) => {
+      const wrapper = await open({ removableProvider: true, [blockedProp]: true });
+      const remove = wrapper.get('[data-testid="remove-provider-llama-cpp"]');
+      expect(remove.attributes("disabled")).toBeDefined();
+      await remove.trigger("click");
+      expect(wrapper.emitted("remove-provider")).toBeUndefined();
+    },
+  );
+
+  it("blocks provider removal during local setup or in read-only mode", async () => {
+    const wrapper = await open({ removableProvider: true });
+    listener(operation());
+    await flushPromises();
+    expect(
+      wrapper.get('[data-testid="remove-provider-llama-cpp"]').attributes("disabled"),
+    ).toBeDefined();
+    vi.mocked(api.getCapabilities).mockResolvedValue(ok({ ...capabilities, mutable: false }));
+    const readOnly = await open({ removableProvider: true });
+    expect(
+      readOnly.get('[data-testid="remove-provider-llama-cpp"]').attributes("disabled"),
+    ).toBeDefined();
+  });
+
   it("reads hardware once for the managed catalog without detecting, downloading, or changing models", async () => {
     vi.mocked(api.getSnapshot).mockResolvedValue(
       ok({

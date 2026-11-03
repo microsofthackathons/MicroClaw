@@ -970,6 +970,8 @@ export default {
   "localModel.catalogNotice":
     "目录可用性不代表服务正在运行或 GPU 已就绪；未知能力不会通过推测补全。",
   "localModel.removeConnection": "移除连接",
+  "localModel.removeProviderConfirm":
+    "将移除本地模型连接并停用 llama.cpp 组件，同时清除默认模型和智能体中的本地模型引用。已下载的模型、缓存和运行时文件会保留，之后可重新启用组件。使用本地模型的会话需要重新选择模型。是否继续？",
   "localModel.selectBeforeRemove": "移除此连接前，请明确选用并应用另一个默认模型。",
   "localModel.removalNotice":
     "移除连接不会删除模型文件、缓存或运行时。移除当前本地模型前，请先选择其他默认模型。",
