@@ -2035,7 +2035,8 @@ async function loadLocalFileStatus(): Promise<void> {
     localProviderReady.value =
       capabilities.value.supported &&
       capabilities.value.plugin.installed &&
-      capabilities.value.plugin.enabled;
+      capabilities.value.plugin.enabled &&
+      capabilities.value.plugin.loaded !== false;
   } catch (error) {
     if (!modelViewDisposed && revision === localSnapshotRevision)
       modelStatusError.value = error instanceof Error ? error.message : String(error);

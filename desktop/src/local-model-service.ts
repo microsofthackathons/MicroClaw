@@ -40,7 +40,6 @@ interface LocalModelDependencies {
   stateDir?(): string;
   readReceipt(): LocalModelReceipt | undefined;
   saveReceipt(receipt: LocalModelReceipt | null): void;
-  restartGateway(): Promise<void>;
   onChange(operation: LocalModelOperation): void;
 }
 
@@ -82,6 +81,26 @@ function record(value: unknown): JsonObject {
 
 function optionalRecord(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? record(value) : {};
+}
+
+function providerRuntimeApplied(result: JsonObject): boolean {
+  const runtime = optionalRecord(result.runtime);
+  return (
+    result.ok === true &&
+    (result.restartRequired === undefined || result.restartRequired === false) &&
+    Number.isInteger(runtime.generation) &&
+    Number(runtime.generation) >= 0 &&
+    Array.isArray(runtime.pluginIds) &&
+    runtime.pluginIds.includes(PROVIDER)
+  );
+}
+
+function assertConfigHotReload(config: unknown): void {
+  const gateway = optionalRecord(optionalRecord(config).gateway);
+  if (optionalRecord(gateway.reload).mode === "off")
+    throw new Error(
+      "Gateway configuration hot reload is disabled. Enable hot reload before preparing or selecting a local model. Gateway was not restarted.",
+    );
 }
 
 function text(value: unknown): string {
@@ -195,6 +214,7 @@ export class LocalModelService {
   private driveGeneration = 0;
   private awaitingStart = false;
   private mutationPending = false;
+  private providerLoadPending = false;
   private secrets = new Set<string>();
   private reviewedToken: string | undefined;
   private pendingReview: LocalModelInstallReview | undefined;
@@ -389,7 +409,7 @@ export class LocalModelService {
     const missing = METHODS.filter((method) => !gateway.methods.includes(method));
     if (missing.length)
       blockers.push(`Gateway is missing local setup methods: ${missing.join(", ")}`);
-    let plugin = {
+    let plugin: LocalModelCapabilities["plugin"] = {
       installed: false,
       enabled: false,
       canInstall: false,
@@ -406,9 +426,23 @@ export class LocalModelService {
       }
       if (entry) {
         const install = optionalRecord(entry.install);
+        const runtime = optionalRecord(entry.runtime);
+        const runtimeError = typeof runtime.error === "string" && runtime.error.length > 0;
         plugin = {
           installed: entry.installed === true,
           enabled: entry.enabled === true,
+          ...((typeof runtime.state === "string" && runtime.state !== "unloaded") ||
+          runtimeError ||
+          entry.state === "error" ||
+          this.providerLoadPending
+            ? {
+                loaded:
+                  runtime.state === "active" &&
+                  !runtimeError &&
+                  entry.state !== "error" &&
+                  !this.providerLoadPending,
+              }
+            : {}),
           version: typeof entry.version === "string" ? entry.version : undefined,
           canInstall:
             mutable &&
@@ -428,8 +462,12 @@ export class LocalModelService {
             `The installed llama.cpp provider version is not supported (requires ${pluginVersion} for OpenClaw ${gateway.serverVersion})`,
           );
         }
-        pluginError = entry.state === "error" || entry.origin === "workspace";
-        if (pluginError) blockers.push("The llama.cpp provider reported an error");
+        pluginError =
+          entry.origin === "workspace" ||
+          (entry.state === "error" &&
+            (!plugin.installed || !gateway.methods.includes("plugins.reload")));
+        if (entry.state === "error" || pluginError)
+          blockers.push("The llama.cpp provider reported an error");
       }
     }
     if (
@@ -488,6 +526,7 @@ export class LocalModelService {
 
   private async requireReady(): Promise<LocalModelGateway> {
     this.deps.assertMutable();
+    assertConfigHotReload(this.deps.readConfig());
     const capabilities = await this.getCapabilities();
     if (!capabilities.supported || !capabilities.mutable) {
       throw new Error(capabilities.blockers.join("\n") || "Local model setup is unavailable");
@@ -495,8 +534,82 @@ export class LocalModelService {
     if (!capabilities.plugin.installed || !capabilities.plugin.enabled) {
       throw new Error("Install and enable the official llama.cpp provider first");
     }
+    if (capabilities.plugin.loaded === false) await this.reloadProvider(this.gateway());
     this.checkEndpoint();
     return this.gateway();
+  }
+
+  private assertProviderGateway(gateway: LocalModelGateway, generation: number | undefined): void {
+    this.deps.assertMutable();
+    if (
+      this.deps.gateway() !== gateway ||
+      !gateway.connected ||
+      gateway.connectionGeneration !== generation
+    )
+      throw new Error("Gateway connection changed while hot-loading the local model provider");
+  }
+
+  private async confirmProviderRuntime(
+    gateway: LocalModelGateway,
+    generation: number | undefined,
+    result: JsonObject,
+  ): Promise<LocalModelCapabilities | undefined> {
+    this.assertProviderGateway(gateway, generation);
+    if (!providerRuntimeApplied(result)) return;
+    this.providerLoadPending = false;
+    try {
+      const capabilities = await this.getCapabilities();
+      this.assertProviderGateway(gateway, generation);
+      if (
+        capabilities.supported &&
+        capabilities.mutable &&
+        capabilities.plugin.installed &&
+        capabilities.plugin.enabled &&
+        capabilities.plugin.loaded !== false
+      ) {
+        if (capabilities.plugin.loaded === true) return capabilities;
+        const detection = await this.detect({ refresh: true });
+        this.assertProviderGateway(gateway, generation);
+        if (detection.choices.some((option) => option.id === PROVIDER))
+          return { ...capabilities, plugin: { ...capabilities.plugin, loaded: true } };
+      }
+    } catch {
+      this.providerLoadPending = true;
+      this.assertProviderGateway(gateway, generation);
+      return;
+    }
+    this.providerLoadPending = true;
+  }
+
+  private async reloadProvider(
+    gateway: LocalModelGateway,
+    acknowledgeCapabilities: JsonObject = {},
+  ): Promise<LocalModelCapabilities> {
+    const generation = gateway.connectionGeneration;
+    this.assertProviderGateway(gateway, generation);
+    if (!gateway.methods.includes("plugins.reload"))
+      throw new Error(
+        "This Gateway does not support hot-loading plugins. Gateway was not restarted.",
+      );
+    this.providerLoadPending = true;
+    this.invalidateDetection();
+    try {
+      const result = record(
+        await gateway.request(
+          "plugins.reload",
+          { plugins: [{ pluginId: PROVIDER }], waitForDrain: true, ...acknowledgeCapabilities },
+          300_000,
+        ),
+      );
+      const capabilities = await this.confirmProviderRuntime(gateway, generation, result);
+      if (!capabilities)
+        throw new Error(
+          "The local model provider could not be hot-loaded. Downloaded files are retained; retry loading. Gateway was not restarted.",
+        );
+      return capabilities;
+    } finally {
+      this.invalidateDetection();
+    }
   }
 
   private detectionContext(): DetectionContext {
@@ -659,30 +772,61 @@ export class LocalModelService {
         throw new Error(capabilities.blockers.join("\n"));
       }
       const gateway = this.gateway();
+      const generation = gateway.connectionGeneration;
       if (!capabilities.plugin.installed && !capabilities.plugin.canInstall) {
         throw new Error("No compatible official llama.cpp install is offered by this Gateway");
       }
-      if (capabilities.plugin.installed && capabilities.plugin.enabled) return capabilities;
+      if (
+        capabilities.plugin.installed &&
+        capabilities.plugin.enabled &&
+        capabilities.plugin.loaded === true
+      )
+        return capabilities;
+      if (!gateway.methods.includes("plugins.reload"))
+        throw new Error(
+          "This Gateway does not support hot-loading plugins. Gateway was not restarted.",
+        );
       const acknowledgeCapabilities =
         params.reviewToken !== undefined
           ? { acknowledgeCapabilities: { reviewToken: text(params.reviewToken) } }
           : {};
-      const result = record(
-        await gateway.request(
-          capabilities.plugin.installed ? "plugins.setEnabled" : "plugins.install",
-          capabilities.plugin.installed
-            ? { pluginId: PROVIDER, enabled: true, ...acknowledgeCapabilities }
-            : { ...this.installRequest, ...acknowledgeCapabilities },
-          300_000,
-        ),
-      );
-      if (result.ok !== true)
-        throw new Error("The official plugin could not be installed or enabled");
-      if (!capabilities.plugin.installed || result.restartRequired === true)
-        await this.deps.restartGateway();
+      let applied: LocalModelCapabilities | undefined;
+      if (!capabilities.plugin.installed || !capabilities.plugin.enabled) {
+        this.providerLoadPending = true;
+        let result: JsonObject | undefined;
+        try {
+          result = record(
+            await gateway.request(
+              capabilities.plugin.installed ? "plugins.setEnabled" : "plugins.install",
+              capabilities.plugin.installed
+                ? { pluginId: PROVIDER, enabled: true, ...acknowledgeCapabilities }
+                : { ...this.installRequest, ...acknowledgeCapabilities },
+              300_000,
+            ),
+          );
+        } catch (error) {
+          this.assertProviderGateway(gateway, generation);
+          const persistence = optionalRecord(
+            optionalRecord(optionalRecord(error).details).persistence,
+          );
+          if (
+            capabilities.plugin.installed ||
+            persistence.operation !== "install" ||
+            persistence.pluginId !== PROVIDER
+          )
+            throw error;
+        }
+        if (result) {
+          if (result.ok !== true)
+            throw new Error("The official plugin could not be installed or enabled");
+          applied = await this.confirmProviderRuntime(gateway, generation, result);
+        }
+      }
+      this.assertProviderGateway(gateway, generation);
+      const loaded = applied ?? (await this.reloadProvider(gateway, acknowledgeCapabilities));
       this.reviewedToken = undefined;
       this.pendingReview = undefined;
-      return await this.getCapabilities();
+      return loaded;
     } catch (error) {
       const details = optionalRecord(optionalRecord(error).details);
       if (
@@ -774,6 +918,7 @@ export class LocalModelService {
       const agentId = await this.defaultAgent(context.gateway);
       const snapshot = record(await context.gateway.request("config.get", {}));
       if (snapshot.valid !== true) throw new Error("The Gateway configuration is invalid");
+      assertConfigHotReload(snapshot.config);
       const patch = buildLocalModelSelectionPatch(snapshot.config, modelRef);
       this.assertModelFilesPresent(snapshot.config, modelRef);
       const baseHash = text(snapshot.hash);
@@ -818,7 +963,7 @@ export class LocalModelService {
           throw new Error("The saved model does not match the selected model");
         }
         const stats = optionalRecord(optionalRecord(optionalRecord(result.sentinel).payload).stats);
-        if (stats.requiresRestart === true) await this.deps.restartGateway();
+        if (stats.requiresRestart === true) await this.reloadProvider(gateway);
         await this.waitForSelectionApplied(modelRef);
         this.finish({ phase: "ready", modelRef });
       });
@@ -977,6 +1122,9 @@ export class LocalModelService {
                 "Preparation did not return the exact selected model; no model selection was changed",
               );
             }
+            const capabilities = await this.getCapabilities();
+            if (capabilities.plugin.loaded === false) await this.reloadProvider(gateway);
+            if (!isCurrent() || !this.operation?.busy) return;
             this.finish({ phase: "prepared", preparedModelRef });
           } else {
             const activation = record(result.modelActivation);
@@ -992,7 +1140,7 @@ export class LocalModelService {
             // Resume a legacy receipt without starting another inference check.
             if (activation.gatewayRestartRequired === true) {
               this.publish({ phase: "applying", step: undefined });
-              await this.deps.restartGateway();
+              await this.reloadProvider(gateway);
             }
             await this.waitForSelectionApplied(text(activation.modelRef));
             this.finish({ phase: "ready", modelRef: text(activation.modelRef) });

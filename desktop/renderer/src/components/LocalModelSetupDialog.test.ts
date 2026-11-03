@@ -853,6 +853,69 @@ describe("LocalModelSetupDialog", () => {
     expect(api.inspectProvider).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["en-US", "Retry loading component", "Loading component…"],
+    ["zh-CN", "重试加载组件", "正在加载组件…"],
+  ] as const)(
+    "offers hot-load retry for an installed but unloaded component in %s",
+    async (locale, label, loadingLabel) => {
+      setLocale(locale);
+      vi.mocked(api.getCapabilities)
+        .mockResolvedValueOnce(
+          ok({
+            ...capabilities,
+            plugin: { installed: true, enabled: true, loaded: false, canInstall: false },
+          }),
+        )
+        .mockResolvedValue(ok(capabilities));
+      const loading = deferred<LocalModelResult<LocalModelCapabilities>>();
+      vi.mocked(api.installProvider).mockReturnValueOnce(loading.promise);
+      const wrapper = await open();
+      expect(wrapper.get('[data-testid="provider-install"]').text()).toBe(label);
+      await wrapper.get('[data-testid="provider-install"]').trigger("click");
+      expect(wrapper.get('[data-testid="provider-install"]').text()).toBe(loadingLabel);
+      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+      expect(api.prepare).not.toHaveBeenCalled();
+      loading.resolve(ok(capabilities));
+      await flushPromises();
+      expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
+    },
+  );
+
+  it("refreshes a saved installation after a loading failure so retry does not download again", async () => {
+    vi.mocked(api.getCapabilities)
+      .mockResolvedValueOnce(
+        ok({
+          ...capabilities,
+          plugin: { installed: false, enabled: false, canInstall: true },
+        }),
+      )
+      .mockResolvedValueOnce(
+        ok({
+          ...capabilities,
+          plugin: { installed: true, enabled: true, loaded: false, canInstall: false },
+        }),
+      )
+      .mockResolvedValue(ok(capabilities));
+    vi.mocked(api.installProvider)
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "Hot loading failed; downloaded files are retained",
+      })
+      .mockResolvedValueOnce(ok(capabilities));
+    const wrapper = await open();
+    await wrapper.get('[data-testid="provider-install"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain("downloaded files are retained");
+    expect(wrapper.get('[data-testid="provider-install"]').text()).toBe("Retry loading component");
+    expect(api.getCapabilities).toHaveBeenCalledTimes(2);
+    await wrapper.get('[data-testid="provider-install"]').trigger("click");
+    await flushPromises();
+    expect(api.installProvider).toHaveBeenCalledTimes(2);
+    expect(api.prepare).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
+  });
+
   it.each(["streaming", "read-only", "unsupported", "unavailable", "busy"])(
     "blocks installation when %s",
     async (reason) => {
@@ -895,7 +958,7 @@ describe("LocalModelSetupDialog", () => {
   });
 
   it("keeps ordinary installation errors retryable without treating error text as permission consent", async () => {
-    vi.mocked(api.getCapabilities).mockResolvedValueOnce(
+    vi.mocked(api.getCapabilities).mockResolvedValue(
       ok({ ...capabilities, plugin: { installed: false, enabled: false, canInstall: true } }),
     );
     vi.mocked(api.installProvider)

@@ -79,7 +79,6 @@ describe("local model IPC", () => {
       readConfig: () => ({}),
       readReceipt: () => undefined,
       saveReceipt: () => {},
-      restartGateway: async () => {},
       onChange: () => {},
     });
     registerLocalModelHandlers(ipc, service);

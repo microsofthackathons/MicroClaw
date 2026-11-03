@@ -27,7 +27,7 @@ const plugin = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
 it.skipIf(!entry || !plugin)(
   cache
     ? "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults"
-    : "reaches exact-model download consent through the real provider loader without downloading or changing defaults",
+    : "hot-loads a copied provider and reaches download consent without restarting or downloading weights",
   async () => {
     const root = mkdtempSync(path.join(tmpdir(), "microclaw-complete-local-"));
     const configPath = path.join(root, "openclaw.json");
@@ -67,7 +67,7 @@ it.skipIf(!entry || !plugin)(
             heartbeat: { every: "0m" },
           },
         },
-        plugins: { allow: ["llama-cpp"], entries: { "llama-cpp": { enabled: true } } },
+        plugins: { allow: ["llama-cpp"], entries: { "llama-cpp": { enabled: !!cache } } },
         skills: { allowBundled: [] },
       };
       await writeFile(configPath, JSON.stringify(before));
@@ -110,7 +110,7 @@ it.skipIf(!entry || !plugin)(
       client = new GatewayClient({ port, token });
       client.start();
       await vi.waitFor(() => expect(client!.connected).toBe(true), {
-        timeout: 100_000,
+        timeout: 180_000,
         interval: 500,
       });
       const events: LocalModelOperation[] = [];
@@ -125,12 +125,45 @@ it.skipIf(!entry || !plugin)(
         saveReceipt: (value) => {
           receipt = value ?? undefined;
         },
-        restartGateway: async () => {
-          throw new Error("Preparation must not require an application restart");
-        },
         onChange: (value) => events.push(value),
       });
+      const connectionGeneration = client.connectionGeneration;
+      const gatewayRequest = client.request.bind(client);
       const request = vi.spyOn(client, "request");
+      if (!cache) {
+        request.mockImplementation(
+          async <Response>(
+            method: string,
+            params?: unknown,
+            timeout?: number | null,
+          ): Promise<Response> => {
+            const result = await gatewayRequest<Response>(method, params, timeout);
+            return method === "plugins.setEnabled" &&
+              (params as { enabled?: boolean })?.enabled === true
+              ? ({ ...(result as object), runtime: undefined } as Response)
+              : result;
+          },
+        );
+        const review = await service.inspectProvider();
+        const loaded = await service.installProvider({
+          confirmed: true,
+          reviewToken: review.reviewToken,
+        });
+        expect(loaded.plugin.loaded).toBe(true);
+        expect(request).toHaveBeenCalledWith(
+          "plugins.reload",
+          {
+            plugins: [{ pluginId: "llama-cpp" }],
+            waitForDrain: true,
+            ...(review.reviewToken
+              ? { acknowledgeCapabilities: { reviewToken: review.reviewToken } }
+              : {}),
+          },
+          300_000,
+        );
+        expect(client.connectionGeneration).toBe(connectionGeneration);
+        expect(child.exitCode).toBeNull();
+      }
       const started = await service.prepare({
         authChoice: "llama-cpp",
         modelRef: model.modelRef,
@@ -231,5 +264,5 @@ it.skipIf(!entry || !plugin)(
       rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   },
-  360_000,
+  600_000,
 );

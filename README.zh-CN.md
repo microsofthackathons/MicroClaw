@@ -131,7 +131,9 @@ $env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
 
 不打断桌面的自动化可在启动安装器或客户端时设置仅限该进程的环境变量 `MICROCLAW_BACKGROUND=1`：安装器不激活窗口，客户端启动使用 `showInactive`，并保持渲染器后台计时器可用。正常启动行为不变。此模式不会关闭沙箱，也不授权控制用户键鼠；自动化应使用应用内部操作，并确认没有激活窗口。安装器窗口标题为 **MicroClaw Setup**，与客户端明确区分。
 
-安装器不再安装或启用官方 llama.cpp provider。用户在 **设置 → 模型 → 本地模型** 中点击 **启用**，审阅官方组件并明确确认后，才会安装或启用提供商。仅打开设置不会安装组件或下载模型；模型权重和推理运行时仍需首次使用时另行确认。升级保留已有本地提供商及用户明确禁用的插件策略。组件安装并启用后，本地卡片即显示“已连接”，不取决于模型是否下载；它表示提供商可用，不是推理健康检查。
+安装器不再安装或启用官方 llama.cpp provider。用户在 **设置 → 模型 → 本地模型** 中点击 **启用**，审阅官方组件并明确确认后，才会安装或启用提供商。仅打开设置不会安装组件或下载模型；模型权重和推理运行时仍需首次使用时另行确认。升级保留已有本地提供商及用户明确禁用的插件策略。组件安装并启用，且没有已知加载失败时，本地卡片显示“已连接”，不取决于模型是否下载；按需加载的提供商暂未加载不等于加载失败。它表示提供商可用，不是推理健康检查。
+
+本地组件安装、启用、模型下载完成及选模均不会重启 Gateway。安装后先核对运行时应用回执和插件状态；应用不完整或“安装已保存、加载失败”时，定向调用 `plugins.reload` 热加载已有组件，不重复下载。显式加载按需提供商时，还会验证其设置接口可用。热加载仍失败则保留已下载文件，并提供“重试加载组件”，不以重启兜底。不支持插件热加载的 Gateway 会拒绝组件安装/启用，而不是重启；未确认运行时应用生效不会报告加载成功。`gateway.reload.mode` 为 `off` 时，模型准备/选模也会拒绝写入配置，避免配置变更隐式触发重启。
 
 OpenClaw 固定版本未变化时，桌面更新只刷新托管文件，不在轻量回滚快照之外重复迁移数据库。运行时升级仍执行完整迁移；两种路径都必须等待安装后的桌面与 Gateway 就绪，才会提交安装。
 
@@ -167,7 +169,7 @@ npm --prefix desktop test -- src/local-model-gateway.integration.test.ts
 
 也可将 `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` 指向已有的官方 llama.cpp 插件目录，在一次性 Gateway 和拒绝全部推理请求的本地端点上检查直接选用流程。该检查要求配置切换成功且推理请求数为零，不改动用户当前模型。
 
-设置 `MICROCLAW_TEST_OPENCLAW_ENTRY` 和 `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` 后，运行 `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts` 可通过真实插件加载器检查精确模型下载确认，再取消操作；不设置 `MICROCLAW_TEST_LOCAL_CACHE` 时不会下载模型或运行推理。
+设置 `MICROCLAW_TEST_OPENCLAW_ENTRY` 和 `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` 后，运行 `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts` 可通过真实插件加载器检查精确模型下载确认，再取消操作；不设置 `MICROCLAW_TEST_LOCAL_CACHE` 时，还会先启用隔离的插件副本、模拟缺失运行时应用回执，验证真实定向热加载既不重连也不更换 Gateway 进程，不会下载模型或运行推理。
 
 完整准备检查还需将 `MICROCLAW_TEST_LOCAL_CACHE` 指向包含固定 4B 和 embedding 文件的缓存，再运行 `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts`。它将模型文件复制到一次性状态目录，要求确认回执中的模型和 embedding 下载量均为零，再安装、校验官方运行组件。运行组件压缩包可能需要下载，但不下载模型权重，不选用模型、不推理，也不改变原缓存或用户配置。
 

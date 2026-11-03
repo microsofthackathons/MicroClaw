@@ -29,6 +29,7 @@ const METHODS = [
   "plugins.inspect",
   "plugins.install",
   "plugins.setEnabled",
+  "plugins.reload",
   "agents.list",
   "models.list",
   "openclaw.setup.detect",
@@ -71,6 +72,8 @@ function fixture(initialReceipt?: LocalModelReceipt) {
     id: "llama-cpp",
     installed: true,
     enabled: true,
+    runtime: { state: "active" },
+    state: "enabled",
     version: "2026.9.3",
     install: { source: "official", pluginId: "llama-cpp" },
   };
@@ -197,11 +200,22 @@ function fixture(initialReceipt?: LocalModelReceipt) {
           return { status: "cancelled" };
         case "plugins.install":
         case "plugins.setEnabled":
+        case "plugins.reload":
           if (method === "plugins.install") {
             plugin.version = (params as { version?: string }).version ?? plugin.version;
           }
-          plugin = { ...plugin, installed: true, enabled: true };
-          return { ok: true, restartRequired: true };
+          plugin = {
+            ...plugin,
+            installed: true,
+            enabled: true,
+            state: "enabled",
+            runtime: { state: "active" },
+          };
+          return {
+            ok: true,
+            restartRequired: false,
+            runtime: { generation: 1, pluginIds: ["llama-cpp"] },
+          };
         default:
           throw new Error(`Unexpected method: ${method}`);
       }
@@ -217,7 +231,6 @@ function fixture(initialReceipt?: LocalModelReceipt) {
   };
   const events: LocalModelOperation[] = [];
   const assertMutable = vi.fn();
-  const restartGateway = vi.fn().mockResolvedValue(undefined);
   const service = new LocalModelService({
     gateway: () => gateway,
     identity: () => "test-gateway",
@@ -227,7 +240,6 @@ function fixture(initialReceipt?: LocalModelReceipt) {
     saveReceipt: (value) => {
       receipt = value ?? undefined;
     },
-    restartGateway,
     onChange: (operation) => events.push(operation),
   });
   return {
@@ -236,7 +248,6 @@ function fixture(initialReceipt?: LocalModelReceipt) {
     request,
     events,
     assertMutable,
-    restartGateway,
     detection,
     receipt: () => receipt,
     next: (handler: typeof next) => {
@@ -469,17 +480,15 @@ describe("local model protocol guards", () => {
   it.each(["2026.9.3", "2026.9.4"])("accepts the supported host %s", (version) => {
     expect(supportsLocalModelVersion(version)).toBe(true);
   });
-  it("restarts after a first install even when the Gateway does not request it", async () => {
+  it("accepts a confirmed first-install hot load without restarting or reloading again", async () => {
     const context = fixture();
     context.plugin({ installed: false, enabled: false });
-    const request = context.request.getMockImplementation()!;
-    context.request.mockImplementation(async (method, params, timeout) => {
-      const result = await request(method, params, timeout);
-      return method === "plugins.install" ? { ok: true, restartRequired: false } : result;
-    });
     const result = await context.service.installProvider({ confirmed: true });
-    expect(result.plugin.installed).toBe(true);
-    expect(context.restartGateway).toHaveBeenCalledOnce();
+    expect(result.plugin).toMatchObject({ installed: true, enabled: true, loaded: true });
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.install"),
+    ).toHaveLength(1);
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
   });
 
   it.each([
@@ -526,6 +535,401 @@ describe("local model protocol guards", () => {
     "http://user:secret@localhost",
   ])("rejects non-loopback or credential-bearing endpoints %s", (url) => {
     expect(() => validateLocalModelUrl(url)).toThrow();
+  });
+});
+
+describe("local model provider hot loading", () => {
+  it.each(["prepare", "activate"])(
+    "refuses %s before configuration changes if hot reload is disabled",
+    async (operation) => {
+      const context = fixture();
+      context.config({
+        ...(context.readConfig() as object),
+        gateway: { reload: { mode: "off" } },
+      });
+      const before = structuredClone(context.readConfig());
+      const result =
+        operation === "prepare"
+          ? context.service.prepare({ authChoice: "llama-cpp" })
+          : context.service.activate({ modelRef: MODEL, kind: "existing-model" });
+      await expect(result).rejects.toThrow("hot reload is disabled");
+      expect(context.readConfig()).toEqual(before);
+      expect(
+        context.request.mock.calls.some(([method]) =>
+          ["plugins.reload", "config.patch", "openclaw.setup.prepare.start"].includes(method),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("rechecks hot reload policy in the authoritative configuration before selection", async () => {
+    const context = fixture();
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = (await original(method, params, timeout)) as Record<string, unknown>;
+      return method === "config.get"
+        ? {
+            ...result,
+            config: { ...(result.config as object), gateway: { reload: { mode: "off" } } },
+          }
+        : result;
+    });
+    await expect(
+      context.service.activate({ modelRef: MODEL, kind: "existing-model" }),
+    ).rejects.toThrow("hot reload is disabled");
+    expect(context.request.mock.calls.some(([method]) => method === "config.patch")).toBe(false);
+    expect(context.receipt()).toBeUndefined();
+  });
+
+  it("does not mistake an on-demand provider for a failed load while reading capabilities", async () => {
+    const context = fixture();
+    context.plugin({ runtime: { state: "unloaded" } });
+    const capabilities = await context.service.getCapabilities();
+    expect(capabilities.plugin.loaded).toBeUndefined();
+    expect(capabilities.supported).toBe(true);
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
+    expect(context.request.mock.calls.some(([method]) => method === "openclaw.setup.detect")).toBe(
+      false,
+    );
+  });
+
+  it.each([true, false])(
+    "verifies on-demand setup availability after hot loading: %s",
+    async (available) => {
+      const context = fixture();
+      context.plugin({ runtime: { state: "unloaded" } });
+      if (!available) context.detection.prepareOptions = [];
+      const original = context.request.getMockImplementation()!;
+      context.request.mockImplementation(async (method, params, timeout) => {
+        const result = await original(method, params, timeout);
+        if (method === "plugins.reload") context.plugin({ runtime: { state: "unloaded" } });
+        return result;
+      });
+      const loading = context.service.installProvider({ confirmed: true });
+      if (available) expect((await loading).plugin.loaded).toBe(true);
+      else {
+        await expect(loading).rejects.toThrow("could not be hot-loaded");
+        expect((await context.service.getCapabilities()).plugin.loaded).toBe(false);
+      }
+      expect(
+        context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+      ).toHaveLength(1);
+      expect(
+        context.request.mock.calls.filter(([method]) => method === "openclaw.setup.detect"),
+      ).toHaveLength(1);
+      expect(context.request.mock.calls.some(([method]) => method.endsWith(".start"))).toBe(false);
+      expect(context.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    ["a restart request", { ok: true, restartRequired: true }],
+    ["a missing runtime receipt", { ok: true, restartRequired: false }],
+    [
+      "an unrelated runtime receipt",
+      { ok: true, runtime: { generation: 1, pluginIds: ["other"] } },
+    ],
+  ])("hot-loads installed files after %s without reinstalling", async (_reason, response) => {
+    const context = fixture();
+    context.plugin({ installed: false, enabled: false });
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      return method === "plugins.install" ? response : result;
+    });
+    const result = await context.service.installProvider({ confirmed: true });
+    expect(result.plugin.loaded).toBe(true);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.install"),
+    ).toHaveLength(1);
+    expect(context.request).toHaveBeenCalledWith(
+      "plugins.reload",
+      { plugins: [{ pluginId: "llama-cpp" }], waitForDrain: true },
+      300_000,
+    );
+  });
+
+  it("reloads when the install receipt is valid but the provider reports a load error", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, enabled: false });
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      if (method === "plugins.install")
+        context.plugin({ state: "error", runtime: { state: "unloaded" } });
+      return result;
+    });
+    expect((await context.service.installProvider({ confirmed: true })).plugin.loaded).toBe(true);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+  });
+
+  it("hot-loads saved files when on-demand provider verification initially fails", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, enabled: false });
+    const original = context.request.getMockImplementation()!;
+    let failed = false;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      if (method === "plugins.install" || method === "plugins.reload")
+        context.plugin({ runtime: { state: "unloaded" } });
+      if (method === "openclaw.setup.detect" && !failed) {
+        failed = true;
+        throw new Error("Provider setup module could not be loaded");
+      }
+      return result;
+    });
+    expect((await context.service.installProvider({ confirmed: true })).plugin.loaded).toBe(true);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.install"),
+    ).toHaveLength(1);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "openclaw.setup.detect"),
+    ).toHaveLength(2);
+  });
+
+  it.each(["unloaded", "service-failed"])(
+    "retries an installed %s provider through reload rather than download or enable",
+    async (state) => {
+      const context = fixture();
+      context.plugin({ runtime: { state } });
+      const review = await context.service.inspectProvider();
+      const result = await context.service.installProvider({
+        confirmed: true,
+        reviewToken: review.reviewToken,
+      });
+      expect(result.plugin.loaded).toBe(true);
+      expect(context.request).toHaveBeenCalledWith(
+        "plugins.reload",
+        {
+          plugins: [{ pluginId: "llama-cpp" }],
+          waitForDrain: true,
+          acknowledgeCapabilities: { reviewToken: review.reviewToken },
+        },
+        300_000,
+      );
+      expect(context.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(
+        false,
+      );
+      expect(context.request.mock.calls.some(([method]) => method === "plugins.setEnabled")).toBe(
+        false,
+      );
+    },
+  );
+
+  it("enables a disabled provider in the running Gateway without downloading it", async () => {
+    const context = fixture();
+    context.plugin({ enabled: false, runtime: { state: "disabled" } });
+    expect((await context.service.installProvider({ confirmed: true })).plugin.loaded).toBe(true);
+    expect(context.request).toHaveBeenCalledWith(
+      "plugins.setEnabled",
+      { pluginId: "llama-cpp", enabled: true },
+      300_000,
+    );
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
+  });
+
+  it("allows targeted hot-load recovery for an installed provider reporting a load error", async () => {
+    const context = fixture();
+    context.plugin({ state: "error", runtime: { state: "unloaded" } });
+    expect(await context.service.getCapabilities()).toMatchObject({
+      supported: true,
+      plugin: { installed: true, loaded: false },
+    });
+    expect((await context.service.installProvider({ confirmed: true })).plugin.loaded).toBe(true);
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+  });
+
+  it("hot-loads a durably saved installation after its initial runtime application fails", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, enabled: false });
+    const original = context.request.getMockImplementation()!;
+    let saved = false;
+    let published = false;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      if (method === "plugins.list" && saved && !published)
+        return { plugins: [], mutationAllowed: true };
+      if (method === "plugins.reload") published = true;
+      const result = await original(method, params, timeout);
+      if (method === "plugins.install") {
+        saved = true;
+        context.plugin({ enabled: false, state: "error", runtime: { state: "unloaded" } });
+        throw new GatewayRequestError(
+          "Runtime application failed after installation",
+          "UNAVAILABLE",
+          {
+            persistence: { operation: "install", pluginId: "llama-cpp" },
+          },
+        );
+      }
+      return result;
+    });
+    expect((await context.service.installProvider({ confirmed: true })).plugin.loaded).toBe(true);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.install"),
+    ).toHaveLength(1);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+  });
+
+  it.each([undefined, { operation: "install", pluginId: "other" }])(
+    "does not replay an install failure without matching persistence evidence: %j",
+    async (persistence) => {
+      const context = fixture();
+      context.plugin({ installed: false, enabled: false });
+      const original = context.request.getMockImplementation()!;
+      context.request.mockImplementation((method, params, timeout) => {
+        if (method === "plugins.install")
+          throw new GatewayRequestError("Installation rejected", "UNAVAILABLE", { persistence });
+        return original(method, params, timeout);
+      });
+      await expect(context.service.installProvider({ confirmed: true })).rejects.toThrow(
+        "Installation rejected",
+      );
+      expect(context.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    { ok: true, restartRequired: true, runtime: { generation: 1, pluginIds: ["llama-cpp"] } },
+    { ok: true, runtime: { generation: -1, pluginIds: ["llama-cpp"] } },
+    { ok: true, runtime: { generation: 1, pluginIds: ["other"] } },
+    { ok: true },
+    { ok: false },
+  ])("keeps incomplete hot loads retryable without claiming success: %j", async (response) => {
+    const context = fixture();
+    context.plugin({ runtime: { state: "unloaded" } });
+    const before = structuredClone(context.readConfig());
+    const original = context.request.getMockImplementation()!;
+    let failed = true;
+    context.request.mockImplementation((method, params, timeout) =>
+      method === "plugins.reload" && failed
+        ? Promise.resolve(response)
+        : original(method, params, timeout),
+    );
+    await expect(context.service.installProvider({ confirmed: true })).rejects.toThrow(
+      "Gateway was not restarted",
+    );
+    expect((await context.service.getCapabilities()).plugin.loaded).toBe(false);
+    expect(context.service.busy).toBe(false);
+    expect(context.readConfig()).toEqual(before);
+    failed = false;
+    expect((await context.service.installProvider({ confirmed: true })).plugin.loaded).toBe(true);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(2);
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
+  });
+
+  it("rejects a reload receipt if the provider is not active", async () => {
+    const context = fixture();
+    context.plugin({ runtime: { state: "unloaded" } });
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      if (method === "plugins.reload") context.plugin({ runtime: { state: "service-failed" } });
+      return result;
+    });
+    await expect(context.service.installProvider({ confirmed: true })).rejects.toThrow(
+      "could not be hot-loaded",
+    );
+    expect((await context.service.getCapabilities()).plugin.loaded).toBe(false);
+  });
+
+  it("refuses an older Gateway without hot reload before installing anything", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, enabled: false });
+    context.gateway.methods = METHODS.filter((method) => method !== "plugins.reload");
+    await expect(context.service.installProvider({ confirmed: true })).rejects.toThrow(
+      "does not support hot-loading",
+    );
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
+    expect(context.request.mock.calls.some(([method]) => method === "plugins.setEnabled")).toBe(
+      false,
+    );
+  });
+
+  it("rejects a reload completed on a different Gateway connection generation", async () => {
+    const context = fixture();
+    context.plugin({ runtime: { state: "unloaded" } });
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      if (method === "plugins.reload") context.gateway.connectionGeneration!++;
+      return result;
+    });
+    await expect(context.service.installProvider({ confirmed: true })).rejects.toThrow(
+      "connection changed",
+    );
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+  });
+
+  it("reloads before preparation if an installed provider is unloaded", async () => {
+    const context = fixture();
+    context.plugin({ state: "error", runtime: { state: "unloaded" } });
+    await context.service.prepare({ authChoice: "llama-cpp" });
+    await waitPhase(context, "step");
+    const methods = context.request.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("plugins.reload")).toBeLessThan(
+      methods.indexOf("openclaw.setup.prepare.start"),
+    );
+  });
+
+  it("hot-loads after preparation if the downloaded provider is no longer active", async () => {
+    const context = fixture();
+    const operation = await context.service.prepare({ authChoice: "llama-cpp" });
+    await waitPhase(context, "step");
+    context.next(() => {
+      context.plugin({ state: "error", runtime: { state: "unloaded" } });
+      return { done: true, status: "done", preparedModelRef: PRESET };
+    });
+    await context.service.answer({ operationId: operation.id, stepId: "consent", value: true });
+    await waitPhase(context, "prepared");
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "openclaw.setup.prepare.start"),
+    ).toHaveLength(1);
+    expect(context.readConfig()).toMatchObject({
+      agents: { defaults: { model: { primary: "cloud/previous" } } },
+    });
+  });
+
+  it("hot-loads a legacy activation receipt instead of restarting", async () => {
+    const context = fixture({
+      id: "legacy-activation",
+      kind: "activate",
+      agentId: "main",
+      gatewayIdentity: "test-gateway",
+      modelRef: MODEL,
+    });
+    context.config({ agents: { defaults: { model: { primary: MODEL } } } });
+    context.next(() => ({
+      done: true,
+      status: "done",
+      modelActivation: { modelRef: MODEL, gatewayRestartRequired: true },
+    }));
+    await context.service.resume();
+    await waitPhase(context, "ready");
+    expect(
+      context.request.mock.calls.filter(([method]) => method === "plugins.reload"),
+    ).toHaveLength(1);
+    expect(context.request.mock.calls.some(([method]) => method.endsWith(".start"))).toBe(false);
   });
 });
 
@@ -837,7 +1241,7 @@ describe("local model lifecycle", () => {
       },
       300_000,
     );
-    expect(f.restartGateway).toHaveBeenCalledOnce();
+    expect((await f.service.getCapabilities()).plugin.loaded).toBe(true);
   });
 
   it.each([
@@ -895,7 +1299,7 @@ describe("local model lifecycle", () => {
       "Pinned release unavailable",
     );
     expect(f.request.mock.calls.filter(([method]) => method === "plugins.install")).toHaveLength(1);
-    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
   });
 
   it.each([
@@ -908,8 +1312,9 @@ describe("local model lifecycle", () => {
       f.gateway.serverVersion = gatewayVersion;
       f.gateway.methods = [...METHODS, "plugins.search"];
       const original = f.request.getMockImplementation()!;
+      let installed = false;
       f.request.mockImplementation(async (method, params, timeout) => {
-        if (method === "plugins.list") return { plugins: [], mutationAllowed: true };
+        if (method === "plugins.list" && !installed) return { plugins: [], mutationAllowed: true };
         if (method === "plugins.search")
           return {
             results: [
@@ -924,7 +1329,9 @@ describe("local model lifecycle", () => {
               },
             ],
           };
-        return original(method, params, timeout);
+        const result = await original(method, params, timeout);
+        if (method === "plugins.install") installed = true;
+        return result;
       });
       const review = await f.service.inspectProvider();
       expect(review.version).toBe(pluginVersion);
@@ -959,7 +1366,7 @@ describe("local model lifecycle", () => {
     await expect(f.service.installProvider({ confirmed: true })).rejects.toThrow("review");
     expect(f.request.mock.calls.filter(([method]) => method === "plugins.install")).toHaveLength(1);
     expect((await f.service.inspectProvider()).reviewToken).toBe("staged-token");
-    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
   });
 
   it("rejects a community package pretending to provide the official runtime", async () => {
@@ -986,7 +1393,7 @@ describe("local model lifecycle", () => {
     });
     expect((await f.service.getCapabilities(true)).plugin.canInstall).toBe(false);
     await expect(f.service.installProvider({ confirmed: true })).rejects.toThrow("official");
-    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
   });
 
   it("keeps prepare separate from activation and never auto-confirms download", async () => {
@@ -1011,7 +1418,7 @@ describe("local model lifecycle", () => {
     await waitPhase(f, "prepared");
     expect(f.service.getOperation()?.preparedModelRef).toBe(PRESET);
     expect(f.receipt()).toBeUndefined();
-    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
   });
 
   it("does not start duplicate operations or accept stale answers", async () => {
@@ -1051,12 +1458,12 @@ describe("local model lifecycle", () => {
     ).toBe(true);
   });
 
-  it("waits for a required restart and the applied configuration revision, never running an AI test", async () => {
+  it("hot-loads a restart-marked selection and waits for the applied configuration without an AI test", async () => {
     const f = fixture();
     const apply = deferred<void>();
-    f.restartGateway.mockReturnValueOnce(apply.promise);
     const original = f.request.getMockImplementation()!;
     f.request.mockImplementation(async (method, params, timeout) => {
+      if (method === "plugins.reload") await apply.promise;
       const result = await original(method, params, timeout);
       return method === "config.patch"
         ? { ...(result as object), sentinel: { payload: { stats: { requiresRestart: true } } } }
@@ -1067,7 +1474,11 @@ describe("local model lifecycle", () => {
     expect(f.service.busy).toBe(true);
     apply.resolve();
     await waitPhase(f, "ready");
-    expect(f.restartGateway).toHaveBeenCalledOnce();
+    expect(f.request).toHaveBeenCalledWith(
+      "plugins.reload",
+      { plugins: [{ pluginId: "llama-cpp" }], waitForDrain: true },
+      300_000,
+    );
     expect(f.request.mock.calls.some(([method]) => method.startsWith("openclaw.setup."))).toBe(
       false,
     );
@@ -1094,7 +1505,7 @@ describe("local model lifecycle", () => {
       expect(f.service.getOperation()?.phase).toBe("ready");
       expect(f.request.mock.calls.filter(([method]) => method === "config.get")).toHaveLength(3);
       expect(f.request.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(1);
-      expect(f.restartGateway).not.toHaveBeenCalled();
+      expect(f.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -1157,7 +1568,7 @@ describe("local model lifecycle", () => {
     await f.service.activate({ kind: "provider-auto:llama-cpp", modelRef: MODEL });
     await waitPhase(f, "error");
     expect(f.service.getOperation()?.error).toContain("does not match");
-    expect(f.restartGateway).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.some(([method]) => method === "plugins.reload")).toBe(false);
   });
 
   it("preserves the previous default when the Gateway rejects a stale configuration revision", async () => {
