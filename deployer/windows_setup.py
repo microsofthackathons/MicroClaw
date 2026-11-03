@@ -643,6 +643,7 @@ class WindowsSetup:
                 display_version, _ = winreg.QueryValueEx(key, "DisplayVersion")
                 install_location, _ = winreg.QueryValueEx(key, "InstallLocation")
                 uninstall_string, _ = winreg.QueryValueEx(key, "UninstallString")
+                display_icon, _ = winreg.QueryValueEx(key, "DisplayIcon")
             finally:
                 winreg.CloseKey(key)
         except OSError:
@@ -652,6 +653,7 @@ class WindowsSetup:
             display_version == OPENCLAW_TARGET_VERSION
             and Path(install_location) == DEFAULT_DESKTOP_DIR
             and uninstall_string == f'"{expected_uninstaller}" --uninstall'
+            and display_icon == str(desktop_exe)
         )
 
     def rollback(self):
@@ -5749,7 +5751,10 @@ class WindowsSetup:
         return None
 
     def _resolve_icon(self) -> Path | None:
-        """Find and ensure microclaw.ico is in ~/.openclaw/."""
+        """Prefer the installed app's embedded icon over a separate state file."""
+        desktop_exe = self._find_desktop_exe()
+        if desktop_exe is not None and desktop_exe.is_file():
+            return desktop_exe
         return self._resolve_packaged_icon("microclaw.ico", "microclaw.ico")
 
     def _resolve_uninstall_icon(self) -> Path | None:
