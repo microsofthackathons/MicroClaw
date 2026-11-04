@@ -79,6 +79,10 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       },
     },
     windowsNodeMxc: {
+      getDisclosureStatus: async () => ({ consented: false, available: false }),
+      requestDisclosure: async () => {
+        throw new Error("WeChat command-sharing consent requires the native desktop app");
+      },
       async getDisplayStatus() {
         return {
           status: await this.getStatus(),

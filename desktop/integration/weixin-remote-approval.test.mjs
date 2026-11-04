@@ -96,6 +96,7 @@ vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
 }));
 
 import { interceptWeixinRemoteApprovalMessage } from "../../plugins/openclaw-weixin/src/messaging/process-message.js";
+import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "../src/windows-node-mxc-weixin-disclosure-consent";
 import { monitorWeixinProvider } from "../../plugins/openclaw-weixin/src/monitor/monitor.js";
 import { parseWeixinUpdatesJson } from "../../plugins/openclaw-weixin/src/api/provider-metadata.js";
 import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
@@ -248,19 +249,31 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     approval = normalizedApproval(),
     durableConsent = true,
     scopeOverride = undefined,
+    disclosureConsent = true,
   ) {
     const sources = new Map();
+    const owner = normalizeWeixinRemoteApprovalOwner(
+      "bot",
+      "owner@im.wechat",
+      "2026-10-20T00:00:00.000Z",
+    );
     const configuration = projectWeixinRemoteApprovalRuntimeConfiguration(
       {
         enabled: true,
         ...(durableConsent
           ? { consentScope: scopeOverride ?? WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
           : {}),
-        owner: normalizeWeixinRemoteApprovalOwner(
-          "bot",
-          "owner@im.wechat",
-          "2026-10-20T00:00:00.000Z",
-        ),
+        owner,
+        ...(disclosureConsent
+          ? {
+              fullDetailDisclosure: {
+                contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
+                receiptId: "11111111-1111-4111-8111-111111111111",
+                acknowledgedAt: "2026-10-20T00:00:00.000Z",
+                owner,
+              },
+            }
+          : {}),
       },
       true,
     );
@@ -797,7 +810,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(JSON.stringify(state.diagnostics)).not.toContain("test-account-token");
   });
 
-  it.each(["private unclassified content", "Bearer example-secret"])(
+  it.each(["******", "Bearer example-secret", "password=synthetic-private-value"])(
     "keeps content local with a data-free phone notice and real terminal receipt: %s",
     async (content) => {
       const state = await pipeline(
@@ -815,6 +828,22 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       expect(state.resolved[0]).toMatchObject({ decision: "deny", origin: "desktop" });
     },
   );
+
+  it("shares ordinary inline content only after the owner has consented to full details", async () => {
+    const script = `Set-Content -Path '${root}\\sample.txt' -Value 'ordinary inline text'`;
+    const allowed = await pipeline(normalizedApproval(script));
+    const delivery = await allowed.start();
+    expect(delivery?.text).toContain("ordinary inline text");
+    const withheld = await pipeline(normalizedApproval(script), true, undefined, false);
+    expect(await withheld.start()).toBeNull();
+    expect(withheld.states.at(-1)).toMatchObject({
+      state: "local-only",
+      reason: "disclosure-consent-required",
+    });
+    const fallback = mocks.send.mock.calls.at(-1)[0].text;
+    expect(fallback).not.toContain("ordinary inline text");
+    expect(fallback).not.toContain("sample.txt");
+  });
 
   it("does not authorize after unconfirmed delivery or automatically resend", async () => {
     const state = await pipeline();

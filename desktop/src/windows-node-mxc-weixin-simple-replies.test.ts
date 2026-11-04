@@ -8,6 +8,7 @@ import {
   normalizeWeixinRemoteApprovalOwner,
   WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
 } from "./windows-node-mxc-weixin-remote-approval";
+import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "./windows-node-mxc-weixin-disclosure-consent";
 
 const modulePath =
   process.env.MICROCLAW_SIMPLE_REPLY_BASELINE ?? "./windows-node-mxc-weixin-remote-approval";
@@ -85,9 +86,16 @@ function setup(nativeDurable = false, delivered = true) {
   const request = input();
   let wireOwner = { accountId: "bot", userId: request.source.senderId };
   const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () => wireOwner);
+  const owner = normalizeWeixinRemoteApprovalOwner("bot", wireOwner.userId, "2026-10-22T00:00:00Z");
   const configuration: WeixinRemoteApprovalConfiguration = {
     enabled: true,
-    owner: normalizeWeixinRemoteApprovalOwner("bot", wireOwner.userId, "2026-10-22T00:00:00Z"),
+    owner,
+    fullDetailDisclosure: {
+      contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
+      receiptId: "11111111-1111-4111-8111-111111111111",
+      acknowledgedAt: "2026-10-22T00:00:00Z",
+      owner,
+    },
     ...(nativeDurable ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } : {}),
   };
   broker.configure(configuration);
@@ -133,8 +141,13 @@ describe("temporary simple-current-prompt policy", () => {
     expect(setup().reply("3")).toMatchObject({ status: "denied", decision: "deny" });
   });
 
-  it("eligible bare 2 requires existing native exact-conversation durable consent", () => {
-    expect(setup(true).reply("2")).toMatchObject({ status: "approved", decision: "allow-always" });
+  it("never accepts bare 2 even with historical native durable consent", () => {
+    const durable = setup(true);
+    expect(durable.delivery.text).not.toMatch(/2:/);
+    expect(durable.reply("2")).toMatchObject({ status: "rejected", reason: "malformed" });
+    expect(durable.reply("1", { messageId: "102", cursor: "102" })).toMatchObject({
+      decision: "allow-once",
+    });
     const legacy = setup();
     const before = JSON.stringify(legacy.configuration);
     expect(legacy.reply("2")).toMatchObject({ status: "rejected", reason: "consent-scope" });

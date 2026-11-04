@@ -197,14 +197,21 @@ export async function deliverWeixinRemoteApproval(params: {
       return;
     }
     const presentationOnly =
-      reason === "presentation-unsupported" || reason === "presentation-sensitive";
-    const detail = presentationOnly
-      ? params.locale === "zh-CN"
-        ? "此命令无法在微信中安全展示或审批，请在桌面允许或拒绝"
-        : "This command cannot be safely displayed or approved on WeChat; allow or deny on Desktop"
-      : params.locale === "zh-CN"
-        ? "另有一个请求须在桌面处理"
-        : "Another request needs a Desktop decision";
+      reason === "presentation-unsupported" ||
+      reason === "presentation-sensitive" ||
+      reason === "presentation-too-long";
+    const detail =
+      reason === "disclosure-consent-required"
+        ? params.locale === "zh-CN"
+          ? "请在安全设置中查看微信命令详情共享同意；此请求须在桌面审批"
+          : "Review WeChat command-sharing consent in Security settings; decide this request on Desktop"
+        : presentationOnly
+          ? params.locale === "zh-CN"
+            ? "此命令无法在微信中安全展示或审批，请在桌面允许或拒绝"
+            : "This command cannot be safely displayed or approved on WeChat; allow or deny on Desktop"
+          : params.locale === "zh-CN"
+            ? "另有一个请求须在桌面处理"
+            : "Another request needs a Desktop decision";
     const text =
       params.locale === "zh-CN"
         ? `MicroClaw 安全审批：${detail}（${reason}）。未授予任何权限，原截止时间不变；稍后会通知结果。`

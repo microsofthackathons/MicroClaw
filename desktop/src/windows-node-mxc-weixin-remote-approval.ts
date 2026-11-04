@@ -1,13 +1,15 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import path from "node:path";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import { createCanonicalExecPresentation } from "./windows-node-mxc-exec-presentation";
 import {
-  classifyLiteralFilesystemCommand,
-  isLiteralLocalPath,
-  tokenizeLiteralCommand,
-} from "./windows-node-mxc-literal-filesystem-command";
-import { originalPowerShellFilesystemApproval } from "./windows-node-mxc-powershell-scope";
+  renderCanonicalWeixinExecPrompt,
+  type GenericPhonePresentationCategory,
+} from "./windows-node-mxc-weixin-exec-presentation";
+import {
+  validateWeixinFullDetailDisclosure,
+  type WeixinFullDetailDisclosure,
+} from "./windows-node-mxc-weixin-disclosure-consent";
 import {
   normalizeWeixinProviderInteger,
   isLaterWeixinProviderCursor,
@@ -24,36 +26,7 @@ export const WEIXIN_REMOTE_APPROVAL_REPLY_MODE = "simple-current-prompt" as cons
 const CHALLENGE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CHALLENGE_CODE_LENGTH = 8;
 const MAX_GLOBAL_ATTEMPTS_PER_MINUTE = 20;
-const MAX_PROMPT_ARGUMENTS = 8;
-const MAX_PROMPT_DECLARATIONS = 8;
-const MAX_PROMPT_REQUESTS = 8;
-const MAX_PROMPT_LINE = 160;
-const MAX_PROMPT_LENGTH = 6_000;
-const DANGEROUS_PROMPT_UNICODE_PATTERN =
-  /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
-const SAFE_SIMPLE_ARGUMENT_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,15}$/;
-const SAFE_NUMERIC_ARGUMENT_PATTERN = /^-?(?:0|[1-9][0-9]{0,18})(?:\.[0-9]{1,8})?$/;
-const SAFE_SWITCH_PATTERN = /^(?:--?[A-Za-z][A-Za-z0-9-]{0,31}|\/[A-Za-z][A-Za-z0-9-]{0,31})$/;
-const SAFE_RELATIVE_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.[A-Za-z0-9]{1,8}$/;
 const SAFE_STRUCTURAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,159}$/;
-const SENSITIVE_SEMANTIC_PATTERN =
-  /(?:accountkey|authorization|auth|bearer|clientsecret|cookie|credential|key|passphrase|passwd|password|privatekey|proxyauthorization|sas|secret|setcookie|signature|sig|token)/i;
-const SAFE_PATH_VALUE_SWITCHES = new Set([
-  "-File",
-  "--file",
-  "--output",
-  "--project",
-  "--cwd",
-  "-o",
-]);
-const SAFE_ENUM_VALUE_SWITCHES = new Set([
-  "--color",
-  "--configuration",
-  "--format",
-  "--mode",
-  "--target",
-]);
-const SAFE_LITERAL_ARGUMENTS = new Set(["false", "null", "true"]);
 
 export interface WeixinRemoteApprovalOwnerBinding {
   contract: typeof WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT;
@@ -66,6 +39,7 @@ export interface WeixinRemoteApprovalConfiguration {
   enabled: boolean;
   owner: WeixinRemoteApprovalOwnerBinding | null;
   consentScope?: typeof WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE;
+  fullDetailDisclosure?: WeixinFullDetailDisclosure;
 }
 
 export function migrateWeixinRemoteApprovalConfiguration(
@@ -86,12 +60,19 @@ export function migrateWeixinRemoteApprovalConfiguration(
       typeof owner.userId === "string" ? owner.userId : "",
       typeof owner.boundAt === "string" ? owner.boundAt : new Date(0).toISOString(),
     );
+    const disclosure = validateWeixinFullDetailDisclosure(record.fullDetailDisclosure, normalized);
+    if (Object.hasOwn(record, "fullDetailDisclosure") && !disclosure) {
+      console.warn(
+        "[weixin-remote-approval] Invalid or rebound command disclosure receipt; Desktop approval required",
+      );
+    }
     return {
       enabled: record.enabled === true,
       owner: normalized,
       ...(record.consentScope === WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
         ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
         : {}),
+      ...(disclosure ? { fullDetailDisclosure: disclosure } : {}),
     };
   } catch {
     return { enabled: false, owner: null };
@@ -277,6 +258,10 @@ interface ActiveChallenge {
   codeHash: string;
   challengeHash: string;
   bindingHash: string;
+  presentationBinding: {
+    presentationDigest: string;
+    disclosureHash: string;
+  };
   source: WeixinRemoteApprovalSource;
   security: WeixinRemoteApprovalSecurityBinding;
   approvalIds: string[];
@@ -288,7 +273,6 @@ interface ActiveChallenge {
   deliveredAtUnixMs: number | null;
   reminderAtUnixMs: number | null;
   reminderCount: number;
-  allowDurable: boolean;
 }
 
 interface ClosedChallenge {
@@ -345,6 +329,16 @@ export function weixinRemoteApprovalConsentHash(
     : null;
 }
 
+export function weixinFullDetailDisclosureHash(
+  configuration: WeixinRemoteApprovalConfiguration,
+): string | null {
+  const consent = validateWeixinFullDetailDisclosure(
+    configuration.fullDetailDisclosure,
+    configuration.owner,
+  );
+  return configuration.enabled && consent ? hash(canonicalize(consent)) : null;
+}
+
 function canonicalize(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
   if (value && typeof value === "object") {
@@ -367,48 +361,55 @@ function securityBindingHash(
     createdAtUnixMs: number;
     expiresAtUnixMs: number;
   },
+  presentationBinding: ActiveChallenge["presentationBinding"],
 ): string {
+  const binding = {
+    source: {
+      accountId: normalizeIdentity(source.accountId),
+      senderId: source.senderId,
+      conversationId: normalizeOpaqueId(source.conversationId),
+      messageId: normalizeOpaqueId(source.messageId),
+      cursor: normalizeWeixinProviderInteger(source.cursor),
+      agentId: normalizeOpaqueId(source.agentId),
+      sessionKey: normalizeOpaqueId(source.sessionKey),
+      direct: source.direct,
+      forwarded: source.forwarded,
+      quoted: source.quoted,
+      receivedAtUnixMs: source.receivedAtUnixMs,
+      runIds: source.runIds ?? [],
+      gatewayGeneration: source.gatewayGeneration ?? null,
+    },
+    requests: requests.map(({ approval }) => ({
+      id: approval.id,
+      command: approval.command,
+      executable: approval.executable,
+      executablePath: approval.executablePath,
+      executableSha256: approval.executableSha256.toLowerCase(),
+      arguments: approval.arguments,
+      canonicalCwd: approval.canonicalCwd,
+      declaredAccess: approval.declaredAccess,
+      folderChanges: approval.folderChanges ?? [],
+      planSha256: approval.planSha256 ?? null,
+      policyFingerprint: approval.policyFingerprint ?? null,
+      agent: approval.agent,
+      sessionKey: approval.sessionKey,
+      origin: approval.origin ?? null,
+      ...(approval.providerInitialization
+        ? { providerInitialization: approval.providerInitialization }
+        : {}),
+      hasMutableFileOperand: approval.hasMutableFileOperand,
+      allowedDecisions: approval.allowedDecisions,
+      commandConsent: approval.commandConsent ?? null,
+    })),
+    security,
+    challenge,
+  };
   return hash(
     canonicalize({
-      source: {
-        accountId: normalizeIdentity(source.accountId),
-        senderId: source.senderId,
-        conversationId: normalizeOpaqueId(source.conversationId),
-        messageId: normalizeOpaqueId(source.messageId),
-        cursor: normalizeWeixinProviderInteger(source.cursor),
-        agentId: normalizeOpaqueId(source.agentId),
-        sessionKey: normalizeOpaqueId(source.sessionKey),
-        direct: source.direct,
-        forwarded: source.forwarded,
-        quoted: source.quoted,
-        receivedAtUnixMs: source.receivedAtUnixMs,
-        runIds: source.runIds ?? [],
-        gatewayGeneration: source.gatewayGeneration ?? null,
-      },
-      requests: requests.map(({ approval }) => ({
-        id: approval.id,
-        command: approval.command,
-        executable: approval.executable,
-        executablePath: approval.executablePath,
-        executableSha256: approval.executableSha256.toLowerCase(),
-        arguments: approval.arguments,
-        canonicalCwd: approval.canonicalCwd,
-        declaredAccess: approval.declaredAccess,
-        folderChanges: approval.folderChanges ?? [],
-        planSha256: approval.planSha256 ?? null,
-        policyFingerprint: approval.policyFingerprint ?? null,
-        agent: approval.agent,
-        sessionKey: approval.sessionKey,
-        origin: approval.origin ?? null,
-        ...(approval.providerInitialization
-          ? { providerInitialization: approval.providerInitialization }
-          : {}),
-        hasMutableFileOperand: approval.hasMutableFileOperand,
-        allowedDecisions: approval.allowedDecisions,
-        commandConsent: approval.commandConsent ?? null,
-      })),
-      security,
-      challenge,
+      domain: "microclaw.wechat-exec-binding.readable.v2",
+      binding,
+      presentationBinding,
+      canonicalFacts: requests.map(({ approval }) => createCanonicalExecPresentation(approval)),
     }),
   );
 }
@@ -424,333 +425,6 @@ function createCode(): string {
   let result = "";
   for (const byte of bytes) result += CHALLENGE_ALPHABET[byte % CHALLENGE_ALPHABET.length];
   return result;
-}
-
-function isSafeAsciiDisplayValue(value: string): boolean {
-  return (
-    value.length > 0 &&
-    /^[\x20-\x7e]+$/.test(value) &&
-    !DANGEROUS_PROMPT_UNICODE_PATTERN.test(value)
-  );
-}
-
-function hasSensitiveSemantics(value: string): boolean {
-  return SENSITIVE_SEMANTIC_PATTERN.test(value.replace(/[^A-Za-z0-9]/g, ""));
-}
-
-function isSafeWindowsPath(value: string): boolean {
-  if (
-    !isSafeAsciiDisplayValue(value) ||
-    !/^[A-Za-z]:\\/.test(value) ||
-    /["'<>|?*=;&]/.test(value)
-  ) {
-    return false;
-  }
-  const segments = value.slice(3).split("\\");
-  return segments.every(
-    (segment) =>
-      segment.length > 0 &&
-      segment.length <= 80 &&
-      !segment.endsWith(" ") &&
-      !segment.endsWith(".") &&
-      !hasSensitiveSemantics(segment),
-  );
-}
-
-function isSafeRelativeFile(value: string): boolean {
-  return (
-    isSafeAsciiDisplayValue(value) &&
-    SAFE_RELATIVE_FILE_PATTERN.test(value) &&
-    !hasSensitiveSemantics(value)
-  );
-}
-
-function isSafeSimpleArgument(value: string): boolean {
-  return (
-    isSafeAsciiDisplayValue(value) &&
-    (SAFE_LITERAL_ARGUMENTS.has(value.toLowerCase()) ||
-      SAFE_NUMERIC_ARGUMENT_PATTERN.test(value) ||
-      (SAFE_SIMPLE_ARGUMENT_PATTERN.test(value) && !hasSensitiveSemantics(value)))
-  );
-}
-
-function isSafeSwitch(value: string): boolean {
-  return (
-    isSafeAsciiDisplayValue(value) &&
-    SAFE_SWITCH_PATTERN.test(value) &&
-    !hasSensitiveSemantics(value)
-  );
-}
-
-function argumentsCanBeSafelyRendered(values: string[]): boolean {
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (isSafeWindowsPath(value) || isSafeRelativeFile(value)) continue;
-    if (isSafeSwitch(value)) {
-      if (SAFE_PATH_VALUE_SWITCHES.has(value)) {
-        const pathValue = values[index + 1];
-        if (
-          pathValue === undefined ||
-          (!isSafeWindowsPath(pathValue) && !isSafeRelativeFile(pathValue))
-        ) {
-          return false;
-        }
-        index += 1;
-      } else if (SAFE_ENUM_VALUE_SWITCHES.has(value)) {
-        const enumValue = values[index + 1];
-        if (enumValue === undefined || !isSafeSimpleArgument(enumValue)) return false;
-        index += 1;
-      } else if (values[index + 1] !== undefined && !isSafeSwitch(values[index + 1])) {
-        return false;
-      }
-      continue;
-    }
-    if (SAFE_LITERAL_ARGUMENTS.has(value.toLowerCase())) continue;
-    return false;
-  }
-  return true;
-}
-
-function quoteWindowsArgument(value: string): string {
-  if (value.length > 0 && !/\s/.test(value) && !value.includes('"')) return value;
-  let output = '"';
-  let slashes = 0;
-  for (const character of value) {
-    if (character === "\\") {
-      slashes += 1;
-      continue;
-    }
-    if (character === '"') {
-      output += `${"\\".repeat(slashes * 2 + 1)}"`;
-      slashes = 0;
-      continue;
-    }
-    output += `${"\\".repeat(slashes)}${character}`;
-    slashes = 0;
-  }
-  return `${output}${"\\".repeat(slashes * 2)}"`;
-}
-
-function exactWindowsCommand(values: string[]): string {
-  return values.map(quoteWindowsArgument).join(" ");
-}
-
-function safelyPresentedLiteralCmd(approval: WindowsNodeMxcGatewayApproval): boolean {
-  const executable = path.win32.basename(approval.executable).toLowerCase();
-  if (
-    executable !== "cmd.exe" ||
-    path.win32.basename(approval.executablePath).toLowerCase() !== "cmd.exe" ||
-    (approval.executable.includes("\\") &&
-      approval.executable.toLowerCase() !== approval.executablePath.toLowerCase()) ||
-    approval.arguments.length !== 4 ||
-    approval.arguments
-      .slice(0, 3)
-      .map((value) => value.toLowerCase())
-      .join(" ") !== "/d /s /c"
-  )
-    return false;
-  const payload = approval.arguments[3];
-  if (!isSafeAsciiDisplayValue(payload) || /[%!^']/.test(payload)) return false;
-  const tokens = tokenizeLiteralCommand(payload);
-  if (!tokens?.length || tokens[0].quoted) return false;
-  const command = tokens[0].value.toLowerCase();
-  if (
-    tokens.length === 1 &&
-    ["dir", "hostname", "hostname.exe", "whoami", "whoami.exe"].includes(command)
-  )
-    return true;
-  if (
-    command === "git" &&
-    (tokens.length === 2 || (tokens.length === 3 && tokens[2].value === "--short")) &&
-    !tokens[1].quoted &&
-    tokens[1].value.toLowerCase() === "status"
-  )
-    return true;
-  if (!["dir", "type", "mkdir", "md"].includes(command) || tokens.length !== 2) return false;
-  const target = tokens[1].value;
-  if (!isLiteralLocalPath(target) || !isSafeWindowsPath(target)) return false;
-  const needsWrite = command === "mkdir" || command === "md";
-  return approval.declaredAccess.some((entry) => {
-    if (
-      (needsWrite && entry.access !== "rw") ||
-      !isLiteralLocalPath(entry.path) ||
-      !isSafeWindowsPath(entry.path)
-    )
-      return false;
-    const relative = path.win32.relative(entry.path.toLowerCase(), target.toLowerCase());
-    return relative === "" || (!relative.startsWith("..") && !path.win32.isAbsolute(relative));
-  });
-}
-
-function approvalHasSafeStructuredPresentation(approval: WindowsNodeMxcGatewayApproval): boolean {
-  const canonicalCwdIsSafe =
-    approval.canonicalCwd === "isolated-scratch:v1" || isSafeWindowsPath(approval.canonicalCwd);
-  const original = originalPowerShellFilesystemApproval(approval);
-  const isCmd =
-    path.win32.basename(approval.executable).toLowerCase() === "cmd.exe" ||
-    path.win32.basename(approval.executablePath).toLowerCase() === "cmd.exe";
-  const argumentsAreSafe = isCmd
-    ? safelyPresentedLiteralCmd(approval)
-    : argumentsCanBeSafelyRendered(approval.arguments) ||
-      (original !== null &&
-        classifyLiteralFilesystemCommand(original) !== null &&
-        !approval.arguments.some(hasSensitiveSemantics));
-  return (
-    original !== null &&
-    (isSafeRelativeFile(approval.executable) || isSafeWindowsPath(approval.executable)) &&
-    isSafeWindowsPath(approval.executablePath) &&
-    canonicalCwdIsSafe &&
-    SAFE_STRUCTURAL_ID_PATTERN.test(approval.sessionKey) &&
-    (approval.agent === null || SAFE_STRUCTURAL_ID_PATTERN.test(approval.agent)) &&
-    argumentsAreSafe &&
-    approval.command === exactWindowsCommand([approval.executable, ...approval.arguments]) &&
-    approval.declaredAccess.every((entry) => isSafeWindowsPath(entry.path)) &&
-    (approval.folderChanges ?? []).every(
-      (entry) => (entry.access === "ro" || entry.access === "rw") && isSafeWindowsPath(entry.path),
-    )
-  );
-}
-
-function promptCanRepresentRequests(requests: WeixinRemoteApprovalBatchRequest[]): boolean {
-  if (requests.length === 0 || requests.length > MAX_PROMPT_REQUESTS) return false;
-  return requests.every(({ approval }) => {
-    if (
-      approval.arguments.length > MAX_PROMPT_ARGUMENTS ||
-      approval.declaredAccess.length > MAX_PROMPT_DECLARATIONS ||
-      (approval.folderChanges?.length ?? 0) > MAX_PROMPT_DECLARATIONS ||
-      !/^[a-f0-9]{64}$/i.test(approval.executableSha256) ||
-      !approvalHasSafeStructuredPresentation(approval)
-    ) {
-      return false;
-    }
-    return true;
-  });
-}
-
-export function renderWeixinRemoteApprovalPrompt(params: {
-  code: string;
-  expiresAtUnixMs: number;
-  requests: WeixinRemoteApprovalBatchRequest[];
-  security: WeixinRemoteApprovalSecurityBinding;
-  locale: "en-US" | "zh-CN";
-  bareReplies?: boolean;
-  allowDurable?: boolean;
-}): string {
-  if (!promptCanRepresentRequests(params.requests)) {
-    throw new Error("Cannot safely present these approval requests on WeChat");
-  }
-  const zh = params.locale === "zh-CN";
-  const addsFolders = params.requests.some(({ approval }) => approval.folderChanges?.length);
-  const suffix = params.bareReplies === false ? ` ${params.code}` : "";
-  const allowDurable =
-    !addsFolders &&
-    params.allowDurable === true &&
-    params.requests.every(
-      ({ approval }) =>
-        !approval.commandConsent &&
-        approval.allowedDecisions.includes("allow-always") &&
-        !approval.hasMutableFileOperand,
-    );
-  const choices = zh
-    ? [
-        `回复 1${suffix}：${addsFolders ? "允许" : "仅允许一次"}`,
-        ...(allowDurable ? [`2${suffix}：为此智能体记住命令和参数（跨对话，不绑定工作目录）`] : []),
-        `3${suffix}：拒绝`,
-      ]
-    : [
-        `Reply 1${suffix}: ${addsFolders ? "allow" : "allow once"}`,
-        ...(allowDurable
-          ? [
-              `2${suffix}: remember command and arguments for this agent across conversations (not bound to the working directory)`,
-            ]
-          : []),
-        `3${suffix}: deny`,
-      ];
-  const actions = {
-    "exists-path": zh ? "检查路径是否存在" : "Check whether path exists",
-    "create-directory": zh ? "创建文件夹" : "Create folder",
-    "create-file": zh ? "创建文件" : "Create file",
-    "remove-path": zh ? "删除文件或文件夹" : "Delete file/folder",
-    "clear-content": zh ? "清空文件内容" : "Clear file content",
-    "set-content": zh ? "替换文件内容" : "Replace file content",
-    "append-content": zh ? "追加文件内容" : "Append file content",
-  };
-  const lines = [
-    zh ? "[MicroClaw 安全审批]" : "[MicroClaw Security Approval]",
-    choices.join(" | "),
-    ...(addsFolders
-      ? [
-          zh
-            ? "允许将保存下列文件夹权限，直到在设置中移除；当前命令仅批准一次。"
-            : "Allow saves the folder grants below until removed in Settings; this command runs once.",
-        ]
-      : []),
-    ...params.requests.flatMap(({ approval }) => {
-      const original = originalPowerShellFilesystemApproval(approval);
-      if (!original) throw new Error("Approval initialization could not be validated");
-      const operation = classifyLiteralFilesystemCommand(original);
-      return [
-        operation
-          ? `${actions[operation.kind]}: ${operation.path}`
-          : `${zh ? "命令" : "Command"}: ${approval.command}`,
-        `${zh ? "程序" : "Executable"}: ${approval.executablePath}`,
-        `${zh ? "工作目录" : "CWD"}: ${approval.canonicalCwd}`,
-        ...(approval.folderChanges ?? []).map(
-          (entry) =>
-            `${zh ? "添加到" : "Add to"} ${entry.access === "rw" ? "RW" : "RO"}: ${entry.path}`,
-        ),
-        ...(operation
-          ? [
-              ...(operation.recursive
-                ? [zh ? "递归删除所有子项。" : "Recursive: delete all children."]
-                : []),
-              ...(operation.force
-                ? [
-                    operation.kind === "create-directory"
-                      ? zh
-                        ? "Force：复用已存在的文件夹。"
-                        : "Force: reuse an existing folder."
-                      : operation.kind === "create-file"
-                        ? zh
-                          ? "Force：可能覆盖已有文件。"
-                          : "Force: may overwrite an existing file."
-                        : zh
-                          ? "Force：包含隐藏或只读项；不绕过权限。"
-                          : "Force: include hidden/read-only items; no ACL bypass.",
-                  ]
-                : []),
-              ...(operation.content !== null
-                ? [`${zh ? "写入内容" : "Content"}: ${JSON.stringify(operation.content)}`]
-                : []),
-              ...(operation.encoding !== null
-                ? [`${zh ? "编码" : "Encoding"}: ${operation.encoding}`]
-                : []),
-              ...(operation.noNewline ? [zh ? "不添加换行。" : "No added newline."] : []),
-            ]
-          : []),
-        `${zh ? "文件访问" : "File access"}: ${
-          approval.declaredAccess
-            .map(
-              (entry) =>
-                `${entry.access === "rw" ? (zh ? "读写" : "read/write") : zh ? "只读" : "read-only"} ${entry.path}`,
-            )
-            .join("; ") || (zh ? "无额外授权" : "no additional grants")
-        }`,
-        ...(approval.providerInitialization
-          ? [
-              zh
-                ? "含受限工作目录初始化；不增加文件权限。"
-                : "Scoped CWD initialization included; no extra file access.",
-            ]
-          : []),
-      ];
-    }),
-    `${zh ? "到期" : "Expires"}: ${new Date(params.expiresAtUnixMs).toISOString()}`,
-    zh
-      ? "仅限当前会话的当前审批。精确命令、参数、工作目录和完整技术细节见桌面。"
-      : "Current prompt/conversation only. Exact command, argv, CWD and full details: Desktop.",
-  ];
-  return lines.join("\n");
 }
 
 function acknowledgement(locale: "en-US" | "zh-CN", result: string): string {
@@ -781,6 +455,7 @@ export type WeixinRemoteApprovalRejectionReason =
   | "source-run-mismatch"
   | "source-provider-mismatch"
   | "ambiguous-request-set"
+  | "disclosure-consent-required"
   | "presentation-sensitive"
   | "presentation-unsupported"
   | "presentation-too-long"
@@ -788,7 +463,11 @@ export type WeixinRemoteApprovalRejectionReason =
 
 export type WeixinRemoteApprovalChallengeResult =
   | { status: "created"; delivery: WeixinRemoteApprovalDelivery }
-  | { status: "rejected"; reason: WeixinRemoteApprovalRejectionReason };
+  | {
+      status: "rejected";
+      reason: WeixinRemoteApprovalRejectionReason;
+      presentationCategory?: GenericPhonePresentationCategory;
+    };
 
 export function weixinRemoteApprovalWireSourceRejection(
   configuration: WeixinRemoteApprovalConfiguration,
@@ -838,20 +517,27 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
   }
 
   configure(configuration: WeixinRemoteApprovalConfiguration): void {
+    const owner = configuration.owner
+      ? normalizeWeixinRemoteApprovalOwner(
+          configuration.owner.accountId,
+          configuration.owner.userId,
+          configuration.owner.boundAt,
+        )
+      : null;
+    const disclosure = validateWeixinFullDetailDisclosure(
+      configuration.fullDetailDisclosure,
+      owner,
+    );
     const changed =
       this.configuration.enabled !== configuration.enabled ||
       this.configuration.consentScope !== configuration.consentScope ||
-      canonicalize(this.configuration.owner) !== canonicalize(configuration.owner);
+      canonicalize(this.configuration.owner) !== canonicalize(owner) ||
+      canonicalize(this.configuration.fullDetailDisclosure ?? null) !== canonicalize(disclosure);
     this.configuration = {
       enabled: configuration.enabled,
       ...(configuration.consentScope ? { consentScope: configuration.consentScope } : {}),
-      owner: configuration.owner
-        ? normalizeWeixinRemoteApprovalOwner(
-            configuration.owner.accountId,
-            configuration.owner.userId,
-            configuration.owner.boundAt,
-          )
-        : null,
+      ...(disclosure ? { fullDetailDisclosure: disclosure } : {}),
+      owner,
     };
     if (changed) this.invalidateAll("configuration-changed");
   }
@@ -860,6 +546,14 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     return {
       enabled: this.configuration.enabled,
       ...(this.configuration.consentScope ? { consentScope: this.configuration.consentScope } : {}),
+      ...(this.configuration.fullDetailDisclosure
+        ? {
+            fullDetailDisclosure: {
+              ...this.configuration.fullDetailDisclosure,
+              owner: { ...this.configuration.fullDetailDisclosure.owner },
+            },
+          }
+        : {}),
       owner: this.configuration.owner ? { ...this.configuration.owner } : null,
     };
   }
@@ -901,6 +595,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     }
     if (!SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode))
       return reject("security-binding-invalid");
+    const disclosureHash = weixinFullDetailDisclosureHash(this.configuration);
+    if (!disclosureHash) return reject("disclosure-consent-required");
     if (
       input.requests.some(({ approval }) => approval.providerInitialization) &&
       !(
@@ -942,20 +638,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       const reason = weixinApprovalOriginRejection(approval, input.source);
       if (reason) return reject(reason);
     }
-    if (!promptCanRepresentRequests(input.requests)) {
-      return reject(
-        input.requests.some(
-          ({ approval }) =>
-            approval.arguments.some(hasSensitiveSemantics) ||
-            approval.declaredAccess.some((entry) => hasSensitiveSemantics(entry.path)) ||
-            approval.folderChanges?.some((entry) => hasSensitiveSemantics(entry.path)),
-        )
-          ? "presentation-sensitive"
-          : "presentation-unsupported",
-      );
-    }
     const chatKey = this.chatKey(input.source.accountId, input.source.conversationId);
-    this.invalidateChat(chatKey, "superseded");
     const code = createCode();
     const id = randomBytes(16).toString("hex");
     const codeHash = hash(code);
@@ -963,19 +646,42 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     const expiresAtUnixMs = Math.min(
       now + WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS,
       input.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+      input.requests[0].approval.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
     );
     if (expiresAtUnixMs <= now) return reject("security-binding-invalid");
+    const presentation = renderCanonicalWeixinExecPrompt({
+      approval: input.requests[0].approval,
+      security: input.security,
+      expiresAtUnixMs,
+      code,
+      locale: input.locale,
+      bareReplies: true,
+    });
+    if (presentation.status === "unsupported") {
+      return {
+        status: "rejected",
+        reason: presentation.reason,
+        presentationCategory: presentation.category,
+      };
+    }
+    this.invalidateChat(chatKey, "superseded");
+    const presentationBinding = {
+      presentationDigest: presentation.presentationDigest,
+      disclosureHash,
+    };
     const challenge: ActiveChallenge = {
       id,
       code,
       codeHash,
       challengeHash,
-      bindingHash: securityBindingHash(input.source, input.requests, input.security, {
-        id,
-        codeHash,
-        createdAtUnixMs: now,
-        expiresAtUnixMs,
-      }),
+      bindingHash: securityBindingHash(
+        input.source,
+        input.requests,
+        input.security,
+        { id, codeHash, createdAtUnixMs: now, expiresAtUnixMs },
+        presentationBinding,
+      ),
+      presentationBinding,
       source: {
         ...input.source,
         accountId: input.source.accountId,
@@ -991,31 +697,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       deliveredAtUnixMs: null,
       reminderAtUnixMs: null,
       reminderCount: 0,
-      allowDurable:
-        weixinRemoteApprovalConsentHash(this.configuration) !== null &&
-        input.requests.every(
-          ({ approval }) =>
-            !approval.folderChanges?.length &&
-            !approval.commandConsent &&
-            approval.allowedDecisions.includes("allow-always") &&
-            !approval.hasMutableFileOperand,
-        ),
     };
-    const text = renderWeixinRemoteApprovalPrompt({
-      code,
-      expiresAtUnixMs,
-      requests: input.requests,
-      security: input.security,
-      locale: input.locale,
-      bareReplies: true,
-      allowDurable: challenge.allowDurable,
-    });
-    if (
-      text.length > MAX_PROMPT_LENGTH ||
-      text.split("\n").some((line) => line.length > MAX_PROMPT_LINE)
-    ) {
-      return reject("presentation-too-long");
-    }
     this.challengesByChat.set(chatKey, challenge);
     return {
       status: "created",
@@ -1029,7 +711,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         sourceMessageId: challenge.source.messageId,
         sourceCursor: challenge.source.cursor,
         expiresAtUnixMs,
-        text,
+        text: presentation.text,
         replyCode: code,
       },
     };
@@ -1090,13 +772,10 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       ) {
         challenge.reminderAtUnixMs = now;
         challenge.reminderCount++;
-        text = !challenge.allowDurable
-          ? challenge.locale === "zh-CN"
+        text =
+          challenge.locale === "zh-CN"
             ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）或 3（拒绝）；不接受引用、转发或混合内容。"
-            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once) or 3 (deny), without quotes, forwarding or other content."
-          : challenge.locale === "zh-CN"
-            ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）、2（为此智能体跨对话记住命令和参数，不绑定工作目录）或 3（拒绝）；不接受引用、转发或混合内容。"
-            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once), 2 (remember command and arguments for this agent across conversations, not bound to the working directory), or 3 (deny), without quotes, forwarding or other content.";
+            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once) or 3 (deny), without quotes, forwarding or other content.";
       }
       return { consumed: true, status: "rejected", reason, acknowledgement: text };
     };
@@ -1252,27 +931,33 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     }
     if (
       canonicalize(candidate.security) !== canonicalize(challenge.security) ||
-      securityBindingHash(challenge.source, candidate.requests, candidate.security, {
-        id: challenge.id,
-        codeHash: challenge.codeHash,
-        createdAtUnixMs: challenge.createdAtUnixMs,
-        expiresAtUnixMs: challenge.expiresAtUnixMs,
-      }) !== challenge.bindingHash
+      securityBindingHash(
+        challenge.source,
+        candidate.requests,
+        candidate.security,
+        {
+          id: challenge.id,
+          codeHash: challenge.codeHash,
+          createdAtUnixMs: challenge.createdAtUnixMs,
+          expiresAtUnixMs: challenge.expiresAtUnixMs,
+        },
+        challenge.presentationBinding,
+      ) !== challenge.bindingHash ||
+      weixinFullDetailDisclosureHash(this.configuration) !==
+        challenge.presentationBinding.disclosureHash
     ) {
       return reject("stale", true);
     }
     const option = parsed?.[1] ?? candidate.text;
-    if (option === "2" && weixinRemoteApprovalConsentHash(this.configuration) === null) {
-      return remind("consent-scope");
+    if (option === "2") {
+      return remind(
+        weixinRemoteApprovalConsentHash(this.configuration) === null
+          ? "consent-scope"
+          : "malformed",
+      );
     }
-    if (option === "2" && !challenge.allowDurable) return remind("malformed");
-    if (
-      option === "2" &&
-      candidate.requests.some(
-        ({ approval }) =>
-          !approval.allowedDecisions.includes("allow-always") || approval.hasMutableFileOperand,
-      )
-    ) {
+    const decision = option === "3" ? "deny" : "allow-once";
+    if (candidate.requests.some(({ approval }) => !approval.allowedDecisions.includes(decision))) {
       return remind("malformed");
     }
     this.challengesByChat.delete(chatKey);
@@ -1282,7 +967,6 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       locale: challenge.locale,
     });
     this.pendingResolutions.set(challenge.id, challenge);
-    const decision = option === "3" ? "deny" : option === "2" ? "allow-always" : "allow-once";
     const approvalIds = [...challenge.approvalIds];
     return {
       consumed: true,

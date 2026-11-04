@@ -134,6 +134,7 @@ const weixinReasons: Record<WeixinDiagnosticReason, true> = {
   "source-run-mismatch": true,
   "source-provider-mismatch": true,
   "ambiguous-request-set": true,
+  "disclosure-consent-required": true,
   "presentation-sensitive": true,
   "presentation-unsupported": true,
   "presentation-too-long": true,

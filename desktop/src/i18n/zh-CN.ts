@@ -13,11 +13,18 @@ export default {
   "tray.open": "打开 MicroClaw",
   "tray.restartGateway": "重启网关",
   "tray.quit": "退出",
+  "weixinDisclosure.title": "向微信发送完整命令详情？",
+  "weixinDisclosure.message": "信任当前绑定且已认证的微信账户，允许接收命令审批详情。",
+  "weixinDisclosure.risk":
+    "完整命令、每个参数和内联文件内容、工作目录、声明的路径、新增文件夹权限及可执行文件身份将通过微信及其服务提供方发送给此账户。已验证的工作目录初始化和技术标识保留在桌面。这些内容可能包含敏感信息：过滤规则无法证明任意文本均为公开内容。账户遭入侵后，攻击者可能读取详情并批准命令或持久文件夹权限。已识别的敏感或不透明数据及无法完整显示的请求仍须在桌面审批。这不会授予永久命令审批同意，也不会扩大任何命令的执行范围。已有的待处理手机审批将改为仅桌面审批，原截止时间不变，不会重发。撤销同意后将停止新的命令详情披露和手机审批，但无法撤回已发送的详情。",
+  "weixinDisclosure.keepDesktop": "保留桌面审批",
+  "weixinDisclosure.allow": "信任绑定账户并共享命令详情",
+  "weixinDisclosure.cancel": "取消",
   "weixinRemoteApproval.consentTitle": "远程命令审批",
   "weixinRemoteApproval.consentMessage":
     "选择是否允许当前已登录的微信账户为本次 MXC 激活审批命令。",
   "weixinRemoteApproval.consentRisk":
-    "如果此微信会话遭到入侵，攻击者可能批准命令、添加所示只读/读写文件夹权限或保存精确命令的永久审批。文件夹审批中，1 将保存所示权限直到在设置中移除，并仅批准当前命令一次；3 拒绝。其他命令审批仍使用 1/2/3，延迟回复可能影响更新的审批。2 仅在已有此会话精确范围的永久审批授权且命令符合条件时可用。禁用后仍需在桌面审批。",
+    "如果此微信会话遭到入侵，攻击者可能批准命令或添加所示只读/读写文件夹权限。文件夹审批中，1 将保存所示权限直到在设置中移除，并仅批准当前命令一次；3 拒绝。其他命令审批仅提供允许一次或拒绝。延迟回复可能影响更新的审批。共享完整命令详情需要在安全设置中另行原生确认。禁用后仍需在桌面审批。",
   "weixinRemoteApproval.disable": "禁用",
   "weixinRemoteApproval.enable": "启用",
   "weixinRemoteApproval.cancelActivation": "取消 MXC 激活",

@@ -23,10 +23,12 @@ import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc"
 import {
   normalizeWeixinRemoteApprovalOwner,
   WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+  weixinFullDetailDisclosureHash,
   weixinRemoteApprovalConsentHash,
   weixinRemoteApprovalWireSourceRejection,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
 } from "../src/windows-node-mxc-weixin-remote-approval";
+import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "../src/windows-node-mxc-weixin-disclosure-consent";
 import {
   bindWeixinApprovalRun,
   deliverWeixinRemoteApproval,
@@ -91,6 +93,19 @@ const root = String.raw`C:\Users\sunt\Desktop`;
 const target = `${root}\\wire_fixture_folder`;
 const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
 let captured;
+function displayedCommand(text) {
+  const lines = text.split("\n\n")[1].split("\n").slice(1);
+  const escaped = !lines[0].startsWith("  | ");
+  return lines
+    .slice(escaped ? 1 : 0)
+    .map((line) => {
+      expect(line.endsWith(" |")).toBe(true);
+      const value = line.slice(4, -2);
+      return escaped ? JSON.parse(value) : value;
+    })
+    .join("");
+}
+
 function approvalFor(
   script = `New-Item -ItemType Directory -Path '${target}' -Force`,
   access = "rw",
@@ -209,9 +224,16 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     decisions = [];
     sources = new Map();
     pending = true;
+    const owner = normalizeWeixinRemoteApprovalOwner("bot", rawPeer, "2026-10-20T00:00:00Z");
     configuration = {
       enabled: true,
-      owner: normalizeWeixinRemoteApprovalOwner("bot", rawPeer, "2026-10-20T00:00:00Z"),
+      owner,
+      fullDetailDisclosure: {
+        contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
+        receiptId: "11111111-1111-4111-8111-111111111111",
+        acknowledgedAt: "2026-10-20T00:00:00Z",
+        owner,
+      },
     };
     broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () =>
       readAuthenticatedWeixinWireOwner(stateDir),
@@ -496,10 +518,12 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expiresAtUnixMs,
       remoteSecurity,
       remoteSource: findWeixinApprovalSource(sources, approval),
+      remoteDisclosureHash: weixinFullDetailDisclosureHash(configuration),
     };
     const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
       exactWeixinApprovalSource,
       getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      weixinFullDetailDisclosureHash,
       readAuthenticatedWeixinWireOwner,
       getOpenClawStateDir: () => stateDir,
       withWindowsNodeMxcApprovalResolution: (operation) => operation(),
@@ -530,6 +554,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     });
     const resolver = createMainFunctionFixture("resolvePendingWindowsNodeMxcGatewayApproval", {
       findPendingWindowsNodeMxcGatewayApproval: () => (entry.lifecycle.pending ? entry : null),
+      getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      weixinFullDetailDisclosureHash,
     });
     main.replace("pendingWindowsNodeMxcGatewayApproval", entry);
     main.replace("resolvePendingWindowsNodeMxcGatewayApproval", async (...args) => {
@@ -684,7 +710,6 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       `Remove-Item -Path '${target}' -Recurse -Force`,
       [{ access: "ro", path: root }],
     ],
-    ["sensitive path", `Test-Path '${root}\\password_cache'`, [{ access: "ro", path: root }]],
     [
       "extra operation",
       `Test-Path '${target}'; Remove-Item '${target}'`,
@@ -692,16 +717,16 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     ],
     ["extra switch", `Test-Path '${target}' -Force`, [{ access: "ro", path: root }]],
   ])(
-    "keeps actual normalized unsupported existence-related form local: %s",
+    "displays the exact normalized exec without inferring access from its syntax: %s",
     async (_name, script, grants) => {
       approval = approvalFor(script, "ro", grants);
       const before = JSON.stringify(approval);
-      expect(await deliver()).toBeNull();
-      const notice = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
-      expect(notice).toContain("cannot be safely displayed or approved on WeChat");
-      expect(notice).toContain("allow or deny on Desktop");
-      expect(notice).not.toContain(script);
-      expect(notice).not.toContain("password_cache");
+      const delivery = await deliver();
+      expect(delivery).not.toBeNull();
+      const text = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
+      expect(displayedCommand(text)).toBe(approval.command);
+      for (const grant of grants) expect(text).toContain(grant.path);
+      if (!grants.length) expect(text).toContain("None");
       expect(JSON.stringify(approval)).toBe(before);
       expect(
         await transport.intercept({
@@ -715,9 +740,19 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           sourcePhase: "candidate",
         }),
       ).toBe(true);
-      expect(decisions).toEqual([]);
+      expect(decisions).toEqual([{ approvalIds: [approval.id], decision: "allow-once" }]);
     },
   );
+
+  it("keeps a recognizable sensitive path local without including its contents in the fallback", async () => {
+    approval = approvalFor(`Test-Path '${root}\\password_cache'`, "ro", [
+      { access: "ro", path: root },
+    ]);
+    expect(await deliver()).toBeNull();
+    const notice = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
+    expect(notice).toContain("cannot be safely displayed or approved on WeChat");
+    expect(notice).not.toContain("password_cache");
+  });
 
   it.each(["create", "exists-ro"])(
     "delivers the actual normalized %s plan with exact context, coded backward compatibility and correlated provider receipt",
@@ -896,9 +931,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expect(sent.context_token).toBe("synthetic-exact-context");
       expect(sent.item_list[0].text_item.text).toContain("Reply 1:");
       if (operation.startsWith("exists")) {
-        expect(sent.item_list[0].text_item.text).toContain("Check whether path exists");
+        expect(displayedCommand(sent.item_list[0].text_item.text)).toBe(approval.command);
         expect(sent.item_list[0].text_item.text).toContain(
-          operation === "exists-ro" ? "read-only" : "read/write",
+          operation === "exists-ro" ? "Read-only" : "Read/write",
         );
         expect(approval.arguments.at(-1)).toBe(
           `powershell -NoProfile -Command "Test-Path '${target}'"`,
@@ -1182,9 +1217,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     ).toBe(1);
     expect(
       fetch.mock.calls.filter(([, params]) =>
-        JSON.parse(params.body).msg.item_list[0].text_item.text.startsWith(
-          "[MicroClaw Security Approval]",
-        ),
+        JSON.parse(params.body).msg.item_list[0].text_item.text.includes("Command (exact;"),
       ),
     ).toHaveLength(1);
   });
@@ -1310,9 +1343,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     ).toBe(1);
     expect(
       fetch.mock.calls.filter(([, params]) =>
-        JSON.parse(params.body).msg.item_list[0].text_item.text.startsWith(
-          "[MicroClaw Security Approval]",
-        ),
+        JSON.parse(params.body).msg.item_list[0].text_item.text.includes("Command (exact;"),
       ),
     ).toHaveLength(1);
   });
@@ -1850,7 +1881,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           await source({ message_id: 1001 + step * 4, seq: 42 + step * 4 });
           const delivery = await deliver();
           expect(delivery).not.toBeNull();
-          expect(delivery.text).toContain("Scoped CWD initialization");
+          expect(delivery.text).toContain("Verified folder initialization");
           const code = delivery.replyCode;
           expect(
             await transport.intercept({

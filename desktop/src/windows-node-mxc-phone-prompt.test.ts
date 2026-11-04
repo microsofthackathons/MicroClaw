@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { normalizeWindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import { createPowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
-import { renderWeixinRemoteApprovalPrompt } from "./windows-node-mxc-weixin-remote-approval";
+import { renderCanonicalWeixinExecPrompt } from "./windows-node-mxc-weixin-exec-presentation";
 // @ts-expect-error External ESM Windows quoting fixture.
 import { windowsCommand } from "../integration/windows-command-fixture.mjs";
 
-const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
-const root = String.raw`C:\Users\sunt\Desktop`;
-const target = `${root}\\phone_approval_fixture`;
+const powershell = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
+const cmd = String.raw`C:\Windows\System32\cmd.exe`;
+const root = String.raw`C:\Approved`;
+const target = `${root}\\sample folder`;
 const access = [{ access: "rw" as const, path: root }];
 const security = {
   gatewayGeneration: "fixture-generation",
@@ -18,29 +19,25 @@ const security = {
   effectiveMode: "appcontainer-dacl",
 };
 
-function prepared(script: string) {
-  const argv = [
-    executable,
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `powershell -NoProfile -Command "${script}"`,
-  ];
-  const initialization = createPowerShellFilesystemInitialization(argv, executable, access);
-  if (!initialization) throw new Error("Closed literal fixture was not prepared");
+function normalized(argv: string[], executablePath: string, initialize = false) {
+  const initialization = initialize
+    ? createPowerShellFilesystemInitialization(argv, executablePath, access)
+    : null;
+  if (initialize && !initialization) throw new Error("Initializer fixture was not prepared");
+  const finalArgv = initialization?.finalArgv ?? argv;
   const plan = {
-    argv: initialization.finalArgv,
-    commandText: windowsCommand(initialization.finalArgv),
-    commandPreview: `# [declare-access]rw:${root}[/declare-access]\n${initialization.finalArgv.at(-1)}`,
+    argv: finalArgv,
+    commandText: windowsCommand(finalArgv),
+    commandPreview: `# [declare-access]rw:${root}[/declare-access]\n${finalArgv.at(-1)}`,
     cwd: null,
     cwdBinding: "isolated-scratch:v1",
     agentId: "main",
     sessionKey: "agent:main:fixture",
-    executablePath: executable,
+    executablePath,
     executableSha256: "a".repeat(64),
     declaredAccess: access,
-    providerInitialization: initialization,
+    commandConsent: { required: true, allowAlwaysAvailable: true },
+    ...(initialization ? { providerInitialization: initialization } : {}),
   };
   const approval = normalizeWindowsNodeMxcGatewayApproval(
     {
@@ -51,189 +48,95 @@ function prepared(script: string) {
     security.gatewayGeneration,
     security.requestedMode,
   );
-  if (!approval) throw new Error("Actual prepared plan was not normalized");
+  if (!approval) throw new Error("Prepared fixture was not normalized");
   return { approval, plan };
 }
 
-describe("short phone summary of the independently validated actual prepared plan", () => {
-  it.each(["ro", "rw"] as const)(
-    "renders the literal existence operation with unchanged target, %s grants and no write initialization",
-    (grant) => {
-      const { approval } = prepared(`New-Item -ItemType Directory -Path '${target}'`);
-      const argv = [
-        executable,
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `powershell -NoProfile -Command "Test-Path '${target}'"`,
-      ];
-      const declaredAccess = [{ access: grant, path: root }];
-      expect(createPowerShellFilesystemInitialization(argv, executable, declaredAccess)).toBeNull();
-      const direct = {
-        ...approval,
-        arguments: argv.slice(1),
-        command: windowsCommand(argv),
-        providerInitialization: undefined,
-        declaredAccess,
-      };
-      const before = JSON.stringify(direct);
-      for (const locale of ["en-US", "zh-CN"] as const) {
-        const text = renderWeixinRemoteApprovalPrompt({
-          code: "23456789",
-          expiresAtUnixMs: Date.parse("2026-10-22T11:30:00Z"),
-          requests: [{ approval: direct }],
-          security,
-          locale,
-          allowDurable: false,
-        });
-        console.info(
-          JSON.stringify({
-            fixture: `exists-${grant}-${locale}`,
-            renderedCharacters: text.length,
-            renderedUtf8Bytes: Buffer.byteLength(text),
-          }),
-        );
-        expect(text).toContain(
-          locale === "en-US" ? "Check whether path exists" : "检查路径是否存在",
-        );
-        expect(text).toContain(target);
-        expect(text).toContain(executable);
-        expect(text).toContain(
-          locale === "en-US"
-            ? grant === "ro"
-              ? "read-only"
-              : "read/write"
-            : grant === "ro"
-              ? "只读"
-              : "读写",
-        );
-        expect(text).not.toMatch(/initialization|2:|23456789|Force|Recurse/);
-        expect(text.length).toBeLessThanOrEqual(600);
-        expect(JSON.stringify(direct)).toBe(before);
-        expect(direct.command).toBe(windowsCommand([direct.executable, ...direct.arguments]));
-      }
+describe("generic WeChat presentation of the prepared exec plan", () => {
+  it.each(["en-US", "zh-CN"] as const)(
+    "shows an unchanged stock CMD wrapper and complete PowerShell payload in %s",
+    (locale) => {
+      const payload = `powershell -NoProfile -Command "Test-Path '${target}'"`;
+      const argv = [cmd, "/d", "/s", "/c", payload];
+      const { approval, plan } = normalized(argv, cmd);
+      const before = structuredClone({ approval, plan });
+      const result = renderCanonicalWeixinExecPrompt({
+        approval,
+        security,
+        code: "23456789",
+        expiresAtUnixMs: 123_000,
+        locale,
+      });
+      expect(result.status).toBe("supported");
+      if (result.status !== "supported") throw new Error("CMD prompt was not supported");
+      expect(result.text).toContain(cmd);
+      expect(result.text).toContain("Test-Path");
+      expect(result.text).toContain(target);
+      expect(result.text).toMatch(
+        locale === "en-US" ? /Reply 1: allow once/ : /回复 1：仅允许一次/,
+      );
+      expect(result.text).toMatch(locale === "en-US" ? /3: deny/ : /3：拒绝/);
+      expect(result.text).not.toMatch(/^(?:Reply |回复 )?2[:：]/m);
+      expect(result.text.length).toBeLessThanOrEqual(6000);
+      expect([approval.executable, ...approval.arguments]).toEqual(argv);
+      expect(approval.command).toBe(plan.commandText);
+      expect(approval.providerInitialization).toBeUndefined();
+      expect({ approval, plan }).toEqual(before);
     },
   );
 
   it.each([
-    ["create", `New-Item -ItemType Directory -Path '${target}' -Force`],
-    ["delete", `Remove-Item -Path '${target}' -Recurse -Force`],
-  ])(
-    "measures actual initialized %s rendering with available choices first",
-    (operation, script) => {
-      const { approval, plan } = prepared(script);
-      const before = JSON.stringify(approval);
-      const text = renderWeixinRemoteApprovalPrompt({
-        code: "23456789",
-        expiresAtUnixMs: Date.parse("2026-10-22T11:30:00Z"),
-        requests: [{ approval }],
-        security,
-        locale: "en-US",
-        allowDurable: false,
-      });
-      console.info(
-        JSON.stringify({
-          fixture: operation,
-          renderedCharacters: text.length,
-          renderedUtf8Bytes: Buffer.byteLength(text),
-          firstChoiceOffset: text.indexOf("Reply 1:"),
-          denyChoiceOffset: text.indexOf("3: deny"),
-        }),
-      );
-      expect(text.length).toBeLessThanOrEqual(600);
-      expect(text.indexOf("Reply 1:")).toBeGreaterThan(0);
-      expect(text.indexOf("Reply 1:")).toBeLessThan(120);
-      expect(text.indexOf("3: deny")).toBeGreaterThan(0);
-      expect(text.indexOf("3: deny")).toBeLessThan(160);
-      expect(text).toContain(target);
-      expect(text).toContain(root);
-      expect(text).toMatch(/read\/write/i);
-      expect(text).toMatch(/force/i);
-      if (operation === "delete") expect(text).toMatch(/recursive|all children/i);
-      expect(text).toMatch(/scoped.*initialization/i);
-      expect(text).toMatch(/Desktop/);
-      expect(text).toContain(executable);
-      expect(text).not.toContain("23456789");
-      expect(text).not.toContain("2:");
-      expect(text).not.toMatch(/off and|enable again|JSON fragments|Args:|SHA-256/);
-      expect(text).not.toContain(approval.command);
-      expect(text).not.toContain(approval.sessionKey);
-      expect(JSON.stringify(approval)).toBe(before);
-      expect(windowsCommand([approval.executable, ...approval.arguments])).toBe(plan.commandText);
-      expect(approval.command).toBe(plan.commandText);
-      expect(approval.providerInitialization).toEqual(plan.providerInitialization);
-    },
-  );
+    `New-Item -ItemType Directory -Path '${target}' -Force`,
+    `Remove-Item -Path '${target}' -Recurse -Force`,
+  ])("presents a validated initialization through its original exact command: %s", (script) => {
+    const argv = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+    const { approval, plan } = normalized(argv, powershell, true);
+    const before = structuredClone(approval);
+    const result = renderCanonicalWeixinExecPrompt({
+      approval,
+      security,
+      code: "23456789",
+      expiresAtUnixMs: 123_000,
+      locale: "en-US",
+    });
+    expect(result.status).toBe("supported");
+    if (result.status !== "supported") throw new Error("Initialized prompt was not supported");
+    expect(result.text).toContain(target);
+    expect(result.text).toContain(script.includes("Remove-Item") ? "Remove-Item" : "New-Item");
+    expect(result.text).toContain("Force");
+    expect(result.text).toContain("initialization");
+    expect(result.text).not.toContain("microclaw.powershell-filesystem-scope.v1");
+    expect(approval.command).toBe(plan.commandText);
+    expect(approval.arguments).toEqual(plan.argv.slice(1));
+    expect(approval).toEqual(before);
+  });
 
   it.each(["en-US", "zh-CN"] as const)(
-    "retains executable identity, every grant and every content effect (%s)",
+    "shows every persistent folder addition and prevents durable command decisions in %s",
     (locale) => {
-      const { approval } = prepared(`New-Item -ItemType Directory -Path '${target}' -Force`);
-      const customExecutable = String.raw`C:\custom\powershell.exe`;
-      const argv = [
-        customExecutable,
-        "-NoProfile",
-        "-Command",
-        `Set-Content -LiteralPath '${target}' -Value '' -Encoding Unicode -NoNewline -Force`,
+      const { approval } = normalized([cmd, "/d", "/s", "/c", "dir"], cmd);
+      approval.folderChanges = [
+        { path: root, access: "rw" },
+        { path: "C:\\Reference", access: "ro" },
       ];
-      const direct = {
-        ...approval,
-        executable: customExecutable,
-        executablePath: customExecutable,
-        arguments: argv.slice(1),
-        command: windowsCommand(argv),
-        providerInitialization: undefined,
-        declaredAccess: [...access, { access: "ro" as const, path: String.raw`C:\ApprovedRead` }],
-      };
-      const before = JSON.stringify(direct);
-      const text = renderWeixinRemoteApprovalPrompt({
+      const result = renderCanonicalWeixinExecPrompt({
+        approval,
+        security,
         code: "23456789",
         expiresAtUnixMs: 123_000,
-        requests: [{ approval: direct }],
-        security,
         locale,
-        allowDurable: true,
       });
-      expect(text).toContain(customExecutable);
-      expect(text).toContain(target);
-      expect(text).toContain(root);
-      expect(text).toContain(String.raw`C:\ApprovedRead`);
-      expect(text).toContain('""');
-      expect(text).toContain("Unicode");
-      expect(text).toContain("Force");
-      expect(text).toMatch(locale === "en-US" ? /No added newline/ : /不添加换行/);
-      expect(text).toMatch(locale === "en-US" ? /read-only/ : /只读/);
-      expect(text).toMatch(locale === "en-US" ? /read\/write/ : /读写/);
-      expect(JSON.stringify(direct)).toBe(before);
-    },
-  );
-
-  it.each([
-    ["New-Item -ItemType File -Path", "-Value '0' -Force", /Create file/, /overwrite/],
-    ["Clear-Content -LiteralPath", "-Force", /Clear file content/, /Force/],
-    ["Add-Content -Path", "-Value '1' -NoNewline", /Append file content/, /No added newline/],
-  ] as const)(
-    "discloses the closed operation and its effects: %s",
-    (operation, flags, action, effect) => {
-      const { approval } = prepared(`New-Item -ItemType Directory -Path '${target}'`);
-      const argv = [executable, "-NoProfile", "-Command", `${operation} '${target}' ${flags}`];
-      const direct = {
-        ...approval,
-        arguments: argv.slice(1),
-        command: windowsCommand(argv),
-        providerInitialization: undefined,
-      };
-      const text = renderWeixinRemoteApprovalPrompt({
-        code: "23456789",
-        expiresAtUnixMs: 123_000,
-        requests: [{ approval: direct }],
-        security,
-        locale: "en-US",
-      });
-      expect(text).toMatch(action);
-      expect(text).toMatch(effect);
-      expect(text).toContain(target);
+      expect(result.status).toBe("supported");
+      if (result.status !== "supported") throw new Error("Folder prompt was not supported");
+      expect(result.text).toContain(root);
+      expect(result.text).toContain("C:\\Reference");
+      expect(result.text).toMatch(locale === "en-US" ? /Read\/write/ : /读写/);
+      expect(result.text).toMatch(locale === "en-US" ? /Read-only/ : /只读/);
+      expect(result.text).toMatch(
+        locale === "en-US" ? /until removed in Settings/ : /直到在设置中移除/,
+      );
+      expect(result.text).toMatch(locale === "en-US" ? /command runs once/ : /当前命令仅批准一次/);
+      expect(result.text).not.toMatch(/^(?:Reply |回复 )?2[:：]/m);
     },
   );
 });

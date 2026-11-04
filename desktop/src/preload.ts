@@ -404,6 +404,16 @@ contextBridge.exposeInMainWorld("openclaw", {
 
   windowsNodeMxc: {
     getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
+    getDisclosureStatus: () =>
+      ipcRenderer.invoke("windows-node-mxc:weixin-disclosure-status") as Promise<{
+        consented: boolean;
+        available: boolean;
+      }>,
+    requestDisclosure: (intent: "enable-full-details" | "revoke") =>
+      ipcRenderer.invoke("windows-node-mxc:weixin-disclosure-request", { intent }) as Promise<{
+        consented: boolean;
+        available: boolean;
+      }>,
     getDisplayStatus: () => ipcRenderer.invoke("windows-node-mxc:display-status"),
     onDisplayStatus: (callback: (snapshot: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: unknown) => callback(snapshot);

@@ -243,6 +243,8 @@ describe("SettingsView", () => {
       },
       windowsNodeMxc: {
         getStatus: getWindowsNodeMxcStatus,
+        getDisclosureStatus: vi.fn().mockResolvedValue({ consented: false, available: false }),
+        requestDisclosure: vi.fn().mockResolvedValue({ consented: false, available: false }),
         setEnabled: setWindowsNodeMxcEnabled,
         validateFolderPolicy,
         applyFolderPolicy,
@@ -272,12 +274,212 @@ describe("SettingsView", () => {
     });
 
     await flushPromises();
-
     expect(wrapper.find(".settings-content--skills").exists()).toBe(false);
     expect(wrapper.findAll(".settings-menu-item").some((item) => item.text() === "Skills")).toBe(
       false,
     );
     expect(wrapper.find(".settings-menu-item.active").text()).toBe("General");
+  });
+
+  it.each(["en-US", "zh-CN"] as const)(
+    "requires explicit native review and supports revocation in %s",
+    async (locale) => {
+      routeState.section = "security";
+      setLocale(locale);
+      vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus).mockResolvedValue({
+        consented: false,
+        available: true,
+      });
+      vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockResolvedValue({
+        consented: true,
+        available: true,
+      });
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      expect(window.openclaw.windowsNodeMxc.requestDisclosure).not.toHaveBeenCalled();
+      const section = wrapper.get('[data-testid="weixin-disclosure-settings"]');
+      expect(section.text()).toMatch(
+        locale === "en-US" ? /Filters cannot prove/ : /无法证明任意文本/,
+      );
+      await wrapper.get('[data-testid="weixin-disclosure-review"]').trigger("click");
+      await flushPromises();
+      expect(window.openclaw.windowsNodeMxc.requestDisclosure).toHaveBeenCalledExactlyOnceWith(
+        "enable-full-details",
+      );
+      expect(section.text()).toMatch(locale === "en-US" ? /may be shared/ : /允许.*共享/);
+      vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockResolvedValue({
+        consented: false,
+        available: true,
+      });
+      await wrapper.get('[data-testid="weixin-disclosure-revoke"]').trigger("click");
+      await flushPromises();
+      expect(window.openclaw.windowsNodeMxc.requestDisclosure).toHaveBeenLastCalledWith("revoke");
+      expect(wrapper.find('[data-testid="weixin-disclosure-revoke"]').exists()).toBe(false);
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("keeps cancelled or failed disclosure Desktop-only and reports native errors", async () => {
+    routeState.section = "security";
+    vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus).mockResolvedValue({
+      consented: false,
+      available: true,
+    });
+    vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockResolvedValue({
+      consented: false,
+      available: true,
+    });
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    await wrapper.get('[data-testid="weixin-disclosure-review"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="weixin-disclosure-settings"]').text()).toContain(
+      "not shared",
+    );
+    const error = vi.spyOn(ElMessage, "error");
+    vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockRejectedValueOnce(
+      new Error("Synthetic native owner changed"),
+    );
+    await wrapper.get('[data-testid="weixin-disclosure-review"]').trigger("click");
+    await flushPromises();
+    expect(error).toHaveBeenCalledWith("Synthetic native owner changed");
+    expect(wrapper.find('[data-testid="weixin-disclosure-revoke"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("disables unavailable consent and ignores duplicate native-review clicks", async () => {
+    routeState.section = "security";
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="weixin-disclosure-review"]').attributes("disabled")).toBe(
+      "true",
+    );
+    wrapper.unmount();
+    vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus).mockResolvedValue({
+      consented: false,
+      available: true,
+    });
+    let finish!: (value: { consented: boolean; available: boolean }) => void;
+    vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const active = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    await active.get('[data-testid="weixin-disclosure-review"]').trigger("click");
+    await active.get('[data-testid="weixin-disclosure-review"]').trigger("click");
+    expect(window.openclaw.windowsNodeMxc.requestDisclosure).toHaveBeenCalledOnce();
+    finish({ consented: false, available: true });
+    await flushPromises();
+    expect(active.get('[data-testid="weixin-disclosure-settings"]').text()).toContain("not shared");
+    active.unmount();
+  });
+
+  it("offers revocation of saved command disclosure even while MXC is off", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue(offStatus());
+    vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus).mockResolvedValue({
+      consented: true,
+      available: false,
+    });
+    vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockResolvedValue({
+      consented: false,
+      available: false,
+    });
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="weixin-disclosure-review"]').attributes("disabled")).toBe(
+      "true",
+    );
+    await wrapper.get('[data-testid="weixin-disclosure-revoke"]').trigger("click");
+    await flushPromises();
+    expect(window.openclaw.windowsNodeMxc.requestDisclosure).toHaveBeenCalledWith("revoke");
+    expect(wrapper.find('[data-testid="weixin-disclosure-settings"]').exists()).toBe(false);
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("refreshes WeChat disclosure availability when MXC is enabled", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue(offStatus());
+    let enabled = false;
+    vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus).mockImplementation(async () => ({
+      consented: false,
+      available: enabled,
+    }));
+    setWindowsNodeMxcEnabled.mockImplementation(async (request: { enabled: boolean }) => {
+      enabled = request.enabled;
+      return enabled ? status("node-local") : offStatus();
+    });
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="weixin-disclosure-settings"]').exists()).toBe(false);
+    await toggleSandbox(wrapper);
+    await flushPromises();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: true });
+    expect(wrapper.get('[data-testid="weixin-disclosure-review"]').attributes("disabled")).toBe(
+      "false",
+    );
+    wrapper.unmount();
+  });
+
+  it("refreshes WeChat disclosure availability after a pushed MXC transition", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue(offStatus());
+    let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+    let enabled = false;
+    window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+      update = callback;
+      return vi.fn();
+    };
+    vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus).mockImplementation(async () => ({
+      consented: false,
+      available: enabled,
+    }));
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    enabled = true;
+    update({
+      status: status("node-local"),
+      verifiedAt: Date.now(),
+      refreshing: false,
+      error: null,
+    });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="weixin-disclosure-review"]').attributes("disabled")).toBe(
+      "false",
+    );
+    wrapper.unmount();
+  });
+
+  it("does not restore stale disclosure status after native consent", async () => {
+    routeState.section = "security";
+    const getDisclosureStatus = vi.mocked(window.openclaw.windowsNodeMxc.getDisclosureStatus);
+    getDisclosureStatus.mockResolvedValue({ consented: false, available: true });
+    vi.mocked(window.openclaw.windowsNodeMxc.requestDisclosure).mockResolvedValue({
+      consented: true,
+      available: true,
+    });
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    let finish!: (value: { consented: boolean; available: boolean }) => void;
+    getDisclosureStatus.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    window.dispatchEvent(new Event("focus"));
+    await flushPromises();
+    await wrapper.get('[data-testid="weixin-disclosure-review"]').trigger("click");
+    await flushPromises();
+    finish({ consented: false, available: true });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="weixin-disclosure-revoke"]').exists()).toBe(true);
+    wrapper.unmount();
   });
 
   it("shows Gateway status and log export at the end of General", async () => {

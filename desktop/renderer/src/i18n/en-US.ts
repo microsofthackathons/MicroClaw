@@ -476,6 +476,15 @@ export default {
   "settings.windowsNodeMxcDisabled": "Disabled",
   "settings.windowsNodeMxcCommands": "Declared node commands",
   "settings.windowsNodeMxcConnection": "Connection / pairing",
+  "settings.weixinDisclosure": "WeChat command disclosure",
+  "settings.weixinDisclosureGranted":
+    "Command details may be shared with the bound WeChat account for phone approval.",
+  "settings.weixinDisclosureDesktop":
+    "Command details are not shared. Approvals stay on Desktop until you give native consent.",
+  "settings.weixinDisclosureRisk":
+    "Command details include every argument, inline contents and declared paths sent through WeChat. Filters cannot prove arbitrary text public. A native confirmation binds this disclosure separately to the authenticated account; it does not enable durable command approvals. Changing consent makes existing pending phone requests Desktop-only without resending them.",
+  "settings.weixinDisclosureReview": "Review command-sharing consent",
+  "settings.weixinDisclosureRevoke": "Revoke command sharing",
   "settings.windowsNodeMxcFolders": "Global MXC approved folders",
   "settings.windowsNodeMxcFullFolders": "Full hard-boundary approved folders",
   "settings.windowsNodeMxcLimitedFolders": "Limited additional filesystem grants",
