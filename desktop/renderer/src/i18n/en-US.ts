@@ -122,6 +122,9 @@ export default {
   "chat.stopGeneration": "Stop Generating",
   "chat.stopTask": "Stop task",
   "chat.addAttachment": "Add attachment",
+  "chat.dropImages": "Drop images to attach",
+  "chat.attachment.unsupportedImage":
+    "{file} is not a supported image. Use PNG, JPEG, GIF, WebP, BMP, TIFF, AVIF or HEIF.",
   "chat.attachment": "Attachment",
   "chat.image": "Image",
   "chat.removeAttachment": "Remove {file}",

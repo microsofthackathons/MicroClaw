@@ -34,7 +34,17 @@
 
     <!-- Input area -->
     <div class="home-input-area">
-      <div class="home-input-box">
+      <div
+        class="home-input-box"
+        :class="{ 'home-input-box--drop': dragDepth > 0 }"
+        @dragenter="handleDragEnter"
+        @dragover="handleDragOver"
+        @dragleave="handleDragLeave"
+        @drop="handleDrop"
+      >
+        <div v-if="dragDepth > 0" class="home-input-drop-hint" role="status">
+          {{ t("chat.dropImages") }}
+        </div>
         <ChatAttachments
           class="home-input-attachments"
           :attachments="pendingAttachments"
@@ -129,6 +139,7 @@ import {
   insertTextAtSelection,
   serializeClipboardImages,
 } from "@/utils/chat-clipboard";
+import { prepareDroppedImages, type DroppedImageRejection } from "@/utils/chat-image-drop";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ChatAttachments from "@/components/chat/ChatAttachments.vue";
 import ChatWelcome from "@/components/ChatWelcome.vue";
@@ -150,7 +161,8 @@ const pendingModelSetupMessage = ref("");
 const pendingModelSetupAttachments = ref<ChatAttachment[]>([]);
 const pendingAttachments = ref<ChatAttachment[]>([]);
 const pickingFiles = ref(false);
-const importingClipboardImages = ref(0);
+const importingImages = ref(0);
+const dragDepth = ref(0);
 const submittingMessage = ref(false);
 let isUserScrolledUp = false;
 let attachmentImportQueue: Promise<void> = Promise.resolve();
@@ -229,7 +241,7 @@ const canSend = computed(
     !chatStore.agentPreparationError &&
     !submittingMessage.value &&
     !pickingFiles.value &&
-    importingClipboardImages.value === 0 &&
+    importingImages.value === 0 &&
     (inputText.value.trim().length > 0 || pendingAttachments.value.length > 0),
 );
 
@@ -348,7 +360,7 @@ async function handleSend() {
     chatStore.agentPreparationError ||
     submittingMessage.value ||
     pickingFiles.value ||
-    importingClipboardImages.value > 0
+    importingImages.value > 0
   ) {
     return;
   }
@@ -441,7 +453,7 @@ function handlePaste(event: ClipboardEvent) {
     });
   }
 
-  importingClipboardImages.value += 1;
+  importingImages.value += 1;
   void enqueueAttachmentImport(async () => {
     try {
       const images = await serializeClipboardImages(files);
@@ -453,7 +465,66 @@ function handlePaste(event: ClipboardEvent) {
     } catch (error) {
       ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
     } finally {
-      importingClipboardImages.value -= 1;
+      importingImages.value -= 1;
+    }
+  });
+}
+
+function isFileDrag(event: DragEvent): boolean {
+  return (
+    Array.from(event.dataTransfer?.types ?? []).includes("Files") ||
+    (event.dataTransfer?.files.length ?? 0) > 0
+  );
+}
+
+function handleDragEnter(event: DragEvent) {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  if (chatStore.wsConnected && !submittingMessage.value) dragDepth.value += 1;
+}
+
+function handleDragOver(event: DragEvent) {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect =
+      chatStore.wsConnected && !submittingMessage.value ? "copy" : "none";
+  }
+}
+
+function handleDragLeave(event: DragEvent) {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  dragDepth.value = Math.max(0, dragDepth.value - 1);
+}
+
+function handleDrop(event: DragEvent) {
+  dragDepth.value = 0;
+  if (!isFileDrag(event)) return;
+  // Prevent Chromium from navigating to a dropped file, even while disconnected.
+  event.preventDefault();
+  if (!chatStore.wsConnected || submittingMessage.value) return;
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (files.length === 0) return;
+  const sessionKey = chatStore.sessionKey;
+  const agentId = route.params.agentId;
+  importingImages.value += 1;
+  void enqueueAttachmentImport(async () => {
+    try {
+      const prepared = await prepareDroppedImages(files, currentAttachmentBytes());
+      if (sessionKey !== chatStore.sessionKey || agentId !== route.params.agentId) return;
+      showAttachmentRejections(prepared.rejections);
+      if (prepared.images.length === 0) return;
+      const result = await window.openclaw.attachment.importClipboardImages(
+        prepared.images,
+        currentAttachmentBytes(),
+      );
+      if (sessionKey !== chatStore.sessionKey || agentId !== route.params.agentId) return;
+      applyAttachmentResult(result);
+    } catch (error) {
+      ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+    } finally {
+      importingImages.value -= 1;
     }
   });
 }
@@ -473,7 +544,11 @@ function currentAttachmentBytes(): number {
 
 function applyAttachmentResult(result: OpenFilesResult) {
   pendingAttachments.value.push(...result.attachments);
-  for (const rejection of result.rejections) {
+  showAttachmentRejections(result.rejections);
+}
+
+function showAttachmentRejections(rejections: DroppedImageRejection[]) {
+  for (const rejection of rejections) {
     if (rejection.reason === "file_too_large") {
       ElMessage.error(
         t("chat.attachment.fileTooLarge", {
@@ -488,6 +563,8 @@ function applyAttachmentResult(result: OpenFilesResult) {
           limit: formatLimit(rejection.limit),
         }),
       );
+    } else if (rejection.reason === "unsupported_image") {
+      ElMessage.error(t("chat.attachment.unsupportedImage", { file: rejection.fileName }));
     } else {
       ElMessage.error(t("chat.attachment.readFailed", { file: rejection.fileName }));
     }
@@ -618,11 +695,29 @@ function handleThreadClick(e: MouseEvent) {
 }
 
 .home-input-box {
+  position: relative;
   border: 1px solid var(--ux-border);
   border-radius: 20px;
   transition:
     box-shadow 0.15s,
     border-color 0.15s;
+}
+
+.home-input-box--drop {
+  box-shadow: 0 0 0 2px var(--ux-focus);
+}
+
+.home-input-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: var(--ux-surface-secondary);
+  color: var(--ux-text-primary);
+  font-size: 14px;
+  pointer-events: none;
 }
 
 .home-input-box:focus-within {
