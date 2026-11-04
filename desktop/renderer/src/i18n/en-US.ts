@@ -181,6 +181,12 @@ export default {
   "chat.error.request_rejected.title": "The provider could not accept the request",
   "chat.error.request_rejected.hint":
     "Check whether the model supports the chat API, the requested input and tools, and the conversation length. A new conversation will not fix an incompatible API.",
+  "chat.error.billing.title": "The provider reported an account billing problem",
+  "chat.error.billing.hint":
+    "The provider reports insufficient balance or an overdue payment. Check the billing status of the account that owns this API key in the provider console, resolve the payment issue, then retry.",
+  "chat.error.quota_exhausted.title": "The provider's usage allowance is exhausted",
+  "chat.error.quota_exhausted.hint":
+    "The provider reports that the model's free or usage allowance is exhausted. Check the allowance and its renewal in the provider console, enable paid usage if supported, or choose another available model.",
   "chat.error.rate_limited.title": "Rate limited by the model provider",
   "chat.error.rate_limited.hint":
     "Too many requests — try again shortly, or check your quota / billing status with the provider.",

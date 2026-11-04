@@ -176,6 +176,12 @@ export default {
   "chat.error.request_rejected.title": "服务商无法接受此请求",
   "chat.error.request_rejected.hint":
     "请检查模型是否支持聊天接口、当前输入与工具，以及会话长度。新建会话不能解决接口不兼容的问题。",
+  "chat.error.billing.title": "服务商报告账户计费异常",
+  "chat.error.billing.hint":
+    "服务商明确报告余额不足或账户欠费。请在服务商控制台检查此 API Key 所属账户的账单状态，处理付款问题后重试。",
+  "chat.error.quota_exhausted.title": "服务商的模型使用额度已用尽",
+  "chat.error.quota_exhausted.hint":
+    "服务商明确报告此模型的免费额度或使用额度已用尽。请在服务商控制台检查剩余额度及恢复时间；如支持，可启用付费使用，或选择其他可用模型。",
   "chat.error.rate_limited.title": "请求被模型提供方限流",
   "chat.error.rate_limited.hint": "请求过于频繁，请稍后再试，或检查账户的配额与账单状态。",
   "chat.error.model_not_found.title": "模型未找到",

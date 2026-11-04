@@ -4,18 +4,23 @@ import { useUsagePanel } from "@/composables/useUsagePanel";
 import { setLocale, t } from "@/i18n";
 import UsagePanel from "./UsagePanel.vue";
 
-const mocks = vi.hoisted(() => ({ getDetailedStats: vi.fn(), push: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  getDetailedStats: vi.fn(),
+  push: vi.fn(),
+  lastError: null as { code: string } | null,
+}));
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("@/stores/gateway", () => ({
   useGatewayStore: () => ({ ready: true, status: "running" }),
 }));
-vi.mock("@/stores/chat", () => ({ useChatStore: () => ({ lastError: null }) }));
+vi.mock("@/stores/chat", () => ({ useChatStore: () => ({ lastError: mocks.lastError }) }));
 
 const wrappers: Array<ReturnType<typeof mount>> = [];
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  mocks.lastError = null;
   useUsagePanel().close();
   setLocale("zh-CN");
   mocks.getDetailedStats.mockResolvedValue({
@@ -52,6 +57,16 @@ async function openPanel() {
 }
 
 describe("usage source accounting", () => {
+  it.each(["billing", "quota_exhausted"])(
+    "does not report a working model after a %s failure",
+    async (code) => {
+      mocks.lastError = { code };
+      const wrapper = await openPanel();
+      expect(wrapper.get(".status-pill").text()).toBe(t("usage.statusModelOffline"));
+      expect(wrapper.get(".status-pill").classes()).toContain("status-pill-error");
+    },
+  );
+
   it("shows the combined total and distinguishes memory from session usage", async () => {
     const wrapper = await openPanel();
     const sources = wrapper.get('[data-testid="usage-sources"]');

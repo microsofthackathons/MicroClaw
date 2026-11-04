@@ -1072,6 +1072,50 @@ describe("server-driven WeChat conversation busy state", () => {
 
 describe("classifyChatError", () => {
   it.each([
+    [
+      'HTTP 403 {"code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}',
+      "billing",
+      403,
+    ],
+    ["403 Access denied, please make sure your account is in good standing.", "billing", 403],
+    ["HTTP 402 Payment Required", "billing", 402],
+    ["HTTP 400: Your credit balance is too low to access this API.", "billing", 400],
+    ["HTTP 401 insufficient_balance: 余额不足", "billing", 401],
+    ["账户欠费，请充值后重试", "billing", undefined],
+    [
+      'HTTP 403 {"code":"AllocationQuota.FreeTierOnly","message":"Free tier exhausted"}',
+      "quota_exhausted",
+      403,
+    ],
+    ["HTTP 429 insufficient_quota: Free allocated quota exceeded.", "quota_exhausted", 429],
+    ["usage quota has been exhausted", "quota_exhausted", undefined],
+    ["免费额度已耗尽", "quota_exhausted", undefined],
+  ])(
+    "recognizes explicit provider billing or usage-allowance failures: %s",
+    (raw, code, status) => {
+      const error = classifyChatError(String(raw));
+      expect(error).toEqual({ code, raw, status });
+      expect(requiresModelAuthRecovery(error)).toBe(false);
+    },
+  );
+
+  it.each([
+    ["HTTP 429 Too many requests", "rate_limited", 429],
+    ["HTTP 429 insufficient_quota", "rate_limited", 429],
+    [
+      "HTTP 429 Throttling.AllocationQuota: Allocated quota exceeded. Reduce tokens per minute.",
+      "rate_limited",
+      429,
+    ],
+    ["Requests throttling triggered: quota limit", "rate_limited", undefined],
+    ["HTTP 403 Access denied. Check billing or model permissions.", "provider_access", 403],
+    ["HTTP 401 API token expired", "unauthorized", 401],
+    ["Request failed: billing status unknown", "generic", undefined],
+  ])("does not infer exhausted balance or allowance without evidence: %s", (raw, code, status) => {
+    expect(classifyChatError(String(raw))).toEqual({ code, raw, status });
+  });
+
+  it.each([
     ["HTTP 403 Forbidden", "provider_access", 403],
     [
       "⚠️ Couldn't sign in to the AI service. Sign in again under Models.",

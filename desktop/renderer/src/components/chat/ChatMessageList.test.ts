@@ -3,7 +3,7 @@ import { shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { setLocale } from "@/i18n";
-import { useChatStore } from "@/stores/chat";
+import { classifyChatError, useChatStore } from "@/stores/chat";
 import ChatMessageList from "./ChatMessageList.vue";
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -33,6 +33,62 @@ describe("chat waiting feedback", () => {
     const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
     expect(wrapper.get(".chat-error").attributes("role")).toBe("alert");
     expect(wrapper.find(".chat-error__btn--primary").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it.each([
+    [
+      "en-US",
+      "HTTP 403 Arrearage",
+      "The provider reported an account billing problem",
+      "Check the billing status of the account that owns this API key",
+    ],
+    ["zh-CN", "HTTP 403 Arrearage", "服务商报告账户计费异常", "处理付款问题后重试"],
+    [
+      "en-US",
+      "HTTP 403 AllocationQuota.FreeTierOnly",
+      "The provider's usage allowance is exhausted",
+      "enable paid usage if supported",
+    ],
+    [
+      "zh-CN",
+      "HTTP 403 AllocationQuota.FreeTierOnly",
+      "服务商的模型使用额度已用尽",
+      "免费额度或使用额度已用尽",
+    ],
+  ] as const)("shows the specific provider error in %s", (locale, raw, title, hint) => {
+    setLocale(locale);
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    store.lastError = classifyChatError(raw);
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+
+    expect(wrapper.get(".chat-error__title").text()).toBe(title);
+    expect(wrapper.get(".chat-error__body").text()).toContain(hint);
+    expect(wrapper.get(".chat-error__raw").text()).toBe(raw);
+    expect(wrapper.text()).not.toContain("chat.error.billing");
+    expect(wrapper.text()).not.toContain("chat.error.quota_exhausted");
+    wrapper.unmount();
+  });
+
+  it("keeps explicit quota evidence from an error event through to the displayed alert", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+    const raw = "403 AllocationQuota.FreeTierOnly: Free tier exhausted";
+    store.handleChatEvent({
+      runId: "quota-failure",
+      sessionKey: store.sessionKey,
+      state: "error",
+      errorMessage: raw,
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(store.lastError).toEqual({ code: "quota_exhausted", raw, status: 403 });
+    expect(wrapper.get(".chat-error").attributes("role")).toBe("alert");
+    expect(wrapper.get(".chat-error__title").text()).toBe(
+      "The provider's usage allowance is exhausted",
+    );
     wrapper.unmount();
   });
 

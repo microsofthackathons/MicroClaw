@@ -212,6 +212,8 @@ const chatModelError = computed(() => {
     code === "not_found" ||
     code === "model_not_found" ||
     code === "unauthorized" ||
+    code === "billing" ||
+    code === "quota_exhausted" ||
     code === "rate_limited" ||
     code === "network" ||
     code === "server_error"

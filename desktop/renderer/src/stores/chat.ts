@@ -44,6 +44,8 @@ export interface ChatErrorInfo {
     | "provider_access" // 403 or upstream-normalized authentication/authorization rejection
     | "unsupported_model"
     | "request_rejected"
+    | "billing" // explicit payment / account-balance failure
+    | "quota_exhausted" // explicit exhausted usage allowance, not a token-rate limit
     | "rate_limited" // 429
     | "model_not_found" // model name typo
     | "network" // ECONNREFUSED / ENOTFOUND / timeout
@@ -91,6 +93,24 @@ export function classifyChatError(raw: string | null | undefined): ChatErrorInfo
     return { code: "copilot_auth", raw: text, status };
   }
   if (/UNSUPPORTED_CHAT_MODEL/.test(text)) return { code: "unsupported_model", raw: text, status };
+  // Qwen can report billing/free-quota failures as 403. Keep these before the
+  // HTTP fallbacks, but require affirmative evidence: insufficient_quota and
+  // Throttling.AllocationQuota can also mean TPS/TPM rate limiting.
+  if (
+    status === 402 ||
+    /\bArrearage\b|\binsufficient[_ -](?:balance|credits?)\b|\bcredit balance (?:is )?too low\b|\bpayment required\b|access denied, please make sure your account is in good standing\b|余额不足|账户欠费/i.test(
+      text,
+    )
+  ) {
+    return { code: "billing", raw: text, status };
+  }
+  if (
+    /\bAllocationQuota\.FreeTierOnly\b|\bfree allocated quota exceeded\b|\bquota_exhausted\b|\b(?:free|usage) quota (?:is |has been )?(?:exhausted|depleted)\b|免费额度(?:已|已经)?(?:用尽|耗尽)/i.test(
+      text,
+    )
+  ) {
+    return { code: "quota_exhausted", raw: text, status };
+  }
   if (
     status === 403 ||
     /forbidden|access[_ .-]*denied|couldn['’]t sign in to the ai service/i.test(text)
